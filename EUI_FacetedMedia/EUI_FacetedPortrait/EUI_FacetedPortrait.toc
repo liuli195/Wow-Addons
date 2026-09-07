@@ -1,0 +1,7 @@
+## Interface: 120000, 120001, 120100
+## Title: EUI Faceted Media
+## Notes: Applies the crystal-cut materials only when both dedicated EUI media choices are selected.
+## Dependencies: EllesmereUI, EllesmereUIUnitFrames
+## Version: 0.5.1
+
+Core.lua

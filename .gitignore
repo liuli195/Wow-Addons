@@ -1,0 +1,19 @@
+# 本地压缩包与历史备份
+/My Project/*.rar
+/My Project/WOWMYUI-1.8/
+/EUI_FacetedMedia/Backup/
+*.bak
+
+# 游戏账号配置
+WTF/
+
+# Python 缓存与本地虚拟环境
+__pycache__/
+*.py[cod]
+.venv/
+
+# 系统临时文件
+.vs/
+Thumbs.db
+Desktop.ini
+.DS_Store
