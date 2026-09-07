@@ -1,0 +1,38 @@
+defaults:
+  baseBranch: main
+  mergeStrategy: merge
+  reviewGate:
+    mode: github
+  hotfix:
+    verifyCommand: build-and-verify verify --project . --full
+  wait:
+    timeoutSeconds: 600
+    pollSeconds: 15
+  pr:
+    bodyTemplatePath: .pr-flow/pr-template.md
+    requiredSections:
+    - Summary
+    - Scope
+    - Closing References
+branches:
+  main:
+    remote: origin
+    allowHotfixPush: true
+setup:
+  github:
+    branchRulesets:
+    - branch: main
+      requirePullRequest: true
+      requiredApprovingReviewCount: 0
+      restrictDeletions: true
+      blockForcePushes: true
+      adminHotfixBypass: true
+    statusChecks:
+      mode: identify-after-first-run
+    codeScanning: true
+    allowedMergeMethods:
+    - merge
+    autoDeleteHeadBranch: false
+authorization:
+  phraseHashAlgorithm: md5
+  phraseHash: 4f9ee82bfd2ac6399a3e330ac49d75f1
