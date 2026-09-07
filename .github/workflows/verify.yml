@@ -1,0 +1,59 @@
+name: Addon verification
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  verify:
+    name: Windows addon checks
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Restore recorded verification toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $identity = (Get-Content .pr-flow/toolchain.json -Raw | ConvertFrom-Json).tools.'build-and-verify'
+          if ($identity.mode -eq 'release') {
+            npm install --global --ignore-scripts --no-audit --no-fund "$($identity.packageName)@$($identity.packageVersion)"
+          } elseif ($identity.mode -eq 'dev') {
+            $source = Join-Path $env:RUNNER_TEMP 'verification-toolchain'
+            git clone --no-checkout $identity.sourceRepository $source
+            git -C $source checkout --detach $identity.sourceCommit
+            $package = python "$source/plugins/tool-lifecycle/pack.py" build-and-verify $env:RUNNER_TEMP
+            npm install --global --ignore-scripts --no-audit --no-fund $package
+          } else {
+            throw 'Unknown toolchain mode'
+          }
+      - name: Prepare pinned tools and API references
+        shell: pwsh
+        run: ./tools/setup.ps1
+      - name: Full verification
+        shell: pwsh
+        run: build-and-verify verify --project . --full
+      - name: Keep diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-diagnostics
+          path: |
+            .local/luals/
+            .build-and-verify/runs/
+          if-no-files-found: ignore

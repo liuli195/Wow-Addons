@@ -1,0 +1,8 @@
+{
+  "runtime.version": "Lua 5.1",
+  "completion.autoRequire": false,
+  "workspace.checkThirdParty": false,
+  "workspace.library": [".tools/wow-api/Annotations/Core"],
+  "diagnostics.globals": ["EllesmereUI"],
+  "diagnostics.libraryFiles": "Disable"
+}

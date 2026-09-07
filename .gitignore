@@ -12,6 +12,10 @@ __pycache__/
 *.py[cod]
 .venv/
 
+# 本仓库开发工具和诊断缓存
+/.tools/
+/.local/
+
 # 系统临时文件
 .vs/
 Thumbs.db

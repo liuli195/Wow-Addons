@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "build": {
+    "checks": []
+  },
+  "verify": {
+    "checks": [
+      {
+        "id": "verify.luals",
+        "command": ".venv\\Scripts\\python.exe tools/check.py luals",
+        "paths": [
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ]
+      },
+      {
+        "id": "verify.luacheck",
+        "command": ".venv\\Scripts\\python.exe tools/check.py luacheck",
+        "paths": [
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ]
+      },
+      {
+        "id": "verify.toc",
+        "command": ".venv\\Scripts\\python.exe tools/check.py toc",
+        "paths": [
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ]
+      },
+      {
+        "id": "verify.assets",
+        "command": ".venv\\Scripts\\python.exe EUI_FacetedMedia/verify.py",
+        "paths": [
+          "EUI_FacetedMedia/verify.py",
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "EUI_FacetedMedia/verify.py",
+          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
+          "EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ]
+      },
+      {
+        "id": "verify.docs",
+        "command": ".venv\\Scripts\\python.exe tools/check.py docs",
+        "paths": [
+          "README.md",
+          "AGENTS.md",
+          "docs/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "README.md",
+          "AGENTS.md",
+          "docs/**",
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ]
+      },
+      {
+        "id": "verify.checker-tests",
+        "command": ".venv\\Scripts\\python.exe tools/test_checks.py",
+        "paths": [
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tools/**",
+          ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json"
+        ]
+      }
+    ]
+  }
+}

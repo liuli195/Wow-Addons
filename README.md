@@ -2,6 +2,24 @@
 
 本仓库保存个人脚本、配置文本、自制素材和第三方界面插件副本。
 
+## 人工智能开发环境
+
+当前目标为魔兽正式服 12.1.0（构建号 69587）。环境部署、检查范围和已知限制见[环境使用说明](docs/environment-setup.md)；完整开发与交付流程见[协作指南](docs/wow-addon-development-guide.md)。
+
+首次准备工具，在仓库根目录执行：
+
+```powershell
+pwsh -NoProfile -File tools/setup.ps1
+```
+
+日常验证使用本机 build-and-verify（构建与验证）技能与命令：
+
+```powershell
+build-and-verify verify --project .
+```
+
+PR Flow（拉取请求流程）已配置本地入口；提交前读取当前技能。热修复允许管理员在授权短语校验及完整验证后直推。CodeQL（安全扫描）用于 Python（脚本语言），Lua（插件脚本）由独立检查器验证。
+
 ## 目录
 
 | 目录 | 用途 |
@@ -19,7 +37,7 @@
 验证现有素材：
 
 ```powershell
-python .\EUI_FacetedMedia\verify.py
+build-and-verify verify --project .
 ```
 
 生成素材的入口：
@@ -36,4 +54,4 @@ python .\EUI_FacetedMedia\verify.py
 
 新机器需要先安装大文件存储工具，再在仓库根目录执行 `git lfs install --local`（启用当前仓库的大文件处理与推送钩子）。检出后若素材仍是文本指针，执行 `git lfs pull`（从远程取回素材）；前提是远程仓库已配置并上传对应对象。当前素材转为大文件存储不会迁移旧提交。
 
-编辑器缓存、历史备份、游戏账号配置和本地整合包由 `.gitignore`（忽略规则）排除。旧提交仍保存最初纳入的文件，本次整理不重写历史。仓库内整理不会自动同步到游戏安装目录。
+编辑器缓存、历史备份、游戏账号配置和本地整合包由 `.gitignore`（忽略规则）排除。公有仓库从整理后的内容建立基线；包含旧整合包的历史仅保留在原机器的本地备份分支，不推送。仓库内整理不会自动同步到游戏安装目录。
