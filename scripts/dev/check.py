@@ -8,7 +8,7 @@ import tempfile
 from urllib.parse import unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
-ADDON = ROOT / "AddOns/EUI_FacetedPortrait"
+ADDON = ROOT / "addons/EUI_FacetedPortrait"
 LUA = ROOT / ".tools/lua-5.1.5/src/lua.exe"
 LUALS = ROOT / ".tools/luals/bin/lua-language-server.exe"
 LUACHECK = ROOT / ".tools/downloads/luacheck.exe"
@@ -76,7 +76,7 @@ def check_luals(folder):
 
 
 def check_docs():
-    files = [ROOT / "README.md", ROOT / "AGENTS.md", *sorted((ROOT / "DOC").glob("*.md"))]
+    files = [ROOT / "README.md", ROOT / "AGENTS.md", *sorted((ROOT / "docs").glob("*.md"))]
     for path in files:
         content = path.read_text(encoding="utf-8")
         if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", content):

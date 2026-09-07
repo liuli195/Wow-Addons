@@ -9,7 +9,7 @@
         "id": "verify.luals",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals",
         "paths": [
-          "AddOns/EUI_FacetedPortrait/**",
+          "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -18,7 +18,7 @@
           ".pr-flow/toolchain.json"
         ],
         "inputs": [
-          "AddOns/EUI_FacetedPortrait/**",
+          "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -31,7 +31,7 @@
         "id": "verify.luacheck",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luacheck",
         "paths": [
-          "AddOns/EUI_FacetedPortrait/**",
+          "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -40,7 +40,7 @@
           ".pr-flow/toolchain.json"
         ],
         "inputs": [
-          "AddOns/EUI_FacetedPortrait/**",
+          "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -53,7 +53,7 @@
         "id": "verify.toc",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py toc",
         "paths": [
-          "AddOns/EUI_FacetedPortrait/**",
+          "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -62,7 +62,7 @@
           ".pr-flow/toolchain.json"
         ],
         "inputs": [
-          "AddOns/EUI_FacetedPortrait/**",
+          "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -76,9 +76,9 @@
         "command": ".venv\\Scripts\\python.exe scripts/media/verify.py",
         "paths": [
           "scripts/media/verify.py",
-          "AddOns/EUI_FacetedPortrait/**",
-          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
-          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "addons/EUI_FacetedPortrait/**",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
@@ -87,9 +87,9 @@
         ],
         "inputs": [
           "scripts/media/verify.py",
-          "AddOns/EUI_FacetedPortrait/**",
-          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
-          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "addons/EUI_FacetedPortrait/**",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
@@ -103,7 +103,7 @@
         "paths": [
           "README.md",
           "AGENTS.md",
-          "DOC/**",
+          "docs/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
@@ -112,7 +112,7 @@
         "inputs": [
           "README.md",
           "AGENTS.md",
-          "DOC/**",
+          "docs/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",

@@ -15,7 +15,7 @@
 初始化前核实的基线（部署后的状态以环境使用说明和实际配置为准）：
 
 - 这是自制插件、素材、代码片段和第三方插件混合保存的仓库，没有必要整体搬家。
-- 自制插件位于 AddOns/EUI_FacetedPortrait，依赖 EllesmereUI（界面插件）及其单位框体模块。
+- 自制插件位于 addons/EUI_FacetedPortrait，依赖 EllesmereUI（界面插件）及其单位框体模块。
 - scripts/media/verify.py（素材验证脚本）已实测通过，覆盖 13 个素材及部分代码约束；这不代表游戏内显示已经验收。
 - scripts/snippets/（个人脚本目录）包含依赖不同运行环境的片段，不能一概当成可独立加载的插件或现成测试。
 - 本机 build-and-verify（构建与验证命令）可以调用；gh（GitHub 命令行工具）可以调用；已安装 PR Flow（拉取请求流程）技能，其脚本帮助入口可运行。
@@ -88,7 +88,7 @@ Luacheck 作者提供 Windows 单文件程序，能减少 LuaRocks（Lua 包管�
 
 ~~~powershell
 $repoRoot = (Get-Location).Path
-lua-language-server --check "$repoRoot/AddOns/EUI_FacetedPortrait" --configpath "$repoRoot/.luarc.json" --checklevel=Warning --check_format=json --logpath "$repoRoot/.local/luals"
+lua-language-server --check "$repoRoot/addons/EUI_FacetedPortrait" --configpath "$repoRoot/.luarc.json" --checklevel=Warning --check_format=json --logpath "$repoRoot/.local/luals"
 ~~~
 
 报告位于指定日志目录的 check.json（诊断报告）。固定版本下实测“有问题时的退出状态”；若退出状态不足以执行项目门禁，只增加一个很薄的适配脚本，读取本次报告、输出文件与行号，并把达到约定严重级别的问题转为失败。报告缺失、生成失败或时间不匹配应报错，不能读取旧报告冒充新结果。[独立运行说明](https://luals.github.io/wiki/usage/)、[诊断报告说明](https://luals.github.io/wiki/diagnosis-report/)
@@ -405,7 +405,7 @@ complete（收尾）会创建或同步请求、等待检查、执行审查门禁
 GitHub 交付使用当前 PR Flow 技能；完整收尾可能合并和清理。
 游戏部署、仓库首次推送、远端设置和发布按明确授权范围执行。
 报告分别列出本机验证、远端检查、模拟器测试和真实游戏验收。
-具体流程、失败恢复和完成标准见 DOC/wow-addon-development-guide.md。
+具体流程、失败恢复和完成标准见 docs/wow-addon-development-guide.md。
 ~~~
 
 不要将全部指南复制到代理工作说明中，也不要让文档重新定义技能参数。每次执行以实际读取的当前技能契约为准。

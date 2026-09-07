@@ -2,7 +2,7 @@
 
 部署日期：2026-09-07。公有仓库：[liuli195/Wow-Addons](https://github.com/liuli195/Wow-Addons)。
 
-目录整理后，插件集中在 `AddOns/`，项目文档在 `DOC/`，开发脚本在 `scripts/dev/`，素材脚本在 `scripts/media/`，个人片段在 `scripts/snippets/`。原整合包和配置移入 `Archive/`（历史存档），整个目录忽略；配置在旧公有提交中的内容保留。
+目录整理后，插件集中在 `addons/`，项目文档在 `docs/`，开发脚本在 `scripts/dev/`，素材脚本在 `scripts/media/`，个人片段在 `scripts/snippets/`。原整合包和配置移入 `archive/`（历史存档），整个目录忽略；配置在旧公有提交中的内容保留。
 
 ## 环境与范围
 

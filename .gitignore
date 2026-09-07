@@ -1,6 +1,6 @@
 # 本地压缩包与历史备份
-/Archive/
-/Assets/EUI_FacetedMedia/Backup/
+/archive/
+/assets/EUI_FacetedMedia/Backup/
 *.bak
 
 # 游戏账号配置
