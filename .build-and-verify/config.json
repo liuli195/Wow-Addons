@@ -7,10 +7,10 @@
     "checks": [
       {
         "id": "verify.luals",
-        "command": ".venv\\Scripts\\python.exe tools/check.py luals",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals",
         "paths": [
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "tools/**",
+          "AddOns/EUI_FacetedPortrait/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
@@ -18,8 +18,8 @@
           ".pr-flow/toolchain.json"
         ],
         "inputs": [
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "tools/**",
+          "AddOns/EUI_FacetedPortrait/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
@@ -29,10 +29,10 @@
       },
       {
         "id": "verify.luacheck",
-        "command": ".venv\\Scripts\\python.exe tools/check.py luacheck",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luacheck",
         "paths": [
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "tools/**",
+          "AddOns/EUI_FacetedPortrait/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
@@ -40,8 +40,8 @@
           ".pr-flow/toolchain.json"
         ],
         "inputs": [
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "tools/**",
+          "AddOns/EUI_FacetedPortrait/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
@@ -51,10 +51,10 @@
       },
       {
         "id": "verify.toc",
-        "command": ".venv\\Scripts\\python.exe tools/check.py toc",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py toc",
         "paths": [
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "tools/**",
+          "AddOns/EUI_FacetedPortrait/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
@@ -62,8 +62,8 @@
           ".pr-flow/toolchain.json"
         ],
         "inputs": [
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "tools/**",
+          "AddOns/EUI_FacetedPortrait/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
@@ -73,36 +73,38 @@
       },
       {
         "id": "verify.assets",
-        "command": ".venv\\Scripts\\python.exe EUI_FacetedMedia/verify.py",
+        "command": ".venv\\Scripts\\python.exe scripts/media/verify.py",
         "paths": [
-          "EUI_FacetedMedia/verify.py",
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
-          "EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
-          "tools/**",
+          "scripts/media/verify.py",
+          "AddOns/EUI_FacetedPortrait/**",
+          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "scripts/media/**"
         ],
         "inputs": [
-          "EUI_FacetedMedia/verify.py",
-          "EUI_FacetedMedia/EUI_FacetedPortrait/**",
-          "EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
-          "EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
-          "tools/**",
+          "scripts/media/verify.py",
+          "AddOns/EUI_FacetedPortrait/**",
+          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "Assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "scripts/media/**"
         ]
       },
       {
         "id": "verify.docs",
-        "command": ".venv\\Scripts\\python.exe tools/check.py docs",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py docs",
         "paths": [
           "README.md",
           "AGENTS.md",
-          "docs/**",
-          "tools/**",
+          "DOC/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           ".pr-flow/toolchain.json"
@@ -110,8 +112,8 @@
         "inputs": [
           "README.md",
           "AGENTS.md",
-          "docs/**",
-          "tools/**",
+          "DOC/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           ".pr-flow/toolchain.json"
@@ -119,9 +121,9 @@
       },
       {
         "id": "verify.checker-tests",
-        "command": ".venv\\Scripts\\python.exe tools/test_checks.py",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/test_checks.py",
         "paths": [
-          "tools/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
@@ -129,7 +131,7 @@
           ".pr-flow/toolchain.json"
         ],
         "inputs": [
-          "tools/**",
+          "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",

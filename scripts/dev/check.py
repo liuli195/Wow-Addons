@@ -7,8 +7,8 @@ import subprocess
 import tempfile
 from urllib.parse import unquote, urlparse
 
-ROOT = Path(__file__).resolve().parents[1]
-ADDON = ROOT / "EUI_FacetedMedia/EUI_FacetedPortrait"
+ROOT = Path(__file__).resolve().parents[2]
+ADDON = ROOT / "AddOns/EUI_FacetedPortrait"
 LUA = ROOT / ".tools/lua-5.1.5/src/lua.exe"
 LUALS = ROOT / ".tools/luals/bin/lua-language-server.exe"
 LUACHECK = ROOT / ".tools/downloads/luacheck.exe"
@@ -22,7 +22,7 @@ def check_toc(folder):
     tocs = list(folder.glob("*.toc"))
     if not tocs:
         raise ValueError(f"没有插件清单：{folder}")
-    interface = str(json.loads((ROOT / "tools/versions.json").read_text())["client"]["interface"])
+    interface = str(json.loads((ROOT / "scripts/dev/versions.json").read_text())["client"]["interface"])
     for toc in tocs:
         lines = toc.read_text(encoding="utf-8-sig").splitlines()
         versions = [v.strip() for line in lines if line.startswith("## Interface:")
@@ -37,7 +37,7 @@ def check_toc(folder):
             if not path.is_relative_to(folder.resolve()) or not path.is_file():
                 raise ValueError(f"{toc}: 加载文件缺失或越界：{entry}")
             if path.suffix.lower() == ".lua":
-                run(LUA, ROOT / "tools/check_syntax.lua", path)
+                run(LUA, ROOT / "scripts/dev/check_syntax.lua", path)
     print("PASS: 插件清单、目标接口号和 Lua 5.1 语法")
 
 
@@ -76,7 +76,7 @@ def check_luals(folder):
 
 
 def check_docs():
-    files = [ROOT / "README.md", ROOT / "AGENTS.md", *sorted((ROOT / "docs").glob("*.md"))]
+    files = [ROOT / "README.md", ROOT / "AGENTS.md", *sorted((ROOT / "DOC").glob("*.md"))]
     for path in files:
         content = path.read_text(encoding="utf-8")
         if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", content):

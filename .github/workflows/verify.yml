@@ -44,7 +44,7 @@ jobs:
           }
       - name: Prepare pinned tools and API references
         shell: pwsh
-        run: ./tools/setup.ps1
+        run: ./scripts/dev/setup.ps1
       - name: Full verification
         shell: pwsh
         run: build-and-verify verify --project . --full

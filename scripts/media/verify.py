@@ -5,8 +5,9 @@ import numpy as np
 from PIL import Image
 
 
-ROOT = Path(__file__).parent
-MEDIA = ROOT / "EUI_FacetedPortrait" / "Media"
+REPO = Path(__file__).resolve().parents[2]
+ROOT = REPO / "Assets/EUI_FacetedMedia"
+MEDIA = REPO / "AddOns/EUI_FacetedPortrait/Media"
 ASSETS = {
     ROOT / "SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga": (256, 64),
     ROOT / "SharedMedia_MyMedia/border/EUI Faceted Border.tga": (256, 32),
@@ -55,7 +56,7 @@ assert mask[64, 64, 3] == 255 and mask[0, 0, 3] == 0, "portrait mask is invalid"
 outer_antialias = (portrait[:, :, 3] > 0) & (portrait[:, :, 3] < 32)
 assert portrait[:, :, 0][outer_antialias].max() <= 128, "portrait has a bright alpha fringe"
 
-core = (ROOT / "EUI_FacetedPortrait/Core.lua").read_text(encoding="utf-8")
+core = (REPO / "AddOns/EUI_FacetedPortrait/Core.lua").read_text(encoding="utf-8")
 for required in (
     'local BAR_KEY = "sm:EUI Faceted Bar"',
     'local BORDER_KEY = "sm:EUI Faceted Border"',
@@ -65,7 +66,7 @@ for required in (
     assert required in core, f"Core.lua missing: {required}"
 assert "FacetedHealthFrame.tga" not in core, "single-piece border still distorts when the bar ratio changes"
 
-toc = (ROOT / "EUI_FacetedPortrait/EUI_FacetedPortrait.toc").read_text(encoding="utf-8")
+toc = (REPO / "AddOns/EUI_FacetedPortrait/EUI_FacetedPortrait.toc").read_text(encoding="utf-8")
 assert "## Version: 0.5.1" in toc, "TOC version was not updated"
 
 print("PASS: 13 neutral RGBA assets; WoW TGA headers; eight-slice border atlas; clean portrait alpha fringe.")

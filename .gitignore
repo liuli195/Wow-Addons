@@ -1,7 +1,6 @@
 # 本地压缩包与历史备份
-/My Project/*.rar
-/My Project/WOWMYUI-1.8/
-/EUI_FacetedMedia/Backup/
+/Archive/
+/Assets/EUI_FacetedMedia/Backup/
 *.bak
 
 # 游戏账号配置

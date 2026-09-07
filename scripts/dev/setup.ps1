@@ -1,9 +1,9 @@
 # 本机和远端共用；仅写仓库内缓存，不修改系统环境或游戏文件。
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-$repoRoot = Split-Path $PSScriptRoot -Parent
+$repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location -LiteralPath $repoRoot
-$versions = Get-Content tools/versions.json -Raw | ConvertFrom-Json
+$versions = Get-Content scripts/dev/versions.json -Raw | ConvertFrom-Json
 New-Item -ItemType Directory -Force .tools/downloads | Out-Null
 
 function Get-Artifact($spec, $path) {
@@ -67,7 +67,7 @@ if ((Get-Content .tools/wow-ui-source/version.txt).Trim() -ne $expected) {
     throw '界面源码构建号不匹配。'
 }
 if (-not (Test-Path '.venv/Scripts/python.exe')) { python -m venv .venv }
-& .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r tools/requirements.txt
+& .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r scripts/dev/requirements.txt
 & .tools/lua-5.1.5/src/lua.exe -e 'assert(_VERSION == "Lua 5.1"); print(_VERSION)'
 & .tools/downloads/luacheck.exe --version
 & .tools/luals/bin/lua-language-server.exe --version

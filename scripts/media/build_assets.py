@@ -6,9 +6,10 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 
-ROOT = Path(__file__).parent
+REPO = Path(__file__).resolve().parents[2]
+ROOT = REPO / "Assets/EUI_FacetedMedia"
 SOURCE = ROOT / "New-Crystal-Set" / "Final-PNG"
-MEDIA = ROOT / "EUI_FacetedPortrait" / "Media"
+MEDIA = REPO / "AddOns/EUI_FacetedPortrait/Media"
 STATUSBAR = ROOT / "SharedMedia_MyMedia" / "statusbar"
 BORDER = ROOT / "SharedMedia_MyMedia" / "border"
 RESAMPLE = Image.Resampling.LANCZOS

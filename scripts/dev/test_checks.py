@@ -4,11 +4,11 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def invoke(check, folder, expected):
-    result = subprocess.run([sys.executable, str(ROOT / "tools/check.py"), check,
+    result = subprocess.run([sys.executable, str(ROOT / "scripts/dev/check.py"), check,
                              "--source", str(folder)], cwd=ROOT,
                             capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert (result.returncode == 0) == expected, result.stdout + result.stderr

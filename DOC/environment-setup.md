@@ -2,9 +2,11 @@
 
 部署日期：2026-09-07。公有仓库：[liuli195/Wow-Addons](https://github.com/liuli195/Wow-Addons)。
 
+目录整理后，插件集中在 `AddOns/`，项目文档在 `DOC/`，开发脚本在 `scripts/dev/`，素材脚本在 `scripts/media/`，个人片段在 `scripts/snippets/`。原整合包和配置移入 `Archive/`（历史存档），整个目录忽略；配置在旧公有提交中的内容保留。
+
 ## 环境与范围
 
-本机游戏可执行文件和安装版本记录均为正式服 12.1.0.69587。工具和接口资料的具体版本以 `tools/versions.json` 为准；本机使用仓库内 `.venv`（独立 Python 环境），无需启动编辑器。
+本机游戏可执行文件和安装版本记录均为正式服 12.1.0.69587。工具和接口资料的具体版本以 `scripts/dev/versions.json` 为准；本机使用仓库内 `.venv`（独立 Python 环境），无需启动编辑器。
 
 - LuaLS（语言服务器）3.19.1：对自制插件进行语言诊断。
 - Luacheck（静态检查器）1.2.0：检查 Lua 5.1 语法、合法全局量等。
@@ -15,7 +17,7 @@
 初次使用需要 Git（版本管理）、Git LFS（大文件存储）、PowerShell 7（命令环境）、Python 3.12（解释器）以及微软 C++（编译语言）工具。远端采用 Windows 2025（运行环境）并准备相同依赖。
 
 ~~~powershell
-pwsh -NoProfile -File tools/setup.ps1
+pwsh -NoProfile -File scripts/dev/setup.ps1
 build-and-verify verify --project .
 ~~~
 
