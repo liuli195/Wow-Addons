@@ -28,7 +28,10 @@ setup:
       blockForcePushes: true
       adminHotfixBypass: true
     statusChecks:
-      mode: identify-after-first-run
+      mode: enabled
+      names:
+      - Windows addon checks
+      - pr-flow-toolchain
     codeScanning: true
     allowedMergeMethods:
     - merge
