@@ -1,0 +1,7 @@
+__pycache__/
+*-check-results.json
+coverage-*-run.json
+effect-cache-v2/
+browser-check/
+*.log
+calc-*/

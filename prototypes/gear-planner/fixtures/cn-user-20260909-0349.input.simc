@@ -1,0 +1,25 @@
+# User-provided 12.1.0.69587 profile, 2026-09-09 03:49. Identity omitted; Markdown underscore escapes normalized.
+deathknight=cn_reference
+level=90
+race=highmountain_tauren
+role=tank
+professions=alchemy=98/enchanting=72
+spec=blood
+talents=CoPAkXBWxkyfx9CbGaHonEAhLxMz2MzwMmZmhZbmZmmZxMjZmxAAAAAmhZmZmZMzYAAzMzMzAAAYgBmxiGLbgsNgNAzYAAAmZAMA
+omnium_talents=136814:1/136821:1/136817:1/136819:1/136822:1
+head=,id=251229,enchant_id=7991,bonus_id=12843/13440/42/13696/13662/12699,content_tuning=1279
+neck=,id=266314,gem_id=240894,bonus_id=12841/13657,content_tuning=5381
+shoulder=,id=271472,enchant_id=7973,bonus_id=6652/13440/13694/13697/12854,redirected_base_stats=251138
+back=,id=272226,bonus_id=6652/13662/12838,content_tuning=6014
+chest=,id=273787,enchant_id=7987,bonus_id=13440/6652/13662/12699/12846,content_tuning=1279
+tabard=,id=45585,content_tuning=3321
+wrist=,id=237834,bonus_id=12214/13667/12497/13751/14001/8960/12384/8790/13836/13696,content_tuning=3615,crafted_stats=36/32,crafting_quality=5
+hands=,id=155970,bonus_id=8902/7756/13662/12699/12843,content_tuning=440
+waist=,id=159418,bonus_id=12842/13440/6652/13696/13662/12699,content_tuning=1279
+legs=,id=271473,enchant_id=8159,bonus_id=6652/13440/13693/13698/12846,redirected_base_stats=273776
+feet=,id=273777,enchant_id=8019,bonus_id=12841/13440/6652/13662/12699,content_tuning=1279
+finger1=,id=273792,enchant_id=7967,gem_id=240983,bonus_id=13440/6652/13668/12699/12846,content_tuning=1279
+finger2=,id=159459,enchant_id=7967,gem_id=240894,bonus_id=13440/6652/13668/12699/12845,content_tuning=1279
+trinket1=,id=250245,bonus_id=12843/13440/42/12699,content_tuning=1279
+trinket2=,id=250228,bonus_id=12843/13440/6652/12699,content_tuning=1279
+main_hand=,id=237846,enchant_id=6241,bonus_id=12214/13667/12497/13751/14004/13771/8960/8791/13836,content_tuning=3615,crafted_stats=36/49,crafting_quality=5

@@ -1,0 +1,402 @@
+{
+  "3368": {
+    "name": "堕落十字军符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/53344?dataEnv=1&locale=4"
+  },
+  "3370": {
+    "name": "冰锋符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/53343?dataEnv=1&locale=4"
+  },
+  "3847": {
+    "name": "岩肤石像鬼符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/62158?dataEnv=1&locale=4"
+  },
+  "6241": {
+    "name": "鲜红符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/326805?dataEnv=1&locale=4"
+  },
+  "6242": {
+    "name": "护咒符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/326855?dataEnv=1&locale=4"
+  },
+  "6243": {
+    "name": "癔狂符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/326911?dataEnv=1&locale=4"
+  },
+  "6244": {
+    "name": "无尽渴求符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/326977?dataEnv=1&locale=4"
+  },
+  "6245": {
+    "name": "天启符文",
+    "source": "https://nether.wowhead.com/tooltip/spell/327082?dataEnv=1&locale=4"
+  },
+  "7934": {
+    "name": "阳炎丝绸魔线",
+    "source": "https://nether.wowhead.com/tooltip/item/240094?dataEnv=1&locale=4"
+  },
+  "7935": {
+    "name": "阳炎丝绸魔线",
+    "source": "https://nether.wowhead.com/tooltip/item/240133?dataEnv=1&locale=4"
+  },
+  "7936": {
+    "name": "奥纹魔线",
+    "source": "https://nether.wowhead.com/tooltip/item/240154?dataEnv=1&locale=4"
+  },
+  "7937": {
+    "name": "奥纹魔线",
+    "source": "https://nether.wowhead.com/tooltip/item/240155?dataEnv=1&locale=4"
+  },
+  "7938": {
+    "name": "光明亚麻魔线",
+    "source": "https://nether.wowhead.com/tooltip/item/240156?dataEnv=1&locale=4"
+  },
+  "7939": {
+    "name": "光明亚麻魔线",
+    "source": "https://nether.wowhead.com/tooltip/item/240157?dataEnv=1&locale=4"
+  },
+  "7956": {
+    "name": "附魔胸甲 - 纳洛拉克印记",
+    "source": "https://nether.wowhead.com/tooltip/item/243946?dataEnv=1&locale=4"
+  },
+  "7957": {
+    "name": "附魔胸甲 - 纳洛拉克印记",
+    "source": "https://nether.wowhead.com/tooltip/item/243947?dataEnv=1&locale=4"
+  },
+  "7958": {
+    "name": "附魔头盔 - 吸血妖术",
+    "source": "https://nether.wowhead.com/tooltip/item/243948?dataEnv=1&locale=4"
+  },
+  "7959": {
+    "name": "附魔头盔 - 吸血妖术",
+    "source": "https://nether.wowhead.com/tooltip/item/243949?dataEnv=1&locale=4"
+  },
+  "7960": {
+    "name": "附魔头盔 - 强化吸血妖术",
+    "source": "https://nether.wowhead.com/tooltip/item/243950?dataEnv=1&locale=4"
+  },
+  "7961": {
+    "name": "附魔头盔 - 强化吸血妖术",
+    "source": "https://nether.wowhead.com/tooltip/item/243951?dataEnv=1&locale=4"
+  },
+  "7962": {
+    "name": "附魔靴子 - 山猫之敏",
+    "source": "https://nether.wowhead.com/tooltip/item/243952?dataEnv=1&locale=4"
+  },
+  "7963": {
+    "name": "附魔靴子 - 山猫之敏",
+    "source": "https://nether.wowhead.com/tooltip/item/243953?dataEnv=1&locale=4"
+  },
+  "7964": {
+    "name": "附魔戒指 - 阿曼尼精通",
+    "source": "https://nether.wowhead.com/tooltip/item/243954?dataEnv=1&locale=4"
+  },
+  "7965": {
+    "name": "附魔戒指 - 阿曼尼精通",
+    "source": "https://nether.wowhead.com/tooltip/item/243955?dataEnv=1&locale=4"
+  },
+  "7966": {
+    "name": "附魔戒指 - 鹰眼神视",
+    "source": "https://nether.wowhead.com/tooltip/item/243956?dataEnv=1&locale=4"
+  },
+  "7967": {
+    "name": "附魔戒指 - 鹰眼神视",
+    "source": "https://nether.wowhead.com/tooltip/item/243957?dataEnv=1&locale=4"
+  },
+  "7968": {
+    "name": "附魔戒指 - 祖尔金的精通",
+    "source": "https://nether.wowhead.com/tooltip/item/243958?dataEnv=1&locale=4"
+  },
+  "7969": {
+    "name": "附魔戒指 - 祖尔金的精通",
+    "source": "https://nether.wowhead.com/tooltip/item/243959?dataEnv=1&locale=4"
+  },
+  "7970": {
+    "name": "附魔护肩 - 鹰翔长空",
+    "source": "https://nether.wowhead.com/tooltip/item/243960?dataEnv=1&locale=4"
+  },
+  "7971": {
+    "name": "附魔护肩 - 鹰翔长空",
+    "source": "https://nether.wowhead.com/tooltip/item/243961?dataEnv=1&locale=4"
+  },
+  "7972": {
+    "name": "附魔护肩 - 埃基尔松的迅捷",
+    "source": "https://nether.wowhead.com/tooltip/item/243962?dataEnv=1&locale=4"
+  },
+  "7973": {
+    "name": "附魔护肩 - 埃基尔松的迅捷",
+    "source": "https://nether.wowhead.com/tooltip/item/243963?dataEnv=1&locale=4"
+  },
+  "7978": {
+    "name": "附魔武器 - 哈尔拉兹之力",
+    "source": "https://nether.wowhead.com/tooltip/item/243968?dataEnv=1&locale=4"
+  },
+  "7979": {
+    "name": "附魔武器 - 哈尔拉兹之力",
+    "source": "https://nether.wowhead.com/tooltip/item/243969?dataEnv=1&locale=4"
+  },
+  "7980": {
+    "name": "附魔武器 - 加亚莱的精准",
+    "source": "https://nether.wowhead.com/tooltip/item/243970?dataEnv=1&locale=4"
+  },
+  "7981": {
+    "name": "附魔武器 - 加亚莱的精准",
+    "source": "https://nether.wowhead.com/tooltip/item/243971?dataEnv=1&locale=4"
+  },
+  "7982": {
+    "name": "附魔武器 - 狂战士之怒",
+    "source": "https://nether.wowhead.com/tooltip/item/243972?dataEnv=1&locale=4"
+  },
+  "7983": {
+    "name": "附魔武器 - 狂战士之怒",
+    "source": "https://nether.wowhead.com/tooltip/item/243973?dataEnv=1&locale=4"
+  },
+  "7984": {
+    "name": "附魔胸甲 - 护根者印记",
+    "source": "https://nether.wowhead.com/tooltip/item/243974?dataEnv=1&locale=4"
+  },
+  "7985": {
+    "name": "附魔胸甲 - 护根者印记",
+    "source": "https://nether.wowhead.com/tooltip/item/243975?dataEnv=1&locale=4"
+  },
+  "7986": {
+    "name": "附魔胸甲 - 世界之魂印记",
+    "source": "https://nether.wowhead.com/tooltip/item/243976?dataEnv=1&locale=4"
+  },
+  "7987": {
+    "name": "附魔胸甲 - 世界之魂印记",
+    "source": "https://nether.wowhead.com/tooltip/item/243977?dataEnv=1&locale=4"
+  },
+  "7988": {
+    "name": "附魔头盔 - 加速祝福",
+    "source": "https://nether.wowhead.com/tooltip/item/243978?dataEnv=1&locale=4"
+  },
+  "7989": {
+    "name": "附魔头盔 - 加速祝福",
+    "source": "https://nether.wowhead.com/tooltip/item/243979?dataEnv=1&locale=4"
+  },
+  "7990": {
+    "name": "附魔头盔 - 强化加速祝福",
+    "source": "https://nether.wowhead.com/tooltip/item/243980?dataEnv=1&locale=4"
+  },
+  "7991": {
+    "name": "附魔头盔 - 强化加速祝福",
+    "source": "https://nether.wowhead.com/tooltip/item/243981?dataEnv=1&locale=4"
+  },
+  "7992": {
+    "name": "附魔靴子 - 莎拉达希尔之根",
+    "source": "https://nether.wowhead.com/tooltip/item/243982?dataEnv=1&locale=4"
+  },
+  "7993": {
+    "name": "附魔靴子 - 莎拉达希尔之根",
+    "source": "https://nether.wowhead.com/tooltip/item/243983?dataEnv=1&locale=4"
+  },
+  "7994": {
+    "name": "附魔戒指 - 自然之愤",
+    "source": "https://nether.wowhead.com/tooltip/item/243984?dataEnv=1&locale=4"
+  },
+  "7995": {
+    "name": "附魔戒指 - 自然之愤",
+    "source": "https://nether.wowhead.com/tooltip/item/243985?dataEnv=1&locale=4"
+  },
+  "7996": {
+    "name": "附魔戒指 - 自然之怒",
+    "source": "https://nether.wowhead.com/tooltip/item/243986?dataEnv=1&locale=4"
+  },
+  "7997": {
+    "name": "附魔戒指 - 自然之怒",
+    "source": "https://nether.wowhead.com/tooltip/item/243987?dataEnv=1&locale=4"
+  },
+  "7998": {
+    "name": "附魔护肩 - 自然的优雅",
+    "source": "https://nether.wowhead.com/tooltip/item/243988?dataEnv=1&locale=4"
+  },
+  "7999": {
+    "name": "附魔护肩 - 自然的优雅",
+    "source": "https://nether.wowhead.com/tooltip/item/243989?dataEnv=1&locale=4"
+  },
+  "8000": {
+    "name": "附魔护肩 - 阿梅达希尔之赐",
+    "source": "https://nether.wowhead.com/tooltip/item/243990?dataEnv=1&locale=4"
+  },
+  "8001": {
+    "name": "附魔护肩 - 阿梅达希尔之赐",
+    "source": "https://nether.wowhead.com/tooltip/item/243991?dataEnv=1&locale=4"
+  },
+  "8006": {
+    "name": "附魔武器 - 世界之魂的摇篮",
+    "source": "https://nether.wowhead.com/tooltip/item/243996?dataEnv=1&locale=4"
+  },
+  "8007": {
+    "name": "附魔武器 - 世界之魂的摇篮",
+    "source": "https://nether.wowhead.com/tooltip/item/243997?dataEnv=1&locale=4"
+  },
+  "8008": {
+    "name": "附魔武器 - 世界之魂的庇护",
+    "source": "https://nether.wowhead.com/tooltip/item/243998?dataEnv=1&locale=4"
+  },
+  "8009": {
+    "name": "附魔武器 - 世界之魂的庇护",
+    "source": "https://nether.wowhead.com/tooltip/item/243999?dataEnv=1&locale=4"
+  },
+  "8010": {
+    "name": "附魔武器 - 世界之魂的坚韧",
+    "source": "https://nether.wowhead.com/tooltip/item/244000?dataEnv=1&locale=4"
+  },
+  "8011": {
+    "name": "附魔武器 - 世界之魂的坚韧",
+    "source": "https://nether.wowhead.com/tooltip/item/244001?dataEnv=1&locale=4"
+  },
+  "8012": {
+    "name": "附魔胸甲 - 魔导师印记",
+    "source": "https://nether.wowhead.com/tooltip/item/244002?dataEnv=1&locale=4"
+  },
+  "8013": {
+    "name": "附魔胸甲 - 魔导师印记",
+    "source": "https://nether.wowhead.com/tooltip/item/244003?dataEnv=1&locale=4"
+  },
+  "8014": {
+    "name": "附魔头盔 - 闪避符文",
+    "source": "https://nether.wowhead.com/tooltip/item/244004?dataEnv=1&locale=4"
+  },
+  "8015": {
+    "name": "附魔头盔 - 闪避符文",
+    "source": "https://nether.wowhead.com/tooltip/item/244005?dataEnv=1&locale=4"
+  },
+  "8016": {
+    "name": "附魔头盔 - 强化闪避符文",
+    "source": "https://nether.wowhead.com/tooltip/item/244006?dataEnv=1&locale=4"
+  },
+  "8017": {
+    "name": "附魔头盔 - 强化闪避符文",
+    "source": "https://nether.wowhead.com/tooltip/item/244007?dataEnv=1&locale=4"
+  },
+  "8018": {
+    "name": "附魔靴子 - 远行者的狩猎",
+    "source": "https://nether.wowhead.com/tooltip/item/244008?dataEnv=1&locale=4"
+  },
+  "8019": {
+    "name": "附魔靴子 - 远行者的狩猎",
+    "source": "https://nether.wowhead.com/tooltip/item/244009?dataEnv=1&locale=4"
+  },
+  "8020": {
+    "name": "附魔戒指 - 萨拉斯急速",
+    "source": "https://nether.wowhead.com/tooltip/item/244010?dataEnv=1&locale=4"
+  },
+  "8021": {
+    "name": "附魔戒指 - 萨拉斯急速",
+    "source": "https://nether.wowhead.com/tooltip/item/244011?dataEnv=1&locale=4"
+  },
+  "8022": {
+    "name": "附魔戒指 - 萨拉斯全能",
+    "source": "https://nether.wowhead.com/tooltip/item/244012?dataEnv=1&locale=4"
+  },
+  "8023": {
+    "name": "附魔戒指 - 萨拉斯全能",
+    "source": "https://nether.wowhead.com/tooltip/item/244013?dataEnv=1&locale=4"
+  },
+  "8024": {
+    "name": "附魔戒指 - 银月城之捷",
+    "source": "https://nether.wowhead.com/tooltip/item/244014?dataEnv=1&locale=4"
+  },
+  "8025": {
+    "name": "附魔戒指 - 银月城之捷",
+    "source": "https://nether.wowhead.com/tooltip/item/244015?dataEnv=1&locale=4"
+  },
+  "8026": {
+    "name": "附魔戒指 - 银月城之韧",
+    "source": "https://nether.wowhead.com/tooltip/item/244016?dataEnv=1&locale=4"
+  },
+  "8027": {
+    "name": "附魔戒指 - 银月城之韧",
+    "source": "https://nether.wowhead.com/tooltip/item/244017?dataEnv=1&locale=4"
+  },
+  "8028": {
+    "name": "附魔护肩 - 萨拉斯复原",
+    "source": "https://nether.wowhead.com/tooltip/item/244018?dataEnv=1&locale=4"
+  },
+  "8029": {
+    "name": "附魔护肩 - 萨拉斯复原",
+    "source": "https://nether.wowhead.com/tooltip/item/244019?dataEnv=1&locale=4"
+  },
+  "8030": {
+    "name": "附魔护肩 - 银月城治愈",
+    "source": "https://nether.wowhead.com/tooltip/item/244020?dataEnv=1&locale=4"
+  },
+  "8031": {
+    "name": "附魔护肩 - 银月城治愈",
+    "source": "https://nether.wowhead.com/tooltip/item/244021?dataEnv=1&locale=4"
+  },
+  "8036": {
+    "name": "附魔武器 - 辛多雷之焰",
+    "source": "https://nether.wowhead.com/tooltip/item/244026?dataEnv=1&locale=4"
+  },
+  "8037": {
+    "name": "附魔武器 - 辛多雷之焰",
+    "source": "https://nether.wowhead.com/tooltip/item/244027?dataEnv=1&locale=4"
+  },
+  "8038": {
+    "name": "附魔武器 - 朗多雷之锐",
+    "source": "https://nether.wowhead.com/tooltip/item/244028?dataEnv=1&locale=4"
+  },
+  "8039": {
+    "name": "附魔武器 - 朗多雷之锐",
+    "source": "https://nether.wowhead.com/tooltip/item/244029?dataEnv=1&locale=4"
+  },
+  "8040": {
+    "name": "附魔武器 - 奥术精通",
+    "source": "https://nether.wowhead.com/tooltip/item/244030?dataEnv=1&locale=4"
+  },
+  "8041": {
+    "name": "附魔武器 - 奥术精通",
+    "source": "https://nether.wowhead.com/tooltip/item/244031?dataEnv=1&locale=4"
+  },
+  "8158": {
+    "name": "森林猎手的护甲片",
+    "source": "https://nether.wowhead.com/tooltip/item/244640?dataEnv=1&locale=4"
+  },
+  "8159": {
+    "name": "森林猎手的护甲片",
+    "source": "https://nether.wowhead.com/tooltip/item/244641?dataEnv=1&locale=4"
+  },
+  "8160": {
+    "name": "萨拉斯斥候护甲片",
+    "source": "https://nether.wowhead.com/tooltip/item/244644?dataEnv=1&locale=4"
+  },
+  "8161": {
+    "name": "萨拉斯斥候护甲片",
+    "source": "https://nether.wowhead.com/tooltip/item/244645?dataEnv=1&locale=4"
+  },
+  "8162": {
+    "name": "血骑士的护甲片",
+    "source": "https://nether.wowhead.com/tooltip/item/244642?dataEnv=1&locale=4"
+  },
+  "8163": {
+    "name": "血骑士的护甲片",
+    "source": "https://nether.wowhead.com/tooltip/item/244643?dataEnv=1&locale=4"
+  },
+  "8612": {
+    "name": "私运者的山猫之眼",
+    "source": "https://nether.wowhead.com/tooltip/item/257747?dataEnv=1&locale=4"
+  },
+  "8613": {
+    "name": "私运者的山猫之眼",
+    "source": "https://nether.wowhead.com/tooltip/item/257748?dataEnv=1&locale=4"
+  },
+  "8614": {
+    "name": "远行者的鹰眼",
+    "source": "https://nether.wowhead.com/tooltip/item/257745?dataEnv=1&locale=4"
+  },
+  "8615": {
+    "name": "远行者的鹰眼",
+    "source": "https://nether.wowhead.com/tooltip/item/257746?dataEnv=1&locale=4"
+  },
+  "8688": {
+    "name": "附魔武器 - 哈谢仪式",
+    "source": "https://nether.wowhead.com/tooltip/item/273071?dataEnv=1&locale=4"
+  },
+  "8689": {
+    "name": "附魔武器 - 哈谢仪式",
+    "source": "https://nether.wowhead.com/tooltip/item/273072?dataEnv=1&locale=4"
+  }
+}
