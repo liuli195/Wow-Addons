@@ -4,3 +4,4 @@ coverage-*-run.json
 effect-cache-v2/
 browser-check/
 *.log
+calc-*/
