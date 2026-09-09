@@ -141,7 +141,12 @@ def validate(model):
     if c.get('class')!='deathknight' or str(c.get('level'))!='90' or c.get('spec')!='blood': raise ValueError('当前计算仅支持 90 级鲜血死亡骑士')
     if not re.fullmatch(r'[a-z_]{2,40}',str(c.get('race',''))): raise ValueError('缺少有效种族')
     if not re.fullmatch(r'[A-Za-z0-9+/=]{20,600}',str(c.get('talents',''))): raise ValueError('缺少有效天赋，无法完整计算')
-    if c.get('omnium_talents') and not re.fullmatch(r'\d+:\d+(?:/\d+:\d+)*',str(c['omnium_talents'])): raise ValueError('额外系统配置格式不正确')
+    if c.get('omnium_talents'):
+        extra=c['omnium_talents']
+        if not isinstance(extra,str) or len(extra)>3000: raise ValueError('额外系统配置格式不正确')
+        for pair in extra.split('/'):
+            parts=pair.split(':')
+            if len(parts)!=2 or not all(part.isascii() and part.isdecimal() for part in parts): raise ValueError('额外系统配置格式不正确')
     if not isinstance(model.get('gear'),dict) or any(s not in SLOT_KEYS for s in model['gear']): raise ValueError('装备槽位无效')
     for value in model['gear'].values(): gear_fields(value)
 
