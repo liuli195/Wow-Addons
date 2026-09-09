@@ -533,5 +533,37 @@
       271561,
       271566
     ]
+  },
+  "excluded_raid_tokens": [
+    270909,
+    270910,
+    270911,
+    270912,
+    270913,
+    270914,
+    270915,
+    270916,
+    270917,
+    270918,
+    270919,
+    270920,
+    270921,
+    270922,
+    270923,
+    270924,
+    270925,
+    270926,
+    270927,
+    270928,
+    270929
+  ],
+  "wow_build": "12.1.0.69587",
+  "keystoneloot_commit": "ea786c41a1834fbc5d5bdffc849d85416ca81477",
+  "hashes": {
+    "equippable-items.json": "e04844c086d2d9c189971d436e3541abb599367ed40de0d49078f4476b311330",
+    "bonuses.json": "65d24b991653053d5a0b9b4c091321426125ec2939a87171c6f5fec7f372c420",
+    "crafting.json": "48d218f5776d5c3044560b45602340bea79468153da5f57aef7545cd44748dc1",
+    "item-conversions.json": "67e79e46d22e43368bcf98da40e2d5c3dcc14d0d0feec5d45ac599253fe1fc12",
+    "bonus-upgrade-sets.json": "757421e54ccf26e84c45ff419567816a898629a0e432dc788909df655af62e32"
   }
 }
