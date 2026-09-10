@@ -1,0 +1,391 @@
+{
+  "samples": [
+    {
+      "spec": "protection",
+      "report_url": "https://www.raidbots.com/simbot/report/sNhRs3ogfJL4QEGUaWTABH",
+      "kind": "official_profile_submitted_to_raidbots_not_player_export",
+      "profile_source": "https://github.com/simulationcraft/simc/blob/b845947a34429874433d8e9362326894650dd20a/profiles/MID2/MID2_Paladin_Protection.simc",
+      "simc_commit": "b845947a34",
+      "input_sha256": "614ff8a2ef4534a76fc30e741c0ad18313e714851dbf99872f27a38c82a28f2b",
+      "report_sha256": "759188ebc30c04ecddd2d95f2c77c912b40af6045001636c751f36308642c7eb",
+      "dbc_live": {
+        "build_level": 69587,
+        "wow_version": "12.1.0.69587",
+        "hotfix_date": "2026-09-04",
+        "hotfix_build": 69587,
+        "hotfix_hash": "210cdaf4f71cc8f675a3a62d99e3b6010952c9694959d8d4d59d0e134ffba46a"
+      },
+      "identity": {
+        "race": "tauren",
+        "level": 90,
+        "role": "tank",
+        "specialization": "Protection Paladin",
+        "talents": "CIEAAAAAAAAAAAAAAAAAAAAAAsNzYWmZMzYmxyyALzCDDAwAAAAAAg0MDzYmZMzs1GAGYGYGsNAAwMTbzMLzAEYzyGGAGmhxAAsNDwMAjN"
+      },
+      "snapshot": {
+        "attribute": {
+          "strength": 2637,
+          "agility": 215,
+          "stamina": 71130,
+          "intellect": 642
+        },
+        "stats": {
+          "spell_power": 642,
+          "attack_power": 3327,
+          "spell_crit": 0.3123913043478261,
+          "attack_crit": 0.3123913043478261,
+          "spell_haste": 0.7202482237287413,
+          "attack_haste": 0.7202482237287413,
+          "spell_cast_speed": 0.7202482237287413,
+          "auto_attack_speed": 0.7202482237287413,
+          "mastery_value": 0.2619565217391304,
+          "damage_versatility": 0.019814814814814816,
+          "heal_versatility": 0.019814814814814816,
+          "mitigation_versatility": 0.009907407407407408,
+          "crit_rating": 1023,
+          "crit_pct": 0.3123913043478261,
+          "haste_rating": 1429,
+          "haste_pct": 0.38841022727272745,
+          "mastery_rating": 653,
+          "mastery_pct": 0.2619565217391304,
+          "versatility_rating": 107,
+          "versatility_pct": 0.019814814814814816,
+          "speed_rating": 98,
+          "speed_pct": 7.547923102834254,
+          "armor": 8221.253040000003,
+          "dodge": 0.03,
+          "parry": 0.28366238852942227,
+          "block": 0.31136529701598326
+        }
+      },
+      "gear": {
+        "head": {
+          "name": "warhelm_of_the_consecrated_flame",
+          "encoded_item": "warhelm_of_the_consecrated_flame,id=271465,bonus_id=1808/13692/13698,ilevel=334,gem_id=240983,enchant_id=7991,redirected_base_stats=268229",
+          "ilevel": 334,
+          "stamina": 3910,
+          "crit_rating": 61,
+          "haste_rating": 140,
+          "strint": 189
+        },
+        "neck": {
+          "name": "aqirbane_reliquary",
+          "encoded_item": "aqirbane_reliquary,id=268265,bonus_id=13668/13708,ilevel=344,gem_id=240890/240890",
+          "ilevel": 344,
+          "stamina": 2466,
+          "crit_rating": 107,
+          "haste_rating": 107,
+          "versatility_rating": 107,
+          "mastery_rating": 107
+        },
+        "shoulders": {
+          "name": "pauldrons_of_the_consecrated_flame",
+          "encoded_item": "pauldrons_of_the_consecrated_flame,id=271463,ilevel=334,enchant_id=7973,redirected_base_stats=251138",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 95,
+          "mastery_rating": 56,
+          "strint": 141
+        },
+        "chest": {
+          "name": "bulwark_of_the_consecrated_flame",
+          "encoded_item": "bulwark_of_the_consecrated_flame,id=271468,ilevel=344,enchant_id=7987,redirected_base_stats=268222",
+          "ilevel": 344,
+          "stamina": 4385,
+          "haste_rating": 149,
+          "mastery_rating": 60,
+          "strint": 207
+        },
+        "waist": {
+          "name": "girdle_of_toxic_regret",
+          "encoded_item": "girdle_of_toxic_regret,id=268259,ilevel=344,gem_id=240888",
+          "ilevel": 344,
+          "stamina": 3288,
+          "crit_rating": 110,
+          "mastery_rating": 46,
+          "strint": 155
+        },
+        "legs": {
+          "name": "greaves_of_the_consecrated_flame",
+          "encoded_item": "greaves_of_the_consecrated_flame,id=271464,bonus_id=13846,ilevel=344,enchant_id=8159,redirected_base_stats=271878",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 209,
+          "strint": 207
+        },
+        "feet": {
+          "name": "spellbreakers_march",
+          "encoded_item": "spellbreakers_march,id=237828,bonus_id=8790/8960/12384/13667/13751/13836/12497,enchant_id=8019,crafted_stats=36/40",
+          "ilevel": 331,
+          "stamina": 2832,
+          "crit_rating": 74,
+          "haste_rating": 74,
+          "strint": 138
+        },
+        "wrists": {
+          "name": "spellbreakers_bracers",
+          "encoded_item": "spellbreakers_bracers,id=237834,bonus_id=8960/12384/13751/13836/9627,crafted_stats=32/36",
+          "ilevel": 331,
+          "stamina": 2124,
+          "crit_rating": 56,
+          "haste_rating": 56,
+          "strint": 103
+        },
+        "hands": {
+          "name": "gauntlets_of_the_consecrated_flame",
+          "encoded_item": "gauntlets_of_the_consecrated_flame,id=271466,bonus_id=13691/13697,ilevel=334,redirected_base_stats=271466",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 49,
+          "mastery_rating": 101,
+          "strint": 141
+        },
+        "finger1": {
+          "name": "band_of_the_amani_warlord",
+          "encoded_item": "band_of_the_amani_warlord,id=273792,bonus_id=13668,ilevel=334,gem_id=240890,enchant_id=8025",
+          "ilevel": 334,
+          "stamina": 2199,
+          "crit_rating": 147,
+          "haste_rating": 258
+        },
+        "finger2": {
+          "name": "sickening_signet_of_atroxus",
+          "encoded_item": "sickening_signet_of_atroxus,id=252258,bonus_id=13668,ilevel=334,gem_id=240890,enchant_id=8025",
+          "ilevel": 334,
+          "stamina": 2199,
+          "haste_rating": 278,
+          "mastery_rating": 127
+        },
+        "trinket1": {
+          "name": "zuljins_guillotine_technique",
+          "encoded_item": "zuljins_guillotine_technique,id=270173,ilevel=344",
+          "ilevel": 344,
+          "stragi": 197
+        },
+        "trinket2": {
+          "name": "voracious_heart_of_ulatek",
+          "encoded_item": "voracious_heart_of_ulatek,id=270175,ilevel=344",
+          "ilevel": 344,
+          "crit_rating": 149
+        },
+        "back": {
+          "name": "silken_voodoo_drape",
+          "encoded_item": "silken_voodoo_drape,id=268253,ilevel=344",
+          "ilevel": 344,
+          "stamina": 2466,
+          "haste_rating": 35,
+          "mastery_rating": 83,
+          "stragiint": 116
+        },
+        "main_hand": {
+          "name": "amanmuso_warlords_vengeance",
+          "encoded_item": "amanmuso_warlords_vengeance,id=268209,ilevel=344,enchant_id=8039",
+          "ilevel": 344,
+          "stamina": 2192,
+          "haste_rating": 31,
+          "mastery_rating": 73,
+          "stragi": 103
+        },
+        "off_hand": {
+          "name": "venomslashed_scuteward",
+          "encoded_item": "venomslashed_scuteward,id=268196,ilevel=334",
+          "ilevel": 334,
+          "strength": 94,
+          "intellect": 289,
+          "stamina": 1955,
+          "crit_rating": 33,
+          "haste_rating": 67
+        }
+      }
+    },
+    {
+      "spec": "retribution",
+      "report_url": "https://www.raidbots.com/simbot/report/xctaz9zmmrkACd3tkdjwyJ",
+      "kind": "official_profile_submitted_to_raidbots_not_player_export",
+      "profile_source": "https://github.com/simulationcraft/simc/blob/b845947a34429874433d8e9362326894650dd20a/profiles/MID2/MID2_Paladin_Retribution.simc",
+      "simc_commit": "b845947a34",
+      "input_sha256": "0521baa83b0c7e416e2ca4f24e6ba5de631491c27c75bbd2ce6d3cbd895bbe79",
+      "report_sha256": "fe7026bdf4491c0dd6fefce7778ae874fa9b811d15003edc5707cb47e14fbc53",
+      "dbc_live": {
+        "build_level": 69587,
+        "wow_version": "12.1.0.69587",
+        "hotfix_date": "2026-09-04",
+        "hotfix_build": 69587,
+        "hotfix_hash": "210cdaf4f71cc8f675a3a62d99e3b6010952c9694959d8d4d59d0e134ffba46a"
+      },
+      "identity": {
+        "race": "dwarf",
+        "level": 90,
+        "role": "attack",
+        "specialization": "Retribution Paladin",
+        "talents": "CYEAAAAAAAAAAAAAAAAAAAAAAAAAAAANbbzMzywMDAAAAAAjyYGmZsNmthZ2mxYMGmxCbDDYWmtZmZrBBAAsAYAwYGmBzYmZDYmZYMjBD"
+      },
+      "snapshot": {
+        "attribute": {
+          "strength": 2783,
+          "agility": 215,
+          "stamina": 50023,
+          "intellect": 643
+        },
+        "stats": {
+          "spell_power": 643,
+          "attack_power": 2783,
+          "spell_crit": 0.3508695652173913,
+          "attack_crit": 0.3508695652173913,
+          "spell_haste": 0.8270179237339106,
+          "attack_haste": 0.8270179237339106,
+          "spell_cast_speed": 0.8270179237339106,
+          "auto_attack_speed": 0.5021180251241599,
+          "mastery_value": 0.4736739130434782,
+          "damage_versatility": 0.019814814814814816,
+          "heal_versatility": 0.019814814814814816,
+          "mitigation_versatility": 0.009907407407407408,
+          "crit_rating": 1200,
+          "crit_pct": 0.3508695652173913,
+          "haste_rating": 816,
+          "haste_pct": 0.20916363636363666,
+          "mastery_rating": 1062,
+          "mastery_pct": 0.4736739130434782,
+          "versatility_rating": 107,
+          "versatility_pct": 0.019814814814814816,
+          "avoidance_rating": 19,
+          "avoidance_pct": 0.005162969778270266,
+          "speed_pct": 7.49,
+          "armor": 3213.6,
+          "dodge": 0.03,
+          "parry": 0.15850895791442643,
+          "block": 0.1
+        }
+      },
+      "gear": {
+        "head": {
+          "name": "warhelm_of_the_consecrated_flame",
+          "encoded_item": "warhelm_of_the_consecrated_flame,id=271465,bonus_id=12854/13692/13698/13750,gem_id=240983,redirected_base_stats=268229",
+          "ilevel": 334,
+          "stamina": 3910,
+          "crit_rating": 61,
+          "haste_rating": 140,
+          "strint": 189
+        },
+        "neck": {
+          "name": "aqirbane_reliquary",
+          "encoded_item": "aqirbane_reliquary,id=268265,bonus_id=4786/13750/13848/13987,ilevel=344,gem_id=240892/240892",
+          "ilevel": 344,
+          "stamina": 2466,
+          "crit_rating": 107,
+          "haste_rating": 107,
+          "versatility_rating": 107,
+          "mastery_rating": 107
+        },
+        "shoulders": {
+          "name": "pauldrons_of_the_consecrated_flame",
+          "encoded_item": "pauldrons_of_the_consecrated_flame,id=271463,bonus_id=12854/13694/13697,redirected_base_stats=251138",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 95,
+          "mastery_rating": 56,
+          "strint": 141
+        },
+        "chest": {
+          "name": "bulwark_of_the_consecrated_flame",
+          "encoded_item": "bulwark_of_the_consecrated_flame,id=271468,bonus_id=13690/13698/13848,enchant_id=7987,redirected_base_stats=268222",
+          "ilevel": 344,
+          "stamina": 4385,
+          "haste_rating": 149,
+          "mastery_rating": 60,
+          "strint": 207
+        },
+        "waist": {
+          "name": "girdle_of_toxic_regret",
+          "encoded_item": "girdle_of_toxic_regret,id=268259,bonus_id=13668,ilevel=344,gem_id=240892",
+          "ilevel": 344,
+          "stamina": 3288,
+          "crit_rating": 110,
+          "mastery_rating": 46,
+          "strint": 155
+        },
+        "legs": {
+          "name": "greaves_of_the_consecrated_flame",
+          "encoded_item": "greaves_of_the_consecrated_flame,id=271464,bonus_id=13693/13698/13708/13848,enchant_id=8159,redirected_base_stats=271878",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 209,
+          "strint": 207
+        },
+        "feet": {
+          "name": "scaled_fiends_warboots",
+          "encoded_item": "scaled_fiends_warboots,id=268260,ilevel=334,enchant_id=7963",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 47,
+          "mastery_rating": 104,
+          "strint": 141
+        },
+        "wrists": {
+          "name": "spellbreakers_bracers",
+          "encoded_item": "spellbreakers_bracers,id=237834,bonus_id=8790/8960/13454/13750/13751/13836/9627,gem_id=240892,crafted_stats=32/49",
+          "ilevel": 331,
+          "stamina": 2124,
+          "crit_rating": 56,
+          "haste_rating": 56,
+          "strint": 103
+        },
+        "hands": {
+          "name": "gauntlets_of_the_consecrated_flame",
+          "encoded_item": "gauntlets_of_the_consecrated_flame,id=271466,bonus_id=12854/13691/13697,ilevel=334,redirected_base_stats=251214",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 59,
+          "haste_rating": 91,
+          "strint": 141
+        },
+        "finger1": {
+          "name": "vile_alchemists_band",
+          "encoded_item": "vile_alchemists_band,id=268249,bonus_id=1808/13668,ilevel=334,gem_id=240892,enchant_id=7967",
+          "ilevel": 334,
+          "stamina": 2199,
+          "crit_rating": 73,
+          "mastery_rating": 332
+        },
+        "finger2": {
+          "name": "loa_worshipers_band",
+          "encoded_item": "loa_worshipers_band,id=251513,bonus_id=8960/12214/13751/13836/9627,gem_id=240892,enchant_id=7967",
+          "ilevel": 331,
+          "stamina": 2124,
+          "crit_rating": 228,
+          "mastery_rating": 171
+        },
+        "trinket1": {
+          "name": "zuljins_guillotine_technique",
+          "encoded_item": "zuljins_guillotine_technique,id=270173,bonus_id=13335,ilevel=344",
+          "ilevel": 344,
+          "stragi": 197
+        },
+        "trinket2": {
+          "name": "voracious_heart_of_ulatek",
+          "encoded_item": "voracious_heart_of_ulatek,id=270175,bonus_id=13335,ilevel=344",
+          "ilevel": 344,
+          "crit_rating": 149
+        },
+        "back": {
+          "name": "silken_voodoo_drape",
+          "encoded_item": "silken_voodoo_drape,id=268253,bonus_id=13662/13848",
+          "ilevel": 344,
+          "stamina": 2466,
+          "haste_rating": 35,
+          "mastery_rating": 83,
+          "stragiint": 116
+        },
+        "main_hand": {
+          "name": "mazeroa_warlords_fury",
+          "encoded_item": "mazeroa_warlords_fury,id=268213,ilevel=344,enchant_id=8689",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 148,
+          "mastery_rating": 61,
+          "stragi": 207
+        }
+      }
+    }
+  ]
+}

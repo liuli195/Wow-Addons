@@ -1,0 +1,8 @@
+evoker=UnsupportedProbe
+level=90
+race=dracthyr
+spec=preservation
+iterations=1
+max_time=1
+actions.precombat=snapshot_stats
+actions=wait,sec=1

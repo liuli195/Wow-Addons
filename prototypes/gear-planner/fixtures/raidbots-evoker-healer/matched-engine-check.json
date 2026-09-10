@@ -1,0 +1,11 @@
+{
+  "engine": "D:\\My Project\\Wow Addons\\.tools\\gear-planner-dk-reference\\simulationcraft-simc-b845947\\engine\\simc.exe",
+  "engine_sha256": "af33b536a6cf1df0b315c2ad065315c87a68b540a4443c654258efe9e1aef4ec",
+  "samples": [
+    {
+      "spec": "preservation",
+      "engine_pass": false,
+      "error": "Assertion failed: level <= MAX_SCALING_LEVEL, file dbc\\sc_const_data.cpp, line 1276\nSimulationCraft 1210-01 for World of Warcraft 12.1.0.69587 Live (hotfix 2026-09-04/69587, no-networking)\n\nSimulating... ( iterations=1, threads=1, target_error=0.000, max_time=1, vary_combat_length=0.00, optimal_raid=0, fight_style=None )\n\n"
+    }
+  ]
+}

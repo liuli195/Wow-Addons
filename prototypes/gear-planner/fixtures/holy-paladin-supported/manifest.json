@@ -1,0 +1,183 @@
+{
+  "scope": "local integration baseline, not independent accuracy evidence",
+  "samples": [
+    {
+      "spec": "holy",
+      "gear": {
+        "head": {
+          "name": "helm_of_the_raptor_king",
+          "encoded_item": "helm_of_the_raptor_king,id=239050,bonus_id=12854,enchant_id=7991",
+          "ilevel": 334,
+          "stamina": 3910,
+          "haste_rating": 83,
+          "versatility_rating": 118,
+          "strint": 189
+        },
+        "neck": {
+          "name": "pendant_of_malefic_fury",
+          "encoded_item": "pendant_of_malefic_fury,id=251142,bonus_id=12854/13668,gem_id=240894",
+          "ilevel": 334,
+          "stamina": 2199,
+          "haste_rating": 127,
+          "mastery_rating": 278
+        },
+        "shoulders": {
+          "name": "cthraxxi_binders_pauldrons",
+          "encoded_item": "cthraxxi_binders_pauldrons,id=239037,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 50,
+          "haste_rating": 101,
+          "strint": 141
+        },
+        "chest": {
+          "name": "breastplate_of_soaring_terror",
+          "encoded_item": "breastplate_of_soaring_terror,id=193753,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 3910,
+          "haste_rating": 75,
+          "mastery_rating": 126,
+          "strint": 189
+        },
+        "waist": {
+          "name": "girdle_of_pestilent_purification",
+          "encoded_item": "girdle_of_pestilent_purification,id=159418,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 95,
+          "mastery_rating": 56,
+          "strint": 141
+        },
+        "legs": {
+          "name": "legplates_of_charged_duality",
+          "encoded_item": "legplates_of_charged_duality,id=159435,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 3910,
+          "crit_rating": 75,
+          "versatility_rating": 126,
+          "strint": 189
+        },
+        "feet": {
+          "name": "auric_puddle_stompers",
+          "encoded_item": "auric_puddle_stompers,id=159412,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 62,
+          "versatility_rating": 88,
+          "strint": 141
+        },
+        "wrists": {
+          "name": "embalmers_steadying_bracers",
+          "encoded_item": "embalmers_steadying_bracers,id=159409,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2199,
+          "crit_rating": 69,
+          "haste_rating": 44,
+          "strint": 106
+        },
+        "hands": {
+          "name": "gauntlets_of_the_avian_sentinel",
+          "encoded_item": "gauntlets_of_the_avian_sentinel,id=159413,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 50,
+          "mastery_rating": 101,
+          "strint": 141
+        },
+        "finger1": {
+          "name": "charged_sandstone_band",
+          "encoded_item": "charged_sandstone_band,id=158366,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2199,
+          "crit_rating": 232,
+          "mastery_rating": 174
+        },
+        "finger2": {
+          "name": "ritual_binders_ring",
+          "encoded_item": "ritual_binders_ring,id=159459,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2199,
+          "haste_rating": 266,
+          "versatility_rating": 139
+        },
+        "trinket1": {
+          "name": "kyrakkas_searing_embers",
+          "encoded_item": "kyrakkas_searing_embers,id=193748,bonus_id=12854",
+          "ilevel": 334,
+          "crit_rating": 143
+        },
+        "trinket2": {
+          "name": "ruby_whelp_shell",
+          "encoded_item": "ruby_whelp_shell,id=193757,bonus_id=12854",
+          "ilevel": 334,
+          "stragiint": 179
+        },
+        "back": {
+          "name": "cloak_of_the_restless_tribes",
+          "encoded_item": "cloak_of_the_restless_tribes,id=159288,bonus_id=12854",
+          "ilevel": 334,
+          "stamina": 2199,
+          "versatility_rating": 61,
+          "mastery_rating": 52,
+          "stragiint": 106
+        },
+        "main_hand": {
+          "name": "galvanized_stormcrusher",
+          "encoded_item": "galvanized_stormcrusher,id=158369,bonus_id=12854",
+          "ilevel": 334,
+          "intellect": 455,
+          "stamina": 1955,
+          "haste_rating": 59,
+          "versatility_rating": 42
+        },
+        "off_hand": {
+          "name": "bulwark_of_brimming_potential",
+          "encoded_item": "bulwark_of_brimming_potential,id=159664,bonus_id=12854",
+          "ilevel": 334,
+          "strength": 94,
+          "intellect": 289,
+          "stamina": 1955,
+          "crit_rating": 46,
+          "versatility_rating": 55
+        }
+      },
+      "snapshot": {
+        "attribute": {
+          "strength": 644.0,
+          "agility": 217.0,
+          "stamina": 45540.0,
+          "intellect": 3254.0
+        },
+        "stats": {
+          "spell_power": 3254.0,
+          "attack_power": 644.0,
+          "spell_crit": 0.25130434782608696,
+          "attack_crit": 0.25130434782608696,
+          "spell_haste": 0.7932001117691065,
+          "attack_haste": 0.7932001117691065,
+          "spell_cast_speed": 0.7932001117691065,
+          "auto_attack_speed": 0.7932001117691065,
+          "mastery_value": 0.5168478260869566,
+          "damage_versatility": 0.12018518518518517,
+          "heal_versatility": 0.12018518518518517,
+          "mitigation_versatility": 0.06009259259259259,
+          "crit_rating": 742.0,
+          "crit_pct": 0.25130434782608696,
+          "haste_rating": 883.0,
+          "haste_pct": 0.26071590909090925,
+          "mastery_rating": 803.0,
+          "mastery_pct": 0.5168478260869566,
+          "versatility_rating": 649.0,
+          "versatility_pct": 0.12018518518518517,
+          "speed_rating": 22.0,
+          "speed_pct": 7.29330302286338,
+          "manareg_per_second": 2000.0,
+          "armor": 4392.4608,
+          "dodge": 0.03,
+          "parry": 0.06358819028130772,
+          "block": 0.1
+        }
+      }
+    }
+  ]
+}

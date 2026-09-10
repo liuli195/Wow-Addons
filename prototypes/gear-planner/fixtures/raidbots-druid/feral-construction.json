@@ -1,0 +1,8 @@
+{
+  "kind": "constructed_static_reference_not_player_export",
+  "gear_source": "current 12.1 candidate pool, first compatible distinct item per slot; shaman reference jewelry retained",
+  "talents_source": "https://www.method.gg/guides/feral-druid/talents",
+  "talents": "CcGADBD3hSPCL9Y9gz68WcKvMAAAAAAwghxYmZmxsxDsMz2MzMmZGAAAAWCmNYMzomxsMzMzMGzYGAAAAAAgBAAAQzsMLzMzACsAmZAWMDGAAAzshB",
+  "role": "attack",
+  "form": "unshifted; snapshot_stats only; no shapeshift action"
+}

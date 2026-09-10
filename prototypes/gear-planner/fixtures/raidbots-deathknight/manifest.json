@@ -1,0 +1,588 @@
+{
+  "samples": [
+    {
+      "spec": "blood",
+      "report_url": "https://www.raidbots.com/simbot/report/qnDzcQpyCC4xhwkJ8e7vmi",
+      "kind": "official_profile_submitted_to_raidbots_not_player_export",
+      "profile_source": "https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/profiles/MID2/MID2_Death_Knight_Blood.simc",
+      "simc_commit": "b845947a34429874433d8e9362326894650dd20a",
+      "report_sha256": "5165f7ae6d093b49725e30dc36d2a9da2951b49c50ef940ef01e3d859d304980",
+      "input_sha256": "942b4a14217a7d6ce4e418942afe66589f9c82c90bf8523ed39955ee1a69c5b0",
+      "dbc_live": {
+        "build_level": 69587,
+        "wow_version": "12.1.0.69587",
+        "hotfix_date": "2026-09-04",
+        "hotfix_build": 69587,
+        "hotfix_hash": "210cdaf4f71cc8f675a3a62d99e3b6010952c9694959d8d4d59d0e134ffba46a"
+      },
+      "identity": {
+        "race": "mechagnome",
+        "level": 90,
+        "role": "tank",
+        "specialization": "Blood Death Knight",
+        "talents": "CoPAAAAAAAAAAAAAAAAAAAAAAwYWmZmxMmZmhZZmZmmZxMjxMAAAAAmZmZGmZGzMjZAgZmZGAAADMwMW0YZDklBsBYGzAAAmZwgB"
+      },
+      "snapshot": {
+        "attribute": {
+          "strength": 2545,
+          "agility": 516,
+          "stamina": 80216,
+          "intellect": 337
+        },
+        "stats": {
+          "spell_power": 337,
+          "attack_power": 3003,
+          "spell_crit": 0.32065217391304346,
+          "attack_crit": 0.32065217391304346,
+          "spell_haste": 0.751735826362692,
+          "attack_haste": 0.751735826362692,
+          "spell_cast_speed": 0.751735826362692,
+          "auto_attack_speed": 0.751735826362692,
+          "mastery_value": 0.36043478260869566,
+          "damage_versatility": 0.0462962962962963,
+          "heal_versatility": 0.0462962962962963,
+          "mitigation_versatility": 0.02314814814814815,
+          "crit_rating": 1245,
+          "crit_pct": 0.32065217391304346,
+          "haste_rating": 1228,
+          "haste_pct": 0.3302545454545456,
+          "mastery_rating": 461,
+          "mastery_pct": 0.36043478260869566,
+          "versatility_rating": 250,
+          "versatility_pct": 0.0462962962962963,
+          "leech_pct": 0.03,
+          "speed_rating": 98,
+          "speed_pct": 7.057923102834253,
+          "armor": 3957.775,
+          "dodge": 0.03,
+          "parry": 0.3045846655424106
+        }
+      },
+      "gear": {
+        "head": {
+          "name": "baleful_graveknights_casque",
+          "encoded_item": "baleful_graveknights_casque,id=271474,bonus_id=13750,ilevel=334,gem_id=240983,enchant_id=7991,redirected_base_stats=268229",
+          "ilevel": 334,
+          "stamina": 3910,
+          "crit_rating": 61,
+          "haste_rating": 140,
+          "strint": 189
+        },
+        "neck": {
+          "name": "aqirbane_reliquary",
+          "encoded_item": "aqirbane_reliquary,id=268265,bonus_id=13668,ilevel=344,gem_id=240894/240894",
+          "ilevel": 344,
+          "stamina": 2466,
+          "crit_rating": 107,
+          "haste_rating": 107,
+          "versatility_rating": 107,
+          "mastery_rating": 107
+        },
+        "shoulders": {
+          "name": "baleful_graveknights_gibbets",
+          "encoded_item": "baleful_graveknights_gibbets,id=271472,ilevel=334,enchant_id=7973",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 50,
+          "versatility_rating": 101,
+          "strint": 141
+        },
+        "chest": {
+          "name": "baleful_graveknights_breastplate",
+          "encoded_item": "baleful_graveknights_breastplate,id=271477,ilevel=344,enchant_id=7987,redirected_base_stats=268222",
+          "ilevel": 344,
+          "stamina": 4385,
+          "haste_rating": 149,
+          "mastery_rating": 60,
+          "strint": 207
+        },
+        "waist": {
+          "name": "girdle_of_toxic_regret",
+          "encoded_item": "girdle_of_toxic_regret,id=268259,bonus_id=13750,ilevel=344,gem_id=240894",
+          "ilevel": 344,
+          "stamina": 3288,
+          "crit_rating": 110,
+          "mastery_rating": 46,
+          "strint": 155
+        },
+        "legs": {
+          "name": "baleful_graveknights_greaves",
+          "encoded_item": "baleful_graveknights_greaves,id=271473,ilevel=344,enchant_id=8159,redirected_base_stats=271878",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 209,
+          "strint": 207
+        },
+        "feet": {
+          "name": "scaled_fiends_warboots",
+          "encoded_item": "scaled_fiends_warboots,id=268260,ilevel=334,enchant_id=8019",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 47,
+          "mastery_rating": 104,
+          "strint": 141
+        },
+        "wrists": {
+          "name": "spellbreakers_bracers",
+          "encoded_item": "spellbreakers_bracers,id=237834,bonus_id=8960/13454/13750,ilevel=331,gem_id=240894,crafted_stats=32/36",
+          "ilevel": 331,
+          "stamina": 2124,
+          "crit_rating": 56,
+          "haste_rating": 56,
+          "strint": 103
+        },
+        "hands": {
+          "name": "baleful_graveknights_deathgrips",
+          "encoded_item": "baleful_graveknights_deathgrips,id=271475,ilevel=334,redirected_base_stats=251214",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 59,
+          "haste_rating": 91,
+          "strint": 141
+        },
+        "finger1": {
+          "name": "band_of_the_amani_warlord",
+          "encoded_item": "band_of_the_amani_warlord,id=273792,bonus_id=13668,ilevel=334,gem_id=240894,enchant_id=7967",
+          "ilevel": 334,
+          "stamina": 2199,
+          "crit_rating": 147,
+          "haste_rating": 258
+        },
+        "finger2": {
+          "name": "masterwork_sindorei_band",
+          "encoded_item": "masterwork_sindorei_band,id=240949,bonus_id=8960/13453,ilevel=331,gem_id=240894,enchant_id=7967,crafted_stats=32/36",
+          "ilevel": 331,
+          "stamina": 2124,
+          "crit_rating": 199,
+          "haste_rating": 199
+        },
+        "trinket1": {
+          "name": "voracious_heart_of_ulatek",
+          "encoded_item": "voracious_heart_of_ulatek,id=270175,ilevel=344",
+          "ilevel": 344,
+          "crit_rating": 149
+        },
+        "trinket2": {
+          "name": "zuljins_guillotine_technique",
+          "encoded_item": "zuljins_guillotine_technique,id=270173,ilevel=344",
+          "ilevel": 344,
+          "stragi": 197
+        },
+        "back": {
+          "name": "silken_voodoo_drape",
+          "encoded_item": "silken_voodoo_drape,id=268253,ilevel=344",
+          "ilevel": 344,
+          "stamina": 2466,
+          "haste_rating": 35,
+          "mastery_rating": 83,
+          "stragiint": 116
+        },
+        "main_hand": {
+          "name": "mazeroa_warlords_fury",
+          "encoded_item": "mazeroa_warlords_fury,id=268213,ilevel=344,enchant_id=6241",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 148,
+          "mastery_rating": 61,
+          "stragi": 207
+        }
+      }
+    },
+    {
+      "spec": "frost",
+      "report_url": "https://www.raidbots.com/simbot/report/5otFxvcR4o1CZLJAUqN4xr",
+      "kind": "official_profile_submitted_to_raidbots_not_player_export",
+      "profile_source": "https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/profiles/MID2/MID2_Death_Knight_Frost.simc",
+      "simc_commit": "b845947a34429874433d8e9362326894650dd20a",
+      "report_sha256": "54ba1af35a5dc83cf299d191102aa78efc37549fc8c3e132c24cd2ff7a25012d",
+      "input_sha256": "b4210f983a030b74d0fb83de507160ab786d47b62ed4b507f727c888729bb130",
+      "dbc_live": {
+        "build_level": 69587,
+        "wow_version": "12.1.0.69587",
+        "hotfix_date": "2026-09-04",
+        "hotfix_build": 69587,
+        "hotfix_hash": "210cdaf4f71cc8f675a3a62d99e3b6010952c9694959d8d4d59d0e134ffba46a"
+      },
+      "identity": {
+        "race": "human",
+        "level": 90,
+        "role": "attack",
+        "specialization": "Frost Death Knight",
+        "talents": "CsPAAAAAAAAAAAAAAAAAAAAAAMAGAADYYYMiBjhZGDmZmZmZmZmBAAAAAAAAgxYgBAsMMhMWwMjhBGAGmBAwA"
+      },
+      "snapshot": {
+        "attribute": {
+          "strength": 2830,
+          "agility": 545,
+          "stamina": 47930,
+          "intellect": 355
+        },
+        "stats": {
+          "spell_power": 355,
+          "attack_power": 2830,
+          "spell_crit": 0.2267391304347826,
+          "attack_crit": 0.2267391304347826,
+          "spell_haste": 0.7910937230308959,
+          "attack_haste": 0.7910937230308959,
+          "spell_cast_speed": 0.7910937230308959,
+          "auto_attack_speed": 0.7910937230308959,
+          "mastery_value": 0.7607826086956522,
+          "damage_versatility": 0.020185185185185184,
+          "heal_versatility": 0.020185185185185184,
+          "mitigation_versatility": 0.010092592592592592,
+          "crit_rating": 813,
+          "crit_pct": 0.2267391304347826,
+          "haste_rating": 948,
+          "haste_pct": 0.26407272727272724,
+          "mastery_rating": 1382,
+          "mastery_pct": 0.7607826086956522,
+          "versatility_rating": 109,
+          "versatility_pct": 0.020185185185185184,
+          "avoidance_rating": 90,
+          "avoidance_pct": 0.024456172633911786,
+          "speed_pct": 7,
+          "armor": 2723.1400000000003,
+          "dodge": 0.03,
+          "parry": 0.16036782783962877
+        }
+      },
+      "gear": {
+        "head": {
+          "name": "baleful_graveknights_casque",
+          "encoded_item": "baleful_graveknights_casque,id=271474,bonus_id=4786/12854/13692/13698/13750,gem_id=240983,redirected_base_stats=251126",
+          "ilevel": 334,
+          "stamina": 3910,
+          "crit_rating": 75,
+          "mastery_rating": 126,
+          "strint": 189
+        },
+        "neck": {
+          "name": "aqirbane_reliquary",
+          "encoded_item": "aqirbane_reliquary,id=268265,bonus_id=13335/13708/13848,gem_id=240908/240908",
+          "ilevel": 344,
+          "stamina": 2466,
+          "crit_rating": 107,
+          "haste_rating": 107,
+          "versatility_rating": 107,
+          "mastery_rating": 107
+        },
+        "shoulders": {
+          "name": "baleful_graveknights_gibbets",
+          "encoded_item": "baleful_graveknights_gibbets,id=271472,bonus_id=4786/12854/13691/13697,redirected_base_stats=251138",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 95,
+          "mastery_rating": 56,
+          "strint": 141
+        },
+        "chest": {
+          "name": "reckless_spirit_breastplate",
+          "encoded_item": "reckless_spirit_breastplate,id=268222,bonus_id=13335/13848,enchant_id=7987,content_tuning=883",
+          "ilevel": 344,
+          "stamina": 4385,
+          "haste_rating": 149,
+          "mastery_rating": 60,
+          "strint": 207
+        },
+        "waist": {
+          "name": "girdle_of_toxic_regret",
+          "encoded_item": "girdle_of_toxic_regret,id=268259,bonus_id=13335/13750/13848,gem_id=240908,content_tuning=883",
+          "ilevel": 344,
+          "stamina": 3288,
+          "crit_rating": 110,
+          "mastery_rating": 46,
+          "strint": 155
+        },
+        "legs": {
+          "name": "baleful_graveknights_greaves",
+          "encoded_item": "baleful_graveknights_greaves,id=271473,bonus_id=40/13693/13698/13846,ilevel=344,enchant_id=8159,content_tuning=8078",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 61,
+          "mastery_rating": 148,
+          "strint": 207,
+          "avoidance_rating": 90
+        },
+        "feet": {
+          "name": "spellbreakers_march",
+          "encoded_item": "spellbreakers_march,id=237828,bonus_id=8790/8960/12384/13751/13836/12497",
+          "ilevel": 331,
+          "stamina": 2832,
+          "crit_rating": 74,
+          "haste_rating": 74,
+          "strint": 138
+        },
+        "wrists": {
+          "name": "spellbreakers_bracers",
+          "encoded_item": "spellbreakers_bracers,id=237834,bonus_id=8793/8960/12384/13750/13751/13836/12497,gem_id=240908",
+          "ilevel": 331,
+          "stamina": 2124,
+          "mastery_rating": 56,
+          "haste_rating": 56,
+          "strint": 103
+        },
+        "hands": {
+          "name": "baleful_graveknights_deathgrips",
+          "encoded_item": "baleful_graveknights_deathgrips,id=271475,bonus_id=4786/12854/13691/13697",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 52,
+          "mastery_rating": 99,
+          "strint": 141
+        },
+        "finger1": {
+          "name": "sickening_signet_of_atroxus",
+          "encoded_item": "sickening_signet_of_atroxus,id=252258,bonus_id=12854/13335,gem_id=240908,enchant_id=7967,content_tuning=883",
+          "ilevel": 334,
+          "stamina": 2199,
+          "haste_rating": 278,
+          "mastery_rating": 127
+        },
+        "finger2": {
+          "name": "vile_alchemists_band",
+          "encoded_item": "vile_alchemists_band,id=268249,bonus_id=12854/13335,gem_id=240908,enchant_id=7967,content_tuning=883",
+          "ilevel": 334,
+          "stamina": 2199,
+          "crit_rating": 73,
+          "mastery_rating": 332
+        },
+        "trinket1": {
+          "name": "voracious_heart_of_ulatek",
+          "encoded_item": "voracious_heart_of_ulatek,id=270175,bonus_id=13335/13848",
+          "ilevel": 344,
+          "crit_rating": 149
+        },
+        "trinket2": {
+          "name": "zuljins_guillotine_technique",
+          "encoded_item": "zuljins_guillotine_technique,id=270173,bonus_id=13335/13848,content_tuning=883",
+          "ilevel": 344,
+          "stragi": 197
+        },
+        "back": {
+          "name": "silken_voodoo_drape",
+          "encoded_item": "silken_voodoo_drape,id=268253,bonus_id=13335/13848,content_tuning=883",
+          "ilevel": 344,
+          "stamina": 2466,
+          "haste_rating": 35,
+          "mastery_rating": 83,
+          "stragiint": 116
+        },
+        "main_hand": {
+          "name": "amanmuso_warlords_vengeance",
+          "encoded_item": "amanmuso_warlords_vengeance,id=268209,bonus_id=13335/13848,enchant_id=3368,content_tuning=883",
+          "ilevel": 344,
+          "stamina": 2192,
+          "haste_rating": 31,
+          "mastery_rating": 73,
+          "stragi": 103
+        },
+        "off_hand": {
+          "name": "jaw_of_the_shackled_goddess",
+          "encoded_item": "jaw_of_the_shackled_goddess,id=268202,bonus_id=13847/13848,enchant_id=3847",
+          "ilevel": 344,
+          "strength": 103,
+          "stamina": 2192,
+          "haste_rating": 104
+        }
+      }
+    },
+    {
+      "spec": "unholy",
+      "report_url": "https://www.raidbots.com/simbot/report/s6edoEES5AN7J4isJiKVrC",
+      "kind": "official_profile_submitted_to_raidbots_not_player_export",
+      "profile_source": "https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/profiles/MID2/MID2_Death_Knight_Unholy.simc",
+      "simc_commit": "b845947a34429874433d8e9362326894650dd20a",
+      "report_sha256": "389bb680895731e5a87d523c0ff785df889ac05d46e9b42b16ae12731de76864",
+      "input_sha256": "0b0ba04bf3872649f004a2a62d3326ad0f2a132eb3509577e7fc703992a11681",
+      "dbc_live": {
+        "build_level": 69587,
+        "wow_version": "12.1.0.69587",
+        "hotfix_date": "2026-09-04",
+        "hotfix_build": 69587,
+        "hotfix_hash": "210cdaf4f71cc8f675a3a62d99e3b6010952c9694959d8d4d59d0e134ffba46a"
+      },
+      "identity": {
+        "race": "troll",
+        "level": 90,
+        "role": "attack",
+        "specialization": "Unholy Death Knight",
+        "talents": "CwPAAAAAAAAAAAAAAAAAAAAAAAwMjZMDDz2MzMTzmZmZMjBAAAAAAAgZGmZAwyMmZ2mZGjZAbmFDDZgZjhGLAYGAGzMjZAmZmxYA"
+      },
+      "snapshot": {
+        "attribute": {
+          "strength": 2672,
+          "agility": 517,
+          "stamina": 50904,
+          "intellect": 332
+        },
+        "stats": {
+          "spell_power": 332,
+          "attack_power": 2672,
+          "spell_crit": 0.28804347826086957,
+          "attack_crit": 0.28804347826086957,
+          "spell_haste": 0.8354599586827074,
+          "attack_haste": 0.8354599586827074,
+          "spell_cast_speed": 0.8354599586827074,
+          "auto_attack_speed": 0.8354599586827074,
+          "mastery_value": 0.6616956521739131,
+          "damage_versatility": 0.019814814814814816,
+          "heal_versatility": 0.019814814814814816,
+          "mitigation_versatility": 0.009907407407407408,
+          "crit_rating": 1095,
+          "crit_pct": 0.28804347826086957,
+          "haste_rating": 664,
+          "haste_pct": 0.19694545454545476,
+          "mastery_rating": 1323,
+          "mastery_pct": 0.6616956521739131,
+          "versatility_rating": 107,
+          "versatility_pct": 0.019814814814814816,
+          "avoidance_rating": 603,
+          "avoidance_pct": 0.14831381398832538,
+          "leech_pct": 0.03,
+          "speed_rating": 98,
+          "speed_pct": 7.057923102834253,
+          "armor": 2723.1400000000003,
+          "dodge": 0.03,
+          "parry": 0.1540177234939767
+        }
+      },
+      "gear": {
+        "head": {
+          "name": "baleful_graveknights_casque",
+          "encoded_item": "baleful_graveknights_casque,id=271474,bonus_id=40/12854/13335/13692/13696/13698,gem_id=240983,enchant_id=7991,content_tuning=807,redirected_base_stats=251126",
+          "ilevel": 334,
+          "stamina": 3910,
+          "crit_rating": 75,
+          "mastery_rating": 126,
+          "strint": 189,
+          "avoidance_rating": 86
+        },
+        "neck": {
+          "name": "aqirbane_reliquary",
+          "encoded_item": "aqirbane_reliquary,id=268265,bonus_id=40/13335/13668/13848/13987,gem_id=240898/240898,content_tuning=883",
+          "ilevel": 344,
+          "stamina": 2466,
+          "crit_rating": 107,
+          "haste_rating": 107,
+          "versatility_rating": 107,
+          "mastery_rating": 107,
+          "avoidance_rating": 73
+        },
+        "shoulders": {
+          "name": "baleful_graveknights_gibbets",
+          "encoded_item": "baleful_graveknights_gibbets,id=271472,bonus_id=40/12854/13335/13694/13697,enchant_id=7973,content_tuning=807,redirected_base_stats=251138",
+          "ilevel": 334,
+          "stamina": 2932,
+          "haste_rating": 95,
+          "mastery_rating": 56,
+          "strint": 141,
+          "avoidance_rating": 65
+        },
+        "chest": {
+          "name": "baleful_graveknights_breastplate",
+          "encoded_item": "baleful_graveknights_breastplate,id=271477,bonus_id=13690/13698/13848,enchant_id=7987,redirected_base_stats=268222",
+          "ilevel": 344,
+          "stamina": 4385,
+          "haste_rating": 149,
+          "mastery_rating": 60,
+          "strint": 207
+        },
+        "waist": {
+          "name": "girdle_of_toxic_regret",
+          "encoded_item": "girdle_of_toxic_regret,id=268259,bonus_id=13662/13750/13848,gem_id=240898",
+          "ilevel": 344,
+          "stamina": 3288,
+          "crit_rating": 110,
+          "mastery_rating": 46,
+          "strint": 155
+        },
+        "legs": {
+          "name": "baleful_graveknights_greaves",
+          "encoded_item": "baleful_graveknights_greaves,id=271473,bonus_id=40/12854/13335/13693/13698/13708,ilevel=344,enchant_id=8159,redirected_base_stats=271878",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 209,
+          "strint": 207,
+          "avoidance_rating": 90
+        },
+        "feet": {
+          "name": "spellbreakers_march",
+          "encoded_item": "spellbreakers_march,id=237828,bonus_id=8960/12384/13751/13836/9627,enchant_id=8019,crafted_stats=32/49",
+          "ilevel": 331,
+          "stamina": 2832,
+          "crit_rating": 74,
+          "mastery_rating": 74,
+          "strint": 138
+        },
+        "wrists": {
+          "name": "spellbreakers_bracers",
+          "encoded_item": "spellbreakers_bracers,id=237834,bonus_id=8791/8960/12214/12384/13667/13750/13751/13836/12497,gem_id=240898,crafted_stats=49/40,content_tuning=3615",
+          "ilevel": 331,
+          "stamina": 2124,
+          "crit_rating": 56,
+          "mastery_rating": 56,
+          "strint": 103
+        },
+        "hands": {
+          "name": "baleful_graveknights_deathgrips",
+          "encoded_item": "baleful_graveknights_deathgrips,id=271475,bonus_id=40/12854/13335/13691/13697,content_tuning=807",
+          "ilevel": 334,
+          "stamina": 2932,
+          "crit_rating": 52,
+          "mastery_rating": 99,
+          "strint": 141,
+          "avoidance_rating": 65
+        },
+        "finger1": {
+          "name": "vile_alchemists_band",
+          "encoded_item": "vile_alchemists_band,id=268249,bonus_id=12854/13335,gem_id=240898,enchant_id=7967",
+          "ilevel": 334,
+          "stamina": 2199,
+          "crit_rating": 73,
+          "mastery_rating": 332
+        },
+        "finger2": {
+          "name": "sickening_signet_of_atroxus",
+          "encoded_item": "sickening_signet_of_atroxus,id=252258,bonus_id=4786/12854/13750,gem_id=240898,enchant_id=7967",
+          "ilevel": 334,
+          "stamina": 2199,
+          "haste_rating": 278,
+          "mastery_rating": 127
+        },
+        "trinket1": {
+          "name": "voracious_heart_of_ulatek",
+          "encoded_item": "voracious_heart_of_ulatek,id=270175,bonus_id=40/13335/13848",
+          "ilevel": 344,
+          "crit_rating": 149,
+          "avoidance_rating": 67
+        },
+        "trinket2": {
+          "name": "zuljins_guillotine_technique",
+          "encoded_item": "zuljins_guillotine_technique,id=270173,bonus_id=40/13335/13848",
+          "ilevel": 344,
+          "stragi": 197,
+          "avoidance_rating": 67
+        },
+        "back": {
+          "name": "silken_voodoo_drape",
+          "encoded_item": "silken_voodoo_drape,id=268253,bonus_id=13662/13848",
+          "ilevel": 344,
+          "stamina": 2466,
+          "haste_rating": 35,
+          "mastery_rating": 83,
+          "stragiint": 116
+        },
+        "main_hand": {
+          "name": "mazeroa_warlords_fury",
+          "encoded_item": "mazeroa_warlords_fury,id=268213,bonus_id=40/13335/13848,enchant_id=6245",
+          "ilevel": 344,
+          "stamina": 4385,
+          "crit_rating": 148,
+          "mastery_rating": 61,
+          "stragi": 207,
+          "avoidance_rating": 90
+        }
+      }
+    }
+  ]
+}

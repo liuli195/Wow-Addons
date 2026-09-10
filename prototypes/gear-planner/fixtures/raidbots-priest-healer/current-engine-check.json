@@ -1,0 +1,69 @@
+{
+  "engine": "D:\\My Project\\Wow Addons\\.tools\\gear-planner-research\\simc-1210.01.c1935b9-win64\\simc.exe",
+  "engine_sha256": "f1281cdc7224d9d08e23cca1c090fa1b144b8b22491ffd8459ccefb8d8120987",
+  "samples": [
+    {
+      "spec": "holy",
+      "report_url": "https://www.raidbots.com/simbot/report/2dyiEQPhXi6A5x3usxwY5M",
+      "engine_pass": true,
+      "reported_git_revision": "c1935b9",
+      "identity_pass": true,
+      "dbc_pass": true,
+      "gear_pass": true,
+      "passed_fields": [
+        "attribute.agility",
+        "attribute.intellect",
+        "attribute.stamina",
+        "attribute.strength",
+        "stats.armor",
+        "stats.attack_crit",
+        "stats.attack_haste",
+        "stats.auto_attack_speed",
+        "stats.crit_pct",
+        "stats.crit_rating",
+        "stats.damage_versatility",
+        "stats.dodge",
+        "stats.haste_pct",
+        "stats.haste_rating",
+        "stats.heal_versatility",
+        "stats.leech_pct",
+        "stats.leech_rating",
+        "stats.manareg_per_second",
+        "stats.mastery_pct",
+        "stats.mastery_rating",
+        "stats.mastery_value",
+        "stats.mitigation_versatility",
+        "stats.speed_pct",
+        "stats.spell_cast_speed",
+        "stats.spell_crit",
+        "stats.spell_haste",
+        "stats.spell_power",
+        "stats.versatility_pct",
+        "stats.versatility_rating"
+      ],
+      "failed_fields": [],
+      "application": {
+        "computed": true,
+        "pass": true,
+        "failed_fields": [],
+        "values": {
+          "strength": 357.0,
+          "agility": 516.0,
+          "intellect": 3469.0,
+          "stamina": 47552.0,
+          "armor": 732.0,
+          "crit": 364.0,
+          "crit_pct": 12.913043478260871,
+          "haste": 1266.0,
+          "haste_pct": 32.635909090909074,
+          "mastery": 1424.0,
+          "mastery_pct": 40.598049530000004,
+          "versatility": 123.0,
+          "versatility_pct": 2.2777777777777777,
+          "ilevel": 337.375
+        },
+        "error": null
+      }
+    }
+  ]
+}

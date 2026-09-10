@@ -1,0 +1,11 @@
+{
+  "kind": "constructed_static_reference_not_player_export",
+  "base": "same equipment as paired MID2 shadow priest reference",
+  "talents_source": "https://www.method.gg/guides/discipline-priest/talents",
+  "talents": "CAQAAAAAAAAAAAAAAAAAAAAAAADsMmxywMYmhZzsNzMzMzMAAAAAAAAAAMDLzgZmZYGmBMNTzMYmBABwsNbbgxmBAgxYmxgZwMDmJYA",
+  "options": {
+    "allow_experimental_specializations": 1,
+    "role": "spell"
+  },
+  "scope": "isolated validation, production switch unchanged"
+}
