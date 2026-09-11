@@ -7,4 +7,20 @@
 - 使用 `codex/` 功能分支，保留已有修改。常规验证读取当前 build-and-verify（构建与验证）技能，执行 `build-and-verify verify --project .`；正式差异验证使用干净工作树及固定基线，跳过不等于通过。
 - GitHub（代码托管平台）初始化与交付读取当前 PR Flow（拉取请求流程）技能；分别报告本机检查、远端检查和实际游戏验收。
 - 工具缓存位于 `.tools/`，报告位于 `.local/`。游戏部署和安装包发布按任务授权执行；素材生成缺少源图时保留现有成品。
-- `archive/`（历史存档）仅保留本地；保持整个目录忽略，不强制加入版本管理。项目文档统一放在 `docs/`，开发、素材和个人片段分别放在 `scripts/dev/`、`scripts/media/`、`scripts/snippets/`。
+- `archive/`（历史存档）仅保留本地；保持整个目录忽略，不强制加入版本管理。项目文档统一放在 `docs/`，开发、素材和个人片段分别放在 `scripts/dev/`、`scripts/media/`、`scripts/snippets/`。开发流程的需求和票据按技能要求放在 `myspec/changes/`。
+
+## Agent skills（代理技能）
+
+开发变更使用当前 dev-flow（开发流程）技能，按其入口加载依赖、执行阶段和确认门禁。仓库约定补充项目边界，流程规则以当前技能为准。
+
+### Issue tracker（任务跟踪）
+
+需求和任务使用本地文件；读写前阅读 [任务跟踪约定](docs/agents/issue-tracker.md)。
+
+### Triage labels（任务分拣标签）
+
+使用默认五类标签；分拣任务时阅读 [任务分拣标签](docs/agents/triage-labels.md)。
+
+### Domain docs（领域文档）
+
+调查、设计和审查前阅读 [领域文档约定](docs/agents/domain.md)，按其规则加载相关术语和决策。
