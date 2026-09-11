@@ -1,0 +1,8 @@
+{
+  "kind": "constructed_static_reference_not_player_export",
+  "base": ".local/gear-planner-priest-validation/shadow.submitted.simc",
+  "talents_source": "https://www.method.gg/guides/holy-priest/talents",
+  "talents": "CEQAAAAAAAAAAAAAAAAAAAAAAwYAAAAAAAgZmlxMjZmZYmZYZGmBAAAwMmlZwMzMMDzAYmaAgZWMTmFDAMGsZmZWA0MGjxwMz2yAMDMA",
+  "role": "native default",
+  "allow_experimental_specializations": 1
+}

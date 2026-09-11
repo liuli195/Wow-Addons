@@ -1,0 +1,8 @@
+{
+  "kind": "constructed_static_reference_not_player_export",
+  "base": ".local/gear-planner-evoker-validation/devastation.submitted.simc",
+  "talents_source": "https://www.method.gg/guides/preservation-evoker/talents",
+  "talents": "CwbBAAAAAAAAAAAAAAAAAAAAAAAAAAAmZmZ2WmZGDjxsMDw2wAAAzYGzYMMTMmBAAAMzMTzYmZmZZMDAMmBWAbgZYCZjxmhZAmZYA",
+  "role": "native default",
+  "allow_experimental_specializations": 1
+}

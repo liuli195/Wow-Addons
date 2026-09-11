@@ -1,0 +1,8 @@
+[
+  {
+    "class": "paladin",
+    "spec": "holy",
+    "exit_code": 40,
+    "diagnostic": "SimulationCraft 1210-01 for World of Warcraft 12.1.0.69587 Live (hotfix 2026-09-04/69587, git build midnight c1935b9)\n\nSimulating... ( iterations=1, threads=20, target_error=0.000, max_time=1, vary_combat_length=0.20, optimal_raid=1, fight_style=None )\n\nTrivial: Holy Paladin for Player 'ExperimentalProbe' is not currently supported.\nError: Initialization error: No active players in sim!\n"
+  }
+]

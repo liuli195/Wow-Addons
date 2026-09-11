@@ -1,0 +1,5 @@
+Trivial: Holy Paladin for Player 'Holy_Paladin_Controlled_Reference' is not currently supported.
+Implementation Not Yet Verified: Rune of Unleashed Fire: Procs are assumed to target the same unit that triggered them. Procs triggered by damage are assumed to proc damage. Procs triggered by healing/aura are assumed to proc heal.
+Error: Initialization error: No active players in sim!
+SimulationCraft 1210-01 for World of Warcraft 12.1.0.69587 Live (hotfix 2026-09-04/69587, git build HEAD b845947a34)
+Simulating... ( iterations=1, threads=32, target_error=0.000, max_time=1, vary_combat_length=0.00, optimal_raid=0, fight_style=None )

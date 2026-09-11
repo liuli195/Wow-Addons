@@ -1,0 +1,68 @@
+{
+  "engine": "D:\\My Project\\Wow Addons\\.tools\\gear-planner-research\\simc-1210.01.c1935b9-win64\\simc.exe",
+  "engine_sha256": "f1281cdc7224d9d08e23cca1c090fa1b144b8b22491ffd8459ccefb8d8120987",
+  "samples": [
+    {
+      "spec": "preservation",
+      "report_url": "https://www.raidbots.com/simbot/report/jTSefYmCrxheNZRpw4AZ6C",
+      "engine_pass": true,
+      "reported_git_revision": "c1935b9",
+      "identity_pass": true,
+      "dbc_pass": true,
+      "gear_pass": true,
+      "passed_fields": [
+        "attribute.agility",
+        "attribute.intellect",
+        "attribute.stamina",
+        "attribute.strength",
+        "stats.armor",
+        "stats.attack_crit",
+        "stats.attack_haste",
+        "stats.auto_attack_speed",
+        "stats.crit_pct",
+        "stats.crit_rating",
+        "stats.damage_versatility",
+        "stats.dodge",
+        "stats.haste_pct",
+        "stats.haste_rating",
+        "stats.heal_versatility",
+        "stats.manareg_per_second",
+        "stats.mastery_pct",
+        "stats.mastery_rating",
+        "stats.mastery_value",
+        "stats.mitigation_versatility",
+        "stats.speed_pct",
+        "stats.speed_rating",
+        "stats.spell_cast_speed",
+        "stats.spell_crit",
+        "stats.spell_haste",
+        "stats.spell_power",
+        "stats.versatility_pct",
+        "stats.versatility_rating"
+      ],
+      "failed_fields": [],
+      "application": {
+        "computed": true,
+        "pass": true,
+        "failed_fields": [],
+        "values": {
+          "strength": 273.0,
+          "agility": 422.0,
+          "intellect": 3316.0,
+          "stamina": 45823.0,
+          "armor": 2952.25,
+          "crit": 867.0,
+          "crit_pct": 23.84782608695652,
+          "haste": 922.0,
+          "haste_pct": 20.954545454545446,
+          "mastery": 526.0,
+          "mastery_pct": 36.78260869565218,
+          "versatility": 648.0,
+          "versatility_pct": 12.0,
+          "ilevel": 334.625
+        },
+        "error": null
+      }
+    }
+  ]
+}

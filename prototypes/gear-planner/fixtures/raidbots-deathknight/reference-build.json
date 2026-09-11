@@ -1,0 +1,11 @@
+{
+  "source_commit": "b845947a34429874433d8e9362326894650dd20a",
+  "source_url": "https://api.github.com/repos/simulationcraft/simc/zipball/b845947a34429874433d8e9362326894650dd20a",
+  "source_archive_sha256": "412fe6f536e181ef73fd4fcf6d27dbcd2e17d873511c545a1cea1138c44e8110",
+  "source_files_verified_unchanged": 1157,
+  "engine_sha256": "af33b536a6cf1df0b315c2ad065315c87a68b540a4443c654258efe9e1aef4ec",
+  "build_command": "mingw32-make -C .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine -j 8 CXX=g++ SC_NO_NETWORKING=1 BITS=64",
+  "source_modified": false,
+  "runtime_switched": false,
+  "note": "Official source compiled locally; no embedded Git revision because input is an official source archive. Offline build; reference inputs use item_db_source=local."
+}

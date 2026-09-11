@@ -1,0 +1,27 @@
+{
+  "kind": "constructed_static_reference_not_player_export_not_official_holy_profile",
+  "base": "MID2_Paladin_Protection.simc at b845947a34429874433d8e9362326894650dd20a",
+  "talents_source": "https://www.method.gg/guides/holy-paladin/talents",
+  "talents": "CEEAAAAAAAAAAAAAAAAAAAAAAAAAALAwMAAw2MzMjZMzYxYmZYZwMLmpJGGzMDjZLDADAbgNWmxMLz2Mzs1AAAAsAGYzwYGDmBAwMDzYMaA",
+  "role": "attack",
+  "changes": [
+    {
+      "slot": "trinket1",
+      "old_id": 270173,
+      "new_id": 193748,
+      "reason": "主属性不适配当前专精"
+    },
+    {
+      "slot": "trinket2",
+      "old_id": 270175,
+      "new_id": 193748,
+      "reason": "掉落专精不含当前专精"
+    },
+    {
+      "slot": "main_hand",
+      "old_id": 268209,
+      "new_id": 158369,
+      "reason": "主属性不适配当前专精"
+    }
+  ]
+}

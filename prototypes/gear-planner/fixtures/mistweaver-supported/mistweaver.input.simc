@@ -1,0 +1,19 @@
+# Constructed local integration fixture; not a player export or Raidbots result.
+monk=MistweaverGate
+level=90
+race=pandaren
+spec=mistweaver
+head=,id=193751,bonus_id=12854
+neck=,id=251142,bonus_id=12854
+shoulder=,id=251146,bonus_id=12854
+back=,id=159288,bonus_id=12854
+chest=,id=193764,bonus_id=12854
+wrist=,id=159300,bonus_id=12854
+hands=,id=159312,bonus_id=12854
+waist=,id=159301,bonus_id=12854
+legs=,id=159313,bonus_id=12854
+feet=,id=159304,bonus_id=12854
+finger1=,id=158366,bonus_id=12854
+finger2=,id=159459,bonus_id=12854
+main_hand=,id=159636,bonus_id=12854
+talents=C4QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgFAAAAAACAAAAAAQAAAAAEAAAAAAAAAACA

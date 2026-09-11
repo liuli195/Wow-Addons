@@ -1,0 +1,37 @@
+--- a/engine/class_modules/monk/sc_monk.cpp
++++ b/engine/class_modules/monk/sc_monk.cpp
+@@ -5437,7 +5437,7 @@
+ 
+ bool monk_t::validate_actor()
+ {
+-  if ( specialization() == MONK_MISTWEAVER )
++  if ( specialization() == MONK_MISTWEAVER && !sim->allow_experimental_specializations )
+   {
+     if ( !quiet )
+       sim->error( "Mistweaver Monk for {} is not currently supported.", *this );
+@@ -5485,6 +5485,7 @@
+   {
+     case MONK_BREWMASTER:
+     case MONK_WINDWALKER:
++    case MONK_MISTWEAVER:
+       return true;
+     default:
+       sim->error( "No specialization was selected for {}.", *this );
+@@ -7130,6 +7131,8 @@
+     case STAT_STR_AGI_INT:
+       switch ( specialization() )
+       {
++        case MONK_MISTWEAVER:
++          return STAT_INTELLECT;
+         case MONK_BREWMASTER:
+         case MONK_WINDWALKER:
+           return STAT_AGILITY;
+@@ -7137,7 +7140,7 @@
+           return STAT_NONE;
+       }
+     case STAT_AGI_INT:
+-      return STAT_AGILITY;
++      return specialization() == MONK_MISTWEAVER ? STAT_INTELLECT : STAT_AGILITY;
+     case STAT_STR_AGI:
+       return STAT_AGILITY;
+     case STAT_STR_INT:

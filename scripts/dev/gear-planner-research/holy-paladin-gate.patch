@@ -1,0 +1,11 @@
+--- a/engine/class_modules/paladin/sc_paladin.cpp
++++ b/engine/class_modules/paladin/sc_paladin.cpp
+@@ -4038,7 +4038,7 @@
+ // paladin_t::validate_actor ================================================
+ bool paladin_t::validate_actor()
+ {
+-  if ( specialization() == PALADIN_HOLY )
++  if ( specialization() == PALADIN_HOLY && !sim->allow_experimental_specializations )
+   {
+     if ( !quiet )
+       sim->error( "Holy Paladin for {} is not currently supported.", *this );

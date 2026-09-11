@@ -20,6 +20,8 @@ ROOT = HERE.parents[1]
 DATA = ROOT / '.tools/gear-planner-research'
 RESEARCH = HERE / 'fixtures'
 EXE = DATA / 'simc-1210.01.c1935b9-win64/simc.exe'
+HOLY_EXE = ROOT / '.tools/gear-planner-holy/b845947-gate1/simc.exe'
+MISTWEAVER_EXE = ROOT / '.tools/gear-planner-mistweaver/b845947-attributes1/simc.exe'
 VERSION = '12.1.0.69587 · c1935b9'
 PORT = 8765
 TOKEN = secrets.token_urlsafe(24)
@@ -56,9 +58,13 @@ GEAR_ENCHANTS=[e for e in ENCHANTS.values() if (e.get('expansion')==11 and e.get
 ENCHANT_NAMES=json.loads((HERE/'enchant-names-zhCN.json').read_text(encoding='utf-8')) if (HERE/'enchant-names-zhCN.json').exists() else {}
 STAT_NAMES={**GEM_STATS,'str':'力量','agi':'敏捷','int':'智力','sta':'耐力','leech':'吸血','speed':'加速','avoidance':'闪避','armor':'护甲','runspeed':'加速','stragi':'力量 / 敏捷'}
 
-def enchant_options(f):
+CLASS_SPECS={'deathknight':{'blood':250,'frost':251,'unholy':252},'demonhunter':{'havoc':577,'vengeance':581,'devourer':1480},'rogue':{'assassination':259,'outlaw':260,'subtlety':261},'warlock':{'affliction':265,'demonology':266,'destruction':267},'mage':{'arcane':62,'fire':63,'frost':64},'paladin':{'holy':65,'protection':66,'retribution':70},'hunter':{'beast_mastery':253,'marksmanship':254,'survival':255},'shaman':{'elemental':262,'enhancement':263,'restoration':264},'warrior':{'arms':71,'fury':72,'protection':73},'priest':{'discipline':256,'holy':257,'shadow':258},'druid':{'balance':102,'feral':103,'guardian':104,'restoration':105},'monk':{'brewmaster':268,'mistweaver':270,'windwalker':269},'evoker':{'devastation':1467,'preservation':1468,'augmentation':1473}}
+SPEC_IDS={cls+':'+spec:i for cls,specs in CLASS_SPECS.items() for spec,i in specs.items()}
+
+def enchant_options(f, character_class='deathknight'):
     item=ITEMS.get(int(f['id']),{});options=[]
     for e in GEAR_ENCHANTS:
+        if character_class!='deathknight' and e['id'] in RUNE_IDS:continue
         req=e['equipRequirements']
         if item.get('itemClass')!=req['itemClass']:continue
         if any(req.get(mask,0) and not req[mask] & (1<<item.get(key,0)) for mask,key in [('itemSubClassMask','itemSubClass'),('invTypeMask','inventoryType')]):continue
@@ -108,7 +114,7 @@ def gear_fields(value):
             if part and not re.fullmatch(r'[\w .\-\u0080-\uffff]+',part): raise ValueError('装备名称格式不正确')
             continue
         key,val=part.split('=',1)
-        if key not in FIELDS or not re.fullmatch(r'\d+(?:/\d+)*',val): raise ValueError('未支持的装备字段：'+key)
+        if not (key=='embellishment' and re.fullmatch(r'[a-z][a-z0-9_]{0,99}',val)) and (key not in FIELDS or not re.fullmatch(r'\d+(?:/\d+)*',val)): raise ValueError('未支持的装备字段：'+key)
         if key in result: raise ValueError('重复装备字段：'+key)
         result[key]=val
     if not result.get('id'): raise ValueError('装备缺少物品编号')
@@ -125,8 +131,8 @@ def parse_import(text):
         if not line or line.startswith('#'): continue
         if '=' not in line: raise ValueError('无法识别的导入行')
         key,value=line.split('=',1); key=ALIASES.get(key,key)
-        if key=='deathknight': model['character']['class']='deathknight'
-        elif key in ('level','race','spec','talents','omnium_talents'): model['character'][key]=value
+        if key in CLASS_SPECS: model['character']['class']=key
+        elif key in ('level','race','spec','talents','omnium_talents','timeofday'): model['character'][key]=value.lower() if key=='race' else value
         elif key in SLOT_KEYS:
             if key in model['gear']: raise ValueError('重复装备槽位')
             model['gear'][key]=encode(gear_fields(value))
@@ -138,15 +144,17 @@ def parse_import(text):
 def validate(model):
     if not isinstance(model,dict): raise ValueError('方案格式不正确')
     c=model.get('character',{})
-    if c.get('class')!='deathknight' or str(c.get('level'))!='90' or c.get('spec')!='blood': raise ValueError('当前计算仅支持 90 级鲜血死亡骑士')
+    if str(c.get('level'))!='90' or c.get('spec') not in CLASS_SPECS.get(c.get('class'),{}): raise ValueError('当前仅支持 90 级死亡骑士、恶魔猎手、盗贼、术士、法师、圣骑士、猎人、萨满、战士、牧师、德鲁伊、武僧与唤魔师的已接入专精')
+    if c.get('timeofday','day') not in ('day','night'):raise ValueError('无效昼夜状态')
     if not re.fullmatch(r'[a-z_]{2,40}',str(c.get('race',''))): raise ValueError('缺少有效种族')
     if not re.fullmatch(r'[A-Za-z0-9+/=]{20,600}',str(c.get('talents',''))): raise ValueError('缺少有效天赋，无法完整计算')
     if c.get('omnium_talents'):
         extra=c['omnium_talents']
         if not isinstance(extra,str) or len(extra)>3000: raise ValueError('额外系统配置格式不正确')
+        # Upstream initialize_expansion_trait_effects accepts a node ID or tokenized
+        # name, with an optional rank. Keep identifiers bounded to safe ASCII input.
         for pair in extra.split('/'):
-            parts=pair.split(':')
-            if len(parts)!=2 or not all(part.isascii() and part.isdecimal() for part in parts): raise ValueError('额外系统配置格式不正确')
+            if not re.fullmatch(r'(?:[0-9]+|[a-z][a-z0-9_]*)(?::[0-9]+)?',pair): raise ValueError('额外系统配置格式不正确')
     if not isinstance(model.get('gear'),dict) or any(s not in SLOT_KEYS for s in model['gear']): raise ValueError('装备槽位无效')
     for value in model['gear'].values(): gear_fields(value)
 
@@ -161,32 +169,69 @@ INVENTORY=json.loads((RESEARCH/'epic-catalog-results.json').read_text())
 GROUPS={k:set(v) for k,v in INVENTORY['groups'].items()}
 CONVERSIONS=json.loads((DATA/'item-conversions.json').read_text())['13']
 ITEMS.update({x['id']:x for x in CONVERSIONS['items']})
-SLOT_MAP={1:['head'],2:['neck'],3:['shoulder'],5:['chest'],6:['waist'],7:['legs'],8:['feet'],9:['wrist'],10:['hands'],11:['finger1','finger2'],12:['trinket1','trinket2'],13:['main_hand','off_hand'],14:['off_hand'],15:['main_hand'],16:['back'],17:['main_hand'],20:['chest'],21:['main_hand'],22:['off_hand'],23:['off_hand'],25:['main_hand'],26:['main_hand']}
+SLOT_MAP={1:['head'],2:['neck'],3:['shoulder'],5:['chest'],6:['waist'],7:['legs'],8:['feet'],9:['wrist'],10:['hands'],11:['finger1','finger2'],12:['trinket1','trinket2'],13:['main_hand','off_hand'],14:['off_hand'],15:['main_hand'],16:['back'],17:['main_hand','off_hand'],20:['chest'],21:['main_hand'],22:['off_hand'],23:['off_hand'],25:['main_hand'],26:['main_hand']}
 CRAFT_PAIRS={'/'.join(map(str,BONUSES[str(b)]['craftedStats'])):str(b) for b in range(8790,8796)}
 
-def equip_reason(item):
-    if item.get('inventoryType') in (14,23):return '死亡骑士无法装备盾牌或副手物品'
-    if item.get('allowableClasses') and 6 not in item['allowableClasses']: return '其他职业专属'
-    if item['itemClass']==4 and item.get('itemSubClass') not in (0,1,2,3,4): return '死亡骑士无法装备'
-    if item['itemClass']==2 and item.get('itemSubClass') not in (0,1,4,5,6,7,8): return '死亡骑士无法装备'
+def occupies_both_hands(item):
+    return item.get('inventoryType')==17 or (item.get('itemClass')==2 and item.get('itemSubClass') in (2,3,18))
+
+
+def equip_reason(item, character_class='deathknight'):
+    dh=character_class=='demonhunter'
+    rogue=character_class=='rogue'
+    caster=character_class in ('warlock','mage','priest')
+    if (item.get('inventoryType')==14 and character_class not in ('paladin','shaman','warrior')) or (item.get('inventoryType')==23 and not caster and character_class not in ('shaman','druid','monk','evoker')):return '当前职业无法装备盾牌或副手物品'
+    if item.get('allowableClasses') and (13 if character_class=='evoker' else 10 if character_class=='monk' else 11 if character_class=='druid' else 5 if character_class=='priest' else 1 if character_class=='warrior' else 7 if character_class=='shaman' else 3 if character_class=='hunter' else 2 if character_class=='paladin' else 8 if character_class=='mage' else 9 if caster else 4 if rogue else 12 if dh else 6) not in item['allowableClasses']: return '其他职业专属'
+    if character_class in ('druid','monk') and item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS and item.get('itemSubClass') not in (1,2):return '当前职业只能装备布甲或皮甲'
+    if caster and item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS and item.get('itemSubClass')!=1:return '当前职业只能装备布甲'
+    if item['itemClass']==4 and item.get('itemSubClass') not in ((0,1,2,3) if character_class=='evoker' else (0,1,2,3,6) if character_class=='shaman' else (0,1,2,3,4,6) if character_class in ('paladin','warrior') else (0,1,2,3,4)): return '当前职业无法装备'
+    if item['itemClass']==2 and item.get('itemSubClass') not in ((0,4,7,10,13,15) if character_class=='evoker' else (0,4,6,7,10,13) if character_class=='monk' else (4,5,6,10,13,15) if character_class=='druid' else (4,10,15,19) if character_class=='priest' else (0,1,2,3,4,5,6,7,8,10,13,15,18) if character_class=='warrior' else (0,1,4,5,10,13,15) if character_class=='shaman' else (0,1,2,3,6,7,8,10,13,15,18) if character_class=='hunter' else (7,10,15,19) if caster else (0,4,7,13,15) if rogue else (0,7,9,13,15) if dh else (0,1,4,5,6,7,8)): return '当前职业无法装备'
     return ''
 
 ARMOR_NAMES={1:'布甲',2:'皮甲',3:'锁甲',4:'板甲'}
 ARMOR_SLOTS={1,3,5,6,7,8,9,10,20}
 
-def fit_reason(item):
+DK_SPECS=CLASS_SPECS['deathknight']
+
+def fit_reason(item, spec='blood', slot='main_hand', character_class='deathknight'):
     # Candidate relevance is not an equip prohibition or a performance ranking.
-    hard=equip_reason(item)
+    dh=character_class=='demonhunter'
+    rogue=character_class=='rogue'
+    caster=character_class in ('warlock','mage','priest')
+    hard=equip_reason(item,character_class)
     if hard:return hard
-    if item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS and item.get('itemSubClass')!=4:
-        return ARMOR_NAMES.get(item.get('itemSubClass'),'其他护甲')+' · 不符合当前职业板甲专精'
-    if item['itemClass']==2 and item.get('inventoryType')!=17:
-        return '非鲜血常规双手武器配置'
+    if item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS and item.get('itemSubClass')!=(3 if character_class in ('hunter','shaman','evoker') else 1 if caster else 2 if dh or rogue or character_class in ('druid','monk') else 4):
+        return ARMOR_NAMES.get(item.get('itemSubClass'),'其他护甲')+' · 不符合当前职业护甲专精'
+    if slot=='off_hand' and occupies_both_hands(item) and not (character_class=='warrior' and spec=='fury'):return '此专精不能在副手使用双手武器'
+    if character_class=='warrior':
+        if slot=='off_hand' and (spec=='arms' or spec=='protection' and item.get('inventoryType')!=14 or spec=='fury' and item['itemClass']!=2):return '武器专精不使用副手，防护使用盾牌'
+        if item['itemClass']==2:
+            if spec=='fury' and (item.get('inventoryType')!=17 or item.get('itemSubClass') not in (1,5,8)):return '狂暴使用双手斧、锤或剑双持'
+            if spec!='fury' and ((spec=='arms')!=(item.get('inventoryType')==17) or item.get('itemSubClass') in (2,3,18)):return '当前专精使用适配的近战武器'
+    if character_class=='monk' and slot=='off_hand' and ((spec=='mistweaver')!=(item.get('inventoryType')==23)):return '织雾使用副手物品，酒仙与踏风使用副手武器'
+    if character_class=='druid' and slot=='off_hand' and item.get('inventoryType')!=23:return '德鲁伊副手使用副手物品，不能双持武器'
+    if (caster or character_class=='evoker') and slot=='off_hand' and item.get('inventoryType')!=23:return '当前职业副手使用副手物品，不能双持武器'
+    if item['itemClass']==2 and character_class=='deathknight' and spec!='frost' and item.get('inventoryType')!=17:
+        return '当前专精使用双手武器'
+    if character_class=='paladin':
+        if slot=='off_hand' and (spec=='retribution' or item.get('inventoryType')!=14):return '当前专精不使用此副手装备'
+        if item['itemClass']==2 and ((spec=='retribution')!=(item.get('inventoryType')==17)):return '惩戒使用双手武器，神圣与防护使用单手武器和盾牌'
+    if character_class=='shaman':
+        if spec=='enhancement':
+            if slot in ('main_hand','off_hand') and (item['itemClass']!=2 or item.get('itemSubClass') not in (0,4,13) or item.get('inventoryType') not in (13,21,22)):return '增强使用单手斧、锤或拳套双持'
+        elif slot=='off_hand' and item.get('inventoryType') not in (14,23):return '元素与恢复使用盾牌或副手物品，不能双持武器'
+    if character_class=='hunter':
+        if slot=='off_hand' and spec!='survival':return '当前专精使用远程武器，不使用副手'
+        if item['itemClass']==2 and ((spec!='survival')!=(item.get('itemSubClass') in (2,3,18))):return '野兽控制与射击使用弓、枪、弩，生存使用近战武器'
+    if rogue and item['itemClass']==2:
+        if (spec=='assassination' or (spec=='subtlety' and slot=='main_hand')) and item['itemSubClass']!=15:return '当前专精使用匕首'
+        if spec=='outlaw' and slot=='main_hand' and item['itemSubClass']==15:return '狂徒主手使用非匕首武器'
     primary={s['id'] for s in item.get('stats',[])} & {3,4,5,71,72,73,74}
-    if primary and not primary & {4,71,72,74}:
-        return '主属性不提供力量'
-    if item.get('specs') and 250 not in item['specs']:
-        return '掉落专精不含鲜血 · 可在全部装备中查看'
+    wanted={5,71,73,74} if spec=='devourer' or caster or character_class=='evoker' or (character_class=='monk' and spec=='mistweaver') or (character_class=='druid' and spec in ('balance','restoration')) or (character_class=='paladin' and spec=='holy') or (character_class=='shaman' and spec!='enhancement') else ({3,71,72,73} if dh or rogue or character_class in ('hunter','shaman','druid','monk') else {4,71,72,74})
+    if primary and not primary & wanted:
+        return '主属性不适配当前专精'
+    if item.get('specs') and CLASS_SPECS[character_class][spec] not in item['specs'] and not (spec=='outlaw' and slot=='off_hand' and item['itemClass']==2 and item['itemSubClass']==15):
+        return '掉落专精不含当前专精'
     return ''
 
 def catalog_fields(iid):
@@ -210,8 +255,8 @@ SOURCE_LABELS={'mplus':'大秘境','raid_direct':'团本','raid_token_products':
 for group,ids in GROUPS.items():
     for iid in sorted(ids):
         item=ITEMS[iid]; value=encode(catalog_fields(iid))
-        record={'label':SOURCE_LABELS[group],'value':value,**item_info(value),'reason':equip_reason(item),'fitReason':fit_reason(item),'armorType':ARMOR_NAMES.get(item.get('itemSubClass'),'') if item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS else '', 'conversion':group=='non_set_conversion_forms'}
-        for slot in SLOT_MAP.get(item['inventoryType'],[]):CATALOG[slot].append(record)
+        record={'label':SOURCE_LABELS[group],'value':value,**item_info(value),'reason':equip_reason(item),'fitReason':fit_reason(item),'fitReasonsBySpec':{cls+':'+spec:fit_reason(item,spec,character_class=cls) for cls,specs in CLASS_SPECS.items() for spec in specs},'armorType':ARMOR_NAMES.get(item.get('itemSubClass'),'') if item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS else '', 'conversion':group=='non_set_conversion_forms'}
+        for slot in SLOT_MAP.get(item['inventoryType'],[]):CATALOG[slot].append({**record,'fitReasonsBySpec':{cls+':'+spec:fit_reason(item,spec,slot,cls) for cls,specs in CLASS_SPECS.items() for spec in specs}})
 # Imported items outside the search scope stay in the model, never expand this catalog.
 CATALOG_COUNT=len({x['id'] for rows in CATALOG.values() for x in rows})
 assert CATALOG_COUNT==523
@@ -386,7 +431,23 @@ def apply_edit(model, edit):
             candidates=CATALOG.get(slot,[]); index=edit['candidate']
             if not isinstance(index,int) or index<0 or index>=len(candidates): raise ValueError('无效装备选择')
             candidate=candidates[index]
-        if candidate['reason']: raise ValueError(candidate['reason'])
+        reason=equip_reason(ITEMS[candidate['id']],model['character']['class'])
+        if reason:raise ValueError(reason)
+        if slot=='off_hand' and occupies_both_hands(ITEMS[candidate['id']]) and not (model['character']['class']=='warrior' and model['character']['spec']=='fury' and ITEMS[candidate['id']]['itemSubClass'] in (1,5,8)):raise ValueError('此专精不能在副手使用双手武器')
+        if model['character']['class']=='warrior' and slot=='off_hand' and model['character']['spec']!='fury':
+            if model['character']['spec']!='protection' or ITEMS[candidate['id']]['inventoryType']!=14:raise ValueError('当前专精不能使用此副手')
+            main=ITEMS.get(int(gear_fields(model['gear']['main_hand'])['id']),{}) if model['gear'].get('main_hand') else {}
+            if occupies_both_hands(main):raise ValueError('请先选择单手主手武器')
+        if model['character']['class'] in ('warlock','mage','priest','paladin','druid','evoker') and slot=='off_hand':
+            allowed=14 if model['character']['class']=='paladin' else 23
+            if ITEMS[candidate['id']]['inventoryType']!=allowed:raise ValueError('当前职业不能双持武器，请选择适用的盾牌或副手物品')
+            main=ITEMS.get(int(gear_fields(model['gear']['main_hand'])['id']),{}) if model['gear'].get('main_hand') else {}
+            if main.get('inventoryType')==17:raise ValueError('双手武器不能搭配副手物品，请先选择单手主手武器')
+        if model['character']['class'] in ('hunter','shaman','monk') and slot=='off_hand':
+            main=ITEMS.get(int(gear_fields(model['gear']['main_hand'])['id']),{}) if model['gear'].get('main_hand') else {}
+            if occupies_both_hands(main):raise ValueError('双手或远程武器不能搭配副手，请先选择单手主手武器')
+            if model['character']['class']=='monk' and ((model['character']['spec']=='mistweaver')!=(ITEMS[candidate['id']]['inventoryType']==23)):raise ValueError('当前专精不能使用此副手')
+            if model['character']['class']=='shaman' and model['character']['spec']!='enhancement' and ITEMS[candidate['id']]['inventoryType'] not in (14,23):raise ValueError('当前专精不能双持武器，请选择盾牌或副手物品')
         if candidate['conversion']:
             if slot not in model['gear']:raise ValueError('先装备一件可转化的同槽位装备')
             original=gear_fields(model['gear'][slot]); source=ITEMS.get(int(original['id']),{})
@@ -427,7 +488,7 @@ def apply_edit(model, edit):
                 new_bonuses=[b for b in replacement.get('bonus_id','').split('/') if not BONUSES.get(b,{}).get('socket')]
                 if socket_bonuses:replacement['bonus_id']='/'.join(new_bonuses+socket_bonuses)
                 if original.get('enchant_id'):
-                    if original['enchant_id'] not in {o['id'] for o in enchant_options(replacement)}:raise ValueError('原附魔不适用于新装备，已保留原装备；请先移除或更换附魔')
+                    if original['enchant_id'] not in {o['id'] for o in enchant_options(replacement,model['character']['class'])}:raise ValueError('原附魔不适用于新装备，已保留原装备；请先移除或更换附魔')
                     replacement['enchant_id']=original['enchant_id']
                 if original.get('gem_id'):
                     gems=original['gem_id'].split('/');sockets=gem_sockets(replacement)
@@ -436,6 +497,8 @@ def apply_edit(model, edit):
                     replacement['gem_id']=original['gem_id']
                     if original.get('gem_bonus_id'):replacement['gem_bonus_id']=original['gem_bonus_id']
                 model['gear'][slot]=encode(replacement)
+        if model['character']['class'] in ('warlock','mage','priest','paladin','hunter','shaman','warrior','druid','monk','evoker') and not (model['character']['class']=='warrior' and model['character']['spec']=='fury') and slot=='main_hand' and occupies_both_hands(ITEMS[candidate['id']]):
+            model['gear'].pop('off_hand',None)
     if slot not in model['gear']: raise ValueError('先选择装备')
     f=gear_fields(model['gear'][slot]); bonuses=f.get('bonus_id','').split('/') if f.get('bonus_id') else []
     if 'level' in edit or 'levelVariant' in edit:
@@ -461,7 +524,7 @@ def apply_edit(model, edit):
         if pair not in mapping or not item_info(model['gear'][slot])['crafted'] or not any(x['id'] in (24,25) for x in ITEMS[int(f['id'])].get('stats',[])): raise ValueError('不支持此制作属性')
         bonuses=[b for b in bonuses if not BONUSES.get(b,{}).get('craftedStats')]+[mapping[pair]]
         f['crafted_stats']=pair
-    enchants={o['id'] for o in enchant_options(f)} | {''}
+    enchants={o['id'] for o in enchant_options(f,model['character']['class'])} | {''}
     if 'gem_id' in edit:
         gid=str(edit['gem_id']);index=edit.get('gemIndex',0);sockets=gem_sockets(f)
         if not isinstance(index,int) or not 0<=index<len(sockets):raise ValueError('当前装备没有这个可用插槽')
@@ -484,13 +547,13 @@ def apply_edit(model, edit):
     return model
 
 @lru_cache(maxsize=2048)
-def replacement_signature(slot,value):
+def replacement_signature(slot,value,probe_json=None):
     # Cache item-only evidence; native gear stats exclude character and set multipliers.
-    probe=copy.deepcopy(BASE);probe['gear'][slot]=value
+    probe=json.loads(probe_json) if probe_json else copy.deepcopy(BASE);probe['gear'][slot]=value
     result=calculate(probe)
     if not result['complete']:raise ValueError('无法确认换装结果')
     item=result['items'][slot];f=item['fields']
-    effects=item_effects({'itemId':item['id'],'level':item['ilevel'],'bonuses':f.get('bonus_id','')})
+    effects=item_effects({'itemId':item['id'],'level':item['ilevel'],'bonuses':f.get('bonus_id','')},cache_only=True)
     if effects.get('error'):raise ValueError('无法确认装备特效')
     raw={k:v for k,v in item['raw'].items() if k!='encoded_item'}
     return {'raw':raw,'effects':effects['effects'],'sets':effects.get('setEffectsBySpec') or effects.get('setEffects') or [],
@@ -500,6 +563,8 @@ def replacement_signature(slot,value):
 
 def original_matches(model, originals):
     validate(model)
+    # Item comparison needs the current identity and weapon setup, not every slot.
+    probe_json=json.dumps({'character':model['character'],'gear':{s:v for s,v in model['gear'].items() if s in ('main_hand','off_hand')}},sort_keys=True)
     if not isinstance(originals,dict) or any(slot not in dict(SLOTS) for slot in originals):raise ValueError('无效原装备列表')
     def outcome(slot,patch):
         confirmation=None
@@ -509,7 +574,7 @@ def original_matches(model, originals):
             changed=apply_edit(model,{'slot':slot,**patch,'acceptLevelChange':confirmation})
         fields=gear_fields(changed['gear'][slot])
         if fields.get('bonus_id'):fields['bonus_id']='/'.join(sorted(set(fields['bonus_id'].split('/')),key=int))
-        return confirmation,replacement_signature(slot,encode(fields))
+        return confirmation,replacement_signature(slot,encode(fields),probe_json)
     matches={'_selected':{}}
     for slot in set(originals)|{s for s in model['gear'] if s in dict(SLOTS)}:
         value=originals.get(slot);matches[slot]=[];matches['_selected'][slot]=[]
@@ -519,13 +584,13 @@ def original_matches(model, originals):
         try:
             fields=gear_fields(current_value)
             if fields.get('bonus_id'):fields['bonus_id']='/'.join(sorted(set(fields['bonus_id'].split('/')),key=int))
-            current=(None,replacement_signature(slot,encode(fields)))
+            current=(None,replacement_signature(slot,encode(fields),probe_json))
         except (ValueError,KeyError,TypeError):current=None
         try:original=outcome(slot,{'originalItem':value}) if value else None
         except (ValueError,KeyError,TypeError):original=None
         if original is not None and current is not None and original==current:matches['_selected'][slot].append('original')
         for index,item in enumerate(CATALOG[slot]):
-            if item['id'] not in (iid,current_id) or item['reason'] or item['fitReason'] or item['conversion']:continue
+            if item['id'] not in (iid,current_id) or item['fitReasonsBySpec'][model['character']['class']+':'+model['character']['spec']] or item['conversion']:continue
             try:
                 candidate=outcome(slot,{'candidate':index})
                 if original is not None and candidate==original:matches[slot].append(index)
@@ -535,18 +600,26 @@ def original_matches(model, originals):
 
 def calculate(model):
     validate(model); started=time.perf_counter(); c=model['character']
-    lines=['deathknight=prototype','level=90','spec=blood','race='+c['race'],'talents='+c['talents']]
+    holy=(c['class'],c['spec'])==('paladin','holy')
+    mistweaver=(c['class'],c['spec'])==('monk','mistweaver')
+    engine=MISTWEAVER_EXE if mistweaver else HOLY_EXE if holy else EXE
+    version='12.1.0.69587 · b845947 · mistweaver-attributes1' if mistweaver else '12.1.0.69587 · b845947 · holy-gate1' if holy else VERSION
+    lines=[c['class']+'=prototype','level=90','spec='+c['spec'],'race='+c['race'],'talents='+c['talents']]
+    if c.get('timeofday'):lines.append('timeofday='+c['timeofday'])
     if c.get('omnium_talents'): lines.append('omnium_talents='+c['omnium_talents'])
     lines += [s+'='+encode(gear_fields(v)) for s,v in model['gear'].items()]
     with LOCK, tempfile.TemporaryDirectory(prefix='calc-',dir=HERE) as tmp:
         tmp=Path(tmp); src=tmp/'input.simc'; out=tmp/'result.json'; src.write_text('\n'.join(lines),encoding='utf-8')
-        args=[str(EXE),str(src),'item_db_source=local','iterations=1','threads=1','fixed_time=1','max_time=1','vary_combat_length=0','optimal_raid=0','potion=disabled','flask=disabled','food=disabled','augmentation=disabled','temporary_enchant=disabled','override.allow_potions=0','override.allow_food=0','override.allow_flasks=0','override.allow_augmentations=0','actions.precombat=snapshot_stats','actions=wait,sec=1',f'json={out},version=2',f'output={tmp / "report.txt"}']
+        args=[str(engine),str(src),'item_db_source=local','iterations=1','threads=1','fixed_time=1','max_time=1','vary_combat_length=0','optimal_raid=0','potion=disabled','flask=disabled','food=disabled','augmentation=disabled','temporary_enchant=disabled','override.allow_potions=0','override.allow_food=0','override.allow_flasks=0','override.allow_augmentations=0','actions.precombat=snapshot_stats','actions=wait,sec=1',f'json={out},version=2',f'output={tmp / "report.txt"}']
+        if (c['class'],c['spec']) in {('priest','discipline'),('priest','holy'),('paladin','holy'),('monk','mistweaver'),('evoker','preservation')}:args.append('allow_experimental_specializations=1')
+        if mistweaver:args.extend(['role=heal','target_level=90'])
         run=subprocess.run(args,cwd=tmp,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=12)
         if run.returncode or not out.exists():
             diagnostic=(run.stderr+'\n'+run.stdout).strip()[-1400:]
-            return {'model':model,'complete':False,'error':'这份配置未能完整计算，原始方案已保留。','diagnostic':diagnostic,'version':VERSION}
+            return {'model':model,'complete':False,'error':'这份配置未能完整计算，原始方案已保留。','diagnostic':diagnostic,'version':version}
         actor=json.loads(out.read_text())['sim']['players'][0]
     snap=actor['collected_data']['buffed_stats']; stats=snap['stats']; attrs=snap['attribute']
+    if not attrs or not stats:return {'model':model,'complete':False,'error':'引擎未返回完整属性，原始方案已保留。','version':version}
     # Only missing numeric leaves in a successful, complete native snapshot are zero-valued.
     values={k:attrs.get(k,0) for k in ('strength','agility','intellect','stamina')}
     values['armor']=stats.get('armor',0)
@@ -562,8 +635,11 @@ def calculate(model):
             level=int(f['ilevel']) if f.get('ilevel') else next((BONUSES[b]['upgrade']['itemLevel'] for b in f.get('bonus_id','').split('/') if BONUSES.get(b,{}).get('upgrade',{}).get('seasonId')==37),None)
             if level:gear[slot]={'name':item['name'],'ilevel':level}
     mh=gear_fields(model['gear']['main_hand']) if model['gear'].get('main_hand') else {}
-    twohand=ITEMS.get(int(mh.get('id',0)),{}).get('inventoryType')==17
-    values['ilevel']=(sum(v['ilevel'] for v in gear.values())+gear['main_hand']['ilevel'])/16 if twohand and len(gear)==15 and 'off_hand' not in gear else None
+    twohand=occupies_both_hands(ITEMS.get(int(mh.get('id',0)),{})) and not (c['class']=='warrior' and c['spec']=='fury')
+    equipped={slot:v for slot,v in gear.items() if slot in dict(SLOTS)}
+    # Empty slots contribute zero; cosmetic slots never enter the 16-slot average.
+    known=all(slot in equipped for slot in model['gear'] if slot in dict(SLOTS))
+    values['ilevel']=(sum(v['ilevel'] for v in equipped.values())+(equipped.get('main_hand',{}).get('ilevel',0) if twohand and 'off_hand' not in equipped else 0))/16 if known else None
     metadata={}
     for slot,value in model['gear'].items():
         if slot not in dict(SLOTS): continue
@@ -577,13 +653,19 @@ def calculate(model):
         info['gemSlots']=gem_sockets(f)
         info['addableSocket']=not gem_sockets(f,False) and can_add_socket(f)
         info['gemEditable']=bool(info['gemSlots'])
-        info['enchantOptions']=enchant_options(f)
+        info['enchantOptions']=enchant_options(f,c['class'])
         info['effectiveCrafted']=next(('/'.join(map(str,BONUSES[b]['craftedStats'])) for b in f.get('bonus_id','').split('/') if BONUSES.get(b,{}).get('craftedStats')),f.get('crafted_stats',''))
         metadata[slot]=info
-    return {'model':model,'complete':True,'values':values,'items':metadata,'version':VERSION,'seconds':round(time.perf_counter()-started,3),'baseline':model['gear']==BASE['gear'] and model['character']==BASE['character'],'note':'属性由原版模拟器计算；额外系统部分触发效果仍有上游未验证提示。'}
+    state=''
+    if mistweaver:
+        state='计算基线：无临时增益，未计入罗盘周期姿态；并非实时角色快照。'
+        if c['race']=='night_elf':state+=' 昼夜：'+('白天' if actor.get('timeofday')=='DAY_TIME' else '夜间')+('。' if c.get('timeofday') else '（引擎默认）。')
+        if c['race']=='zandalari_troll':state+=' 洛阿：帕库（引擎默认，不计触发）。'
+        if 'earthen' in c['race']:state+=' 矿物：红宝石（引擎默认）。'
+    return {'model':model,'complete':True,'values':values,'items':metadata,'version':version,'seconds':round(time.perf_counter()-started,3),'baseline':model['gear']==BASE['gear'] and model['character']==BASE['character'],'calculationState':state,'note':'织雾使用已授权的主属性修复；游戏数值尚未完整验收。' if mistweaver else '神圣使用仅放行入口的独立引擎；游戏数值准确性尚未完整验收。' if holy else '属性由原版模拟器计算；额外系统部分触发效果仍有上游未验证提示。'}
 
 
-def item_effects(data):
+def item_effects(data, cache_only=False):
     iid=data.get('itemId');level=data.get('level');bonuses=data.get('bonuses','')
     if type(iid) is not int or not 0<iid<10000000 or type(level) is not int or not 0<level<1000:raise ValueError('无效物品或装等')
     if not isinstance(bonuses,str) or len(bonuses)>3000 or (bonuses and not re.fullmatch(r'\d+(?:/\d+)*',bonuses)):raise ValueError('无效装备变体')
@@ -594,6 +676,7 @@ def item_effects(data):
     if path.exists():
         cached=json.loads(path.read_text(encoding='utf-8'))
         if not cached.get('setName') or 'setEffectsBySpec' in cached:return cached
+    if cache_only:return {'effects':[],'error':'尚无完整特效缓存，暂不合并'}
     try:
         with urllib.request.urlopen(url,timeout=8) as response:tooltip=json.load(response).get('tooltip','')
         reported=re.search(r'<!--ilvl-->(\d+)',tooltip)
@@ -633,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Host')!=f'127.0.0.1:{PORT}': self.reply(403,{'error':'只允许本机访问'}); return
         path=urlsplit(self.path).path
         if path=='/': self.reply(200,(HERE/'index.html').read_bytes(),'text/html; charset=utf-8')
-        elif path=='/api/bootstrap': self.reply(200,{'token':TOKEN,'catalog':CATALOG,'slots':SLOTS,'version':VERSION,'catalogCount':CATALOG_COUNT,'gems':GEMS,'effectCache':cached_effects()})
+        elif path=='/api/bootstrap': self.reply(200,{'token':TOKEN,'catalog':CATALOG,'classSpecs':CLASS_SPECS,'slots':SLOTS,'version':VERSION,'catalogCount':CATALOG_COUNT,'gems':GEMS,'effectCache':cached_effects()})
         else: self.reply(404,{'error':'页面不存在'})
     def do_POST(self):
         if self.headers.get('Host')!=f'127.0.0.1:{PORT}' or self.headers.get('X-Prototype-Token')!=TOKEN or self.headers.get('Origin',f'http://127.0.0.1:{PORT}')!=f'http://127.0.0.1:{PORT}': self.reply(403,{'error':'请求来源不匹配'}); return

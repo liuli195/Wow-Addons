@@ -1,0 +1,24 @@
+{
+  "source_commit": "b845947a34429874433d8e9362326894650dd20a",
+  "build": "12.1.0.69587",
+  "patch": "scripts/dev/gear-planner-research/mistweaver-attributes.patch",
+  "changed_source_files": [
+    "engine\\class_modules\\monk\\sc_monk.cpp"
+  ],
+  "build_method": "MinGW -j2 SC_NO_NETWORKING=1 CXX=g++; reused same-source objects, rebuilt monk and linked; not clean rebuild",
+  "validation_scope": "constructed local integration and unchanged-spec regression; independent game snapshots pending",
+  "files": {
+    "mistweaver": {
+      "sha256": "f1a8516e71a1d6e063fb83eca662cba5a5d56efe63639f711c68078fb8edbb06",
+      "bytes": 141024657
+    },
+    "holy": {
+      "sha256": "7fc6a54acd4fa247fc4e1703619c03da3368ecb4f853a880a427ffdc7a87f6ae",
+      "bytes": 141024145
+    },
+    "official": {
+      "sha256": "f1281cdc7224d9d08e23cca1c090fa1b144b8b22491ffd8459ccefb8d8120987",
+      "bytes": 121016832
+    }
+  }
+}
