@@ -21,6 +21,7 @@ DATA = ROOT / '.tools/gear-planner-research'
 RESEARCH = HERE / 'fixtures'
 EXE = DATA / 'simc-1210.01.c1935b9-win64/simc.exe'
 HOLY_EXE = ROOT / '.tools/gear-planner-holy/b845947-gate1/simc.exe'
+MISTWEAVER_EXE = ROOT / '.tools/gear-planner-mistweaver/b845947-attributes1/simc.exe'
 VERSION = '12.1.0.69587 · c1935b9'
 PORT = 8765
 TOKEN = secrets.token_urlsafe(24)
@@ -600,8 +601,9 @@ def original_matches(model, originals):
 def calculate(model):
     validate(model); started=time.perf_counter(); c=model['character']
     holy=(c['class'],c['spec'])==('paladin','holy')
-    engine=HOLY_EXE if holy else EXE
-    version='12.1.0.69587 · b845947 · holy-gate1' if holy else VERSION
+    mistweaver=(c['class'],c['spec'])==('monk','mistweaver')
+    engine=MISTWEAVER_EXE if mistweaver else HOLY_EXE if holy else EXE
+    version='12.1.0.69587 · b845947 · mistweaver-attributes1' if mistweaver else '12.1.0.69587 · b845947 · holy-gate1' if holy else VERSION
     lines=[c['class']+'=prototype','level=90','spec='+c['spec'],'race='+c['race'],'talents='+c['talents']]
     if c.get('timeofday'):lines.append('timeofday='+c['timeofday'])
     if c.get('omnium_talents'): lines.append('omnium_talents='+c['omnium_talents'])
@@ -610,6 +612,7 @@ def calculate(model):
         tmp=Path(tmp); src=tmp/'input.simc'; out=tmp/'result.json'; src.write_text('\n'.join(lines),encoding='utf-8')
         args=[str(engine),str(src),'item_db_source=local','iterations=1','threads=1','fixed_time=1','max_time=1','vary_combat_length=0','optimal_raid=0','potion=disabled','flask=disabled','food=disabled','augmentation=disabled','temporary_enchant=disabled','override.allow_potions=0','override.allow_food=0','override.allow_flasks=0','override.allow_augmentations=0','actions.precombat=snapshot_stats','actions=wait,sec=1',f'json={out},version=2',f'output={tmp / "report.txt"}']
         if (c['class'],c['spec']) in {('priest','discipline'),('priest','holy'),('paladin','holy'),('monk','mistweaver'),('evoker','preservation')}:args.append('allow_experimental_specializations=1')
+        if mistweaver:args.extend(['role=heal','target_level=90'])
         run=subprocess.run(args,cwd=tmp,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=12)
         if run.returncode or not out.exists():
             diagnostic=(run.stderr+'\n'+run.stdout).strip()[-1400:]
@@ -653,7 +656,13 @@ def calculate(model):
         info['enchantOptions']=enchant_options(f,c['class'])
         info['effectiveCrafted']=next(('/'.join(map(str,BONUSES[b]['craftedStats'])) for b in f.get('bonus_id','').split('/') if BONUSES.get(b,{}).get('craftedStats')),f.get('crafted_stats',''))
         metadata[slot]=info
-    return {'model':model,'complete':True,'values':values,'items':metadata,'version':version,'seconds':round(time.perf_counter()-started,3),'baseline':model['gear']==BASE['gear'] and model['character']==BASE['character'],'note':'神圣使用仅放行入口的独立引擎；游戏数值准确性尚未完整验收。' if holy else '属性由原版模拟器计算；额外系统部分触发效果仍有上游未验证提示。'}
+    state=''
+    if mistweaver:
+        state='计算基线：无临时增益，未计入罗盘周期姿态；并非实时角色快照。'
+        if c['race']=='night_elf':state+=' 昼夜：'+('白天' if actor.get('timeofday')=='DAY_TIME' else '夜间')+('。' if c.get('timeofday') else '（引擎默认）。')
+        if c['race']=='zandalari_troll':state+=' 洛阿：帕库（引擎默认，不计触发）。'
+        if 'earthen' in c['race']:state+=' 矿物：红宝石（引擎默认）。'
+    return {'model':model,'complete':True,'values':values,'items':metadata,'version':version,'seconds':round(time.perf_counter()-started,3),'baseline':model['gear']==BASE['gear'] and model['character']==BASE['character'],'calculationState':state,'note':'织雾使用已授权的主属性修复；游戏数值尚未完整验收。' if mistweaver else '神圣使用仅放行入口的独立引擎；游戏数值准确性尚未完整验收。' if holy else '属性由原版模拟器计算；额外系统部分触发效果仍有上游未验证提示。'}
 
 
 def item_effects(data, cache_only=False):

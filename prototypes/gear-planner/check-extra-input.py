@@ -72,7 +72,8 @@ for cls,specs in server.CLASS_SPECS.items():
   model=deepcopy(server.BASE);model['character'].update({'class':cls,'spec':spec})
   with patch.object(server.subprocess,'run',return_value=SimpleNamespace(returncode=1,stdout='',stderr='probe')) as call:
    assert server.calculate(model)['complete'] is False
-   assert call.call_args.args[0][0]==str(server.HOLY_EXE if (cls,spec)==('paladin','holy') else server.EXE)
+   assert call.call_args.args[0][0]==str(server.MISTWEAVER_EXE if (cls,spec)==('monk','mistweaver') else server.HOLY_EXE if (cls,spec)==('paladin','holy') else server.EXE)
+   assert ('target_level=90' in call.call_args.args[0]) == ((cls,spec)==('monk','mistweaver'))
    assert ('allow_experimental_specializations=1' in call.call_args.args[0]) == ((cls,spec) in experimental)
 print('PASS: experimental flag scoped to five authorized healer specs; no false success on rejection')
 
