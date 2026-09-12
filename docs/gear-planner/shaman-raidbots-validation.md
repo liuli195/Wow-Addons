@@ -45,18 +45,18 @@
 
 ## 验证与复现
 
-样本及期望清单：`prototypes/gear-planner/fixtures/raidbots-shaman/`。原始模板、提交文本、实际报告、角色探测、浮点差异与复验结果：`.local/gear-planner-shaman-validation/`。当前引擎文件摘要保持 `f1281cdc7224d9d08e23cca1c090fa1b144b8b22491ffd8459ccefb8d8120987`。
+样本及期望清单：`projects/gear-planner/fixtures/raidbots-shaman/`。原始模板、提交文本、实际报告、角色探测、浮点差异与复验结果：`.local/gear-planner-shaman-validation/`。当前引擎文件摘要保持 `f1281cdc7224d9d08e23cca1c090fa1b144b8b22491ffd8459ccefb8d8120987`。
 
 三个参考样本的浏览器操作均通过：导入、候选和套装专精选择、宝石、附魔、替换、保存、另存为、刷新恢复、比较、导出再导入。增强追加单手锤／拳套双持替换与平均装等检查；元素和恢复追加法杖清除副手、双手时加盾牌被拦截、单手加盾牌／副手物品切换及平均装等检查。测试使用独立临时存储，没有修改用户方案。
 
 候选与输入检查通过。此前七职业二十份成功参考样本的应用数值回归没有新增差异，完整快照仅保留既有奇袭躲闪与奥术回蓝差异。神圣圣骑士按用户决定保持暂缓，不计入成功样本。仓库默认快速检查六项全部实际执行通过，文档更新后按统一入口复验。
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-shaman-validation/current-engine-check.json
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-shaman-validation/matched-engine-check.json
-node prototypes/gear-planner/check-deathknight.cjs fixtures/raidbots-shaman
-.venv/Scripts/python.exe prototypes/gear-planner/check-fit.py
-.venv/Scripts/python.exe prototypes/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-shaman-validation/current-engine-check.json
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-shaman-validation/matched-engine-check.json
+node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-shaman
+.venv/Scripts/python.exe projects/gear-planner/check-fit.py
+.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 

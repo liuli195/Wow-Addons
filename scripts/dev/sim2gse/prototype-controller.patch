@@ -1,0 +1,292 @@
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -206,6 +206,20 @@
+   timespan_t  cooldown_tolerance_;
+ 
+   // Spell Queue
++  // Task-8 prototype only: isolated input state, disabled by default.
++  std::string sim2gse_steps;
++  bool sim2gse_trace = false;
++  timespan_t sim2gse_window = 400_ms;
++  std::vector<std::vector<action_t*>> sim2gse_blocks;
++  unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0;
++  action_t* sim2gse_pending = nullptr;
++  action_t* sim2gse_dispatch = nullptr;
++  event_t* sim2gse_queue = nullptr;
++  void sim2gse_init();
++  void sim2gse_tick();
++  void sim2gse_record(const char*, action_t*, unsigned);
++  void sim2gse_dispatch_action(action_t*, unsigned);
++
+   bool enable_spell_queue;
+   timespan_t spell_queue_window;
+ 
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4488,8 +4488,140 @@
+   } );
+ }
+ 
++// Throwaway task-8 controller. Fixed single-target, instant player actions only.
++// Queue policy is an experiment, not a claim about the WoW client.
++static void sim2gse_arm_queue(player_t* p)
++{
++  event_t::cancel(p->sim2gse_queue);
++  if (!p->sim2gse_pending) return;
++  const auto delay = std::max(std::max(0_ms, p->gcd_ready - p->sim->current_time()), p->sim2gse_pending->cooldown->remains());
++  p->sim2gse_queue = make_event(*p->sim, delay, [p] {
++    auto* next = p->sim2gse_pending;
++    auto from = p->sim2gse_pending_origin;
++    p->sim2gse_queue = nullptr;
++    p->sim2gse_pending = nullptr;
++    if (next) p->sim2gse_dispatch_action(next, from);
++  });
++}
++
++void player_t::sim2gse_init()
++{
++  if ( sim2gse_steps.empty() ) return;
++  if ( is_pet() || is_enemy() || specialization() != DEATH_KNIGHT_UNHOLY || sim->threads != 1 )
++    throw std::runtime_error("sim2gse prototype requires one-thread Unholy player");
++  if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
++    throw std::runtime_error("sim2gse prototype window must be 0..400ms");
++  auto* list = find_action_priority_list("sim2gse");
++  if ( !list || list->foreground_action_list.empty() )
++    throw std::runtime_error("sim2gse prototype requires actions.sim2gse");
++  if (list->foreground_action_list.size() != list->action_list.size())
++    throw std::runtime_error("sim2gse action removed by native initialization");
++  for ( auto block : util::string_split(sim2gse_steps, "/") )
++  {
++    std::vector<action_t*> actions;
++    unsigned gcd_actions = 0;
++    for ( auto index : util::string_split(block, "+") )
++    {
++      if ( index.empty() || index.find_first_not_of("0123456789") != std::string::npos )
++        throw std::runtime_error("invalid sim2gse action index");
++      auto n = std::stoul(index);
++      if ( n == 0 || n > list->foreground_action_list.size() )
++        throw std::runtime_error("sim2gse action index out of range");
++      auto* a = list->foreground_action_list[n - 1];
++      if ( a->background || !a->option.if_expr_str.empty() || !a->option.target_if_str.empty() ||
++           a->channeled || a->execute_time() != 0_ms ||
++           a->type == ACTION_VARIABLE || a->name_str == "use_items" ||
++           a->name_str == "call_action_list" || a->name_str == "run_action_list" )
++        throw std::runtime_error("unsupported sim2gse prototype action: " + a->name_str);
++      if ( a->gcd() > 0_ms && ++gcd_actions > 1 )
++        throw std::runtime_error("prototype supports at most one GCD action per block");
++      actions.push_back(a);
++    }
++    if ( actions.empty() ) throw std::runtime_error("empty sim2gse block");
++    sim2gse_blocks.push_back(actions);
++  }
++  if ( sim2gse_blocks.empty() || sim2gse_blocks.size() > 128 )
++    throw std::runtime_error("invalid sim2gse sequence length");
++}
++
++void player_t::sim2gse_record(const char* event, action_t* a, unsigned origin)
++{
++  if ( sim2gse_trace )
++    sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
++      event, origin, sim2gse_step, a ? a->name_str : "-", gcd_ready.total_millis(),
++      resources.current[RESOURCE_RUNIC_POWER], health_percentage(), a ? a->cooldown->remains().total_millis() : 0);
++}
++
++void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
++{
++  if ( resource_regeneration == regen_type::DYNAMIC ) do_dynamic_regen();
++  if ( is_sleeping() || executing || channeling || buffs.stunned->check() || !a->action_ready() ||
++       (a->gcd() > 0_ms && gcd_ready > sim->current_time()) ||
++       !a->cooldown->up() )
++  {
++    sim2gse_record("dispatch_failed", a, origin);
++    return;
++  }
++  sim2gse_record("dispatch", a, origin);
++  if ( a->gcd() == 0_ms )
++    a->queue_execute(execute_type::OFF_GCD);
++  else
++  {
++    sim2gse_dispatch = a;
++    execute_action(); // Keep native foreground scheduling, accounting and stats.
++  }
++}
++
++void player_t::sim2gse_tick()
++{
++  if ( is_sleeping() || sim->event_mgr.canceled ) return;
++  const unsigned origin = ++sim2gse_input;
++  sim2gse_record("input", nullptr, origin);
++  for ( auto* a : sim2gse_blocks[sim2gse_step] )
++  {
++    if ( resource_regeneration == regen_type::DYNAMIC ) do_dynamic_regen();
++    if ( executing || channeling || buffs.stunned->check() )
++    {
++      sim2gse_record("busy", a, origin);
++      continue;
++    }
++    if ( !a->action_ready() )
++    {
++      sim2gse_record("not_ready", a, origin);
++      continue;
++    }
++    const auto delay = a->gcd() > 0_ms ? std::max(std::max(0_ms, gcd_ready - sim->current_time()), a->cooldown->remains()) : 0_ms;
++    if ( delay > sim2gse_window )
++    {
++      sim2gse_record("outside_window", a, origin);
++      continue;
++    }
++    if ( delay > 0_ms )
++    {
++      if ( sim2gse_pending ) sim2gse_record("replace", sim2gse_pending, sim2gse_pending_origin);
++      event_t::cancel(sim2gse_queue);
++      sim2gse_pending = a;
++      sim2gse_pending_origin = origin;
++      sim2gse_record("queue", a, origin);
++      sim2gse_arm_queue(this);
++    }
++    else
++    {
++      if ( a->gcd() > 0_ms )
++      {
++        event_t::cancel(sim2gse_queue);
++        sim2gse_pending = nullptr;
++      }
++      sim2gse_dispatch_action(a, origin);
++    }
++  }
++  sim2gse_step = (sim2gse_step + 1) % sim2gse_blocks.size();
++  make_event(*sim, 300_ms, [this] { sim2gse_tick(); });
++}
++
+ void player_t::init_finished()
+ {
++  sim2gse_init();
+   // Add dynamic cooldowns first before action_t::init_finished so actions can adjust their behavior accordingly if
+   // necessary.
+   range::for_each( cooldown_list, [ this ]( cooldown_t* c ) {
+@@ -6152,8 +6284,11 @@
+   {
+     for ( auto& action : precombat_action_list )
+     {
++      if (!sim2gse_steps.empty() && action->name_str != "raise_dead" && action->name_str != "snapshot_stats")
++        throw std::runtime_error("unsupported automatic precombat action: " + action->name_str);
+       if ( action->action_ready() )
+       {
++        if (!sim2gse_steps.empty()) sim2gse_record("explicit_precombat", action, 0);
+         if ( action->harmful )
+         {
+           if ( first_cast )
+@@ -6183,6 +6318,8 @@
+   }
+   first_cast = false;
+ 
++  if (!sim2gse_steps.empty()) make_event(*sim, 0_ms, [this] { sim2gse_tick(); });
++
+   sim->print_debug( "Combat begins for {}.", *this );
+ 
+   if ( !precombat_action_list.empty() )
+@@ -6616,6 +6753,9 @@
+  */
+ void player_t::reset()
+ {
++  sim2gse_step = sim2gse_input = sim2gse_pending_origin = 0;
++  sim2gse_pending = sim2gse_dispatch = nullptr;
++  sim2gse_queue = nullptr;
+   sim->print_debug( "Resetting {}.", *this );
+ 
+   last_cast = timespan_t::zero();
+@@ -6789,6 +6929,7 @@
+ 
+ void player_t::schedule_off_gcd_ready( timespan_t delta_time )
+ {
++  if (!sim2gse_steps.empty()) return;
+   if ( delta_time < 0_ms )
+     delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
+ 
+@@ -6838,6 +6979,7 @@
+ 
+ void player_t::schedule_cwc_ready( timespan_t delta_time )
+ {
++  if (!sim2gse_steps.empty()) return;
+   if ( delta_time < 0_ms )
+     delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
+ 
+@@ -6925,6 +7067,8 @@
+   queueing      = nullptr;
+   channeling    = nullptr;
+   action_queued = false;
++
++  if (!sim2gse_steps.empty()) return;
+ 
+   started_waiting = timespan_t::min();
+ 
+@@ -7360,7 +7504,12 @@
+   if (resource_regeneration == regen_type::DYNAMIC)
+     do_dynamic_regen();
+ 
+-  if ( strict_sequence )
++  if (!sim2gse_steps.empty())
++  {
++    action = sim2gse_dispatch;
++    sim2gse_dispatch = nullptr;
++  }
++  else if ( strict_sequence )
+   {
+     // Committed to a strict sequence of actions, just perform them instead of a priority list
+     action = strict_sequence;
+@@ -10040,6 +10189,8 @@
+ 
+     action_t::init();
+ 
++    if (!player->sim2gse_steps.empty() && action && (action->channeled || action->execute_time() != 0_ms))
++      throw std::runtime_error("prototype does not support cast/channel trinket: " + name_str);
+     if ( action )
+       action->is_precombat = is_precombat;
+   }
+@@ -13245,6 +13396,9 @@
+   add_option( opt_func( "brain_lag", parse_brain_lag ) );
+   add_option( opt_func( "brain_lag_stddev", parse_brain_lag_stddev ) );
+   add_option( opt_timespan( "cooldown_tolerance", cooldown_tolerance_ ) );
++  add_option( opt_string("sim2gse_steps", sim2gse_steps) );
++  add_option( opt_bool("sim2gse_trace", sim2gse_trace) );
++  add_option( opt_timespan("sim2gse_window", sim2gse_window) );
+   add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );
+   add_option( opt_timespan( "spell_queue_window", spell_queue_window ) );
+   add_option( opt_bool( "scale_player", scale_player ) );
+@@ -14176,6 +14330,7 @@
+                                    execute_type                  et,
+                                    const action_t*               context )
+ {
++  if (!sim2gse_steps.empty()) throw std::runtime_error("hidden sim2gse APL scan");
+   // Mark this action list as visited with the APL internal id
+   visited_apls_ |= list.internal_id_mask;
+ 
+--- a/engine/action/action.cpp
++++ b/engine/action/action.cpp
+@@ -81,6 +81,8 @@
+       action->player->sequence_add( action, action->target );
+     }
+ 
++    if (!action->player->sim2gse_steps.empty())
++      action->player->sim2gse_record("native_execute", action, 0);
+     action->execute();
+     action->line_cooldown->start();
+ 
+@@ -264,6 +266,8 @@
+       // Action target must follow any potential pre-execute-state target if it differs from the
+       // current (default) target of the action.
+       action->set_target( target );
++      if (!p()->sim2gse_steps.empty() && !action->background)
++        p()->sim2gse_record("native_execute", action, 0);
+       action->execute();
+     }
+     else
+@@ -2274,7 +2278,7 @@
+       player->schedule_cwc_ready( timespan_t::zero() );
+     }
+ 
+-    if ( player->enable_spell_queue && time_to_execute > player->spell_queue_window )
++    if ( player->sim2gse_steps.empty() && player->enable_spell_queue && time_to_execute > player->spell_queue_window )
+     {
+       if ( player->spell_queue_event )
+         event_t::cancel( player->spell_queue_event );

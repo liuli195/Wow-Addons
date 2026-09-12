@@ -25,7 +25,7 @@
 - 从固定未修改源码重建时，只应用 `mistweaver-attributes.patch`；它已经包含入口放行，不要再叠加 `mistweaver-gate.patch`。
 - 逐文件检查 cpp／hpp／h／inc（源码和数据），只有 `engine/class_modules/monk/sc_monk.cpp` 与固定原版不同。
 
-产物、版本与验证范围记录在 `prototypes/gear-planner/fixtures/mistweaver-supported/manifest.json`。新程序约 141 MB，纳入任务 09.6 延后统一整理；本轮没有清理原程序或缓存。
+产物、版本与验证范围记录在 `projects/gear-planner/fixtures/mistweaver-supported/manifest.json`。新程序约 141 MB，纳入任务 09.6 延后统一整理；本轮没有清理原程序或缓存。
 
 ## 计算状态
 
@@ -35,7 +35,7 @@
 
 ## 验证
 
-可重复执行：`python prototypes/gear-planner/check-mistweaver.py`。
+可重复执行：`python projects/gear-planner/check-mistweaver.py`。
 
 | 场景 | 结果 |
 | --- | --- |

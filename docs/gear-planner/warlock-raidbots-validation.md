@@ -39,14 +39,14 @@
 
 候选与输入校验、异步请求回归均通过。此前死亡骑士、恶魔猎手与盗贼九份快照及应用输出复验无新增差异，九个专精的浏览器操作回归也全部通过；奇袭躲闪仍保留原来的一个浮点步长差异。仓库默认快速验证六项均实际执行并通过，与配装器专项验证分别记录。
 
-版本管理中的样本：`prototypes/gear-planner/fixtures/raidbots-warlock/`。清单保存报告链接、原始输入与结果文件的校验摘要、完整期望快照及装备。原始官方配置、提交文本、实际输入与输出、两种引擎重放及套装资料保存在 `.local/gear-planner-warlock-validation/`。
+版本管理中的样本：`projects/gear-planner/fixtures/raidbots-warlock/`。清单保存报告链接、原始输入与结果文件的校验摘要、完整期望快照及装备。原始官方配置、提交文本、实际输入与输出、两种引擎重放及套装资料保存在 `.local/gear-planner-warlock-validation/`。
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-warlock-validation/current-engine-check.json
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-warlock-validation/matched-engine-check.json
-node prototypes/gear-planner/check-deathknight.cjs fixtures/raidbots-warlock
-.venv/Scripts/python.exe prototypes/gear-planner/check-fit.py
-.venv/Scripts/python.exe prototypes/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-warlock-validation/current-engine-check.json
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-warlock-validation/matched-engine-check.json
+node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-warlock
+.venv/Scripts/python.exe projects/gear-planner/check-fit.py
+.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 

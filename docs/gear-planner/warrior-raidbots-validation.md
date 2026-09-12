@@ -14,7 +14,7 @@
 
 适配力量板甲、武器双手、防护单手加盾、狂暴双持双手斧锤剑；狂暴副手可选择双手武器，其他专精不因此获得双手副手。狂暴缺失副手的本机探测确认该槽贡献为零，不把主手重复计入。武器与盾牌限制参考[暴雪战士介绍](https://worldofwarcraft.blizzard.com/zh-cn/game/classes/warrior)和固定官方源码 warrior_t::validate_actor()。
 
-样本与期望：prototypes/gear-planner/fixtures/raidbots-warrior/；两版本复验和原始报告：.local/gear-planner-warrior-validation/。复用 check-deathknight-raidbots.py 的 --fixtures 参数及 check-deathknight.cjs fixtures/raidbots-warrior 复验。完整种族、天赋、游戏状态未因此完成。
+样本与期望：projects/gear-planner/fixtures/raidbots-warrior/；两版本复验和原始报告：.local/gear-planner-warrior-validation/。复用 check-deathknight-raidbots.py 的 --fixtures 参数及 check-deathknight.cjs fixtures/raidbots-warrior 复验。完整种族、天赋、游戏状态未因此完成。
 
 三份浏览器导入、编辑、保存、另存为、刷新、比较、导出再导入全部通过，狂暴副手双手武器替换通过。
 

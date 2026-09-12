@@ -12,7 +12,7 @@
 
 保留身份、天赋、额外系统、站位和装备；移除原动作循环与消耗品配置，关闭团队增益、药水、合剂、食物、强化符文及临时武器附魔，仅执行属性快照并等待一秒。没有召唤宠物或执行输出循环。这是接入一致性测试，不代表宠物增益、伤害模拟或全部游戏状态验收。
 
-从真实报告下载实际输入、文本输出和结构化结果，期望值直接摘自角色属性快照，未使用本机计算结果生成。实际输入与摘要、完整期望值和装备保存于 `prototypes/gear-planner/fixtures/raidbots-hunter/`；官方原文、提交文本、下载原文和复验结果保存在 `.local/gear-planner-hunter-validation/`。
+从真实报告下载实际输入、文本输出和结构化结果，期望值直接摘自角色属性快照，未使用本机计算结果生成。实际输入与摘要、完整期望值和装备保存于 `projects/gear-planner/fixtures/raidbots-hunter/`；官方原文、提交文本、下载原文和复验结果保存在 `.local/gear-planner-hunter-validation/`。
 
 报告使用 `b845947a34`，正式服 `12.1.0.69587`，热修日期 `2026-09-04`，热修摘要 `210cdaf4f71cc8f675a3a62d99e3b6010952c9694959d8d4d59d0e134ffba46a`。分别用同提交未修改构建及当前官方 `c1935b9` 程序重放，身份、天赋、装备、游戏数据和快照均一致。程序来源沿用[死亡骑士构建记录](deathknight-raidbots-validation.md)。
 
@@ -40,11 +40,11 @@
 ## 复现
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-hunter-validation/current-engine-check.json
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-hunter-validation/matched-engine-check.json
-node prototypes/gear-planner/check-deathknight.cjs fixtures/raidbots-hunter
-.venv/Scripts/python.exe prototypes/gear-planner/check-fit.py
-.venv/Scripts/python.exe prototypes/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-hunter-validation/current-engine-check.json
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-hunter-validation/matched-engine-check.json
+node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-hunter
+.venv/Scripts/python.exe projects/gear-planner/check-fit.py
+.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 

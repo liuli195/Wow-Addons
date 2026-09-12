@@ -6,7 +6,7 @@
 
 防护、惩戒采用官方固定提交 `b845947a34429874433d8e9362326894650dd20a` 的 `profiles/MID2/MID2_Paladin_Protection.simc` 和 `MID2_Paladin_Retribution.simc`。分别保留牛头人防护、矮人惩戒的身份、天赋及装备，提交 Raidbots（模拟服务），下载实际输入、输出及结构化报告。这是官方参考配置，不是玩家原始导出或游戏面板实测。
 
-沿用此前口径：关闭团队增益及消耗品，仅执行属性快照并等待一秒，不执行输出循环。实际输入与期望属性保存在 `prototypes/gear-planner/fixtures/raidbots-paladin/`，原始下载与复验在 `.local/gear-planner-paladin-validation/`。
+沿用此前口径：关闭团队增益及消耗品，仅执行属性快照并等待一秒，不执行输出循环。实际输入与期望属性保存在 `projects/gear-planner/fixtures/raidbots-paladin/`，原始下载与复验在 `.local/gear-planner-paladin-validation/`。
 
 | 专精 | 报告 | 原版快照 | 应用属性／平均装等 | 平均装等 |
 | --- | --- | --- | --- | --- |
@@ -40,10 +40,10 @@
 ## 复现
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-paladin --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-paladin-validation/current-engine-check.json
-node prototypes/gear-planner/check-deathknight.cjs fixtures/raidbots-paladin
-.venv/Scripts/python.exe prototypes/gear-planner/check-fit.py
-.venv/Scripts/python.exe prototypes/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-paladin --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-paladin-validation/current-engine-check.json
+node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-paladin
+.venv/Scripts/python.exe projects/gear-planner/check-fit.py
+.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 
@@ -65,4 +65,4 @@ build-and-verify verify --project .
 
 专精引擎选择检查通过；空快照不再被判为零属性成功。防护、惩戒原有远端配对回归通过。仓库快速验证通过。
 
-新样本位于 prototypes/gear-planner/fixtures/holy-paladin-supported（本地接入回归样本），不是 Raidbots（模拟服务）独立准确性样本。神圣完成当前配装器接入，但独立游戏面板及全部天赋准确性仍未验收。织雾继续暂缓。
+新样本位于 projects/gear-planner/fixtures/holy-paladin-supported（本地接入回归样本），不是 Raidbots（模拟服务）独立准确性样本。神圣完成当前配装器接入，但独立游戏面板及全部天赋准确性仍未验收。织雾继续暂缓。

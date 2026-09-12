@@ -53,7 +53,7 @@ for stat in ('crit','haste','mastery','versatility'):
 
 # Physical specializations must be bit-for-bit unchanged on the same source build.
 for spec in ('brewmaster','windwalker'):
-    source = root/f'prototypes/gear-planner/fixtures/raidbots-monk/{spec}.input.simc'
+    source = root/f'projects/gear-planner/fixtures/raidbots-monk/{spec}.input.simc'
     t = source.read_text(encoding='utf-8')
     control = root/'.local/gear-planner-mistweaver-research/source/engine/simc-mistweaver-control.exe'
     assert snapshot(native(t, control)) == snapshot(native(t))
