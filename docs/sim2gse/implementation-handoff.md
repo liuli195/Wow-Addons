@@ -6,9 +6,9 @@
 
 - [总开发需求](../../myspec/changes/sim2gse-implementation/spec.md)：采用开发流程的需求模板，保存目标、范围、实现决策、测试入口及任务顺序。
 - [五张实施票](../../myspec/changes/sim2gse-implementation/issues/)：每票独立保存依赖、可观察交付、验收条件、规格映射与完成证据。
-- [MySpec 角色输入预览](../../.local/spec-work/current/preview/sim2gse-character-input/spec.md)
-- [MySpec 序列评估预览](../../.local/spec-work/current/preview/sim2gse-sequence-evaluation/spec.md)
-- [MySpec 用户流程预览](../../.local/spec-work/current/preview/sim2gse-user-workflow/spec.md)
+- MySpec 角色输入预览（仅本机：`.local/spec-work/current/preview/sim2gse-character-input/spec.md`）
+- MySpec 序列评估预览（仅本机：`.local/spec-work/current/preview/sim2gse-sequence-evaluation/spec.md`）
+- MySpec 用户流程预览（仅本机：`.local/spec-work/current/preview/sim2gse-user-workflow/spec.md`）
 
 MySpec（自有规格）候选按官方能力模板编写，只含目的、需求及可观察场景。算法与待办放在总开发需求和任务票里。正式规格唯一位置仍是 myspec/specs/，当前仅生成临时预览，没有提前写入主规格。
 
@@ -25,3 +25,7 @@ MySpec（自有规格）候选按官方能力模板编写，只含目的、需�
 先完成需求和规格候选校验，再按 dev-flow（开发流程）核对正式开发起点、固定基线与同一真实验收入口。用户授权开始开发后依票实施、验证并审查；最终规格应用与远端交付按对应阶段确认，不由任务拆分自动触发。
 
 研究文档继续作为历史证据，原型通过不等于正式产品通过。版本身份、缓存失效、输入保真与真实游戏状态仍需验收；游戏安装保持后置。公开分发若将来另行提出，再按实际组件核对许可和打包要求。
+
+### 本次文档提交范围
+
+用户已授权将累计改动通过拉取请求合入主干。本次提交需求、五张票及研究原型；上述 `.local/` 规格候选和校验记录是仅本机可读的临时产物，不包含在拉取请求中。主规格尚未应用，五张实施票仍未完成。后续依据已提交的需求和票据重新生成候选，经实现、验证与审查后按官方流程落库。

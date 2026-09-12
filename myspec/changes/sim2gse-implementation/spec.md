@@ -57,12 +57,12 @@ Triage（分拣）: ready-for-agent
 
 - 本文件及五张任务票是开发计划与实施记录，按照本仓库的 dev-flow（开发流程）和本地跟踪模板组织。
 - 以下预览采用 MySpec 模板：能力标题、Purpose、Requirements、全局唯一 Requirement、MUST／SHALL，以及非空 WHEN／THEN 场景。预览经过官方 CLI（命令行程序）校验后仍是候选，不代表已写入唯一主规格源。
-- [角色输入规格预览](../../../.local/spec-work/current/preview/sim2gse-character-input/spec.md)
-- [序列评估规格预览](../../../.local/spec-work/current/preview/sim2gse-sequence-evaluation/spec.md)
-- [用户流程规格预览](../../../.local/spec-work/current/preview/sim2gse-user-workflow/spec.md)
+- 角色输入规格预览（仅本机：`.local/spec-work/current/preview/sim2gse-character-input/spec.md`）
+- 序列评估规格预览（仅本机：`.local/spec-work/current/preview/sim2gse-sequence-evaluation/spec.md`）
+- 用户流程规格预览（仅本机：`.local/spec-work/current/preview/sim2gse-user-workflow/spec.md`）
 - 预览与增量为本地工作产物；正式交付时经 MySpec 流程应用到 `myspec/specs/` 后更新这些链接。不得把未实现能力提前写成当前系统事实。
-- [官方命令生成的完整差异](../../../.local/spec-work/current/full.diff)提供未截断的逐文件规格候选；当前仅供审阅，不请求提前应用主规格。
-- [本次校验记录](../../../.local/sim2gse/task-12-myspec/verification.json)：官方 MySpec 2.0.0 增量、主规格预览及预览生成校验通过；3 个能力、14 条需求、28 个场景。5 张票的顺序、前置与本地链接已核对。该记录不代表实现或产品测试通过。
+- 官方命令生成的完整差异（仅本机：`.local/spec-work/current/full.diff`）提供未截断的逐文件规格候选；当前仅供审阅，不请求提前应用主规格。
+- 本次校验记录（仅本机：`.local/sim2gse/task-12-myspec/verification.json`）：官方 MySpec 2.0.0 增量、主规格预览及预览生成校验通过；3 个能力、14 条需求、28 个场景。5 张票的顺序、前置与本地链接已核对。该记录不代表实现或产品测试通过。
 - MySpec 当前预览状态与锁保留在本地规格工作区，主规格尚未应用。后续不能自动清理该锁或把旧预览直接应用为已实现能力；进入交付阶段须按当时输入和实现证据重新核对流程状态。
 
 ### 任务顺序
@@ -86,3 +86,7 @@ Triage（分拣）: ready-for-agent
 ### 依据
 
 [实施地图](../sim2gse-wayfinder/spec.md)、[执行原型](../../../docs/sim2gse/execution-prototype.md)、[运行契约](../../../docs/sim2gse/runtime-contract.md)、[已验收交互](../../../docs/sim2gse/terminal-flow-prototype.html)。用户最新“不要求打包”和简化界面的决议优先于早期交接草案。
+
+### 本次文档提交范围
+
+用户已授权将累计改动通过拉取请求合入主干。本次提交需求、五张票及研究原型；上述 `.local/` 规格候选和校验记录是仅本机可读的临时产物，不包含在拉取请求中。主规格尚未应用，五张实施票仍未完成。后续依据已提交的需求和票据重新生成候选，经实现、验证与审查后按官方流程落库。
