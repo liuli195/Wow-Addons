@@ -34,11 +34,11 @@
 
 ## 证据与复现
 
-样本与内容摘要：`prototypes/gear-planner/fixtures/raidbots-rogue/`。原始报告及当前／同提交验证输出：`.local/gear-planner-rogue-validation/`。期望值只来自服务报告。
+样本与内容摘要：`projects/gear-planner/fixtures/raidbots-rogue/`。原始报告及当前／同提交验证输出：`.local/gear-planner-rogue-validation/`。期望值只来自服务报告。
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures prototypes/gear-planner/fixtures/raidbots-rogue --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-rogue-validation/current-engine-check.json
-node prototypes/gear-planner/check-deathknight.cjs fixtures/raidbots-rogue
+.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-rogue --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-rogue-validation/current-engine-check.json
+node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-rogue
 ```
 
 第一条本轮返回 1（保留躲闪差异）；第二条返回 0。应用导入检查先提取角色装备字段，不能将其描述为整份服务控制脚本都可直接导入。

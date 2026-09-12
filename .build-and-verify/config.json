@@ -1,7 +1,18 @@
 {
   "version": 1,
   "build": {
-    "checks": []
+    "checks": [
+      {
+        "id": "build.sim2gse-prototype-baseline",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/prototype-engine-build.py baseline",
+        "timeoutSeconds": 900
+      },
+      {
+        "id": "build.sim2gse-prototype-controlled",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/prototype-engine-build.py controlled",
+        "timeoutSeconds": 900
+      }
+    ]
   },
   "verify": {
     "checks": [

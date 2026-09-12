@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>角色按键序列优化器</title>
+<style>
+:root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#e6edf5;background:#10171f;color-scheme:dark}*{box-sizing:border-box}body{max-width:740px;margin:54px auto;padding:0 24px}h1{font-size:28px;margin-bottom:8px}h2{font-size:18px;margin:0 0 18px}p{color:#aebdcc;line-height:1.7}section{padding:25px;margin:22px 0;border:1px solid #344352;border-radius:12px;background:#19232e}label{display:block;margin-bottom:10px}textarea{width:100%;padding:14px;background:#10171f;color:#e6edf5;border:1px solid #526778;border-radius:7px;font:14px/1.7 monospace;resize:vertical}button{margin-top:16px;padding:11px 23px;border:0;border-radius:7px;background:#a2e3cd;color:#11291f;font:600 15px system-ui;cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible,textarea:focus-visible{outline:3px solid #a2e3cd;outline-offset:3px}progress{width:100%;height:12px;accent-color:#a2e3cd}.note{font-size:13px}.number{color:#a2e3cd;margin-right:12px}#error{color:#ffb7af;margin-bottom:0}#progressText{color:#e6edf5}#result{min-height:90px}[hidden]{display:none!important}@media(max-width:500px){body{margin:26px auto;padding:0 14px}section{padding:18px}}
+</style>
+<header><h1>角色按键序列优化器</h1><p>粘贴角色信息，找到适合你的按键序列。</p><p class="note">界面原型：仅演示操作与进度，尚未连接模拟引擎。</p></header>
+<main>
+<section><h2><span class="number">01</span>导入角色</h2>
+<label for="profile">角色导出字符串</label><textarea id="profile" rows="7" spellcheck="false" placeholder="在这里粘贴从 SimC（角色导出插件）复制的完整文本"></textarea>
+<p id="error" role="alert" hidden></p><button id="start">开始运行</button>
+</section>
+<section><h2><span class="number">02</span>运行进度</h2>
+<p id="progressText" role="status" aria-live="polite">等待开始</p><progress id="progress" value="0" max="100" aria-label="演示流程进度"></progress><p id="progressNote" class="note">开始后，这里会展示正在进行的步骤。</p>
+</section>
+<section id="resultSection" hidden><h2><span class="number">03</span>复制结果</h2>
+<label for="result">游戏导入字符串</label><textarea id="result" rows="3" readonly placeholder="运行结束后，导入字符串将显示在这里。"></textarea>
+<button id="copy" disabled>复制字符串</button><p id="resultNote" class="note" role="status">等待运行结果</p>
+</section>
+</main>
+<script>
+const profile=document.getElementById('profile'),start=document.getElementById('start'),copy=document.getElementById('copy'),result=document.getElementById('result');
+const error=document.getElementById('error'),progress=document.getElementById('progress'),progressText=document.getElementById('progressText'),progressNote=document.getElementById('progressNote'),resultNote=document.getElementById('resultNote');
+const stages=['正在读取角色信息','正在寻找合适的序列','正在复测候选序列','正在整理结果'];
+const resultSection=document.getElementById('resultSection');
+let running=false;
+function resetResult(){resultSection.hidden=true;result.value='';copy.disabled=true;resultNote.textContent='等待运行结果';}
+profile.addEventListener('input',()=>{error.hidden=true;resetResult();progress.value=0;progressText.textContent='等待开始';progressNote.textContent='开始后，这里会展示正在进行的步骤。';});
+start.addEventListener('click',async()=>{
+ if(running)return;
+ if(!profile.value.trim()){error.textContent='请先粘贴角色导出字符串。';error.hidden=false;profile.focus();return;}
+ running=true;start.disabled=true;profile.disabled=true;start.textContent='运行中…';error.hidden=true;resetResult();
+ progressNote.textContent='演示进度，不代表实际模拟进度。';
+ for(let i=0;i<stages.length;i++){
+  progressText.textContent=stages[i];progress.value=i*25;
+  await new Promise(resolve=>setTimeout(resolve,850));
+ }
+ progress.value=100;progressText.textContent='流程演示结束';
+ progressNote.textContent='正式运行会在完成后显示结果。';
+ resultNote.textContent='原型尚未连接引擎，未生成真实导入字符串。';
+ resultSection.hidden=false;
+ running=false;start.disabled=false;profile.disabled=false;start.textContent='开始运行';
+});
+copy.addEventListener('click',async()=>{
+ if(!result.value.trim())return;
+ try{await navigator.clipboard.writeText(result.value);resultNote.textContent='已复制，可以粘贴到游戏中。';}
+ catch{result.focus();result.select();resultNote.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}
+});
+</script>
+</html>

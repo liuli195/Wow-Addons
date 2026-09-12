@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
-FIXTURES = ROOT / 'prototypes/gear-planner/fixtures/raidbots-deathknight'
+FIXTURES = ROOT / 'projects/gear-planner/fixtures/raidbots-deathknight'
 
 
 def leaves(value, prefix=''):
@@ -31,7 +31,7 @@ def main():
     fixtures = args.fixtures.resolve()
     engine = args.engine.resolve(strict=True)
     manifest = json.loads((fixtures / 'manifest.json').read_text(encoding='utf-8'))
-    app = runpy.run_path(str(ROOT / 'prototypes/gear-planner/server.py'))
+    app = runpy.run_path(str(ROOT / 'projects/gear-planner/server.py'))
     results = []
     for sample in manifest['samples']:
         spec = sample['spec']

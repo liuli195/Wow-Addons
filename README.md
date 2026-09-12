@@ -24,6 +24,7 @@ PR Flow（拉取请求流程）已配置本地入口；提交前读取当前技�
 
 | 目录 | 用途 |
 | --- | --- |
+| `projects/`（项目） | [配装器](projects/gear-planner/)与[角色级按键序列优化器](projects/sim2gse/README.md)的独立项目目录 |
 | `addons/`（插件） | 自制插件及 AzeriteUI（第三方界面插件）；插件说明和许可证保留在各自目录 |
 | `assets/EUI_FacetedMedia/`（素材） | 原始图片、共享媒体素材和预览图片；插件运行所需的内置素材仍随插件保存 |
 | `docs/`（文档） | 开发指南、研究记录和环境说明 |

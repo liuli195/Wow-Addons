@@ -76,7 +76,9 @@ def check_luals(folder):
 
 
 def check_docs():
-    files = [ROOT / "README.md", ROOT / "AGENTS.md", *sorted((ROOT / "docs").glob("*.md"))]
+    files = [ROOT / "README.md", ROOT / "AGENTS.md",
+             *sorted((ROOT / "docs").rglob("*.md")),
+             *sorted((ROOT / "myspec" / "changes").rglob("*.md"))]
     for path in files:
         content = path.read_text(encoding="utf-8")
         if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", content):
