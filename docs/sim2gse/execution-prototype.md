@@ -79,7 +79,7 @@ build-and-verify verify --project .
 本地证据根目录：`.local/sim2gse/execution-prototype/`。
 
 - `baseline/build.json`、`controlled/build.json`：完整上游身份、工具链、命令、补丁及程序散列；相邻 `build.log`（构建日志）。
-- `source-audit.json`：两份源码与固定上游的 563 份文件核对。
+- `.tools/sim2gse/execution-prototype/<模式>/prototype-source-files.json`：两份展开源码与固定上游的逐文件散列清单。
 - `runs/summary.json`：最终通过状态、逐例计数、实际耗时和未做客户端验证的标记。
 - `runs/<用例名>/`：原样测试输入、命令与程序身份、进程日志、原生文本轨迹和结构化角色结果。
 
