@@ -17,6 +17,10 @@ def invoke(check, folder, expected):
 
 
 def main():
+    setup = (ROOT / "scripts/dev/setup.ps1").read_text(encoding="utf-8")
+    assert "https://github.com/simulationcraft/simc.git" in setup
+    assert "simc-source.zip" not in setup
+
     with tempfile.TemporaryDirectory(prefix="wow-checks-") as temporary:
         folder = Path(temporary)
         source = folder / "Core.lua"

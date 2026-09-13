@@ -28,7 +28,7 @@ def identity(mode, runtime=None):
     manifest = json.loads((ROOT / '.local/sim2gse/build' / mode / 'build.json').read_text())
     executable = ROOT / '.tools/sim2gse/product' / mode / 'engine/simc.exe'
     if (manifest['exit_code'] or manifest['upstream_commit'] != lock['upstream_commit'] or
-            manifest['archive_sha256'] != lock['archive_sha256'] or
+            manifest['upstream_tree'] != lock['upstream_tree'] or
             manifest['build_options'] != lock['build_options'] or
             manifest['binary_sha256'] != hashlib.sha256(executable.read_bytes()).hexdigest()):
         raise ValueError('独立引擎身份或构建状态不符，请重新构建')

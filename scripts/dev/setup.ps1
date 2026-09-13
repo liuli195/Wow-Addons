@@ -19,11 +19,6 @@ function Get-Artifact($spec, $path) {
 Get-Artifact $versions.luals '.tools/downloads/luals.zip'
 Get-Artifact $versions.luacheck '.tools/downloads/luacheck.exe'
 Get-Artifact $versions.lua '.tools/downloads/lua.tar.gz'
-$simcSource = [pscustomobject]@{
-    url = "https://github.com/simulationcraft/simc/archive/$($simcLock.upstream_commit).zip"
-    sha256 = $simcLock.archive_sha256
-}
-
 function Sync-Repository($path, $spec) {
     if (-not (Test-Path -LiteralPath $path)) {
         git init --quiet $path
@@ -40,7 +35,11 @@ function Sync-Repository($path, $spec) {
         git -C $path checkout --detach FETCH_HEAD
     }
 }
-Get-Artifact $simcSource '.tools/downloads/simc-source.zip'
+$simc = [pscustomobject]@{
+    url = 'https://github.com/simulationcraft/simc.git'
+    commit = $simcLock.upstream_commit
+}
+Sync-Repository '.tools/sim2gse-upstream/simc' $simc
 Expand-Archive .tools/downloads/luals.zip .tools/luals -Force
 if (-not (Test-Path '.tools/lua-5.1.5/src/lua.c')) {
     tar -xzf .tools/downloads/lua.tar.gz -C .tools

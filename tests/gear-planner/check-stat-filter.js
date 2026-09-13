@@ -1,7 +1,7 @@
 const PROJECT = require('node:path').resolve(__dirname, '../../projects/gear-planner');
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const html=fs.readFileSync(PROJECT+'/index.html','utf8');
-new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)[1]);
+new vm.Script(html.slice(html.indexOf('<script>')+8,html.indexOf('</script>')));
 const source=html.slice(html.indexOf('function matchesStats('),html.indexOf('function drawLevelControl('));
 const ctx=vm.createContext({statFilters:[],statMatch:'any'});vm.runInContext(source,ctx);
 assert(ctx.matchesStats({filterStats:[]}));

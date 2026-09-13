@@ -48,7 +48,7 @@ build-and-verify build --project .
 build-and-verify verify --project .
 ```
 
-构建使用 `compatibility/lock.json`（兼容锁）中固定的上游提交、源归档、补丁顺序和构建参数。准备入口从 SimulationCraft（战斗模拟器）官方仓库下载该固定提交到 `.tools/downloads/simc-source.zip`，核对兼容锁中的 SHA-256（文件散列）后，在 `.tools/sim2gse/product/` 独立准备原版和受控版；不调用或修改配装器引擎。无网络或编译工具时明确失败。
+构建使用 `compatibility/lock.json`（兼容锁）中固定的上游提交、源码树、补丁顺序和构建参数。准备入口从 SimulationCraft（战斗模拟器）官方 Git（版本管理）仓库检出固定提交并核对源码树身份，再在 `.tools/sim2gse/product/` 独立准备原版和受控版；不调用或修改配装器引擎。无网络或编译工具时明确失败。
 
 每次构建记录真实程序散列；任务开始前核验构建状态、程序和补丁身份。引擎使用任务目录内固定的相对文件名，从而支持用户输入和任务目录中的中文及空格。程序关闭联网，角色不会自动上传。
 

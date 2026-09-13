@@ -16,9 +16,17 @@ def digest(path):
 
 def main():
     lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
-    archive = ROOT / '.tools/downloads/simc-source.zip'
-    if digest(archive) != lock['archive_sha256']:
-        raise ValueError('固定源归档身份不符')
+    upstream = ROOT / '.tools/sim2gse-upstream/simc'
+    commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=upstream, check=True,
+                            capture_output=True, text=True).stdout.strip()
+    tree = subprocess.run(['git', 'rev-parse', 'HEAD^{tree}'], cwd=upstream, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    if commit != lock['upstream_commit'] or tree != lock['upstream_tree']:
+        raise ValueError('固定上游提交身份不符')
+    archive = ROOT / '.local/sim2gse/build/upstream.zip'
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['git', 'archive', '--format=zip', '--prefix=simc/', f'--output={archive}', commit],
+                   cwd=upstream, check=True)
     env = os.environ.copy()
     msys2 = Path(env.get('MSYS2_LOCATION', 'C:/msys64'))
     toolchain = msys2 / 'mingw64/bin'
@@ -30,7 +38,7 @@ def main():
         output = ROOT / '.local/sim2gse/build' / mode
         output.mkdir(parents=True, exist_ok=True)
         patches = lock['patches'] if mode == 'controlled' else lock['baseline_patches']
-        identity = dict(upstream_commit=lock['upstream_commit'], archive_sha256=lock['archive_sha256'], patches=patches,
+        identity = dict(upstream_commit=lock['upstream_commit'], upstream_tree=lock['upstream_tree'], patches=patches,
                         build_options=lock['build_options'])
         marker = source / 'source-identity.json'
         if not marker.exists():

@@ -1,7 +1,7 @@
 {
   "protocol": 1,
   "upstream_commit": "b845947a34429874433d8e9362326894650dd20a",
-  "archive_sha256": "412fe6f536e181ef73fd4fcf6d27dbcd2e17d873511c545a1cea1138c44e8110",
+  "upstream_tree": "a76e304d4b409e475ebec43177728d2489da6142",
   "patches": [
     {
       "path": "projects/sim2gse/native/patches/001-controller.patch",

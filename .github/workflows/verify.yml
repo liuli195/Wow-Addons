@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            .tools/downloads/simc-source.zip
+            .tools/sim2gse-upstream/simc
             .tools/sim2gse/product
           key: sim2gse-${{ runner.os }}-${{ steps.compiler.outputs.sha256 }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
       - name: Prepare pinned tools and API references
