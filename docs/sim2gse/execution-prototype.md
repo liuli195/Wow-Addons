@@ -68,6 +68,8 @@
 
 ```powershell
 build-and-verify build --project .
+.venv/Scripts/python.exe scripts/dev/sim2gse/prototype-engine-build.py baseline
+.venv/Scripts/python.exe scripts/dev/sim2gse/prototype-engine-build.py controlled
 .venv/Scripts/python.exe tests/sim2gse/research/prototype-engine-check.py
 build-and-verify verify --project .
 ```

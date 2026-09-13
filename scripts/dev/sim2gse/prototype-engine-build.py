@@ -14,6 +14,14 @@ TOOLS = ROOT / '.tools/sim2gse/execution-prototype'
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+def verify_source(source, files):
+    current = {path.as_posix(): digest(source / path) for path in files}
+    manifest = source / 'prototype-source-files.json'
+    if manifest.exists():
+        assert json.loads(manifest.read_text()) == current, 'prototype source changed'
+    else:
+        manifest.write_text(json.dumps(current, sort_keys=True))
+
 def main():
     mode = sys.argv[1]
     assert mode in ('baseline', 'controlled')
@@ -26,6 +34,9 @@ def main():
     archive.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(['git', 'archive', '--format=zip', '--prefix=simc/', f'--output={archive}', commit],
                    cwd=upstream, check=True)
+    with zipfile.ZipFile(archive) as zipped:
+        files = [Path(*Path(entry.filename).parts[1:]) for entry in zipped.infolist()
+                 if not entry.is_dir() and len(Path(entry.filename).parts) > 1]
     source = TOOLS / mode
     source.mkdir(parents=True, exist_ok=True)
     marker = source / 'prototype-source.json'
@@ -66,6 +77,7 @@ def main():
             applied.write_text(patch_hash)
             saved_patch.write_bytes(patch.read_bytes())
         assert applied.read_text() == patch_hash, 'use a fresh source for changed patch'
+    verify_source(source, files)
     run_dir = OUT / mode
     run_dir.mkdir(parents=True, exist_ok=True)
     command = [str(toolchain / 'mingw32-make.exe'), '-j4', 'all', 'PATHSEP=/', 'SC_NO_NETWORKING=1',

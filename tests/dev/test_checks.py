@@ -26,6 +26,11 @@ def main():
     )
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
+    prototype_spec = importlib.util.spec_from_file_location(
+        "sim2gse_prototype_build", ROOT / "scripts/dev/sim2gse/prototype-engine-build.py"
+    )
+    prototype_build = importlib.util.module_from_spec(prototype_spec)
+    prototype_spec.loader.exec_module(prototype_build)
     with tempfile.TemporaryDirectory(prefix="sim2gse-source-") as temporary:
         repository = Path(temporary)
         subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
@@ -43,6 +48,17 @@ def main():
             pass
         else:
             raise AssertionError("错误源码树必须被拒绝")
+        source = repository / "expanded"
+        source.mkdir()
+        (source / "source.cpp").write_text("original\n", encoding="utf-8")
+        prototype_build.verify_source(source, [Path("source.cpp")])
+        (source / "source.cpp").write_text("changed\n", encoding="utf-8")
+        try:
+            prototype_build.verify_source(source, [Path("source.cpp")])
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("修改后的原型源码必须被拒绝")
 
     with tempfile.TemporaryDirectory(prefix="wow-checks-") as temporary:
         folder = Path(temporary)
