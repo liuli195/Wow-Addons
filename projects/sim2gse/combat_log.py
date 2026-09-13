@@ -342,13 +342,21 @@ def analyze(
             "guid": guid,
             "name": name,
             "damage": damage,
+            "dps": damage / duration,
             "overkill": target_overkill[(guid, name)],
+            "overkill_dps": target_overkill[(guid, name)] / duration,
             "effective_damage": target_effective_damage[(guid, name)],
+            "effective_dps": target_effective_damage[(guid, name)] / duration,
         }
         for (guid, name), damage in target_damage.most_common()
         if (guid, name) != primary
     ]
     total_damage = sum(target_damage.values())
+    total_overkill = sum(target_overkill.values())
+    total_effective_damage = sum(target_effective_damage.values())
+    secondary_damage = total_damage - primary_damage
+    secondary_overkill = total_overkill - target_overkill[primary]
+    secondary_effective_damage = total_effective_damage - target_effective_damage[primary]
     source_groups = {}
     for (target_guid, target_name, source_guid, source_name, spell_id, spell_name,
          amount, overkill, effective_damage) in damage_records:
@@ -400,14 +408,18 @@ def analyze(
         "affected_target_count": len(target_damage),
         "other_affected_target_count": len(other_targets),
         "other_affected_targets": other_targets,
-        "secondary_damage": total_damage - primary_damage,
+        "secondary_damage": secondary_damage,
+        "secondary_dps": secondary_damage / duration,
         "total_damage": total_damage,
-        "secondary_overkill": sum(target_overkill.values()) - target_overkill[primary],
-        "total_overkill": sum(target_overkill.values()),
-        "secondary_effective_damage": (
-            sum(target_effective_damage.values()) - target_effective_damage[primary]
-        ),
-        "total_effective_damage": sum(target_effective_damage.values()),
+        "total_dps": total_damage / duration,
+        "secondary_overkill": secondary_overkill,
+        "secondary_overkill_dps": secondary_overkill / duration,
+        "total_overkill": total_overkill,
+        "total_overkill_dps": total_overkill / duration,
+        "secondary_effective_damage": secondary_effective_damage,
+        "secondary_effective_dps": secondary_effective_damage / duration,
+        "total_effective_damage": total_effective_damage,
+        "total_effective_dps": total_effective_damage / duration,
         "successful_casts": {
             spell: {"count": len(times), "times_seconds": times}
             for spell, times in sorted(successful.items())

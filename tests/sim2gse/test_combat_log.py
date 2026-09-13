@@ -23,23 +23,55 @@ class CombatLogToolTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_preserves_recorded_overkill_and_effective_damage(self) -> None:
+    def test_preserves_real_training_damage_after_the_dummy_reaches_one_health(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             combat = Path(directory) / "WoWCombatLog.txt"
             combat.write_text("\n".join([
-                '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"训练假人",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,1000,1000,200,1,0,0,0,nil,nil,nil,ST',
-                '9/13/2026 16:41:20.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"训练假人",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,20000,20000,19999,1,0,0,0,nil,nil,nil,ST',
+                '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"训练假人",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,20532,20532,20531,1,0,0,0,nil,nil,nil,ST',
+                '9/13/2026 16:41:20.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"训练假人",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,13002,13002,13001,1,0,0,0,nil,nil,nil,ST',
             ]), encoding="utf-8")
 
             result = self.run_tool(
                 combat, "--duration", "2", "--primary-target", "Creature-1"
             )
 
-            self.assertEqual(result["primary_target"]["damage"], 21000)
-            self.assertEqual(result["primary_target"]["overkill"], 20199)
-            self.assertEqual(result["primary_target"]["effective_damage"], 801)
-            self.assertEqual(result["primary_target"]["dps"], 10500)
-            self.assertEqual(result["primary_target"]["effective_dps"], 400.5)
+            self.assertEqual(result["primary_target"]["damage"], 33534)
+            self.assertEqual(result["primary_target"]["overkill"], 33532)
+            self.assertEqual(result["primary_target"]["effective_damage"], 2)
+            self.assertEqual(result["primary_target"]["dps"], 16767)
+            self.assertEqual(result["primary_target"]["effective_dps"], 1)
+            self.assertEqual(result["total_damage"], 33534)
+            self.assertEqual(result["total_overkill"], 33532)
+            self.assertEqual(result["total_effective_damage"], 2)
+            source = result["damage_sources"][0]
+            self.assertEqual(source["damage"], 33534)
+            self.assertEqual(source["overkill"], 33532)
+            self.assertEqual(source["effective_damage"], 2)
+
+    def test_reports_normal_kill_damage_at_every_target_level(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            combat = Path(directory) / "WoWCombatLog.txt"
+            combat.write_text("\n".join([
+                '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"主目标",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,1000,1000,200,1,0,0,0,nil,nil,nil,ST',
+                '9/13/2026 16:41:20.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-2,"次目标",0,0,50842,"血液沸腾",0,Creature-2,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,500,500,100,1,0,0,0,nil,nil,nil,AOE',
+            ]), encoding="utf-8")
+
+            result = self.run_tool(
+                combat, "--duration", "2", "--primary-target", "Creature-1"
+            )
+
+            self.assertEqual(result["primary_target"]["effective_dps"], 400)
+            self.assertEqual(result["other_affected_targets"], [{
+                "guid": "Creature-2", "name": "次目标", "damage": 500,
+                "dps": 250, "overkill": 100, "overkill_dps": 50,
+                "effective_damage": 400, "effective_dps": 200,
+            }])
+            self.assertEqual(result["secondary_dps"], 250)
+            self.assertEqual(result["secondary_overkill_dps"], 50)
+            self.assertEqual(result["secondary_effective_dps"], 200)
+            self.assertEqual(result["total_dps"], 750)
+            self.assertEqual(result["total_overkill_dps"], 150)
+            self.assertEqual(result["total_effective_dps"], 600)
 
     def test_reports_primary_target_without_calling_splash_a_multitarget_test(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -78,8 +110,11 @@ class CombatLogToolTests(unittest.TestCase):
                     "guid": "Creature-2",
                     "name": "附近假人",
                     "damage": 100,
+                    "dps": 50,
                     "overkill": 0,
+                    "overkill_dps": 0,
                     "effective_damage": 100,
+                    "effective_dps": 50,
                 }
             ])
             self.assertEqual(result["secondary_damage"], 100)
