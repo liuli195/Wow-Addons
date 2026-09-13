@@ -162,32 +162,26 @@ def save_tga(path, image):
 
 def main():
     rectangle_border = load("01-Rectangular-Border.png")
-    rectangle_fill = load("02-Rectangular-Fill.png")
     hex_border = clean_alpha_fringe(contain(load("08-Hexagonal-Border.png"), (128, 128)))
 
-    bar = exact(rectangle_fill, (256, 64), opaque=True)
     frame = horizontal_nine_slice(rectangle_border, (1024, 64))
 
-    save_tga(STATUSBAR / "EUI Faceted Bar.tga", bar)
     save_tga(BORDER / "EUI Faceted Border.tga", edge_atlas(rectangle_border))
-    save_tga(MEDIA / "FacetedPowerBar.tga", bar)
     save_tga(MEDIA / "FacetedHexPortraitBorder.tga", hex_border)
     save_tga(MEDIA / "FacetedHexPortraitMask.tga", opening_mask(hex_border))
 
     extras = {
         "CrystalRectangularBorder.tga": frame,
-        "CrystalRectangularFill.tga": bar,
         "CrystalSquareFill.tga": contain(load("03-Square-Fill.png"), (256, 256)),
         "CrystalCircularFill.tga": contain(load("04-Circular-Fill.png"), (256, 256)),
         "CrystalHexagonalFill.tga": contain(load("05-Hexagonal-Fill.png"), (256, 256)),
         "CrystalSquareBorder.tga": contain(load("06-Square-Border.png"), (256, 256)),
-        "CrystalCircularBorder.tga": contain(load("07-Circular-Border-v2.png"), (256, 256)),
         "CrystalHexagonalBorder.tga": contain(load("08-Hexagonal-Border.png"), (256, 256)),
     }
     for name, image in extras.items():
         save_tga(MEDIA / name, image)
 
-    print(f"Built {5 + len(extras)} WoW TGA assets from New-Crystal-Set.")
+    print(f"Built {3 + len(extras)} WoW TGA assets from New-Crystal-Set.")
 
 
 if __name__ == "__main__":

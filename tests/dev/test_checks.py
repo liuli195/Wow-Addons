@@ -1,5 +1,6 @@
 """验证真实检查器能区分正确输入和错误输入，不模拟游戏运行时。"""
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,15 @@ def main():
         invoke("toc", folder, False)
         toc.write_text("## Interface: 120100\nMissing.lua\n", encoding="utf-8")
         invoke("toc", folder, False)
+
+    output = ROOT / ".local/tests/build-assets"
+    shutil.rmtree(output, ignore_errors=True)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/media/build_assets.py"), "--output-root", str(output)],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (output / "addons/EUI_FacetedPortrait/Media/CrystalHexagonalBorder.tga").is_file()
     print("PASS: 正确代码通过；错误接口名、参数、语法及缺失加载文件均被拦截")
 
 
