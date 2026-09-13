@@ -4,6 +4,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location -LiteralPath $repoRoot
 $versions = Get-Content scripts/dev/versions.json -Raw | ConvertFrom-Json
+$simcLock = Get-Content projects/sim2gse/compatibility/lock.json -Raw | ConvertFrom-Json
 New-Item -ItemType Directory -Force .tools/downloads | Out-Null
 
 function Get-Artifact($spec, $path) {
@@ -18,6 +19,11 @@ function Get-Artifact($spec, $path) {
 Get-Artifact $versions.luals '.tools/downloads/luals.zip'
 Get-Artifact $versions.luacheck '.tools/downloads/luacheck.exe'
 Get-Artifact $versions.lua '.tools/downloads/lua.tar.gz'
+$simcSource = [pscustomobject]@{
+    url = "https://github.com/simulationcraft/simc/archive/$($simcLock.upstream_commit).zip"
+    sha256 = $simcLock.archive_sha256
+}
+Get-Artifact $simcSource '.tools/downloads/simc-source.zip'
 Expand-Archive .tools/downloads/luals.zip .tools/luals -Force
 if (-not (Test-Path '.tools/lua-5.1.5/src/lua.c')) {
     tar -xzf .tools/downloads/lua.tar.gz -C .tools
@@ -68,6 +74,7 @@ if ((Get-Content .tools/wow-ui-source/version.txt).Trim() -ne $expected) {
 }
 if (-not (Test-Path '.venv/Scripts/python.exe')) { python -m venv .venv }
 & .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r scripts/dev/requirements.txt
+npm ci --ignore-scripts --no-audit --no-fund
 & .tools/lua-5.1.5/src/lua.exe -e 'assert(_VERSION == "Lua 5.1"); print(_VERSION)'
 & .tools/downloads/luacheck.exe --version
 & .tools/luals/bin/lua-language-server.exe --version

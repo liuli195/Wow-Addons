@@ -16,7 +16,7 @@ def digest(path):
 
 def main():
     lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
-    archive = ROOT / '.local/gear-planner-dk-validation/b845947-source.zip'
+    archive = ROOT / '.tools/downloads/simc-source.zip'
     if digest(archive) != lock['archive_sha256']:
         raise ValueError('固定源归档身份不符')
     env = os.environ.copy()

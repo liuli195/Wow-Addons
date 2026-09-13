@@ -72,7 +72,7 @@ build-and-verify build --project .
 build-and-verify verify --project .
 ```
 
-第一步通过[统一配置](../../.build-and-verify/config.json)调用[本地原型构建入口](../../scripts/dev/sim2gse/prototype-engine-build.py)。需要已有官方归档和编译环境；不会安装依赖。专用战斗检查显式单独运行，未加入依赖私人角色文件的远端常规检查。最后一步是仓库常规验证，不代替第二步。
+第一步在运行 `scripts/dev/setup.ps1` 后直接调用[本地原型构建入口](../../scripts/dev/sim2gse/prototype-engine-build.py)。需要编译环境；专用战斗检查显式单独运行，不加入依赖私人角色文件的 PR（拉取请求）常规检查。最后一步是仓库常规验证，不代替第二步。
 
 本地证据根目录：`.local/sim2gse/execution-prototype/`。
 

@@ -166,7 +166,9 @@
           "projects/sim2gse/**",
           "scripts/dev/sim2gse/**",
           ".build-and-verify/config.json",
-          "tests/sim2gse/**"
+          "tests/sim2gse/**",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "projects/sim2gse/**",
@@ -177,7 +179,9 @@
           ".local/sim2gse/build/baseline/build.json",
           ".local/sim2gse/build/controlled/build.json",
           ".tools/sim2gse-research/gse-f225d4c/**",
-          "tests/sim2gse/**"
+          "tests/sim2gse/**",
+          "package.json",
+          "package-lock.json"
         ],
         "timeoutSeconds": 240
       },
@@ -208,7 +212,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -216,7 +222,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       },
       {
@@ -228,7 +236,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -236,7 +246,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       },
       {
@@ -248,7 +260,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -256,7 +270,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       },
       {
@@ -268,7 +284,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -276,7 +294,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       },
       {
@@ -288,7 +308,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -296,7 +318,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       },
       {
@@ -308,7 +332,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -316,7 +342,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       },
       {
@@ -328,7 +356,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -336,7 +366,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       },
       {
@@ -348,7 +380,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ],
         "inputs": [
           "tests/gear-planner/**",
@@ -356,7 +390,9 @@
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
           "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json"
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       }
     ]

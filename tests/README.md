@@ -32,8 +32,8 @@ PR（拉取请求）工作流依次执行产品构建和全部可移植验证。
 node tests/gear-planner/check-async.js
 ```
 
-`check-browser.cjs` 和 `check-deathknight.cjs` 需要 Playwright（浏览器自动化工具）和 Edge（浏览器）；统一入口启动并清理本次专用的本地装备规划器服务，8765 端口已被占用时失败；不能用语法检查替代实际浏览器验收。私人角色单序列检查运行 `tests/sim2gse/manual_native_task.py`；完整搜索检查运行 `tests/sim2gse/manual_search_task.py`，使用默认十分钟预算，统一入口允许 660 秒含收尾。
+`check-browser.cjs` 和 `check-deathknight.cjs` 需要 Playwright（浏览器自动化工具）和 Edge（浏览器）；准备脚本使用锁文件安装 Playwright。本机验收入口启动并清理本次专用的本地装备规划器服务，8765 端口已被占用时失败；不能用语法检查替代实际浏览器验收。私人角色单序列检查直接运行 `tests/sim2gse/manual_native_task.py`；完整搜索检查直接运行 `tests/sim2gse/manual_search_task.py`，使用默认十分钟预算。
 
 生产程序仍使用的 `projects/gear-planner/fixtures/`（样例目录）保持原位。测试生成的新报告写入 `.local/tests/`；既有研究报告维持原有证据路径。新增测试时同步核对构建与验证配置的执行命令、变更匹配路径及缓存输入，不能只移动文件。
 
-任务四浏览器回归包含在 test_interface.py 自动发现中，使用本机已有 Playwright（浏览器自动化工具）与 Edge（浏览器）。完整真实角色界面检查运行 tests/sim2gse/manual_interface.py，启动独立动态端口服务，核对真实计算、剪贴板、修改输入清理，并保存截图及验收摘要；统一入口允许 680 秒含浏览器启动与清理。
+任务四浏览器回归包含在 `test_interface.py` 自动发现中，使用锁定的 Playwright（浏览器自动化工具）与 Edge（浏览器）。完整真实角色界面检查直接运行 `tests/sim2gse/manual_interface.py`，启动独立动态端口服务，核对真实计算、剪贴板、修改输入清理，并保存截图及验收摘要。

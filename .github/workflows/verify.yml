@@ -25,6 +25,11 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc make
       - name: Restore recorded verification toolchain
         shell: pwsh
         run: |
@@ -42,6 +47,12 @@ jobs:
           } else {
             throw 'Unknown toolchain mode'
           }
+      - name: Restore SimC source cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .tools/downloads/simc-source.zip
+          key: sim2gse-${{ runner.os }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
       - name: Prepare pinned tools and API references
         shell: pwsh
         run: ./scripts/dev/setup.ps1
@@ -61,9 +72,5 @@ jobs:
             .local/luals/
             .local/tests/
             .local/sim2gse/build/
-            .local/sim2gse/execution-prototype/baseline/build.log
-            .local/sim2gse/execution-prototype/baseline/build.json
-            .local/sim2gse/execution-prototype/controlled/build.log
-            .local/sim2gse/execution-prototype/controlled/build.json
             .build-and-verify/runs/
           if-no-files-found: ignore

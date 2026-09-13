@@ -20,7 +20,7 @@ def digest(path):
 def main():
     mode = sys.argv[1]
     assert mode in ('baseline', 'controlled')
-    archive = ROOT / '.local/gear-planner-dk-validation/b845947-source.zip'
+    archive = ROOT / '.tools/downloads/simc-source.zip'
     assert digest(archive) == ARCHIVE_HASH, 'upstream archive changed'
     source = TOOLS / mode
     source.mkdir(parents=True, exist_ok=True)
