@@ -115,9 +115,28 @@ def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
     }
     grouped: dict[tuple[str, int], dict] = {}
 
-    def add(rows: list[dict], owner_type: str) -> None:
+    def owned_actor_indices(rows: list[dict]) -> set[int]:
+        return {
+            int(row['sim2gse_actor_index'])
+            for row in rows
+            if row.get('sim2gse_owner_type') == 'owned_unit'
+            and type(row.get('sim2gse_actor_index')) is int
+            and row.get('type') == 'damage'
+            and isinstance((row.get('actual_amount') or {}).get('mean'), (int, float))
+            and not isinstance((row.get('actual_amount') or {}).get('mean'), bool)
+        } | {
+            actor
+            for row in rows
+            for actor in owned_actor_indices(row.get('children', []))
+        }
+
+    def add(rows: list[dict], inherited_owner: str, separate_owned: set[int]) -> None:
         for row in rows:
-            add(row.get('children', []), owner_type)
+            owner_type = row.get('sim2gse_owner_type', inherited_owner)
+            actor_index = row.get('sim2gse_actor_index')
+            add(row.get('children', []), owner_type, separate_owned)
+            if owner_type == 'owned_unit' and actor_index in separate_owned:
+                continue
             amount = row.get('actual_amount') or {}
             damage = amount.get('mean') if isinstance(amount, dict) else None
             if (row.get('type') != 'damage' or isinstance(damage, bool)
@@ -129,27 +148,39 @@ def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
                 'owner_type': owner_type,
                 'spell_id': spell_id,
                 'spell_names': set(),
+                'actor_indices': set(),
+                'actor_names': set(),
                 'damage': 0.0,
                 'uses': 0.0,
             })
             target['spell_names'].add(row.get('spell_name') or row.get('name') or '未知')
+            if type(actor_index) is int:
+                target['actor_indices'].add(actor_index)
+            if row.get('sim2gse_actor_name'):
+                target['actor_names'].add(row['sim2gse_actor_name'])
             target['damage'] += damage
             executes = row.get('num_executes') or {}
             mean_executes = executes.get('mean') if isinstance(executes, dict) else None
             if isinstance(mean_executes, (int, float)) and not isinstance(mean_executes, bool):
                 target['uses'] += executes['mean']
 
-    add(player.get('stats', []), 'player')
-    for rows in player.get('stats_pets', {}).values():
-        add(rows, 'owned_unit')
+    pet_rows = [row for rows in player.get('stats_pets', {}).values() for row in rows]
+    add(player.get('stats', []), 'player', owned_actor_indices(pet_rows))
+    add(pet_rows, 'owned_unit', set())
     expected_damage = player.get('collected_data', {}).get('dps', {}).get('mean')
     if isinstance(expected_damage, (int, float)) and not isinstance(expected_damage, bool):
-        unallocated = expected_damage * duration - sum(row['damage'] for row in grouped.values())
+        expected_total = expected_damage * duration
+        detailed_total = sum(row['damage'] for row in grouped.values())
+        if detailed_total > expected_total + max(0.01, expected_total * 1e-9):
+            raise ValueError('SimC 伤害来源重复，无法可靠比较')
+        unallocated = expected_total - detailed_total
         if unallocated > 0.01:
             grouped[('unattributed', -1)] = {
                 'owner_type': 'unattributed',
                 'spell_id': -1,
                 'spell_names': {'SimC 未细分伤害'},
+                'actor_indices': set(),
+                'actor_names': set(),
                 'damage': unallocated,
                 'uses': 0.0,
             }
@@ -157,6 +188,8 @@ def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
     for row in grouped.values():
         spell_id = row['spell_id']
         row['spell_names'] = sorted(row['spell_names'])
+        row['actor_indices'] = sorted(row['actor_indices'])
+        row['actor_names'] = sorted(row['actor_names'])
         row['spell_name'] = row['spell_names'][0]
         row['category'] = ('unattributed' if row['owner_type'] == 'unattributed' else
                            'owned_unit' if row['owner_type'] == 'owned_unit' else

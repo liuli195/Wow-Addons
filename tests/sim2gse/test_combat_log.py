@@ -79,7 +79,7 @@ class CombatLogToolTests(unittest.TestCase):
                 'players': [{'name': '测试者', 'sim2gse_actions': [
                     {'data_id': 100, 'background': False, 'passive': False, 'type': 'spell'},
                 ], 'collected_data': {'dps': {
-                    'mean': 1750, 'min': 1600, 'max': 1900, 'std_dev': 50,
+                    'mean': 1875, 'min': 1700, 'max': 2000, 'std_dev': 50,
                 }}, 'stats': [
                     {'id': 100, 'spell_name': '同名伤害', 'name': 'button', 'type': 'damage',
                      'actual_amount': {'mean': 2000}, 'num_executes': {'mean': 5},
@@ -87,10 +87,24 @@ class CombatLogToolTests(unittest.TestCase):
                          {'id': 200, 'spell_name': '同名伤害', 'name': 'derived',
                           'type': 'damage', 'actual_amount': {'mean': 1000},
                           'num_executes': {'mean': 10}},
+                         {'id': 300, 'spell_name': '撕咬', 'name': 'bite',
+                          'type': 'damage', 'actual_amount': {'mean': 500},
+                          'num_executes': {'mean': 4}, 'sim2gse_owner_type': 'owned_unit',
+                          'sim2gse_actor_index': 7, 'sim2gse_actor_name': '召唤物'},
+                         {'id': 400, 'spell_name': '骑士攻击', 'name': 'rider_hit',
+                          'type': 'damage', 'actual_amount': {'mean': 250},
+                          'num_executes': {'mean': 2}, 'sim2gse_owner_type': 'owned_unit',
+                          'sim2gse_actor_index': 8, 'sim2gse_actor_name': '骑士'},
                      ]},
                 ], 'stats_pets': {'召唤物': [
                     {'id': 300, 'spell_name': '撕咬', 'name': 'bite', 'type': 'damage',
-                     'actual_amount': {'mean': 500}, 'num_executes': {'mean': 4}},
+                     'actual_amount': {'mean': 500}, 'num_executes': {'mean': 4},
+                     'sim2gse_owner_type': 'owned_unit', 'sim2gse_actor_index': 7,
+                     'sim2gse_actor_name': '召唤物'},
+                ], '骑士': [
+                    {'id': 401, 'spell_name': '防御统计', 'name': 'defense', 'type': 'damage',
+                     'actual_amount': None, 'sim2gse_owner_type': 'owned_unit',
+                     'sim2gse_actor_index': 8, 'sim2gse_actor_name': '骑士'},
                 ]}}],
             }}), encoding='utf-8')
 
@@ -103,12 +117,38 @@ class CombatLogToolTests(unittest.TestCase):
             self.assertEqual(actual[('player', 100)]['damage'], 1000)
             comparison = {(row['owner_type'], row['spell_id']): row
                           for row in result['damage_source_comparison']}
+            self.assertEqual(comparison[('owned_unit', 400)]['simulation_dps'], 125)
             self.assertEqual(comparison[('player', 100)]['actual_dps'], 500)
             self.assertEqual(comparison[('player', 100)]['simulation_dps'], 1000)
             self.assertEqual(comparison[('player', 100)]['percent_of_simulation'], 50)
             self.assertNotIn(('unattributed', -1), comparison)
-            self.assertEqual(sum(row['simulation_dps'] for row in comparison.values()), 1750)
+            self.assertEqual(sum(row['simulation_dps'] for row in comparison.values()), 1875)
             self.assertEqual(result['successful_casts_by_spell_id']['100']['count'], 1)
+
+    def test_rejects_overcounted_simulation_damage_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            combat = root / 'WoWCombatLog.txt'
+            combat.write_text(
+                '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者",0,0,Creature-1,"假人",0,0,1,"技能",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,100,100,-1,1,0,0,0,nil,nil,nil,ST',
+                encoding='utf-8',
+            )
+            simulation = root / 'simulation.json'
+            simulation.write_text(json.dumps({'sim': {
+                'options': {'max_time': 1, 'desired_targets': 1},
+                'players': [{'name': '测试者', 'collected_data': {'dps': {
+                    'mean': 100, 'min': 90, 'max': 110, 'std_dev': 5,
+                }}, 'stats': [{'id': 1, 'type': 'damage',
+                               'actual_amount': {'mean': 101}}]}],
+            }}), encoding='utf-8')
+
+            invalid = subprocess.run(
+                [sys.executable, str(TOOL), str(combat), '--player', '测试者',
+                 '--duration', '1', '--simulation', str(simulation),
+                 '--primary-target', 'Creature-1'],
+                text=True, encoding='utf-8', capture_output=True)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn('SimC 伤害来源重复', invalid.stderr)
 
     def test_uses_latest_gse_session_and_compares_primary_dps_with_simulation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

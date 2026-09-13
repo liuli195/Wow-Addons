@@ -1,0 +1,12 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -305,6 +305,9 @@ void stats_to_json( JsonOutput root, const std::vector<stats_t*>& stats_list, int
+ 
+     // find action for this stat
+     action_t* a = nullptr;
++    node[ "sim2gse_actor_index" ] = s->player->actor_index;
++    node[ "sim2gse_actor_name" ] = s->player->name_str;
++    node[ "sim2gse_owner_type" ] = s->player->is_pet() ? "owned_unit" : "player";
+     for ( const auto& action : s->action_list )
+     {
+       if ( ( a = action )->id > 1 )
