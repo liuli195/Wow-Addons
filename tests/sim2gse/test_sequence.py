@@ -79,6 +79,38 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertTrue(any(q['origin'] == d['origin'] and any(q['ms'] < t < d['ms'] for t in failed_times)
                             for q in queued for d in dispatched))
 
+    def test_cooldown_ending_inside_queue_window_executes_from_that_press(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'input.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            result = run_task(source, Path(directory) / 'task', mode='single',
+                              program=[['putrefy']])
+            simulation = evaluate(source, result['candidate'], Path(directory) / 'queue-window',
+                                  character=result['character'], iterations=2,
+                                  input_times=[0, 300, 1200, 1500, 29700, 30000])
+            events = [e for e in simulation['trace'] if e['action'] == 'putrefy']
+            self.assertTrue(any(e['event'] == 'queue' and e['ms'] == 30000
+                                and e['cooldown_ms'] == 301 for e in events))
+            self.assertTrue(any(e['event'] == 'native_execute' and e['ms'] == 30302
+                                and e['origin'] == 6 for e in events))
+
+    def test_press_during_cast_queues_the_ready_button_variant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'input.simc'
+            source.write_text((REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'),
+                              encoding='utf-8')
+            result = run_task(source, Path(directory) / 'task', mode='single', program=[['consume']])
+            simulation = evaluate(source, result['candidate'], Path(directory) / 'cast-window',
+                                  character=result['character'], iterations=2,
+                                  input_times=[0, 100, 200, 300, 400, 1400])
+            events = [e for e in simulation['trace'] if e['action'] in ('devour', 'consume')]
+            self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'devour'
+                                and e['ms'] == 1400 for e in events))
+            self.assertTrue(any(e['event'] == 'queue' and e['action'] == 'consume'
+                                and e['ms'] == 1400 and e['origin'] == 6 for e in events))
+            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'consume'
+                                and e['ms'] == 3159 and e['origin'] == 6 for e in events))
+
     def test_same_block_item_order(self):
         first_actions = []
         for slots in [('trinket1',), ('trinket1', 'trinket2'), ('trinket2', 'trinket1')]:
