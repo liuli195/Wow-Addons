@@ -30,6 +30,42 @@ def sample_profile() -> str:
 
 
 class CharacterExportTests(unittest.TestCase):
+    def test_native_precombat_button_is_a_nocombat_gse_step(self):
+        from codec import export
+        from engine import inspect
+        from sequence import compiled_program, select
+
+        native = dict(
+            actions_protocol=1,
+            active_items=[],
+            executed_actions=[dict(
+                name='heart_strike', signature='heart_strike', player_owned=True,
+                background=False, quiet=False, passive=False, type='spell',
+                precombat=False, data_id=206930, data_valid=True,
+                base_spell_id=206930, gcd_ms=1500,
+            )],
+            precombat_sequence=[dict(id=195292, name='deaths_caress', queue_failed=False),
+                                dict(id=195292, name='deaths_caress', queue_failed=False)],
+            precombat_definitions=[dict(
+                name='deaths_caress', signature='deaths_caress', player_owned=True,
+                background=False, quiet=False, passive=False, type='spell',
+                precombat=True, data_id=195292, data_valid=True,
+                base_spell_id=195292, gcd_ms=1500,
+            )],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            capabilities = inspect(native, Path(directory) / 'capabilities')
+            self.assertEqual([a['simc_action'] for a in capabilities['precombat_actions']],
+                             ['deaths_caress', 'deaths_caress'])
+            candidate = export(select(capabilities, [['heart_strike']]), Path(directory) / 'export',
+                               identity=dict(spec_id=250, class_id=6))
+            self.assertEqual(candidate['compiled_steps'][0],
+                             dict(type='macro', macrotext='/cast [nocombat] deaths_caress'))
+            self.assertEqual(candidate['compiled_steps'][1], candidate['compiled_steps'][0])
+            self.assertEqual(compiled_program(candidate),
+                             [['deaths_caress'], ['deaths_caress'], ['heart_strike']])
+            self.assertEqual(candidate['precombat_count'], 2)
+
     def test_client_target_masks_apply_across_classes_and_mixed_blocks(self):
         from codec import export
         from sequence import compiled_program
@@ -78,6 +114,9 @@ class CharacterExportTests(unittest.TestCase):
             spell_ids = {a['spell_id'] for a in capabilities['actions'] if a['kind']=='spell'}
             self.assertTrue({42650,1233448,47541,55090} <= spell_ids)
             self.assertTrue(spell_ids.isdisjoint({47528,50977,255654,48743,221562,316239,46585}))
+            self.assertEqual([a['simc_action'] for a in capabilities['precombat_actions']], ['raise_dead'])
+            self.assertEqual(result['candidate']['compiled_steps'][0],
+                             dict(type='macro', macrotext='/cast [nocombat] raise_dead'))
             selected = [row for row in capabilities['sources'] if row['status']=='mapped']
             self.assertTrue(all(row['executions']>0 and row['player_owned'] and
                                 not row['background'] and not row['passive'] for row in selected))

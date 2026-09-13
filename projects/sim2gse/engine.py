@@ -72,10 +72,13 @@ def inspect(reference, folder):
     if reference.get('actions_protocol') != 1:
         raise ValueError('基准没有返回完整的原生动作标记，请重新构建')
     actions = {}
+    precombat_actions = {}
     sources = []
     unsupported = []
     items = reference['active_items']
-    for native in reference['executed_actions']:
+    used_precombat = {row.get('name') for row in reference.get('precombat_sequence', [])
+                      if not row.get('queue_failed')}
+    for native in [*reference['executed_actions'], *reference.get('precombat_definitions', [])]:
         row = dict(native)
         sources.append(row)
         name = row['signature'].split(',', 1)[0]
@@ -83,8 +86,8 @@ def inspect(reference, folder):
                 row['type'] in ('call_action_list', 'action_variable', 'sequence') or name == 'use_items'):
             row['status'] = 'native_non_button'
             continue
-        if row['precombat']:
-            row['status'] = 'native_precombat'
+        if row['precombat'] and row['name'] not in used_precombat:
+            row['status'] = 'native_non_button'
             continue
         action = None
         if row['name'] == 'auto_attack':
@@ -115,10 +118,11 @@ def inspect(reference, folder):
             # 非伤害、无法术身份的场景设施不作为伤害技能按钮。
             row['status'] = 'native_non_button'
             continue
-        row['status'] = 'mapped' if action else 'unsupported'
+        row['status'] = ('mapped_precombat' if row['precombat'] else 'mapped') if action else 'unsupported'
         if action:
             action['native_name'] = row['name']
-            actions.setdefault(action['simc_action'], action)
+            target = precombat_actions if row['precombat'] else actions
+            target.setdefault(action['simc_action'], action)
     buttons = {}
     for action in actions.values():
         key = ('spell', action['base_spell_id']) if action['kind']=='spell' else ('action', action['simc_action'])
@@ -127,7 +131,10 @@ def inspect(reference, folder):
     for variants in buttons.values():
         primary = next((a for a in variants if a.get('spell_id') == a.get('base_spell_id')), variants[0])
         grouped.append(dict(primary, variants=variants) if len(variants)>1 else primary)
-    result = dict(actions=grouped, sources=sources, protocol=2,
+    precombat_program = [dict(precombat_actions[row['name']])
+                         for row in reference.get('precombat_sequence', [])
+                         if not row.get('queue_failed') and row.get('name') in precombat_actions]
+    result = dict(actions=grouped, precombat_actions=precombat_program, sources=sources, protocol=3,
                   scope='baseline_executed_player_actions', coverage='all_baseline_iterations')
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'catalogue.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -203,7 +210,9 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     replace_file(folder / 'native.pending.json', folder / 'native.json')
     player = player_report(report, character)
     result['action_sequence'] = player['collected_data'].get('action_sequence', [])
+    result['precombat_sequence'] = player['collected_data'].get('action_sequence_precombat', [])
     result['actions_protocol'] = player.get('sim2gse_actions_protocol')
     result['executed_actions'] = player.get('sim2gse_actions', [])
+    result['precombat_definitions'] = player.get('sim2gse_precombat_actions', [])
     result['active_items'] = player.get('sim2gse_items', [])
     return result

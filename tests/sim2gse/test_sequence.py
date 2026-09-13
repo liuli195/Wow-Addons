@@ -39,8 +39,8 @@ class SequenceSimulationTests(unittest.TestCase):
             result = run_task(source, destination, program=[["outbreak"]], mode='single')
 
             simulation = result["controlled_simulation"]
-            self.assertEqual(simulation["blocks"], [["outbreak"]])
-            self.assertEqual(simulation["native_blocks"], simulation["blocks"])
+            self.assertEqual(simulation["blocks"], [["raise_dead"], ["outbreak"]])
+            self.assertEqual(simulation["native_blocks"], [[], ["outbreak"]])
             self.assertTrue(simulation["consistent"])
             self.assertTrue(simulation["trace"])
             self.assertGreater(simulation["report"]["sim"]["players"][0]["collected_data"]["dps"]["mean"], 0)
@@ -61,13 +61,13 @@ class SequenceSimulationTests(unittest.TestCase):
     def test_failed_steps_and_queue_replacement(self):
         result = self.task([['outbreak'], ['death_coil'], ['scourge_strike']])
         events = result['controlled_simulation']['trace']
-        self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'death_coil' and e['ms'] == 300 for e in events))
-        self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'scourge_strike' and e['ms'] == 300 for e in events))
+        self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'death_coil' and e['ms'] == 600 for e in events))
+        self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'scourge_strike' and e['ms'] == 600 for e in events))
         self.assertTrue(any(e['event'] == 'replace' for e in events))
         self.assertTrue(all(e['cooldown_ms'] <= 0 for e in events if e['event'] == 'dispatch'))
         executed = [e for e in events if e['event'] == 'native_execute']
         dispatched = [e for e in events if e['event'] == 'dispatch']
-        self.assertTrue(all(e['origin'] > 0 and e['step'] == (e['origin'] - 1) % 3
+        self.assertTrue(all(e['origin'] > 0 and e['step'] == (e['origin'] - 1) % 4
                             for e in dispatched + executed))
         self.assertEqual(Counter((e['battle'], e['origin'], e['signature'], e['ms']) for e in executed),
                          Counter((d['battle'], d['origin'], d['signature'], d['ms']) for d in dispatched))
@@ -84,12 +84,13 @@ class SequenceSimulationTests(unittest.TestCase):
         for slots in [('trinket1',), ('trinket1', 'trinket2'), ('trinket2', 'trinket1')]:
             program = [[*[f'use_item,slot={s}' for s in slots], 'outbreak']]
             result = self.task(program, items=True)
-            self.assertEqual(result['controlled_simulation']['blocks'], program)
+            self.assertEqual(result['controlled_simulation']['blocks'], [['raise_dead'], *program])
+            self.assertEqual(result['controlled_simulation']['native_blocks'], [[], *program])
             events = result['controlled_simulation']['trace']
-            at_zero = [e['action'] for e in events if e['event'] == 'native_execute' and e['ms'] == 0]
-            self.assertTrue(at_zero[0].startswith('use_item_'))
-            self.assertEqual(at_zero[1], 'outbreak')
-            first_actions.append(at_zero[0])
+            first_press = [e['action'] for e in events if e['event'] == 'native_execute' and e['ms'] == 300]
+            self.assertTrue(first_press[0].startswith('use_item_'))
+            self.assertEqual(first_press[1], 'outbreak')
+            first_actions.append(first_press[0])
         self.assertEqual(first_actions[0], first_actions[1])
         self.assertNotEqual(first_actions[1], first_actions[2])
 
@@ -114,7 +115,7 @@ class SequenceSimulationTests(unittest.TestCase):
             disabled = json.loads((Path(directory) / 'disabled/native.json').read_text(encoding='utf-8'))
             self.assertEqual(original['sim']['players'], disabled['sim']['players'])
             altered = copy.deepcopy(result['candidate'])
-            altered['compiled_steps'][0]['spell'] = 999999
+            altered['compiled_steps'][altered['precombat_count']]['spell'] = 999999
             with self.assertRaises((ValueError, KeyError)):
                 compiled_program(altered)
             with self.assertRaisesRegex(ValueError, '原版引擎不兼容'):

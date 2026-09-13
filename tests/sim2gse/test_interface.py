@@ -278,11 +278,12 @@ main_hand=,id=271092,ilevel=311
         self.assertGreater(len(native['sim']['players']), 1)
         self.assertEqual(result['native_reference']['dps'], native['sim']['statistics']['raid_dps']['mean'])
 
-    def test_native_cast_interrupt_reaches_candidate(self):
+    def test_native_cast_reaches_candidate(self):
         self.test_browser_computes_copies_and_clears_real_candidate(
             (REPOSITORY/'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'), expected_spec=1480)
         traces = list((Path(self.directory.name)/'输出'/'tasks').glob('*/batches/*/native.txt'))
-        self.assertTrue(any('\tnative_interrupt\t' in p.read_text(encoding='utf-8') for p in traces))
+        self.assertTrue(any(any('\tnative_execute\t' in line and float(line.rsplit('\t', 1)[-1]) > 0
+                                for line in p.read_text(encoding='utf-8').splitlines()) for p in traces))
 
     def test_replacement_forms_remain_one_button(self):
         self.test_browser_computes_copies_and_clears_real_candidate('''warrior="Fury buttons"

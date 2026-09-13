@@ -14,7 +14,7 @@ def select(capabilities, program=None):
     program = program if program is not None else [[name] for name in available]
     if not isinstance(program, list) or not 1 <= len(program) <= 128:
         raise ValueError('程序必须包含 1 至 128 个动作块')
-    blocks = []
+    blocks = [[dict(action, condition='nocombat')] for action in capabilities.get('precombat_actions', [])]
     for block in program:
         if not isinstance(block, list) or not block or len(block) > 16:
             raise ValueError('动作块必须包含 1 至 16 个命令')
@@ -46,8 +46,8 @@ def compiled_program(candidate):
                 if line == '/startattack':
                     block.append(next(a['simc_action'] for b in candidate['blocks'] for a in b if a['kind']=='start_attack'))
                 elif line.startswith('/cast '):
-                    block.append(spells[line[6:].removeprefix('[@player] ')])
-                elif re.fullmatch(r'/use (?:\[@player\] )?(13|14)', line):
+                    block.append(spells[re.sub(r'^\[[^]]+\] ', '', line[6:])])
+                elif re.fullmatch(r'/use (?:\[[^]]+\] )?(13|14)', line):
                     block.append(items[line.split()[-1]])
                 else:
                     raise ValueError('上游编译产生了不支持的宏命令')
@@ -72,8 +72,13 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             any(b <= a for a, b in zip(input_times, input_times[1:]))):
         raise ValueError('输入时刻必须是战斗范围内递增的整数毫秒')
     blocks = compiled_program(candidate)
-    pool = list(dict.fromkeys(name for block in blocks for name in block))
-    indices = '/'.join('+'.join(str(pool.index(name) + 1) for name in block) for block in blocks)
+    precombat_count = candidate.get('precombat_count', 0)
+    if not 0 <= precombat_count < len(blocks):
+        raise ValueError('战前动作块数量无效')
+    runtime_blocks = [[] if index < precombat_count else block for index, block in enumerate(blocks)]
+    pool = list(dict.fromkeys(name for block in runtime_blocks for name in block))
+    indices = '/'.join('0' if not block else '+'.join(str(pool.index(name) + 1) for name in block)
+                       for block in runtime_blocks)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     generated = folder / 'input.simc'
@@ -90,12 +95,15 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             continue
         _, block, position, signature = line.split('\t')
         block, position = int(block), int(position)
+        if position == -1 and signature == '-' and block == len(native_blocks):
+            native_blocks.append([])
+            continue
         if block == len(native_blocks) and position == 0:
             native_blocks.append([])
         if not native_blocks or block != len(native_blocks) - 1 or position != len(native_blocks[-1]):
             raise ValueError('原生动作块回报结构不符')
         native_blocks[block].append(signature)
-    if native_blocks != blocks:
+    if native_blocks != runtime_blocks:
         raise ValueError('原生实际解析的动作块与编译结果不一致')
     try:
         pending_report = json.loads(pending_report.read_text(encoding='utf-8'))
@@ -129,9 +137,18 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         dispatches = [e for e in events if e['event'] == 'dispatch']
         if any(not 1 <= e['origin'] <= len(input_times)
                or e['step'] != (e['origin'] - 1) % len(blocks)
-               or e['signature'] not in blocks[e['step']]
+               or e['signature'] not in runtime_blocks[e['step']]
                for e in dispatches + executed + interrupted):
             raise ValueError('原生动作不属于来源输入对应的编译块')
+        expected_precombat = [block[0] for block in blocks[:precombat_count]]
+        if expected_precombat:
+            battles = {e['battle'] for e in events if e['event'] == 'input'}
+            for battle in battles:
+                observed = [e['action'] for e in events
+                            if e['battle'] == battle and e['event'] == 'explicit_precombat'
+                            and e['action'] in expected_precombat]
+                if observed != expected_precombat:
+                    raise ValueError('原生战前动作没有对应 GSE 战前步骤')
         def key(e):
             return e['battle'], e['origin'], e['step'], e['signature']
         starts = {key(e): e for e in dispatches}

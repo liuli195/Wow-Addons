@@ -1,0 +1,30 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -893,3 +893,27 @@
+     row[ "channeled" ] = a->channeled;
+   }
++  auto precombat_actions = root[ "sim2gse_precombat_actions" ];
++  precombat_actions.make_array();
++  for ( const auto* a : p.precombat_action_list )
++  {
++    auto row = precombat_actions.add();
++    row[ "name" ] = a->name_str;
++    row[ "id" ] = a->id;
++    row[ "data_id" ] = a->data().id();
++    row[ "base_spell_id" ] = p.sim2gse_base_spell_id( a->data().id() );
++    row[ "data_valid" ] = a->data().ok();
++    row[ "signature" ] = a->signature_str;
++    row[ "executions" ] = a->total_executions;
++    row[ "type" ] = util::action_type_string( a->type );
++    row[ "background" ] = a->background;
++    row[ "quiet" ] = a->quiet;
++    row[ "harmful" ] = a->harmful;
++    row[ "player_owned" ] = a->player == &p && !p.is_pet();
++    row[ "passive" ] = a->data().flags( SX_PASSIVE );
++    row[ "action_list" ] = a->action_list ? a->action_list->name_str : "";
++    row[ "precombat" ] = true;
++    row[ "gcd_ms" ] = a->trigger_gcd.total_millis();
++    row[ "cast_ms" ] = a->execute_time().total_millis();
++    row[ "channeled" ] = a->channeled;
++  }
+   auto items = root[ "sim2gse_items" ];

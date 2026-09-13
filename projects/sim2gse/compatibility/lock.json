@@ -74,6 +74,14 @@
     {
       "path": "projects/sim2gse/native/patches/019-item-targeting-identity.patch",
       "sha256": "634ddbce76c414a884fb6b79e97186063daad0085e0a1f21f20d5020feae9cf3"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/020-precombat-actions-report.patch",
+      "sha256": "ab7f45807bf26ba04f8947c63410486aea53e016e8342af49aac06f29f2711b6"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/021-precombat-noop-blocks.patch",
+      "sha256": "390ec83ee72c291fcc501e4fdaeae7489df7f0e12a7cb3d6ac9dbbc9b901f69f"
     }
   ],
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
@@ -107,11 +115,11 @@
     "GSE/API/translator.lua": "14480c4647cf269fd3852998f6ed09311af75455209188bac2971cb23b8e429c"
   },
   "patched_files": {
-    "engine/player/player.cpp": "517902d6cea8c428b37883f38d6c8ac3dd82aa3466e2b8a206c3d31d10a86d35",
+    "engine/player/player.cpp": "10870381f3bede99a334dcfb5fa85b0f8f9308227ff61c39f0bc0d8164f5cb0d",
     "engine/player/player.hpp": "847f17531ff775f84a478e629c2ee278993611a360e3d9f34fc272370e8b3764",
     "engine/action/action.cpp": "cc233fa87fa8a965343711abe8744fee4bc43c8dcfe41b6e0625e0544e421e34",
     "engine/class_modules/sc_death_knight.cpp": "812db808a9e68e0c4c28c744093d4bd55606c18b87e4688c0b92f606904dcdbd",
-    "engine/report/json/report_json.cpp": "19aba232d0bf8e7a47a54e5c2ec186c259b6edffc9e04b8c87817b49334cdf3e"
+    "engine/report/json/report_json.cpp": "72230599812bb885576f9b19962c5f6fc5aa976793fda38bc06decbf47db8df7"
   },
   "baseline_patches": [
     {
@@ -137,10 +145,14 @@
     {
       "path": "projects/sim2gse/native/patches/019-item-targeting-identity.patch",
       "sha256": "634ddbce76c414a884fb6b79e97186063daad0085e0a1f21f20d5020feae9cf3"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/020-precombat-actions-report.patch",
+      "sha256": "ab7f45807bf26ba04f8947c63410486aea53e016e8342af49aac06f29f2711b6"
     }
   ],
   "baseline_patched_files": {
-    "engine/report/json/report_json.cpp": "19aba232d0bf8e7a47a54e5c2ec186c259b6edffc9e04b8c87817b49334cdf3e",
+    "engine/report/json/report_json.cpp": "72230599812bb885576f9b19962c5f6fc5aa976793fda38bc06decbf47db8df7",
     "engine/player/player.cpp": "c1a40f7a94b1920cef832d57e724c0b795c92e6e54f138a7f8a9995f2913f353",
     "engine/player/player.hpp": "dcd1a84b39cd4685faea7c18cb463743ec6f76d3b47ca105f2cef6a4e3ea011c"
   },

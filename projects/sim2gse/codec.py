@@ -55,15 +55,19 @@ def export(blocks, folder, *, identity, runtime=None):
     for block in blocks:
         if not block:
             raise ValueError('动作块不能为空')
-        if len(block) > 1 or any(ground(c) for c in block):
+        if len(block) > 1 or any(ground(c) or c.get('condition') for c in block):
             lines, translated = [], []
             for command in block:
                 if command['kind'] == 'spell':
-                    prefix = '/cast [@player] ' if ground(command) else '/cast '
+                    conditions = [*(['@player'] if ground(command) else []),
+                                  *([command['condition']] if command.get('condition') else [])]
+                    prefix = '/cast ' + (f"[{','.join(conditions)}] " if conditions else '')
                     lines.append(prefix + str(command['spell_id']))
                     translated.append(prefix + command['name'])
                 elif command['kind'] == 'item':
-                    lines.append(('/use [@player] ' if ground(command) else '/use ') + str(command['slot']))
+                    conditions = [*(['@player'] if ground(command) else []),
+                                  *([command['condition']] if command.get('condition') else [])]
+                    lines.append('/use ' + (f"[{','.join(conditions)}] " if conditions else '') + str(command['slot']))
                     translated.append(lines[-1])
                 elif command['kind'] == 'start_attack':
                     lines.append('/startattack')
@@ -127,6 +131,8 @@ def export(blocks, folder, *, identity, runtime=None):
         raise ValueError('编码往返改变了序列')
     if 'PASS\t' not in compile('compile'):
         raise ValueError('上游编译校验没有成功记录')
-    return dict(text=text, blocks=blocks, compiled_steps=steps, simulation='not_run', game_validation='not_run',
+    return dict(text=text, blocks=blocks, compiled_steps=steps,
+                precombat_count=sum(all(c.get('condition') == 'nocombat' for c in block) for block in blocks),
+                simulation='not_run', game_validation='not_run',
                 targeting_build=targeting['client_build'], ground_location='player',
                 encoding='raw_deflate_cbor_bytes_client_vector', upstream_compilation='passed_with_client_boundary_stubs')
