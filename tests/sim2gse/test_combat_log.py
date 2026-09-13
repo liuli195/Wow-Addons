@@ -23,6 +23,24 @@ class CombatLogToolTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
+    def test_preserves_recorded_overkill_and_effective_damage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            combat = Path(directory) / "WoWCombatLog.txt"
+            combat.write_text("\n".join([
+                '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"训练假人",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,1000,1000,200,1,0,0,0,nil,nil,nil,ST',
+                '9/13/2026 16:41:20.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"训练假人",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,20000,20000,19999,1,0,0,0,nil,nil,nil,ST',
+            ]), encoding="utf-8")
+
+            result = self.run_tool(
+                combat, "--duration", "2", "--primary-target", "Creature-1"
+            )
+
+            self.assertEqual(result["primary_target"]["damage"], 21000)
+            self.assertEqual(result["primary_target"]["overkill"], 20199)
+            self.assertEqual(result["primary_target"]["effective_damage"], 801)
+            self.assertEqual(result["primary_target"]["dps"], 10500)
+            self.assertEqual(result["primary_target"]["effective_dps"], 400.5)
+
     def test_reports_primary_target_without_calling_splash_a_multitarget_test(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -56,7 +74,13 @@ class CombatLogToolTests(unittest.TestCase):
             self.assertEqual(result["affected_target_count"], 2)
             self.assertEqual(result["other_affected_target_count"], 1)
             self.assertEqual(result["other_affected_targets"], [
-                {"guid": "Creature-2", "name": "附近假人", "damage": 100}
+                {
+                    "guid": "Creature-2",
+                    "name": "附近假人",
+                    "damage": 100,
+                    "overkill": 0,
+                    "effective_damage": 100,
+                }
             ])
             self.assertEqual(result["secondary_damage"], 100)
             self.assertEqual(result["successful_casts"]["心脏打击"]["count"], 1)
@@ -198,11 +222,25 @@ class CombatLogToolTests(unittest.TestCase):
             self.assertEqual(result['simulation_conditions'], {
                 'duration_seconds': 2, 'targets': 1,
                 'actual_affected_targets': 1, 'secondary_damage_excluded': 0,
+                'damage_metric': 'logged_amount',
             })
             self.assertEqual(result['simulation_conditions_not_verifiable_from_combat_log'], [
                 'specialization', 'talents', 'gear', 'game_version', 'sequence',
+                'enemy_attack_timeline', 'enemy_health_timeline',
+                'target_defenses', 'target_skill_coverage', 'input_timing',
             ])
             self.assertEqual(result['primary_target_percent_of_simulation'], 75)
+            self.assertEqual(result['simulation_comparison'], {
+                'status': 'conditions_unverified',
+                'accuracy_assessed': False,
+                'damage_metric': 'logged_amount',
+                'throughput_percent': 75,
+                'unverified_conditions': [
+                    'specialization', 'talents', 'gear', 'game_version', 'sequence',
+                    'enemy_attack_timeline', 'enemy_health_timeline',
+                    'target_defenses', 'target_skill_coverage', 'input_timing',
+                ],
+            })
             self.assertEqual(result['simulation_dps_distribution'], {
                 'mean': 2000, 'min': 1400, 'max': 2600, 'std_dev': 300,
             })

@@ -267,6 +267,8 @@ def analyze(
                 changed = True
 
     target_damage: Counter[tuple[str, str]] = Counter()
+    target_overkill: Counter[tuple[str, str]] = Counter()
+    target_effective_damage: Counter[tuple[str, str]] = Counter()
     cast_destinations: Counter[tuple[str, str]] = Counter()
     successful: dict[str, list[float]] = defaultdict(list)
     successful_by_id: dict[int, list[float]] = defaultdict(list)
@@ -293,10 +295,18 @@ def analyze(
         amount_index = DAMAGE_EVENTS[row[0]]
         if len(row) <= amount_index + 2:
             raise ValueError(f"{row[0]} 伤害字段不完整")
-        amount = int(row[amount_index]) - max(0, int(row[amount_index + 2]))
-        target_damage[(row[5], row[6])] += amount
+        amount = int(row[amount_index])
+        overkill = max(0, int(row[amount_index + 2]))
+        effective_damage = amount - overkill
+        target = row[5], row[6]
+        target_damage[target] += amount
+        target_overkill[target] += overkill
+        target_effective_damage[target] += effective_damage
         spell_id, spell_name = _damage_identity(row)
-        damage_records.append((row[5], row[6], row[1], row[2], spell_id, spell_name, amount))
+        damage_records.append((
+            row[5], row[6], row[1], row[2], spell_id, spell_name,
+            amount, overkill, effective_damage,
+        ))
 
     if not target_damage:
         raise ValueError("测试区间内没有伤害")
@@ -328,13 +338,20 @@ def analyze(
             selection = {"method": "highest_owned_damage", "evidence_count": 0}
     primary_damage = target_damage[primary]
     other_targets = [
-        {"guid": guid, "name": name, "damage": damage}
+        {
+            "guid": guid,
+            "name": name,
+            "damage": damage,
+            "overkill": target_overkill[(guid, name)],
+            "effective_damage": target_effective_damage[(guid, name)],
+        }
         for (guid, name), damage in target_damage.most_common()
         if (guid, name) != primary
     ]
     total_damage = sum(target_damage.values())
     source_groups = {}
-    for target_guid, target_name, source_guid, source_name, spell_id, spell_name, amount in damage_records:
+    for (target_guid, target_name, source_guid, source_name, spell_id, spell_name,
+         amount, overkill, effective_damage) in damage_records:
         if (target_guid, target_name) != primary:
             continue
         owner_type = 'player' if source_guid == player_guid else 'owned_unit'
@@ -342,11 +359,14 @@ def analyze(
         row = source_groups.setdefault(key, {
             'owner_type': owner_type, 'spell_id': spell_id, 'spell_names': set(),
             'source_guids': set(), 'source_names': set(), 'damage': 0,
+            'overkill': 0, 'effective_damage': 0,
         })
         row['spell_names'].add(spell_name)
         row['source_guids'].add(source_guid)
         row['source_names'].add(source_name)
         row['damage'] += amount
+        row['overkill'] += overkill
+        row['effective_damage'] += effective_damage
     damage_sources = []
     for row in source_groups.values():
         row['spell_names'] = sorted(row['spell_names'])
@@ -357,6 +377,8 @@ def analyze(
                            'swing' if row['spell_id'] == 0 else
                            'button' if row['spell_id'] in successful_by_id else 'derived')
         row['dps'] = row['damage'] / duration
+        row['overkill_dps'] = row['overkill'] / duration
+        row['effective_dps'] = row['effective_damage'] / duration
         row['portion_of_primary_percent'] = row['damage'] / primary_damage * 100
         damage_sources.append(row)
     damage_sources.sort(key=lambda row: (-row['damage'], row['owner_type'], row['spell_id']))
@@ -369,6 +391,10 @@ def analyze(
             "name": primary[1],
             "damage": primary_damage,
             "dps": primary_damage / duration,
+            "overkill": target_overkill[primary],
+            "overkill_dps": target_overkill[primary] / duration,
+            "effective_damage": target_effective_damage[primary],
+            "effective_dps": target_effective_damage[primary] / duration,
         },
         "primary_target_selection": selection,
         "affected_target_count": len(target_damage),
@@ -376,6 +402,12 @@ def analyze(
         "other_affected_targets": other_targets,
         "secondary_damage": total_damage - primary_damage,
         "total_damage": total_damage,
+        "secondary_overkill": sum(target_overkill.values()) - target_overkill[primary],
+        "total_overkill": sum(target_overkill.values()),
+        "secondary_effective_damage": (
+            sum(target_effective_damage.values()) - target_effective_damage[primary]
+        ),
+        "total_effective_damage": sum(target_effective_damage.values()),
         "successful_casts": {
             spell: {"count": len(times), "times_seconds": times}
             for spell, times in sorted(successful.items())
@@ -436,6 +468,7 @@ def analyze(
             "targets": simulation_targets,
             "actual_affected_targets": len(target_damage),
             "secondary_damage_excluded": total_damage - primary_damage,
+            "damage_metric": "logged_amount",
         }
         simulation_sources = _simulation_damage_sources(matches[0], duration)
         result['simulation_damage_sources'] = simulation_sources
@@ -460,10 +493,21 @@ def analyze(
                                           if simulation_source_dps > 0 else None),
             })
         result['damage_source_comparison'] = comparison
-        result["simulation_conditions_not_verifiable_from_combat_log"] = [
-            "specialization", "talents", "gear", "game_version", "sequence"
+        unverified_conditions = [
+            "specialization", "talents", "gear", "game_version", "sequence",
+            "enemy_attack_timeline", "enemy_health_timeline", "target_defenses",
+            "target_skill_coverage", "input_timing",
         ]
-        result["primary_target_percent_of_simulation"] = primary_damage / duration / simulation_dps * 100
+        throughput_percent = primary_damage / duration / simulation_dps * 100
+        result["simulation_conditions_not_verifiable_from_combat_log"] = unverified_conditions
+        result["primary_target_percent_of_simulation"] = throughput_percent
+        result["simulation_comparison"] = {
+            "status": "conditions_unverified",
+            "accuracy_assessed": False,
+            "damage_metric": "logged_amount",
+            "throughput_percent": throughput_percent,
+            "unverified_conditions": unverified_conditions,
+        }
         result["primary_target_within_simulation_sample_range"] = (
             simulation_min <= primary_damage / duration <= simulation_max
         )
