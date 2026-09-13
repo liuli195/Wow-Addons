@@ -7,13 +7,39 @@ HELPERS = {
     'tests/gear-planner/test-page.cjs': 'tests/gear-planner/check-async.js',
     'tests/sim2gse/research/prototype-export.lua': 'tests/sim2gse/research/prototype-export.py',
 }
+LOCAL_ACCEPTANCE = {
+    'tests/gear-planner/check-add-socket.py',
+    'tests/gear-planner/check-browser.cjs',
+    'tests/gear-planner/check-bulk-levels.py',
+    'tests/gear-planner/check-catalog.py',
+    'tests/gear-planner/check-deathknight.cjs',
+    'tests/gear-planner/check-effects.py',
+    'tests/gear-planner/check-enchants.py',
+    'tests/gear-planner/check-extra-input.py',
+    'tests/gear-planner/check-fit.py',
+    'tests/gear-planner/check-gems.py',
+    'tests/gear-planner/check-item-stats.py',
+    'tests/gear-planner/check-levels.py',
+    'tests/gear-planner/check-merge-selection.py',
+    'tests/gear-planner/check-merge-slots.py',
+    'tests/gear-planner/check-mistweaver.py',
+    'tests/gear-planner/check-names.py',
+    'tests/gear-planner/check-option-labels.py',
+    'tests/gear-planner/check-original-item.py',
+    'tests/gear-planner/check-replace-level.py',
+    'tests/gear-planner/check-replace.py',
+    'tests/gear-planner/check-sets.py',
+    'tests/gear-planner/check-sources.py',
+    'tests/gear-planner/check.py',
+}
 
 
 def local_acceptance(path):
     relative = path.relative_to(ROOT).as_posix()
-    return (relative.startswith('tests/sim2gse/manual_')
+    return (relative in LOCAL_ACCEPTANCE
+            or relative.startswith('tests/sim2gse/manual_')
             or relative.startswith('tests/sim2gse/research/')
-            or (relative.startswith('tests/gear-planner/') and path.suffix in ('.py', '.cjs')))
+            or relative.startswith('tests/gear-planner/research/'))
 
 
 def main():

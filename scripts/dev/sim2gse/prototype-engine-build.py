@@ -41,7 +41,8 @@ def main():
         marker.write_text(json.dumps(identity))
     assert json.loads(marker.read_text()) == identity
     env = os.environ.copy()
-    env['PATH'] = 'C:/msys64/mingw64/bin' + os.pathsep + env['PATH']
+    toolchain = Path(env.get('MSYS2_LOCATION', 'C:/msys64')) / 'mingw64/bin'
+    env['PATH'] = str(toolchain) + os.pathsep + env['PATH']
     # Archive provenance is explicit; never report the enclosing WoW repo's HEAD.
     env['GIT_CEILING_DIRECTORIES'] = str(TOOLS)
     patch = ROOT / 'scripts/dev/sim2gse/prototype-controller.patch'
@@ -63,7 +64,7 @@ def main():
         assert applied.read_text() == patch_hash, 'use a fresh source for changed patch'
     run_dir = OUT / mode
     run_dir.mkdir(parents=True, exist_ok=True)
-    command = ['C:/msys64/mingw64/bin/mingw32-make.exe', '-j4', 'all', 'PATHSEP=/', 'SC_NO_NETWORKING=1',
+    command = [str(toolchain / 'mingw32-make.exe'), '-j4', 'all', 'PATHSEP=/', 'SC_NO_NETWORKING=1',
                'CXX=g++', 'GIT=', 'MODULE=simc.exe']
     started = time.perf_counter()
     with (run_dir / 'build.log').open('w') as log:
@@ -71,7 +72,7 @@ def main():
     evidence = dict(identity, mode=mode, command=command, patch_sha256=patch_hash,
                     source=str(source), exit_code=result.returncode,
                     elapsed_seconds=time.perf_counter() - started,
-                    compiler=subprocess.check_output(['C:/msys64/mingw64/bin/g++.exe', '--version'], env=env, text=True))
+                    compiler=subprocess.check_output([str(toolchain / 'g++.exe'), '--version'], env=env, text=True))
     if result.returncode == 0:
         evidence['binary_sha256'] = digest(source / 'engine/simc.exe')
     (run_dir / 'build.json').write_text(json.dumps(evidence, indent=2))

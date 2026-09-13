@@ -41,7 +41,8 @@ def export(blocks, folder, *, identity, runtime=None):
     lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
     for path, expected_hash in lock['gse_sources'].items():
         runtime.check()
-        if hashlib.sha256((SOURCE / path).read_bytes()).hexdigest() != expected_hash:
+        source = (SOURCE / path).read_bytes().replace(b'\r\n', b'\n')
+        if hashlib.sha256(source).hexdigest() != expected_hash:
             raise ValueError('固定上游编译器源码已变化')
     target_source = lock['client_targeting']
     target_path = ROOT / target_source['path']

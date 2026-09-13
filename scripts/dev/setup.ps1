@@ -23,6 +23,23 @@ $simcSource = [pscustomobject]@{
     url = "https://github.com/simulationcraft/simc/archive/$($simcLock.upstream_commit).zip"
     sha256 = $simcLock.archive_sha256
 }
+
+function Sync-Repository($path, $spec) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        git init --quiet $path
+        git -C $path config core.autocrlf false
+        git -C $path remote add origin $spec.url
+    }
+    if ((git -C $path remote get-url origin) -ne $spec.url) {
+        throw "缓存来源与版本记录不一致：$path"
+    }
+    $head = try { git -C $path rev-parse --verify HEAD 2>$null } catch { '' }
+    if ($head -ne $spec.commit) {
+        if (git -C $path status --porcelain) { throw "缓存包含修改：$path" }
+        git -C $path fetch --depth 1 origin $spec.commit
+        git -C $path checkout --detach FETCH_HEAD
+    }
+}
 Get-Artifact $simcSource '.tools/downloads/simc-source.zip'
 Expand-Archive .tools/downloads/luals.zip .tools/luals -Force
 if (-not (Test-Path '.tools/lua-5.1.5/src/lua.c')) {
@@ -52,21 +69,13 @@ exit /b %errorlevel%
 
 foreach ($entry in $versions.repositories.PSObject.Properties) {
     $path = ".tools/$($entry.Name)"
-    $spec = $entry.Value
-    if (-not (Test-Path -LiteralPath $path)) {
-        git init --quiet $path
-        git -C $path remote add origin $spec.url
-    }
-    if ((git -C $path remote get-url origin) -ne $spec.url) {
-        throw "缓存来源与版本记录不一致：$path"
-    }
-    $head = try { git -C $path rev-parse --verify HEAD 2>$null } catch { '' }
-    if ($head -ne $spec.commit) {
-        if (git -C $path status --porcelain) { throw "缓存包含修改：$path" }
-        git -C $path fetch --depth 1 origin $spec.commit
-        git -C $path checkout --detach FETCH_HEAD
-    }
+    Sync-Repository $path $entry.Value
 }
+$gse = [pscustomobject]@{
+    url = 'https://github.com/TimothyLuke/GSE-Advanced-Macro-Compiler.git'
+    commit = $simcLock.gse_commit
+}
+Sync-Repository '.tools/sim2gse-research/gse-f225d4c' $gse
 git -C .tools/wow-api submodule update --init --recursive --depth 1
 $expected = "$($versions.client.version).$($versions.client.build)"
 if ((Get-Content .tools/wow-ui-source/version.txt).Trim() -ne $expected) {

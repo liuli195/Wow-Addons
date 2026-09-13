@@ -20,9 +20,11 @@ def main():
     if digest(archive) != lock['archive_sha256']:
         raise ValueError('固定源归档身份不符')
     env = os.environ.copy()
-    env['PATH'] = 'C:/msys64/mingw64/bin' + os.pathsep + env['PATH']
+    msys2 = Path(env.get('MSYS2_LOCATION', 'C:/msys64'))
+    toolchain = msys2 / 'mingw64/bin'
+    env['PATH'] = str(toolchain) + os.pathsep + env['PATH']
     env['GIT_CEILING_DIRECTORIES'] = str(ROOT / '.tools/sim2gse')
-    tool = Path('C:/msys64/mingw64/bin/mingw32-make.exe')
+    tool = toolchain / 'mingw32-make.exe'
     for mode in ('baseline', 'controlled'):
         source = ROOT / '.tools/sim2gse/product' / mode
         output = ROOT / '.local/sim2gse/build' / mode
@@ -70,7 +72,7 @@ def main():
         with (output / 'build.log').open('w') as log:
             result = subprocess.run(command, cwd=source / 'engine', env=env, stdout=log, stderr=subprocess.STDOUT)
         manifest = dict(identity, exit_code=result.returncode, command=command,
-                        compiler_sha256=digest(Path('C:/msys64/mingw64/bin/g++.exe')))
+                        compiler_sha256=digest(toolchain / 'g++.exe'))
         if not result.returncode:
             manifest['binary_sha256'] = digest(source / 'engine/simc.exe')
         (output / 'build.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
