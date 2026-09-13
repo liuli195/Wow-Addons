@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import string
 import argparse
 import sys
 import os
@@ -163,19 +164,22 @@ def parse_character(raw_text: str) -> Character:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             candidate = stripped[1:].strip() if stripped.startswith("#") else ""
-            bag_match = re.match(r"([a-z][a-z0-9_]*)=(.*)$", candidate)
-            if bag_match and bag_match.group(1) in _EQUIPMENT_SLOTS:
+            bag_key, separator, bag_value = candidate.partition('=')
+            valid_bag_key = (separator == '=' and bag_key and bag_key[0] in string.ascii_lowercase
+                             and all(char in string.ascii_lowercase + string.digits + '_' for char in bag_key))
+            if valid_bag_key and bag_key in _EQUIPMENT_SLOTS:
                 try:
-                    parsed = _parse_item(bag_match.group(1), bag_match.group(2), line_number)
+                    parsed = _parse_item(bag_key, bag_value, line_number)
                 except TaskError:
                     parsed = None  # Comments never become engine options.
                 if parsed is not None:
                     bags.append(parsed)
             continue
-        match = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)=(.*)$", stripped)
-        if not match:
+        key, separator, value = stripped.partition('=')
+        valid_key = (separator == '=' and key and key[0] in string.ascii_letters + '_'
+                     and all(char in string.ascii_letters + string.digits + '_.' for char in key))
+        if not valid_key:
             raise TaskError(f"第 {line_number} 行不是受支持的角色字段")
-        key, value = match.groups()
         if key in _CLASS_KEYS:
             class_rows.append((key, value, line_number))
             continue
