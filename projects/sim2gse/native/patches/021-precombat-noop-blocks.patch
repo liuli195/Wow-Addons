@@ -1,0 +1,16 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4533,6 +4533,12 @@
+   if (list->foreground_action_list.size() != list->action_list.size())
+     throw std::runtime_error("sim2gse action removed by native initialization");
+   for ( auto block : util::string_split(sim2gse_steps, "/") )
+   {
++    if (block == "0")
++    {
++      fmt::print("S2GBLOCK\t{}\t-1\t-\n", sim2gse_blocks.size());
++      sim2gse_blocks.emplace_back();
++      continue;
++    }
+     std::vector<action_t*> actions;
+     std::set<unsigned> gcd_buttons;
+     for ( auto index : util::string_split(block, "+") )

@@ -1,0 +1,19 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -10266,6 +10266,7 @@
+       if ( action->ready() && action->target_ready( target ) )
+       {
+         action->set_target( target );
++        ++action->total_executions; // Observe direct proxy execution, outside the foreground scheduler.
+         action->execute();
+         break;
+       }
+@@ -10476,6 +10477,8 @@
+       }
+ 
+       auto use_action = new use_item_t( player, std::string( "slot=" ) + item.slot_name() );
++      use_action->signature_str = std::string("use_item,slot=") + item.slot_name();
++      use_action->is_precombat = is_precombat;
+       use_action->option.if_expr_str = option.if_expr_str;
+       use_actions.push_back( use_action );
+ 

@@ -21,7 +21,7 @@
 - [实际 Raidbots（模拟服务）报告](https://www.raidbots.com/simbot/report/2ufPzx1a6tQbTnRCboFaZ6)：当前原版与报告同提交原版构建均为 29/29 完整快照一致，身份、装备、数据版本一致。
 - 在独立测试进程中仅向引擎启动参数注入开关：配装器属性及平均装等 14/14 一致，没有浮点差异。
 
-可复验入口：scripts/dev/gear-planner-research/check-priest-experimental.py（戒律实验验证脚本），沿用原有回放脚本的 --fixtures（样本目录）、--engine（引擎路径）、--output（结果文件）参数。样本目录为 projects/gear-planner/fixtures/raidbots-priest-experimental；包含实际输入、期望、构造说明及两次结果。开关仅在验证进程生效。
+可复验入口：tests/gear-planner/research/check-priest-experimental.py（戒律实验验证脚本），沿用原有回放脚本的 --fixtures（样本目录）、--engine（引擎路径）、--output（结果文件）参数。样本目录为 projects/gear-planner/fixtures/raidbots-priest-experimental；包含实际输入、期望、构造说明及两次结果。开关仅在验证进程生效。
 
 这纠正此前“戒律无法计算”的表述：应为默认未支持、实验性静态路径本轮通过。尚未启用正式界面接入或执行戒律完整界面操作验收，也不能据此声称治疗／伤害循环及全部天赋已正确实现。其他暂缓专精的状态不变。
 

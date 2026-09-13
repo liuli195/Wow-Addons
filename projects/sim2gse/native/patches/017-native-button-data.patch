@@ -1,0 +1,11 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -873,7 +873,7 @@
+     row[ "name" ] = a->name_str;
+     row[ "id" ] = a->id;
+     row[ "data_id" ] = a->data().id();
+-    row[ "base_spell_id" ] = p.sim2gse_base_spell_id( a->id );
++    row[ "base_spell_id" ] = p.sim2gse_base_spell_id( a->data().id() );
+     row[ "data_valid" ] = a->data().ok();
+     row[ "signature" ] = a->signature_str;
+     row[ "executions" ] = a->total_executions;

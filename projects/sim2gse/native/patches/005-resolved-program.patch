@@ -1,0 +1,11 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4549,6 +4549,8 @@
+       actions.push_back(a);
+     }
+     if ( actions.empty() ) throw std::runtime_error("empty sim2gse block");
++    for (size_t i = 0; i < actions.size(); ++i)
++      fmt::print("S2GBLOCK\t{}\t{}\t{}\n", sim2gse_blocks.size(), i, actions[i]->signature_str);
+     sim2gse_blocks.push_back(actions);
+   }
+   if ( sim2gse_blocks.empty() || sim2gse_blocks.size() > 128 )

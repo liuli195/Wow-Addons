@@ -1,0 +1,21 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4137,6 +4137,8 @@
+ 
+ void player_t::create_actions()
+ {
++  const auto* sequence_list = find_action_priority_list("sim2gse");
++  const std::string sequence_actions = sequence_list ? sequence_list->action_list_str : "";
+   if( is_player() && !is_enemy() && !is_pet() )
+     consumable::create_consumeable_actions( this );
+ 
+@@ -4159,6 +4161,9 @@
+       std::throw_with_nested( sc_initialization_error( "Invalid action list" ) );
+     }
+   }
++
++  if (!sim2gse_steps.empty())
++    get_action_priority_list("sim2gse")->action_list_str = sequence_actions;
+ 
+   std::string modify_action_options;
+ 

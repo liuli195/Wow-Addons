@@ -10,9 +10,9 @@
 
 ## 原型与复现
 
-- [Python（编程语言）入口](../../scripts/dev/sim2gse/prototype-export.py)：创建固定样本、编码和本地压缩往返，调用上游核对，输出证据及可查看步骤的单文件演示。
-- [Lua（脚本语言）入口](../../scripts/dev/sim2gse/prototype-export.lua)：使用上游测试替身、CBOR（紧凑对象编码）解码器，以及未经修改的导入、校验和编译实现。
-- 从仓库根执行：`.venv/Scripts/python.exe scripts/dev/sim2gse/prototype-export.py`。复用已有解释器及固定源码缓存，不安装依赖，不启动游戏，不运行战斗。
+- [Python（编程语言）入口](../../tests/sim2gse/research/prototype-export.py)：创建固定样本、编码和本地压缩往返，调用上游核对，输出证据及可查看步骤的单文件演示。
+- [Lua（脚本语言）入口](../../tests/sim2gse/research/prototype-export.lua)：使用上游测试替身、CBOR（紧凑对象编码）解码器，以及未经修改的导入、校验和编译实现。
+- 从仓库根执行：`.venv/Scripts/python.exe tests/sim2gse/research/prototype-export.py`。复用已有解释器及固定源码缓存，不安装依赖，不启动游戏，不运行战斗。
 - 输出在 `.local/sim2gse/export-prototype/`：`evidence.json`、每例的 `.cbor`、`.trace.txt`、`.candidate.txt` 以及 `walkthrough.html`。候选字符串明确未经过客户端验证；演示只浏览实际编译结果，不模拟游戏执行。
 
 固定上游仍为 `3.3.32 / f225d4c947d168c63451ef7c567d7063c38cc239`，Lua 解释器为已有 5.1.5。本次复核原有五份来源散列，并补取同一提交的上游测试辅助文件；所有使用缓存的源码散列记入证据。

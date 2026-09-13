@@ -3,14 +3,13 @@
   "build": {
     "checks": [
       {
-        "id": "build.sim2gse-prototype-baseline",
-        "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/prototype-engine-build.py baseline",
-        "timeoutSeconds": 900
+        "id": "build.sim2gse-product",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/build.py",
+        "timeoutSeconds": 1200
       },
       {
-        "id": "build.sim2gse-prototype-controlled",
-        "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/prototype-engine-build.py controlled",
-        "timeoutSeconds": 900
+        "id": "build.assets",
+        "command": ".venv\\Scripts\\python.exe scripts/media/build_assets.py --output-root .local/build/assets"
       }
     ]
   },
@@ -118,7 +117,11 @@
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "myspec/changes/**",
+          "projects/sim2gse/README.md",
+          "tests/**/*.md",
+          "projects/*/README.md"
         ],
         "inputs": [
           "README.md",
@@ -127,19 +130,24 @@
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "myspec/changes/**",
+          "projects/sim2gse/README.md",
+          "tests/**/*.md",
+          "projects/*/README.md"
         ]
       },
       {
         "id": "verify.checker-tests",
-        "command": ".venv\\Scripts\\python.exe scripts/dev/test_checks.py",
+        "command": ".venv\\Scripts\\python.exe tests/dev/test_checks.py",
         "paths": [
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
         ],
         "inputs": [
           "scripts/dev/**",
@@ -147,7 +155,244 @@
           ".luarc.json",
           ".luacheckrc",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
+        ]
+      },
+      {
+        "id": "verify.sim2gse",
+        "command": ".venv\\Scripts\\python.exe -m unittest discover -s tests/sim2gse -p test_*.py",
+        "paths": [
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          "tests/sim2gse/**",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".tools/sim2gse/product/baseline/engine/simc.exe",
+          ".tools/sim2gse/product/controlled/engine/simc.exe",
+          ".local/sim2gse/build/baseline/build.json",
+          ".local/sim2gse/build/controlled/build.json",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          "tests/sim2gse/**",
+          "package.json",
+          "package-lock.json"
+        ],
+        "timeoutSeconds": 600
+      },
+      {
+        "id": "verify.test-inventory",
+        "command": ".venv\\Scripts\\python.exe tests/dev/test_inventory.py",
+        "paths": [
+          "tests/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ]
+      },
+      {
+        "id": "verify.gear-async",
+        "command": "node tests/gear-planner/check-async.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.gear-build-names",
+        "command": "node tests/gear-planner/check-build-names.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.gear-delete",
+        "command": "node tests/gear-planner/check-delete.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.gear-empty",
+        "command": "node tests/gear-planner/check-empty.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.gear-save-armor",
+        "command": "node tests/gear-planner/check-save-armor.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.gear-save-as",
+        "command": "node tests/gear-planner/check-save-as.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.gear-stat-filter",
+        "command": "node tests/gear-planner/check-stat-filter.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.gear-summary",
+        "command": "node tests/gear-planner/check-summary.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json"
         ]
       }
     ]

@@ -14,6 +14,7 @@ __pycache__/
 # 本仓库开发工具和诊断缓存
 /.tools/
 /.local/
+/node_modules/
 
 # 系统临时文件
 .vs/

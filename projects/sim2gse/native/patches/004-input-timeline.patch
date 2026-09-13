@@ -1,0 +1,60 @@
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -210,6 +210,8 @@
+   std::string sim2gse_steps;
+   bool sim2gse_trace = false;
+   timespan_t sim2gse_window = 400_ms;
++  std::string sim2gse_times;
++  std::vector<timespan_t> sim2gse_input_times;
+   std::vector<std::vector<action_t*>> sim2gse_blocks;
+   unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0;
+   action_t* sim2gse_pending = nullptr;
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4507,6 +4507,17 @@
+ void player_t::sim2gse_init()
+ {
+   if ( sim2gse_steps.empty() ) return;
++  for (auto value : util::string_split(sim2gse_times, "/"))
++  {
++    if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
++      throw std::runtime_error("invalid sim2gse input time");
++    auto at = timespan_t::from_millis(std::stoul(value));
++    if (at >= sim->max_time || (!sim2gse_input_times.empty() && at <= sim2gse_input_times.back()))
++      throw std::runtime_error("sim2gse input times must increase within combat");
++    sim2gse_input_times.push_back(at);
++  }
++  if (sim2gse_input_times.size() > 4096)
++    throw std::runtime_error("too many sim2gse input times");
+   if ( is_pet() || is_enemy() || specialization() != DEATH_KNIGHT_UNHOLY || sim->threads != 1 )
+     throw std::runtime_error("sim2gse prototype requires one-thread Unholy player");
+   if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
+@@ -4616,7 +4627,10 @@
+     }
+   }
+   sim2gse_step = (sim2gse_step + 1) % sim2gse_blocks.size();
+-  make_event(*sim, 300_ms, [this] { sim2gse_tick(); });
++  if (sim2gse_input_times.empty())
++    make_event(*sim, 300_ms, [this] { sim2gse_tick(); });
++  else if (sim2gse_input < sim2gse_input_times.size())
++    make_event(*sim, sim2gse_input_times[sim2gse_input] - sim->current_time(), [this] { sim2gse_tick(); });
+ }
+ 
+ void player_t::init_finished()
+@@ -6318,7 +6332,7 @@
+   }
+   first_cast = false;
+ 
+-  if (!sim2gse_steps.empty()) make_event(*sim, 0_ms, [this] { sim2gse_tick(); });
++  if (!sim2gse_steps.empty()) make_event(*sim, sim2gse_input_times.empty() ? 0_ms : sim2gse_input_times.front(), [this] { sim2gse_tick(); });
+ 
+   sim->print_debug( "Combat begins for {}.", *this );
+ 
+@@ -13397,6 +13411,7 @@
+   add_option( opt_func( "brain_lag_stddev", parse_brain_lag_stddev ) );
+   add_option( opt_timespan( "cooldown_tolerance", cooldown_tolerance_ ) );
+   add_option( opt_string("sim2gse_steps", sim2gse_steps) );
++  add_option( opt_string("sim2gse_times", sim2gse_times) );
+   add_option( opt_bool("sim2gse_trace", sim2gse_trace) );
+   add_option( opt_timespan("sim2gse_window", sim2gse_window) );
+   add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );

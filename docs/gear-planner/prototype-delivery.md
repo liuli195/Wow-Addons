@@ -2,7 +2,7 @@
 
 本次将用户审阅通过的原型及测试纳入版本管理，不代表正式版全角色适配完成。
 
-- 源码、启动脚本、公开名称资料和检查位于 `projects/gear-planner/`。
+- 源码、启动脚本和公开名称资料位于 `projects/gear-planner/`，检查集中在 `tests/gear-planner/`。
 - `fixtures/` 仅包含去除角色名称、区服等身份信息的计算样本，以及已核对的公开目录编号分组。它们用于回归，不自动载入用户页面。
 - 研究程序位于 `scripts/dev/gear-planner-research/`，继续读写 `.local/gear-planner-research/` 的本机证据。
 - `.local/gear-planner-prototype/` 原工作副本保留；之前文档中的路径是历史研究记录。后续应修改受版本管理的源码目录，避免两份副本分叉。
@@ -17,7 +17,7 @@
 ## 验证
 
 ```powershell
-python projects/gear-planner/run-checks.py
+build-and-verify verify --project .
 ```
 
-服务须已启动；浏览器检查使用独立临时上下文，不修改用户方案。复用当前已安装的浏览器自动化依赖。日志与下载生成在源码目录中被忽略的文件/目录。正式开发时再把项目环境准备和独立功能检查接入适合的交付门禁；仓库当前远端检查主要针对插件工具及文档，不能冒充原型端到端检查。
+统一入口已接入项目检查，并为浏览器检查启动和清理独立服务；已有服务占用端口时失败。日志和下载保存到 `.local/tests/`。构建、样例、私人输入与远端环境条件见[仓库测试说明](../../tests/README.md)。

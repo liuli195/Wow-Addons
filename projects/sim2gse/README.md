@@ -1,6 +1,6 @@
 # Sim2GSE（角色级按键序列优化器）
 
-本目录是项目入口，与同级的 `gear-planner/`（配装器）统一放在 `projects/`（项目目录）下。当前按实施地图推进，尚未建立正式实现模块。
+本目录是项目入口，与同级的 `gear-planner/`（配装器）统一放在 `projects/`（项目目录）下。当前已建立角色读取、离线导出、同一序列原生模拟、自动搜索、独立复测及取消恢复；第四票已将同一程序接入三步界面。职业、专精和职责交给固定引擎判断，统一优化伤害。最新测试与审查记录见[第四票](../../myspec/changes/sim2gse-implementation/issues/04-three-step-interface.md)，运行方式和状态边界见[本地任务说明](../../docs/sim2gse/local-task.md)。
 
 - [实施地图](../../myspec/changes/sim2gse-wayfinder/spec.md)
 - [实施方案](../../docs/Sim2GSE_Implementation_Plan.md)
@@ -11,4 +11,24 @@
 
 首轮使用用户提供的邪恶死亡骑士样本，单目标、300 毫秒名义输入间隔。项目说明与研究资料位于 `docs/sim2gse/`，开发脚本按需放入 `scripts/dev/sim2gse/`；复用仓库根的工具缓存、解释器环境与本地报告目录。后续只按当前票据需要创建文件。
 
-本项目引擎独立于配装器：从官方固定源码单独维护补丁、构建和程序，放在本项目专属目录。公共工具目录不代表共用引擎文件；不得修改、覆盖或自动调用配装器的专用引擎。本项目扩展引擎目前尚未实现。
+本项目引擎独立于配装器：从官方固定源码单独维护补丁、构建和程序，放在本项目专属目录。公共工具目录不代表共用引擎文件；不得修改、覆盖或自动调用配装器的专用引擎。产品专用构建与研究原型分目录保存。
+
+## 训练假人日志分析
+
+游戏中先用 `/combatlog` 开始记录，测试结束后再输入一次 `/combatlog` 停止记录。然后在仓库根目录运行：
+
+```powershell
+.venv\Scripts\python.exe projects\sim2gse\combat_log.py `
+  "D:\Program Files\World of Warcraft\_retail_\Logs\WoWCombatLog.txt" `
+  --player "角色名" `
+  --duration 180 `
+  --gse-debug "GSE调试导出.txt" `
+  --simulation "simc-result.json" `
+  --primary-target "主训练假人"
+```
+
+只有战斗日志和 `--player` 是必需参数。工具会用成功施法的目标推断主目标；需要严格指定时使用 `--primary-target`，同名目标改填 GUID（全局唯一标识）。已经在开始记录前召出的宠物或守护者可重复传入 `--owned-source "名称或GUID"`；同名来源无法唯一确定时必须填 GUID，否则日志无法证明其归属。
+
+`--gse-debug` 用最后一次 GSE（按键序列插件）调试区间定位测试，并列出各技能尝试次数、阻断原因和估算按键间隔。默认按运行电脑的本地时区解释 GSE 时间；分析来自另一时区的日志时，用 `--gse-utc-offset 8` 指定客户端相对 UTC（协调世界时）的小时偏移。`--simulation` 接受 SimC（模拟引擎）的 JSON 结果；角色和时长一致时，工具只用已确认的主目标比较单目标 DPS（每秒伤害），并明确报告排除的次要目标伤害。`damage` 和 `dps` 使用日志记录的完整命中伤害，适合不会死亡的训练假人；`overkill` 单列过量伤害，`effective_damage` 和 `effective_dps` 保留普通目标的实际扣血口径。伤害来源按法术 ID（标识符）和归属单位分组；SimC 未按法术细分的差额单列，不猜测归属。
+
+战斗日志不能证明专精、天赋、装备、游戏版本、候选序列、敌人攻击和生命时间线、目标防御、各技能实际覆盖范围以及输入节奏与模拟一致。输出中的百分比只是完整命中伤害的吞吐量比值；`simulation_comparison.accuracy_assessed` 在这些条件未核对时为 `false`，不能将该百分比当作模拟准确率结论。

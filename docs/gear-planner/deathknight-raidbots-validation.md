@@ -65,8 +65,8 @@
 在仓库根目录执行：
 
 ```powershell
-.venv\Scripts\python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-dk-validation/current-engine-check.json
-.venv\Scripts\python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-dk-validation/matched-engine-check.json
+.venv\Scripts\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-dk-validation/current-engine-check.json
+.venv\Scripts\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-dk-validation/matched-engine-check.json
 ```
 
 修复前命令返回状态码 1，失败记录保留于 `before-input-fix.json`（修复前记录）。修复后上述两条命令均返回状态码 0，全部原版字段及应用输出对照通过。验证脚本经过实际导入解析入口，但先明确移除服务专用模拟选项，因此不冒充整个 Raidbots 原始输入可直接粘贴导入。
@@ -82,4 +82,4 @@
 - `check-fit.py`（候选适配检查）核对三个专精的候选掉落编号和武器类型；原有数值与换装回归、筛选、保存失败与删除检查均通过。原有 `check-browser.cjs`（浏览器检查）单独重跑通过，包括装等修改、删除及保存失败保护。
 - 仓库六项默认快速检查通过。曾尝试批量原型检查，出现并发资源争用下的浏览器超时，批量运行已中止，不能记为全部检查通过；本轮受影响检查以以上串行复验结果为准。新浏览器检查等待本地页面就绪，不等待外部图片全部下载。
 
-复现浏览器检查：使用仓库已有运行环境启动服务，然后执行 `node projects/gear-planner/check-deathknight.cjs`；复用现有浏览器依赖，不安装新依赖。
+复现浏览器检查：使用仓库已有运行环境启动服务，然后执行 `node tests/gear-planner/check-deathknight.cjs`；复用现有浏览器依赖，不安装新依赖。

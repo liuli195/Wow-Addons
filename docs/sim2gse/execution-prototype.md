@@ -15,7 +15,7 @@
 | 300 毫秒固定研究序列 | 59,465.16 | 原生引擎实际结果；没有执行搜索，不是推荐序列或可达到伤害的上限。 |
 | 同序列开启详细轨迹 | 59,465.16 | 开关日志及三次重复运行的完整角色报告一致。 |
 
-固定研究序列为 12 个块、9 种原生主动动作，明确包含开始自动攻击；战前只允许召唤常驻宠物和记录属性快照。具体样例写在[运行检查入口](../../scripts/dev/sim2gse/prototype-engine-check.py)，是本票的研究输入，不是产品技能白名单。正式产品仍须自动生成角色能力清单。
+固定研究序列为 12 个块、9 种原生主动动作，明确包含开始自动攻击；战前只允许召唤常驻宠物和记录属性快照。具体样例写在[运行检查入口](../../tests/sim2gse/research/prototype-engine-check.py)，是本票的研究输入，不是产品技能白名单。正式产品仍须自动生成角色能力清单。
 
 100 次带轨迹运行共记录 **60,000 次输入、14,878 次原生主动执行、10,466 次入队、1,771 次覆盖**；最终执行复查拒绝为 **0**。计数包含上游统计前的首轮，不能直接当作 99 个统计样本的均值。技能替换由原生职业逻辑处理，报告中出现法术 `458128` 的实际执行；研究输入没有把它另列为独立按钮。常驻食尸鬼的原生子动作有实际伤害。
 
@@ -29,7 +29,7 @@
 
 ## 如何保证确实测到了引擎
 
-- 两份源码均从散列校验通过的官方 `b845947a34429874433d8e9362326894650dd20a` 归档单独展开到 `.tools/sim2gse/execution-prototype/`。原版和受控版分目录、分程序，没有复制配装器的修改或复用其二进制文件。
+- 两份源码均从提交和源码树身份核对通过的官方 `b845947a34429874433d8e9362326894650dd20a` 检出内容单独展开到 `.tools/sim2gse/execution-prototype/`。原版和受控版分目录、分程序，没有复制配装器的修改或复用其二进制文件。
 - 核对 563 份引擎及构建输入文件：原版无差异；受控版仅修改玩家状态、玩家调度和动作执行三份源码。原生职业、装备、数据表与伤害公式没有改动。差异保存为[可审查补丁](../../scripts/dev/sim2gse/prototype-controller.patch)。
 - 本机未发现 CMake（构建工具），本轮采用同一固定源码附带的 Make（构建工具）入口和已有 GCC（编译器）15.2.0，不安装环境。两个版本使用相同参数，关闭联网，输入只读本地数据；此为本地原型构建，不是最终发行选型。
 - 按键事件取当前块后推进一次；动作经原生可用性、目标和冷却检查，再进入原生前台或非公共冷却执行路径。详细轨迹分别记录输入、拒绝、排队、覆盖、调度及真正进入原生执行函数的时点，同时记录冷却、符文能量和生命值。
@@ -68,16 +68,18 @@
 
 ```powershell
 build-and-verify build --project .
-.venv/Scripts/python.exe scripts/dev/sim2gse/prototype-engine-check.py
+.venv/Scripts/python.exe scripts/dev/sim2gse/prototype-engine-build.py baseline
+.venv/Scripts/python.exe scripts/dev/sim2gse/prototype-engine-build.py controlled
+.venv/Scripts/python.exe tests/sim2gse/research/prototype-engine-check.py
 build-and-verify verify --project .
 ```
 
-第一步通过[统一配置](../../.build-and-verify/config.json)调用[本地原型构建入口](../../scripts/dev/sim2gse/prototype-engine-build.py)。需要已有官方归档和编译环境；不会安装依赖。专用战斗检查显式单独运行，未加入依赖私人角色文件的远端常规检查。最后一步是仓库常规验证，不代替第二步。
+第一步在运行 `scripts/dev/setup.ps1` 后直接调用[本地原型构建入口](../../scripts/dev/sim2gse/prototype-engine-build.py)。需要编译环境；专用战斗检查显式单独运行，不加入依赖私人角色文件的 PR（拉取请求）常规检查。最后一步是仓库常规验证，不代替第二步。
 
 本地证据根目录：`.local/sim2gse/execution-prototype/`。
 
 - `baseline/build.json`、`controlled/build.json`：完整上游身份、工具链、命令、补丁及程序散列；相邻 `build.log`（构建日志）。
-- `source-audit.json`：两份源码与归档的 563 份文件核对。
+- `.tools/sim2gse/execution-prototype/<模式>/prototype-source-files.json`：两份展开源码与固定上游的逐文件散列清单。
 - `runs/summary.json`：最终通过状态、逐例计数、实际耗时和未做客户端验证的标记。
 - `runs/<用例名>/`：原样测试输入、命令与程序身份、进程日志、原生文本轨迹和结构化角色结果。
 
@@ -85,10 +87,10 @@ build-and-verify verify --project .
 
 ## 已运行的按钮源码检查
 
-[检查入口](../../scripts/dev/sim2gse/prototype-input.lua)使用既有 Lua（脚本语言）5.1.5 与 GSE（按键序列插件）固定提交 `f225d4c947d168c63451ef7c567d7063c38cc239`。从仓库根运行：
+[检查入口](../../tests/sim2gse/research/prototype-input.lua)使用既有 Lua（脚本语言）5.1.5 与 GSE（按键序列插件）固定提交 `f225d4c947d168c63451ef7c567d7063c38cc239`。从仓库根运行：
 
 ```powershell
-.tools/lua-5.1.5/src/lua.exe scripts/dev/sim2gse/prototype-input.lua
+.tools/lua-5.1.5/src/lua.exe tests/sim2gse/research/prototype-input.lua
 ```
 
 调用原版按钮构造函数，执行其生成的初始化和点击代码；只替代客户端框架、修饰键状态与图标通知。没有重写一份步进算法来证明自己正确。第一次加载暴露客户端全局表插入函数缺失，显式补齐该边界及字符串拼接函数后通过。

@@ -1,0 +1,61 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4545,7 +4545,6 @@
+         throw std::runtime_error("sim2gse action index out of range");
+       auto* a = list->foreground_action_list[n - 1];
+       if ( a->background || !a->option.if_expr_str.empty() || !a->option.target_if_str.empty() ||
+-           a->channeled || a->execute_time() != 0_ms ||
+            a->type == ACTION_VARIABLE || a->name_str == "use_items" ||
+            a->name_str == "call_action_list" || a->name_str == "run_action_list" )
+         throw std::runtime_error("unsupported sim2gse prototype action: " + a->name_str);
+@@ -4565,10 +4564,10 @@
+ void player_t::sim2gse_record(const char* event, action_t* a, unsigned origin)
+ {
+   if ( sim2gse_trace )
+-    sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
++    sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
+       event, origin, origin ? static_cast<int>((origin - 1) % sim2gse_blocks.size()) : -1, a ? a->name_str : "-", gcd_ready.total_millis(),
+       resources.current[primary_resource()], health_percentage(), a ? a->cooldown->remains().total_millis() : 0,
+-      sim->current_iteration, a ? a->signature_str : "-");
++      sim->current_iteration, a ? a->signature_str : "-", a ? a->execute_time().total_millis() : 0);
+ }
+ 
+ void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
+@@ -4583,7 +4582,7 @@
+   }
+   sim2gse_record("dispatch", a, origin);
+   sim2gse_origin = origin;
+-  if ( a->gcd() == 0_ms )
++  if ( a->gcd() == 0_ms && a->execute_time() == 0_ms && !a->channeled )
+     a->queue_execute(execute_type::OFF_GCD);
+   else
+   {
+@@ -10211,8 +10210,6 @@
+ 
+     action_t::init();
+ 
+-    if (!player->sim2gse_steps.empty() && action && (action->channeled || action->execute_time() != 0_ms))
+-      throw std::runtime_error("prototype does not support cast/channel trinket: " + name_str);
+     if ( action )
+       action->is_precombat = is_precombat;
+   }
+--- a/engine/action/action.cpp
++++ b/engine/action/action.cpp
+@@ -82,7 +82,7 @@
+     }
+ 
+     if (!action->player->sim2gse_steps.empty())
+-      action->player->sim2gse_record("native_execute", action, sim2gse_origin);
++      action->player->sim2gse_record(action->is_precombat ? "native_precombat" : "native_execute", action, sim2gse_origin);
+     action->execute();
+     action->line_cooldown->start();
+ 
+@@ -274,7 +274,7 @@
+       // current (default) target of the action.
+       action->set_target( target );
+       if (!p()->sim2gse_steps.empty() && !action->background)
+-        p()->sim2gse_record("native_execute", action, sim2gse_origin);
++        p()->sim2gse_record(action->is_precombat ? "native_precombat" : "native_execute", action, sim2gse_origin);
+       action->execute();
+     }
+     else

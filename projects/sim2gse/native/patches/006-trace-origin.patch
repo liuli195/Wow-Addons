@@ -1,0 +1,160 @@
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -213,7 +213,7 @@
+   std::string sim2gse_times;
+   std::vector<timespan_t> sim2gse_input_times;
+   std::vector<std::vector<action_t*>> sim2gse_blocks;
+-  unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0;
++  unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0, sim2gse_origin = 0;
+   action_t* sim2gse_pending = nullptr;
+   action_t* sim2gse_dispatch = nullptr;
+   event_t* sim2gse_queue = nullptr;
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4560,9 +4560,10 @@
+ void player_t::sim2gse_record(const char* event, action_t* a, unsigned origin)
+ {
+   if ( sim2gse_trace )
+-    sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
+-      event, origin, sim2gse_step, a ? a->name_str : "-", gcd_ready.total_millis(),
+-      resources.current[RESOURCE_RUNIC_POWER], health_percentage(), a ? a->cooldown->remains().total_millis() : 0);
++    sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
++      event, origin, origin ? static_cast<int>((origin - 1) % sim2gse_blocks.size()) : -1, a ? a->name_str : "-", gcd_ready.total_millis(),
++      resources.current[RESOURCE_RUNIC_POWER], health_percentage(), a ? a->cooldown->remains().total_millis() : 0,
++      sim->current_iteration, a ? a->signature_str : "-");
+ }
+ 
+ void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
+@@ -4576,6 +4577,7 @@
+     return;
+   }
+   sim2gse_record("dispatch", a, origin);
++  sim2gse_origin = origin;
+   if ( a->gcd() == 0_ms )
+     a->queue_execute(execute_type::OFF_GCD);
+   else
+@@ -4583,6 +4585,7 @@
+     sim2gse_dispatch = a;
+     execute_action(); // Keep native foreground scheduling, accounting and stats.
+   }
++  sim2gse_origin = 0;
+ }
+ 
+ void player_t::sim2gse_tick()
+@@ -6769,7 +6772,7 @@
+  */
+ void player_t::reset()
+ {
+-  sim2gse_step = sim2gse_input = sim2gse_pending_origin = 0;
++  sim2gse_step = sim2gse_input = sim2gse_pending_origin = sim2gse_origin = 0;
+   sim2gse_pending = sim2gse_dispatch = nullptr;
+   sim2gse_queue = nullptr;
+   sim->print_debug( "Resetting {}.", *this );
+--- a/engine/action/action.cpp
++++ b/engine/action/action.cpp
+@@ -44,7 +44,7 @@
+  * (instead of going through schedule_execute processing), and parts of our execution chain where
+  * relevant (e.g., line cooldown, stats tracking, gcd triggering for cast while casting).
+  */
+-void do_execute( action_t* action, execute_type type )
++void do_execute( action_t* action, execute_type type, unsigned sim2gse_origin )
+ {
+   // Schedule off gcd or cast while casting ready event before the action executes.
+   // This prevents the action from scheduling ready events with non-zero delay
+@@ -82,7 +82,7 @@
+     }
+ 
+     if (!action->player->sim2gse_steps.empty())
+-      action->player->sim2gse_record("native_execute", action, 0);
++      action->player->sim2gse_record("native_execute", action, sim2gse_origin);
+     action->execute();
+     action->line_cooldown->start();
+ 
+@@ -100,9 +100,11 @@
+ {
+   action_t* action;
+   execute_type type;
+-
+-  queued_action_execute_event_t( action_t* a, timespan_t t, execute_type type_ )
+-    : event_t( *a->sim, t ), action( a ), type( type_ )
++  unsigned sim2gse_origin;
++
++  queued_action_execute_event_t( action_t* a, timespan_t t, execute_type type_, unsigned origin = 0 )
++    : event_t( *a->sim, t ), action( a ), type( type_ ),
++      sim2gse_origin(origin ? origin : a->player->sim2gse_origin)
+   { }
+ 
+   const char* name() const override
+@@ -126,7 +128,7 @@
+     if ( action->cooldown->charges > 1 && action->cooldown->current_charge == 0 && action->cooldown->recharge_event &&
+          action->cooldown->recharge_event->remains() == timespan_t::zero() )
+     {
+-      action->queue_event = make_event<queued_action_execute_event_t>( sim(), action, timespan_t::zero(), type );
++      action->queue_event = make_event<queued_action_execute_event_t>( sim(), action, timespan_t::zero(), type, sim2gse_origin );
+       // Note, processing ends here
+       return;
+     }
+@@ -171,13 +173,16 @@
+       }
+       else
+       {
++        const auto previous_origin = actor->sim2gse_origin;
++        actor->sim2gse_origin = sim2gse_origin;
+         action->schedule_execute();
++        actor->sim2gse_origin = previous_origin;
+       }
+     }
+     // Other execute types are specialized, and need separate handling
+     else
+     {
+-      do_execute( action, type );
++      do_execute( action, type, sim2gse_origin );
+     }
+   }
+ };
+@@ -189,12 +194,14 @@
+   action_t* action;
+   action_state_t* execute_state;
+   bool has_cast_time;
++  unsigned sim2gse_origin;
+ 
+   action_execute_event_t( action_t* a, timespan_t time_to_execute, action_state_t* state = nullptr )
+     : player_event_t( *a->player, time_to_execute ),
+       action( a ),
+       execute_state( state ),
+-      has_cast_time( time_to_execute > timespan_t::zero() )
++      has_cast_time( time_to_execute > timespan_t::zero() ),
++      sim2gse_origin(a->player->sim2gse_origin)
+   {
+     if ( sim().debug )
+     {
+@@ -267,7 +274,7 @@
+       // current (default) target of the action.
+       action->set_target( target );
+       if (!p()->sim2gse_steps.empty() && !action->background)
+-        p()->sim2gse_record("native_execute", action, 0);
++        p()->sim2gse_record("native_execute", action, sim2gse_origin);
+       action->execute();
+     }
+     else
+@@ -2188,7 +2195,7 @@
+       }
+       else
+       {
+-        do_execute( this, et );
++        do_execute( this, et, player->sim2gse_origin );
+       }
+     }
+   }
+@@ -5089,9 +5096,10 @@
+   else
+   {
+     execute_type et = debug_cast<queued_action_execute_event_t*>( queue_event )->type;
++    unsigned origin = debug_cast<queued_action_execute_event_t*>( queue_event )->sim2gse_origin;
+ 
+     event_t::cancel( queue_event );
+-    queue_event = make_event<queued_action_execute_event_t>( *sim, this, new_queue_delay, et );
++    queue_event = make_event<queued_action_execute_event_t>( *sim, this, new_queue_delay, et, origin );
+   }
+ }
+ rng::rng_t& action_t::rng()

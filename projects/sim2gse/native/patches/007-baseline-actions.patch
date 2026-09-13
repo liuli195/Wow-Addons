@@ -1,0 +1,48 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -856,6 +856,45 @@
+   }
+ 
+   collected_data_to_json( root[ "collected_data" ], report_configuration, p );
++
++  // Expose existing whole-run counters and native identity; no simulation decisions change.
++  root[ "sim2gse_actions_protocol" ] = 1;
++  auto actions = root[ "sim2gse_actions" ];
++  actions.make_array();
++  for ( const auto* a : p.action_list )
++  {
++    if ( !a->total_executions ) continue;
++    auto row = actions.add();
++    row[ "name" ] = a->name_str;
++    row[ "id" ] = a->id;
++    row[ "data_id" ] = a->data().id();
++    row[ "data_valid" ] = a->data().ok();
++    row[ "signature" ] = a->signature_str;
++    row[ "executions" ] = a->total_executions;
++    row[ "type" ] = util::action_type_string( a->type );
++    row[ "background" ] = a->background;
++    row[ "quiet" ] = a->quiet;
++    row[ "player_owned" ] = a->player == &p && !p.is_pet();
++    row[ "passive" ] = a->data().flags( SX_PASSIVE );
++    row[ "action_list" ] = a->action_list ? a->action_list->name_str : "";
++    row[ "precombat" ] = a->is_precombat;
++    row[ "gcd_ms" ] = a->trigger_gcd.total_millis();
++    row[ "cast_ms" ] = a->execute_time().total_millis();
++    row[ "channeled" ] = a->channeled;
++  }
++  auto items = root[ "sim2gse_items" ];
++  items.make_array();
++  for ( const auto& item : p.items )
++  {
++    const auto* effect = item.special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE );
++    if ( !effect ) continue;
++    auto row = items.add();
++    row[ "slot" ] = item.slot_name();
++    row[ "id" ] = item.parsed.data.id;
++    row[ "name" ] = item.name_str;
++    row[ "channeled" ] = ( effect->execute_action && effect->execute_action->channeled ) ||
++      effect->driver()->flags( SX_CHANNELED ) || effect->driver()->flags( SX_CHANNELED_2 );
++  }
+ 
+   if ( p.sim->report_details != 0 )
+   {

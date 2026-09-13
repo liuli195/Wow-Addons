@@ -52,11 +52,11 @@
 候选与输入检查通过。此前七职业二十份成功参考样本的应用数值回归没有新增差异，完整快照仅保留既有奇袭躲闪与奥术回蓝差异。神圣圣骑士按用户决定保持暂缓，不计入成功样本。仓库默认快速检查六项全部实际执行通过，文档更新后按统一入口复验。
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-shaman-validation/current-engine-check.json
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-shaman-validation/matched-engine-check.json
-node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-shaman
-.venv/Scripts/python.exe projects/gear-planner/check-fit.py
-.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-shaman-validation/current-engine-check.json
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-shaman-validation/matched-engine-check.json
+node tests/gear-planner/check-deathknight.cjs fixtures/raidbots-shaman
+.venv/Scripts/python.exe tests/gear-planner/check-fit.py
+.venv/Scripts/python.exe tests/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 

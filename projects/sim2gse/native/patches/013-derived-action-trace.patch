@@ -1,0 +1,14 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4563,6 +4563,11 @@
+ 
+ void player_t::sim2gse_record(const char* event, action_t* a, unsigned origin)
+ {
++  if ( sim2gse_trace && std::string(event) == "native_execute" &&
++       (!origin || std::find(sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].begin(),
++                            sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end(), a) ==
++                   sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end()) )
++    event = "native_derived";
+   if ( sim2gse_trace )
+     sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
+       event, origin, origin ? static_cast<int>((origin - 1) % sim2gse_blocks.size()) : -1, a ? a->name_str : "-", gcd_ready.total_millis(),

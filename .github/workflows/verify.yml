@@ -14,7 +14,7 @@ jobs:
   verify:
     name: Windows addon checks
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
         with:
@@ -25,6 +25,20 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
+      - name: Record compiler identity
+        id: compiler
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $compiler = Join-Path $env:MSYS2_LOCATION 'mingw64/bin/g++.exe'
+          "sha256=$((Get-FileHash -LiteralPath $compiler -Algorithm SHA256).Hash)" >> $env:GITHUB_OUTPUT
       - name: Restore recorded verification toolchain
         shell: pwsh
         run: |
@@ -42,10 +56,32 @@ jobs:
           } else {
             throw 'Unknown toolchain mode'
           }
+      - name: Restore SimC source cache
+        id: simc-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .tools/sim2gse-upstream/simc
+            .tools/sim2gse/product
+          key: sim2gse-${{ runner.os }}-${{ steps.compiler.outputs.sha256 }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
       - name: Prepare pinned tools and API references
         shell: pwsh
         run: ./scripts/dev/setup.ps1
+      - name: Build all repository targets
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: build-and-verify build --project .
+      - name: Save SimC build cache
+        if: success() && steps.simc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .tools/sim2gse-upstream/simc
+            .tools/sim2gse/product
+          key: sim2gse-${{ runner.os }}-${{ steps.compiler.outputs.sha256 }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
       - name: Full verification
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: build-and-verify verify --project . --full
       - name: Keep diagnostics
@@ -55,5 +91,7 @@ jobs:
           name: verification-diagnostics
           path: |
             .local/luals/
+            .local/tests/
+            .local/sim2gse/build/
             .build-and-verify/runs/
           if-no-files-found: ignore

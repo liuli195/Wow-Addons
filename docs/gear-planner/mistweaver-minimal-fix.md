@@ -35,7 +35,7 @@
 
 ## 验证
 
-可重复执行：`python projects/gear-planner/check-mistweaver.py`。
+可重复执行：`python tests/gear-planner/check-mistweaver.py`。
 
 | 场景 | 结果 |
 | --- | --- |

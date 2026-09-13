@@ -46,11 +46,11 @@
 样本：`projects/gear-planner/fixtures/raidbots-mage/`。清单保存报告链接、实际输入与报告的校验摘要、身份、完整期望快照和装备。原始官方配置、提交文本、实际输入／输出、两种引擎复验、既有职业数值回归及套装资料保存在 `.local/gear-planner-mage-validation/`。
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-mage --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-mage-validation/current-engine-check.json
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-mage --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-mage-validation/matched-engine-check.json
-node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-mage
-.venv/Scripts/python.exe projects/gear-planner/check-fit.py
-.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-mage --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-mage-validation/current-engine-check.json
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-mage --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-mage-validation/matched-engine-check.json
+node tests/gear-planner/check-deathknight.cjs fixtures/raidbots-mage
+.venv/Scripts/python.exe tests/gear-planner/check-fit.py
+.venv/Scripts/python.exe tests/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 

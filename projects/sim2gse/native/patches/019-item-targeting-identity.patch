@@ -1,0 +1,10 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -898,6 +898,7 @@
+     auto row = items.add();
+     row[ "slot" ] = item.slot_name();
+     row[ "id" ] = item.parsed.data.id;
++    row[ "driver_spell_id" ] = effect->driver()->id();
+     row[ "name" ] = item.name_str;
+     row[ "channeled" ] = ( effect->execute_action && effect->execute_action->channeled ) ||
+       effect->driver()->flags( SX_CHANNELED ) || effect->driver()->flags( SX_CHANNELED_2 );

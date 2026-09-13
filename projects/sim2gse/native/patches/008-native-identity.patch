@@ -1,0 +1,22 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -858,6 +858,11 @@
+   collected_data_to_json( root[ "collected_data" ], report_configuration, p );
+ 
+   // Expose existing whole-run counters and native identity; no simulation decisions change.
++  root[ "sim2gse_class" ] = util::player_type_string( p.type );
++  root[ "sim2gse_class_id" ] = util::class_id( p.type );
++  root[ "sim2gse_spec_id" ] = static_cast<unsigned>( p.specialization() );
++  root[ "sim2gse_spec" ] = dbc::specialization_string( p.specialization() );
++  root[ "sim2gse_resource" ] = util::resource_type_string( p.primary_resource() );
+   root[ "sim2gse_actions_protocol" ] = 1;
+   auto actions = root[ "sim2gse_actions" ];
+   actions.make_array();
+@@ -874,6 +879,7 @@
+     row[ "type" ] = util::action_type_string( a->type );
+     row[ "background" ] = a->background;
+     row[ "quiet" ] = a->quiet;
++    row[ "harmful" ] = a->harmful;
+     row[ "player_owned" ] = a->player == &p && !p.is_pet();
+     row[ "passive" ] = a->data().flags( SX_PASSIVE );
+     row[ "action_list" ] = a->action_list ? a->action_list->name_str : "";
