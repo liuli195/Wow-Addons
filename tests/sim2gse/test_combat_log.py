@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +20,7 @@ class CombatLogToolTests(unittest.TestCase):
             text=True,
             encoding="utf-8",
             capture_output=True,
+            env={**os.environ, "TZ": "UTC"},
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
@@ -241,7 +243,8 @@ class CombatLogToolTests(unittest.TestCase):
             }), encoding='utf-8')
 
             result = self.run_tool(
-                combat, '--duration', '2', '--gse-debug', str(debug), '--simulation', str(simulation),
+                combat, '--duration', '2', '--gse-debug', str(debug), '--gse-utc-offset', '8',
+                '--simulation', str(simulation),
                 '--primary-target', '新假人')
 
             self.assertEqual(result['primary_target']['name'], '新假人')
@@ -280,6 +283,14 @@ class CombatLogToolTests(unittest.TestCase):
                 'mean': 2000, 'min': 1400, 'max': 2600, 'std_dev': 300,
             })
             self.assertTrue(result['primary_target_within_simulation_sample_range'])
+
+            mismatched = subprocess.run(
+                [sys.executable, str(TOOL), str(combat), '--player', '测试者',
+                 '--duration', '2', '--gse-debug', str(debug), '--gse-utc-offset', '7'],
+                text=True, encoding='utf-8', capture_output=True,
+                env={**os.environ, 'TZ': 'UTC'})
+            self.assertNotEqual(mismatched.returncode, 0)
+            self.assertIn('GSE 调试记录与测试区间不重合', mismatched.stderr)
 
     def test_rejects_ambiguous_comparison_and_malformed_debug(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

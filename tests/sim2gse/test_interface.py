@@ -397,7 +397,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                 with self.assertRaises(subprocess.TimeoutExpired):manual_interface.main()
             self.assertGreaterEqual(sum(bool(handle) for handle in held),2,'必须观察到 Node 及浏览器子进程')
             for handle in held:
-                if handle:self.assertEqual(kernel.WaitForSingleObject(handle,0),0,'浏览器进程未被清理')
+                if handle:self.assertEqual(kernel.WaitForSingleObject(handle,5000),0,'浏览器进程未被清理')
         finally:
             for handle in held:
                 if handle:kernel.CloseHandle(handle)

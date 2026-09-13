@@ -43,7 +43,7 @@ def _read_events(path: Path) -> list[tuple[datetime, list[str]]]:
     return events
 
 
-def _latest_gse_session(path: Path) -> tuple[datetime, list[list[str]]]:
+def _latest_gse_session(path: Path) -> tuple[int, list[list[str]]]:
     rows = list(csv.reader(path.read_text(encoding="utf-8-sig").splitlines()))
     if not rows or any(len(row) < 4 for row in rows):
         raise ValueError("GSE 调试记录格式错误")
@@ -58,15 +58,21 @@ def _latest_gse_session(path: Path) -> tuple[datetime, list[list[str]]]:
         if timestamps[index] - timestamps[index - 1] > 5:
             session_start = index
     session_rows = rows[session_start:]
-    return datetime.fromtimestamp(timestamps[session_start]), session_rows
+    return timestamps[session_start], session_rows
+
+
+def _gse_time(timestamp: int, utc_offset: float | None) -> datetime:
+    if utc_offset is None:
+        return datetime.fromtimestamp(timestamp)
+    if not -12 <= utc_offset <= 14:
+        raise ValueError("GSE UTC 时区偏移必须在 -12 到 +14 小时之间")
+    return datetime(1970, 1, 1) + timedelta(seconds=timestamp, hours=utc_offset)
 
 
 def _summarize_gse_session(
-    rows: list[list[str]], start: datetime, end: datetime
+    rows: list[list[str]], start: datetime, end: datetime, utc_offset: float | None
 ) -> dict:
-    start_second = math.floor(start.timestamp())
-    end_second = math.ceil(end.timestamp())
-    session_rows = [row for row in rows if start_second <= int(row[2]) < end_second]
+    session_rows = [row for row in rows if start <= _gse_time(int(row[2]), utc_offset) < end]
     if not session_rows:
         raise ValueError("GSE 调试记录与测试区间不重合")
     session_times = [int(row[2]) for row in session_rows]
@@ -82,8 +88,8 @@ def _summarize_gse_session(
     ) * 1000 / (len(session_times) - 1)
     return {
         "rows": len(session_rows),
-        "start": datetime.fromtimestamp(session_times[0]).isoformat(sep=" "),
-        "end": datetime.fromtimestamp(session_times[-1]).isoformat(sep=" "),
+        "start": _gse_time(session_times[0], utc_offset).isoformat(sep=" "),
+        "end": _gse_time(session_times[-1], utc_offset).isoformat(sep=" "),
         "estimated_average_input_interval_ms": round(interval, 3),
         "attempts_by_spell": dict(sorted(attempts.items())),
         "blocked_reasons": dict(sorted(blocked.items())),
@@ -209,6 +215,7 @@ def analyze(
     simulation: Path | None = None,
     primary_target: str | None = None,
     owned_sources: tuple[str, ...] = (),
+    gse_utc_offset: float | None = None,
 ) -> dict:
     if duration <= 0:
         raise ValueError("duration 必须大于 0")
@@ -227,7 +234,8 @@ def analyze(
     debug_result = None
     debug_rows = None
     if gse_debug is not None:
-        debug_start, debug_rows = _latest_gse_session(gse_debug)
+        debug_timestamp, debug_rows = _latest_gse_session(gse_debug)
+        debug_start = _gse_time(debug_timestamp, gse_utc_offset)
         matching_damage = [item for item in player_damage if item[0] >= debug_start]
         if not matching_damage:
             raise ValueError("GSE 最后一次按键区间之后没有找到角色伤害")
@@ -255,7 +263,7 @@ def analyze(
         start = _latest_damage_cluster_start(owned_damage)
     end = start + timedelta(seconds=duration)
     if debug_rows is not None:
-        debug_result = _summarize_gse_session(debug_rows, start, end)
+        debug_result = _summarize_gse_session(debug_rows, start, end, gse_utc_offset)
     changed = True
     while changed:
         changed = False
@@ -532,6 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--player", required=True, help="角色名，可省略服务器和地区后缀")
     parser.add_argument("--duration", type=float, default=180)
     parser.add_argument("--gse-debug", type=Path)
+    parser.add_argument("--gse-utc-offset", type=float, help="GSE 时间相对 UTC 的小时偏移；默认使用本机时区")
     parser.add_argument("--simulation", type=Path, help="SimC JSON 结果")
     parser.add_argument("--primary-target", help="主目标名称或 GUID；同名目标请使用 GUID")
     parser.add_argument(
@@ -550,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
             simulation=args.simulation,
             primary_target=args.primary_target,
             owned_sources=tuple(args.owned_source),
+            gse_utc_offset=args.gse_utc_offset,
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
