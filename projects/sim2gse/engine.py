@@ -36,7 +36,8 @@ def identity(mode, runtime=None):
     if manifest['patches'] != expected:
         raise ValueError('引擎补丁身份已变化')
     for patch in expected:
-        if hashlib.sha256((ROOT / patch['path']).read_bytes()).hexdigest() != patch['sha256']:
+        patch_bytes = (ROOT / patch['path']).read_bytes().replace(b'\r\n', b'\n')
+        if hashlib.sha256(patch_bytes).hexdigest() != patch['sha256']:
             raise ValueError('补丁与受检引擎不符')
     if runtime:
         runtime.check()

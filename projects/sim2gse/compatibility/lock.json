@@ -21,7 +21,7 @@
     },
     {
       "path": "projects/sim2gse/native/patches/006-trace-origin.patch",
-      "sha256": "2c056237503cfdd1e0853eab82585ca1111ea01e394ac80e271b641addae14dd"
+      "sha256": "913cc5989f3028d5e96810bee68b246bc15fd8484b92448d180d24f498ecff57"
     },
     {
       "path": "projects/sim2gse/native/patches/007-baseline-actions.patch",
@@ -33,15 +33,15 @@
     },
     {
       "path": "projects/sim2gse/native/patches/009-unrestricted-player.patch",
-      "sha256": "08a5074c9ae498f2d0b2fd3abfc5517ab0c3cd67426f7a4941d08598833e2cd7"
+      "sha256": "bb8d7ddfdb5fa9a128400131192f0b3ebbf59dd521e870f3b39b6f134ae62689"
     },
     {
       "path": "projects/sim2gse/native/patches/010-preserve-sequence-list.patch",
-      "sha256": "8e5e479e366fb6433af4beadff0e145fbeca5774dc8e5fb8b28cc92f65dc7fb6"
+      "sha256": "2e3b4b3f2c375ade5776974ad0ba5f3dea98eed75fda8b1acf1e13e768251e4e"
     },
     {
       "path": "projects/sim2gse/native/patches/011-native-casting.patch",
-      "sha256": "7bda42bab9d1618a8f27e1abcfb1c7f680b6d4ec113a83f00569fad4a12a694b"
+      "sha256": "33ed3da8ee25e99f36bc65c3f03a6d9d88f3c6a14bad881781e0990ff62ac6b9"
     },
     {
       "path": "projects/sim2gse/native/patches/012-observe-item-proxies.patch",
@@ -49,7 +49,7 @@
     },
     {
       "path": "projects/sim2gse/native/patches/013-derived-action-trace.patch",
-      "sha256": "2ea3963605183b8386e99c667f7d7152b3c750d50ec65cce242f233110cdc5ec"
+      "sha256": "68268c7eca37595a3e0c33113e2a3312988459a1084e007bfb96f9870e70d23a"
     },
     {
       "path": "projects/sim2gse/native/patches/014-controlled-button-identity.patch",
@@ -57,7 +57,7 @@
     },
     {
       "path": "projects/sim2gse/native/patches/015-native-button-blocks.patch",
-      "sha256": "d72571d58613d1518018266294f135bb6a136aa5d8ca364cf1ae3f6fa38fcd76"
+      "sha256": "4724b7d67cb9d5baae4d9746b39548fcf4bfade337b52456b8210f21644d563d"
     },
     {
       "path": "projects/sim2gse/native/patches/016-native-cast-interrupt.patch",

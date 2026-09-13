@@ -14,6 +14,20 @@ TOOLS = ROOT / '.tools/sim2gse/execution-prototype'
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+def patch_bytes(path):
+    return path.read_bytes().replace(b'\r\n', b'\n')
+
+def patch_digest(path):
+    return hashlib.sha256(patch_bytes(path)).hexdigest()
+
+def apply_patch(source, path, env=None, reverse=False):
+    command = ['git', 'apply']
+    if reverse:
+        command.append('--reverse')
+    content = patch_bytes(path)
+    subprocess.run([*command, '--check', '-'], input=content, cwd=source, env=env, check=True)
+    subprocess.run([*command, '-'], input=content, cwd=source, env=env, check=True)
+
 def verify_source(source, files):
     current = {path.as_posix(): digest(source / path) for path in files}
     manifest = source / 'prototype-source-files.json'
@@ -63,19 +77,18 @@ def main():
     patch = ROOT / 'scripts/dev/sim2gse/prototype-controller.patch'
     patch_hash = None
     if mode == 'controlled':
-        patch_hash = digest(patch)
+        patch_hash = patch_digest(patch)
         applied = source / 'prototype-patch.sha256'
         saved_patch = source / 'prototype-applied.patch'
         if applied.exists() and applied.read_text() != patch_hash:
-            assert saved_patch.exists() and digest(saved_patch) == applied.read_text()
-            subprocess.run(['git', 'apply', '--reverse', '--check', str(saved_patch)], cwd=source, env=env, check=True)
-            subprocess.run(['git', 'apply', '--reverse', str(saved_patch)], cwd=source, env=env, check=True)
+            assert saved_patch.exists() and patch_digest(saved_patch) == applied.read_text()
+            apply_patch(source, saved_patch, env, reverse=True)
             applied.unlink()
         if not applied.exists():
-            subprocess.run(['git', 'apply', '--check', str(patch)], cwd=source, env=env, check=True)
-            subprocess.run(['git', 'apply', str(patch)], cwd=source, env=env, check=True)
+            current_bytes = patch_bytes(patch)
+            apply_patch(source, patch, env)
             applied.write_text(patch_hash)
-            saved_patch.write_bytes(patch.read_bytes())
+            saved_patch.write_bytes(current_bytes)
         assert applied.read_text() == patch_hash, 'use a fresh source for changed patch'
     verify_source(source, files)
     run_dir = OUT / mode

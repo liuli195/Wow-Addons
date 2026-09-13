@@ -14,6 +14,10 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def patch_digest(path):
+    return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+
+
 def verify_upstream(upstream, lock):
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=upstream, check=True,
                             capture_output=True, text=True).stdout.strip()
@@ -63,7 +67,7 @@ def main():
                         target.write_bytes(zipped.read(entry))
             for patch in patches:
                 path = ROOT / patch['path']
-                if digest(path) != patch['sha256']:
+                if patch_digest(path) != patch['sha256']:
                     raise ValueError('补丁散列与兼容锁不符')
                 patch_bytes = path.read_bytes().replace(b'\r\n', b'\n')
                 subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', '--check', '-'], input=patch_bytes, cwd=source, check=True, env=env)

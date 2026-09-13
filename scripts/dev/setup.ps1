@@ -81,7 +81,7 @@ if ((Get-Content .tools/wow-ui-source/version.txt).Trim() -ne $expected) {
     throw '界面源码构建号不匹配。'
 }
 if (-not (Test-Path '.venv/Scripts/python.exe')) { python -m venv .venv }
-& .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r scripts/dev/requirements.txt
+& .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r scripts/dev/requirements.txt -r projects/sim2gse/requirements.txt
 npm ci --ignore-scripts --no-audit --no-fund
 & .tools/lua-5.1.5/src/lua.exe -e 'assert(_VERSION == "Lua 5.1"); print(_VERSION)'
 & .tools/downloads/luacheck.exe --version
