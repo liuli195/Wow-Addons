@@ -183,7 +183,7 @@
           "package.json",
           "package-lock.json"
         ],
-        "timeoutSeconds": 240
+        "timeoutSeconds": 600
       },
       {
         "id": "verify.test-inventory",

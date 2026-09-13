@@ -57,7 +57,8 @@ jobs:
             throw 'Unknown toolchain mode'
           }
       - name: Restore SimC source cache
-        uses: actions/cache@v4
+        id: simc-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             .tools/sim2gse-upstream/simc
@@ -71,6 +72,14 @@ jobs:
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: build-and-verify build --project .
+      - name: Save SimC build cache
+        if: success() && steps.simc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .tools/sim2gse-upstream/simc
+            .tools/sim2gse/product
+          key: sim2gse-${{ runner.os }}-${{ steps.compiler.outputs.sha256 }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
       - name: Full verification
         if: ${{ !cancelled() }}
         shell: pwsh

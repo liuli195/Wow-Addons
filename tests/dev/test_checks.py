@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,10 +21,14 @@ def invoke(check, folder, expected):
 def main():
     setup = (ROOT / "scripts/dev/setup.ps1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
+    config = json.loads((ROOT / ".build-and-verify/config.json").read_text(encoding="utf-8"))
     assert "https://github.com/simulationcraft/simc.git" in setup
     assert "simc-source.zip" not in setup
     assert "projects/sim2gse/requirements.txt" in setup
     assert "mingw-w64-x86_64-make" in workflow
+    assert "actions/cache/save@v4" in workflow
+    sim2gse = next(check for check in config["verify"]["checks"] if check["id"] == "verify.sim2gse")
+    assert sim2gse["timeoutSeconds"] >= 600
     spec = importlib.util.spec_from_file_location(
         "sim2gse_build", ROOT / "scripts/dev/sim2gse/build.py"
     )
