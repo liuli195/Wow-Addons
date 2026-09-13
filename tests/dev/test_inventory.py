@@ -45,8 +45,14 @@ def local_acceptance(path):
 def main():
     config = json.loads((ROOT / '.build-and-verify/config.json').read_text())
     commands = '\n'.join(str(c['command']).replace('\\', '/') for c in config['verify']['checks'])
-    local_checks = [c['id'] for c in config['verify']['checks']
-                    if any(part in c['id'] for part in ('manual', 'research', 'raidbots', 'prototype'))]
+    local_checks = []
+    for check in config['verify']['checks']:
+        command = str(check['command']).replace('\\', '/')
+        if (any(path in command for path in LOCAL_ACCEPTANCE)
+                or 'tests/sim2gse/manual_' in command
+                or 'tests/sim2gse/research/' in command
+                or 'tests/gear-planner/research/' in command):
+            local_checks.append(check['id'])
     assert not local_checks, '本机验收不得进入 PR 统一验证：\n' + '\n'.join(local_checks)
     assert {c['id'] for c in config['build']['checks']} == {
         'build.sim2gse-product', 'build.assets',
