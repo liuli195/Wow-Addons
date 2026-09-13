@@ -122,7 +122,7 @@ def inspect(reference, folder):
         if action:
             action['native_name'] = row['name']
             target = precombat_actions if row['precombat'] else actions
-            target.setdefault(action['simc_action'], action)
+            target.setdefault(row['name'] if row['precombat'] else action['simc_action'], action)
     buttons = {}
     for action in actions.values():
         key = ('spell', action['base_spell_id']) if action['kind']=='spell' else ('action', action['simc_action'])

@@ -117,6 +117,7 @@ def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
 
     def add(rows: list[dict], owner_type: str) -> None:
         for row in rows:
+            add(row.get('children', []), owner_type)
             amount = row.get('actual_amount') or {}
             damage = amount.get('mean') if isinstance(amount, dict) else None
             if (row.get('type') != 'damage' or isinstance(damage, bool)

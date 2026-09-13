@@ -66,6 +66,39 @@ class CharacterExportTests(unittest.TestCase):
                              [['deaths_caress'], ['deaths_caress'], ['heart_strike']])
             self.assertEqual(candidate['precombat_count'], 2)
 
+    def test_native_precombat_item_keeps_its_runtime_action_name(self):
+        from codec import export
+        from engine import inspect
+        from sequence import compiled_program, select
+
+        native = dict(
+            actions_protocol=1,
+            active_items=[dict(slot='trinket1', id=123, driver_spell_id=206930, name='test_item')],
+            executed_actions=[dict(
+                name='heart_strike', signature='heart_strike', player_owned=True,
+                background=False, quiet=False, passive=False, type='spell',
+                precombat=False, data_id=206930, data_valid=True,
+                base_spell_id=206930, gcd_ms=1500,
+            )],
+            precombat_sequence=[dict(id=123, name='use_item_test_item', queue_failed=False)],
+            precombat_definitions=[dict(
+                name='use_item_test_item', signature='use_item,slot=trinket1', player_owned=True,
+                background=False, quiet=False, passive=False, type='item',
+                precombat=True, data_id=123, data_valid=True,
+                base_spell_id=123, gcd_ms=0,
+            )],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            capabilities = inspect(native, Path(directory) / 'capabilities')
+            self.assertEqual([a['simc_action'] for a in capabilities['precombat_actions']],
+                             ['use_item,slot=trinket1'])
+            candidate = export(select(capabilities, [['heart_strike']]), Path(directory) / 'export',
+                               identity=dict(spec_id=250, class_id=6))
+            self.assertEqual(candidate['compiled_steps'][0],
+                             dict(type='macro', macrotext='/use [nocombat] 13'))
+            self.assertEqual(compiled_program(candidate),
+                             [['use_item,slot=trinket1'], ['heart_strike']])
+
     def test_client_target_masks_apply_across_classes_and_mixed_blocks(self):
         from codec import export
         from sequence import compiled_program

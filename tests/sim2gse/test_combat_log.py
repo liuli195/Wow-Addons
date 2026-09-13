@@ -79,12 +79,15 @@ class CombatLogToolTests(unittest.TestCase):
                 'players': [{'name': '测试者', 'sim2gse_actions': [
                     {'data_id': 100, 'background': False, 'passive': False, 'type': 'spell'},
                 ], 'collected_data': {'dps': {
-                    'mean': 2000, 'min': 1600, 'max': 2200, 'std_dev': 50,
+                    'mean': 1750, 'min': 1600, 'max': 1900, 'std_dev': 50,
                 }}, 'stats': [
                     {'id': 100, 'spell_name': '同名伤害', 'name': 'button', 'type': 'damage',
-                     'actual_amount': {'mean': 2000}, 'num_executes': {'mean': 5}},
-                    {'id': 200, 'spell_name': '同名伤害', 'name': 'derived', 'type': 'damage',
-                     'actual_amount': {'mean': 1000}, 'num_executes': {'mean': 10}},
+                     'actual_amount': {'mean': 2000}, 'num_executes': {'mean': 5},
+                     'children': [
+                         {'id': 200, 'spell_name': '同名伤害', 'name': 'derived',
+                          'type': 'damage', 'actual_amount': {'mean': 1000},
+                          'num_executes': {'mean': 10}},
+                     ]},
                 ], 'stats_pets': {'召唤物': [
                     {'id': 300, 'spell_name': '撕咬', 'name': 'bite', 'type': 'damage',
                      'actual_amount': {'mean': 500}, 'num_executes': {'mean': 4}},
@@ -103,7 +106,8 @@ class CombatLogToolTests(unittest.TestCase):
             self.assertEqual(comparison[('player', 100)]['actual_dps'], 500)
             self.assertEqual(comparison[('player', 100)]['simulation_dps'], 1000)
             self.assertEqual(comparison[('player', 100)]['percent_of_simulation'], 50)
-            self.assertEqual(comparison[('unattributed', -1)]['simulation_dps'], 250)
+            self.assertNotIn(('unattributed', -1), comparison)
+            self.assertEqual(sum(row['simulation_dps'] for row in comparison.values()), 1750)
             self.assertEqual(result['successful_casts_by_spell_id']['100']['count'], 1)
 
     def test_uses_latest_gse_session_and_compares_primary_dps_with_simulation(self) -> None:
