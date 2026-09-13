@@ -7,6 +7,7 @@ import json
 import unittest
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / 'projects/sim2gse'))
@@ -30,6 +31,26 @@ def sample_profile() -> str:
 
 
 class CharacterExportTests(unittest.TestCase):
+    def test_lua_compiler_receives_only_ascii_paths(self):
+        import codec
+
+        commands = []
+        original = codec.run_command
+        def fake(command, *args, **kwargs):
+            commands.append(command)
+            output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+            return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
+        codec.run_command = fake
+        try:
+            with tempfile.TemporaryDirectory(prefix="中文路径 ") as directory:
+                codec.export([[dict(kind="spell", spell_id=206930, name="heart_strike",
+                                         simc_action="heart_strike")]], Path(directory) / "导出",
+                             identity=dict(spec_id=250, class_id=6))
+        finally:
+            codec.run_command = original
+        self.assertTrue(commands)
+        self.assertTrue(all(str(value).isascii() for command in commands for value in command[1:]))
+
     def test_native_precombat_button_is_a_nocombat_gse_step(self):
         from codec import export
         from engine import inspect

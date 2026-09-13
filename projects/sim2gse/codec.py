@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import tempfile
 import zlib
 import cbor2
 from runtime import BudgetExceeded, ProcessTimeout, TaskCancelled, TaskRuntime, run_command
@@ -108,16 +109,25 @@ def export(blocks, folder, *, identity, runtime=None):
 
     def compile(mode):
         runtime.check()
-        (folder / 'input.cbor').write_bytes(cbor2.dumps(wire_value(payload)))
-        (folder / 'expected.lua').write_text('return ' + lua_literal(dict(expected, payload=payload)), encoding='utf-8')
-        try:
-            proc = run_command([str(LUA), str(Path(__file__).with_suffix('.lua')), str(SOURCE),
-                                str(folder / 'input.cbor'), str(folder / 'expected.lua'), mode],
-                               SOURCE, timeout_seconds=20, runtime=runtime, output_dir=folder)
-        except ProcessTimeout as error:
-            raise ValueError('上游编译校验超时，任务已停止') from error
-        except (TaskCancelled, BudgetExceeded):
-            raise
+        input_data = cbor2.dumps(wire_value(payload))
+        expected_text = 'return ' + lua_literal(dict(expected, payload=payload))
+        (folder / 'input.cbor').write_bytes(input_data)
+        (folder / 'expected.lua').write_text(expected_text, encoding='utf-8')
+        staging_root = ROOT / '.local/sim2gse/codec'
+        staging_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='gse-', dir=staging_root) as temporary:
+            staging = Path(temporary)
+            (staging / 'input.cbor').write_bytes(input_data)
+            (staging / 'expected.lua').write_text(expected_text, encoding='utf-8')
+            relative = lambda path: path.relative_to(ROOT).as_posix()
+            try:
+                proc = run_command([str(LUA), relative(Path(__file__).with_suffix('.lua')), relative(SOURCE),
+                                    relative(staging / 'input.cbor'), relative(staging / 'expected.lua'), mode],
+                                   ROOT, timeout_seconds=20, runtime=runtime, output_dir=folder)
+            except ProcessTimeout as error:
+                raise ValueError('上游编译校验超时，任务已停止') from error
+            except (TaskCancelled, BudgetExceeded):
+                raise
         log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
         (folder / (mode + '.log')).write_text(log, encoding='utf-8')
         if proc.returncode:
