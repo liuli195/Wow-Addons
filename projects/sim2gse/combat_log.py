@@ -98,6 +98,74 @@ def _latest_damage_cluster_start(player_damage: list[tuple[datetime, list[str]]]
     return start
 
 
+def _damage_identity(row: list[str]) -> tuple[int, str]:
+    if row[0] == 'SWING_DAMAGE':
+        return 0, '近战攻击'
+    if len(row) <= 11:
+        raise ValueError(f'{row[0]} 法术字段不完整')
+    return int(row[9]), row[10]
+
+
+def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
+    button_ids = {
+        int(row.get('base_spell_id') or row.get('data_id') or 0)
+        for row in player.get('sim2gse_actions', [])
+        if not row.get('background') and not row.get('passive')
+        and row.get('type') not in ('call_action_list', 'action_variable', 'sequence')
+    }
+    grouped: dict[tuple[str, int], dict] = {}
+
+    def add(rows: list[dict], owner_type: str) -> None:
+        for row in rows:
+            amount = row.get('actual_amount') or {}
+            damage = amount.get('mean') if isinstance(amount, dict) else None
+            if (row.get('type') != 'damage' or isinstance(damage, bool)
+                    or not isinstance(damage, (int, float)) or damage <= 0):
+                continue
+            spell_id = int(row.get('id') or 0)
+            key = owner_type, spell_id
+            target = grouped.setdefault(key, {
+                'owner_type': owner_type,
+                'spell_id': spell_id,
+                'spell_names': set(),
+                'damage': 0.0,
+                'uses': 0.0,
+            })
+            target['spell_names'].add(row.get('spell_name') or row.get('name') or '未知')
+            target['damage'] += damage
+            executes = row.get('num_executes') or {}
+            mean_executes = executes.get('mean') if isinstance(executes, dict) else None
+            if isinstance(mean_executes, (int, float)) and not isinstance(mean_executes, bool):
+                target['uses'] += executes['mean']
+
+    add(player.get('stats', []), 'player')
+    for rows in player.get('stats_pets', {}).values():
+        add(rows, 'owned_unit')
+    expected_damage = player.get('collected_data', {}).get('dps', {}).get('mean')
+    if isinstance(expected_damage, (int, float)) and not isinstance(expected_damage, bool):
+        unallocated = expected_damage * duration - sum(row['damage'] for row in grouped.values())
+        if unallocated > 0.01:
+            grouped[('unattributed', -1)] = {
+                'owner_type': 'unattributed',
+                'spell_id': -1,
+                'spell_names': {'SimC 未细分伤害'},
+                'damage': unallocated,
+                'uses': 0.0,
+            }
+    result = []
+    for row in grouped.values():
+        spell_id = row['spell_id']
+        row['spell_names'] = sorted(row['spell_names'])
+        row['spell_name'] = row['spell_names'][0]
+        row['category'] = ('unattributed' if row['owner_type'] == 'unattributed' else
+                           'owned_unit' if row['owner_type'] == 'owned_unit' else
+                           'swing' if spell_id == 0 else
+                           'button_or_shared_effect' if spell_id in button_ids else 'derived')
+        row['dps'] = row['damage'] / duration
+        result.append(row)
+    return sorted(result, key=lambda row: (-row['damage'], row['owner_type'], row['spell_id']))
+
+
 def analyze(
     path: Path,
     player: str,
@@ -167,17 +235,22 @@ def analyze(
     target_damage: Counter[tuple[str, str]] = Counter()
     cast_destinations: Counter[tuple[str, str]] = Counter()
     successful: dict[str, list[float]] = defaultdict(list)
+    successful_by_id: dict[int, list[float]] = defaultdict(list)
     failed: dict[str, Counter[str]] = defaultdict(Counter)
+    damage_records = []
     for time, row in events:
-        if not start <= time < end:
-            continue
-        if row[1] == player_guid and row[0] == "SPELL_CAST_SUCCESS":
+        if (start - timedelta(seconds=5) <= time < end and row[1] == player_guid
+                and row[0] == 'SPELL_CAST_SUCCESS'):
             if len(row) <= 10:
                 raise ValueError("SPELL_CAST_SUCCESS 字段不完整")
-            successful[row[10]].append(round((time - start).total_seconds(), 4))
+            at = round((time - start).total_seconds(), 4)
+            successful[row[10]].append(at)
+            successful_by_id[int(row[9])].append(at)
             if row[5] != "0000000000000000" and row[6] != "nil":
                 cast_destinations[(row[5], row[6])] += 1
-        elif row[1] == player_guid and row[0] == "SPELL_CAST_FAILED":
+        if not start <= time < end:
+            continue
+        if row[1] == player_guid and row[0] == "SPELL_CAST_FAILED":
             if len(row) <= 12:
                 raise ValueError("SPELL_CAST_FAILED 字段不完整")
             failed[row[10]][row[12]] += 1
@@ -188,6 +261,8 @@ def analyze(
             raise ValueError(f"{row[0]} 伤害字段不完整")
         amount = int(row[amount_index]) - max(0, int(row[amount_index + 2]))
         target_damage[(row[5], row[6])] += amount
+        spell_id, spell_name = _damage_identity(row)
+        damage_records.append((row[5], row[6], row[1], row[2], spell_id, spell_name, amount))
 
     if not target_damage:
         raise ValueError("测试区间内没有伤害")
@@ -224,6 +299,33 @@ def analyze(
         if (guid, name) != primary
     ]
     total_damage = sum(target_damage.values())
+    source_groups = {}
+    for target_guid, target_name, source_guid, source_name, spell_id, spell_name, amount in damage_records:
+        if (target_guid, target_name) != primary:
+            continue
+        owner_type = 'player' if source_guid == player_guid else 'owned_unit'
+        key = owner_type, spell_id
+        row = source_groups.setdefault(key, {
+            'owner_type': owner_type, 'spell_id': spell_id, 'spell_names': set(),
+            'source_guids': set(), 'source_names': set(), 'damage': 0,
+        })
+        row['spell_names'].add(spell_name)
+        row['source_guids'].add(source_guid)
+        row['source_names'].add(source_name)
+        row['damage'] += amount
+    damage_sources = []
+    for row in source_groups.values():
+        row['spell_names'] = sorted(row['spell_names'])
+        row['spell_name'] = row['spell_names'][0]
+        row['source_guids'] = sorted(row['source_guids'])
+        row['source_names'] = sorted(row['source_names'])
+        row['category'] = ('owned_unit' if row['owner_type'] == 'owned_unit' else
+                           'swing' if row['spell_id'] == 0 else
+                           'button' if row['spell_id'] in successful_by_id else 'derived')
+        row['dps'] = row['damage'] / duration
+        row['portion_of_primary_percent'] = row['damage'] / primary_damage * 100
+        damage_sources.append(row)
+    damage_sources.sort(key=lambda row: (-row['damage'], row['owner_type'], row['spell_id']))
     result = {
         "player": player,
         "start": start.isoformat(sep=" "),
@@ -244,7 +346,12 @@ def analyze(
             spell: {"count": len(times), "times_seconds": times}
             for spell, times in sorted(successful.items())
         },
+        "successful_casts_by_spell_id": {
+            str(spell_id): {"count": len(times), "times_seconds": times}
+            for spell_id, times in sorted(successful_by_id.items())
+        },
         "failed_casts": {spell: dict(reasons) for spell, reasons in sorted(failed.items())},
+        "damage_sources": damage_sources,
     }
     if debug_result is not None:
         result["gse_debug"] = debug_result
@@ -279,8 +386,6 @@ def analyze(
             raise ValueError("SimC 玩家 DPS 分布无效")
         if simulation_targets != 1 or simulation_duration != duration:
             raise ValueError("SimC 结果必须与单目标测试时长一致")
-        if len(target_damage) != simulation_targets:
-            raise ValueError("实际伤害目标数量与 SimC 结果不一致")
         if selection["method"] == "highest_owned_damage":
             raise ValueError("无法确认主目标，请提供 --primary-target 后再比较 SimC")
         if selection["method"] != "explicit_target" and len(destination_matches) != 1:
@@ -295,7 +400,32 @@ def analyze(
         result["simulation_conditions"] = {
             "duration_seconds": simulation_duration,
             "targets": simulation_targets,
+            "actual_affected_targets": len(target_damage),
+            "secondary_damage_excluded": total_damage - primary_damage,
         }
+        simulation_sources = _simulation_damage_sources(matches[0], duration)
+        result['simulation_damage_sources'] = simulation_sources
+        actual_by_id = {(row['owner_type'], row['spell_id']): row for row in damage_sources}
+        simulation_by_id = {(row['owner_type'], row['spell_id']): row for row in simulation_sources}
+        comparison = []
+        for owner_type, spell_id in sorted(set(actual_by_id) | set(simulation_by_id)):
+            actual = actual_by_id.get((owner_type, spell_id))
+            simulated = simulation_by_id.get((owner_type, spell_id))
+            actual_dps = actual['dps'] if actual else 0
+            simulation_source_dps = simulated['dps'] if simulated else 0
+            comparison.append({
+                'owner_type': owner_type,
+                'spell_id': spell_id,
+                'actual_spell_names': actual['spell_names'] if actual else [],
+                'simulation_spell_names': simulated['spell_names'] if simulated else [],
+                'actual_category': actual['category'] if actual else None,
+                'simulation_category': simulated['category'] if simulated else None,
+                'actual_dps': actual_dps,
+                'simulation_dps': simulation_source_dps,
+                'percent_of_simulation': (actual_dps / simulation_source_dps * 100
+                                          if simulation_source_dps > 0 else None),
+            })
+        result['damage_source_comparison'] = comparison
         result["simulation_conditions_not_verifiable_from_combat_log"] = [
             "specialization", "talents", "gear", "game_version", "sequence"
         ]

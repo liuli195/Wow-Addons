@@ -62,6 +62,50 @@ class CombatLogToolTests(unittest.TestCase):
             self.assertEqual(result["successful_casts"]["心脏打击"]["count"], 1)
             self.assertEqual(result["failed_casts"]["符文刃舞"]["尚未恢复"], 1)
 
+    def test_groups_damage_by_spell_id_owner_and_button_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            combat = root / 'WoWCombatLog.txt'
+            combat.write_text('\n'.join([
+                '9/13/2026 16:41:19.0000  SPELL_CAST_SUCCESS,Player-1,"测试者-服务器-CN",0,0,Creature-1,"假人",0,0,100,"同名伤害",0',
+                '9/13/2026 16:41:19.0100  SPELL_SUMMON,Player-1,"测试者-服务器-CN",0,0,Pet-1,"召唤物",0,0,300,"召唤",0',
+                '9/13/2026 16:41:19.1000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"假人",0,0,100,"同名伤害",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,1000,1000,-1,1,0,0,0,nil,nil,nil,ST',
+                '9/13/2026 16:41:19.2000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"假人",0,0,200,"同名伤害",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,500,500,-1,1,0,0,0,nil,nil,nil,ST',
+                '9/13/2026 16:41:19.3000  SPELL_DAMAGE,Pet-1,"召唤物",0,0,Creature-1,"假人",0,0,300,"撕咬",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,250,250,-1,1,0,0,0,nil,nil,nil,ST',
+            ]), encoding='utf-8')
+            simulation = root / 'simulation.json'
+            simulation.write_text(json.dumps({'sim': {
+                'options': {'max_time': 2, 'desired_targets': 1},
+                'players': [{'name': '测试者', 'sim2gse_actions': [
+                    {'data_id': 100, 'background': False, 'passive': False, 'type': 'spell'},
+                ], 'collected_data': {'dps': {
+                    'mean': 2000, 'min': 1600, 'max': 2200, 'std_dev': 50,
+                }}, 'stats': [
+                    {'id': 100, 'spell_name': '同名伤害', 'name': 'button', 'type': 'damage',
+                     'actual_amount': {'mean': 2000}, 'num_executes': {'mean': 5}},
+                    {'id': 200, 'spell_name': '同名伤害', 'name': 'derived', 'type': 'damage',
+                     'actual_amount': {'mean': 1000}, 'num_executes': {'mean': 10}},
+                ], 'stats_pets': {'召唤物': [
+                    {'id': 300, 'spell_name': '撕咬', 'name': 'bite', 'type': 'damage',
+                     'actual_amount': {'mean': 500}, 'num_executes': {'mean': 4}},
+                ]}}],
+            }}), encoding='utf-8')
+
+            result = self.run_tool(combat, '--duration', '2', '--simulation', str(simulation),
+                                   '--primary-target', 'Creature-1')
+            actual = {(row['owner_type'], row['spell_id']): row for row in result['damage_sources']}
+            self.assertEqual(actual[('player', 100)]['category'], 'button')
+            self.assertEqual(actual[('player', 200)]['category'], 'derived')
+            self.assertEqual(actual[('owned_unit', 300)]['category'], 'owned_unit')
+            self.assertEqual(actual[('player', 100)]['damage'], 1000)
+            comparison = {(row['owner_type'], row['spell_id']): row
+                          for row in result['damage_source_comparison']}
+            self.assertEqual(comparison[('player', 100)]['actual_dps'], 500)
+            self.assertEqual(comparison[('player', 100)]['simulation_dps'], 1000)
+            self.assertEqual(comparison[('player', 100)]['percent_of_simulation'], 50)
+            self.assertEqual(comparison[('unattributed', -1)]['simulation_dps'], 250)
+            self.assertEqual(result['successful_casts_by_spell_id']['100']['count'], 1)
+
     def test_uses_latest_gse_session_and_compares_primary_dps_with_simulation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -107,7 +151,10 @@ class CombatLogToolTests(unittest.TestCase):
                 'Resources Not Available': 1,
             })
             self.assertEqual(result['simulation_dps'], 2000)
-            self.assertEqual(result['simulation_conditions'], {'duration_seconds': 2, 'targets': 1})
+            self.assertEqual(result['simulation_conditions'], {
+                'duration_seconds': 2, 'targets': 1,
+                'actual_affected_targets': 1, 'secondary_damage_excluded': 0,
+            })
             self.assertEqual(result['simulation_conditions_not_verifiable_from_combat_log'], [
                 'specialization', 'talents', 'gear', 'game_version', 'sequence',
             ])
@@ -146,8 +193,10 @@ class CombatLogToolTests(unittest.TestCase):
                  '--duration', '2', '--simulation', str(simulation),
                  '--primary-target', '假人一'],
                 text=True, encoding='utf-8', capture_output=True)
-            self.assertNotEqual(mismatched_targets.returncode, 0)
-            self.assertIn('实际伤害目标数量', mismatched_targets.stderr)
+            self.assertEqual(mismatched_targets.returncode, 0, mismatched_targets.stderr)
+            compared = json.loads(mismatched_targets.stdout)
+            self.assertEqual(compared['simulation_conditions']['actual_affected_targets'], 2)
+            self.assertEqual(compared['simulation_conditions']['secondary_damage_excluded'], 100)
 
             malformed = root / 'gse-debug.txt'
             malformed.write_text('S2G:1,1,1789288879', encoding='utf-8')
