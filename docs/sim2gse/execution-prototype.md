@@ -15,7 +15,7 @@
 | 300 毫秒固定研究序列 | 59,465.16 | 原生引擎实际结果；没有执行搜索，不是推荐序列或可达到伤害的上限。 |
 | 同序列开启详细轨迹 | 59,465.16 | 开关日志及三次重复运行的完整角色报告一致。 |
 
-固定研究序列为 12 个块、9 种原生主动动作，明确包含开始自动攻击；战前只允许召唤常驻宠物和记录属性快照。具体样例写在[运行检查入口](../../scripts/dev/sim2gse/prototype-engine-check.py)，是本票的研究输入，不是产品技能白名单。正式产品仍须自动生成角色能力清单。
+固定研究序列为 12 个块、9 种原生主动动作，明确包含开始自动攻击；战前只允许召唤常驻宠物和记录属性快照。具体样例写在[运行检查入口](../../tests/sim2gse/research/prototype-engine-check.py)，是本票的研究输入，不是产品技能白名单。正式产品仍须自动生成角色能力清单。
 
 100 次带轨迹运行共记录 **60,000 次输入、14,878 次原生主动执行、10,466 次入队、1,771 次覆盖**；最终执行复查拒绝为 **0**。计数包含上游统计前的首轮，不能直接当作 99 个统计样本的均值。技能替换由原生职业逻辑处理，报告中出现法术 `458128` 的实际执行；研究输入没有把它另列为独立按钮。常驻食尸鬼的原生子动作有实际伤害。
 
@@ -68,7 +68,7 @@
 
 ```powershell
 build-and-verify build --project .
-.venv/Scripts/python.exe scripts/dev/sim2gse/prototype-engine-check.py
+.venv/Scripts/python.exe tests/sim2gse/research/prototype-engine-check.py
 build-and-verify verify --project .
 ```
 
@@ -85,10 +85,10 @@ build-and-verify verify --project .
 
 ## 已运行的按钮源码检查
 
-[检查入口](../../scripts/dev/sim2gse/prototype-input.lua)使用既有 Lua（脚本语言）5.1.5 与 GSE（按键序列插件）固定提交 `f225d4c947d168c63451ef7c567d7063c38cc239`。从仓库根运行：
+[检查入口](../../tests/sim2gse/research/prototype-input.lua)使用既有 Lua（脚本语言）5.1.5 与 GSE（按键序列插件）固定提交 `f225d4c947d168c63451ef7c567d7063c38cc239`。从仓库根运行：
 
 ```powershell
-.tools/lua-5.1.5/src/lua.exe scripts/dev/sim2gse/prototype-input.lua
+.tools/lua-5.1.5/src/lua.exe tests/sim2gse/research/prototype-input.lua
 ```
 
 调用原版按钮构造函数，执行其生成的初始化和点击代码；只替代客户端框架、修饰键状态与图标通知。没有重写一份步进算法来证明自己正确。第一次加载暴露客户端全局表插入函数缺失，显式补齐该边界及字符串拼接函数后通过。

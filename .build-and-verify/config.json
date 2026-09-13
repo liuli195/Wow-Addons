@@ -11,6 +11,15 @@
         "id": "build.sim2gse-prototype-controlled",
         "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/prototype-engine-build.py controlled",
         "timeoutSeconds": 900
+      },
+      {
+        "id": "build.sim2gse-product",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/build.py",
+        "timeoutSeconds": 1200
+      },
+      {
+        "id": "build.assets",
+        "command": ".venv\\Scripts\\python.exe scripts/media/build_assets.py --output-root .local/build/assets"
       }
     ]
   },
@@ -118,7 +127,11 @@
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "myspec/changes/**",
+          "projects/sim2gse/README.md",
+          "tests/**/*.md",
+          "projects/*/README.md"
         ],
         "inputs": [
           "README.md",
@@ -127,19 +140,24 @@
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "myspec/changes/**",
+          "projects/sim2gse/README.md",
+          "tests/**/*.md",
+          "projects/*/README.md"
         ]
       },
       {
         "id": "verify.checker-tests",
-        "command": ".venv\\Scripts\\python.exe scripts/dev/test_checks.py",
+        "command": ".venv\\Scripts\\python.exe tests/dev/test_checks.py",
         "paths": [
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
           ".luacheckrc",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
         ],
         "inputs": [
           "scripts/dev/**",
@@ -147,7 +165,2195 @@
           ".luarc.json",
           ".luacheckrc",
           ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json"
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
+        ]
+      },
+      {
+        "id": "verify.sim2gse",
+        "command": ".venv\\Scripts\\python.exe -m unittest discover -s tests/sim2gse -p test_*.py",
+        "paths": [
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          "tests/sim2gse/**"
+        ],
+        "inputs": [
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".tools/sim2gse/product/baseline/engine/simc.exe",
+          ".tools/sim2gse/product/controlled/engine/simc.exe",
+          ".local/sim2gse/build/baseline/build.json",
+          ".local/sim2gse/build/controlled/build.json",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          "tests/sim2gse/**"
+        ],
+        "timeoutSeconds": 240
+      },
+      {
+        "id": "verify.test-inventory",
+        "command": ".venv\\Scripts\\python.exe tests/dev/test_inventory.py",
+        "paths": [
+          "tests/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ]
+      },
+      {
+        "id": "verify.gear-add-socket",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-add-socket.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-async",
+        "command": "node tests/gear-planner/check-async.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-browser",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-browser.cjs",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-build-names",
+        "command": "node tests/gear-planner/check-build-names.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-bulk-levels",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-bulk-levels.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-catalog",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-catalog.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-deathknight",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-deathknight",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-delete",
+        "command": "node tests/gear-planner/check-delete.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-effects",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-effects.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-empty",
+        "command": "node tests/gear-planner/check-empty.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-enchants",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-enchants.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-extra-input",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-extra-input.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-fit",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-fit.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-gems",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-gems.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-item-stats",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-item-stats.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-levels",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-levels.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-merge-selection",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-merge-selection.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-merge-slots",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-merge-slots.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-mistweaver",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-mistweaver.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".local/gear-planner-mistweaver-research/source/engine/simc-mistweaver-*.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-names",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-names.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-option-labels",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-option-labels.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-original-item",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-original-item.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-replace-level",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-replace-level.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-replace",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-replace.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-save-armor",
+        "command": "node tests/gear-planner/check-save-armor.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-save-as",
+        "command": "node tests/gear-planner/check-save-as.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-sets",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-sets.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-sources",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check-sources.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-stat-filter",
+        "command": "node tests/gear-planner/check-stat-filter.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-summary",
+        "command": "node tests/gear-planner/check-summary.js",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-research-cn-reference",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-cn-reference.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-research-deathknight-raidbots",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/check-deathknight-raidbots.json --fixtures projects/gear-planner/fixtures/raidbots-deathknight",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.gear-research-epic-catalog",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-epic-catalog.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-research/keystoneloot/data/*.lua"
+        ]
+      },
+      {
+        "id": "verify.gear-research-priest-experimental",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-priest-experimental.py --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/check-priest-experimental.json --fixtures projects/gear-planner/fixtures/raidbots-priest-experimental",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ]
+      },
+      {
+        "id": "verify.sim2gse-manual-native-task",
+        "command": ".venv\\Scripts\\python.exe tests/sim2gse/manual_native_task.py",
+        "paths": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".local/sim2gse/target-evidence/**",
+          ".local/sim2gse/build/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/sim2gse/product/*/engine/simc.exe",
+          ".tools/sim2gse/execution-prototype/*/engine/simc.exe",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".local/sim2gse/execution-prototype/*/build.json"
+        ]
+      },
+      {
+        "id": "verify.sim2gse-manual-search-task",
+        "command": ".venv\\Scripts\\python.exe tests/sim2gse/manual_search_task.py",
+        "paths": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".local/sim2gse/target-evidence/**",
+          ".local/sim2gse/build/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/sim2gse/product/*/engine/simc.exe",
+          ".tools/sim2gse/execution-prototype/*/engine/simc.exe",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".local/sim2gse/execution-prototype/*/build.json"
+        ],
+        "timeoutSeconds": 660
+      },
+      {
+        "id": "verify.sim2gse-manual-interface",
+        "command": ".venv\\Scripts\\python.exe tests/sim2gse/manual_interface.py",
+        "paths": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".local/sim2gse/target-evidence/**",
+          ".local/sim2gse/build/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/sim2gse/product/*/engine/simc.exe",
+          ".tools/sim2gse/execution-prototype/*/engine/simc.exe",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".local/sim2gse/execution-prototype/*/build.json"
+        ],
+        "timeoutSeconds": 680
+      },
+      {
+        "id": "verify.sim2gse-prototype-engine-check",
+        "command": ".venv\\Scripts\\python.exe tests/sim2gse/research/prototype-engine-check.py",
+        "paths": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".local/sim2gse/target-evidence/**",
+          ".local/sim2gse/build/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/sim2gse/product/*/engine/simc.exe",
+          ".tools/sim2gse/execution-prototype/*/engine/simc.exe",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".local/sim2gse/execution-prototype/*/build.json"
+        ]
+      },
+      {
+        "id": "verify.sim2gse-prototype-export",
+        "command": ".venv\\Scripts\\python.exe tests/sim2gse/research/prototype-export.py",
+        "paths": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".local/sim2gse/target-evidence/**",
+          ".local/sim2gse/build/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/sim2gse/product/*/engine/simc.exe",
+          ".tools/sim2gse/execution-prototype/*/engine/simc.exe",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".local/sim2gse/execution-prototype/*/build.json",
+          ".local/sim2gse/gse-source-review.json"
+        ]
+      },
+      {
+        "id": "verify.sim2gse-prototype-input",
+        "command": ".tools\\lua-5.1.5\\src\\lua.exe tests/sim2gse/research/prototype-input.lua",
+        "paths": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/sim2gse/**",
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".local/sim2gse/target-evidence/**",
+          ".local/sim2gse/build/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/sim2gse/product/*/engine/simc.exe",
+          ".tools/sim2gse/execution-prototype/*/engine/simc.exe",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".local/sim2gse/execution-prototype/*/build.json"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-deathknight-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-deathknight --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-deathknight-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-demonhunter-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-demonhunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-demonhunter-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-demonhunter-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-demonhunter --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-demonhunter-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-demonhunter",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-demonhunter",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-druid-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-druid --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-druid-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-druid-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-druid --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-druid-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-druid",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-druid",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-evoker-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-evoker --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-evoker-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-evoker-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-evoker --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-evoker-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-evoker",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-evoker",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-hunter-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-hunter-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-hunter-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-hunter-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-hunter",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-hunter",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-mage-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-mage --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-mage-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-mage-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-mage --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-mage-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-mage",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-mage",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-monk-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-monk --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-monk-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-monk-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-monk --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-monk-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-monk",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-monk",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-paladin-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-paladin --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-paladin-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-paladin-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-paladin --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-paladin-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-paladin",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-paladin",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-priest-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-priest --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-priest-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-priest-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-priest --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-priest-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-priest",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-priest",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-rogue-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-rogue --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-rogue-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-rogue-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-rogue --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-rogue-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-rogue",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-rogue",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-shaman-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-shaman-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-shaman-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-shaman --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-shaman-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-shaman",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-shaman",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-warlock-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-warlock-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-warlock-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-warlock-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-warlock",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-warlock",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-raidbots-warrior-current",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warrior --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/tests/raidbots-warrior-current.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-raidbots-warrior-matched",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warrior --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/tests/raidbots-warrior-matched.json",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          "scripts/dev/gear-planner-research/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json",
+          ".tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-browser-raidbots-warrior",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/run_browser_check.py tests/gear-planner/check-deathknight.cjs fixtures/raidbots-warrior",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "scripts/dev/run_browser_check.py",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
+        ],
+        "checkParallel": false
+      },
+      {
+        "id": "verify.gear-baseline",
+        "command": ".venv\\Scripts\\python.exe tests/gear-planner/check.py",
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json"
+        ],
+        "inputs": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".tools/gear-planner-research/*.json",
+          ".tools/gear-planner-research/simc-1210.01.c1935b9-win64/*",
+          ".tools/gear-planner-holy/b845947-gate1/*.exe",
+          ".tools/gear-planner-mistweaver/b845947-attributes1/*.exe",
+          ".local/gear-planner-research/cn-user-20260908.snapshot.json",
+          ".local/gear-planner-research/data-source-results.json"
         ]
       }
     ]

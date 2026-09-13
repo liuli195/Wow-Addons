@@ -191,4 +191,15 @@ def main():
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output-root', type=Path)
+    args = parser.parse_args()
+    if args.output_root is not None:
+        output = args.output_root.resolve()
+        if not output.is_relative_to((REPO / '.local').resolve()):
+            parser.error('构建检查输出必须位于仓库 .local/ 内')
+        MEDIA = output / 'addons/EUI_FacetedPortrait/Media'
+        STATUSBAR = output / 'assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar'
+        BORDER = output / 'assets/EUI_FacetedMedia/SharedMedia_MyMedia/border'
     main()

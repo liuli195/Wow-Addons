@@ -1,0 +1,35 @@
+--- a/engine/action/action.cpp
++++ b/engine/action/action.cpp
+@@ -3081,6 +3081,10 @@
+ 
+ void action_t::cancel()
+ {
++  if ( player->sim2gse_trace && player->executing == this && execute_event )
++    player->sim2gse_record("native_interrupt", this,
++      debug_cast<action_execute_event_t*>(execute_event)->sim2gse_origin);
++
+   sim->print_debug( "{} {} is canceled", *player, *this );
+ 
+   if ( channeled )
+@@ -3118,6 +3122,10 @@
+ 
+ void action_t::interrupt_action()
+ {
++  if ( player->sim2gse_trace && player->executing == this && execute_event )
++    player->sim2gse_record("native_interrupt", this,
++      debug_cast<action_execute_event_t*>(execute_event)->sim2gse_origin);
++
+   sim->print_debug( "{} {} is interrupted", *player, *this );
+ 
+   if ( player->executing == this )
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4566,7 +4566,7 @@
+ 
+ void player_t::sim2gse_record(const char* event, action_t* a, unsigned origin)
+ {
+-  if ( sim2gse_trace && std::string(event) == "native_execute" &&
++  if ( sim2gse_trace && (std::string(event) == "native_execute" || std::string(event) == "native_interrupt") &&
+        (!origin || std::find(sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].begin(),
+                             sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end(), a) ==
+                    sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end()) )

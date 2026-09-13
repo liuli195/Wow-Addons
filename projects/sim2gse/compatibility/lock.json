@@ -1,0 +1,152 @@
+{
+  "protocol": 1,
+  "upstream_commit": "b845947a34429874433d8e9362326894650dd20a",
+  "archive_sha256": "412fe6f536e181ef73fd4fcf6d27dbcd2e17d873511c545a1cea1138c44e8110",
+  "patches": [
+    {
+      "path": "projects/sim2gse/native/patches/001-controller.patch",
+      "sha256": "e15a178a08ab3eba7a5fbc27c1b4df03172f2d8fcfe12879db1c02ffe0cba63a"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/003-death-strike-guards.patch",
+      "sha256": "52b8444e85ec0cd54bde6c2b6bc3007e03d968da5afbdc1a354df77e1409b824"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/004-input-timeline.patch",
+      "sha256": "ed4cb82ca31738a1af58b99e982a51cf9fc3a1c4a42b44baac712611fa950831"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/005-resolved-program.patch",
+      "sha256": "26888e67f722fb64c1e8f2aa72c3458fd287afdd7f6762ed9397e43795163de3"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/006-trace-origin.patch",
+      "sha256": "2c056237503cfdd1e0853eab82585ca1111ea01e394ac80e271b641addae14dd"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/007-baseline-actions.patch",
+      "sha256": "c989bb7d09909f9b5dab6b801bdc45d43d6a097fd4a0ae1acc74bbc430bc6d9a"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/008-native-identity.patch",
+      "sha256": "80f228eb791b6b1150cccd287e568b2933acd0429894b52829823978b7cac160"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/009-unrestricted-player.patch",
+      "sha256": "08a5074c9ae498f2d0b2fd3abfc5517ab0c3cd67426f7a4941d08598833e2cd7"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/010-preserve-sequence-list.patch",
+      "sha256": "8e5e479e366fb6433af4beadff0e145fbeca5774dc8e5fb8b28cc92f65dc7fb6"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/011-native-casting.patch",
+      "sha256": "7bda42bab9d1618a8f27e1abcfb1c7f680b6d4ec113a83f00569fad4a12a694b"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/012-observe-item-proxies.patch",
+      "sha256": "b5bd676e22a97d9a95cb87217d692214a3c7a40d02109c033cf6781a1970cee9"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/013-derived-action-trace.patch",
+      "sha256": "2ea3963605183b8386e99c667f7d7152b3c750d50ec65cce242f233110cdc5ec"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/014-controlled-button-identity.patch",
+      "sha256": "8740f4de10b03cf60adf843df1ca2aded88aac56d9f4b7465ad819f6b4315464"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/015-native-button-blocks.patch",
+      "sha256": "d72571d58613d1518018266294f135bb6a136aa5d8ca364cf1ae3f6fa38fcd76"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/016-native-cast-interrupt.patch",
+      "sha256": "b77600381017a25601e8fe6b0af16792fcee30095aec2157d8076f8db55bb1ea"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/017-native-button-data.patch",
+      "sha256": "2ae93cc80d4299c4660ace76c39a9466f68b5c7ce1de990bdeb7e6bd7e4d95bc"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/018-controlled-button-data.patch",
+      "sha256": "251feb5826c387a55faeeb8e43eb7860c7f846f7b65c1344f2d051af0f85fe27"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/019-item-targeting-identity.patch",
+      "sha256": "634ddbce76c414a884fb6b79e97186063daad0085e0a1f21f20d5020feae9cf3"
+    }
+  ],
+  "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
+  "gse_version": 3332,
+  "cbor2": "6.1.4",
+  "build_options": [
+    "all",
+    "PATHSEP=/",
+    "SC_NO_NETWORKING=1",
+    "CXX=g++",
+    "GIT=",
+    "MODULE=simc.exe"
+  ],
+  "gse_sources": {
+    "GSE_GUI/Export.lua": "014efe0deb89eec2592e345b9447ddc23ca5bb6fe2d2ef4b6c6a6f75994bc9ff",
+    "GSE_Utils/Utils.lua": "76668757f7366181cb1eb49a9de4ceb843cd53ad6dceba4db5ea3557736945fa",
+    "spec/cbor.lua": "2f23b8e6900fa5696aa19b63dd2e900fc2f66ceb7f60a6e959b0ba4dfcd4cadf",
+    "spec/cbordelta_spec.lua": "c19663854ded4505ce720e19438bcd265f6ba8dd432da79cbfe7048e15fc1478",
+    "spec/mockGSE.lua": "93e02db0a9f8a354de21e475a17553011957ec54cf1753244f2f1c9ddcd5068b",
+    "spec/run51.lua": "219360959fcc24d3071f4b0a27e86ade1c4d347ca884ea1493c1b28111223909",
+    "spec/seqdelta_cbor_fixtures.lua": "d3d603c814d5f5943b987b02ba8d1bb86d3ce036c2396995f8ca2c07d6be19a4",
+    "spec/sequentialloopcheck.lua": "45c8a0092345988e49b5f46ceac3e07f144f0def9e84a488d6a5924b62276065",
+    "spec/storage_spec.lua": "8a4732e23376a632b4e753e9f597c20bb2d64b93fceaf024bee714cb978b30a5",
+    "GSE/API/CharacterFunctions.lua": "846a42478cbc66bd4fc751eb9b3d807c224dfd09e8eec72cf1b9310de852a2a6",
+    "GSE/API/Checksum.lua": "4ac909591891d88731870a0a0ad0ade160d14b329026d4c37514d657b98199ad",
+    "GSE/API/InitialOptions.lua": "ec9ddb1e1deca9c50dd064ef76724104d7ae67d3ec306d07328d0a923381c1b5",
+    "GSE/API/Serialisation.lua": "7d8fab91fcdd583e121a23bf00d320b46630ef5d7637ebe81ba55d4b15e2fab5",
+    "GSE/API/Statics.lua": "31b4835284679b16f14e0ad18e6002ca43d2d03a60ed6510f42dd7caf806ab1a",
+    "GSE/API/Storage.lua": "96418f6345ff13de2e7336457819644cb7479448bc386c91cc9b1a2b3c935e83",
+    "GSE/API/StringFunctions.lua": "27124df7900367a57018b919ad1e54f78912cb6d295c24f4e1d23e459625c804",
+    "GSE/API/translator.lua": "14480c4647cf269fd3852998f6ed09311af75455209188bac2971cb23b8e429c"
+  },
+  "patched_files": {
+    "engine/player/player.cpp": "517902d6cea8c428b37883f38d6c8ac3dd82aa3466e2b8a206c3d31d10a86d35",
+    "engine/player/player.hpp": "847f17531ff775f84a478e629c2ee278993611a360e3d9f34fc272370e8b3764",
+    "engine/action/action.cpp": "cc233fa87fa8a965343711abe8744fee4bc43c8dcfe41b6e0625e0544e421e34",
+    "engine/class_modules/sc_death_knight.cpp": "812db808a9e68e0c4c28c744093d4bd55606c18b87e4688c0b92f606904dcdbd",
+    "engine/report/json/report_json.cpp": "19aba232d0bf8e7a47a54e5c2ec186c259b6edffc9e04b8c87817b49334cdf3e"
+  },
+  "baseline_patches": [
+    {
+      "path": "projects/sim2gse/native/patches/007-baseline-actions.patch",
+      "sha256": "c989bb7d09909f9b5dab6b801bdc45d43d6a097fd4a0ae1acc74bbc430bc6d9a"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/008-native-identity.patch",
+      "sha256": "80f228eb791b6b1150cccd287e568b2933acd0429894b52829823978b7cac160"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/012-observe-item-proxies.patch",
+      "sha256": "b5bd676e22a97d9a95cb87217d692214a3c7a40d02109c033cf6781a1970cee9"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/014-native-button-identity.patch",
+      "sha256": "c63df2a1aaa962764258f749f750a90912dce7ca61e8e145f27ac85bad8ea8f1"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/017-native-button-data.patch",
+      "sha256": "2ae93cc80d4299c4660ace76c39a9466f68b5c7ce1de990bdeb7e6bd7e4d95bc"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/019-item-targeting-identity.patch",
+      "sha256": "634ddbce76c414a884fb6b79e97186063daad0085e0a1f21f20d5020feae9cf3"
+    }
+  ],
+  "baseline_patched_files": {
+    "engine/report/json/report_json.cpp": "19aba232d0bf8e7a47a54e5c2ec186c259b6edffc9e04b8c87817b49334cdf3e",
+    "engine/player/player.cpp": "c1a40f7a94b1920cef832d57e724c0b795c92e6e54f138a7f8a9995f2913f353",
+    "engine/player/player.hpp": "dcd1a84b39cd4685faea7c18cb463743ec6f76d3b47ca105f2cef6a4e3ea011c"
+  },
+  "client_targeting": {
+    "path": "projects/sim2gse/compatibility/spell-target-masks.json",
+    "sha256": "bf2764e82c0d9609f00b1f6698e9fd0e23767d74c46fa4e919dd0317032194f1",
+    "build": "12.1.0.69814"
+  }
+}

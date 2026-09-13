@@ -1,0 +1,11 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4548,7 +4548,7 @@
+            a->type == ACTION_VARIABLE || a->name_str == "use_items" ||
+            a->name_str == "call_action_list" || a->name_str == "run_action_list" )
+         throw std::runtime_error("unsupported sim2gse prototype action: " + a->name_str);
+-      const auto button = sim2gse_base_spell_id(a->id);
++      const auto button = sim2gse_base_spell_id(a->data().id());
+       sim2gse_button_ids[a] = button;
+       if (a->gcd() > 0_ms) gcd_buttons.insert(button);
+       if ( gcd_buttons.size() > 1 )

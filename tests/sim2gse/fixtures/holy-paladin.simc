@@ -1,0 +1,22 @@
+paladin="Parity paladin-holy"
+level=90
+race=human
+spec=holy
+head=,id=239050,bonus_id=12854,enchant_id=7991
+neck=,id=251142,bonus_id=13668/12854,gem_id=240894
+shoulder=,id=239037,bonus_id=12854
+back=,id=159288,bonus_id=12854
+chest=,id=193753,bonus_id=12854
+wrist=,id=159409,bonus_id=12854
+hands=,id=159413,bonus_id=12854
+waist=,id=159418,bonus_id=12854
+legs=,id=159435,bonus_id=12854
+feet=,id=159412,bonus_id=12854
+finger1=,id=158366,bonus_id=12854
+finger2=,id=159459,bonus_id=12854
+trinket1=,id=193748,bonus_id=12854
+trinket2=,id=193757,bonus_id=12854
+main_hand=,id=158369,bonus_id=12854
+off_hand=,id=159664,bonus_id=12854
+talents=CEEAAAAAAAAAAAAAAAAAAAAAAAAAALAwMAAw2MzMjZMzYxYmZYZwMLmpJGGzMDjZLDADAbgNWmxMLz2Mzs1AAAAsAGYzwYGDmBAwMDzYMaA
+role=auto

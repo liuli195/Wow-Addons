@@ -42,11 +42,11 @@
 版本管理中的样本：`projects/gear-planner/fixtures/raidbots-warlock/`。清单保存报告链接、原始输入与结果文件的校验摘要、完整期望快照及装备。原始官方配置、提交文本、实际输入与输出、两种引擎重放及套装资料保存在 `.local/gear-planner-warlock-validation/`。
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-warlock-validation/current-engine-check.json
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-warlock-validation/matched-engine-check.json
-node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-warlock
-.venv/Scripts/python.exe projects/gear-planner/check-fit.py
-.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-warlock-validation/current-engine-check.json
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-warlock --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-warlock-validation/matched-engine-check.json
+node tests/gear-planner/check-deathknight.cjs fixtures/raidbots-warlock
+.venv/Scripts/python.exe tests/gear-planner/check-fit.py
+.venv/Scripts/python.exe tests/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 

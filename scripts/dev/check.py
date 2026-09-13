@@ -78,6 +78,8 @@ def check_luals(folder):
 def check_docs():
     files = [ROOT / "README.md", ROOT / "AGENTS.md",
              *sorted((ROOT / "docs").rglob("*.md")),
+             *sorted((ROOT / "tests").rglob("*.md")),
+             *sorted((ROOT / "projects").glob("*/README.md")),
              *sorted((ROOT / "myspec" / "changes").rglob("*.md"))]
     for path in files:
         content = path.read_text(encoding="utf-8")

@@ -1,0 +1,38 @@
+--- a/engine/class_modules/sc_death_knight.cpp
++++ b/engine/class_modules/sc_death_knight.cpp
+@@ -9986,7 +9986,7 @@
+   {
+     double m = death_knight_heal_t::action_multiplier();
+ 
+-    m *= 1.0 + p()->buffs.hemostasis->stack_value();
++    if (p()->buffs.hemostasis) m *= 1.0 + p()->buffs.hemostasis->stack_value();
+ 
+     return m;
+   }
+@@ -9995,7 +9995,7 @@
+   {
+     trigger_blood_shield( state );
+ 
+-    p()->buffs.voracious->trigger();
++    if (p()->buffs.voracious) p()->buffs.voracious->trigger();
+ 
+     death_knight_heal_t::impact( state );
+ 
+@@ -10098,7 +10098,7 @@
+   {
+     death_knight_melee_attack_t::impact( state );
+ 
+-    p()->buffs.coagulopathy->trigger();
++    if (p()->buffs.coagulopathy) p()->buffs.coagulopathy->trigger();
+   }
+ 
+   void execute() override
+@@ -10115,7 +10115,7 @@
+       heal->execute();
+     }
+ 
+-    p()->buffs.hemostasis->expire();
++    if (p()->buffs.hemostasis) p()->buffs.hemostasis->expire();
+     if ( p()->talent.sanlayn.vampiric_strike.ok() && !p()->buffs.gift_of_the_sanlayn->check() )
+     {
+       p()->trigger_vampiric_strike_proc( target );

@@ -30,8 +30,8 @@
 复用原有验证脚本，通过参数指定职业样本目录：
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-demonhunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-dh-validation/current-engine-check.json
-node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-demonhunter
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-demonhunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-dh-validation/current-engine-check.json
+node tests/gear-planner/check-deathknight.cjs fixtures/raidbots-demonhunter
 ```
 
 数值检查通过真实导入解析，但先提取角色装备字段，移除服务控制选项。浏览器测试复用仓库现有依赖，使用独立临时存储，不读取或覆盖用户保存方案。

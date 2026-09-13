@@ -1,0 +1,48 @@
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -204,6 +204,8 @@
+   // Latency
+   rng::truncated_gauss_t world_lag, brain_lag;
+   timespan_t  cooldown_tolerance_;
++
++  unsigned sim2gse_base_spell_id( unsigned id ) const;
+ 
+   // Spell Queue
+   bool enable_spell_queue;
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4488,6 +4488,24 @@
+   } );
+ }
+ 
++unsigned player_t::sim2gse_base_spell_id( unsigned id ) const
++{
++  std::set<unsigned> seen;
++  while (id && seen.insert(id).second)
++  {
++    unsigned base = id;
++    for (const auto* buff : buff_list)
++      for (const auto& effect : buff->data().effects())
++        if (effect.type() == E_APPLY_AURA &&
++            (effect.subtype() == A_OVERRIDE_ACTION_SPELL || effect.subtype() == A_OVERRIDE_ACTION_SPELL_TRIGGERED) &&
++            effect.base_value() == id && effect.misc_value1() > 0)
++          base = static_cast<unsigned>(effect.misc_value1());
++    if (base == id) return id;
++    id = base;
++  }
++  return 0;
++}
++
+ void player_t::init_finished()
+ {
+   // Add dynamic cooldowns first before action_t::init_finished so actions can adjust their behavior accordingly if
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -873,6 +873,7 @@
+     row[ "name" ] = a->name_str;
+     row[ "id" ] = a->id;
+     row[ "data_id" ] = a->data().id();
++    row[ "base_spell_id" ] = p.sim2gse_base_spell_id( a->id );
+     row[ "data_valid" ] = a->data().ok();
+     row[ "signature" ] = a->signature_str;
+     row[ "executions" ] = a->total_executions;

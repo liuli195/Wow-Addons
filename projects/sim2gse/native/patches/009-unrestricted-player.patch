@@ -1,0 +1,31 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4518,8 +4518,8 @@
+   }
+   if (sim2gse_input_times.size() > 4096)
+     throw std::runtime_error("too many sim2gse input times");
+-  if ( is_pet() || is_enemy() || specialization() != DEATH_KNIGHT_UNHOLY || sim->threads != 1 )
+-    throw std::runtime_error("sim2gse prototype requires one-thread Unholy player");
++  if ( is_pet() || is_enemy() || sim->threads != 1 )
++    throw std::runtime_error("sim2gse requires one-thread player");
+   if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
+     throw std::runtime_error("sim2gse prototype window must be 0..400ms");
+   auto* list = find_action_priority_list("sim2gse");
+@@ -4562,7 +4562,7 @@
+   if ( sim2gse_trace )
+     sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
+       event, origin, origin ? static_cast<int>((origin - 1) % sim2gse_blocks.size()) : -1, a ? a->name_str : "-", gcd_ready.total_millis(),
+-      resources.current[RESOURCE_RUNIC_POWER], health_percentage(), a ? a->cooldown->remains().total_millis() : 0,
++      resources.current[primary_resource()], health_percentage(), a ? a->cooldown->remains().total_millis() : 0,
+       sim->current_iteration, a ? a->signature_str : "-");
+ }
+ 
+@@ -6303,8 +6303,6 @@
+   {
+     for ( auto& action : precombat_action_list )
+     {
+-      if (!sim2gse_steps.empty() && action->name_str != "raise_dead" && action->name_str != "snapshot_stats")
+-        throw std::runtime_error("unsupported automatic precombat action: " + action->name_str);
+       if ( action->action_ready() )
+       {
+         if (!sim2gse_steps.empty()) sim2gse_record("explicit_precombat", action, 0);

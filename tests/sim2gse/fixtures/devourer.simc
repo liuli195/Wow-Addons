@@ -1,0 +1,21 @@
+demonhunter="Native interrupt"
+spec=devourer
+level=90
+race=void_elf
+role=spell
+talents=CgcBAAAAAAAAAAAAAAAAAAAAAAAWMzMzMzMzMwMAAAAAAALzYMYGAAAAAAAAmxMMmZmZYmZGzsNzYsptFAEwAMjZmZbmZa2mZbmZMjBA
+omnium_talents=136822:1/136819:1/136817:1/136818:1/136814:1
+head=,id=271537,bonus_id=13668/13847,ilevel=344,gem_id=240967,enchant_id=7991,redirected_base_stats=271875
+neck=,id=268265,bonus_id=13668/13708,ilevel=344,gem_id=240908/240892
+back=,id=268253,ilevel=344
+chest=,id=271540,ilevel=334,enchant_id=7987,redirected_base_stats=251159
+hands=,id=271538,ilevel=334
+waist=,id=268256,bonus_id=13668,ilevel=344,gem_id=240898
+legs=,id=268225,ilevel=344,enchant_id=7935
+feet=,id=244569,ilevel=331,embellishment=arcanoweave_lining,enchant_id=7993,crafted_stats=36/49
+finger1=,id=158366,bonus_id=13750,ilevel=334,gem_id=240898,enchant_id=7967
+finger2=,id=268249,bonus_id=13668,ilevel=334,gem_id=240898,enchant_id=7967
+trinket1=,id=250215,ilevel=334
+trinket2=,id=270164,ilevel=334
+main_hand=,id=271092,ilevel=344,enchant_id=8689
+off_hand=,id=268211,ilevel=344,enchant_id=8689

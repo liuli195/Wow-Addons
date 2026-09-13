@@ -40,11 +40,11 @@
 ## 复现
 
 ```powershell
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-hunter-validation/current-engine-check.json
-.venv/Scripts/python.exe scripts/dev/gear-planner-research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-hunter-validation/matched-engine-check.json
-node projects/gear-planner/check-deathknight.cjs fixtures/raidbots-hunter
-.venv/Scripts/python.exe projects/gear-planner/check-fit.py
-.venv/Scripts/python.exe projects/gear-planner/check-extra-input.py
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe --output .local/gear-planner-hunter-validation/current-engine-check.json
+.venv/Scripts/python.exe tests/gear-planner/research/check-deathknight-raidbots.py --fixtures projects/gear-planner/fixtures/raidbots-hunter --engine .tools/gear-planner-dk-reference/simulationcraft-simc-b845947/engine/simc.exe --output .local/gear-planner-hunter-validation/matched-engine-check.json
+node tests/gear-planner/check-deathknight.cjs fixtures/raidbots-hunter
+.venv/Scripts/python.exe tests/gear-planner/check-fit.py
+.venv/Scripts/python.exe tests/gear-planner/check-extra-input.py
 build-and-verify verify --project .
 ```
 
