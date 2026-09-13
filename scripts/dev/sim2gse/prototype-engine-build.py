@@ -11,21 +11,25 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / '.local/sim2gse/execution-prototype'
 TOOLS = ROOT / '.tools/sim2gse/execution-prototype'
-COMMIT = 'b845947a34429874433d8e9362326894650dd20a'
-ARCHIVE_HASH = '412fe6f536e181ef73fd4fcf6d27dbcd2e17d873511c545a1cea1138c44e8110'
-
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 def main():
     mode = sys.argv[1]
     assert mode in ('baseline', 'controlled')
-    archive = ROOT / '.tools/downloads/simc-source.zip'
-    assert digest(archive) == ARCHIVE_HASH, 'upstream archive changed'
+    lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    upstream = ROOT / '.tools/sim2gse-upstream/simc'
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=upstream, text=True).strip()
+    tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=upstream, text=True).strip()
+    assert commit == lock['upstream_commit'] and tree == lock['upstream_tree'], 'upstream source changed'
+    archive = OUT / 'upstream.zip'
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['git', 'archive', '--format=zip', '--prefix=simc/', f'--output={archive}', commit],
+                   cwd=upstream, check=True)
     source = TOOLS / mode
     source.mkdir(parents=True, exist_ok=True)
     marker = source / 'prototype-source.json'
-    identity = {'commit': COMMIT, 'archive_sha256': ARCHIVE_HASH}
+    identity = {'commit': commit, 'tree': tree}
     if not marker.exists():
         assert not list(source.iterdir()), 'refusing to overwrite unknown source'
         with zipfile.ZipFile(archive) as z:

@@ -1,5 +1,6 @@
 """验证真实检查器能区分正确输入和错误输入，不模拟游戏运行时。"""
 from pathlib import Path
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,28 @@ def main():
     setup = (ROOT / "scripts/dev/setup.ps1").read_text(encoding="utf-8")
     assert "https://github.com/simulationcraft/simc.git" in setup
     assert "simc-source.zip" not in setup
+    spec = importlib.util.spec_from_file_location(
+        "sim2gse_build", ROOT / "scripts/dev/sim2gse/build.py"
+    )
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    with tempfile.TemporaryDirectory(prefix="sim2gse-source-") as temporary:
+        repository = Path(temporary)
+        subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repository, check=True)
+        (repository / "source.cpp").write_text("int main() {}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "source.cpp"], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "--quiet", "-m", "source"], cwd=repository, check=True)
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=repository, text=True).strip()
+        build.verify_upstream(repository, {"upstream_commit": commit, "upstream_tree": tree})
+        try:
+            build.verify_upstream(repository, {"upstream_commit": commit, "upstream_tree": "0" * 40})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("错误源码树必须被拒绝")
 
     with tempfile.TemporaryDirectory(prefix="wow-checks-") as temporary:
         folder = Path(temporary)

@@ -14,15 +14,20 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def main():
-    lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
-    upstream = ROOT / '.tools/sim2gse-upstream/simc'
+def verify_upstream(upstream, lock):
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=upstream, check=True,
                             capture_output=True, text=True).stdout.strip()
     tree = subprocess.run(['git', 'rev-parse', 'HEAD^{tree}'], cwd=upstream, check=True,
                           capture_output=True, text=True).stdout.strip()
     if commit != lock['upstream_commit'] or tree != lock['upstream_tree']:
         raise ValueError('固定上游提交身份不符')
+    return commit
+
+
+def main():
+    lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    upstream = ROOT / '.tools/sim2gse-upstream/simc'
+    commit = verify_upstream(upstream, lock)
     archive = ROOT / '.local/sim2gse/build/upstream.zip'
     archive.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(['git', 'archive', '--format=zip', '--prefix=simc/', f'--output={archive}', commit],
