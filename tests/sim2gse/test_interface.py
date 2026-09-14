@@ -11,6 +11,7 @@ import os
 import subprocess
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -363,6 +364,28 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 self.assertLess(len(message), 161)
         self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
 
+        from unittest.mock import patch
+        failed = SimpleNamespace(done=True, error=TaskError('原生引擎失败: C:\\private\\simc.exe'),
+                                 runtime=SimpleNamespace(elapsed_seconds=0))
+        env=os.environ.copy()
+        env.setdefault('NODE_PATH',str(Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'))
+        script=r'''
+const {chromium}=require('playwright'),assert=require('node:assert/strict');
+(async()=>{const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
+ const browser=await chromium.launch({channel:'msedge',headless:true});try{
+  const page=await browser.newPage();await page.goto(input.url);
+  await page.locator('#profile').fill(input.profile);await page.locator('#start').click();
+  await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+  assert.match(await page.locator('#error').innerText(),/引擎计算失败/);
+  assert.ok(!(await page.locator('#error').innerText()).includes('\\'));
+  assert.equal(await page.locator('#resultSection').isVisible(),false);
+ }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+        with patch('interface.start_task', return_value=failed):
+            result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=sample_profile())),
+                text=True,encoding='utf-8',capture_output=True,env=env,timeout=15)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
     def test_manual_browser_timeout_cleans_process_tree(self):
         from unittest.mock import patch
         import ctypes
@@ -376,19 +399,28 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         kernel.OpenProcess.restype=wintypes.HANDLE
         kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
         kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+        def edge_ids(parent_id):
+            query=f"Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' AND ParentProcessId={parent_id}\" | Select-Object -ExpandProperty ProcessId"
+            return {int(pid) for pid in subprocess.run(
+                ['powershell','-NoProfile','-Command',query],capture_output=True,text=True,timeout=10
+            ).stdout.split()}
         def deadline(process,input=None,timeout=None):
             if isinstance(process.args,list) and process.args[0]=='node':
                 held.append(kernel.OpenProcess(0x100000,False,process.pid))
+                process.stdin.write(input)
+                process.stdin.close()
+                process.stdin=None
                 child_ids=[]
                 until=time.monotonic()+10
                 while time.monotonic()<until and not child_ids:
-                    query=f'Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq {process.pid} | Select-Object -ExpandProperty ProcessId'
-                    children=subprocess.run(['powershell','-NoProfile','-Command',query],capture_output=True,text=True,timeout=10)
-                    child_ids=children.stdout.split()
+                    child_ids=edge_ids(process.pid)
                     if not child_ids:time.sleep(0.05)
                 for pid in child_ids:
-                    held.append(kernel.OpenProcess(0x100000,False,int(pid)))
-                return original_communicate(process,input,timeout=0.1)
+                    handle=kernel.OpenProcess(0x100000,False,int(pid))
+                    self.assertTrue(handle,'无法打开 Edge 浏览器进程')
+                    self.assertEqual(kernel.WaitForSingleObject(handle,0),258,'捕获的 Edge 浏览器进程已经退出')
+                    held.append(handle)
+                return original_communicate(process,timeout=0.1)
             return original_communicate(process,input,timeout)
         def profile_input(path,*args,**kwargs):
             if path.name=='unholy-20260912-0240.simc':return sample_profile()
