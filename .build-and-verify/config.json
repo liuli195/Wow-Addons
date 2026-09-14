@@ -394,6 +394,24 @@
           "package.json",
           "package-lock.json"
         ]
+      },
+      {
+        "id": "verify.myspec-main",
+        "command": "myspec validate-main myspec/specs",
+        "paths": [
+          "myspec/specs/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".github/workflows/pr-flow-toolchain.yml",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "myspec/specs/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".github/workflows/pr-flow-toolchain.yml",
+          ".pr-flow/toolchain.json"
+        ]
       }
     ]
   }
