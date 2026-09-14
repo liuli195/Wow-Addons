@@ -14,10 +14,13 @@
     ]
   },
   "verify": {
+    "maxParallel": 2,
+    "fullBudgetSeconds": 60,
     "checks": [
       {
         "id": "verify.luals",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals",
+        "checkParallel": true,
         "paths": [
           "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
@@ -40,6 +43,7 @@
       {
         "id": "verify.luacheck",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luacheck",
+        "checkParallel": true,
         "paths": [
           "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
@@ -62,6 +66,7 @@
       {
         "id": "verify.toc",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py toc",
+        "checkParallel": true,
         "paths": [
           "addons/EUI_FacetedPortrait/**",
           "scripts/dev/**",
@@ -84,6 +89,7 @@
       {
         "id": "verify.assets",
         "command": ".venv\\Scripts\\python.exe scripts/media/verify.py",
+        "checkParallel": true,
         "paths": [
           "scripts/media/verify.py",
           "addons/EUI_FacetedPortrait/**",
@@ -110,6 +116,7 @@
       {
         "id": "verify.docs",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py docs",
+        "checkParallel": true,
         "paths": [
           "README.md",
           "AGENTS.md",
@@ -140,6 +147,7 @@
       {
         "id": "verify.checker-tests",
         "command": ".venv\\Scripts\\python.exe tests/dev/test_checks.py",
+        "checkParallel": true,
         "paths": [
           "scripts/dev/**",
           ".build-and-verify/config.json",
@@ -161,7 +169,9 @@
       },
       {
         "id": "verify.sim2gse",
-        "command": ".venv\\Scripts\\python.exe -m unittest discover -s tests/sim2gse -p test_*.py",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse --dist=worksteal",
+        "checkParallel": true,
+        "pytestXdistWorkers": 8,
         "paths": [
           "projects/sim2gse/**",
           "scripts/dev/sim2gse/**",
@@ -188,6 +198,7 @@
       {
         "id": "verify.test-inventory",
         "command": ".venv\\Scripts\\python.exe tests/dev/test_inventory.py",
+        "checkParallel": true,
         "paths": [
           "tests/**",
           ".build-and-verify/config.json",
@@ -206,6 +217,7 @@
       {
         "id": "verify.gear-async",
         "command": "node tests/gear-planner/check-async.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -230,6 +242,7 @@
       {
         "id": "verify.gear-build-names",
         "command": "node tests/gear-planner/check-build-names.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -254,6 +267,7 @@
       {
         "id": "verify.gear-delete",
         "command": "node tests/gear-planner/check-delete.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -278,6 +292,7 @@
       {
         "id": "verify.gear-empty",
         "command": "node tests/gear-planner/check-empty.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -302,6 +317,7 @@
       {
         "id": "verify.gear-save-armor",
         "command": "node tests/gear-planner/check-save-armor.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -326,6 +342,7 @@
       {
         "id": "verify.gear-save-as",
         "command": "node tests/gear-planner/check-save-as.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -350,6 +367,7 @@
       {
         "id": "verify.gear-stat-filter",
         "command": "node tests/gear-planner/check-stat-filter.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -374,6 +392,7 @@
       {
         "id": "verify.gear-summary",
         "command": "node tests/gear-planner/check-summary.js",
+        "checkParallel": true,
         "paths": [
           "tests/gear-planner/**",
           "projects/gear-planner/**",
@@ -398,6 +417,7 @@
       {
         "id": "verify.myspec-main",
         "command": "myspec validate-main myspec/specs",
+        "checkParallel": true,
         "paths": [
           "myspec/specs/**",
           ".build-and-verify/config.json",
