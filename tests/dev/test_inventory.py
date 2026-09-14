@@ -47,7 +47,8 @@ def main():
     commands = '\n'.join(str(c['command']).replace('\\', '/') for c in config['verify']['checks'])
     sim2gse = next(check for check in config['verify']['checks'] if check['id'] == 'verify.sim2gse')
     sim2gse_command = str(sim2gse['command']).replace('\\', '/')
-    assert '-m pytest' in sim2gse_command and 'tests/sim2gse' in sim2gse_command, 'Sim2GSE 必须由 pytest 自动发现'
+    sim2gse_pytest = '-m pytest' in sim2gse_command and 'tests/sim2gse' in sim2gse_command
+    assert sim2gse_pytest, 'Sim2GSE 必须由 pytest 自动发现'
     local_checks = []
     for check in config['verify']['checks']:
         command = str(check['command']).replace('\\', '/')
@@ -70,8 +71,7 @@ def main():
             continue
         if local_acceptance(path):
             continue
-        discovered = (path.parent == ROOT / 'tests/sim2gse' and path.match('test_*.py')
-                      and '-m pytest' in sim2gse_command and 'tests/sim2gse' in sim2gse_command)
+        discovered = path.parent == ROOT / 'tests/sim2gse' and path.match('test_*.py') and sim2gse_pytest
         if relative not in commands and not discovered:
             missing.append(relative)
     assert not missing, '未接入统一验证的测试：\n' + '\n'.join(sorted(missing))
