@@ -113,7 +113,9 @@ jobs:
       - name: Full verification
         if: ${{ !cancelled() && steps.changes.outputs.needs-build == 'true' }}
         shell: pwsh
-        run: build-and-verify verify --project . --full
+        run: |
+          python -m pip install --disable-pip-version-check -r scripts/dev/requirements.txt
+          build-and-verify verify --project . --full
       - name: Changed-file verification
         if: ${{ !cancelled() && steps.changes.outputs.needs-build != 'true' }}
         shell: pwsh
