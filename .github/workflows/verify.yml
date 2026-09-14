@@ -113,7 +113,13 @@ jobs:
       - name: Full verification
         if: ${{ !cancelled() && steps.changes.outputs.needs-build == 'true' }}
         shell: pwsh
-        run: build-and-verify verify --project . --full
+        env:
+          BUILD_AND_VERIFY_PYTHON: ${{ github.workspace }}\.venv\Scripts\python.exe
+        run: |
+          $config = Get-Content .build-and-verify/config.json -Raw | ConvertFrom-Json
+          ($config.verify.checks | Where-Object id -eq 'verify.sim2gse').pytestXdistWorkers = 2
+          $config | ConvertTo-Json -Depth 100 | Set-Content .build-and-verify/config.json
+          build-and-verify verify --project . --full
       - name: Changed-file verification
         if: ${{ !cancelled() && steps.changes.outputs.needs-build != 'true' }}
         shell: pwsh
