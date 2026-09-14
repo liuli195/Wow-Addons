@@ -19,10 +19,6 @@ COMMON = ['item_db_source=local', 'threads=1', 'seed=20260912', 'target_error=0'
           'override.allow_food=0', 'override.allow_flasks=0', 'override.allow_augmentations=0']
 
 
-def target_options(character):
-    return ['enemy=Dungeon_Damage_Dummy', 'target_level=90'] if character.fields.get('role') == 'tank' else []
-
-
 def identity(mode, runtime=None):
     if runtime:
         runtime.check()
@@ -49,13 +45,11 @@ def identity(mode, runtime=None):
     return executable, manifest
 
 
-def run(profile, folder, mode='baseline', options=(), *, character=None, runtime=None, timeout_seconds=30):
+def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30):
     runtime = runtime or TaskRuntime(timeout_seconds)
     executable, manifest = identity(mode, runtime)
     folder.mkdir(parents=True, exist_ok=True)
-    command = [str(executable), os.path.relpath(profile, folder), *COMMON,
-               *(target_options(character) if character else []),
-               'iterations=100', 'max_time=180',
+    command = [str(executable), os.path.relpath(profile, folder), *COMMON, 'iterations=100', 'max_time=180',
                'json2=native.json', 'output=native.txt', *options]
     try:
         proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime)
@@ -164,11 +158,6 @@ def check_report(report, character, iterations):
     sim = report['sim']
     if len(sim['targets']) != 1:
         raise ValueError('原生报告的目标数量不符')
-    target = sim['targets'][0]
-    if target_options(character) and (
-            target['name'] != 'Dungeon_Damage_Dummy' or target['level'] != 90 or
-            target.get('sim2gse_class') == 'tank_dummy'):
-        raise ValueError('坦克模拟目标不是 90 级单目标地下城伤害假人')
     player = player_report(report, character)
     if (player['sim2gse_class'] != character.class_name or player['level'] != character.level or
             (character.spec_id is not None and player['sim2gse_spec_id'] != character.spec_id) or
@@ -201,9 +190,7 @@ def check_report(report, character, iterations):
     mean, count = damage['mean'], damage['count']
     if not math.isfinite(mean) or mean <= 0 or count != max(1, iterations - 1) or data['fight_length']['mean'] != 180:
         raise ValueError('原生参考数值或实际样本数无效')
-    return dict(dps=mean, metric=metric, personal_dps=data['dps']['mean'], samples=count, seconds=180,
-                target=dict(name=target['name'], level=target['level'], type=target.get('sim2gse_class')),
-                metadata_only=metadata_only, notices=report.get('logs', []),
+    return dict(dps=mean, metric=metric, personal_dps=data['dps']['mean'], samples=count, seconds=180, metadata_only=metadata_only, notices=report.get('logs', []),
                 identity=dict(class_id=player['sim2gse_class_id'], spec_id=player['sim2gse_spec_id'],
                               spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource']))
 
@@ -212,7 +199,7 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     folder = Path(folder)
     runtime = runtime or TaskRuntime()
     run(profile, folder, options=[f'iterations={iterations}', f'seed={seed}',
-        'json2=native.pending.json'], character=character, runtime=runtime)
+        'json2=native.pending.json'], runtime=runtime)
     try:
         report = json.loads((folder / 'native.pending.json').read_text(encoding='utf-8'))
     except (OSError, ValueError) as error:

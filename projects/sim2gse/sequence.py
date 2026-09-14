@@ -88,8 +88,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n', encoding='utf-8')
     pending_report = folder / 'native.pending.json'
     log = run(generated, folder, mode,
-              [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'],
-              character=character, runtime=runtime)
+              [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'], runtime=runtime)
     native_blocks = []
     for line in log.splitlines():
         if not line.startswith('S2GBLOCK\t'):
