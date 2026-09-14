@@ -43,6 +43,7 @@ class SearchAndValidationTests(TestCase):
             self.assertGreaterEqual(len(result["search"]["starts"]), 2)
             self.assertIn("validation", result)
             self.assertIn("final", result)
+            self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
             self.assertNotEqual(result["search"]["dataset"], result["validation"]["dataset"])
             self.assertNotEqual(result["validation"]["dataset"], result["final"]["dataset"])
 

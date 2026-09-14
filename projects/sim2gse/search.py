@@ -636,7 +636,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     complete = (set(final['scenarios']) == set(DEFAULT_SCENARIOS) and config['final_batches'] >= 20
                 and config['final_iterations'] == 100)
     improved = complete and all(v['comparison']['status'] == 'improvement_confirmed' for v in final['scenarios'].values())
-    chosen = best if improved else seed
+    chosen = best if improved or not complete else seed
     result = dict(status='completed' if complete else 'validation_incomplete', phase='done',
                   search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
                               candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason')),

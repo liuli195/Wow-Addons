@@ -263,7 +263,7 @@ def _public_state(state: dict, destination: Path) -> dict:
                                       else "insufficient_validation"),
                 )
                 if status == "validation_incomplete" and state.get("improvement") == "not_proven_better":
-                    response["result_note"] = "复测未完成；未证明优于初始序列，已保留初始序列。"
+                    response["result_note"] = "复测未完成；已保留锁定候选，不能视为验证通过。"
                 elif state.get("improvement") == "not_proven_better":
                     response["result_note"] = "未证明优于初始序列，已保留初始序列。"
                 elif status == "validation_incomplete":
