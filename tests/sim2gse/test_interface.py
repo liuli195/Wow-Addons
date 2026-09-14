@@ -19,7 +19,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
-from interface import create_server  # noqa: E402
+from interface import _public_state, create_server  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
 
 
@@ -100,8 +100,24 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["evidence_status"], "insufficient_validation")
         self.assertTrue(state["candidate_text"].startswith("!GSE3!"))
         self.assertIn("复测未完成", state["result_note"])
+        self.assertIn("锁定候选", state["result_note"])
         self.assertEqual(state["phase"], "done")
         self.assertGreater(state["elapsed_seconds"], 0)
+
+    def test_old_incomplete_result_still_reports_the_seed_it_selected(self) -> None:
+        destination = Path(self.directory.name) / "旧任务"
+        destination.mkdir()
+        (destination / "candidate.txt").write_text("!GSE3!seed", encoding="ascii")
+        state = {
+            "status": "validation_incomplete",
+            "phase": "done",
+            "improvement": "not_proven_better",
+            "locked_candidate_key": "locked",
+            "selected_candidate_key": "seed",
+            "candidate": {"text": "!GSE3!seed"},
+        }
+
+        self.assertIn("初始序列", _public_state(state, destination)["result_note"])
 
     def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300):
         self.server.task_options = {'search_config': dict(total_budget_seconds=20,
