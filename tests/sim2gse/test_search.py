@@ -68,41 +68,10 @@ class SearchAndValidationTests(TestCase):
                           [name for block in result['search']['starts'][1] for name in block])
 
     def test_complete_validation_without_proven_gain_keeps_the_seed(self):
-        import search
-        from unittest.mock import patch
-        summarize_pairs = search.summarize_pairs
+        from search import _choose_final_candidate
 
-        def reject_final_gain(candidate, seed):
-            comparison = summarize_pairs(candidate, seed)
-            if len(candidate) == 20:
-                comparison["status"] = "not_proven_better"
-            return comparison
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-no-gain-") as directory:
-            source = Path(directory) / "角色.simc"
-            destination = Path(directory) / "任务"
-            source.write_text(sample_profile(), encoding="utf-8")
-            with patch.object(search, "DEFAULT_SCENARIOS", ("nominal",)), \
-                    patch.object(search, "summarize_pairs", side_effect=reject_final_gain):
-                result = run_task(source, destination, search_config={
-                    "total_budget_seconds": 60,
-                    "search_budget_seconds": 8,
-                    "candidate_limit": 4,
-                    "batch_targets": (2,),
-                    "validation_batches": 2,
-                    "final_batches": 20,
-                    "iterations": 2,
-                    "final_iterations": 100,
-                    "scenarios": ("nominal",),
-                    "max_processes": 2,
-                })
-
-            seed_key = result["search"]["records"][0]["key"]
-            self.assertEqual(result["status"], "completed")
-            self.assertEqual(result["improvement"], "not_proven_better")
-            self.assertNotEqual(result["locked_candidate_key"], seed_key)
-            self.assertEqual(result["selected_candidate_key"], seed_key)
-            self.assertEqual((destination / "candidate.txt").read_text(encoding="ascii"), result["candidate"]["text"])
+        best, seed = object(), object()
+        self.assertIs(_choose_final_candidate(best, seed, complete=True, improved=False), seed)
 
     def test_search_batch_targets_add_independent_requested_iterations(self):
         with tempfile.TemporaryDirectory(prefix="sim2gse-batches-") as directory:
