@@ -543,12 +543,14 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(result['search']['records'][0]['batches'][0].get('cached',False))
 
     def test_busy_and_dispatch_failure_are_counted_as_attempts(self):
-        from search import feedback_from_trace
-        feedback=feedback_from_trace([
-            dict(event='busy',battle=9001,origin=1,signature='feedback_probe'),
-            dict(event='dispatch_failed',battle=9002,origin=1,signature='feedback_probe'),
-        ])
-        self.assertEqual(feedback['attempts'].get('feedback_probe'),2)
+        with tempfile.TemporaryDirectory(prefix='sim2gse-feedback-') as directory:
+            source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
+            with _fast_search_boundary():
+                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=12,
+                    search_budget_seconds=3,candidate_limit=2,batch_targets=(2,),iterations=2,
+                    validation_batches=2,final_batches=1,final_iterations=2,scenarios=('nominal',)))
+            feedback=result['search']['records'][0]['batches'][0]['feedback']
+            self.assertEqual(feedback['attempts'].get('feedback_probe'),2)
 
     def test_running_task_cannot_be_resumed_by_another_runner(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-runner-lock-') as directory:

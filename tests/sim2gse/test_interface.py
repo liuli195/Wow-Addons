@@ -9,7 +9,7 @@ import unittest
 import json
 import os
 import subprocess
-from dataclasses import replace
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -21,10 +21,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from interface import _public_state, create_server  # noqa: E402
-from task import parse_character  # noqa: E402
-from engine import inspect, reference  # noqa: E402
-from codec import export  # noqa: E402
-from sequence import evaluate, select  # noqa: E402
+from task import run_task  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
 
 
@@ -197,19 +194,18 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
 
     def _export_candidate(self, profile, expected_spec, *, simulate=False):
         root = Path(self.directory.name) / 'direct'
-        root.mkdir()
         source = root / 'input.simc'
+        root.mkdir()
         source.write_text(profile, encoding='utf-8')
-        character = parse_character(profile)
-        native = reference(source, root / 'reference', character)
-        character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-        candidate = export(select(inspect(native, root / 'capabilities')), root / 'export', identity=native['identity'])
-        self._decode_candidate(candidate['text'], expected_spec)
-        self.native_report = json.loads((root / 'reference/native.json').read_text(encoding='utf-8'))
-        self.native_reference = native
-        if simulate:
-            self.controlled = evaluate(source, candidate, root / 'controlled', character=character,
-                                       iterations=2, input_times=list(range(0, 180000, 300)))
+        from unittest.mock import patch
+        boundary = nullcontext() if simulate else patch(
+            'sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'})
+        with boundary:
+            result = run_task(source, root / 'task', mode='single')
+        self._decode_candidate(result['candidate']['text'], expected_spec)
+        self.native_report = json.loads((root / 'task/reference/native.json').read_text(encoding='utf-8'))
+        self.native_reference = result['native_reference']
+        self.controlled = result['controlled_simulation']
 
     def test_invalid_interval_is_rejected_before_creating_task(self):
         for value in (0, 49, 2001, True, 180.5, "180"):
