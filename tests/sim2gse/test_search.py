@@ -31,28 +31,12 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
         for block in candidate["blocks"] for command in block
     ) / 1000.0
     samples = max(1, iterations - 1)
-    player = {
-        "name": character.name,
-        "sim2gse_class": character.class_name,
-        "level": character.level,
-        "sim2gse_spec_id": character.spec_id or 252,
-        "race": character.race,
-        "talents": character.fields["talents"],
-        "sim2gse_resource": "runic_power",
-        "collected_data": {
-            "dps": {"mean": score, "count": samples},
-            "fight_length": {"mean": 180},
-            "resource_overflowed": {"runic_power": {"mean": 0}},
-        },
-    }
-    report = {
-        "sim": {
-            "players": [player],
-            "targets": [{}],
-            "statistics": {"raid_dps": {"mean": score, "count": samples}},
-            "options": {"dbc": {"Live": {"build_level": 69587, "version_used": "Live"}}},
-        }
-    }
+    report = json.loads((Path(profile).parent / "reference/native.json").read_text(encoding="utf-8"))
+    player = next(row for row in report["sim"]["players"] if row["name"] == character.name)
+    player["collected_data"]["dps"].update(mean=score, count=samples)
+    player["collected_data"].setdefault("resource_overflowed", {}) \
+        .setdefault(player["sim2gse_resource"], {})["mean"] = 0
+    report["sim"]["statistics"]["raid_dps"].update(mean=score, count=samples)
     (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
     trace_rows = []
     if trace:
@@ -76,22 +60,12 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                 trace=trace_rows, game_validation="not_run", model="constructed-test-boundary")
 
 
-def _fast_check_report(report, character, iterations):
-    damage = report["sim"]["statistics"]["raid_dps"]
-    return dict(dps=damage["mean"], metric="dps", personal_dps=damage["mean"],
-                samples=damage["count"], seconds=180, metadata_only=[], notices=[],
-                identity={"spec_id": character.spec_id or 252, "race": character.race,
-                          "resource": "runic_power"})
-
-
 @contextmanager
 def _fast_search_boundary():
     """仅替换搜索结果生产；任务入口、TaskStore 和搜索状态机仍走真实代码。"""
-    import engine
     import sequence
 
-    with patch.object(engine, "check_report", side_effect=_fast_check_report), \
-         patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
+    with patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
         yield
 
 
