@@ -1,6 +1,9 @@
 name: Addon verification
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -18,7 +21,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          fetch-depth: 0
           lfs: true
+      - name: Classify changes
+        id: changes
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if ('${{ github.event_name }}' -ne 'pull_request') {
+            'needs-build=true' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $changed = git diff --name-only "$env:BASE_SHA...HEAD"
+          $lightweight = '^(README\.md$|AGENTS\.md$|docs/|myspec/(changes|specs)/|tests/.+/.+\.md$|projects/[^/]+/README\.md$)'
+          $needsBuild = @($changed | Where-Object { $_ -notmatch $lightweight }).Count -gt 0
+          "needs-build=$($needsBuild.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -26,12 +44,14 @@ jobs:
         with:
           node-version: '24'
       - uses: msys2/setup-msys2@v2
+        if: steps.changes.outputs.needs-build == 'true'
         id: msys2
         with:
           msystem: MINGW64
           update: false
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
       - name: Record compiler identity
+        if: steps.changes.outputs.needs-build == 'true'
         id: compiler
         shell: pwsh
         env:
@@ -44,19 +64,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $identity = (Get-Content .pr-flow/toolchain.json -Raw | ConvertFrom-Json).tools.'build-and-verify'
-          if ($identity.mode -eq 'release') {
-            npm install --global --ignore-scripts --no-audit --no-fund "$($identity.packageName)@$($identity.packageVersion)"
-          } elseif ($identity.mode -eq 'dev') {
-            $source = Join-Path $env:RUNNER_TEMP 'verification-toolchain'
-            git clone --no-checkout $identity.sourceRepository $source
-            git -C $source checkout --detach $identity.sourceCommit
-            $package = python "$source/plugins/tool-lifecycle/pack.py" build-and-verify $env:RUNNER_TEMP
-            npm install --global --ignore-scripts --no-audit --no-fund $package
-          } else {
-            throw 'Unknown toolchain mode'
+          $tools = (Get-Content .pr-flow/toolchain.json -Raw | ConvertFrom-Json).tools
+          foreach ($name in @('myspec', 'build-and-verify')) {
+            $identity = $tools.PSObject.Properties[$name].Value
+            if ($identity.mode -eq 'release') {
+              npm install --global --ignore-scripts --no-audit --no-fund "$($identity.packageName)@$($identity.packageVersion)"
+            } elseif ($identity.mode -eq 'dev') {
+              $source = Join-Path $env:RUNNER_TEMP $name
+              git clone --no-checkout $identity.sourceRepository $source
+              git -C $source checkout --detach $identity.sourceCommit
+              $package = python "$source/plugins/tool-lifecycle/pack.py" $name $env:RUNNER_TEMP
+              npm install --global --ignore-scripts --no-audit --no-fund $package
+            } else {
+              throw "Unknown toolchain mode: $name"
+            }
           }
       - name: Restore SimC source cache
+        if: steps.changes.outputs.needs-build == 'true'
         id: simc-cache
         uses: actions/cache/restore@v4
         with:
@@ -65,15 +89,21 @@ jobs:
             .tools/sim2gse/product
           key: sim2gse-${{ runner.os }}-${{ steps.compiler.outputs.sha256 }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
       - name: Prepare pinned tools and API references
+        if: steps.changes.outputs.needs-build == 'true'
         shell: pwsh
         run: ./scripts/dev/setup.ps1
+      - name: Prepare lightweight verification
+        if: steps.changes.outputs.needs-build != 'true'
+        shell: pwsh
+        run: python -m venv .venv
       - name: Build all repository targets
+        if: steps.changes.outputs.needs-build == 'true'
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: build-and-verify build --project .
       - name: Save SimC build cache
-        if: success() && steps.simc-cache.outputs.cache-hit != 'true'
+        if: success() && steps.changes.outputs.needs-build == 'true' && steps.simc-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -81,9 +111,15 @@ jobs:
             .tools/sim2gse/product
           key: sim2gse-${{ runner.os }}-${{ steps.compiler.outputs.sha256 }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
       - name: Full verification
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.changes.outputs.needs-build == 'true' }}
         shell: pwsh
         run: build-and-verify verify --project . --full
+      - name: Changed-file verification
+        if: ${{ !cancelled() && steps.changes.outputs.needs-build != 'true' }}
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: build-and-verify verify --project . --base $env:BASE_SHA
       - name: Keep diagnostics
         if: always()
         uses: actions/upload-artifact@v4
