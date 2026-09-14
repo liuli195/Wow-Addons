@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import time
+from contextlib import contextmanager
+import hashlib
+import json
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 import sys
 
@@ -14,6 +18,158 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
+
+
+def _fast_capabilities():
+    actions = [
+        dict(kind="spell", spell_id=1001, simc_action="outbreak", name="outbreak",
+             gcd_ms=1500, base_spell_id=1001),
+        dict(kind="spell", spell_id=1002, simc_action="death_coil", name="death_coil",
+             gcd_ms=1500, base_spell_id=1002),
+        dict(kind="spell", spell_id=1003, simc_action="scourge_strike", name="scourge_strike",
+             gcd_ms=1500, base_spell_id=1003),
+        dict(kind="spell", spell_id=1004, simc_action="dark_transformation", name="dark_transformation",
+             gcd_ms=1500, base_spell_id=1004),
+        dict(kind="item", slot=13, item_id=250245, driver_spell_id=1005,
+             simc_action="use_item,slot=trinket1", name="使用trinket1", gcd_ms=0),
+    ]
+    return dict(actions=actions, precombat_actions=[], sources=[], protocol=3,
+                scope="test", coverage="constructed-test-boundary")
+
+
+def _fast_identity(mode):
+    return {"mode": mode, "upstream_commit": "test", "build_options": []}
+
+
+def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912):
+    return dict(
+        dps=100.0,
+        metric="dps",
+        personal_dps=100.0,
+        samples=max(1, iterations - 1),
+        seconds=180,
+        identity=dict(class_id=6, spec_id=252, spec=character.spec,
+                      race=character.race, role=character.fields.get("role", "attack"),
+                      resource="runic_power"),
+        action_sequence=[{"name": "use_item,slot=trinket1", "queue_failed": False}],
+        precombat_sequence=[],
+        actions_protocol=1,
+        executed_actions=[],
+        precombat_definitions=[],
+        active_items=[{"slot": "trinket1", "id": 250245, "driver_spell_id": 1005}],
+    )
+
+
+def _fast_inspect(reference, folder):
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    capabilities = _fast_capabilities()
+    (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+    return capabilities
+
+
+def _fast_candidate(blocks, folder, *, identity, runtime=None):
+    """只替换搜索测试的 GSE 编译产物；真实编码仍由角色导出测试覆盖。"""
+    compiled = []
+    for block in blocks:
+        if len(block) == 1 and block[0].get("kind") == "spell":
+            compiled.append({"type": "spell", "spell": block[0]["spell_id"]})
+        elif len(block) == 1 and block[0].get("kind") == "item":
+            compiled.append({"type": "item", "item": block[0]["slot"]})
+        else:
+            lines = [(f'/cast {command["spell_id"]}' if command.get("kind") == "spell" else
+                      f'/use {command["slot"]}' if command.get("kind") == "item" else '/startattack')
+                     for command in block]
+            compiled.append({"type": "macro", "macrotext": "\n".join(lines)})
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    return dict(text="!GSE3!constructed-search-candidate", blocks=blocks,
+                compiled_steps=compiled, precombat_count=0,
+                simulation="not_run", game_validation="not_run",
+                targeting_build="test", ground_location="player",
+                encoding="constructed-test-boundary",
+                upstream_compilation="constructed-test-boundary")
+
+
+def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
+                   seed=20260912, trace=True, mode="controlled", input_times=None,
+                   runtime=None):
+    """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
+    score = 100.0 + sum(
+        command.get("spell_id", command.get("item_id", 0))
+        for block in candidate["blocks"] for command in block
+    ) / 1000.0
+    samples = max(1, iterations - 1)
+    player = {
+        "name": character.name,
+        "sim2gse_class": character.class_name,
+        "level": character.level,
+        "sim2gse_spec_id": character.spec_id or 252,
+        "race": character.race,
+        "talents": character.fields["talents"],
+        "sim2gse_resource": "runic_power",
+        "collected_data": {
+            "dps": {"mean": score, "count": samples},
+            "fight_length": {"mean": 180},
+            "resource_overflowed": {"runic_power": {"mean": 0}},
+        },
+    }
+    report = {
+        "sim": {
+            "players": [player],
+            "targets": [{}],
+            "statistics": {"raid_dps": {"mean": score, "count": samples}},
+            "options": {"dbc": {"Live": {"build_level": 69587, "version_used": "Live"}}},
+        }
+    }
+    (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
+    trace_rows = []
+    if trace:
+        trace_rows = [
+            dict(ms=0, event="input", origin=1, step=0, action="-", signature="-",
+                 battle=1, rp=0, health=100, gcd=0, cooldown=0, cast_ms=0),
+            dict(ms=0, event="busy", origin=1, step=0, action="feedback_probe",
+                 signature="feedback_probe", battle=9001, rp=0, health=100, gcd=0,
+                 cooldown=0, cast_ms=0),
+            dict(ms=0, event="dispatch_failed", origin=1, step=0, action="feedback_probe",
+                 signature="feedback_probe", battle=9002, rp=0, health=100, gcd=0,
+                 cooldown=0, cast_ms=0),
+            dict(ms=0, event="native_execute", origin=1, step=0, action="outbreak",
+                 signature="outbreak", battle=1, rp=1, health=100, gcd=0,
+                 cooldown=0, cast_ms=0),
+        ]
+    return dict(blocks=[[a["simc_action"] for a in block] for block in candidate["blocks"]],
+                native_blocks=[[a["simc_action"] for a in block] for block in candidate["blocks"]],
+                input_times=input_times, consistent=True,
+                summary={"dps": score, "samples": samples}, report=report,
+                trace=trace_rows, game_validation="not_run", model="constructed-test-boundary")
+
+
+def _fast_check_report(report, character, iterations):
+    damage = report["sim"]["statistics"]["raid_dps"]
+    return dict(dps=damage["mean"], metric="dps", personal_dps=damage["mean"],
+                samples=damage["count"], seconds=180, metadata_only=[], notices=[],
+                identity={"spec_id": character.spec_id or 252})
+
+
+@contextmanager
+def _fast_search_boundary():
+    """仅替换搜索结果生产；任务入口、TaskStore 和搜索状态机仍走真实代码。"""
+    import codec
+    import engine
+    import sequence
+
+    with patch.object(engine, "identity",
+                      side_effect=lambda mode, runtime=None: (Path("simc-test.exe"), _fast_identity(mode))), \
+         patch.object(engine, "reference", side_effect=_fast_reference), \
+         patch.object(engine, "inspect", side_effect=_fast_inspect), \
+         patch.object(engine, "check_report", side_effect=_fast_check_report), \
+         patch.object(codec, "export", side_effect=_fast_candidate), \
+         patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
+        yield
 
 
 class SearchAndValidationTests(TestCase):
@@ -60,10 +216,11 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / "角色.simc"
             source.write_text(sample_profile().replace('trinket1=,id=250245',
                               'trinket1=,id=273797,ilevel=311'), encoding='utf-8')
-            result = run_task(source, Path(directory)/'任务', search_config=dict(
-                total_budget_seconds=20, search_budget_seconds=8, candidate_limit=2,
-                batch_targets=(2,), iterations=2, final_iterations=2,
-                validation_batches=1, final_batches=1, scenarios=('nominal',), max_processes=1))
+            with _fast_search_boundary():
+                result = run_task(source, Path(directory)/'任务', search_config=dict(
+                    total_budget_seconds=20, search_budget_seconds=8, candidate_limit=2,
+                    batch_targets=(2,), iterations=2, final_iterations=2,
+                    validation_batches=1, final_batches=1, scenarios=('nominal',), max_processes=1))
             self.assertIn('use_item,slot=trinket1',
                           [name for block in result['search']['starts'][1] for name in block])
 
@@ -82,7 +239,8 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / "角色.simc"
             destination = Path(directory) / "任务"
             source.write_text(sample_profile(), encoding="utf-8")
-            with patch.object(search, "DEFAULT_SCENARIOS", ("nominal",)), \
+            with _fast_search_boundary(), \
+                    patch.object(search, "DEFAULT_SCENARIOS", ("nominal",)), \
                     patch.dict(search.DEFAULT_CONFIG, final_batches=1, final_iterations=2), \
                     patch.object(search, "summarize_pairs", side_effect=reject_final_gain):
                 result = run_task(source, destination, search_config={
@@ -110,24 +268,25 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / "角色.simc"
             destination = Path(directory) / "任务"
             source.write_text(sample_profile(), encoding="utf-8")
-            result = run_task(
-                source,
-                destination,
-                mode="optimize",
-                search_config={
-                    "total_budget_seconds": 10,
-                    "search_budget_seconds": 4,
-                    "candidate_limit": 2,
-                    "round_candidate_limit": 1,
-                    "batch_targets": (2, 4, 8),
-                    "validation_batches": 1,
-                    "final_batches": 1,
-                    "iterations": 2,
-                    "final_iterations": 2,
-                    "scenarios": ("nominal",),
-                    "max_processes": 1,
-                },
-            )
+            with _fast_search_boundary():
+                result = run_task(
+                    source,
+                    destination,
+                    mode="optimize",
+                    search_config={
+                        "total_budget_seconds": 10,
+                        "search_budget_seconds": 4,
+                        "candidate_limit": 2,
+                        "round_candidate_limit": 1,
+                        "batch_targets": (2, 4, 8),
+                        "validation_batches": 1,
+                        "final_batches": 1,
+                        "iterations": 2,
+                        "final_iterations": 2,
+                        "scenarios": ("nominal",),
+                        "max_processes": 1,
+                    },
+                )
             batches = result["search"]["records"][0]["batches"]
             self.assertEqual([row["target"] for row in batches], [2, 4, 8])
             self.assertEqual([row["requested_iterations"] for row in batches], [2, 2, 4])
@@ -189,7 +348,6 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(set(resumed["final"]["scenarios"]), {"nominal", "jitter", "slow", "pause", "phase"})
 
     def test_corrupt_success_report_is_recomputed_and_changed_config_rejected(self):
-        import json
         with tempfile.TemporaryDirectory(prefix="sim2gse-cache-") as directory:
             source = Path(directory)/'role.simc'
             destination = Path(directory)/'task'
@@ -197,18 +355,19 @@ class SearchAndValidationTests(TestCase):
             config=dict(total_budget_seconds=25,search_budget_seconds=3,candidate_limit=2,
                         batch_targets=(2,),validation_batches=2,final_batches=2,
                         iterations=2,final_iterations=2,scenarios=('nominal',),max_processes=1)
-            first=run_task(source,destination,search_config=config)
-            row=first['final']['scenarios']['nominal']['candidate'][0]
-            report=destination/row['artifact']/'native.json'
-            data=json.loads(report.read_text(encoding='utf-8'))
-            data['sim']['players'][0]['collected_data']['dps']['mean']=1
-            report.write_text(json.dumps(data),encoding='utf-8')
-            resumed=resume_task(destination)
-            self.assertGreater(resumed['final']['scenarios']['nominal']['candidate'][0]['dps'],1)
-            self.assertFalse(resumed['final']['scenarios']['nominal']['candidate'][0].get('cached',False))
-            with self.assertRaises(TaskError):
-                resume_task(destination,search_config=dict(config,max_processes=2))
-            self.assertFalse(resumed['independent_validation_complete'])
+            with _fast_search_boundary():
+                first=run_task(source,destination,search_config=config)
+                row=first['final']['scenarios']['nominal']['candidate'][0]
+                report=destination/row['artifact']/'native.json'
+                data=json.loads(report.read_text(encoding='utf-8'))
+                data['sim']['players'][0]['collected_data']['dps']['mean']=1
+                report.write_text(json.dumps(data),encoding='utf-8')
+                resumed=resume_task(destination)
+                self.assertGreater(resumed['final']['scenarios']['nominal']['candidate'][0]['dps'],1)
+                self.assertFalse(resumed['final']['scenarios']['nominal']['candidate'][0].get('cached',False))
+                with self.assertRaises(TaskError):
+                    resume_task(destination,search_config=dict(config,max_processes=2))
+                self.assertFalse(resumed['independent_validation_complete'])
 
     def test_task_hard_exit_preserves_checkpoint_and_cleans_owned_engine(self):
         import ctypes
@@ -324,9 +483,10 @@ class SearchAndValidationTests(TestCase):
             config=dict(total_budget_seconds=25,search_budget_seconds=3,candidate_limit=2,batch_targets=(2,),
                         validation_batches=2,final_batches=2,iterations=2,final_iterations=2,
                         scenarios=('nominal',),max_processes=1)
-            first=run_task(source,Path(directory)/'first',search_config=config)
-            source.write_text(sample_profile()+'\n# display note\n',encoding='utf-8')
-            second=run_task(source,Path(directory)/'second',search_config=config)
+            with _fast_search_boundary():
+                first=run_task(source,Path(directory)/'first',search_config=config)
+                source.write_text(sample_profile()+'\n# display note\n',encoding='utf-8')
+                second=run_task(source,Path(directory)/'second',search_config=config)
             self.assertTrue(second['search']['records'][0]['batches'][0].get('cached'))
             one=first['final']['scenarios']['nominal']['candidate'][0]
             two=second['final']['scenarios']['nominal']['candidate'][0]
@@ -353,9 +513,10 @@ class SearchAndValidationTests(TestCase):
     def test_multiple_local_chains_use_their_own_observed_feedback(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-local-search-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,
-                search_budget_seconds=50,candidate_limit=19,round_candidate_limit=4,batch_targets=(2,),
-                validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
+            with _fast_search_boundary():
+                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,
+                    search_budget_seconds=50,candidate_limit=19,round_candidate_limit=4,batch_targets=(2,),
+                    validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
             self.assertEqual(result['search']['candidate_count'],19)
             self.assertTrue(result['search']['partial_round'])
             chains=result['search']['chains']
@@ -372,32 +533,22 @@ class SearchAndValidationTests(TestCase):
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             config=dict(total_budget_seconds=15,search_budget_seconds=3,candidate_limit=2,batch_targets=(2,),
                         validation_batches=2,final_batches=2,iterations=2,final_iterations=2,scenarios=('nominal',))
-            run_task(source,Path(directory)/'first',search_config=config)
-            with sqlite3.connect(Path(directory)/'cache.sqlite3') as database:
-                database.execute("UPDATE reusable SET value='broken-json'")
-            database.close()
-            result=run_task(source,Path(directory)/'second',search_config=config)
+            with _fast_search_boundary():
+                run_task(source,Path(directory)/'first',search_config=config)
+                with sqlite3.connect(Path(directory)/'cache.sqlite3') as database:
+                    database.execute("UPDATE reusable SET value='broken-json'")
+                database.close()
+                result=run_task(source,Path(directory)/'second',search_config=config)
             self.assertTrue(result['candidate']['text'].startswith('!GSE3!'))
             self.assertFalse(result['search']['records'][0]['batches'][0].get('cached',False))
 
     def test_busy_and_dispatch_failure_are_counted_as_attempts(self):
-        from unittest.mock import patch
-        original=Path.read_text
-        def trace_boundary(path,*args,**kwargs):
-            text=original(path,*args,**kwargs)
-            if path.name=='native.txt' and 'batches' in path.parts:
-                # 模拟固定原生文本协议的两种失败事件；不伪造成绩或编译结果。
-                for event,battle in (('busy',9001),('dispatch_failed',9002)):
-                    text+='\nS2GSE\t0\t'+event+'\t1\t0\tfeedback_probe\t0\t0\t100\t0\t'+str(battle)+'\tfeedback_probe\t0\n'
-            return text
-        with tempfile.TemporaryDirectory(prefix='sim2gse-feedback-') as directory:
-            source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            with patch.object(Path,'read_text',trace_boundary):
-                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=12,
-                    search_budget_seconds=3,candidate_limit=2,batch_targets=(2,),iterations=2,
-                    validation_batches=2,final_batches=1,final_iterations=2,scenarios=('nominal',)))
-            feedback=result['search']['records'][0]['batches'][0]['feedback']
-            self.assertEqual(feedback['attempts'].get('feedback_probe'),2)
+        from search import feedback_from_trace
+        feedback=feedback_from_trace([
+            dict(event='busy',battle=9001,origin=1,signature='feedback_probe'),
+            dict(event='dispatch_failed',battle=9002,origin=1,signature='feedback_probe'),
+        ])
+        self.assertEqual(feedback['attempts'].get('feedback_probe'),2)
 
     def test_running_task_cannot_be_resumed_by_another_runner(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-runner-lock-') as directory:

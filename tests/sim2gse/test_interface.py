@@ -9,6 +9,7 @@ import unittest
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -20,6 +21,10 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from interface import _public_state, create_server  # noqa: E402
+from task import parse_character  # noqa: E402
+from engine import inspect, reference  # noqa: E402
+from codec import export  # noqa: E402
+from sequence import evaluate, select  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
 
 
@@ -172,8 +177,10 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or sample_profile(),interval_ms=interval_ms)),
             text=True,encoding='utf-8',capture_output=True,env=env,timeout=50)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self._decode_candidate(json.loads(result.stdout)['candidate'], expected_spec)
+
+    def _decode_candidate(self, candidate, expected_spec):
         import base64, zlib, cbor2
-        candidate = json.loads(result.stdout)['candidate']
         # 游戏 12.1 实际编码 {1,"test"} 的输出；不由产品编码器生成预期值。
         self.assertEqual(zlib.decompress(base64.b64decode('a2J0KUktLgEA'), -15), b'\x82\x01\x44test')
         wire = cbor2.loads(zlib.decompress(base64.b64decode(candidate[6:]), -15))
@@ -187,6 +194,22 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         payload = text(wire)
         self.assertEqual(payload[1]['MetaData']['SpecID'], expected_spec)
         self.candidate_payload = payload
+
+    def _export_candidate(self, profile, expected_spec, *, simulate=False):
+        root = Path(self.directory.name) / 'direct'
+        root.mkdir()
+        source = root / 'input.simc'
+        source.write_text(profile, encoding='utf-8')
+        character = parse_character(profile)
+        native = reference(source, root / 'reference', character)
+        character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
+        candidate = export(select(inspect(native, root / 'capabilities')), root / 'export', identity=native['identity'])
+        self._decode_candidate(candidate['text'], expected_spec)
+        self.native_report = json.loads((root / 'reference/native.json').read_text(encoding='utf-8'))
+        self.native_reference = native
+        if simulate:
+            self.controlled = evaluate(source, candidate, root / 'controlled', character=character,
+                                       iterations=2, input_times=list(range(0, 180000, 300)))
 
     def test_invalid_interval_is_rejected_before_creating_task(self):
         for value in (0, 49, 2001, True, 180.5, "180"):
@@ -217,33 +240,32 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         import re
         talents='CwPAkXBWxkyfx9CbGaHonEAhLBYmhZMjBzyMzMTjZmxMzYAAAAAAAAYmxwAglZMzsZmxMzA2MbGGyAzGDNWwAmBgxMzYGgZmxMG'
         profile=re.sub(r'^talents=.*$', 'talents='+talents,sample_profile(),flags=re.MULTILINE)
-        self.test_browser_computes_copies_and_clears_real_candidate(profile)
+        self._export_candidate(profile, 252)
 
     def test_baseline_unused_racial_does_not_block_browser_result(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            sample_profile().replace('highmountain_tauren', 'undead'))
+        self._export_candidate(sample_profile().replace('highmountain_tauren', 'undead'), 252)
 
     def test_tank_profile_reaches_damage_candidate(self):
         import re
         profile = sample_profile().replace('role=attack', 'role=tank').replace('spec=unholy', 'spec=blood')
         profile = re.sub(r'^talents=.*$', 'talents=CoPAkXBWxkyfx9CbGaHonEAhLxMz2MzwMmZmhZbmZmmZxMjZmxAAAAAmhZmZmZMzYAAzMzMzAAAYgBmxiGLbgsNgNAzYAAAmZAMA', profile, flags=re.MULTILINE)
-        self.test_browser_computes_copies_and_clears_real_candidate(profile, expected_spec=250)
+        self._export_candidate(profile, 250)
         actions = self.candidate_payload[1]['Versions'][0]['Actions']
         self.assertTrue(any(a.get('macro') == '/cast [@player] 43265' for a in actions), '地面技能必须直接在脚下释放')
 
     def test_caster_profile_reaches_damage_candidate(self):
         # 固定上游 MID2_Mage_Frost 的角色字段；默认动作由引擎生成。
-        self.test_browser_computes_copies_and_clears_real_candidate('''mage="Frost caster"
+        self._export_candidate('''mage="Frost caster"
 level=90
 race=tauren
 role=spell
 spec=frost
 talents=CAEAAAAAAAAAAAAAAAAAAAAAAYGGLzMzsMmZmYmZGjZMziZmZmZMDEAAYmZmllZm2AAAAAAgNA2WGzMzAbzYmZYBAAgZ2AmBGwADD
 main_hand=,id=271092,bonus_id=13662/13848,enchant_id=8689
-''', expected_spec=64)
+''', 64)
 
     def test_native_item_group_reaches_damage_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''mage="Arcane items"
+        self._export_candidate('''mage="Arcane items"
 level=90
 race=tauren
 role=spell
@@ -251,58 +273,53 @@ spec=arcane
 talents=C4DAAAAAAAAAAAAAAAAAAAAAAYGGLzMzswMDamZGAAAGAAEwMzMLLzMxCAAwMzMjNLzMzsMjxYmZwCzYmZGAgBAAYmZBAMDAGmZG
 main_hand=,id=271092,bonus_id=13335/13848,ilevel=344,enchant_id=8689
 trinket1=,id=250215,ilevel=344
-''', expected_spec=62)
+''', 62)
 
     def test_native_empower_and_race_alias_reach_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''evoker="Empower caster"
+        self._export_candidate('''evoker="Empower caster"
 level=90
 race=dracthyr
 role=spell
 spec=devastation
 talents=CsbBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAzMDMDzgBmZGjZaYmpZMWmxMzMz8AzMzAmxMGzMLzMDMwYwCsMGN2GQmBBbYGMzghB
 main_hand=,id=249283,ilevel=289,enchant_id=8039
-''', expected_spec=1467)
+''', 1467)
 
     def test_healer_profile_reaches_damage_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''druid="Restoration healer"
+        self._export_candidate('''druid="Restoration healer"
 level=90
 race=night_elf
 role=heal
 spec=restoration
 talents=CkGAAAAAAAAAAAAAAAAAAAAAAMjxMbzMjZmxsNMGzwYjZAAAAAAAAAAwygmNzYamxwYWmZmZGGmBAAAAAAAAAQAAAz2MLNbzsZjxMDmZAaGAgZGAGA
 main_hand=,id=271092,ilevel=311
-''', expected_spec=105)
-        report = next((Path(self.directory.name)/'输出'/'tasks').glob('*/reference/native.json'))
-        player = json.loads(report.read_text(encoding='utf-8'))['sim']['players'][0]
+''', 105)
+        player = self.native_report['sim']['players'][0]
         self.assertEqual(player['role'], 'heal')
         self.assertGreater(player['collected_data']['dps']['mean'], 0)
 
     def test_explicit_native_experimental_option_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            'allow_experimental_specializations=1\n'+(REPOSITORY/'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8'), expected_spec=256)
+        self._export_candidate(
+            'allow_experimental_specializations=1\n'+(REPOSITORY/'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8'), 256)
 
     def test_native_restoration_shaman_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            (REPOSITORY/'tests/sim2gse/fixtures/restoration-shaman.simc').read_text(encoding='utf-8'), expected_spec=264)
+        self._export_candidate(
+            (REPOSITORY/'tests/sim2gse/fixtures/restoration-shaman.simc').read_text(encoding='utf-8'), 264)
 
     def test_native_augmented_party_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            (REPOSITORY/'tests/sim2gse/fixtures/augmentation.simc').read_text(encoding='utf-8'), expected_spec=1473)
-        task = next((Path(self.directory.name)/'输出'/'tasks').glob('*/reference/native.json')).parents[1]
-        native = json.loads((task/'reference/native.json').read_text(encoding='utf-8'))
-        result = json.loads((task/'result.json').read_text(encoding='utf-8'))
-        self.assertGreater(len(native['sim']['players']), 1)
-        self.assertEqual(result['native_reference']['dps'], native['sim']['statistics']['raid_dps']['mean'])
+        self._export_candidate(
+            (REPOSITORY/'tests/sim2gse/fixtures/augmentation.simc').read_text(encoding='utf-8'), 1473)
+        self.assertGreater(len(self.native_report['sim']['players']), 1)
+        self.assertEqual(self.native_reference['dps'], self.native_report['sim']['statistics']['raid_dps']['mean'])
 
     def test_native_cast_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            (REPOSITORY/'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'), expected_spec=1480)
-        traces = list((Path(self.directory.name)/'输出'/'tasks').glob('*/batches/*/native.txt'))
-        self.assertTrue(any(any('\tnative_execute\t' in line and float(line.rsplit('\t', 1)[-1]) > 0
-                                for line in p.read_text(encoding='utf-8').splitlines()) for p in traces))
+        self._export_candidate(
+            (REPOSITORY/'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'), 1480, simulate=True)
+        self.assertTrue(any(row['event'] == 'native_execute' and row.get('cast_ms', 0) > 0
+                            for row in self.controlled['trace']))
 
     def test_replacement_forms_remain_one_button(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''warrior="Fury buttons"
+        self._export_candidate('''warrior="Fury buttons"
 level=90
 race=dwarf
 role=attack
@@ -310,7 +327,7 @@ spec=fury
 talents=CgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgGDzMmZ2MzMzMDjZmZGzMzsMzMmZmZzYmBAAixy2ALgJYGmAzwGwMDjNAAYmhxYYMYM
 main_hand=,id=268213,bonus_id=13335/13848,ilevel=344,enchant_id=8689
 off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
-''', expected_spec=72)
+''', 72)
         actions = self.candidate_payload[1]['Versions'][0]['Actions']
         self.assertTrue(any('/cast 335097' in a.get('macro','') and '/cast 85288' in a.get('macro','') for a in actions))
         self.assertFalse(any(a.get('spell') in (335097,85288) for a in actions))
