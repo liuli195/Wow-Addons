@@ -39,17 +39,22 @@
 - **THEN** 系统报告不兼容，不能回退为自由选招模拟并称为序列结果。
 ### Requirement: Sim2GSE reports independently tested improvements
 
-系统 MUST 在候选锁定后使用未参与选优的样本进行最终比较，提供可追溯的有效样本数、对照和差异区间，并分别记录名义、扰动、慢按、暂停及起始相位情景。
+系统 MUST 在候选锁定后使用未参与选优的样本进行最终比较，提供可追溯的有效样本数、对照和差异区间，并分别记录名义、扰动、慢按、暂停及起始相位情景；最终复测不完整时须保留锁定候选作为证据不足的临时结果，只有完整复测未证实改善时才保留有效初始序列。
 
 #### Scenario: Candidate reaches final evaluation
 
 - **WHEN** 已锁定候选进入最终复测
 - **THEN** 使用未参与搜索或验证选优的数据评估候选及相应对照，记录各情景结果，不将试验结果倒用于同轮候选选择。
 
-#### Scenario: Improvement is not established
+#### Scenario: Complete evaluation does not establish improvement
 
-- **WHEN** 最终结果无法证实候选优于有效初始序列
-- **THEN** 系统保留有效对照，报告尚未证实改善，不承诺收益比例或全局最优。
+- **WHEN** 全部规定的最终复测完整结束，但无法证实锁定候选优于有效初始序列
+- **THEN** 系统导出有效初始序列，报告尚未证实改善，不承诺收益比例或全局最优。
+
+#### Scenario: Final evaluation is incomplete
+
+- **WHEN** 最终复测缺少任一规定情景、批次或样本而未完整结束
+- **THEN** 系统导出锁定候选作为临时结果，明确显示复测未完成和证据不足，不把该结果标记为验证通过。
 ### Requirement: Sim2GSE respects the confirmed runtime budget
 
 系统 MUST 在一次优化中遵守累计 10 分钟计算上限，搜索最迟累计第 7 分钟结束以预留复测时间，最多同时运行两个单线程引擎进程；停止后的必要清理须如实显示。
