@@ -5,7 +5,6 @@ from __future__ import annotations
 import tempfile
 import time
 from contextlib import contextmanager
-import hashlib
 import json
 from pathlib import Path
 from unittest import TestCase
@@ -18,77 +17,6 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
-
-
-def _fast_capabilities():
-    actions = [
-        dict(kind="spell", spell_id=1001, simc_action="outbreak", name="outbreak",
-             gcd_ms=1500, base_spell_id=1001),
-        dict(kind="spell", spell_id=1002, simc_action="death_coil", name="death_coil",
-             gcd_ms=1500, base_spell_id=1002),
-        dict(kind="spell", spell_id=1003, simc_action="scourge_strike", name="scourge_strike",
-             gcd_ms=1500, base_spell_id=1003),
-        dict(kind="spell", spell_id=1004, simc_action="dark_transformation", name="dark_transformation",
-             gcd_ms=1500, base_spell_id=1004),
-        dict(kind="item", slot=13, item_id=250245, driver_spell_id=1005,
-             simc_action="use_item,slot=trinket1", name="使用trinket1", gcd_ms=0),
-    ]
-    return dict(actions=actions, precombat_actions=[], sources=[], protocol=3,
-                scope="test", coverage="constructed-test-boundary")
-
-
-def _fast_identity(mode):
-    return {"mode": mode, "upstream_commit": "test", "build_options": []}
-
-
-def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912):
-    return dict(
-        dps=100.0,
-        metric="dps",
-        personal_dps=100.0,
-        samples=max(1, iterations - 1),
-        seconds=180,
-        identity=dict(class_id=6, spec_id=252, spec=character.spec,
-                      race=character.race, role=character.fields.get("role", "attack"),
-                      resource="runic_power"),
-        action_sequence=[{"name": "use_item,slot=trinket1", "queue_failed": False}],
-        precombat_sequence=[],
-        actions_protocol=1,
-        executed_actions=[],
-        precombat_definitions=[],
-        active_items=[{"slot": "trinket1", "id": 250245, "driver_spell_id": 1005}],
-    )
-
-
-def _fast_inspect(reference, folder):
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
-    capabilities = _fast_capabilities()
-    (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
-    return capabilities
-
-
-def _fast_candidate(blocks, folder, *, identity, runtime=None):
-    """只替换搜索测试的 GSE 编译产物；真实编码仍由角色导出测试覆盖。"""
-    compiled = []
-    for block in blocks:
-        if len(block) == 1 and block[0].get("kind") == "spell":
-            compiled.append({"type": "spell", "spell": block[0]["spell_id"]})
-        elif len(block) == 1 and block[0].get("kind") == "item":
-            compiled.append({"type": "item", "item": block[0]["slot"]})
-        else:
-            lines = [(f'/cast {command["spell_id"]}' if command.get("kind") == "spell" else
-                      f'/use {command["slot"]}' if command.get("kind") == "item" else '/startattack')
-                     for command in block]
-            compiled.append({"type": "macro", "macrotext": "\n".join(lines)})
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
-    return dict(text="!GSE3!constructed-search-candidate", blocks=blocks,
-                compiled_steps=compiled, precombat_count=0,
-                simulation="not_run", game_validation="not_run",
-                targeting_build="test", ground_location="player",
-                encoding="constructed-test-boundary",
-                upstream_compilation="constructed-test-boundary")
 
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
@@ -152,22 +80,17 @@ def _fast_check_report(report, character, iterations):
     damage = report["sim"]["statistics"]["raid_dps"]
     return dict(dps=damage["mean"], metric="dps", personal_dps=damage["mean"],
                 samples=damage["count"], seconds=180, metadata_only=[], notices=[],
-                identity={"spec_id": character.spec_id or 252})
+                identity={"spec_id": character.spec_id or 252, "race": character.race,
+                          "resource": "runic_power"})
 
 
 @contextmanager
 def _fast_search_boundary():
     """仅替换搜索结果生产；任务入口、TaskStore 和搜索状态机仍走真实代码。"""
-    import codec
     import engine
     import sequence
 
-    with patch.object(engine, "identity",
-                      side_effect=lambda mode, runtime=None: (Path("simc-test.exe"), _fast_identity(mode))), \
-         patch.object(engine, "reference", side_effect=_fast_reference), \
-         patch.object(engine, "inspect", side_effect=_fast_inspect), \
-         patch.object(engine, "check_report", side_effect=_fast_check_report), \
-         patch.object(codec, "export", side_effect=_fast_candidate), \
+    with patch.object(engine, "check_report", side_effect=_fast_check_report), \
          patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
         yield
 
