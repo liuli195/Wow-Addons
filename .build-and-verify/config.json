@@ -177,6 +177,7 @@
           "scripts/dev/sim2gse/**",
           ".build-and-verify/config.json",
           "tests/sim2gse/**",
+          "scripts/dev/requirements.txt",
           "package.json",
           "package-lock.json"
         ],
@@ -190,6 +191,7 @@
           ".local/sim2gse/build/controlled/build.json",
           ".tools/sim2gse-research/gse-f225d4c/**",
           "tests/sim2gse/**",
+          "scripts/dev/requirements.txt",
           "package.json",
           "package-lock.json"
         ],

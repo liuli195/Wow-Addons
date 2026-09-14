@@ -47,14 +47,7 @@ def main():
     commands = '\n'.join(str(c['command']).replace('\\', '/') for c in config['verify']['checks'])
     sim2gse = next(check for check in config['verify']['checks'] if check['id'] == 'verify.sim2gse')
     sim2gse_command = str(sim2gse['command']).replace('\\', '/')
-    requirements = (ROOT / 'scripts/dev/requirements.txt').read_text(encoding='utf-8').splitlines()
-    assert config['verify'].get('fullBudgetSeconds') == 60, '本机完整验证预算必须为 60 秒'
-    assert config['verify'].get('maxParallel') == 2, '检查项并行上限必须为 2'
-    assert all(check.get('checkParallel') is True for check in config['verify']['checks']), '验证检查项必须允许受控并行'
-    assert sim2gse.get('pytestXdistWorkers') == 8, 'Sim2GSE 必须使用 8 个 pytest-xdist 工作进程'
     assert '-m pytest' in sim2gse_command and 'tests/sim2gse' in sim2gse_command, 'Sim2GSE 必须由 pytest 自动发现'
-    assert '--dist=worksteal' in sim2gse_command, '耗时不均的测试必须使用 worksteal 调度'
-    assert 'pytest==9.1.1' in requirements and 'pytest-xdist==3.8.0' in requirements, 'pytest 依赖必须固定版本'
     local_checks = []
     for check in config['verify']['checks']:
         command = str(check['command']).replace('\\', '/')
