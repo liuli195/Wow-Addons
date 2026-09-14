@@ -214,6 +214,11 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.test_browser_computes_copies_and_clears_real_candidate(profile, expected_spec=250)
         actions = self.candidate_payload[1]['Versions'][0]['Actions']
         self.assertTrue(any(a.get('macro') == '/cast [@player] 43265' for a in actions), '地面技能必须直接在脚下释放')
+        task = next(path for path in (Path(self.directory.name) / '输出' / 'tasks').iterdir() if path.is_dir())
+        for report in (task / 'reference/native.json', *task.glob('batches/*/native.json')):
+            target = json.loads(report.read_text(encoding='utf-8'))['sim']['targets'][0]
+            self.assertEqual((target['name'], target['level']), ('Dungeon_Damage_Dummy', 90))
+            self.assertNotEqual(target.get('sim2gse_class'), 'tank_dummy')
 
     def test_caster_profile_reaches_damage_candidate(self):
         # 固定上游 MID2_Mage_Frost 的角色字段；默认动作由引擎生成。
