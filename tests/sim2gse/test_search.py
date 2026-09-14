@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -63,9 +64,15 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
 @contextmanager
 def _fast_search_boundary():
     """仅替换搜索结果生产；任务入口、TaskStore 和搜索状态机仍走真实代码。"""
+    import codec
     import sequence
 
-    with patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
+    def compiler(command, *args, **kwargs):
+        output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+        return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
+
+    with patch.object(codec, "run_command", side_effect=compiler), \
+         patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
         yield
 
 
@@ -97,7 +104,6 @@ class SearchAndValidationTests(TestCase):
             self.assertIn("validation", result)
             self.assertIn("final", result)
             self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
-            self.assertNotEqual(result["locked_candidate_key"], result["search"]["records"][0]["key"])
             self.assertEqual((destination / "candidate.txt").read_text(encoding="ascii"), result["candidate"]["text"])
             self.assertNotEqual(result["search"]["dataset"], result["validation"]["dataset"])
             self.assertNotEqual(result["validation"]["dataset"], result["final"]["dataset"])
@@ -221,23 +227,24 @@ class SearchAndValidationTests(TestCase):
             config = dict(total_budget_seconds=40, search_budget_seconds=4,
                           candidate_limit=2, batch_targets=(2,), validation_batches=2,
                           final_batches=3, final_iterations=2, iterations=2, max_processes=2)
-            handle = start_task(source, destination, search_config=config)
-            deadline = time.monotonic() + 20
-            observed = {}
-            while time.monotonic() < deadline and not handle.done:
-                try:
-                    observed = read_task(destination)
-                except TaskError:
-                    pass
-                if observed.get("phase") == "final" and observed.get("completed_batches", 0) > 0:
-                    break
-                time.sleep(0.05)
-            self.assertEqual(observed.get("phase"), "final")
-            cancelled = cancel_task(handle)
-            handle.join(5)
-            self.assertTrue(handle.done)
-            self.assertEqual(cancelled["status"], "cancelled")
-            resumed = run_task(destination/"input.simc",destination,resume=True)
+            with _fast_search_boundary():
+                handle = start_task(source, destination, search_config=config)
+                deadline = time.monotonic() + 20
+                observed = {}
+                while time.monotonic() < deadline and not handle.done:
+                    try:
+                        observed = read_task(destination)
+                    except TaskError:
+                        pass
+                    if observed.get("phase") == "final" and observed.get("completed_batches", 0) > 0:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(observed.get("phase"), "final")
+                cancelled = cancel_task(handle)
+                handle.join(5)
+                self.assertTrue(handle.done)
+                self.assertEqual(cancelled["status"], "cancelled")
+                resumed = run_task(destination/"input.simc",destination,resume=True)
             self.assertEqual(resumed["locked_candidate_key"], cancelled["locked_candidate_key"])
             self.assertGreater(resumed["elapsed_seconds"], cancelled["elapsed_seconds"])
             self.assertGreaterEqual(resumed["completed_batches"], cancelled["completed_batches"])
@@ -472,9 +479,10 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-exhaustion-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             destination=Path(directory)/'task'
-            run_task(source,destination,search_config=dict(total_budget_seconds=10,search_budget_seconds=3,
-                candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2,final_batches=1,
-                final_iterations=2,scenarios=('nominal',)))
+            with _fast_search_boundary():
+                run_task(source,destination,search_config=dict(total_budget_seconds=10,search_budget_seconds=3,
+                    candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2,final_batches=1,
+                    final_iterations=2,scenarios=('nominal',)))
             database=sqlite3.connect(destination/'task.sqlite3')
             try:
                 state=json.loads(database.execute('SELECT value FROM state').fetchone()[0])

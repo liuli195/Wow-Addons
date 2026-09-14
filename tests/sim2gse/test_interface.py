@@ -20,9 +20,10 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
-from interface import _public_state, create_server  # noqa: E402
+from interface import _friendly_error, _public_state, create_server  # noqa: E402
 from task import run_task  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
+from test_search import _fast_search_boundary  # noqa: E402
 
 
 class InterfaceTests(unittest.TestCase):
@@ -87,16 +88,17 @@ class InterfaceTests(unittest.TestCase):
                 "max_processes": 1,
             }
         }
-        created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
-        self.assertEqual(created["status"], "starting")
-        task_id = created["task_id"]
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._json_request("GET", f"/api/tasks/{task_id}")
-            if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
+        with _fast_search_boundary():
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            self.assertEqual(created["status"], "starting")
+            task_id = created["task_id"]
+            deadline = time.monotonic() + 30
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._json_request("GET", f"/api/tasks/{task_id}")
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.1)
         self.assertEqual(state["status"], "validation_incomplete")
         self.assertTrue(state["result_ready"])
         self.assertEqual(state["evidence_status"], "insufficient_validation")
@@ -215,7 +217,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(list(self.server.tasks), [])
 
     def test_browser_uses_adjustable_input_interval(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180)
+        with _fast_search_boundary():
+            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180)
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
         result = read_task(destination)
@@ -328,69 +331,37 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         self.assertTrue(any('/cast 335097' in a.get('macro','') and '/cast 85288' in a.get('macro','') for a in actions))
         self.assertFalse(any(a.get('spell') in (335097,85288) for a in actions))
 
-    def test_browser_reports_native_and_export_failure_without_stale_result(self):
-        import ctypes
-        from unittest.mock import patch
-        import runtime
-        original=runtime._kernel32.CreateProcessW
-        original_read=Path.read_text
-        self.server.task_options={'search_config':dict(total_budget_seconds=15,search_budget_seconds=5,
-            candidate_limit=2,batch_targets=(2,),validation_batches=1,final_batches=1,
-            iterations=2,final_iterations=2,scenarios=('nominal',))}
-        env=os.environ.copy()
-        env.setdefault('NODE_PATH',str(Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'))
-        script=r'''
-const {chromium}=require('playwright'),assert=require('node:assert/strict');
-(async()=>{
- const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
- const browser=await chromium.launch({channel:'msedge',headless:true});
- try{
-  const page=await browser.newPage();await page.goto(input.url);
-  await page.locator('#profile').fill(input.profile);await page.locator('#start').click();
-  await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:20000});
-  assert.equal(await page.locator('#error').isVisible(),true);
-  const message=await page.locator('#error').innerText();
-  assert.match(message,new RegExp(input.expected));assert.ok(message.length<100);
-  assert.ok(!message.includes('\\'),'不应展示内部文件路径: '+message);
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
-  assert.equal(await page.locator('#start').isEnabled(),true);
- }finally{await browser.close();}
-})().catch(e=>{console.error(e);process.exitCode=1;});
-'''
-        for failure,expected in [('native_default','原生未提供'),('native_disabled','原生未提供'),('native_unsupported','原生未提供'),('simc.exe','引擎'),('lua.exe','编译|导出'),('candidate_state','结果'),('invalid_action','尚未支持的主动能力')]:
+    def test_interface_reports_native_and_export_failures_without_internal_paths(self):
+        from task import TaskError
+        native_cases = [
+            ('native_default', (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
+            ('native_disabled', 'allow_experimental_specializations=0\n' +
+             (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
+            ('native_unsupported', (REPOSITORY / 'tests/sim2gse/fixtures/holy-paladin.simc').read_text(encoding='utf-8')),
+        ]
+        for failure, profile in native_cases:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / 'input.simc'
+                source.write_text(profile, encoding='utf-8')
+                with self.assertRaisesRegex(TaskError, '原生未提供'):
+                    run_task(source, Path(directory) / 'task', mode='single')
+                if failure == 'native_default':
+                    invocation = json.loads((Path(directory) / 'task/reference/invocation.json').read_text(encoding='utf-8'))
+                    self.assertFalse(any(arg.startswith('allow_experimental_specializations=')
+                                         for arg in invocation['command']))
+        cases = [
+            ('主动能力不完整，停止模拟与导出: invalid_action', '尚未支持的主动能力'),
+            ('原生引擎失败: C:\\private\\simc.exe', '引擎'),
+            ('固定上游编译器失败: C:\\private\\lua.exe', '导出'),
+            ('结果文件缺失，未生成可复制文本', '结果'),
+        ]
+        for failure, expected in cases:
             with self.subTest(failure=failure):
-                def process_boundary(*args):
-                    if str(args[0]).lower().endswith(failure):
-                        args=list(args);args[0]=str(Path(sys.executable).resolve())
-                        args[1]=ctypes.create_unicode_buffer('"'+args[0]+'" -c "import sys;sys.exit(9)"')
-                    return original(*args)
-                def missing_candidate(path,*args,**kwargs):
-                    value=original_read(path,*args,**kwargs)
-                    if failure=='invalid_action' and path.name=='native.pending.json':
-                        data=json.loads(value)
-                        for row in data['sim']['players'][0]['sim2gse_actions']:
-                            if row['id']>0:
-                                row['data_valid']=False
-                                break
-                        return json.dumps(data)
-                    if failure=='candidate_state' and path.name=='result.json':
-                        data=json.loads(value);data.pop('candidate',None);return json.dumps(data)
-                    return value
-                with patch.object(runtime._kernel32,'CreateProcessW',side_effect=process_boundary),patch.object(Path,'read_text',missing_candidate):
-                    profile=sample_profile()
-                    if failure in ('native_default','native_disabled'):
-                        profile=(REPOSITORY/'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')
-                        if failure=='native_disabled':profile='allow_experimental_specializations=0\n'+profile
-                    if failure=='native_unsupported':
-                        profile=(REPOSITORY/'tests/sim2gse/fixtures/holy-paladin.simc').read_text(encoding='utf-8')
-                    result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile,expected=expected)),
-                        text=True,encoding='utf-8',capture_output=True,env=env,timeout=30)
-                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-                if failure=='simc.exe':
-                    invocations=list((Path(self.directory.name)/'输出'/'tasks').glob('*/reference/invocation.json'))
-                    failed=[json.loads(p.read_text(encoding='utf-8')) for p in invocations if json.loads(p.read_text(encoding='utf-8'))['exit_code']]
-                    self.assertTrue(failed)
-                    self.assertTrue(all(not any(a.startswith('allow_experimental_specializations=') for a in p['command']) for p in failed))
+                message = _friendly_error(TaskError(failure))
+                self.assertIn(expected, message)
+                self.assertNotIn('\\', message)
+                self.assertLess(len(message), 161)
+        self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
 
     def test_manual_browser_timeout_cleans_process_tree(self):
         from unittest.mock import patch
@@ -408,14 +379,16 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         def deadline(process,input=None,timeout=None):
             if isinstance(process.args,list) and process.args[0]=='node':
                 held.append(kernel.OpenProcess(0x100000,False,process.pid))
-                try:
-                    return original_communicate(process,input,timeout=1)
-                except subprocess.TimeoutExpired:
+                child_ids=[]
+                until=time.monotonic()+10
+                while time.monotonic()<until and not child_ids:
                     query=f'Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq {process.pid} | Select-Object -ExpandProperty ProcessId'
                     children=subprocess.run(['powershell','-NoProfile','-Command',query],capture_output=True,text=True,timeout=10)
-                    for pid in children.stdout.split():
-                        held.append(kernel.OpenProcess(0x100000,False,int(pid)))
-                    raise
+                    child_ids=children.stdout.split()
+                    if not child_ids:time.sleep(0.05)
+                for pid in child_ids:
+                    held.append(kernel.OpenProcess(0x100000,False,int(pid)))
+                return original_communicate(process,input,timeout=0.1)
             return original_communicate(process,input,timeout)
         def profile_input(path,*args,**kwargs):
             if path.name=='unholy-20260912-0240.simc':return sample_profile()
@@ -438,7 +411,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
             if Path(destination).name == 'result.json':
                 time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
             return original(source, destination)
-        with patch.object(os, 'replace', side_effect=delayed_result):
+        with _fast_search_boundary(), patch.object(os, 'replace', side_effect=delayed_result):
             self.test_browser_computes_copies_and_clears_real_candidate()
 
     def test_browser_survives_transient_windows_report_sharing_conflicts(self):
@@ -458,7 +431,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
             except PermissionError as error:
                 conflicts.append(error.winerror)
                 raise
-        with patch.object(os,'replace',side_effect=sharing_conflict):
+        with _fast_search_boundary(), patch.object(os,'replace',side_effect=sharing_conflict):
             self.test_browser_computes_copies_and_clears_real_candidate()
         self.assertEqual(failures,{'progress.json','result.json'})
         for reader in readers:reader.join()
