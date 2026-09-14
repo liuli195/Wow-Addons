@@ -29,4 +29,4 @@ jobs:
           tarball=$(python $RUNNER_TEMP/build-and-verify/plugins/tool-lifecycle/pack.py build-and-verify $RUNNER_TEMP)
           npm install --global --ignore-scripts --no-audit --no-fund "$tarball"
       - run: myspec doctor --all
-      - run: build-and-verify --help
+      - run: build-and-verify verify --project .
