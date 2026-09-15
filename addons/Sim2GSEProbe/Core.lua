@@ -1,9 +1,8 @@
 local PREFIX = "|cff58c7ffSim2GSEProbe:|r "
-local hookedUpdates = {}
-local hookedRelays = {}
-local relayTimes = {}
-local updateSerials = {}
-local createButtonHooked = false
+local GSE_CLICK_MESSAGE = "GSE_MODS_VISIBLE"
+local messageReceiver = {}
+local messageRegistered = false
+local messageSerials = {}
 local C_CVar = _G.C_CVar
 local C_Spell = _G.C_Spell
 local CreateFrame = _G.CreateFrame
@@ -12,9 +11,7 @@ local GetNetStats = _G.GetNetStats
 local GetRuneCooldown = _G.GetRuneCooldown
 local GetServerTime = _G.GetServerTime
 local GetTimePreciseSec = _G.GetTimePreciseSec
-local InCombatLockdown = _G.InCombatLockdown
 local UnitPower = _G.UnitPower
-local hooksecurefunc = _G.hooksecurefunc
 local issecretvalue = _G.issecretvalue
 
 local function GetDB()
@@ -121,15 +118,14 @@ local function ResolveSpellID(spell)
 end
 
 local function PreviousPosition(sequence, nextStep, nextIteration)
-    if type(sequence) ~= "table" or type(nextStep) ~= "number" or type(nextIteration) ~= "number" then
+    if type(sequence) ~= "table" or #sequence == 0
+        or type(nextStep) ~= "number" or type(nextIteration) ~= "number" then
         return nil, nil
     end
     if nextStep > 1 then return nextIteration, nextStep - 1 end
     local iteration = nextIteration - 1
-    if iteration < 1 then iteration = #sequence end
-    local blocks = sequence[iteration]
-    if type(blocks) ~= "table" then return nil, nil end
-    return iteration, #blocks
+    if iteration < 1 then iteration = math.ceil(#sequence / 253) end
+    return iteration, math.min(253, #sequence - (iteration - 1) * 253)
 end
 
 local function Environment()
@@ -155,12 +151,12 @@ local function AddRecord(record)
     table.insert(session.records, record)
 end
 
-local function CaptureClick(button)
+local function CaptureClick(button, evidence)
     local observedAt = NowMs()
     local sequenceName = button and button.GetName and SafeCall(button.GetName, button)
     local gse = GetGSE()
     local sequence = gse and gse.SequencesExec and gse.SequencesExec[sequenceName]
-    local serial = ReadAttribute(button, "gseclickserial")
+    local serial = SafeScalar(evidence.ClickSerial)
     local nextStep = ReadAttribute(button, "step")
     local nextIteration = ReadAttribute(button, "iteration") or 1
     local iteration, step = PreviousPosition(sequence, nextStep, nextIteration)
@@ -170,21 +166,9 @@ local function CaptureClick(button)
         and SafeCall(C_Spell.GetBaseSpell, spellID) or nil
     local overrideSpellID = C_Spell and C_Spell.GetOverrideSpell and spellID
         and SafeCall(C_Spell.GetOverrideSpell, spellID) or nil
-    local relayTime = relayTimes[sequenceName]
-    local relayObserved = type(relayTime) == "number" and observedAt >= relayTime and observedAt - relayTime <= 50
-    local clickTime = relayObserved and relayTime or observedAt
-    local useKeyDown = ReadCVar("ActionButtonUseKeyDown")
-    local triggerEdge = "unknown"
-    if relayObserved then
-        triggerEdge = "keydown-relay-observed"
-    elseif useKeyDown == "0" then
-        triggerEdge = "keyup-configured"
-    end
-    if type(sequenceName) == "string" then relayTimes[sequenceName] = nil end
-
     AddRecord({
         kind = "click",
-        timeMs = clickTime,
+        timeMs = observedAt,
         observedAtMs = observedAt,
         sequence = sequenceName,
         clickSerial = serial,
@@ -198,7 +182,9 @@ local function CaptureClick(button)
         spellID = spellID,
         baseSpellID = baseSpellID,
         overrideSpellID = overrideSpellID,
-        triggerEdge = triggerEdge,
+        hardwareEvent = SafeScalar(evidence.HardwareEvent),
+        spamKey = SafeScalar(evidence.SpamKey),
+        triggerEdge = "gse-execution-message-observed",
         gcd = ReadCooldown(61304),
         spellCooldown = ReadCooldown(spellID),
         runes = ReadRunes(),
@@ -206,45 +192,29 @@ local function CaptureClick(button)
     })
 end
 
-local function CaptureRelay(button)
-    local name = button and button.GetName and SafeCall(button.GetName, button)
-    if type(name) ~= "string" then return end
-    relayTimes[(name:gsub("_KD$", ""))] = NowMs()
+local function CaptureGSEMessage(_, payload)
+    if type(payload) ~= "table" then return end
+    local name = SafeScalar(payload.SequenceName)
+    local serial = SafeScalar(payload.ClickSerial)
+    if type(name) ~= "string" or type(serial) ~= "number" or messageSerials[name] == serial then return end
+    local button = _G[name]
+    if not button then return end
+    messageSerials[name] = serial
+    CaptureClick(button, payload)
 end
 
-local function CaptureUpdate(button)
-    local serial = ReadAttribute(button, "gseclickserial")
-    if type(serial) ~= "number" or updateSerials[button] == serial then return end
-    updateSerials[button] = serial
-    CaptureClick(button)
-end
-
-local function HookButtons()
-    if InCombatLockdown and InCombatLockdown() then return 0 end
+local function ConnectGSE()
     local count = 0
     local gse = GetGSE()
+    if not messageRegistered and gse and type(gse.RegisterMessage) == "function" then
+        gse.RegisterMessage(messageReceiver, GSE_CLICK_MESSAGE, CaptureGSEMessage)
+        messageRegistered = true
+    end
     local sequences = gse and gse.SequencesExec
     if type(sequences) ~= "table" then return count end
     for name in pairs(sequences) do
         local button = type(name) == "string" and _G[name]
-        local serial = ReadAttribute(button, "gseclickserial")
-        if button and type(serial) == "number" and updateSerials[button] == nil then
-            updateSerials[button] = serial
-        end
-        if button and type(button.UpdateIcon) == "function" and not hookedUpdates[button] then
-            hooksecurefunc(button, "UpdateIcon", CaptureUpdate)
-            hookedUpdates[button] = true
-        end
-        local relay = type(name) == "string" and _G[name .. "_KD"]
-        if relay and relay.gseKeyDownRelay == true and relay.HookScript and not hookedRelays[relay] then
-            relay:HookScript("PreClick", CaptureRelay)
-            hookedRelays[relay] = true
-        end
-        if hookedUpdates[button] then count = count + 1 end
-    end
-    if not createButtonHooked and gse and type(gse.CreateGSE3Button) == "function" then
-        hooksecurefunc(gse, "CreateGSE3Button", HookButtons)
-        createButtonHooked = true
+        if button then count = count + 1 end
     end
     return count
 end
@@ -254,9 +224,8 @@ local function Print(message)
 end
 
 local function Start()
-    relayTimes = {}
-    updateSerials = {}
-    HookButtons()
+    messageSerials = {}
+    ConnectGSE()
     _G.Sim2GSEProbeDB = GetDB() or {}
     local database = GetDB()
     database.schema = 1
@@ -294,12 +263,13 @@ local function Stop()
 end
 
 local function Status()
-    local count = HookButtons()
+    local count = ConnectGSE()
     local database = GetDB()
     local session = database and database.session
     local state = session and session.active and "采集中" or "未采集"
     local records = session and session.records and #session.records or 0
-    Print(string.format("%s；已监听 %d 个 GSE 按钮；记录 %d 条。", state, count, records))
+    local connection = messageRegistered and "已连接" or "未连接"
+    Print(string.format("%s；GSE 消息%s；发现 %d 个 GSE 按钮；记录 %d 条。", state, connection, count, records))
 end
 
 _G.SLASH_SIM2GSEPROBE1 = "/s2gprobe"
@@ -341,7 +311,7 @@ end
 events:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_LOGIN" or event == "PLAYER_REGEN_ENABLED" or event == "ADDON_LOADED" then
         _G.Sim2GSEProbeDB = GetDB() or { schema = 1 }
-        HookButtons()
+        ConnectGSE()
         return
     end
 

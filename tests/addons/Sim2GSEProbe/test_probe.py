@@ -14,6 +14,7 @@ local source = assert(arg[1])
 local now = 10
 local eventFrame
 local messages = {}
+local gseMessages = {}
 local restricted = false
 local secret = {}
 
@@ -22,7 +23,6 @@ function GetServerTime() return 1789474410 end
 function GetNetStats() return 0, 0, 28, 25 end
 function UnitPower() return restricted and secret or 80 end
 function GetRuneCooldown(index) return index, 10, index <= 2 end
-function InCombatLockdown() return false end
 function IsLoggedIn() return true end
 function issecretvalue(value) return value == secret end
 function print(message) table.insert(messages, message) end
@@ -46,7 +46,6 @@ local function NewFrame(name)
     function frame:RegisterEvent() end
     function frame:RegisterUnitEvent() end
     function frame:SetScript(kind, callback) self.scripts[kind] = callback end
-    function frame:HookScript(kind, callback) self.scripts[kind] = callback end
     function frame:GetName() return self.name end
     function frame:GetAttribute(key) return self.attrs[key] end
     return frame
@@ -59,49 +58,50 @@ function CreateFrame(_, name)
     return frame
 end
 
-function hooksecurefunc(owner, name, callback)
-    local original = assert(owner[name])
-    owner[name] = function(...)
-        local results = { original(...) }
-        callback(...)
-        return unpack(results)
-    end
-end
-
 SlashCmdList = {}
 GSE = { SequencesExec = {
-    TESTSEQ = { { { type = "spell", spell = 55090 }, { type = "spell", spell = 47541 } } },
-    FAKE = { { { type = "spell", spell = 55090 } } },
+    TESTSEQ = { { type = "spell", spell = 55090 }, { type = "spell", spell = 47541 } },
+    FAKE = { { type = "spell", spell = 55090 } },
 } }
+function GSE.RegisterMessage(receiver, message, callback)
+    gseMessages[message] = callback
+end
 TESTSEQ = NewFrame("TESTSEQ")
-TESTSEQ.UpdateIcon = function() end
 TESTSEQ.attrs = {
     type = "spell", spell = 55090, step = 1, iteration = 1,
     gseclickserial = 0,
 }
-TESTSEQ_KD = NewFrame("TESTSEQ_KD")
-TESTSEQ_KD.gseKeyDownRelay = true
 FAKE = NewFrame("FAKE")
-FAKE.UpdateIcon = function() end
-FAKE_KD = NewFrame("FAKE_KD")
 
 assert(loadfile(source))()
 assert(SLASH_SIM2GSEPROBE1 == "/s2gprobe")
 eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
-assert(FAKE_KD.scripts.PreClick == nil)
+SlashCmdList.SIM2GSEPROBE("")
+assert(messages[#messages]:find("GSE 消息已连接", 1, true))
 SlashCmdList.SIM2GSEPROBE("start")
-TESTSEQ:UpdateIcon(false)
-assert(#Sim2GSEProbeDB.session.records == 1, "unchanged icon refresh was recorded as a click")
+assert(#Sim2GSEProbeDB.session.records == 1)
 
-now = 10.070
-TESTSEQ_KD.scripts.PreClick(TESTSEQ_KD, "LeftButton", true)
--- The secure executor advances its state before it updates the button icon.
+-- GSE advances its secure state before publishing the execution message.
 TESTSEQ.attrs.step = 2
 TESTSEQ.attrs.gseclickserial = 1
 now = 10.071
-TESTSEQ:UpdateIcon(false)
-TESTSEQ:UpdateIcon(false)
-assert(#Sim2GSEProbeDB.session.records == 2, "duplicate icon refresh was recorded as another click")
+assert(gseMessages.GSE_MODS_VISIBLE, "GSE click message was not registered")
+local clickPayload = {
+    SequenceName = "TESTSEQ", ButtonName = "TESTSEQ",
+    HardwareEvent = "LeftButton", SpamKey = "F6", ClickSerial = 1,
+}
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", clickPayload)
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", clickPayload)
+assert(#Sim2GSEProbeDB.session.records == 2, "duplicate GSE message was recorded as another click")
+TESTSEQ.attrs.step = 1
+TESTSEQ.attrs.spell = 47541
+TESTSEQ.attrs.gseclickserial = 2
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ButtonName = "TESTSEQ",
+    HardwareEvent = "LeftButton", ClickSerial = 2,
+})
+assert(Sim2GSEProbeDB.session.records[3].submittedIteration == 1)
+assert(Sim2GSEProbeDB.session.records[3].submittedStep == 2)
 now = 10.072
 eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "Target", "Cast-1", 55090)
 now = 10.090
@@ -118,32 +118,37 @@ assert(session.environment.worldLatencyMs == 25)
 
 local click = session.records[2]
 assert(click.kind == "click")
-assert(click.timeMs == 10070)
+assert(click.timeMs == 10071)
 assert(click.observedAtMs == 10071)
 assert(click.sequence == "TESTSEQ")
 assert(click.clickSerial == 1)
 assert(click.submittedStep == 1 and click.submittedIteration == 1)
 assert(click.actionType == "spell" and click.spell == 55090)
 assert(click.baseSpellID == 55090 and click.overrideSpellID == 207311)
-assert(click.triggerEdge == "keydown-relay-observed")
+assert(click.hardwareEvent == "LeftButton")
+assert(click.spamKey == "F6")
+assert(click.triggerEdge == "gse-execution-message-observed")
 assert(click.runicPower == 80 and #click.runes == 6)
 
-assert(session.records[3].event == "UNIT_SPELLCAST_SENT")
-assert(session.records[3].castGUID == "Cast-1")
-assert(session.records[4].event == "UNIT_SPELLCAST_SUCCEEDED")
-assert(session.records[5].kind == "mark")
-assert(session.records[6].kind == "stop")
+assert(session.records[4].event == "UNIT_SPELLCAST_SENT")
+assert(session.records[4].castGUID == "Cast-1")
+assert(session.records[5].event == "UNIT_SPELLCAST_SUCCEEDED")
+assert(session.records[6].kind == "mark")
+assert(session.records[7].kind == "stop")
 
 restricted = true
 now = 20
 SlashCmdList.SIM2GSEPROBE("start")
 now = 20.001
-TESTSEQ.attrs.gseclickserial = 2
-TESTSEQ:UpdateIcon(false)
+TESTSEQ.attrs.gseclickserial = 3
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ButtonName = "TESTSEQ",
+    HardwareEvent = "LeftButton", ClickSerial = 3,
+})
 local restrictedSession = Sim2GSEProbeDB.session
 local restrictedClick = restrictedSession.records[2]
 assert(restrictedSession.environment.spellQueueWindowMs == "unavailable")
-assert(restrictedClick.triggerEdge == "unknown")
+assert(restrictedClick.triggerEdge == "gse-execution-message-observed")
 assert(restrictedClick.runicPower == "unavailable")
 assert(restrictedClick.gcd == "unavailable")
 assert(restrictedClick.spellCooldown == "unavailable")
