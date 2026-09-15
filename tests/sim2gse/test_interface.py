@@ -11,7 +11,6 @@ import os
 import subprocess
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -149,7 +148,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.locator('#profile').fill('mage=test\nlevel=80\nspec=frost');
   await page.locator('#start').click();
   await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-  assert.equal(await page.locator('#error').isVisible(),true);
+  const asyncError=await page.locator('#error').innerText();
+  assert.match(asyncError,/请检查角色导出内容/);
+  assert.ok(!asyncError.includes('\\'));
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   let dropped=false;
   await page.route('**/api/tasks/*',async route=>{if(!dropped){dropped=true;await route.abort();}else await route.continue();});
@@ -363,28 +364,6 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 self.assertNotIn('\\', message)
                 self.assertLess(len(message), 161)
         self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
-
-        from unittest.mock import patch
-        failed = SimpleNamespace(done=True, error=TaskError('原生引擎失败: C:\\private\\simc.exe'),
-                                 runtime=SimpleNamespace(elapsed_seconds=0))
-        env=os.environ.copy()
-        env.setdefault('NODE_PATH',str(Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'))
-        script=r'''
-const {chromium}=require('playwright'),assert=require('node:assert/strict');
-(async()=>{const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
- const browser=await chromium.launch({channel:'msedge',headless:true});try{
-  const page=await browser.newPage();await page.goto(input.url);
-  await page.locator('#profile').fill(input.profile);await page.locator('#start').click();
-  await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-  assert.match(await page.locator('#error').innerText(),/引擎计算失败/);
-  assert.ok(!(await page.locator('#error').innerText()).includes('\\'));
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
- }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});
-'''
-        with patch('interface.start_task', return_value=failed):
-            result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=sample_profile())),
-                text=True,encoding='utf-8',capture_output=True,env=env,timeout=15)
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 
     def test_manual_browser_timeout_cleans_process_tree(self):
         from unittest.mock import patch

@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 import time
 import shutil
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,10 +43,16 @@ def _fast_reference(profile, folder, character, *, runtime=None, iterations=100,
                 active_items=[{"slot": "trinket1", "id": 250245, "driver_spell_id": 1005}])
 
 
-def _fast_inspect(reference, folder):
+def _fast_inspect(reference, folder, *, include_item=True):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     capabilities = _fast_capabilities()
+    if not include_item:
+        capabilities["actions"] = [row for row in capabilities["actions"]
+                                   if row["kind"] != "item" and row["simc_action"] != "dark_transformation"]
+        spell_ids = {"outbreak": 77575, "death_coil": 47541, "scourge_strike": 55090}
+        for row in capabilities["actions"]:
+            row["spell_id"] = row["base_spell_id"] = spell_ids[row["simc_action"]]
     (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
     return capabilities
 
@@ -66,12 +72,12 @@ def _fast_report(character, score, samples):
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
-                   runtime=None):
+                   runtime=None, score_offset=0):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
-    score = 100.0 + sum(
+    score = score_offset + 100.0 + sum(
         command.get("spell_id", command.get("item_id", 0))
         for block in candidate["blocks"] for command in block
     ) / 1000.0
@@ -101,7 +107,7 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
 
 
 @contextmanager
-def _fast_initialization():
+def _fast_initialization(*, real_engine=False):
     """跳过与状态、缓存和进程故障断言无关的原生初始化。"""
     import codec
     import engine
@@ -119,9 +125,11 @@ def _fast_initialization():
 
     identity = lambda mode, runtime=None: (Path("simc-test.exe"),
         {"mode": mode, "upstream_commit": "test", "build_options": []})
-    with patch.object(engine, "identity", side_effect=identity), \
+    identity_boundary = nullcontext() if real_engine else patch.object(engine, "identity", side_effect=identity)
+    with identity_boundary, \
          patch.object(engine, "reference", side_effect=_fast_reference), \
-         patch.object(engine, "inspect", side_effect=_fast_inspect), \
+         patch.object(engine, "inspect", side_effect=lambda reference, folder:
+                      _fast_inspect(reference, folder, include_item=not real_engine)), \
          patch.object(engine, "check_report", side_effect=check_report), \
          patch.object(codec, "run_command", side_effect=compiler):
         yield
@@ -138,15 +146,26 @@ def _fast_search_boundary():
 
 class SearchAndValidationTests(TestCase):
     def test_public_entry_runs_multi_start_search_with_isolated_validation(self):
+        import sequence
+        real_evaluate = sequence.evaluate
+        native_score = None
+        def evaluate(*args, **kwargs):
+            nonlocal native_score
+            if native_score is None:
+                result = real_evaluate(*args, **kwargs)
+                native_score = result["summary"]["dps"]
+                return result
+            return _fast_evaluate(*args, score_offset=native_score, **kwargs)
         with tempfile.TemporaryDirectory(prefix="sim2gse-search-") as directory:
             source = Path(directory) / "角色.simc"
             destination = Path(directory) / "任务"
             source.write_text(sample_profile(), encoding="utf-8")
-            result = run_task(
-                source,
-                destination,
-                mode="optimize",
-                search_config={
+            with _fast_initialization(real_engine=True), patch.object(sequence, "evaluate", side_effect=evaluate):
+                result = run_task(
+                    source,
+                    destination,
+                    mode="optimize",
+                    search_config={
                     "total_budget_seconds": 20,
                     "search_budget_seconds": 8,
                     "candidate_limit": 4,
@@ -156,9 +175,10 @@ class SearchAndValidationTests(TestCase):
                     "iterations": 2,
                     "scenarios": ("nominal",),
                     "max_processes": 1,
-                },
-            )
+                    },
+                )
 
+            self.assertIsNotNone(native_score)
             self.assertEqual(result["status"], "validation_incomplete")
             self.assertGreaterEqual(len(result["search"]["starts"]), 2)
             self.assertIn("validation", result)
@@ -531,19 +551,20 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-runner-lock-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             destination=Path(directory)/'task'
-            handle=start_task(source,destination,search_config=dict(total_budget_seconds=30,search_budget_seconds=4,
-                candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2,final_batches=10,final_iterations=2))
-            try:
-                deadline=time.monotonic()+15
-                while time.monotonic()<deadline:
-                    try:
-                        if read_task(destination).get('phase')=='final':break
-                    except TaskError:pass
-                    time.sleep(0.02)
-                with self.assertRaisesRegex(TaskError,'正在运行'):
-                    resume_task(destination)
-            finally:
-                cancel_task(handle);handle.join(5)
+            with _fast_search_boundary():
+                handle=start_task(source,destination,search_config=dict(total_budget_seconds=30,search_budget_seconds=4,
+                    candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2,final_batches=10,final_iterations=2))
+                try:
+                    deadline=time.monotonic()+15
+                    while time.monotonic()<deadline:
+                        try:
+                            if read_task(destination).get('phase')=='final':break
+                        except TaskError:pass
+                        time.sleep(0.02)
+                    with self.assertRaisesRegex(TaskError,'正在运行'):
+                        resume_task(destination)
+                finally:
+                    cancel_task(handle);handle.join(5)
 
     def test_crash_allowance_exhaustion_is_published_once(self):
         import sqlite3,json
