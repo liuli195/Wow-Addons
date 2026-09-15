@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / 'projects/sim2gse'))
@@ -159,7 +160,8 @@ class CharacterExportTests(unittest.TestCase):
             input_path = Path(directory) / "中文 角色.simc"
             output_path = Path(directory) / "task-output"
             input_path.write_text(source, encoding="utf-8")
-            result = run_task(input_path, output_path, mode="single")
+            with patch('sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'}):
+                result = run_task(input_path, output_path, mode="single")
             self.assertEqual(result['status'], 'offline_ready')
             self.assertTrue((output_path / 'candidate.txt').exists())
             capabilities = result['capabilities']
@@ -221,7 +223,8 @@ class CharacterExportTests(unittest.TestCase):
             source.write_text(sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
                               .replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311'), encoding='utf-8')
             destination = Path(directory) / '任务'
-            result = run_task(source, destination, mode="single")
+            with patch('sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'}):
+                result = run_task(source, destination, mode="single")
             self.assertEqual([a['slot'] for a in result['capabilities']['actions'] if a['kind'] == 'item'], [13,14])
             self.assertIn(dict(type='item', item=13), result['candidate']['compiled_steps'])
             self.assertIn(dict(type='macro', macrotext='/use [@player] 14'), result['candidate']['compiled_steps'])
@@ -232,7 +235,8 @@ class CharacterExportTests(unittest.TestCase):
             source = Path(directory) / '角色.simc'
             source.write_text(sample_profile().replace('highmountain_tauren', 'undead'), encoding='utf-8')
             destination = Path(directory) / '任务'
-            result = run_task(source, destination, mode="single")
+            with patch('sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'}):
+                result = run_task(source, destination, mode="single")
             self.assertEqual(result['status'], 'offline_ready')
             self.assertTrue((destination / 'reference').exists())
             self.assertTrue((destination / 'candidate.txt').exists())

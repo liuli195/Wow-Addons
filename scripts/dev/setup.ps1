@@ -40,7 +40,9 @@ $simc = [pscustomobject]@{
     commit = $simcLock.upstream_commit
 }
 Sync-Repository '.tools/sim2gse-upstream/simc' $simc
-Expand-Archive .tools/downloads/luals.zip .tools/luals -Force
+if (-not (Test-Path '.tools/luals/bin/lua-language-server.exe')) {
+    Expand-Archive .tools/downloads/luals.zip .tools/luals -Force
+}
 if (-not (Test-Path '.tools/lua-5.1.5/src/lua.c')) {
     tar -xzf .tools/downloads/lua.tar.gz -C .tools
 }

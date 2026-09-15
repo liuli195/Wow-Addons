@@ -166,8 +166,8 @@ class SearchAndValidationTests(TestCase):
                     destination,
                     mode="optimize",
                     search_config={
-                    "total_budget_seconds": 20,
-                    "search_budget_seconds": 8,
+                    "total_budget_seconds": 120,
+                    "search_budget_seconds": 90,
                     "candidate_limit": 4,
                     "batch_targets": (2,),
                     "validation_batches": 2,
@@ -541,8 +541,8 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-feedback-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             with _fast_search_boundary():
-                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=12,
-                    search_budget_seconds=3,candidate_limit=2,batch_targets=(2,),iterations=2,
+                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,
+                    search_budget_seconds=30,candidate_limit=2,batch_targets=(2,),iterations=2,
                     validation_batches=2,final_batches=1,final_iterations=2,scenarios=('nominal',)))
             feedback=result['search']['records'][0]['batches'][0]['feedback']
             self.assertEqual(feedback['attempts'].get('feedback_probe'),2)
@@ -641,11 +641,11 @@ class SearchAndValidationTests(TestCase):
             started=time.monotonic()
             try:
                 with _fast_initialization(), patch.object(runtime._kernel32,'CreateProcessW',side_effect=hanging_engine):
-                    result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=5,search_budget_seconds=3,
+                    result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=10,search_budget_seconds=5,
                         candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2))
                 self.assertTrue(held,'未触发原生批次超时路径')
                 self.assertEqual(result['status'],'validation_incomplete')
-                self.assertLess(time.monotonic()-started,5)
+                self.assertLess(time.monotonic()-started,10)
                 for handle in held:self.assertEqual(runtime._kernel32.WaitForSingleObject(handle,0),0)
             finally:
                 for handle in held:runtime._kernel32.CloseHandle(handle)

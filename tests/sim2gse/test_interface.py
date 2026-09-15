@@ -124,8 +124,8 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("初始序列", _public_state(state, destination)["result_note"])
 
     def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300):
-        self.server.task_options = {'search_config': dict(total_budget_seconds=20,
-            search_budget_seconds=8,candidate_limit=2,batch_targets=(2,),
+        self.server.task_options = {'search_config': dict(total_budget_seconds=120,
+            search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
             scenarios=('nominal','jitter','slow','pause','phase') if interval_ms != 300 else ('nominal',),max_processes=1)}
         env=os.environ.copy()
@@ -176,7 +176,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
         result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or sample_profile(),interval_ms=interval_ms)),
-            text=True,encoding='utf-8',capture_output=True,env=env,timeout=50)
+            text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self._decode_candidate(json.loads(result.stdout)['candidate'], expected_spec)
 

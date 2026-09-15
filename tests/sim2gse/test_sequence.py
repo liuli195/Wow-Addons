@@ -47,11 +47,11 @@ class SequenceSimulationTests(unittest.TestCase):
         folder = Path(tempfile.mkdtemp(prefix='candidate-', dir=self.directory.name))
         return export(select(capabilities, program), folder, identity=native['identity']), source, character
 
-    def task(self, program, *, phase_ms=0):
+    def task(self, program, *, phase_ms=0, iterations=3):
         candidate, source, character = self.candidate(self.prepared, program)
         folder = Path(tempfile.mkdtemp(prefix='controlled-', dir=self.directory.name))
         controlled = evaluate(source, candidate, folder, character=character,
-                              input_times=list(range(phase_ms, 180000, 300)))
+                              iterations=iterations, input_times=list(range(phase_ms, 180000, 300)))
         return {'candidate': candidate, 'character': character,
                 'controlled_simulation': controlled}
 
@@ -149,7 +149,7 @@ class SequenceSimulationTests(unittest.TestCase):
             candidate, source, character = self.candidate(prepared, program)
             controlled = evaluate(source, candidate,
                                   Path(tempfile.mkdtemp(prefix='items-controlled-', dir=self.directory.name)),
-                                  character=character)
+                                  character=character, iterations=2)
             result = {'candidate': candidate, 'controlled_simulation': controlled}
             self.assertEqual(result['controlled_simulation']['blocks'], [['raise_dead'], *program])
             self.assertEqual(result['controlled_simulation']['native_blocks'], [[], *program])
@@ -163,8 +163,8 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def test_phase_reset_and_replay(self):
         program = [['outbreak'], ['scourge_strike']]
-        first = self.task(program, phase_ms=150)['controlled_simulation']
-        second = self.task(program, phase_ms=150)['controlled_simulation']
+        first = self.task(program, phase_ms=150, iterations=100)['controlled_simulation']
+        second = self.task(program, phase_ms=150, iterations=100)['controlled_simulation']
         inputs = [e for e in first['trace'] if e['event'] == 'input']
         self.assertEqual(inputs[0]['ms'], 150)
         self.assertTrue(all(e['step'] == 0 and e['ms'] == 150 for e in inputs if e['origin'] == 1))
