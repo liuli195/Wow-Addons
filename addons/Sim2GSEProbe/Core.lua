@@ -173,6 +173,7 @@ local function CaptureClick(button, sequenceName, evidence)
     local nextStep = ReadAttribute(button, "step")
     local nextIteration = ReadAttribute(button, "iteration") or 1
     local previous = nextPositions[sequenceName]
+    if not (previous and serial == previous.serial + 1) then previous = nil end
     local iteration, step = previous and previous.iteration, previous and previous.step
     if not previous then
         iteration, step = PreviousPosition(sequence, nextStep, nextIteration)
@@ -208,7 +209,7 @@ local function CaptureClick(button, sequenceName, evidence)
         runicPower = ReadRunicPower(),
     })
     if type(nextStep) == "number" and type(nextIteration) == "number" then
-        nextPositions[sequenceName] = { step = nextStep, iteration = nextIteration }
+        nextPositions[sequenceName] = { step = nextStep, iteration = nextIteration, serial = serial }
     end
 end
 

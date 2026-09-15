@@ -62,10 +62,10 @@ end
 function aceEvent.RegisterMessage(receiver, message, callback)
     gseMessages[message] = callback
 end
-function LibStub(name, silent)
+LibStub = setmetatable({}, { __call = function(_, name, silent)
     if name == "AceEvent-3.0" then return aceEvent end
     if not silent then error("unknown library") end
-end
+end })
 
 SlashCmdList = {}
 -- Current GSE exposes only a compatibility proxy in _G; internals stay private.
@@ -164,6 +164,18 @@ assert(Sim2GSEProbeDB.session.records[3].submittedStep == 253)
 assert(Sim2GSEProbeDB.session.records[4].submittedIteration == 2)
 assert(Sim2GSEProbeDB.session.records[4].submittedStep == 1)
 
+now = 18
+SlashCmdList.SIM2GSEPROBE("start")
+TESTSEQ.attrs.step = 2
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 1,
+})
+TESTSEQ.attrs.step = 1
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 3,
+})
+assert(Sim2GSEProbeDB.session.records[3].submittedStep == nil)
+
 restricted = true
 now = 20
 SlashCmdList.SIM2GSEPROBE("start")
@@ -180,6 +192,17 @@ assert(restrictedClick.triggerEdge == "gse-execution-message-observed")
 assert(restrictedClick.runicPower == "unavailable")
 assert(restrictedClick.gcd == "unavailable")
 assert(restrictedClick.spellCooldown == "unavailable")
+
+local globalMessages = {}
+GSE = { SequencesExec = {} }
+function GSE.RegisterMessage(receiver, message, callback)
+    globalMessages[message] = callback
+end
+LibStub = nil
+eventFrame = nil
+assert(loadfile(source))()
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+assert(globalMessages.GSE_MODS_VISIBLE)
 io.write("PASS: probe public seam\n")
 '''
     with tempfile.TemporaryDirectory() as directory:
