@@ -60,7 +60,12 @@ function CreateFrame(_, name)
 end
 
 function hooksecurefunc(owner, name, callback)
-    owner["__hook_" .. name] = callback
+    local original = assert(owner[name])
+    owner[name] = function(...)
+        local results = { original(...) }
+        callback(...)
+        return unpack(results)
+    end
 end
 
 SlashCmdList = {}
@@ -69,6 +74,7 @@ GSE = { SequencesExec = {
     FAKE = { { { type = "spell", spell = 55090 } } },
 } }
 TESTSEQ = NewFrame("TESTSEQ")
+TESTSEQ.UpdateIcon = function() end
 TESTSEQ.attrs = {
     type = "spell", spell = 55090, step = 1, iteration = 1,
     gseclickserial = 0,
@@ -76,6 +82,7 @@ TESTSEQ.attrs = {
 TESTSEQ_KD = NewFrame("TESTSEQ_KD")
 TESTSEQ_KD.gseKeyDownRelay = true
 FAKE = NewFrame("FAKE")
+FAKE.UpdateIcon = function() end
 FAKE_KD = NewFrame("FAKE_KD")
 
 assert(loadfile(source))()
@@ -86,12 +93,11 @@ SlashCmdList.SIM2GSEPROBE("start")
 
 now = 10.070
 TESTSEQ_KD.scripts.PreClick(TESTSEQ_KD, "LeftButton", true)
--- The secure relay advances the executor before the relay's PostClick.
+-- The secure executor advances its state before it updates the button icon.
 TESTSEQ.attrs.step = 2
 TESTSEQ.attrs.gseclickserial = 1
 now = 10.071
-assert(TESTSEQ_KD.scripts.PostClick, "keydown relay has no observable completion hook")
-TESTSEQ_KD.scripts.PostClick(TESTSEQ_KD, "LeftButton", true)
+TESTSEQ:UpdateIcon(false)
 now = 10.072
 eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "Target", "Cast-1", 55090)
 now = 10.090
@@ -127,9 +133,9 @@ assert(session.records[6].kind == "stop")
 restricted = true
 now = 20
 SlashCmdList.SIM2GSEPROBE("start")
-TESTSEQ.scripts.PreClick(TESTSEQ, "LeftButton", false)
 now = 20.001
-TESTSEQ.scripts.PostClick(TESTSEQ, "LeftButton", false)
+TESTSEQ.attrs.gseclickserial = 2
+TESTSEQ:UpdateIcon(false)
 local restrictedSession = Sim2GSEProbeDB.session
 local restrictedClick = restrictedSession.records[2]
 assert(restrictedSession.environment.spellQueueWindowMs == "unavailable")

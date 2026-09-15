@@ -1,8 +1,8 @@
 local PREFIX = "|cff58c7ffSim2GSEProbe:|r "
-local hookedButtons = {}
+local hookedUpdates = {}
 local hookedRelays = {}
-local buttonTimes = {}
 local relayTimes = {}
+local updateSerials = {}
 local createButtonHooked = false
 local C_CVar = _G.C_CVar
 local C_Spell = _G.C_Spell
@@ -172,7 +172,7 @@ local function CaptureClick(button)
         and SafeCall(C_Spell.GetOverrideSpell, spellID) or nil
     local relayTime = relayTimes[sequenceName]
     local relayObserved = type(relayTime) == "number" and observedAt >= relayTime and observedAt - relayTime <= 50
-    local clickTime = relayObserved and relayTime or buttonTimes[button] or observedAt
+    local clickTime = relayObserved and relayTime or observedAt
     local useKeyDown = ReadCVar("ActionButtonUseKeyDown")
     local triggerEdge = "unknown"
     if relayObserved then
@@ -180,7 +180,6 @@ local function CaptureClick(button)
     elseif useKeyDown == "0" then
         triggerEdge = "keyup-configured"
     end
-    buttonTimes[button] = nil
     if type(sequenceName) == "string" then relayTimes[sequenceName] = nil end
 
     AddRecord({
@@ -207,21 +206,17 @@ local function CaptureClick(button)
     })
 end
 
-local function CaptureButtonPress(button)
-    buttonTimes[button] = NowMs()
-end
-
 local function CaptureRelay(button)
     local name = button and button.GetName and SafeCall(button.GetName, button)
     if type(name) ~= "string" then return end
     relayTimes[(name:gsub("_KD$", ""))] = NowMs()
 end
 
-local function CaptureRelayResult(button)
-    local name = button and button.GetName and SafeCall(button.GetName, button)
-    if type(name) ~= "string" then return end
-    local executor = _G[(name:gsub("_KD$", ""))]
-    if executor then CaptureClick(executor) end
+local function CaptureUpdate(button)
+    local serial = ReadAttribute(button, "gseclickserial")
+    if type(serial) ~= "number" or updateSerials[button] == serial then return end
+    updateSerials[button] = serial
+    CaptureClick(button)
 end
 
 local function HookButtons()
@@ -232,18 +227,16 @@ local function HookButtons()
     if type(sequences) ~= "table" then return count end
     for name in pairs(sequences) do
         local button = type(name) == "string" and _G[name]
-        if button and button.HookScript and not hookedButtons[button] then
-            button:HookScript("PreClick", CaptureButtonPress)
-            button:HookScript("PostClick", CaptureClick)
-            hookedButtons[button] = true
+        if button and type(button.UpdateIcon) == "function" and not hookedUpdates[button] then
+            hooksecurefunc(button, "UpdateIcon", CaptureUpdate)
+            hookedUpdates[button] = true
         end
         local relay = type(name) == "string" and _G[name .. "_KD"]
         if relay and relay.gseKeyDownRelay == true and relay.HookScript and not hookedRelays[relay] then
             relay:HookScript("PreClick", CaptureRelay)
-            relay:HookScript("PostClick", CaptureRelayResult)
             hookedRelays[relay] = true
         end
-        if hookedButtons[button] then count = count + 1 end
+        if hookedUpdates[button] then count = count + 1 end
     end
     if not createButtonHooked and gse and type(gse.CreateGSE3Button) == "function" then
         hooksecurefunc(gse, "CreateGSE3Button", HookButtons)
@@ -258,6 +251,8 @@ end
 
 local function Start()
     HookButtons()
+    relayTimes = {}
+    updateSerials = {}
     _G.Sim2GSEProbeDB = GetDB() or {}
     local database = GetDB()
     database.schema = 1
