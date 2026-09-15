@@ -173,6 +173,13 @@ local function CaptureClick(button)
     local relayTime = relayTimes[sequenceName]
     local relayObserved = type(relayTime) == "number" and observedAt >= relayTime and observedAt - relayTime <= 50
     local clickTime = relayObserved and relayTime or buttonTimes[button] or observedAt
+    local useKeyDown = ReadCVar("ActionButtonUseKeyDown")
+    local triggerEdge = "unknown"
+    if relayObserved then
+        triggerEdge = "keydown-relay-observed"
+    elseif useKeyDown == "0" then
+        triggerEdge = "keyup-configured"
+    end
     buttonTimes[button] = nil
     if type(sequenceName) == "string" then relayTimes[sequenceName] = nil end
 
@@ -192,7 +199,7 @@ local function CaptureClick(button)
         spellID = spellID,
         baseSpellID = baseSpellID,
         overrideSpellID = overrideSpellID,
-        triggerEdge = relayObserved and "keydown-relay-observed" or "keyup",
+        triggerEdge = triggerEdge,
         gcd = ReadCooldown(61304),
         spellCooldown = ReadCooldown(spellID),
         runes = ReadRunes(),
@@ -224,7 +231,7 @@ local function HookButtons()
             hookedButtons[button] = true
         end
         local relay = type(name) == "string" and _G[name .. "_KD"]
-        if relay and relay.HookScript and not hookedRelays[relay] then
+        if relay and relay.gseKeyDownRelay == true and relay.HookScript and not hookedRelays[relay] then
             relay:HookScript("PreClick", CaptureRelay)
             hookedRelays[relay] = true
         end
@@ -331,22 +338,24 @@ events:SetScript("OnEvent", function(_, event, ...)
         return
     end
 
-    local unit, first, second, third = ...
+    local unit = ...
     if unit ~= "player" then return end
     if event == "UNIT_SPELLCAST_SENT" then
+        local _, target, castGUID, spellID = ...
         AddRecord({
             kind = "spellcast",
             event = event,
-            target = SafeScalar(first),
-            castGUID = SafeScalar(second),
-            spellID = SafeScalar(third),
+            target = SafeScalar(target),
+            castGUID = SafeScalar(castGUID),
+            spellID = SafeScalar(spellID),
         })
     else
+        local _, castGUID, spellID = ...
         AddRecord({
             kind = "spellcast",
             event = event,
-            castGUID = SafeScalar(first),
-            spellID = SafeScalar(second),
+            castGUID = SafeScalar(castGUID),
+            spellID = SafeScalar(spellID),
         })
     end
 end)

@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 LUA = ROOT / ".tools/lua-5.1.5/src/lua.exe"
 ADDON = ROOT / "addons/Sim2GSEProbe/Core.lua"
 
@@ -14,15 +14,17 @@ local source = assert(arg[1])
 local now = 10
 local eventFrame
 local messages = {}
+local restricted = false
+local secret = {}
 
 function GetTimePreciseSec() return now end
 function GetServerTime() return 1789474410 end
 function GetNetStats() return 0, 0, 28, 25 end
-function UnitPower() return 80 end
+function UnitPower() return restricted and secret or 80 end
 function GetRuneCooldown(index) return index, 10, index <= 2 end
 function InCombatLockdown() return false end
 function IsLoggedIn() return true end
-function issecretvalue() return false end
+function issecretvalue(value) return value == secret end
 function print(message) table.insert(messages, message) end
 
 Enum = { PowerType = { RunicPower = 6 } }
@@ -30,8 +32,9 @@ C_CVar = { GetCVar = function(name)
     if name == "ActionButtonUseKeyDown" then return "1" end
 end }
 C_Spell = {
-    GetSpellQueueWindow = function() return 400 end,
+    GetSpellQueueWindow = function() return restricted and secret or 400 end,
     GetSpellCooldown = function()
+        if restricted then error("restricted cooldown") end
         return { startTime = 9, duration = 1.5, isEnabled = true, modRate = 1 }
     end,
     GetBaseSpell = function(id) return id end,
@@ -63,6 +66,7 @@ end
 SlashCmdList = {}
 GSE = { SequencesExec = {
     TESTSEQ = { { { type = "spell", spell = 55090 }, { type = "spell", spell = 47541 } } },
+    FAKE = { { { type = "spell", spell = 55090 } } },
 } }
 TESTSEQ = NewFrame("TESTSEQ")
 TESTSEQ.attrs = {
@@ -70,10 +74,14 @@ TESTSEQ.attrs = {
     gseclickserial = 1,
 }
 TESTSEQ_KD = NewFrame("TESTSEQ_KD")
+TESTSEQ_KD.gseKeyDownRelay = true
+FAKE = NewFrame("FAKE")
+FAKE_KD = NewFrame("FAKE_KD")
 
 assert(loadfile(source))()
 assert(SLASH_SIM2GSEPROBE1 == "/s2gprobe")
 eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+assert(FAKE_KD.scripts.PreClick == nil)
 SlashCmdList.SIM2GSEPROBE("start")
 
 now = 10.070
@@ -112,6 +120,20 @@ assert(session.records[3].castGUID == "Cast-1")
 assert(session.records[4].event == "UNIT_SPELLCAST_SUCCEEDED")
 assert(session.records[5].kind == "mark")
 assert(session.records[6].kind == "stop")
+
+restricted = true
+now = 20
+SlashCmdList.SIM2GSEPROBE("start")
+TESTSEQ.scripts.PreClick(TESTSEQ, "LeftButton", false)
+now = 20.001
+TESTSEQ.scripts.PostClick(TESTSEQ, "LeftButton", false)
+local restrictedSession = Sim2GSEProbeDB.session
+local restrictedClick = restrictedSession.records[2]
+assert(restrictedSession.environment.spellQueueWindowMs == "unavailable")
+assert(restrictedClick.triggerEdge == "unknown")
+assert(restrictedClick.runicPower == "unavailable")
+assert(restrictedClick.gcd == "unavailable")
+assert(restrictedClick.spellCooldown == "unavailable")
 io.write("PASS: probe public seam\n")
 '''
     with tempfile.TemporaryDirectory() as directory:

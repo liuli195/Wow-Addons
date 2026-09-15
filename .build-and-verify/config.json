@@ -140,6 +140,22 @@
         ]
       },
       {
+        "id": "verify.sim2gse-probe-test",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/Sim2GSEProbe/test_probe.py",
+        "checkParallel": true,
+        "paths": [
+          "addons/Sim2GSEProbe/**",
+          "tests/addons/Sim2GSEProbe/**",
+          ".build-and-verify/config.json"
+        ],
+        "inputs": [
+          "addons/Sim2GSEProbe/**",
+          "tests/addons/Sim2GSEProbe/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".build-and-verify/config.json"
+        ]
+      },
+      {
         "id": "verify.assets",
         "command": ".venv\\Scripts\\python.exe scripts/media/verify.py",
         "checkParallel": true,
@@ -227,7 +243,6 @@
         "pytestXdistWorkers": 8,
         "paths": [
           "projects/sim2gse/**",
-          "addons/Sim2GSEProbe/**",
           "scripts/dev/sim2gse/**",
           ".build-and-verify/config.json",
           "tests/sim2gse/**",
@@ -237,7 +252,6 @@
         ],
         "inputs": [
           "projects/sim2gse/**",
-          "addons/Sim2GSEProbe/**",
           "scripts/dev/sim2gse/**",
           ".build-and-verify/config.json",
           ".tools/sim2gse/product/baseline/engine/simc.exe",
