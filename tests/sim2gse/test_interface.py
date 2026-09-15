@@ -395,15 +395,29 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         original_read=Path.read_text
         held=[]
         kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+        class Entry(ctypes.Structure):
+            _fields_=[('size',wintypes.DWORD),('usage',wintypes.DWORD),('pid',wintypes.DWORD),
+                      ('heap',ctypes.c_size_t),('module',wintypes.DWORD),('threads',wintypes.DWORD),
+                      ('parent',wintypes.DWORD),('priority',wintypes.LONG),('flags',wintypes.DWORD),
+                      ('exe',wintypes.WCHAR*260)]
+        kernel.CreateToolhelp32Snapshot.restype=wintypes.HANDLE
+        kernel.Process32FirstW.argtypes=[wintypes.HANDLE,ctypes.POINTER(Entry)]
+        kernel.Process32NextW.argtypes=[wintypes.HANDLE,ctypes.POINTER(Entry)]
         kernel.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
         kernel.OpenProcess.restype=wintypes.HANDLE
         kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
         kernel.CloseHandle.argtypes=[wintypes.HANDLE]
         def edge_ids(parent_id):
-            query=f"Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' AND ParentProcessId={parent_id}\" | Select-Object -ExpandProperty ProcessId"
-            return {int(pid) for pid in subprocess.run(
-                ['powershell','-NoProfile','-Command',query],capture_output=True,text=True,timeout=10
-            ).stdout.split()}
+            snapshot=kernel.CreateToolhelp32Snapshot(2,0)
+            row=Entry();row.size=ctypes.sizeof(row)
+            found=set()
+            try:
+                more=kernel.Process32FirstW(snapshot,ctypes.byref(row))
+                while more:
+                    if row.parent==parent_id and row.exe.lower()=='msedge.exe':found.add(row.pid)
+                    more=kernel.Process32NextW(snapshot,ctypes.byref(row))
+                return found
+            finally:kernel.CloseHandle(snapshot)
         def deadline(process,input=None,timeout=None):
             if isinstance(process.args,list) and process.args[0]=='node':
                 held.append(kernel.OpenProcess(0x100000,False,process.pid))

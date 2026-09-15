@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+import shutil
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -20,6 +21,49 @@ from test_character_export import sample_profile
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
 
 
+def _fast_capabilities():
+    actions = [
+        dict(kind="spell", spell_id=1001, simc_action="outbreak", name="outbreak", gcd_ms=1500, base_spell_id=1001),
+        dict(kind="spell", spell_id=1002, simc_action="death_coil", name="death_coil", gcd_ms=1500, base_spell_id=1002),
+        dict(kind="spell", spell_id=1003, simc_action="scourge_strike", name="scourge_strike", gcd_ms=1500, base_spell_id=1003),
+        dict(kind="spell", spell_id=1004, simc_action="dark_transformation", name="dark_transformation", gcd_ms=1500, base_spell_id=1004),
+        dict(kind="item", slot=13, item_id=250245, driver_spell_id=1005,
+             simc_action="use_item,slot=trinket1", name="使用trinket1", gcd_ms=0),
+    ]
+    return dict(actions=actions, precombat_actions=[], sources=[], protocol=3,
+                scope="test", coverage="constructed-test-boundary")
+
+
+def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912):
+    return dict(dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
+                identity=dict(class_id=6, spec_id=252, spec=character.spec, race=character.race,
+                              role=character.fields.get("role", "attack"), resource="runic_power"),
+                action_sequence=[{"name": "use_item,slot=trinket1", "queue_failed": False}],
+                precombat_sequence=[], actions_protocol=1, executed_actions=[], precombat_definitions=[],
+                active_items=[{"slot": "trinket1", "id": 250245, "driver_spell_id": 1005}])
+
+
+def _fast_inspect(reference, folder):
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    capabilities = _fast_capabilities()
+    (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+    return capabilities
+
+
+def _fast_report(character, score, samples):
+    player = {
+        "name": character.name, "sim2gse_class": character.class_name, "level": character.level,
+        "sim2gse_spec_id": character.spec_id or 252, "race": character.race,
+        "talents": character.fields["talents"], "sim2gse_resource": "runic_power",
+        "collected_data": {"dps": {"mean": score, "count": samples}, "fight_length": {"mean": 180},
+                           "resource_overflowed": {"runic_power": {"mean": 0}}},
+    }
+    return {"sim": {"players": [player], "targets": [{}],
+                    "statistics": {"raid_dps": {"mean": score, "count": samples}},
+                    "options": {"dbc": {"Live": {"build_level": 69587, "version_used": "Live"}}}}}
+
+
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None):
@@ -32,12 +76,7 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
         for block in candidate["blocks"] for command in block
     ) / 1000.0
     samples = max(1, iterations - 1)
-    report = json.loads((Path(profile).parent / "reference/native.json").read_text(encoding="utf-8"))
-    player = next(row for row in report["sim"]["players"] if row["name"] == character.name)
-    player["collected_data"]["dps"].update(mean=score, count=samples)
-    player["collected_data"].setdefault("resource_overflowed", {}) \
-        .setdefault(player["sim2gse_resource"], {})["mean"] = 0
-    report["sim"]["statistics"]["raid_dps"].update(mean=score, count=samples)
+    report = _fast_report(character, score, samples)
     (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
     trace_rows = []
     if trace:
@@ -62,17 +101,38 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
 
 
 @contextmanager
-def _fast_search_boundary():
-    """仅替换搜索结果生产；任务入口、TaskStore 和搜索状态机仍走真实代码。"""
+def _fast_initialization():
+    """跳过与状态、缓存和进程故障断言无关的原生初始化。"""
     import codec
-    import sequence
+    import engine
 
     def compiler(command, *args, **kwargs):
         output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
-    with patch.object(codec, "run_command", side_effect=compiler), \
-         patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
+    def check_report(report, character, iterations):
+        damage = report["sim"]["statistics"]["raid_dps"]
+        return dict(dps=damage["mean"], metric="dps", personal_dps=damage["mean"],
+                    samples=damage["count"], seconds=180, metadata_only=[], notices=[],
+                    identity={"spec_id": character.spec_id or 252, "race": character.race,
+                              "resource": "runic_power"})
+
+    identity = lambda mode, runtime=None: (Path("simc-test.exe"),
+        {"mode": mode, "upstream_commit": "test", "build_options": []})
+    with patch.object(engine, "identity", side_effect=identity), \
+         patch.object(engine, "reference", side_effect=_fast_reference), \
+         patch.object(engine, "inspect", side_effect=_fast_inspect), \
+         patch.object(engine, "check_report", side_effect=check_report), \
+         patch.object(codec, "run_command", side_effect=compiler):
+        yield
+
+
+@contextmanager
+def _fast_search_boundary():
+    """仅替换搜索结果生产；任务入口、TaskStore 和搜索状态机仍走真实代码。"""
+    import sequence
+
+    with _fast_initialization(), patch.object(sequence, "evaluate", side_effect=_fast_evaluate):
         yield
 
 
@@ -355,7 +415,8 @@ class SearchAndValidationTests(TestCase):
         kernel.OpenProcess.restype=wintypes.HANDLE
         kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
         kernel.CloseHandle.argtypes=[wintypes.HANDLE]
-        with tempfile.TemporaryDirectory(prefix='sim2gse-ownership-') as directory:
+        directory=tempfile.mkdtemp(prefix='sim2gse-ownership-')
+        try:
             owners=[];held=[]
             child="import subprocess,sys,time,os,json;from pathlib import Path;p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);Path(sys.argv[1]).write_text(json.dumps([os.getpid(),p.pid]));time.sleep(60)"
             owner="import sys;sys.path.insert(0,sys.argv[1]);from runtime import run_command;run_command([sys.executable,'-c',sys.argv[2],sys.argv[3]],sys.argv[4],timeout_seconds=60)"
@@ -380,6 +441,16 @@ class SearchAndValidationTests(TestCase):
                     for handle in handles:
                         self.assertEqual(kernel.WaitForSingleObject(handle,2000),0)
                         kernel.CloseHandle(handle)
+        finally:
+            for attempt in range(21):
+                try:
+                    shutil.rmtree(directory)
+                    break
+                except FileNotFoundError:
+                    break
+                except PermissionError:
+                    if attempt==20:raise
+                    time.sleep(0.05)
 
     def test_same_conditions_reuse_search_but_never_old_final_samples(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-cache-reuse-') as directory:
@@ -410,7 +481,7 @@ class SearchAndValidationTests(TestCase):
             return original(*args)
         with tempfile.TemporaryDirectory(prefix='sim2gse-engine-error-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            with patch.object(runtime._kernel32,'CreateProcessW',side_effect=process_boundary):
+            with _fast_initialization(), patch.object(runtime._kernel32,'CreateProcessW',side_effect=process_boundary):
                 with self.assertRaisesRegex(TaskError,'原生引擎失败'):
                     run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=8,search_budget_seconds=3,candidate_limit=2))
 
@@ -548,7 +619,7 @@ class SearchAndValidationTests(TestCase):
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             started=time.monotonic()
             try:
-                with patch.object(runtime._kernel32,'CreateProcessW',side_effect=hanging_engine):
+                with _fast_initialization(), patch.object(runtime._kernel32,'CreateProcessW',side_effect=hanging_engine):
                     result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=5,search_budget_seconds=3,
                         candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2))
                 self.assertTrue(held,'未触发原生批次超时路径')
