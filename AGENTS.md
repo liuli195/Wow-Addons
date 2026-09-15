@@ -18,7 +18,7 @@
 
 仅面向 12.1 正式服，客户端、接口和工具版本以[版本清单](scripts/dev/versions.json)为准。新增游戏接口先查 `.tools/wow-ui-source/Interface/AddOns/Blizzard_APIDocumentationGenerated` 及同版本界面源码；注解和本机模拟不能替代游戏验收。环境准备见[环境说明](docs/environment-setup.md)，接口、部署及发布前阅读[协作指南](docs/wow-addon-development-guide.md)对应章节。
 
-自有游戏插件为 `addons/EUI_FacetedPortrait/`；第三方副本、素材及个人片段边界见[项目说明](README.md)。游戏部署和安装包发布按任务授权执行；素材缺少源图时保留现有成品。
+自有游戏插件为 `addons/EUI_FacetedPortrait/`；Sim2GSE 的开发诊断插件为 `addons/Sim2GSEProbe/`，只采集用户主动触发的实机证据。第三方副本、素材及个人片段边界见[项目说明](README.md)。游戏部署和安装包发布按任务授权执行；素材缺少源图时保留现有成品。
 
 ## 目录导航
 
