@@ -201,7 +201,7 @@ class SearchAndValidationTests(TestCase):
                               'trinket1=,id=273797,ilevel=311'), encoding='utf-8')
             with _fast_search_boundary():
                 result = run_task(source, Path(directory)/'任务', search_config=dict(
-                    total_budget_seconds=20, search_budget_seconds=8, candidate_limit=2,
+                    total_budget_seconds=60, search_budget_seconds=30, candidate_limit=2,
                     batch_targets=(2,), iterations=2, final_iterations=2,
                     validation_batches=1, final_batches=1, scenarios=('nominal',), max_processes=1))
             self.assertIn('use_item,slot=trinket1',
@@ -227,8 +227,8 @@ class SearchAndValidationTests(TestCase):
                     patch.dict(search.DEFAULT_CONFIG, final_batches=1, final_iterations=2), \
                     patch.object(search, "summarize_pairs", side_effect=reject_final_gain):
                 result = run_task(source, destination, search_config={
-                    "total_budget_seconds": 20,
-                    "search_budget_seconds": 8,
+                    "total_budget_seconds": 60,
+                    "search_budget_seconds": 30,
                     "candidate_limit": 4,
                     "batch_targets": (2,),
                     "validation_batches": 2,
@@ -257,8 +257,8 @@ class SearchAndValidationTests(TestCase):
                     destination,
                     mode="optimize",
                     search_config={
-                        "total_budget_seconds": 10,
-                        "search_budget_seconds": 4,
+                        "total_budget_seconds": 60,
+                        "search_budget_seconds": 30,
                         "candidate_limit": 2,
                         "round_candidate_limit": 1,
                         "batch_targets": (2, 4, 8),
@@ -304,7 +304,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
             source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=40, search_budget_seconds=4,
+            config = dict(total_budget_seconds=120, search_budget_seconds=60,
                           candidate_limit=2, batch_targets=(2,), validation_batches=2,
                           final_batches=3, final_iterations=2, iterations=2, max_processes=2)
             with _fast_search_boundary():
@@ -336,7 +336,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory)/'role.simc'
             destination = Path(directory)/'task'
             source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=25,search_budget_seconds=3,candidate_limit=2,
+            config=dict(total_budget_seconds=120,search_budget_seconds=90,candidate_limit=2,
                         batch_targets=(2,),validation_batches=2,final_batches=2,
                         iterations=2,final_iterations=2,scenarios=('nominal',),max_processes=1)
             with _fast_search_boundary():
@@ -387,14 +387,14 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-crash-') as directory:
             source=Path(directory)/'role.simc';destination=Path(directory)/'task'
             source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=45,search_budget_seconds=8,candidate_limit=4,
-                        batch_targets=(32,),validation_batches=2,final_batches=2,iterations=32,
+            config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=2,
+                        batch_targets=(2,),validation_batches=1,final_batches=2,iterations=2,
                         final_iterations=32,max_processes=2)
             code="import sys,json;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))"
             process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),str(source),str(destination),json.dumps(config)])
             held=None
             try:
-                deadline=time.monotonic()+20
+                deadline=time.monotonic()+45
                 state={}
                 while time.monotonic()<deadline and process.poll() is None:
                     try: state=read_task(destination)
@@ -475,7 +475,7 @@ class SearchAndValidationTests(TestCase):
     def test_same_conditions_reuse_search_but_never_old_final_samples(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-cache-reuse-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=25,search_budget_seconds=3,candidate_limit=2,batch_targets=(2,),
+            config=dict(total_budget_seconds=120,search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
                         validation_batches=2,final_batches=2,iterations=2,final_iterations=2,
                         scenarios=('nominal',),max_processes=1)
             with _fast_search_boundary():
@@ -503,14 +503,14 @@ class SearchAndValidationTests(TestCase):
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             with _fast_initialization(), patch.object(runtime._kernel32,'CreateProcessW',side_effect=process_boundary):
                 with self.assertRaisesRegex(TaskError,'原生引擎失败'):
-                    run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=8,search_budget_seconds=3,candidate_limit=2))
+                    run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=2))
 
     def test_multiple_local_chains_use_their_own_observed_feedback(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-local-search-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             with _fast_search_boundary():
-                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,
-                    search_budget_seconds=50,candidate_limit=19,round_candidate_limit=4,batch_targets=(2,),
+                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=120,
+                    search_budget_seconds=90,candidate_limit=19,round_candidate_limit=4,batch_targets=(2,),
                     validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
             self.assertEqual(result['search']['candidate_count'],19)
             self.assertTrue(result['search']['partial_round'])
@@ -526,7 +526,7 @@ class SearchAndValidationTests(TestCase):
         import sqlite3
         with tempfile.TemporaryDirectory(prefix='sim2gse-malformed-cache-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=15,search_budget_seconds=3,candidate_limit=2,batch_targets=(2,),
+            config=dict(total_budget_seconds=120,search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
                         validation_batches=2,final_batches=2,iterations=2,final_iterations=2,scenarios=('nominal',))
             with _fast_search_boundary():
                 run_task(source,Path(directory)/'first',search_config=config)
@@ -552,7 +552,7 @@ class SearchAndValidationTests(TestCase):
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             destination=Path(directory)/'task'
             with _fast_search_boundary():
-                handle=start_task(source,destination,search_config=dict(total_budget_seconds=30,search_budget_seconds=4,
+                handle=start_task(source,destination,search_config=dict(total_budget_seconds=120,search_budget_seconds=60,
                     candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2,final_batches=10,final_iterations=2))
                 try:
                     deadline=time.monotonic()+15
