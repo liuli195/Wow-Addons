@@ -365,14 +365,17 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 self.assertLess(len(message), 161)
         self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
 
-    def test_manual_browser_timeout_cleans_process_tree(self):
+    def test_manual_browser_cancellation_cleans_process_tree(self):
         from unittest.mock import patch
         import ctypes
         from ctypes import wintypes
         import manual_interface
-        original_communicate=subprocess.Popen.communicate
+        import runtime
+        from runtime import TaskCancelled, TaskRuntime
         original_read=Path.read_text
-        held=[]
+        original_create=runtime._kernel32.CreateProcessW
+        held=[];node_ids=[];watch_errors=[]
+        created=threading.Event();task_runtime=TaskRuntime(30)
         kernel=ctypes.WinDLL('kernel32',use_last_error=True)
         class Entry(ctypes.Structure):
             _fields_=[('size',wintypes.DWORD),('usage',wintypes.DWORD),('pid',wintypes.DWORD),
@@ -397,35 +400,51 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                     more=kernel.Process32NextW(snapshot,ctypes.byref(row))
                 return found
             finally:kernel.CloseHandle(snapshot)
-        def deadline(process,input=None,timeout=None):
-            if isinstance(process.args,list) and process.args[0]=='node':
-                held.append(kernel.OpenProcess(0x100000,False,process.pid))
-                process.stdin.write(input)
-                process.stdin.close()
-                process.stdin=None
+        def create_process(*args):
+            result=original_create(*args)
+            if result:
+                info=ctypes.cast(args[9],ctypes.POINTER(runtime._PROCESS_INFORMATION)).contents
+                node_ids.append(info.dwProcessId)
+                held.append(kernel.OpenProcess(0x100000,False,info.dwProcessId))
+                created.set()
+            return result
+        def cancel_after_edge():
+            try:
+                if not created.wait(10):raise AssertionError('Node 进程未启动')
                 child_ids=[]
                 until=time.monotonic()+10
                 while time.monotonic()<until and not child_ids:
-                    child_ids=edge_ids(process.pid)
+                    child_ids=edge_ids(node_ids[0])
                     if not child_ids:time.sleep(0.05)
+                if not child_ids:raise AssertionError('Edge 浏览器进程未启动')
                 for pid in child_ids:
                     handle=kernel.OpenProcess(0x100000,False,int(pid))
-                    self.assertTrue(handle,'无法打开 Edge 浏览器进程')
-                    self.assertEqual(kernel.WaitForSingleObject(handle,0),258,'捕获的 Edge 浏览器进程已经退出')
+                    if not handle or kernel.WaitForSingleObject(handle,0)!=258:
+                        raise AssertionError('无法捕获仍在运行的 Edge 浏览器进程')
                     held.append(handle)
-                return original_communicate(process,timeout=0.1)
-            return original_communicate(process,input,timeout)
+            except BaseException as error:
+                watch_errors.append(error)
+            finally:task_runtime.cancel()
         def profile_input(path,*args,**kwargs):
             if path.name=='unholy-20260912-0240.simc':return sample_profile()
             return original_read(path,*args,**kwargs)
-        destination=Path(self.directory.name)/'超时 界面'
+        destination=Path(self.directory.name)/'取消 界面'
+        watcher=threading.Thread(target=cancel_after_edge,daemon=True)
         try:
-            with patch.object(sys,'argv',['manual_interface.py','--output',str(destination)]),patch.object(Path,'read_text',profile_input),patch.object(subprocess.Popen,'communicate',deadline):
-                with self.assertRaises(subprocess.TimeoutExpired):manual_interface.main()
+            watcher.start()
+            with patch.object(sys,'argv',['manual_interface.py','--output',str(destination)]), \
+                 patch.object(Path,'read_text',profile_input), \
+                 patch.object(manual_interface,'TaskRuntime',return_value=task_runtime), \
+                 patch.object(runtime._kernel32,'CreateProcessW',side_effect=create_process):
+                with self.assertRaises(TaskCancelled):manual_interface.main()
+            watcher.join(20)
+            self.assertFalse(watcher.is_alive(),'浏览器启动观察线程未结束')
+            if watch_errors:raise watch_errors[0]
             self.assertGreaterEqual(sum(bool(handle) for handle in held),2,'必须观察到 Node 及浏览器子进程')
             for handle in held:
                 if handle:self.assertEqual(kernel.WaitForSingleObject(handle,5000),0,'浏览器进程未被清理')
         finally:
+            task_runtime.cancel();watcher.join(1)
             for handle in held:
                 if handle:kernel.CloseHandle(handle)
 
