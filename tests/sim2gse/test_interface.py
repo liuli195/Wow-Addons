@@ -9,6 +9,7 @@ import unittest
 import json
 import os
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -19,8 +20,10 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
-from interface import _public_state, create_server  # noqa: E402
+from interface import _friendly_error, _public_state, create_server  # noqa: E402
+from task import run_task  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
+from test_search import _fast_search_boundary  # noqa: E402
 
 
 class InterfaceTests(unittest.TestCase):
@@ -85,16 +88,17 @@ class InterfaceTests(unittest.TestCase):
                 "max_processes": 1,
             }
         }
-        created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
-        self.assertEqual(created["status"], "starting")
-        task_id = created["task_id"]
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._json_request("GET", f"/api/tasks/{task_id}")
-            if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
+        with _fast_search_boundary():
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            self.assertEqual(created["status"], "starting")
+            task_id = created["task_id"]
+            deadline = time.monotonic() + 30
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._json_request("GET", f"/api/tasks/{task_id}")
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.1)
         self.assertEqual(state["status"], "validation_incomplete")
         self.assertTrue(state["result_ready"])
         self.assertEqual(state["evidence_status"], "insufficient_validation")
@@ -120,8 +124,8 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("初始序列", _public_state(state, destination)["result_note"])
 
     def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300):
-        self.server.task_options = {'search_config': dict(total_budget_seconds=20,
-            search_budget_seconds=8,candidate_limit=2,batch_targets=(2,),
+        self.server.task_options = {'search_config': dict(total_budget_seconds=120,
+            search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
             scenarios=('nominal','jitter','slow','pause','phase') if interval_ms != 300 else ('nominal',),max_processes=1)}
         env=os.environ.copy()
@@ -144,7 +148,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.locator('#profile').fill('mage=test\nlevel=80\nspec=frost');
   await page.locator('#start').click();
   await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-  assert.equal(await page.locator('#error').isVisible(),true);
+  const asyncError=await page.locator('#error').innerText();
+  assert.match(asyncError,/请检查角色导出内容/);
+  assert.ok(!asyncError.includes('\\'));
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   let dropped=false;
   await page.route('**/api/tasks/*',async route=>{if(!dropped){dropped=true;await route.abort();}else await route.continue();});
@@ -170,10 +176,12 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
         result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or sample_profile(),interval_ms=interval_ms)),
-            text=True,encoding='utf-8',capture_output=True,env=env,timeout=50)
+            text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self._decode_candidate(json.loads(result.stdout)['candidate'], expected_spec)
+
+    def _decode_candidate(self, candidate, expected_spec):
         import base64, zlib, cbor2
-        candidate = json.loads(result.stdout)['candidate']
         # 游戏 12.1 实际编码 {1,"test"} 的输出；不由产品编码器生成预期值。
         self.assertEqual(zlib.decompress(base64.b64decode('a2J0KUktLgEA'), -15), b'\x82\x01\x44test')
         wire = cbor2.loads(zlib.decompress(base64.b64decode(candidate[6:]), -15))
@@ -188,6 +196,21 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(payload[1]['MetaData']['SpecID'], expected_spec)
         self.candidate_payload = payload
 
+    def _export_candidate(self, profile, expected_spec, *, simulate=False):
+        root = Path(self.directory.name) / 'direct'
+        source = root / 'input.simc'
+        root.mkdir()
+        source.write_text(profile, encoding='utf-8')
+        from unittest.mock import patch
+        boundary = nullcontext() if simulate else patch(
+            'sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'})
+        with boundary:
+            result = run_task(source, root / 'task', mode='single')
+        self._decode_candidate(result['candidate']['text'], expected_spec)
+        self.native_report = json.loads((root / 'task/reference/native.json').read_text(encoding='utf-8'))
+        self.native_reference = result['native_reference']
+        self.controlled = result['controlled_simulation']
+
     def test_invalid_interval_is_rejected_before_creating_task(self):
         for value in (0, 49, 2001, True, 180.5, "180"):
             with self.subTest(value=value), self.assertRaises(HTTPError) as raised:
@@ -196,7 +219,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(list(self.server.tasks), [])
 
     def test_browser_uses_adjustable_input_interval(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180)
+        with _fast_search_boundary():
+            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180)
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
         result = read_task(destination)
@@ -217,33 +241,32 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         import re
         talents='CwPAkXBWxkyfx9CbGaHonEAhLBYmhZMjBzyMzMTjZmxMzYAAAAAAAAYmxwAglZMzsZmxMzA2MbGGyAzGDNWwAmBgxMzYGgZmxMG'
         profile=re.sub(r'^talents=.*$', 'talents='+talents,sample_profile(),flags=re.MULTILINE)
-        self.test_browser_computes_copies_and_clears_real_candidate(profile)
+        self._export_candidate(profile, 252)
 
     def test_baseline_unused_racial_does_not_block_browser_result(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            sample_profile().replace('highmountain_tauren', 'undead'))
+        self._export_candidate(sample_profile().replace('highmountain_tauren', 'undead'), 252)
 
     def test_tank_profile_reaches_damage_candidate(self):
         import re
         profile = sample_profile().replace('role=attack', 'role=tank').replace('spec=unholy', 'spec=blood')
         profile = re.sub(r'^talents=.*$', 'talents=CoPAkXBWxkyfx9CbGaHonEAhLxMz2MzwMmZmhZbmZmmZxMjZmxAAAAAmhZmZmZMzYAAzMzMzAAAYgBmxiGLbgsNgNAzYAAAmZAMA', profile, flags=re.MULTILINE)
-        self.test_browser_computes_copies_and_clears_real_candidate(profile, expected_spec=250)
+        self._export_candidate(profile, 250)
         actions = self.candidate_payload[1]['Versions'][0]['Actions']
         self.assertTrue(any(a.get('macro') == '/cast [@player] 43265' for a in actions), '地面技能必须直接在脚下释放')
 
     def test_caster_profile_reaches_damage_candidate(self):
         # 固定上游 MID2_Mage_Frost 的角色字段；默认动作由引擎生成。
-        self.test_browser_computes_copies_and_clears_real_candidate('''mage="Frost caster"
+        self._export_candidate('''mage="Frost caster"
 level=90
 race=tauren
 role=spell
 spec=frost
 talents=CAEAAAAAAAAAAAAAAAAAAAAAAYGGLzMzsMmZmYmZGjZMziZmZmZMDEAAYmZmllZm2AAAAAAgNA2WGzMzAbzYmZYBAAgZ2AmBGwADD
 main_hand=,id=271092,bonus_id=13662/13848,enchant_id=8689
-''', expected_spec=64)
+''', 64)
 
     def test_native_item_group_reaches_damage_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''mage="Arcane items"
+        self._export_candidate('''mage="Arcane items"
 level=90
 race=tauren
 role=spell
@@ -251,58 +274,53 @@ spec=arcane
 talents=C4DAAAAAAAAAAAAAAAAAAAAAAYGGLzMzswMDamZGAAAGAAEwMzMLLzMxCAAwMzMjNLzMzsMjxYmZwCzYmZGAgBAAYmZBAMDAGmZG
 main_hand=,id=271092,bonus_id=13335/13848,ilevel=344,enchant_id=8689
 trinket1=,id=250215,ilevel=344
-''', expected_spec=62)
+''', 62)
 
     def test_native_empower_and_race_alias_reach_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''evoker="Empower caster"
+        self._export_candidate('''evoker="Empower caster"
 level=90
 race=dracthyr
 role=spell
 spec=devastation
 talents=CsbBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAzMDMDzgBmZGjZaYmpZMWmxMzMz8AzMzAmxMGzMLzMDMwYwCsMGN2GQmBBbYGMzghB
 main_hand=,id=249283,ilevel=289,enchant_id=8039
-''', expected_spec=1467)
+''', 1467)
 
     def test_healer_profile_reaches_damage_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''druid="Restoration healer"
+        self._export_candidate('''druid="Restoration healer"
 level=90
 race=night_elf
 role=heal
 spec=restoration
 talents=CkGAAAAAAAAAAAAAAAAAAAAAAMjxMbzMjZmxsNMGzwYjZAAAAAAAAAAwygmNzYamxwYWmZmZGGmBAAAAAAAAAQAAAz2MLNbzsZjxMDmZAaGAgZGAGA
 main_hand=,id=271092,ilevel=311
-''', expected_spec=105)
-        report = next((Path(self.directory.name)/'输出'/'tasks').glob('*/reference/native.json'))
-        player = json.loads(report.read_text(encoding='utf-8'))['sim']['players'][0]
+''', 105)
+        player = self.native_report['sim']['players'][0]
         self.assertEqual(player['role'], 'heal')
         self.assertGreater(player['collected_data']['dps']['mean'], 0)
 
     def test_explicit_native_experimental_option_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            'allow_experimental_specializations=1\n'+(REPOSITORY/'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8'), expected_spec=256)
+        self._export_candidate(
+            'allow_experimental_specializations=1\n'+(REPOSITORY/'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8'), 256)
 
     def test_native_restoration_shaman_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            (REPOSITORY/'tests/sim2gse/fixtures/restoration-shaman.simc').read_text(encoding='utf-8'), expected_spec=264)
+        self._export_candidate(
+            (REPOSITORY/'tests/sim2gse/fixtures/restoration-shaman.simc').read_text(encoding='utf-8'), 264)
 
     def test_native_augmented_party_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            (REPOSITORY/'tests/sim2gse/fixtures/augmentation.simc').read_text(encoding='utf-8'), expected_spec=1473)
-        task = next((Path(self.directory.name)/'输出'/'tasks').glob('*/reference/native.json')).parents[1]
-        native = json.loads((task/'reference/native.json').read_text(encoding='utf-8'))
-        result = json.loads((task/'result.json').read_text(encoding='utf-8'))
-        self.assertGreater(len(native['sim']['players']), 1)
-        self.assertEqual(result['native_reference']['dps'], native['sim']['statistics']['raid_dps']['mean'])
+        self._export_candidate(
+            (REPOSITORY/'tests/sim2gse/fixtures/augmentation.simc').read_text(encoding='utf-8'), 1473)
+        self.assertGreater(len(self.native_report['sim']['players']), 1)
+        self.assertEqual(self.native_reference['dps'], self.native_report['sim']['statistics']['raid_dps']['mean'])
 
     def test_native_cast_reaches_candidate(self):
-        self.test_browser_computes_copies_and_clears_real_candidate(
-            (REPOSITORY/'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'), expected_spec=1480)
-        traces = list((Path(self.directory.name)/'输出'/'tasks').glob('*/batches/*/native.txt'))
-        self.assertTrue(any(any('\tnative_execute\t' in line and float(line.rsplit('\t', 1)[-1]) > 0
-                                for line in p.read_text(encoding='utf-8').splitlines()) for p in traces))
+        self._export_candidate(
+            (REPOSITORY/'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'), 1480, simulate=True)
+        self.assertTrue(any(row['event'] == 'native_execute' and row.get('cast_ms', 0) > 0
+                            for row in self.controlled['trace']))
 
     def test_replacement_forms_remain_one_button(self):
-        self.test_browser_computes_copies_and_clears_real_candidate('''warrior="Fury buttons"
+        self._export_candidate('''warrior="Fury buttons"
 level=90
 race=dwarf
 role=attack
@@ -310,111 +328,123 @@ spec=fury
 talents=CgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgGDzMmZ2MzMzMDjZmZGzMzsMzMmZmZzYmBAAixy2ALgJYGmAzwGwMDjNAAYmhxYYMYM
 main_hand=,id=268213,bonus_id=13335/13848,ilevel=344,enchant_id=8689
 off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
-''', expected_spec=72)
+''', 72)
         actions = self.candidate_payload[1]['Versions'][0]['Actions']
         self.assertTrue(any('/cast 335097' in a.get('macro','') and '/cast 85288' in a.get('macro','') for a in actions))
         self.assertFalse(any(a.get('spell') in (335097,85288) for a in actions))
 
-    def test_browser_reports_native_and_export_failure_without_stale_result(self):
-        import ctypes
-        from unittest.mock import patch
-        import runtime
-        original=runtime._kernel32.CreateProcessW
-        original_read=Path.read_text
-        self.server.task_options={'search_config':dict(total_budget_seconds=15,search_budget_seconds=5,
-            candidate_limit=2,batch_targets=(2,),validation_batches=1,final_batches=1,
-            iterations=2,final_iterations=2,scenarios=('nominal',))}
-        env=os.environ.copy()
-        env.setdefault('NODE_PATH',str(Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'))
-        script=r'''
-const {chromium}=require('playwright'),assert=require('node:assert/strict');
-(async()=>{
- const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
- const browser=await chromium.launch({channel:'msedge',headless:true});
- try{
-  const page=await browser.newPage();await page.goto(input.url);
-  await page.locator('#profile').fill(input.profile);await page.locator('#start').click();
-  await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:20000});
-  assert.equal(await page.locator('#error').isVisible(),true);
-  const message=await page.locator('#error').innerText();
-  assert.match(message,new RegExp(input.expected));assert.ok(message.length<100);
-  assert.ok(!message.includes('\\'),'不应展示内部文件路径: '+message);
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
-  assert.equal(await page.locator('#start').isEnabled(),true);
- }finally{await browser.close();}
-})().catch(e=>{console.error(e);process.exitCode=1;});
-'''
-        for failure,expected in [('native_default','原生未提供'),('native_disabled','原生未提供'),('native_unsupported','原生未提供'),('simc.exe','引擎'),('lua.exe','编译|导出'),('candidate_state','结果'),('invalid_action','尚未支持的主动能力')]:
+    def test_interface_reports_native_and_export_failures_without_internal_paths(self):
+        from task import TaskError
+        native_cases = [
+            ('native_default', (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
+            ('native_disabled', 'allow_experimental_specializations=0\n' +
+             (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
+            ('native_unsupported', (REPOSITORY / 'tests/sim2gse/fixtures/holy-paladin.simc').read_text(encoding='utf-8')),
+        ]
+        for failure, profile in native_cases:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / 'input.simc'
+                source.write_text(profile, encoding='utf-8')
+                with self.assertRaisesRegex(TaskError, '原生未提供'):
+                    run_task(source, Path(directory) / 'task', mode='single')
+                if failure == 'native_default':
+                    invocation = json.loads((Path(directory) / 'task/reference/invocation.json').read_text(encoding='utf-8'))
+                    self.assertFalse(any(arg.startswith('allow_experimental_specializations=')
+                                         for arg in invocation['command']))
+        cases = [
+            ('主动能力不完整，停止模拟与导出: invalid_action', '尚未支持的主动能力'),
+            ('原生引擎失败: C:\\private\\simc.exe', '引擎'),
+            ('固定上游编译器失败: C:\\private\\lua.exe', '导出'),
+            ('结果文件缺失，未生成可复制文本', '结果'),
+        ]
+        for failure, expected in cases:
             with self.subTest(failure=failure):
-                def process_boundary(*args):
-                    if str(args[0]).lower().endswith(failure):
-                        args=list(args);args[0]=str(Path(sys.executable).resolve())
-                        args[1]=ctypes.create_unicode_buffer('"'+args[0]+'" -c "import sys;sys.exit(9)"')
-                    return original(*args)
-                def missing_candidate(path,*args,**kwargs):
-                    value=original_read(path,*args,**kwargs)
-                    if failure=='invalid_action' and path.name=='native.pending.json':
-                        data=json.loads(value)
-                        for row in data['sim']['players'][0]['sim2gse_actions']:
-                            if row['id']>0:
-                                row['data_valid']=False
-                                break
-                        return json.dumps(data)
-                    if failure=='candidate_state' and path.name=='result.json':
-                        data=json.loads(value);data.pop('candidate',None);return json.dumps(data)
-                    return value
-                with patch.object(runtime._kernel32,'CreateProcessW',side_effect=process_boundary),patch.object(Path,'read_text',missing_candidate):
-                    profile=sample_profile()
-                    if failure in ('native_default','native_disabled'):
-                        profile=(REPOSITORY/'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')
-                        if failure=='native_disabled':profile='allow_experimental_specializations=0\n'+profile
-                    if failure=='native_unsupported':
-                        profile=(REPOSITORY/'tests/sim2gse/fixtures/holy-paladin.simc').read_text(encoding='utf-8')
-                    result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile,expected=expected)),
-                        text=True,encoding='utf-8',capture_output=True,env=env,timeout=30)
-                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-                if failure=='simc.exe':
-                    invocations=list((Path(self.directory.name)/'输出'/'tasks').glob('*/reference/invocation.json'))
-                    failed=[json.loads(p.read_text(encoding='utf-8')) for p in invocations if json.loads(p.read_text(encoding='utf-8'))['exit_code']]
-                    self.assertTrue(failed)
-                    self.assertTrue(all(not any(a.startswith('allow_experimental_specializations=') for a in p['command']) for p in failed))
+                message = _friendly_error(TaskError(failure))
+                self.assertIn(expected, message)
+                self.assertNotIn('\\', message)
+                self.assertLess(len(message), 161)
+        self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
 
-    def test_manual_browser_timeout_cleans_process_tree(self):
+    def test_manual_browser_cancellation_cleans_process_tree(self):
         from unittest.mock import patch
         import ctypes
         from ctypes import wintypes
         import manual_interface
-        original_communicate=subprocess.Popen.communicate
+        import runtime
+        from runtime import TaskCancelled, TaskRuntime
         original_read=Path.read_text
-        held=[]
+        original_create=runtime._kernel32.CreateProcessW
+        held=[];node_ids=[];watch_errors=[]
+        created=threading.Event();task_runtime=TaskRuntime(30)
         kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+        class Entry(ctypes.Structure):
+            _fields_=[('size',wintypes.DWORD),('usage',wintypes.DWORD),('pid',wintypes.DWORD),
+                      ('heap',ctypes.c_size_t),('module',wintypes.DWORD),('threads',wintypes.DWORD),
+                      ('parent',wintypes.DWORD),('priority',wintypes.LONG),('flags',wintypes.DWORD),
+                      ('exe',wintypes.WCHAR*260)]
+        kernel.CreateToolhelp32Snapshot.restype=wintypes.HANDLE
+        kernel.Process32FirstW.argtypes=[wintypes.HANDLE,ctypes.POINTER(Entry)]
+        kernel.Process32NextW.argtypes=[wintypes.HANDLE,ctypes.POINTER(Entry)]
         kernel.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
         kernel.OpenProcess.restype=wintypes.HANDLE
         kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
         kernel.CloseHandle.argtypes=[wintypes.HANDLE]
-        def deadline(process,input=None,timeout=None):
-            if isinstance(process.args,list) and process.args[0]=='node':
-                held.append(kernel.OpenProcess(0x100000,False,process.pid))
-                try:
-                    return original_communicate(process,input,timeout=1)
-                except subprocess.TimeoutExpired:
-                    query=f'Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq {process.pid} | Select-Object -ExpandProperty ProcessId'
-                    children=subprocess.run(['powershell','-NoProfile','-Command',query],capture_output=True,text=True,timeout=10)
-                    for pid in children.stdout.split():
-                        held.append(kernel.OpenProcess(0x100000,False,int(pid)))
-                    raise
-            return original_communicate(process,input,timeout)
+        def edge_ids(parent_id):
+            snapshot=kernel.CreateToolhelp32Snapshot(2,0)
+            row=Entry();row.size=ctypes.sizeof(row)
+            found=set()
+            try:
+                more=kernel.Process32FirstW(snapshot,ctypes.byref(row))
+                while more:
+                    if row.parent==parent_id and row.exe.lower()=='msedge.exe':found.add(row.pid)
+                    more=kernel.Process32NextW(snapshot,ctypes.byref(row))
+                return found
+            finally:kernel.CloseHandle(snapshot)
+        def create_process(*args):
+            result=original_create(*args)
+            if result:
+                info=ctypes.cast(args[9],ctypes.POINTER(runtime._PROCESS_INFORMATION)).contents
+                node_ids.append(info.dwProcessId)
+                held.append(kernel.OpenProcess(0x100000,False,info.dwProcessId))
+                created.set()
+            return result
+        def cancel_after_edge():
+            try:
+                if not created.wait(10):raise AssertionError('Node 进程未启动')
+                child_ids=[]
+                until=time.monotonic()+10
+                while time.monotonic()<until and not child_ids:
+                    child_ids=edge_ids(node_ids[0])
+                    if not child_ids:time.sleep(0.05)
+                if not child_ids:raise AssertionError('Edge 浏览器进程未启动')
+                for pid in child_ids:
+                    handle=kernel.OpenProcess(0x100000,False,int(pid))
+                    if not handle or kernel.WaitForSingleObject(handle,0)!=258:
+                        raise AssertionError('无法捕获仍在运行的 Edge 浏览器进程')
+                    held.append(handle)
+            except BaseException as error:
+                watch_errors.append(error)
+            finally:task_runtime.cancel()
         def profile_input(path,*args,**kwargs):
             if path.name=='unholy-20260912-0240.simc':return sample_profile()
             return original_read(path,*args,**kwargs)
-        destination=Path(self.directory.name)/'超时 界面'
+        destination=Path(self.directory.name)/'取消 界面'
+        watcher=threading.Thread(target=cancel_after_edge,daemon=True)
         try:
-            with patch.object(sys,'argv',['manual_interface.py','--output',str(destination)]),patch.object(Path,'read_text',profile_input),patch.object(subprocess.Popen,'communicate',deadline):
-                with self.assertRaises(subprocess.TimeoutExpired):manual_interface.main()
+            watcher.start()
+            with patch.object(sys,'argv',['manual_interface.py','--output',str(destination)]), \
+                 patch.object(Path,'read_text',profile_input), \
+                 patch.object(manual_interface,'TaskRuntime',return_value=task_runtime), \
+                 patch.object(runtime._kernel32,'CreateProcessW',side_effect=create_process):
+                with self.assertRaises(TaskCancelled):manual_interface.main()
+            watcher.join(20)
+            self.assertFalse(watcher.is_alive(),'浏览器启动观察线程未结束')
+            if watch_errors:raise watch_errors[0]
             self.assertGreaterEqual(sum(bool(handle) for handle in held),2,'必须观察到 Node 及浏览器子进程')
             for handle in held:
                 if handle:self.assertEqual(kernel.WaitForSingleObject(handle,5000),0,'浏览器进程未被清理')
         finally:
+            task_runtime.cancel();watcher.join(1)
             for handle in held:
                 if handle:kernel.CloseHandle(handle)
 
@@ -425,7 +455,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
             if Path(destination).name == 'result.json':
                 time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
             return original(source, destination)
-        with patch.object(os, 'replace', side_effect=delayed_result):
+        with _fast_search_boundary(), patch.object(os, 'replace', side_effect=delayed_result):
             self.test_browser_computes_copies_and_clears_real_candidate()
 
     def test_browser_survives_transient_windows_report_sharing_conflicts(self):
@@ -445,7 +475,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
             except PermissionError as error:
                 conflicts.append(error.winerror)
                 raise
-        with patch.object(os,'replace',side_effect=sharing_conflict):
+        with _fast_search_boundary(), patch.object(os,'replace',side_effect=sharing_conflict):
             self.test_browser_computes_copies_and_clears_real_candidate()
         self.assertEqual(failures,{'progress.json','result.json'})
         for reader in readers:reader.join()

@@ -9,26 +9,57 @@ import unittest
 import json
 import copy
 from collections import Counter
+from dataclasses import replace
+from unittest.mock import patch
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 
-from task import run_task, TaskError
-from engine import run
-from sequence import compiled_program, evaluate
+from task import run_task, TaskError, parse_character
+from engine import run, reference, inspect
+from codec import export
+from sequence import compiled_program, evaluate, select
 from test_character_export import sample_profile
 
 
 class SequenceSimulationTests(unittest.TestCase):
-    def task(self, program, *, items=False, phase_ms=0):
-        with tempfile.TemporaryDirectory(prefix='序列验证 ') as directory:
-            source = Path(directory) / '角色.simc'
-            text = sample_profile()
-            if items:
-                text = text.replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
-                text = text.replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311')
-            source.write_text(text, encoding='utf-8')
-            return run_task(source, Path(directory) / '任务', program=program, phase_ms=phase_ms, mode='single')
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory(prefix='sim2gse-sequence-shared-')
+        cls.prepared = cls.prepare(sample_profile(), Path(cls.directory.name) / 'default')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    @staticmethod
+    def prepare(text, root):
+        root.mkdir(parents=True, exist_ok=True)
+        source = root / 'input.simc'
+        source.write_text(text, encoding='utf-8')
+        character = parse_character(text)
+        native = reference(source, root / 'reference', character)
+        character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
+        return source, character, native, inspect(native, root / 'capabilities')
+
+    def candidate(self, prepared, program):
+        source, character, native, capabilities = prepared
+        folder = Path(tempfile.mkdtemp(prefix='candidate-', dir=self.directory.name))
+        return export(select(capabilities, program), folder, identity=native['identity']), source, character
+
+    def task(self, program, *, phase_ms=0, iterations=3):
+        candidate, source, character = self.candidate(self.prepared, program)
+        folder = Path(tempfile.mkdtemp(prefix='controlled-', dir=self.directory.name))
+        controlled = evaluate(source, candidate, folder, character=character,
+                              iterations=iterations, input_times=list(range(phase_ms, 180000, 300)))
+        return {'candidate': candidate, 'character': character,
+                'controlled_simulation': controlled}
+
+    def task_entry(self, program):
+        destination = Path(tempfile.mkdtemp(prefix='entry-', dir=self.directory.name)) / 'task'
+        with patch('engine.reference', return_value=self.prepared[2]), \
+                patch('engine.inspect', return_value=self.prepared[3]):
+            return run_task(self.prepared[0], destination, program=program, mode='single')
 
     def test_public_entry_simulates_selected_single_skill(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sim2gse-sequence ") as directory:
@@ -81,12 +112,9 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def test_cooldown_ending_inside_queue_window_executes_from_that_press(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'input.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            result = run_task(source, Path(directory) / 'task', mode='single',
-                              program=[['putrefy']])
-            simulation = evaluate(source, result['candidate'], Path(directory) / 'queue-window',
-                                  character=result['character'], iterations=2,
+            candidate, source, character = self.candidate(self.prepared, [['putrefy']])
+            simulation = evaluate(source, candidate, Path(directory) / 'queue-window',
+                                  character=character, iterations=2,
                                   input_times=[0, 300, 1200, 1500, 29700, 30000])
             events = [e for e in simulation['trace'] if e['action'] == 'putrefy']
             self.assertTrue(any(e['event'] == 'queue' and e['ms'] == 30000
@@ -96,12 +124,12 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def test_press_during_cast_queues_the_ready_button_variant(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'input.simc'
-            source.write_text((REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'),
-                              encoding='utf-8')
-            result = run_task(source, Path(directory) / 'task', mode='single', program=[['consume']])
-            simulation = evaluate(source, result['candidate'], Path(directory) / 'cast-window',
-                                  character=result['character'], iterations=2,
+            prepared = self.prepare(
+                (REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'),
+                Path(directory) / 'prepared')
+            candidate, source, character = self.candidate(prepared, [['consume']])
+            simulation = evaluate(source, candidate, Path(directory) / 'cast-window',
+                                  character=character, iterations=2,
                                   input_times=[0, 100, 200, 300, 400, 1400])
             events = [e for e in simulation['trace'] if e['action'] in ('devour', 'consume')]
             self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'devour'
@@ -113,9 +141,16 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def test_same_block_item_order(self):
         first_actions = []
+        text = sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
+        text = text.replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311')
+        prepared = self.prepare(text, Path(tempfile.mkdtemp(prefix='items-', dir=self.directory.name)))
         for slots in [('trinket1',), ('trinket1', 'trinket2'), ('trinket2', 'trinket1')]:
             program = [[*[f'use_item,slot={s}' for s in slots], 'outbreak']]
-            result = self.task(program, items=True)
+            candidate, source, character = self.candidate(prepared, program)
+            controlled = evaluate(source, candidate,
+                                  Path(tempfile.mkdtemp(prefix='items-controlled-', dir=self.directory.name)),
+                                  character=character, iterations=2)
+            result = {'candidate': candidate, 'controlled_simulation': controlled}
             self.assertEqual(result['controlled_simulation']['blocks'], [['raise_dead'], *program])
             self.assertEqual(result['controlled_simulation']['native_blocks'], [[], *program])
             events = result['controlled_simulation']['trace']
@@ -128,8 +163,8 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def test_phase_reset_and_replay(self):
         program = [['outbreak'], ['scourge_strike']]
-        first = self.task(program, phase_ms=150)['controlled_simulation']
-        second = self.task(program, phase_ms=150)['controlled_simulation']
+        first = self.task(program, phase_ms=150, iterations=100)['controlled_simulation']
+        second = self.task(program, phase_ms=150, iterations=100)['controlled_simulation']
         inputs = [e for e in first['trace'] if e['event'] == 'input']
         self.assertEqual(inputs[0]['ms'], 150)
         self.assertTrue(all(e['step'] == 0 and e['ms'] == 150 for e in inputs if e['origin'] == 1))
@@ -139,27 +174,25 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def test_disabled_controller_matches_original(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'input.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            result = run_task(source, Path(directory) / 'task', program=[['outbreak']], mode='single')
+            candidate, source, character = self.candidate(self.prepared, [['outbreak']])
             run(source, Path(directory) / 'disabled', 'controlled')
-            original = json.loads((Path(directory) / 'task/reference/native.json').read_text(encoding='utf-8'))
+            original = json.loads((Path(self.directory.name) / 'default/reference/native.json').read_text(encoding='utf-8'))
             disabled = json.loads((Path(directory) / 'disabled/native.json').read_text(encoding='utf-8'))
             self.assertEqual(original['sim']['players'], disabled['sim']['players'])
-            altered = copy.deepcopy(result['candidate'])
+            altered = copy.deepcopy(candidate)
             altered['compiled_steps'][altered['precombat_count']]['spell'] = 999999
             with self.assertRaises((ValueError, KeyError)):
                 compiled_program(altered)
             with self.assertRaisesRegex(ValueError, '原版引擎不兼容'):
-                evaluate(source, result['candidate'], Path(directory) / 'wrong', character=result['character'], mode='baseline')
+                evaluate(source, candidate, Path(directory) / 'wrong', character=character, mode='baseline')
 
     def test_two_gcd_commands_rejected_at_task_entry(self):
         with self.assertRaisesRegex(TaskError, '同块多个公共冷却'):
-            self.task([['outbreak', 'scourge_strike']])
+            self.task_entry([['outbreak', 'scourge_strike']])
 
     def test_overlong_compiled_macro_rejected(self):
         with self.assertRaisesRegex(TaskError, '255'):
-            self.task([['dark_transformation'] * 16])
+            self.task_entry([['dark_transformation'] * 16])
 
 
 if __name__ == "__main__":

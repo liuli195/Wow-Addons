@@ -37,9 +37,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            scripts/dev/requirements.txt
+            projects/sim2gse/requirements.txt
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
       - uses: msys2/setup-msys2@v2
         if: steps.changes.outputs.needs-build == 'true'
         id: msys2
@@ -62,14 +68,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $tools = (Get-Content .pr-flow/toolchain.json -Raw | ConvertFrom-Json).tools
+          $development = @($tools.PSObject.Properties.Value | Where-Object mode -eq 'dev')
+          if ($development) {
+            $identity = $development[0]
+            if ($development | Where-Object { $_.sourceRepository -ne $identity.sourceRepository -or $_.sourceCommit -ne $identity.sourceCommit }) {
+              throw 'Development tools must share one recorded source revision'
+            }
+            $source = Join-Path $env:RUNNER_TEMP 'recorded-toolchain'
+            git clone --no-checkout $identity.sourceRepository $source
+            git -C $source checkout --detach $identity.sourceCommit
+          }
           foreach ($name in @('myspec', 'build-and-verify')) {
             $identity = $tools.PSObject.Properties[$name].Value
             if ($identity.mode -eq 'release') {
               npm install --global --ignore-scripts --no-audit --no-fund "$($identity.packageName)@$($identity.packageVersion)"
             } elseif ($identity.mode -eq 'dev') {
-              $source = Join-Path $env:RUNNER_TEMP $name
-              git clone --no-checkout $identity.sourceRepository $source
-              git -C $source checkout --detach $identity.sourceCommit
               $package = python "$source/plugins/tool-lifecycle/pack.py" $name $env:RUNNER_TEMP
               npm install --global --ignore-scripts --no-audit --no-fund $package
             } else {
@@ -85,6 +98,19 @@ jobs:
             .tools/sim2gse-upstream/simc
             .tools/sim2gse/product
           key: sim2gse-${{ runner.os }}-${{ steps.compiler.outputs.sha256 }}-${{ hashFiles('projects/sim2gse/compatibility/lock.json', 'projects/sim2gse/native/patches/**', 'scripts/dev/sim2gse/build.py') }}
+      - name: Restore verification dependencies
+        if: steps.changes.outputs.needs-build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .tools/downloads
+            .tools/luals
+            .tools/lua-5.1.5
+            .tools/wow-api
+            .tools/wow-ui-source
+            .tools/wow-resources
+            .tools/sim2gse-research
+          key: verification-${{ runner.os }}-${{ hashFiles('scripts/dev/setup.ps1', 'scripts/dev/versions.json', 'scripts/dev/requirements.txt', 'projects/sim2gse/requirements.txt', 'package-lock.json') }}
       - name: Prepare pinned tools and API references
         if: steps.changes.outputs.needs-build == 'true'
         shell: pwsh
@@ -112,11 +138,7 @@ jobs:
         shell: pwsh
         env:
           BUILD_AND_VERIFY_PYTHON: ${{ github.workspace }}\.venv\Scripts\python.exe
-        run: |
-          $config = Get-Content .build-and-verify/config.json -Raw | ConvertFrom-Json
-          ($config.verify.checks | Where-Object id -eq 'verify.sim2gse').pytestXdistWorkers = 1
-          $config | ConvertTo-Json -Depth 100 | Set-Content .build-and-verify/config.json
-          build-and-verify verify --project . --full
+        run: build-and-verify verify --project . --full
       - name: Changed-file verification
         if: ${{ !cancelled() && steps.changes.outputs.needs-build != 'true' }}
         shell: pwsh
