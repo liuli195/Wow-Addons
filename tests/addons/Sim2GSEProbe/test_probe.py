@@ -70,8 +70,8 @@ GSE = { SequencesExec = {
 } }
 TESTSEQ = NewFrame("TESTSEQ")
 TESTSEQ.attrs = {
-    type = "spell", spell = 55090, step = 2, iteration = 1,
-    gseclickserial = 1,
+    type = "spell", spell = 55090, step = 1, iteration = 1,
+    gseclickserial = 0,
 }
 TESTSEQ_KD = NewFrame("TESTSEQ_KD")
 TESTSEQ_KD.gseKeyDownRelay = true
@@ -86,9 +86,12 @@ SlashCmdList.SIM2GSEPROBE("start")
 
 now = 10.070
 TESTSEQ_KD.scripts.PreClick(TESTSEQ_KD, "LeftButton", true)
-TESTSEQ.scripts.PreClick(TESTSEQ, "LeftButton", false)
+-- The secure relay advances the executor before the relay's PostClick.
+TESTSEQ.attrs.step = 2
+TESTSEQ.attrs.gseclickserial = 1
 now = 10.071
-TESTSEQ.scripts.PostClick(TESTSEQ, "LeftButton", false)
+assert(TESTSEQ_KD.scripts.PostClick, "keydown relay has no observable completion hook")
+TESTSEQ_KD.scripts.PostClick(TESTSEQ_KD, "LeftButton", true)
 now = 10.072
 eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "Target", "Cast-1", 55090)
 now = 10.090

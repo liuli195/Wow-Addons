@@ -217,6 +217,13 @@ local function CaptureRelay(button)
     relayTimes[(name:gsub("_KD$", ""))] = NowMs()
 end
 
+local function CaptureRelayResult(button)
+    local name = button and button.GetName and SafeCall(button.GetName, button)
+    if type(name) ~= "string" then return end
+    local executor = _G[(name:gsub("_KD$", ""))]
+    if executor then CaptureClick(executor) end
+end
+
 local function HookButtons()
     if InCombatLockdown and InCombatLockdown() then return 0 end
     local count = 0
@@ -233,6 +240,7 @@ local function HookButtons()
         local relay = type(name) == "string" and _G[name .. "_KD"]
         if relay and relay.gseKeyDownRelay == true and relay.HookScript and not hookedRelays[relay] then
             relay:HookScript("PreClick", CaptureRelay)
+            relay:HookScript("PostClick", CaptureRelayResult)
             hookedRelays[relay] = true
         end
         if hookedButtons[button] then count = count + 1 end
