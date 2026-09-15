@@ -15,6 +15,7 @@ local now = 10
 local eventFrame
 local messages = {}
 local gseMessages = {}
+local aceEvent = {}
 local restricted = false
 local secret = {}
 
@@ -58,18 +59,17 @@ function CreateFrame(_, name)
     return frame
 end
 
-SlashCmdList = {}
-GSE = { SequencesExec = {
-    TESTSEQ = { { type = "spell", spell = 55090 }, { type = "spell", spell = 47541 } },
-    FAKE = { { type = "spell", spell = 55090 } },
-} }
-GSE.SequencesExec.LONGSEQ = {}
-for index = 1, 254 do
-    GSE.SequencesExec.LONGSEQ[index] = { type = "spell", spell = 55090 }
-end
-function GSE.RegisterMessage(receiver, message, callback)
+function aceEvent.RegisterMessage(receiver, message, callback)
     gseMessages[message] = callback
 end
+function LibStub(name, silent)
+    if name == "AceEvent-3.0" then return aceEvent end
+    if not silent then error("unknown library") end
+end
+
+SlashCmdList = {}
+-- Current GSE exposes only a compatibility proxy in _G; internals stay private.
+GSE = { RegisterAddon = function() end }
 TESTSEQ = NewFrame("TESTSEQ")
 TESTSEQ.attrs = {
     type = "spell", spell = 55090, step = 1, iteration = 1,
@@ -144,20 +144,25 @@ assert(session.records[7].kind == "stop")
 
 now = 15
 SlashCmdList.SIM2GSEPROBE("start")
-LONGSEQ.attrs.step = 1
-LONGSEQ.attrs.iteration = 2
+LONGSEQ.attrs.step = 253
+LONGSEQ.attrs.iteration = 1
 gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
     SequenceName = "LONGSEQ", ClickSerial = 1,
 })
 LONGSEQ.attrs.step = 1
-LONGSEQ.attrs.iteration = 1
+LONGSEQ.attrs.iteration = 2
 gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
     SequenceName = "LONGSEQ", ClickSerial = 2,
 })
-assert(Sim2GSEProbeDB.session.records[2].submittedIteration == 1)
-assert(Sim2GSEProbeDB.session.records[2].submittedStep == 253)
-assert(Sim2GSEProbeDB.session.records[3].submittedIteration == 2)
-assert(Sim2GSEProbeDB.session.records[3].submittedStep == 1)
+LONGSEQ.attrs.step = 1
+LONGSEQ.attrs.iteration = 1
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "LONGSEQ", ClickSerial = 3,
+})
+assert(Sim2GSEProbeDB.session.records[3].submittedIteration == 1)
+assert(Sim2GSEProbeDB.session.records[3].submittedStep == 253)
+assert(Sim2GSEProbeDB.session.records[4].submittedIteration == 2)
+assert(Sim2GSEProbeDB.session.records[4].submittedStep == 1)
 
 restricted = true
 now = 20

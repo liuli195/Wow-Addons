@@ -4,6 +4,7 @@ local ACTIONS_PER_ITERATION = 253
 local messageReceiver = {}
 local messageRegistered = false
 local messageSerials = {}
+local nextPositions = {}
 local C_CVar = _G.C_CVar
 local C_Spell = _G.C_Spell
 local CreateFrame = _G.CreateFrame
@@ -21,6 +22,15 @@ end
 
 local function GetGSE()
     return rawget(_G, "GSE")
+end
+
+local function GetMessageBus()
+    local gse = GetGSE()
+    if gse and type(gse.RegisterMessage) == "function" then return gse end
+    local libStub = rawget(_G, "LibStub")
+    if not libStub then return nil end
+    local ok, bus = pcall(libStub, "AceEvent-3.0", true)
+    if ok and bus and type(bus.RegisterMessage) == "function" then return bus end
 end
 
 local function SafeScalar(value)
@@ -119,11 +129,11 @@ local function ResolveSpellID(spell)
 end
 
 local function PreviousPosition(sequence, nextStep, nextIteration)
-    if type(sequence) ~= "table" or #sequence == 0
-        or type(nextStep) ~= "number" or type(nextIteration) ~= "number" then
+    if type(nextStep) ~= "number" or type(nextIteration) ~= "number" then
         return nil, nil
     end
     if nextStep > 1 then return nextIteration, nextStep - 1 end
+    if type(sequence) ~= "table" or #sequence == 0 then return nil, nil end
     local iteration = nextIteration - 1
     if iteration < 1 then iteration = math.ceil(#sequence / ACTIONS_PER_ITERATION) end
     return iteration, math.min(
@@ -155,15 +165,18 @@ local function AddRecord(record)
     table.insert(session.records, record)
 end
 
-local function CaptureClick(button, evidence)
+local function CaptureClick(button, sequenceName, evidence)
     local observedAt = NowMs()
-    local sequenceName = button and button.GetName and SafeCall(button.GetName, button)
     local gse = GetGSE()
     local sequence = gse and gse.SequencesExec and gse.SequencesExec[sequenceName]
     local serial = SafeScalar(evidence.ClickSerial)
     local nextStep = ReadAttribute(button, "step")
     local nextIteration = ReadAttribute(button, "iteration") or 1
-    local iteration, step = PreviousPosition(sequence, nextStep, nextIteration)
+    local previous = nextPositions[sequenceName]
+    local iteration, step = previous and previous.iteration, previous and previous.step
+    if not previous then
+        iteration, step = PreviousPosition(sequence, nextStep, nextIteration)
+    end
     local spell = ReadAttribute(button, "spell")
     local spellID = ResolveSpellID(spell)
     local baseSpellID = C_Spell and C_Spell.GetBaseSpell and spellID
@@ -194,6 +207,9 @@ local function CaptureClick(button, evidence)
         runes = ReadRunes(),
         runicPower = ReadRunicPower(),
     })
+    if type(nextStep) == "number" and type(nextIteration) == "number" then
+        nextPositions[sequenceName] = { step = nextStep, iteration = nextIteration }
+    end
 end
 
 local function CaptureGSEMessage(_, payload)
@@ -204,23 +220,16 @@ local function CaptureGSEMessage(_, payload)
     local button = _G[name]
     if not button then return end
     messageSerials[name] = serial
-    CaptureClick(button, payload)
+    CaptureClick(button, name, payload)
 end
 
 local function ConnectGSE()
-    local count = 0
-    local gse = GetGSE()
-    if not messageRegistered and gse and type(gse.RegisterMessage) == "function" then
-        gse.RegisterMessage(messageReceiver, GSE_CLICK_MESSAGE, CaptureGSEMessage)
+    local bus = GetMessageBus()
+    if not messageRegistered and bus then
+        bus.RegisterMessage(messageReceiver, GSE_CLICK_MESSAGE, CaptureGSEMessage)
         messageRegistered = true
     end
-    local sequences = gse and gse.SequencesExec
-    if type(sequences) ~= "table" then return count end
-    for name in pairs(sequences) do
-        local button = type(name) == "string" and _G[name]
-        if button then count = count + 1 end
-    end
-    return count
+    return messageRegistered
 end
 
 local function Print(message)
@@ -229,6 +238,7 @@ end
 
 local function Start()
     messageSerials = {}
+    nextPositions = {}
     ConnectGSE()
     _G.Sim2GSEProbeDB = GetDB() or {}
     local database = GetDB()
@@ -267,13 +277,13 @@ local function Stop()
 end
 
 local function Status()
-    local count = ConnectGSE()
+    ConnectGSE()
     local database = GetDB()
     local session = database and database.session
     local state = session and session.active and "采集中" or "未采集"
     local records = session and session.records and #session.records or 0
     local connection = messageRegistered and "已连接" or "未连接"
-    Print(string.format("%s；GSE 消息%s；发现 %d 个 GSE 按钮；记录 %d 条。", state, connection, count, records))
+    Print(string.format("%s；GSE 消息%s；记录 %d 条。", state, connection, records))
 end
 
 _G.SLASH_SIM2GSEPROBE1 = "/s2gprobe"
