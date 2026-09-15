@@ -63,6 +63,10 @@ GSE = { SequencesExec = {
     TESTSEQ = { { type = "spell", spell = 55090 }, { type = "spell", spell = 47541 } },
     FAKE = { { type = "spell", spell = 55090 } },
 } }
+GSE.SequencesExec.LONGSEQ = {}
+for index = 1, 254 do
+    GSE.SequencesExec.LONGSEQ[index] = { type = "spell", spell = 55090 }
+end
 function GSE.RegisterMessage(receiver, message, callback)
     gseMessages[message] = callback
 end
@@ -72,6 +76,8 @@ TESTSEQ.attrs = {
     gseclickserial = 0,
 }
 FAKE = NewFrame("FAKE")
+LONGSEQ = NewFrame("LONGSEQ")
+LONGSEQ.attrs = { type = "spell", spell = 55090 }
 
 assert(loadfile(source))()
 assert(SLASH_SIM2GSEPROBE1 == "/s2gprobe")
@@ -135,6 +141,23 @@ assert(session.records[4].castGUID == "Cast-1")
 assert(session.records[5].event == "UNIT_SPELLCAST_SUCCEEDED")
 assert(session.records[6].kind == "mark")
 assert(session.records[7].kind == "stop")
+
+now = 15
+SlashCmdList.SIM2GSEPROBE("start")
+LONGSEQ.attrs.step = 1
+LONGSEQ.attrs.iteration = 2
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "LONGSEQ", ClickSerial = 1,
+})
+LONGSEQ.attrs.step = 1
+LONGSEQ.attrs.iteration = 1
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "LONGSEQ", ClickSerial = 2,
+})
+assert(Sim2GSEProbeDB.session.records[2].submittedIteration == 1)
+assert(Sim2GSEProbeDB.session.records[2].submittedStep == 253)
+assert(Sim2GSEProbeDB.session.records[3].submittedIteration == 2)
+assert(Sim2GSEProbeDB.session.records[3].submittedStep == 1)
 
 restricted = true
 now = 20

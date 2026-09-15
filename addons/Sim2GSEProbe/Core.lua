@@ -1,5 +1,6 @@
 local PREFIX = "|cff58c7ffSim2GSEProbe:|r "
 local GSE_CLICK_MESSAGE = "GSE_MODS_VISIBLE"
+local ACTIONS_PER_ITERATION = 253
 local messageReceiver = {}
 local messageRegistered = false
 local messageSerials = {}
@@ -124,8 +125,11 @@ local function PreviousPosition(sequence, nextStep, nextIteration)
     end
     if nextStep > 1 then return nextIteration, nextStep - 1 end
     local iteration = nextIteration - 1
-    if iteration < 1 then iteration = math.ceil(#sequence / 253) end
-    return iteration, math.min(253, #sequence - (iteration - 1) * 253)
+    if iteration < 1 then iteration = math.ceil(#sequence / ACTIONS_PER_ITERATION) end
+    return iteration, math.min(
+        ACTIONS_PER_ITERATION,
+        #sequence - (iteration - 1) * ACTIONS_PER_ITERATION
+    )
 end
 
 local function Environment()
