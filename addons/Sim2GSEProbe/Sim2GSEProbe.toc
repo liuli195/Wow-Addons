@@ -3,6 +3,6 @@
 ## Notes: Records real GSE input timing and player spellcast events for offline analysis.
 ## OptionalDeps: GSE, GSE_Utils
 ## SavedVariables: Sim2GSEProbeDB
-## Version: 0.1.0
+## Version: 0.1.1
 
 Core.lua
