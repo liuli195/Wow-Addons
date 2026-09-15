@@ -227,6 +227,10 @@ local function HookButtons()
     if type(sequences) ~= "table" then return count end
     for name in pairs(sequences) do
         local button = type(name) == "string" and _G[name]
+        local serial = ReadAttribute(button, "gseclickserial")
+        if button and type(serial) == "number" and updateSerials[button] == nil then
+            updateSerials[button] = serial
+        end
         if button and type(button.UpdateIcon) == "function" and not hookedUpdates[button] then
             hooksecurefunc(button, "UpdateIcon", CaptureUpdate)
             hookedUpdates[button] = true
@@ -250,9 +254,9 @@ local function Print(message)
 end
 
 local function Start()
-    HookButtons()
     relayTimes = {}
     updateSerials = {}
+    HookButtons()
     _G.Sim2GSEProbeDB = GetDB() or {}
     local database = GetDB()
     database.schema = 1

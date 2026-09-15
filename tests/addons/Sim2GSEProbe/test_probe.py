@@ -90,6 +90,8 @@ assert(SLASH_SIM2GSEPROBE1 == "/s2gprobe")
 eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
 assert(FAKE_KD.scripts.PreClick == nil)
 SlashCmdList.SIM2GSEPROBE("start")
+TESTSEQ:UpdateIcon(false)
+assert(#Sim2GSEProbeDB.session.records == 1, "unchanged icon refresh was recorded as a click")
 
 now = 10.070
 TESTSEQ_KD.scripts.PreClick(TESTSEQ_KD, "LeftButton", true)
@@ -98,6 +100,8 @@ TESTSEQ.attrs.step = 2
 TESTSEQ.attrs.gseclickserial = 1
 now = 10.071
 TESTSEQ:UpdateIcon(false)
+TESTSEQ:UpdateIcon(false)
+assert(#Sim2GSEProbeDB.session.records == 2, "duplicate icon refresh was recorded as another click")
 now = 10.072
 eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "Target", "Cast-1", 55090)
 now = 10.090
