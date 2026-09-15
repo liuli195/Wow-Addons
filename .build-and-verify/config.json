@@ -87,6 +87,59 @@
         ]
       },
       {
+        "id": "verify.sim2gse-probe-luals",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals --source addons/Sim2GSEProbe",
+        "checkParallel": true,
+        "paths": [
+          "addons/Sim2GSEProbe/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json",
+          ".luarc.json"
+        ],
+        "inputs": [
+          "addons/Sim2GSEProbe/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json",
+          ".luarc.json"
+        ]
+      },
+      {
+        "id": "verify.sim2gse-probe-luacheck",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luacheck --source addons/Sim2GSEProbe",
+        "checkParallel": true,
+        "paths": [
+          "addons/Sim2GSEProbe/**",
+          "scripts/dev/check.py",
+          ".build-and-verify/config.json",
+          ".luacheckrc"
+        ],
+        "inputs": [
+          "addons/Sim2GSEProbe/**",
+          "scripts/dev/check.py",
+          ".build-and-verify/config.json",
+          ".luacheckrc"
+        ]
+      },
+      {
+        "id": "verify.sim2gse-probe-toc",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py toc --source addons/Sim2GSEProbe",
+        "checkParallel": true,
+        "paths": [
+          "addons/Sim2GSEProbe/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json"
+        ],
+        "inputs": [
+          "addons/Sim2GSEProbe/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json"
+        ]
+      },
+      {
         "id": "verify.assets",
         "command": ".venv\\Scripts\\python.exe scripts/media/verify.py",
         "checkParallel": true,
@@ -174,6 +227,7 @@
         "pytestXdistWorkers": 8,
         "paths": [
           "projects/sim2gse/**",
+          "addons/Sim2GSEProbe/**",
           "scripts/dev/sim2gse/**",
           ".build-and-verify/config.json",
           "tests/sim2gse/**",
@@ -183,6 +237,7 @@
         ],
         "inputs": [
           "projects/sim2gse/**",
+          "addons/Sim2GSEProbe/**",
           "scripts/dev/sim2gse/**",
           ".build-and-verify/config.json",
           ".tools/sim2gse/product/baseline/engine/simc.exe",

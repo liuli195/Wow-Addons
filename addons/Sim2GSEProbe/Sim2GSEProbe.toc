@@ -1,0 +1,8 @@
+## Interface: 120100
+## Title: Sim2GSE Timing Probe
+## Notes: Records real GSE input timing and player spellcast events for offline analysis.
+## OptionalDeps: GSE, GSE_Utils
+## SavedVariables: Sim2GSEProbeDB
+## Version: 0.1.0
+
+Core.lua
