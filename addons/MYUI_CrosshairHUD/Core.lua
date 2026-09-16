@@ -191,13 +191,13 @@ end
 --------------------------------------------------------------------------
 
 -- 填充色交给配置层解析（职业配色取不到时它自己回落到自定义色）。
--- 背景**没有**职业色这一说，直接用存下来的自定义色。
+-- 背景的来源固定是职业色，同样走配置层的回落。
 local function FillColor(elementConfig)
     return Config.ResolveFill(elementConfig)
 end
 
 local function BgColor(elementConfig)
-    return elementConfig.bg
+    return Config.ResolveBg(elementConfig)
 end
 
 -- rotation 可能是秘密值：本函数只转交，不检查

@@ -196,11 +196,16 @@ Near(Config.ResolveFill(element)[1], element.fill[1], "资源色取不到就回�
 resourceThrows = false
 
 ----------------------------------------------------------------------
--- 填充与背景互不影响：背景**没有**第二种来源
+-- 背景的第二种来源**固定是职业色**（与 EUI 自己的"职业着色背景"一致），
+-- 不像填充那样按元素换成能量色／职业资源色
 ----------------------------------------------------------------------
+element.fillMode = "power"
+element.bgMode = "class"
+Near(Config.ResolveBg(element)[1], 0.11, "背景选职业时应取职业色（不是能量色）")
+Near(Config.ResolveFill(element)[1], 0.31, "同一时刻填充仍按它自己的来源取")
+element.bgMode = "custom"
+Near(Config.ResolveBg(element)[1], element.bg[1], "背景选自定义时取自定义色")
 element.fillMode = "class"
-Near(Config.ResolveFill(element)[1], 0.11, "填充应是职业色")
-assert(element.bgMode == nil, "背景不该有第二种来源这一项")
 
 ----------------------------------------------------------------------
 -- 二、**实机那个 bug**：EUI 缓存吃不了秘密令牌，抛错后必须退回 Blizzard 的接口
@@ -310,7 +315,8 @@ assert(defaults.health.fillAlpha ~= nil and defaults.health.bgAlpha ~= nil,
 assert(defaults.crosshair.fillAlpha ~= nil and defaults.crosshair.bgAlpha == nil,
     "准星是线，没有背景透明度")
 assert(defaults.health.alpha == nil, "单一的 alpha 键必须已经去掉")
-assert(defaults.health.bgMode == nil, "背景没有职业色来源，不该有这个键")
+assert(defaults.health.bgMode ~= nil and defaults.crosshair.bgMode == nil,
+    "背景要有自己的来源（职业色）；准星没有背景，也就不该有它的来源")
 
 io.write("PASS: config color and alpha\n")
 '''
