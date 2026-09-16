@@ -218,6 +218,40 @@ for _, arc in ipairs({ Logic.ARCS.health, Logic.ARCS.power }) do
     end
 end
 
+----------------------------------------------------------------------
+-- 假数据的两个比例：**方向必须与真实行为一致**
+--
+-- demo 是"没有战斗时检查外观"的唯一手段（`/chh demo`）。方向演反了，看的人会得出
+-- 与真实相反的结论——实机上已经因此误判过一次（"血条默认是空的、能量条不填充"，
+-- 其实是 demo 在演反）。生命值满血起、逐步掉；能量空起、逐步涨。
+----------------------------------------------------------------------
+assert(type(Logic.DemoFills) == "function", "需要 Logic.DemoFills 这个出口函数")
+
+local h0, p0 = Logic.DemoFills(0)
+assert(h0 == 1, "假数据的生命值从满开始，实得 " .. tostring(h0))
+assert(p0 == 0, "假数据的能量从空开始，实得 " .. tostring(p0))
+
+local hh, pp = Logic.DemoFills(0.5)
+assert(math.abs(hh - 0.5) < 1e-9, "半程时生命值应到一半")
+assert(math.abs(pp - 0.5) < 1e-9, "半程时能量应到一半")
+
+local h1, p1 = Logic.DemoFills(1)
+assert(h1 == 0, "走完一轮后生命值见底")
+assert(p1 == 1, "走完一轮后能量充满")
+
+-- 单调：生命值只降不升、能量只升不降（反向演示会在这里露馅）
+local lastH, lastP = Logic.DemoFills(0)
+for i = 1, 20 do
+    local h, p = Logic.DemoFills(i / 20)
+    assert(h <= lastH + 1e-9, "生命值必须单调下降")
+    assert(p >= lastP - 1e-9, "能量必须单调上升")
+    lastH, lastP = h, p
+end
+
+-- 越界钳位：轮次回绕不该算出负数或超过 1
+assert(Logic.DemoFills(-0.5) == 1, "t 为负应钳到 0 那一刻")
+assert(Logic.DemoFills(1.5) == 0, "t 超过 1 应钳到 1 那一刻")
+
 io.write("PASS: logic seam (", checked, " 个弧上采样点逐点核对)\n")
 '''
 

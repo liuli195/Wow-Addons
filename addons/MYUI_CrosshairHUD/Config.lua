@@ -80,6 +80,8 @@ local STRATA_VALUES = {
     _noLoc = true,
 }
 local STRATA_ORDER = { "LOW", "MEDIUM", "HIGH", "DIALOG" }
+-- 导出给测试：键必须是魔兽认的层级名，测试就是盯这个的
+Config.STRATA_VALUES, Config.STRATA_ORDER = STRATA_VALUES, STRATA_ORDER
 
 -- 整体缩放的取值范围。配置页的滑块与解锁模式齿轮面板里的宽度／高度共用这一份，
 -- 两条入口改的是同一个值，不许各存一份。
@@ -228,6 +230,37 @@ Config.FILL_SOURCE = {
 function Config.SourceFor(elementKey, slot)
     if slot ~= "fill" then return nil end
     return Config.FILL_SOURCE[elementKey]
+end
+
+--- 页面上的格子清单。**每项只占半格**：页面按顺序两格一行渲染，末行不足则右边留空
+--- ——不是把空位挪到某一行、也不是为了填满而移动配置项。
+---
+--- 这条规则在实机里来回漂过五次，所以它必须是**数据**而不是散在页面里的判断：
+--- test_config_plan.py 直接断言这份清单。
+---
+--- 每格：
+---   { kind = "toggle", text, key }
+---   { kind = "color",  text, colorKey, alphaKey, modeKey, source }
+--- `source` 非空表示这格有第二个色块（来源色）；背景恒为 nil。
+--- 颜色格的 alphaKey 是**它自己**的透明度——颜色与滑块同格，不能分家。
+function Config.CellPlan(elementKey)
+    local plan = {
+        { kind = "toggle", text = "启用", key = "enabled" },
+        {
+            kind = "color", text = "填充颜色",
+            colorKey = "fill", alphaKey = "fillAlpha", modeKey = "fillMode",
+            source = Config.SourceFor(elementKey, "fill"),
+        },
+    }
+    -- 准星是线不是块：没有背景，也就没有这一格
+    if elementKey ~= "crosshair" then
+        plan[3] = {
+            kind = "color", text = "条背景",
+            colorKey = "bg", alphaKey = "bgAlpha",
+            source = Config.SourceFor(elementKey, "bg"),
+        }
+    end
+    return plan
 end
 
 -- 供页面显示第二个色块用（返回散开的通道，取不到什么都不返回）
@@ -387,6 +420,25 @@ function Config.BuildPage(_, parent, yOffset)
         return list
     end
 
+    -- 照清单把一格翻译成 EUI 的 slot 配置。排版与内容都在清单里，这里只做翻译。
+    local function CellSlot(element, cell, grayed)
+        if cell.kind == "toggle" then
+            return { type = "toggle", text = cell.text,
+                getValue = function() return element[cell.key] ~= false end,
+                setValue = function(value) element[cell.key] = value; refresh() end,
+                -- 总开关关掉时子开关置灰不可点
+                disabled = function() return Config.Get().enabled == false end }
+        end
+        -- 颜色格：滑块是**这一格自己的**透明度，色块随后内联挂在它左侧
+        return { type = "slider", text = cell.text, min = 0, max = 100, step = 1,
+            getValue = function() return (element[cell.alphaKey] or 1) * 100 end,
+            setValue = function(value)
+                element[cell.alphaKey] = value / 100
+                refresh()
+            end,
+            disabled = grayed }
+    end
+
     local _, h = W:SectionHeader(parent, "常规", y)
     y = y - h
 
@@ -433,56 +485,32 @@ function Config.BuildPage(_, parent, yOffset)
 
         -- 每项按顺序占半格，成对成行，**末行右边留空**——不为了填满而挪动配置项。
         -- 颜色那两格是 slider + 内联色块：色块与它自己的透明度滑块同处一格。
-        local cells = {
-            { cfg = { type = "toggle", text = "启用",
-                getValue = function() return element.enabled ~= false end,
-                setValue = function(value) element.enabled = value; refresh() end,
-                -- 总开关关掉时子开关置灰不可点
-                disabled = function() return Config.Get().enabled == false end } },
-            { cfg = { type = "slider", text = "填充颜色", min = 0, max = 100, step = 1,
-                getValue = function() return (element.fillAlpha or 1) * 100 end,
-                setValue = function(value)
-                    element.fillAlpha = value / 100
-                    refresh()
-                end,
-                disabled = grayed },
-              specs = CellSwatches(element, "fill", "fillMode",
-                  Config.SourceFor(key, "fill")) },
-        }
-        if key ~= "crosshair" then
-            cells[3] = {
-                cfg = { type = "slider", text = "条背景", min = 0, max = 100, step = 1,
-                    getValue = function() return (element.bgAlpha or 1) * 100 end,
-                    setValue = function(value)
-                        element.bgAlpha = value / 100
-                        refresh()
-                    end,
-                    disabled = grayed },
-                -- 背景**没有第二个色块**（规则见 Config.SourceFor 与它的回归测试）
-                specs = CellSwatches(element, "bg"),
-            }
-        end
-
+        -- 页面只是照 Config.CellPlan 渲染：**排版规则不在这里**。
+        -- 每项一格、两格一行、末行不足则右边留空——那是清单本身决定的。
+        local plan = Config.CellPlan(key)
         local index = 1
-        while cells[index] do
-            local left = cells[index]
-            local right = cells[index + 1]
+        while plan[index] do
+            local left, right = plan[index], plan[index + 1]
             local row
-            row, h = W:DualRow(parent, y, left.cfg,
-                right and right.cfg or { type = "spacer" })
+            row, h = W:DualRow(parent, y, CellSlot(element, left, grayed),
+                right and CellSlot(element, right, grayed) or { type = "spacer" })
             y = y - h
 
             if not EUI._prebuilding and EUI.BuildColorSwatch then
                 local leftRgn = row and row._leftRegion
-                if left.specs and leftRgn then
-                    for i = #left.specs, 1, -1 do
-                        AttachSwatch(leftRgn, left.specs[i], grayed, Changed)
+                if left.kind == "color" and leftRgn then
+                    local specs = CellSwatches(element, left.colorKey, left.modeKey,
+                        left.source)
+                    for i = #specs, 1, -1 do
+                        AttachSwatch(leftRgn, specs[i], grayed, Changed)
                     end
                 end
                 local rightRgn = row and row._rightRegion
-                if right and right.specs and rightRgn then
-                    for i = #right.specs, 1, -1 do
-                        AttachSwatch(rightRgn, right.specs[i], grayed, Changed)
+                if right and right.kind == "color" and rightRgn then
+                    local specs = CellSwatches(element, right.colorKey, right.modeKey,
+                        right.source)
+                    for i = #specs, 1, -1 do
+                        AttachSwatch(rightRgn, specs[i], grayed, Changed)
                     end
                 end
             end

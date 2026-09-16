@@ -264,12 +264,13 @@ local function DemoState()
 
     local elements = Config.Get().elements
     local state = {}
-    -- 方向必须与真实行为一致，否则拿它检查外观会得出相反的结论：
-    -- 血条满血起、逐步掉；符能空起、逐步涨。
+    -- 方向由 Logic.DemoFills 定（满血起掉、空起涨），那里有测试守着：
+    -- 方向演反了，拿它检查外观会得出与真实相反的结论。
+    local healthFill, powerFill = Logic.DemoFills(demoFill)
     state.health = ElementState(elements.health,
-        ArcRotation(Logic.ARCS.health, 1 - demoFill), true)
+        ArcRotation(Logic.ARCS.health, healthFill), true)
     state.power = ElementState(elements.power,
-        ArcRotation(Logic.ARCS.power, demoFill), true)
+        ArcRotation(Logic.ARCS.power, powerFill), true)
     state.runes = {}
     for slot = 1, Logic.PIPS.count do
         local fill = 1.8 * demoFill - (slot - 1) * 0.16
