@@ -118,8 +118,11 @@ _G.EllesmereUI = {
         if powerThrows then error("no power color") end
         return powerColor
     end,
-    GetClassResourceColor = function(token)
-        assert(token == DK, "职业资源色按职业令牌取，实得 " .. tostring(token))
+    -- 色表按**资源名**取（DK 是 Runes），资源名由职业推——不是拿职业令牌当键。
+    -- 传职业令牌查不到，页面上那个色块会画成黑。
+    CLASS_RESOURCE_MAP = { DEATHKNIGHT = "Runes" },
+    GetClassResourceColor = function(key)
+        assert(key == "Runes", "职业资源色要按资源名取，实得 " .. tostring(key))
         if resourceThrows then error("no resource color") end
         return resourceColor
     end,

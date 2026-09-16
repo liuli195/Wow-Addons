@@ -217,8 +217,12 @@ local function SourceColor(source)
     end
 
     if source == "resource" then
-        if not EUI.GetClassResourceColor then return nil end
-        local ok, color = pcall(EUI.GetClassResourceColor, classFile)
+        -- 色表按**资源名**取（DK 是 "Runes"），资源名由职业推——不是拿职业令牌当键。
+        -- 传职业令牌查不到，色块会画成黑。
+        local map = EUI.CLASS_RESOURCE_MAP
+        local okKey, resourceKey = pcall(function() return map and map[classFile] end)
+        if not (okKey and resourceKey and EUI.GetClassResourceColor) then return nil end
+        local ok, color = pcall(EUI.GetClassResourceColor, resourceKey)
         return ok and Channels(color) or nil
     end
 
@@ -333,6 +337,9 @@ function Config.BuildPage(_, parent, yOffset)
                 return
             end
             local mode = elementConfig.fillMode or "custom"
+            -- 这个职业没有对应的源色（比如表格里没登记的职业）时，把那个色块收起来，
+            -- 而不是留一个取不到色、画成黑的方块
+            sourceSwatch:SetShown(Config.SourceColor(source.mode) ~= nil)
             custom:SetAlpha(grayed and 0.3 or (mode == "custom" and 1 or 0.3))
             sourceSwatch:SetAlpha(grayed and 0.3 or (mode == source.mode and 1 or 0.3))
         end
