@@ -73,3 +73,15 @@ Blocked by（前置事项）: 无
 附带确认：用户随后指出发布口径问题（上传一个项目还是两个），已查实并记入[实施计划](../crosshair-hud/plan.md)的 `.toc` 契约——**一个项目、发布包装多个文件夹、项目 ID 只写核心插件**。该环节属方案的"范围外"，不影响本票结论。
 
 **本票完成**：离线验收 + 实机验收均通过。
+
+### 2026-09-16 补记：门禁一的固定基线（当时漏记）
+
+实施阶段跑正式验证与独立审查时需要"固定基线"，回头找记录才发现门禁一当时**没有把它写下来**。按 `dev-flow` 的约定与仓库既有 change 的记法（`sim2gse-implementation` 记的是"干净起点及固定基线"），固定基线就是**本分支的干净起点**：
+
+- 工作树：`D:/My Project/Wow Addons`
+- 功能分支：`codex/research/crosshair-hud`
+- 固定基线：`f6544d27a16caabb4f652a392320752390a6b107`
+  —— 分支最早提交 `3b7af36`（docs: chart crosshair hud wayfinder map）的父提交，与 `main` 的 merge-base 一致。
+- 正式验证：`build-and-verify verify --project . --base f6544d27…` → `status: passed`，`checked` 33 项（fast 模式）。
+
+**教训**：固定基线属于门禁一必须明确的项（`requirements.md` 第 6 条），当时漏了，导致实施中途要回头补。以后门禁一就把它连同工作树与分支一起记进 01 号票据。
