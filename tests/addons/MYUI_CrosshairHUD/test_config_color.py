@@ -141,24 +141,14 @@ Near(c[1], 0.11, "第一级：EUI 缓存的色应优先"); Near(c[2], 0.22, "g")
 assert(unitClassCalls == 0, "有 EUI 缓存的类名令牌时，不该再去现读 UnitClass")
 
 ----------------------------------------------------------------------
--- 背景有**自己的**来源：bgMode 是 class 时取职业色，否则取自定义背景色
+-- 填充与背景互不影响：背景**没有**职业色这一说
 --
--- 页面上的两个色块（自定义／职业）对填充和背景各有一组，所以判定也必须分开。
+-- 只有填充有"自定义／职业"两种来源；背景就是自定义色一种。填充选了职业色之后，
+-- 背景必须原样不动。
 ----------------------------------------------------------------------
-element.bgMode = "class"
-c = Config.ResolveBg(element)
-Near(c[1], 0.11, "背景选职业时应取职业色")
-
-element.bgMode = "custom"
-c = Config.ResolveBg(element)
-Near(c[1], element.bg[1], "背景选自定义时应取自定义背景色")
-Near(c[2], element.bg[2], "g"); Near(c[3], element.bg[3], "b")
-
--- 填充与背景互不影响
 element.fillMode = "class"
-element.bgMode = "custom"
-Near(Config.ResolveFill(element)[1], 0.11, "填充仍应是职业色")
-Near(Config.ResolveBg(element)[1], element.bg[1], "背景仍应是自定义色")
+Near(Config.ResolveFill(element)[1], 0.11, "填充应是职业色")
+assert(element.bgMode == nil, "背景不该有职业色来源这一项")
 
 ----------------------------------------------------------------------
 -- 二、**实机那个 bug**：EUI 缓存吃不了秘密令牌，抛错后必须退回 Blizzard 的接口
@@ -268,8 +258,7 @@ assert(defaults.health.fillAlpha ~= nil and defaults.health.bgAlpha ~= nil,
 assert(defaults.crosshair.fillAlpha ~= nil and defaults.crosshair.bgAlpha == nil,
     "准星是线，没有背景透明度")
 assert(defaults.health.alpha == nil, "单一的 alpha 键必须已经去掉")
-assert(defaults.health.bgMode ~= nil and defaults.crosshair.bgMode == nil,
-    "背景要有自己的来源；准星没有背景，也就不该有它的来源")
+assert(defaults.health.bgMode == nil, "背景没有职业色来源，不该有这个键")
 
 io.write("PASS: config color and alpha\n")
 '''

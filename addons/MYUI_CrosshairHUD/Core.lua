@@ -190,13 +190,14 @@ end
 -- 显示状态表
 --------------------------------------------------------------------------
 
--- 填充色与背景色的来源都交给配置层解析（职业配色取不到时它自己回落到自定义色）
+-- 填充色交给配置层解析（职业配色取不到时它自己回落到自定义色）。
+-- 背景**没有**职业色这一说，直接用存下来的自定义色。
 local function FillColor(elementConfig)
     return Config.ResolveFill(elementConfig)
 end
 
 local function BgColor(elementConfig)
-    return Config.ResolveBg(elementConfig)
+    return elementConfig.bg
 end
 
 -- rotation 可能是秘密值：本函数只转交，不检查

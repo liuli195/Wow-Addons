@@ -34,7 +34,6 @@ Config.DEFAULTS = {
             fillMode = "custom",    -- "custom" | "class"（职业配色）
             fill = { 0.851, 0.506, 0.553 },   -- #D9818D
             fillAlpha = 1,
-            bgMode = "custom",
             bg   = { 0.208, 0.165, 0.188 },   -- #352A30
             bgAlpha = 1,
         },
@@ -43,7 +42,6 @@ Config.DEFAULTS = {
             fillMode = "custom",
             fill = { 0.498, 0.686, 0.796 },   -- #7FAFCB
             fillAlpha = 1,
-            bgMode = "custom",
             bg   = { 0.161, 0.212, 0.251 },   -- #293640
             bgAlpha = 1,
         },
@@ -52,7 +50,6 @@ Config.DEFAULTS = {
             fillMode = "custom",
             fill = { 0.855, 0.839, 0.796 },   -- #DAD6CB
             fillAlpha = 1,
-            bgMode = "custom",
             bg   = { 0.384, 0.396, 0.408 },   -- #626568
             bgAlpha = 1,
         },
@@ -192,21 +189,13 @@ local function ClassColor()
 end
 
 -- 「职业配色」取不到时**回落到自定义色**，而不是画成黑色或什么都不画。
--- 填充与背景各自有来源（`fillMode` / `bgMode`），共用这一段判定。
-function Config.ResolveColor(mode, customRGB)
-    if mode == "class" then
+-- 只有**填充**有职业色这一说：背景就是自定义色，不给它第二种来源。
+function Config.ResolveFill(elementConfig)
+    if elementConfig.fillMode == "class" then
         local color = ClassColor()
         if color then return color end
     end
-    return customRGB
-end
-
-function Config.ResolveFill(elementConfig)
-    return Config.ResolveColor(elementConfig.fillMode, elementConfig.fill)
-end
-
-function Config.ResolveBg(elementConfig)
-    return Config.ResolveColor(elementConfig.bgMode, elementConfig.bg)
+    return elementConfig.fill
 end
 
 --------------------------------------------------------------------------
@@ -242,46 +231,67 @@ function Config.BuildPage(_, parent, yOffset)
         if Apply then Apply() end
     end
 
-    -- 一行「标签 + 色块 + 透明度滑块」。
+    -- 一行「标签 | 色块 + 透明度滑块」。
     --
-    -- 两个色块就是**自定义颜色**与**职业颜色**：点哪个用哪个，未选中的那个压到 0.3
-    -- 表示当前没在用它；而"已经在自定义上时再点一次才开取色器"是 EUI 全局的色块
-    -- 约定（BuildTrioColorSwatch 的注释写死的），不是我们发明的交互。
-    -- 三元组还会返回一个「默认色」色块——本插件没有"默认色"这个概念，建完就隐藏。
-    local function ColorRow(text, elementKey, elementConfig, modeKey, colorKey, alphaKey)
+    -- **左右分栏**：左半是标签，右半是控件——与 EUI 自己的行一致，不做通栏。
+    -- 色块用 EUI 公开的 BuildTrioColorSwatch：**自定义在左、职业在右**，点哪个用哪个；
+    -- 未选中的那个由它自己压到 0.3（白边框随之变暗），这就是选中态。只有填充有职业色，
+    -- 背景就是自定义色一种。三元组还会返回一个「默认色」色块，本插件没有这个概念，
+    -- 建完即隐藏。
+    local function ColorRow(text, elementKey, elementConfig, modeKey, colorKey, alphaKey,
+        withClass)
         local row, height = W:DualRow(parent, y,
-            { type = "slider", text = text, min = 0, max = 100, step = 1,
+            { type = "label", text = text },
+            -- 右半的滑块不写字：每个分区都会自带一个 14px 标签，留空才不重复。
+            -- 留空而不是省略 text——省略会走到 L(nil) 上去。
+            { type = "slider", text = "", min = 0, max = 100, step = 1,
               getValue = function() return (elementConfig[alphaKey] or 1) * 100 end,
               setValue = function(value)
                   elementConfig[alphaKey] = value / 100
                   refresh()
-              end },
-            { type = "spacer" })
+              end })
         y = y - height
 
         -- 预建阶段不创建任何内联控件
         if EUI._prebuilding then return end
-        local rgn = row._leftRegion
+        local rgn = row._rightRegion
         local ctrl = rgn and rgn._control
         if not (ctrl and EUI.BuildTrioColorSwatch) then return end
 
+        -- 选中态是 EUI 那个 Update() 画的，而它挂在控件刷新列表上：**onChange 里
+        -- 必须叫一次 RefreshPage**——只调自己的刷新，选择态会一直停在初始值。
+        local function changed()
+            refresh()
+            if EUI.RefreshPage then EUI:RefreshPage() end
+        end
+
         local custom, default, class = EUI.BuildTrioColorSwatch(
             rgn, rgn:GetFrameLevel() + 5, {
-                getMode = function() return elementConfig[modeKey] or "custom" end,
-                setMode = function(mode) elementConfig[modeKey] = mode end,
+                getMode = function()
+                    return (modeKey and elementConfig[modeKey]) or "custom"
+                end,
+                setMode = function(mode)
+                    if modeKey then elementConfig[modeKey] = mode end
+                end,
                 getCustomRGB = function()
                     local c = elementConfig[colorKey]
                     return c[1], c[2], c[3]
                 end,
                 setCustomRGB = function(r, g, b) elementConfig[colorKey] = { r, g, b } end,
-                hasClassColor = true,
-                onChange = refresh,
+                hasClassColor = withClass == true,
+                onChange = changed,
                 disabled = function() return Config.Grayed(elementKey) end,
                 overrideSize = 20,
             })
         if default then default:Hide() end
-        if custom then custom:SetPoint("RIGHT", ctrl, "LEFT", -10, 0) end
-        if class and custom then class:SetPoint("RIGHT", custom, "LEFT", -8, 0) end
+
+        -- 自右向左挂，于是视觉上自定义在左、职业在右
+        local anchor = ctrl
+        if class then
+            class:SetPoint("RIGHT", anchor, "LEFT", -10, 0)
+            anchor = class
+        end
+        if custom then custom:SetPoint("RIGHT", anchor, "LEFT", -8, 0) end
     end
 
     local _, h = W:SectionHeader(parent, "常规", y)
@@ -325,11 +335,12 @@ function Config.BuildPage(_, parent, yOffset)
             function() return Config.Grayed(key) end)
         y = y - h
 
-        ColorRow("填充色", key, element, "fillMode", "fill", "fillAlpha")
+        -- 填充：自定义 + 职业两个色块
+        ColorRow("填充色", key, element, "fillMode", "fill", "fillAlpha", true)
 
-        -- 准星是线不是块：**没有背景色**
+        -- 准星是线不是块：**没有背景色**。背景也没有职业色，只有自定义一种。
         if key ~= "crosshair" then
-            ColorRow("条背景", key, element, "bgMode", "bg", "bgAlpha")
+            ColorRow("条背景", key, element, nil, "bg", "bgAlpha", false)
         end
     end
 
