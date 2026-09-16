@@ -563,8 +563,13 @@ end
 --------------------------------------------------------------------------
 -- EUI 挂载（票据 07）
 --
--- 侧边栏读三张挂在 EllesmereUI 命名空间上的普通表；文件夹名没有前缀要求。
--- 注入必须早于用户首次打开 EUI 面板——行只在首次建面板时创建。
+-- 侧边栏**行**由核心 MYUI 登记（见 MYUI/Series.lua）：行必须在册，而本插件被
+-- 行上的电源按钮禁用后下次重载就不再加载，自己写不回去。这里只登记**页面**与
+-- 解锁元素——它们本来就只在本插件加载时存在，被禁用时点开那一行自然没有页面，
+-- 与 EUI 自家被禁用的模块行为一致。
+--
+-- EUI 的官方入口 `EllesmereUI:RegisterModule` 有一张只含自家目录名的白名单，
+-- 第三方调用会被**静默拒绝**，所以模块表只能直接写。
 --------------------------------------------------------------------------
 
 local UNLOCK_KEY = "MYUI_CrosshairHUD"
@@ -637,29 +642,6 @@ local function RegisterUnlockElement()
     }, ADDON)
 end
 
-local function InjectSidebar()
-    local api = EUIAPI()
-    if not (api and api._modules and api._addonInfoByFolder and api.ADDON_GROUPS) then
-        return false
-    end
-    if api._addonInfoByFolder[ADDON] then return true end   -- 幂等
-
-    -- 不设 alwaysLoaded：本插件是真插件，保留行右边的电源按钮
-    api._addonInfoByFolder[ADDON] = { folder = ADDON, display = "Crosshair HUD" }
-    if api._syncExempt then api._syncExempt[ADDON] = true end
-
-    local group
-    for _, candidate in ipairs(api.ADDON_GROUPS) do
-        if candidate.key == "myui" then group = candidate break end
-    end
-    if not group then
-        group = { key = "myui", label = "MYUI", members = {} }
-        api.ADDON_GROUPS[#api.ADDON_GROUPS + 1] = group
-    end
-    group.members[#group.members + 1] = ADDON
-    return true
-end
-
 local function RegisterModule()
     local api = EUIAPI()
     if not (api and api._modules) then return end
@@ -682,7 +664,12 @@ local function RegisterModule()
 end
 
 function NS.Mount()
-    InjectSidebar()
+    -- 侧边栏那一行由核心 MYUI 登记：核心不会被行上的电源按钮禁用，所以行一直在册，
+    -- 本插件被禁用后只会置灰、还能点回来。这里再调一次是幂等兜底，防的是核心的
+    -- PLAYER_LOGIN 处理恰好排在本函数之后。
+    local core = rawget(_G, "MYUI")
+    if core and core.InjectSidebar then core.InjectSidebar() end
+
     RegisterModule()
     RegisterUnlockElement()
 end
