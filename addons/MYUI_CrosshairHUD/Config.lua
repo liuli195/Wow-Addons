@@ -162,42 +162,19 @@ local function PlayerClass()
     return nil
 end
 
--- 职业色的取值链。**这里差点做错**：EUI 自己的颜色缓存以**类名令牌为键**，而
--- UnitClass 在受限上下文里会交回秘密令牌——秘密值不能当表键，查表会直接出错，
--- 于是静默回落到默认色，表现就是"选了职业配色但毫无变化"。
--- （EUI 源码对这种情况留了原话：退回 C_ClassColor.GetClassColor(secretToken)，
---   "right class, but Blizzard's default shade instead of the user's"。）
---
--- 所以顺序是：先用 EUI 的缓存（能反映用户在 EUI 里改过的职业色），它吃不了秘密
--- 令牌就退回 Blizzard 自己的接口——那个能吃秘密令牌，代价只是拿不到用户改过的色。
--- "取不到"是缺陷，"不是自定义的那个色"只是次要诉求。
+-- 职业色**只认 EUI 的接口**。职业色／能量色／职业资源色都由 EUI 统一管理，
+-- 本插件不能打破这一条：**不许退回暴雪自己的色表**（`C_ClassColor`／
+-- `RAID_CLASS_COLORS`）——那是暴雪默认色，不是用户在 EUI 里配的色，混着用会让同一套
+-- 界面里出现两套职业色。取不到就返回 nil，由调用方回落到自定义色。
 local function ClassColor()
     local EUI = rawget(_G, "EllesmereUI")
     local classFile = PlayerClass()
-    if classFile == nil then return nil end
+    if not (EUI and EUI.GetClassColor and classFile) then return nil end
 
-    if EUI and EUI.GetClassColor then
-        local ok, color = pcall(EUI.GetClassColor, classFile)
-        local channels = ok and Channels(color)
-        if channels then return channels end
-    end
-
-    local api = _G.C_ClassColor
-    if api and api.GetClassColor then
-        local ok, color = pcall(api.GetClassColor, classFile)
-        local channels = ok and Channels(color)
-        if channels then return channels end
-    end
-
-    -- 老牌全局色表（现代客户端上可能已不存在）。用 rawget 取，与取 EllesmereUI 同一写法。
-    local palette = rawget(_G, "RAID_CLASS_COLORS")
-    if palette then
-        local ok, entry = pcall(function() return palette[classFile] end)
-        local channels = ok and Channels(entry)
-        if channels then return channels end
-    end
-
-    return nil
+    -- 取色本身也要 pcall：EUI 的颜色缓存以类名令牌为键，而 UnitClass 在受限上下文里
+    -- 可能交回秘密令牌——秘密值不能当表键，查表会直接抛错。
+    local ok, color = pcall(EUI.GetClassColor, classFile)
+    return ok and Channels(color) or nil
 end
 
 --- 第二种来源的取色。**三个来源在 EUI 里都有现成接口，本插件不自己定色**：

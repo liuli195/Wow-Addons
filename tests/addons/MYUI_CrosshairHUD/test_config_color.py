@@ -2,11 +2,12 @@
 
 两件事，各锁一个已经出过问题的地方：
 
-1. **职业色的取值链。** 实机现象是"选了职业配色但毫无变化"。根因是 EUI 的颜色缓存
-   **以类名令牌为键**，而 `UnitClass` 在受限上下文里交回的是**秘密令牌**——秘密值
-   不能当表键，查表直接抛错，于是静默回落到自定义色。修法是补齐取值链，并接受
-   "退回 Blizzard 接口拿不到用户自定义的色"这个次要损失。这里逐一断言链条的每一级，
-   包括"全都不可用时必须回落到自定义色，绝不能是 nil"。
+1. **颜色只从 EUI 取。** 职业色／能量色／职业资源色都由 EUI 统一管理，本插件不能
+   打破这一条。实机上曾经"选了职业配色但毫无变化"，根因是 EUI 的颜色缓存**以类名
+   令牌为键**，而 `UnitClass` 在受限上下文里可能交回**秘密令牌**——秘密值不能当表键，
+   查表抛错，于是静默回落到自定义色。现在整条路径都 pcall，且**绝不退回暴雪的色表**
+   （`C_ClassColor`／`RAID_CLASS_COLORS`）——那会拿到暴雪默认色而不是用户在 EUI 里
+   配的色。取不到就回落到自定义色，绝不能是 nil 或黑；这条用探针钉死。
 
 2. **填充与背景的透明度是两个值。** 合成一个就只能整条一起淡化。断言在渲染层的
    公开入口（`Elements.Apply`）上做——那里是这套契约最高的接缝：喂一张状态表进去，
@@ -95,11 +96,9 @@ function UnitHealthPercent(_, _, curve) return curve:Evaluate(1) end
 function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(1) end
 
 ----------------------------------------------------------------------
--- 颜色取值链的三级来源，测试逐个开关
+-- 色源开关。**只有 EUI 一个来源**——暴雪的色表在测试里被探针盯着，碰一下就报错。
 ----------------------------------------------------------------------
 local euiColor, euiThrows = nil, false
-local blizzardColor, blizzardThrows = nil, false
-local raidColors = nil
 
 local DK = "DEATHKNIGHT"
 local powerColor, powerThrows = nil, false
@@ -208,21 +207,27 @@ Near(Config.ResolveBg(element)[1], element.bg[1], "背景选自定义时取自�
 element.fillMode = "class"
 
 ----------------------------------------------------------------------
--- 二、**实机那个 bug**：EUI 缓存吃不了秘密令牌，抛错后必须退回 Blizzard 的接口
+-- 二、**只能认 EUI**：EUI 取不到就回落自定义色，绝不退回暴雪的色表
 --
--- Blizzard 的 C_ClassColor.GetClassColor 能直接吃秘密令牌，代价是拿不到用户改过
--- 的色。"取不到"是缺陷，"不是自定义的那个色"只是次要诉求。
+-- 职业色／能量色／职业资源色都由 EUI 统一管理。退回 C_ClassColor 或
+-- RAID_CLASS_COLORS 会拿到暴雪默认色——不是用户在 EUI 里配的那个——同一套界面里
+-- 就会冒出两套职业色。这条用一个探针把"绝不碰暴雪色表"钉死。
 ----------------------------------------------------------------------
+local blizzardTouched = false
+_G.C_ClassColor = {
+    GetClassColor = function()
+        blizzardTouched = true
+        return { r = 0.77, g = 0.12, b = 0.23 }
+    end,
+}
+_G.RAID_CLASS_COLORS = setmetatable({}, {
+    __index = function() blizzardTouched = true; return { r = 0.1, g = 0.2, b = 0.3 } end,
+})
+
 euiThrows = true
-_G.C_ClassColor = { GetClassColor = function(token)
-    assert(token == DK, "类名令牌要原样传下去")
-    if blizzardThrows then error("nope") end
-    return blizzardColor
-end }
-blizzardColor = { r = 0.77, g = 0.12, b = 0.23 }
 c = Config.ResolveFill(element)
-Near(c[1], 0.77, "第二级：EUI 缓存失效时必须退回 C_ClassColor")
-Near(c[2], 0.12, "g"); Near(c[3], 0.23, "b")
+Near(c[1], element.fill[1], "EUI 取不到时回落到自定义色")
+assert(not blizzardTouched, "绝不退回暴雪的色表：那些色不是用户在 EUI 里配的")
 
 ----------------------------------------------------------------------
 -- 三、颜色通道本身可能是秘密值：必须原封不动地转交
@@ -230,30 +235,18 @@ Near(c[2], 0.12, "g"); Near(c[3], 0.23, "b")
 -- 用数值哨兵：任何算术都会改变它，所以"原封不动"等价于"没运算过"。
 -- 也要能通过校验——校验只许用 type，不许真值判断。
 ----------------------------------------------------------------------
-blizzardColor = { r = secretNumber, g = secretNumber, b = secretNumber }
+euiThrows = false
+euiColor = { r = secretNumber, g = secretNumber, b = secretNumber }
 c = Config.ResolveFill(element)
 assert(c[1] == secretNumber and c[2] == secretNumber and c[3] == secretNumber,
     "秘密通道必须原样转交，实得 " .. tostring(c[1]))
+euiColor = { r = 0.11, g = 0.22, b = 0.33 }
 
 ----------------------------------------------------------------------
--- 四、Blizzard 接口也拿不到时，退回老牌全局色表
+-- 四、（已并入二）不退回暴雪色表
 ----------------------------------------------------------------------
-blizzardThrows = true
-_G.RAID_CLASS_COLORS = { DEATHKNIGHT = { r = 0.9, g = 0.1, b = 0.2 } }
-c = Config.ResolveFill(element)
-Near(c[1], 0.9, "第三级：全局色表")
 
-----------------------------------------------------------------------
--- 五、全都不可用：必须回落到自定义色，**绝不能是 nil 或黑**
-----------------------------------------------------------------------
-_G.RAID_CLASS_COLORS = nil
-_G.C_ClassColor = nil
-c = Config.ResolveFill(element)
-assert(type(c) == "table" and type(c[1]) == "number" and type(c[2]) == "number"
-    and type(c[3]) == "number", "取不到职业色时必须回落到自定义色，不能是 nil")
-Near(c[1], element.fill[1], "回落色应是自定义色")
 
-----------------------------------------------------------------------
 -- 六、填充与背景的透明度是两个值
 --
 -- 在渲染层的公开入口上断言：喂一张状态表，看两个纹理各自收到哪个 alpha。
