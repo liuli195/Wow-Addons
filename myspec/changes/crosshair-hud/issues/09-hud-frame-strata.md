@@ -2,8 +2,8 @@
 
 Label（标签）: wayfinder:grilling
 Triage（分拣）: ready-for-human
-Status（状态）: open
-Assignee（领取者）: unassigned
+Status（状态）: closed
+Assignee（领取者）: Codex（主代理）
 Mode（方式）: HITL（与用户共同决策）
 Parent（所属地图）: [Crosshair HUD（准星 HUD，EllesmereUI 扩展插件）实施地图](../spec.md)
 Blocked by（前置事项）: 无
@@ -57,4 +57,14 @@ BACKGROUND < LOW < MEDIUM < HIGH < DIALOG < FULLSCREEN < FULLSCREEN_DIALOG < TOO
 
 ## Comments（讨论）
 
-尚未领取；结论在本节追加，不提前填入答案。
+### 2026-09-16 用户决议
+
+用户明确答复：**选 (b)**——层级做成配置项，默认 `MEDIUM`。
+
+**结论**：
+
+- 默认 `MEDIUM`；下拉项提供层级选择（至少覆盖 `LOW` / `MEDIUM` / `HIGH` / `DIALOG`，具体选项集在方案里定）。
+- 理由：与 EUI 自家资源条的做法一致；层级属于"装上去看一眼才知道对不对"的参数，留开关比写死省事。
+- 配置项总数由 19 变为 **20**（`MYUI_CrosshairHUD` 的配置规格表已相应更新——见[方案计划成文](07-plan-writeup.md)的输入）。
+
+**实施提示**：同一层级内部的前后关系由 `SetFrameLevel` 决定，与层级是两个维度；本 HUD 在所选层级内取正常序号即可，只有与 EUI 元素在同层重叠时才需按实测微调。
