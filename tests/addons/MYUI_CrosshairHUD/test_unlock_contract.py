@@ -150,6 +150,16 @@ assert(elem.label == DISPLAY_NAME,
 ----------------------------------------------------------------------
 assert(elem.noResize == nil, "不许设 noResize：它会连齿轮里的 X/Y 输入一起藏掉")
 
+-- **自作定位的元素必须声明 noInitHook**
+--
+-- EUI 在尺寸变化（NotifyElementResized）与初始化时，会**用他自己的换算**把存下来的
+-- CENTER 位置重新贴一遍（EUI_UnlockMode.lua:1630 的 ApplyCenterPosition）。而本插件的
+-- 位置由自己管——应用时要按缩放做除法、还要做像素吸附——那一次重贴会把框贴到别处。
+-- 实机现象：齿轮里 X/Y 显示 0,0，框却明显不在 0,0；改宽度/高度时"啪"地跳走。
+-- 声明 noInitHook 后，EUI 改为回调我们自己的 applyPosition，两边就不会各贴一次。
+assert(elem.noInitHook == true,
+    "自作定位的元素必须设 noInitHook，否则改尺寸时位置会被 EUI 重贴到别处")
+
 -- 于是必须给出尺寸语义，否则宽度/高度那两行改不动任何东西
 assert(type(elem.setWidth) == "function", "要能承接齿轮里的宽度")
 assert(type(elem.setHeight) == "function", "要能承接齿轮里的高度")

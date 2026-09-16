@@ -711,6 +711,12 @@ local function RegisterUnlockElement()
             applyPos = function() ApplyPosition() end,
             -- 主开关关闭 → 报告隐藏 → 每次同步都会收起 mover，不留可拖动空框
             isHidden = Core.IsHidden,
+            -- **自作定位，必须声明**：否则尺寸变化（NotifyElementResized）与初始化时，
+            -- EUI 会用他自己的换算把存下来的 CENTER 位置重贴一遍
+            -- （EUI_UnlockMode.lua:1630 的 ApplyCenterPosition），把框贴到别处——
+            -- 实机现象就是"X/Y 显示 0,0，框却不在 0,0；改宽度/高度时啪地跳走"。
+            -- 设了它，EUI 改为回调下面这个 applyPos，两边不再各贴一次。
+            noInitHook = true,
             -- **不要设 noResize**：EUI 把齿轮面板里的宽度/高度/X/Y 几行全放在
             -- `if canResize and elem then` 块里，设了它就等于把 X/Y 输入也一起藏掉。
             -- 本元素的"尺寸"就是整体缩放，交给下面两个 setter 承接。
