@@ -140,6 +140,59 @@
         ]
       },
       {
+        "id": "verify.crosshairhud-proto-luals",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals --source addons/CrosshairHUDProto",
+        "checkParallel": true,
+        "paths": [
+          "addons/CrosshairHUDProto/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json",
+          ".luarc.json"
+        ],
+        "inputs": [
+          "addons/CrosshairHUDProto/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json",
+          ".luarc.json"
+        ]
+      },
+      {
+        "id": "verify.crosshairhud-proto-luacheck",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luacheck --source addons/CrosshairHUDProto",
+        "checkParallel": true,
+        "paths": [
+          "addons/CrosshairHUDProto/**",
+          "scripts/dev/check.py",
+          ".build-and-verify/config.json",
+          ".luacheckrc"
+        ],
+        "inputs": [
+          "addons/CrosshairHUDProto/**",
+          "scripts/dev/check.py",
+          ".build-and-verify/config.json",
+          ".luacheckrc"
+        ]
+      },
+      {
+        "id": "verify.crosshairhud-proto-toc",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py toc --source addons/CrosshairHUDProto",
+        "checkParallel": true,
+        "paths": [
+          "addons/CrosshairHUDProto/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json"
+        ],
+        "inputs": [
+          "addons/CrosshairHUDProto/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json"
+        ]
+      },
+      {
         "id": "verify.sim2gse-probe-test",
         "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/Sim2GSEProbe/test_probe.py",
         "checkParallel": true,
