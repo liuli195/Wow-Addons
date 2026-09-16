@@ -164,12 +164,18 @@ local function ApplyFillable(part, st)
         return
     end
 
-    local bg = st.bgColor
-    part.bg:SetVertexColor(bg[1], bg[2], bg[3], st.bgAlpha or 1)
+    -- 颜色通道可能是秘密值，也可能取不到。整次设置是 pcalled 的：取不到就保留
+    -- 上一次的颜色，绝不因为一个坏色值把每帧的渲染打断。
+    pcall(function()
+        local bg = st.bgColor
+        part.bg:SetVertexColor(bg[1], bg[2], bg[3], st.bgAlpha or 1)
+    end)
 
     if showFill then
-        local fc = st.fillColor
-        part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+        pcall(function()
+            local fc = st.fillColor
+            part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+        end)
         -- rotation 可能是秘密值：只能原样交给 setter
         part.mask:SetRotation(st.rotation)
     end
@@ -201,7 +207,9 @@ function Elements.Apply(state)
     local ch = state.crosshair
     if ch then
         parts.crosshair:SetShown(ch.visible ~= false)
-        local fc = ch.fillColor
-        parts.crosshair:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
+        pcall(function()
+            local fc = ch.fillColor
+            parts.crosshair:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
+        end)
     end
 end

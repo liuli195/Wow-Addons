@@ -25,6 +25,7 @@ local GetTime = _G.GetTime
 local InCombatLockdown = _G.InCombatLockdown
 local SlashCmdList = assert(rawget(_G, "SlashCmdList"))
 local UIParent = _G.UIParent
+local UnitClass = _G.UnitClass
 local UnitHealth = _G.UnitHealth
 local UnitHealthMax = _G.UnitHealthMax
 local UnitHealthPercent = _G.UnitHealthPercent
@@ -189,9 +190,13 @@ end
 -- 显示状态表
 --------------------------------------------------------------------------
 
--- 填充色的来源交给配置层解析（职业配色取不到时它自己回落到自定义色）
+-- 填充色与背景色的来源都交给配置层解析（职业配色取不到时它自己回落到自定义色）
 local function FillColor(elementConfig)
     return Config.ResolveFill(elementConfig)
+end
+
+local function BgColor(elementConfig)
+    return Config.ResolveBg(elementConfig)
 end
 
 -- rotation 可能是秘密值：本函数只转交，不检查
@@ -203,7 +208,7 @@ local function ElementState(elementConfig, rotation, hasRotation, runeState)
         state = runeState,
         fillColor = FillColor(elementConfig),
         fillAlpha = elementConfig.fillAlpha or 1,
-        bgColor = elementConfig.bg,
+        bgColor = BgColor(elementConfig),
         bgAlpha = elementConfig.bgAlpha or 1,
     }
 end
@@ -510,6 +515,57 @@ local function Probe(label, call)
         label, #results - 1, type(value), verdict, tostring(arithOk)))
 end
 
+-- 职业色取值链的探针：只报**类型与成败**，绝不打印颜色本身（通道可能是秘密值）。
+local function ColorSource(label, call)
+    local results = { pcall(call) }
+    if not results[1] then
+        print("  " .. label .. "：调用抛错 → " .. tostring(results[2]))
+        return
+    end
+    local color = results[2]
+    local channels = "-"
+    if type(color) == "table" then
+        local ok, r, g, b = pcall(function() return color.r, color.g, color.b end)
+        channels = ok
+            and (type(r) .. "/" .. type(g) .. "/" .. type(b))
+            or ("读通道抛错 → " .. tostring(r))
+    end
+    local detector = rawget(_G, "issecretvalue")
+    local secret = "无检测函数"
+    if detector then
+        local ok, value = pcall(detector, color)
+        secret = ok and tostring(value) or ("抛错 → " .. tostring(value))
+    end
+    print(string.format("  %s：type=%s 通道=%s issecretvalue=%s",
+        label, type(color), channels, secret))
+end
+
+local function ReportClassColor()
+    print("  职业色取值链：")
+    local ok, _, classFile = pcall(UnitClass, "player")
+    print("  UnitClass：调用成功=" .. tostring(ok) .. "  类名令牌可读="
+        .. tostring(classFile ~= nil))
+    if not (ok and classFile) then return end
+
+    local api = rawget(_G, "C_ClassColor")
+    local EUI = rawget(_G, "EllesmereUI")
+    print("  接口：C_ClassColor=" .. Presence(api ~= nil)
+        .. "  EUI 缓存令牌=" .. Presence(EUI and EUI._playerClass ~= nil)
+        .. "  EUI.GetClassColor=" .. Presence(EUI and EUI.GetClassColor ~= nil)
+        .. "  RAID_CLASS_COLORS=" .. Presence(rawget(_G, "RAID_CLASS_COLORS") ~= nil))
+
+    if EUI and EUI.GetClassColor then
+        ColorSource("第一级 EUI 缓存", function() return EUI.GetClassColor(classFile) end)
+    end
+    if api and api.GetClassColor then
+        ColorSource("第二级 C_ClassColor", function() return api.GetClassColor(classFile) end)
+    end
+    local palette = rawget(_G, "RAID_CLASS_COLORS")
+    if palette then
+        ColorSource("第三级 全局色表", function() return palette[classFile] end)
+    end
+end
+
 local function Report()
     local cfg = Config.Get()
     print("|cff9fd4ff" .. ADDON .. "|r 诊断：")
@@ -539,6 +595,7 @@ local function Report()
         Probe("UnitPowerMax", function() return UnitPowerMax("player", powerType) end)
     end
     Probe("GetRuneCooldown(1)", function() return GetRuneCooldown(1) end)
+    ReportClassColor()
     if InCombatLockdown and InCombatLockdown() then
         print("  （战斗中）")
     end

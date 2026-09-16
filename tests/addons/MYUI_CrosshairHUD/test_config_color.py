@@ -101,15 +101,19 @@ local euiColor, euiThrows = nil, false
 local blizzardColor, blizzardThrows = nil, false
 local raidColors = nil
 
+local DK = "DEATHKNIGHT"
 _G.EllesmereUI = {
-    GetClassColor = function()
+    -- EUI 加载时就缓存好的类名令牌，优先于现读 UnitClass
+    _playerClass = DK,
+    GetClassColor = function(token)
+        assert(token == DK, "取职业色要拿 EUI 缓存的令牌，实得 " .. tostring(token))
         if euiThrows then error("table index is nil") end   -- 秘密令牌当表键就是这个错
         return euiColor
     end,
 }
 
-local DK = "DEATHKNIGHT"
-function UnitClass() return "Death Knight", DK, 6 end
+local unitClassCalls = 0
+function UnitClass() unitClassCalls = unitClassCalls + 1; return "Death Knight", DK, 6 end
 
 for _, name in ipairs({ "Logic", "Elements", "Config", "Core" }) do
     assert(loadfile(dir .. "/" .. name .. ".lua"))()
@@ -134,6 +138,27 @@ element.fillMode = "class"
 euiColor = { r = 0.11, g = 0.22, b = 0.33 }
 local c = Config.ResolveFill(element)
 Near(c[1], 0.11, "第一级：EUI 缓存的色应优先"); Near(c[2], 0.22, "g"); Near(c[3], 0.33, "b")
+assert(unitClassCalls == 0, "有 EUI 缓存的类名令牌时，不该再去现读 UnitClass")
+
+----------------------------------------------------------------------
+-- 背景有**自己的**来源：bgMode 是 class 时取职业色，否则取自定义背景色
+--
+-- 页面上的两个色块（自定义／职业）对填充和背景各有一组，所以判定也必须分开。
+----------------------------------------------------------------------
+element.bgMode = "class"
+c = Config.ResolveBg(element)
+Near(c[1], 0.11, "背景选职业时应取职业色")
+
+element.bgMode = "custom"
+c = Config.ResolveBg(element)
+Near(c[1], element.bg[1], "背景选自定义时应取自定义背景色")
+Near(c[2], element.bg[2], "g"); Near(c[3], element.bg[3], "b")
+
+-- 填充与背景互不影响
+element.fillMode = "class"
+element.bgMode = "custom"
+Near(Config.ResolveFill(element)[1], 0.11, "填充仍应是职业色")
+Near(Config.ResolveBg(element)[1], element.bg[1], "背景仍应是自定义色")
 
 ----------------------------------------------------------------------
 -- 二、**实机那个 bug**：EUI 缓存吃不了秘密令牌，抛错后必须退回 Blizzard 的接口
@@ -219,6 +244,22 @@ assert(crosshair and crosshair.vertex, "准星要收到顶点色")
 Near(crosshair.vertex[4], 0.25, "准星用的是 fillAlpha")
 
 ----------------------------------------------------------------------
+-- 颜色对象取不出通道时：不许抛错，也不许把上一次的颜色弄没
+--
+-- 渲染侧整次 SetVertexColor 是 pcalled 的——防的就是一个坏色值把每帧的渲染打断。
+----------------------------------------------------------------------
+local beforeBg = healthBg.vertex[1]
+local ok = pcall(Elements.Apply, {
+    health = { visible = true, rotation = 1, hasRotation = true,
+               fillColor = {}, fillAlpha = 0.4,      -- 通道读不出来
+               bgColor = { 0.5, 0.6, 0.7 }, bgAlpha = 0.8 },
+    runes = {},
+    crosshair = { visible = true, fillColor = { 1, 1, 1 }, fillAlpha = 0.25 },
+})
+assert(ok, "颜色取不出来时不许抛错")
+Near(healthBg.vertex[1], beforeBg, "取不出来时应保留上一次的颜色")
+
+----------------------------------------------------------------------
 -- 七、默认值：两个 alpha 都在，且旧数据里的单一 alpha 不会把新键顶掉
 ----------------------------------------------------------------------
 local defaults = Config.DEFAULTS.elements
@@ -227,6 +268,8 @@ assert(defaults.health.fillAlpha ~= nil and defaults.health.bgAlpha ~= nil,
 assert(defaults.crosshair.fillAlpha ~= nil and defaults.crosshair.bgAlpha == nil,
     "准星是线，没有背景透明度")
 assert(defaults.health.alpha == nil, "单一的 alpha 键必须已经去掉")
+assert(defaults.health.bgMode ~= nil and defaults.crosshair.bgMode == nil,
+    "背景要有自己的来源；准星没有背景，也就不该有它的来源")
 
 io.write("PASS: config color and alpha\n")
 '''

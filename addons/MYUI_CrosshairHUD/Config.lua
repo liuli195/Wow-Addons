@@ -34,6 +34,7 @@ Config.DEFAULTS = {
             fillMode = "custom",    -- "custom" | "class"（职业配色）
             fill = { 0.851, 0.506, 0.553 },   -- #D9818D
             fillAlpha = 1,
+            bgMode = "custom",
             bg   = { 0.208, 0.165, 0.188 },   -- #352A30
             bgAlpha = 1,
         },
@@ -42,6 +43,7 @@ Config.DEFAULTS = {
             fillMode = "custom",
             fill = { 0.498, 0.686, 0.796 },   -- #7FAFCB
             fillAlpha = 1,
+            bgMode = "custom",
             bg   = { 0.161, 0.212, 0.251 },   -- #293640
             bgAlpha = 1,
         },
@@ -50,6 +52,7 @@ Config.DEFAULTS = {
             fillMode = "custom",
             fill = { 0.855, 0.839, 0.796 },   -- #DAD6CB
             fillAlpha = 1,
+            bgMode = "custom",
             bg   = { 0.384, 0.396, 0.408 },   -- #626568
             bgAlpha = 1,
         },
@@ -70,7 +73,13 @@ Config.ELEMENT_LABELS = {
     health = "血弧", power = "符能弧", runes = "符文格", crosshair = "准星",
 }
 
-local STRATA_VALUES = { "LOW", "MEDIUM", "HIGH", "DIALOG" }
+-- 与填充色来源同理：values 是映射表 + 显式 order。传数组时 EUI 会用 pairs 自己
+-- 拼顺序，每次建页的排列都可能不同。
+local STRATA_VALUES = {
+    LOW = "LOW", MEDIUM = "MEDIUM", HIGH = "HIGH", DIALOG = "DIALOG",
+    _noLoc = true,
+}
+local STRATA_ORDER = { "LOW", "MEDIUM", "HIGH", "DIALOG" }
 
 -- 整体缩放的取值范围。配置页的滑块与解锁模式齿轮面板里的宽度／高度共用这一份，
 -- 两条入口改的是同一个值，不许各存一份。
@@ -125,17 +134,16 @@ end
 --------------------------------------------------------------------------
 
 -- 取出三个通道。**只搬位置，不读值**：受限上下文里这些通道本身可能就是秘密值，
--- 只许原样交给 SetVertexColor，绝不比较、绝不运算。校验一律用 type 与 pcall，
--- 连"是不是 nil"都不用真值判断去测。
+-- 只许原样交给 SetVertexColor。
+--
+-- 校验**只到"容器是不是颜色对象"为止，绝不去判断通道**——初版对通道做了
+-- `type(...) ~= "number"` 的检查，那正是把整条取值链判死的地方：判断在秘密值上
+-- 未必成立，判错就等于三级全部作废、静默回落到自定义色。通道取不到时由渲染侧
+-- 兜底（那边整次 SetVertexColor 是 pcalled 的，取不到就保留上一次的颜色）。
 local function Channels(color)
-    local ok, r, g, b = pcall(function()
-        if type(color) ~= "table" then error("不是颜色对象") end
-        return color.r, color.g, color.b
-    end)
+    if type(color) ~= "table" then return nil end
+    local ok, r, g, b = pcall(function() return color.r, color.g, color.b end)
     if not ok then return nil end
-    if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
-        return nil
-    end
     return { r, g, b }
 end
 
@@ -149,14 +157,16 @@ end
 -- 令牌就退回 Blizzard 自己的接口——那个能吃秘密令牌，代价只是拿不到用户改过的色。
 -- "取不到"是缺陷，"不是自定义的那个色"只是次要诉求。
 local function ClassColor()
-    local classFile
-    if UnitClass then
+    -- 优先用 EUI 自己缓存的类名令牌（`_playerClass`）：它加载时就取好了，
+    -- 不受之后上下文变化影响，EUI 自家的色块也是用它取职业色的。
+    local EUI = rawget(_G, "EllesmereUI")
+    local classFile = EUI and EUI._playerClass or nil
+    if classFile == nil and UnitClass then
         local ok, _, file = pcall(UnitClass, "player")
         if ok then classFile = file end
     end
     if classFile == nil then return nil end
 
-    local EUI = rawget(_G, "EllesmereUI")
     if EUI and EUI.GetClassColor then
         local ok, color = pcall(EUI.GetClassColor, classFile)
         local channels = ok and Channels(color)
@@ -181,13 +191,22 @@ local function ClassColor()
     return nil
 end
 
--- 「职业配色」取不到时**回落到自定义色**，而不是画成黑色或什么都不画
-function Config.ResolveFill(elementConfig)
-    if elementConfig.fillMode == "class" then
+-- 「职业配色」取不到时**回落到自定义色**，而不是画成黑色或什么都不画。
+-- 填充与背景各自有来源（`fillMode` / `bgMode`），共用这一段判定。
+function Config.ResolveColor(mode, customRGB)
+    if mode == "class" then
         local color = ClassColor()
         if color then return color end
     end
-    return elementConfig.fill
+    return customRGB
+end
+
+function Config.ResolveFill(elementConfig)
+    return Config.ResolveColor(elementConfig.fillMode, elementConfig.fill)
+end
+
+function Config.ResolveBg(elementConfig)
+    return Config.ResolveColor(elementConfig.bgMode, elementConfig.bg)
 end
 
 --------------------------------------------------------------------------
@@ -223,6 +242,48 @@ function Config.BuildPage(_, parent, yOffset)
         if Apply then Apply() end
     end
 
+    -- 一行「标签 + 色块 + 透明度滑块」。
+    --
+    -- 两个色块就是**自定义颜色**与**职业颜色**：点哪个用哪个，未选中的那个压到 0.3
+    -- 表示当前没在用它；而"已经在自定义上时再点一次才开取色器"是 EUI 全局的色块
+    -- 约定（BuildTrioColorSwatch 的注释写死的），不是我们发明的交互。
+    -- 三元组还会返回一个「默认色」色块——本插件没有"默认色"这个概念，建完就隐藏。
+    local function ColorRow(text, elementKey, elementConfig, modeKey, colorKey, alphaKey)
+        local row, height = W:DualRow(parent, y,
+            { type = "slider", text = text, min = 0, max = 100, step = 1,
+              getValue = function() return (elementConfig[alphaKey] or 1) * 100 end,
+              setValue = function(value)
+                  elementConfig[alphaKey] = value / 100
+                  refresh()
+              end },
+            { type = "spacer" })
+        y = y - height
+
+        -- 预建阶段不创建任何内联控件
+        if EUI._prebuilding then return end
+        local rgn = row._leftRegion
+        local ctrl = rgn and rgn._control
+        if not (ctrl and EUI.BuildTrioColorSwatch) then return end
+
+        local custom, default, class = EUI.BuildTrioColorSwatch(
+            rgn, rgn:GetFrameLevel() + 5, {
+                getMode = function() return elementConfig[modeKey] or "custom" end,
+                setMode = function(mode) elementConfig[modeKey] = mode end,
+                getCustomRGB = function()
+                    local c = elementConfig[colorKey]
+                    return c[1], c[2], c[3]
+                end,
+                setCustomRGB = function(r, g, b) elementConfig[colorKey] = { r, g, b } end,
+                hasClassColor = true,
+                onChange = refresh,
+                disabled = function() return Config.Grayed(elementKey) end,
+                overrideSize = 20,
+            })
+        if default then default:Hide() end
+        if custom then custom:SetPoint("RIGHT", ctrl, "LEFT", -10, 0) end
+        if class and custom then class:SetPoint("RIGHT", custom, "LEFT", -8, 0) end
+    end
+
     local _, h = W:SectionHeader(parent, "常规", y)
     y = y - h
 
@@ -242,7 +303,7 @@ function Config.BuildPage(_, parent, yOffset)
           tooltip = "整体等比缩放。1.0 为设计稿原始大小。",
           getValue = function() return cfg.scale or 1.0 end,
           setValue = function(value) cfg.scale = value; refresh() end },
-        { type = "dropdown", text = "图层", values = STRATA_VALUES,
+        { type = "dropdown", text = "图层", values = STRATA_VALUES, order = STRATA_ORDER,
           getValue = function() return cfg.strata or "MEDIUM" end,
           setValue = function(value) cfg.strata = value; refresh() end })
     y = y - h
@@ -264,42 +325,11 @@ function Config.BuildPage(_, parent, yOffset)
             function() return Config.Grayed(key) end)
         y = y - h
 
-        -- 「用哪个色」与「颜色本身」是两回事，分两行
-        _, h = W:Dropdown(parent, "填充色来源", y, { "custom", "class" },
-            function() return element.fillMode or "custom" end,
-            function(value) element.fillMode = value; refresh() end)
-        y = y - h
-
-        -- 颜色与透明度压在一行（EUI 的 ColorPicker 开 hasAlpha 就是这个形态，
-        -- 整行算**一项**配置）。**这里不顺手把来源切回 custom**：取色器的取消
-        -- 回调也会走 setValue，那样"打开又取消"就会把职业配色悄悄改掉。
-        _, h = W:ColorPicker(parent, "填充色", y,
-            function()
-                local c = element.fill
-                return c[1], c[2], c[3], element.fillAlpha or 1
-            end,
-            function(r, g, b, a)
-                element.fill = { r, g, b }
-                element.fillAlpha = a or 1
-                refresh()
-            end,
-            true)
-        y = y - h
+        ColorRow("填充色", key, element, "fillMode", "fill", "fillAlpha")
 
         -- 准星是线不是块：**没有背景色**
         if key ~= "crosshair" then
-            _, h = W:ColorPicker(parent, "条背景", y,
-                function()
-                    local c = element.bg
-                    return c[1], c[2], c[3], element.bgAlpha or 1
-                end,
-                function(r, g, b, a)
-                    element.bg = { r, g, b }
-                    element.bgAlpha = a or 1
-                    refresh()
-                end,
-                true)
-            y = y - h
+            ColorRow("条背景", key, element, "bgMode", "bg", "bgAlpha")
         end
     end
 
