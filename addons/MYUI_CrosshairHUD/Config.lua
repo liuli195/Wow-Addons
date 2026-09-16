@@ -309,12 +309,8 @@ end
 -- 页面
 --------------------------------------------------------------------------
 
--- 供 EUI 的 disabled 回调用：总开关关掉时子开关必须置灰不可点
-function Config.ElementEnabled(key)
-    local cfg = Config.Get()
-    return cfg.enabled ~= false and cfg.elements[key].enabled ~= false
-end
-
+-- 供 EUI 的 disabled 回调用：总开关关掉、或该元素自己关掉时，控件置灰不可点。
+-- （曾经还有个 ElementEnabled，没有调用者，已删。）
 function Config.Grayed(key)
     local cfg = Config.Get()
     if cfg.enabled == false then return true end

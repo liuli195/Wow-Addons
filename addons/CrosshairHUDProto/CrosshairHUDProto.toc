@@ -1,8 +1,0 @@
-## Interface: 120100
-## Title: CrosshairHUD Proto
-## Notes: One-off arc-fill technique prototype for wayfinder ticket 02. Not a shippable addon.
-## Author: MYUI
-## Version: 0.1.0
-## X-Prototype: 1
-
-Proto.lua
