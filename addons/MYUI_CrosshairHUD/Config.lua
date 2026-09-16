@@ -34,7 +34,6 @@ Config.DEFAULTS = {
             fillMode = "custom",    -- "custom" | "class"（职业配色）
             fill = { 0.851, 0.506, 0.553 },   -- #D9818D
             fillAlpha = 1,
-            bgMode = "custom",      -- 背景的第二种来源固定是职业色
             bg   = { 0.208, 0.165, 0.188 },   -- #352A30
             bgAlpha = 1,
         },
@@ -43,7 +42,6 @@ Config.DEFAULTS = {
             fillMode = "custom",
             fill = { 0.498, 0.686, 0.796 },   -- #7FAFCB
             fillAlpha = 1,
-            bgMode = "custom",
             bg   = { 0.161, 0.212, 0.251 },   -- #293640
             bgAlpha = 1,
         },
@@ -52,7 +50,6 @@ Config.DEFAULTS = {
             fillMode = "custom",
             fill = { 0.855, 0.839, 0.796 },   -- #DAD6CB
             fillAlpha = 1,
-            bgMode = "custom",
             bg   = { 0.384, 0.396, 0.408 },   -- #626568
             bgAlpha = 1,
         },
@@ -214,12 +211,24 @@ end
 
 -- 第二个色块的含义是**设计决定，不是用户配置**：血弧与准星用职业色，
 -- 符能弧用能量色，符文格用职业资源色。tooltip 用 EUI 自己的词条键，由它本地化。
+--
+-- **背景没有第二个色块**：背景只有自定义色一种。这条有回归测试盯着
+-- （test_config_color.py），因为它来回漂过好几次——不要再给背景加来源色。
 Config.FILL_SOURCE = {
     health    = { mode = "class",    tooltip = "Class Colored" },
     power     = { mode = "power",    tooltip = "Power Colored" },
     runes     = { mode = "resource", tooltip = "Class Resource Color" },
     crosshair = { mode = "class",    tooltip = "Class Colored" },
 }
+
+--- 某一格的第二个色块用哪个来源。**"背景只有自定义色"这条规则的唯一出口**：
+--- 页面靠它决定要不要建第二个色块，测试靠它断言这条规则没被改回去。
+---   slot = "fill" → 按元素取（见上表）
+---   slot = "bg"   → **恒为 nil**：背景没有第二个色块
+function Config.SourceFor(elementKey, slot)
+    if slot ~= "fill" then return nil end
+    return Config.FILL_SOURCE[elementKey]
+end
 
 -- 供页面显示第二个色块用（返回散开的通道，取不到什么都不返回）
 function Config.SourceColor(source)
@@ -239,13 +248,9 @@ function Config.ResolveFill(elementConfig)
     return elementConfig.fill
 end
 
--- 背景的第二种来源固定是**职业色**（与 EUI 自己的"职业着色背景"一致），
--- 不像填充那样按元素换成能量色／职业资源色。
+-- 背景**只有自定义色一种**，没有第二种来源（用户定）。所以它不走取值链，
+-- 直接用存下来的自定义色。
 function Config.ResolveBg(elementConfig)
-    if elementConfig.bgMode == "class" then
-        local color = ClassColor()
-        if color then return color end
-    end
     return elementConfig.bg
 end
 
@@ -341,9 +346,11 @@ function Config.BuildPage(_, parent, yOffset)
     end
 
     -- 一格里的色块：自定义 +（可选）第二种来源。
-    -- modeKey 是"用哪个来源"存在哪：填充是 fillMode，背景是 bgMode。
+    -- modeKey 是"用哪个来源"存在哪（填充是 fillMode）；source 为 nil 表示这格
+    -- **没有第二种来源**（背景就是），此时只有一个自定义色块，modeKey 也为 nil。
     local function CellSwatches(elementConfig, colorKey, modeKey, source)
         local function Selected(mode)
+            if not modeKey then return mode == "custom" end
             return (elementConfig[modeKey] or "custom") == mode
         end
         local list = { {
@@ -354,9 +361,11 @@ function Config.BuildPage(_, parent, yOffset)
             end,
             setRGB = function(r, g, b)
                 elementConfig[colorKey] = { r, g, b }
-                elementConfig[modeKey] = "custom"
+                if modeKey then elementConfig[modeKey] = "custom" end
             end,
-            select = function() elementConfig[modeKey] = "custom" end,
+            select = function()
+                if modeKey then elementConfig[modeKey] = "custom" end
+            end,
             isSelected = function() return Selected("custom") end,
             alpha = function() return Selected("custom") and 1 or 0.3 end,
             editable = true,      -- 只有自定义色块能开取色器
@@ -409,9 +418,6 @@ function Config.BuildPage(_, parent, yOffset)
     -- 位置**不在这里配**：解锁模式里点齿轮（元素选项）就能改 X/Y，那是 EUI 现成的
     -- 能力，而且与拖动框同处一个会话，比在配置页里另开一套更顺。这里自建只会重复。
 
-    -- 背景的第二种来源固定是职业色（与 EUI 自己的"职业着色背景"一致）
-    local BG_SOURCE = { mode = "class", tooltip = "Class Colored Background" }
-
     for _, key in ipairs(Config.ELEMENT_ORDER) do
         local element = cfg.elements[key]
         local label = Config.ELEMENT_LABELS[key]
@@ -440,7 +446,8 @@ function Config.BuildPage(_, parent, yOffset)
                     refresh()
                 end,
                 disabled = grayed },
-              specs = CellSwatches(element, "fill", "fillMode", Config.FILL_SOURCE[key]) },
+              specs = CellSwatches(element, "fill", "fillMode",
+                  Config.SourceFor(key, "fill")) },
         }
         if key ~= "crosshair" then
             cells[3] = {
@@ -451,7 +458,8 @@ function Config.BuildPage(_, parent, yOffset)
                         refresh()
                     end,
                     disabled = grayed },
-                specs = CellSwatches(element, "bg", "bgMode", BG_SOURCE),
+                -- 背景**没有第二个色块**（规则见 Config.SourceFor 与它的回归测试）
+                specs = CellSwatches(element, "bg"),
             }
         end
 

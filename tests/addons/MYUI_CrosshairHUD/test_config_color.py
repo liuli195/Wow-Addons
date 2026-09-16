@@ -195,15 +195,38 @@ Near(Config.ResolveFill(element)[1], element.fill[1], "资源色取不到就回�
 resourceThrows = false
 
 ----------------------------------------------------------------------
--- 背景的第二种来源**固定是职业色**（与 EUI 自己的"职业着色背景"一致），
--- 不像填充那样按元素换成能量色／职业资源色
+-- **背景只有自定义色一种，没有第二个色块**（用户定，且这条来回漂过好几次）
+--
+-- 这是本测试最该盯住的一条：规则漂了两次都是因为没人守着。所以从三个层面钉：
+--   出口函数（页面据此建不建第二个色块）、数据模型（有没有 bgMode）、渲染取值。
 ----------------------------------------------------------------------
-element.fillMode = "power"
-element.bgMode = "class"
-Near(Config.ResolveBg(element)[1], 0.11, "背景选职业时应取职业色（不是能量色）")
-Near(Config.ResolveFill(element)[1], 0.31, "同一时刻填充仍按它自己的来源取")
-element.bgMode = "custom"
-Near(Config.ResolveBg(element)[1], element.bg[1], "背景选自定义时取自定义色")
+local order = Config.ELEMENT_ORDER
+assert(#order == 4, "元素数量变了就要一并检查这条规则")
+
+for _, key in ipairs(order) do
+    assert(Config.SourceFor(key, "bg") == nil,
+        key .. " 的背景不该有来源色块——背景只有自定义色")
+    assert(Config.FILL_SOURCE[key] == nil or Config.FILL_SOURCE[key].mode ~= nil,
+        "填充的来源表格式不对")
+end
+assert(Config.SourceFor("health", "fill") ~= nil, "填充仍要有来源色块")
+assert(Config.SourceFor("crosshair", "fill") ~= nil, "准星也要有来源色块")
+
+-- 出口函数对任何"不是 fill 的槽"都必须返回 nil，不是只对 "bg"
+assert(Config.SourceFor("health", "border") == nil, "没有来源的槽一律返回 nil")
+
+----------------------------------------------------------------------
+-- 数据模型里不该再有"背景来源"这个键；渲染取值恒为自定义色
+----------------------------------------------------------------------
+local defaults = Config.DEFAULTS.elements
+for _, key in ipairs(order) do
+    assert(defaults[key].bgMode == nil, key .. " 不该再有 bgMode")
+end
+
+element.fillMode = "power"      -- 填充挑任何来源，背景都必须原样不动
+Near(Config.ResolveBg(element)[1], element.bg[1], "背景恒取自定义色（不受填充来源影响）")
+Near(Config.ResolveBg(element)[2], element.bg[2], "g")
+Near(Config.ResolveBg(element)[3], element.bg[3], "b")
 element.fillMode = "class"
 
 ----------------------------------------------------------------------
@@ -302,14 +325,12 @@ Near(healthBg.vertex[1], beforeBg, "取不出来时应保留上一次的颜色")
 ----------------------------------------------------------------------
 -- 七、默认值：两个 alpha 都在，且旧数据里的单一 alpha 不会把新键顶掉
 ----------------------------------------------------------------------
-local defaults = Config.DEFAULTS.elements
-assert(defaults.health.fillAlpha ~= nil and defaults.health.bgAlpha ~= nil,
-    "血弧要同时有填充与背景两个透明度")
-assert(defaults.crosshair.fillAlpha ~= nil and defaults.crosshair.bgAlpha == nil,
+local defaults2 = Config.DEFAULTS.elements
+assert(defaults2.health.fillAlpha ~= nil and defaults2.health.bgAlpha ~= nil,
+    "生命值条要同时有填充与背景两个透明度")
+assert(defaults2.crosshair.fillAlpha ~= nil and defaults2.crosshair.bgAlpha == nil,
     "准星是线，没有背景透明度")
-assert(defaults.health.alpha == nil, "单一的 alpha 键必须已经去掉")
-assert(defaults.health.bgMode ~= nil and defaults.crosshair.bgMode == nil,
-    "背景要有自己的来源（职业色）；准星没有背景，也就不该有它的来源")
+assert(defaults2.health.alpha == nil, "单一的 alpha 键必须已经去掉")
 
 io.write("PASS: config color and alpha\n")
 '''
