@@ -190,8 +190,10 @@ local function DemoState()
 
     local elements = Config.Get().elements
     local state = {}
-    state.health = ElementState(elements.health, demoFill)
-    state.power = ElementState(elements.power, 1 - demoFill)
+    -- 方向必须与真实行为一致，否则拿它检查外观会得出相反的结论：
+    -- 血条满血起、逐步掉；符能空起、逐步涨。
+    state.health = ElementState(elements.health, 1 - demoFill)
+    state.power = ElementState(elements.power, demoFill)
     state.runes = {}
     for slot = 1, Logic.PIPS.count do
         local fill = 1.8 * demoFill - (slot - 1) * 0.16
