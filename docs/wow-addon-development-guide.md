@@ -101,15 +101,15 @@ lua-language-server --check "$repoRoot/addons/EUI_FacetedPortrait" --configpath 
 
 | 资料 | 本次核实结果 | 使用方式 |
 | --- | --- | --- |
-| Gethe/wow-ui-source（暴雪界面源码镜像） | 12.1.0 标签解析为 `8ea15b61e45c0ed4eba01439c90757f86eb78d34`；版本文件为 `12.1.0.69587` | 暴雪生成文档和真实界面调用的主要证据 |
-| Ketho/BlizzardInterfaceResources（游戏接口资源清单） | 12.1.0 标签解析为 `36dd01db2d8fa5086dffda5cbfb3d55f4a70e526`；读取的说明记录构建号 69587、接口号 120100 | 查全局函数、事件、控件方法、模板、枚举等清单 |
+| Gethe/wow-ui-source（暴雪界面源码镜像） | `live` 分支解析为 `4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59`；版本文件为 `12.1.0.69814` | 暴雪生成文档和真实界面调用的主要证据 |
+| Ketho/BlizzardInterfaceResources（游戏接口资源清单） | `live` 分支解析为 `36dd01db2d8fa5086dffda5cbfb3d55f4a70e526`；读取的说明记录构建号 69587、接口号 120100 | 查全局函数、事件、控件方法、模板、枚举等清单 |
 | Ketho/vscode-wow-api（语言服务器接口注解） | 本次主分支提交为 `d0b5b51fac4c52c493371b9b18e66ce604ea4326`；更新记录仅明确写到 12.0.1 | 可作为注解候选，尚未确认完整匹配 12.1，不能直接作为版本基准 |
 
-证据：[源码固定提交版本文件](https://github.com/Gethe/wow-ui-source/blob/8ea15b61e45c0ed4eba01439c90757f86eb78d34/version.txt)、[接口资源说明](https://github.com/Ketho/BlizzardInterfaceResources/tree/36dd01db2d8fa5086dffda5cbfb3d55f4a70e526)、[注解更新记录](https://github.com/Ketho/vscode-wow-api/blob/d0b5b51fac4c52c493371b9b18e66ce604ea4326/CHANGELOG.md)。网页搜索缓存可能落后于直接获取结果，因此版本判断以固定提交文件为准。
+证据：[源码固定提交版本文件](https://github.com/Gethe/wow-ui-source/blob/4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59/version.txt)、[接口资源说明](https://github.com/Ketho/BlizzardInterfaceResources/tree/36dd01db2d8fa5086dffda5cbfb3d55f4a70e526)、[注解更新记录](https://github.com/Ketho/vscode-wow-api/blob/d0b5b51fac4c52c493371b9b18e66ce604ea4326/CHANGELOG.md)。网页搜索缓存可能落后于直接获取结果，因此版本判断以固定提交文件为准。
 
 获取步骤：
 
-1. 在目标正式服客户端执行 `/dump GetBuildInfo()`，记录版本、构建号、构建日期和接口号。当前已找到的快照为 12.1.0 / 69587 / 120100；只有客户端匹配时才采用该快照。12.1 的后续小补丁也不能自动混入。
+1. 在目标正式服客户端执行 `/dump GetBuildInfo()`，记录版本、构建号、构建日期和接口号。当前已找到的快照为 12.1.0 / 69814 / 120100；只有客户端匹配时才采用该快照。12.1 的后续小补丁也不能自动混入。
 2. 下载对应的界面源码快照，重点检索 `Interface/AddOns/Blizzard_APIDocumentationGenerated`（暴雪生成接口文档目录）。其中的 Lua（脚本语言）表描述函数参数、返回值、事件和数据结构，部分还包含受限参数规则。这是数据描述，不能直接当成语言服务器类型声明。
 3. 保留同一份快照的其余界面源码，查模板、混入方法、加载顺序和暴雪实际调用。源码镜像包含不同客户端相关文件时，按正式服加载清单选择，不将全部文件视为正式服可用接口。
 4. 下载匹配版本的接口资源清单，用 `GlobalAPI.lua`、`WidgetAPI.lua`、`ScriptObjectAPI.lua`、`Events.lua`、`Templates.lua` 等补查名称与覆盖范围。函数名清单本身不提供完整参数语义，也不能证明所有按需加载内容都已覆盖。
@@ -119,7 +119,7 @@ lua-language-server --check "$repoRoot/addons/EUI_FacetedPortrait" --configpath 
 
 ~~~powershell
 git clone --filter=blob:none --no-checkout https://github.com/Gethe/wow-ui-source.git .tools/wow-ui-source
-git -C .tools/wow-ui-source checkout --detach 8ea15b61e45c0ed4eba01439c90757f86eb78d34
+git -C .tools/wow-ui-source checkout --detach 4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59
 Get-Content .tools/wow-ui-source/version.txt
 
 git clone --filter=blob:none --no-checkout https://github.com/Ketho/BlizzardInterfaceResources.git .tools/wow-resources

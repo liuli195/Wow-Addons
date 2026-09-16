@@ -1,0 +1,13 @@
+---@meta _
+---@class UITextureSliceData
+---@field marginLeft number
+---@field marginTop number
+---@field marginRight number
+---@field marginBottom number
+---@field sliceMode Enum.UITextureSliceMode
+
+---@class UITextureSliceMargins
+---@field left number
+---@field top number
+---@field right number
+---@field bottom number

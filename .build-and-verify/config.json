@@ -392,6 +392,31 @@
         ]
       },
       {
+        "id": "verify.annotation-build",
+        "command": ".venv\\Scripts\\python.exe tests/dev/test_build_wow_annotations.py",
+        "checkParallel": true,
+        "paths": [
+          "scripts/dev/**",
+          ".build-and-verify/config.json",
+          ".tools/wow-api/wowdoc/loader/doc_widgets.lua",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
+        ],
+        "inputs": [
+          "scripts/dev/**",
+          ".build-and-verify/config.json",
+          ".tools/wow-api/wowdoc/loader/doc_widgets.lua",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
+        ]
+      },
+      {
         "id": "verify.sim2gse",
         "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse --dist=worksteal",
         "checkParallel": true,
