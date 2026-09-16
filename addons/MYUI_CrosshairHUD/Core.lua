@@ -578,7 +578,7 @@ local function Report()
         tostring(cfg.enabled), cfg.scale or 1, cfg.strata or "MEDIUM",
         Core.demo and "开" or "关"))
     -- 只报"有没有取到"，绝不打印角度本身：实机里它是秘密值，不允许转字符串
-    print(string.format("  弧线角度：血量%s  符能%s",
+    print(string.format("  弧线角度：生命值%s  能量%s",
         last.hasHealthArc and "已取到" or "没取到",
         last.hasPowerArc and "已取到" or "没取到"))
 
@@ -590,7 +590,7 @@ local function Report()
     Probe("UnitHealth", function() return UnitHealth("player") end)
     Probe("UnitHealthMax", function() return UnitHealthMax("player") end)
     local powerType = Enum and Enum.PowerType and Enum.PowerType.RunicPower
-    print("  符能类型：Enum.PowerType.RunicPower=" .. tostring(powerType))
+    print("  能量类型：Enum.PowerType.RunicPower=" .. tostring(powerType))
     if powerType then
         Probe("UnitPower", function() return UnitPower("player", powerType) end)
         Probe("UnitPowerMax", function() return UnitPowerMax("player", powerType) end)
@@ -733,7 +733,7 @@ local function RegisterModule()
 
     api._modules[ADDON] = {
         title = "Crosshair HUD",
-        description = "屏幕中心准星 HUD：血量、符能与死亡骑士符文。",
+        description = "屏幕中心准星 HUD：生命值条、能量条与死亡骑士的职业资源条。",
         pages = { "Crosshair HUD" },
         buildPage = Config.BuildPage,
         onReset = function()

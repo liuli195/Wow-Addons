@@ -69,14 +69,17 @@ Config.DEFAULTS = {
 -- 元素在页面上与状态表里的固定顺序
 Config.ELEMENT_ORDER = { "health", "power", "runes", "crosshair" }
 
+-- 界面上的元素名（稳定键仍是 health／power／runes，只换显示名）
 Config.ELEMENT_LABELS = {
-    health = "血弧", power = "符能弧", runes = "符文格", crosshair = "准星",
+    health = "生命值条", power = "能量条", runes = "职业资源条", crosshair = "准星",
 }
 
 -- 与填充色来源同理：values 是映射表 + 显式 order。传数组时 EUI 会用 pairs 自己
 -- 拼顺序，每次建页的排列都可能不同。
+-- **键是存下来的值，内容是显示文字**：键必须是魔兽认的层级名（要交给
+-- SetFrameStrata），界面上显示中文。`_noLoc` 关掉二次本地化——内容本来就是中文。
 local STRATA_VALUES = {
-    LOW = "LOW", MEDIUM = "MEDIUM", HIGH = "HIGH", DIALOG = "DIALOG",
+    LOW = "低", MEDIUM = "中", HIGH = "高", DIALOG = "对话框",
     _noLoc = true,
 }
 local STRATA_ORDER = { "LOW", "MEDIUM", "HIGH", "DIALOG" }
