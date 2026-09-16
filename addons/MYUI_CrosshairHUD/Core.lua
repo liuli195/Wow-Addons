@@ -202,8 +202,9 @@ local function ElementState(elementConfig, rotation, hasRotation, runeState)
         hasRotation = hasRotation == true,
         state = runeState,
         fillColor = FillColor(elementConfig),
+        fillAlpha = elementConfig.fillAlpha or 1,
         bgColor = elementConfig.bg,
-        alpha = elementConfig.alpha or 1,
+        bgAlpha = elementConfig.bgAlpha or 1,
     }
 end
 
@@ -233,7 +234,7 @@ local function BuildState()
     state.crosshair = {
         visible = crosshair.enabled ~= false,
         fillColor = FillColor(crosshair),
-        alpha = crosshair.alpha or 1,
+        fillAlpha = crosshair.fillAlpha or 1,
     }
     return state
 end

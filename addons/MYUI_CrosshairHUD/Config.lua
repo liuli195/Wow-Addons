@@ -26,33 +26,38 @@ Config.DEFAULTS = {
     position = nil,                 -- 由 EUI 的位置控件写入；nil = 默认锚点（屏幕居中）
     strata = "MEDIUM",              -- 框架层级
 
+    -- 填充与背景各有各的透明度：合成一个只能整条一起淡化，分不开。
+    -- 「填充色来源」放在颜色之外单独一项——它是"用哪个色"的选择，不是颜色本身。
     elements = {
         health = {
             enabled = true,
             fillMode = "custom",    -- "custom" | "class"（职业配色）
             fill = { 0.851, 0.506, 0.553 },   -- #D9818D
+            fillAlpha = 1,
             bg   = { 0.208, 0.165, 0.188 },   -- #352A30
-            alpha = 1,
+            bgAlpha = 1,
         },
         power = {
             enabled = true,
             fillMode = "custom",
             fill = { 0.498, 0.686, 0.796 },   -- #7FAFCB
+            fillAlpha = 1,
             bg   = { 0.161, 0.212, 0.251 },   -- #293640
-            alpha = 1,
+            bgAlpha = 1,
         },
         runes = {
             enabled = true,
             fillMode = "custom",
             fill = { 0.855, 0.839, 0.796 },   -- #DAD6CB
+            fillAlpha = 1,
             bg   = { 0.384, 0.396, 0.408 },   -- #626568
-            alpha = 1,
+            bgAlpha = 1,
         },
         crosshair = {
             enabled = true,
             fillMode = "custom",
             fill = { 0.898, 0.914, 0.914 },   -- #E5E9E9
-            alpha = 1,
+            fillAlpha = 1,
             -- 准星是线不是块，**没有背景色**
         },
     },
@@ -119,15 +124,60 @@ end
 -- 填充色的来源
 --------------------------------------------------------------------------
 
-local function ClassColor()
-    local EUI = rawget(_G, "EllesmereUI")
-    if not (EUI and EUI.GetClassColor and UnitClass) then return nil end
-    local ok, _, classFile = pcall(UnitClass, "player")
-    if not ok or not classFile then return nil end
-    local fetched, color = pcall(EUI.GetClassColor, classFile)
-    if fetched and type(color) == "table" and color.r then
-        return { color.r, color.g, color.b }
+-- 取出三个通道。**只搬位置，不读值**：受限上下文里这些通道本身可能就是秘密值，
+-- 只许原样交给 SetVertexColor，绝不比较、绝不运算。校验一律用 type 与 pcall，
+-- 连"是不是 nil"都不用真值判断去测。
+local function Channels(color)
+    local ok, r, g, b = pcall(function()
+        if type(color) ~= "table" then error("不是颜色对象") end
+        return color.r, color.g, color.b
+    end)
+    if not ok then return nil end
+    if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+        return nil
     end
+    return { r, g, b }
+end
+
+-- 职业色的取值链。**这里差点做错**：EUI 自己的颜色缓存以**类名令牌为键**，而
+-- UnitClass 在受限上下文里会交回秘密令牌——秘密值不能当表键，查表会直接出错，
+-- 于是静默回落到默认色，表现就是"选了职业配色但毫无变化"。
+-- （EUI 源码对这种情况留了原话：退回 C_ClassColor.GetClassColor(secretToken)，
+--   "right class, but Blizzard's default shade instead of the user's"。）
+--
+-- 所以顺序是：先用 EUI 的缓存（能反映用户在 EUI 里改过的职业色），它吃不了秘密
+-- 令牌就退回 Blizzard 自己的接口——那个能吃秘密令牌，代价只是拿不到用户改过的色。
+-- "取不到"是缺陷，"不是自定义的那个色"只是次要诉求。
+local function ClassColor()
+    local classFile
+    if UnitClass then
+        local ok, _, file = pcall(UnitClass, "player")
+        if ok then classFile = file end
+    end
+    if classFile == nil then return nil end
+
+    local EUI = rawget(_G, "EllesmereUI")
+    if EUI and EUI.GetClassColor then
+        local ok, color = pcall(EUI.GetClassColor, classFile)
+        local channels = ok and Channels(color)
+        if channels then return channels end
+    end
+
+    local api = _G.C_ClassColor
+    if api and api.GetClassColor then
+        local ok, color = pcall(api.GetClassColor, classFile)
+        local channels = ok and Channels(color)
+        if channels then return channels end
+    end
+
+    -- 老牌全局色表（现代客户端上可能已不存在）。用 rawget 取，与取 EllesmereUI 同一写法。
+    local palette = rawget(_G, "RAID_CLASS_COLORS")
+    if palette then
+        local ok, entry = pcall(function() return palette[classFile] end)
+        local channels = ok and Channels(entry)
+        if channels then return channels end
+    end
+
     return nil
 end
 
@@ -214,41 +264,43 @@ function Config.BuildPage(_, parent, yOffset)
             function() return Config.Grayed(key) end)
         y = y - h
 
-        -- 填充色：职业配色 / 自定义二选一，计入**一项**配置
-        _, h = W:DualRow(parent, y,
-            { type = "dropdown", text = "填充色来源", values = { "custom", "class" },
-              getValue = function() return element.fillMode or "custom" end,
-              setValue = function(value) element.fillMode = value; refresh() end,
-              disabled = function() return Config.Grayed(key) end },
-            { type = "colorpicker", text = "自定义", hasAlpha = false,
-              getValue = function()
-                  local c = element.fill
-                  return c[1], c[2], c[3]
-              end,
-              setValue = function(r, g, b)
-                  element.fill = { r, g, b }
-                  element.fillMode = "custom"
-                  refresh()
-              end,
-              disabled = function() return Config.Grayed(key) end })
+        -- 「用哪个色」与「颜色本身」是两回事，分两行
+        _, h = W:Dropdown(parent, "填充色来源", y, { "custom", "class" },
+            function() return element.fillMode or "custom" end,
+            function(value) element.fillMode = value; refresh() end)
+        y = y - h
+
+        -- 颜色与透明度压在一行（EUI 的 ColorPicker 开 hasAlpha 就是这个形态，
+        -- 整行算**一项**配置）。**这里不顺手把来源切回 custom**：取色器的取消
+        -- 回调也会走 setValue，那样"打开又取消"就会把职业配色悄悄改掉。
+        _, h = W:ColorPicker(parent, "填充色", y,
+            function()
+                local c = element.fill
+                return c[1], c[2], c[3], element.fillAlpha or 1
+            end,
+            function(r, g, b, a)
+                element.fill = { r, g, b }
+                element.fillAlpha = a or 1
+                refresh()
+            end,
+            true)
         y = y - h
 
         -- 准星是线不是块：**没有背景色**
         if key ~= "crosshair" then
-            _, h = W:ColorPicker(parent, "背景色", y,
+            _, h = W:ColorPicker(parent, "条背景", y,
                 function()
                     local c = element.bg
-                    return c[1], c[2], c[3]
+                    return c[1], c[2], c[3], element.bgAlpha or 1
                 end,
-                function(r, g, b) element.bg = { r, g, b }; refresh() end,
-                false)
+                function(r, g, b, a)
+                    element.bg = { r, g, b }
+                    element.bgAlpha = a or 1
+                    refresh()
+                end,
+                true)
             y = y - h
         end
-
-        _, h = W:Slider(parent, "透明度", y, 0, 100, 1,
-            function() return (element.alpha or 1) * 100 end,
-            function(value) element.alpha = value / 100; refresh() end)
-        y = y - h
     end
 
     return math.abs(y)

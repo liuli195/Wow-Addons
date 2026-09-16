@@ -3,9 +3,13 @@
 -- 持有全部纹理对象与遮罩，**不读配置、不读游戏数据**。
 -- 对外只接受一张「显示状态表」，由 Core 从「配置 + 游戏读数」算好后整表下发：
 --
---   state.health / state.power = { visible, rotation, state, fillColor, bgColor, alpha }
---   state.crosshair            = { visible, fillColor, alpha }          （准星是线，没有背景色）
---   state.runes[1..6]          = { visible, rotation, state, fillColor, bgColor, alpha }
+--   state.health / state.power = { visible, rotation, state, fillColor, fillAlpha,
+--                                  bgColor, bgAlpha }
+--   state.crosshair            = { visible, fillColor, fillAlpha }   （准星是线，没有背景色）
+--   state.runes[1..6]          = { visible, rotation, state, fillColor, fillAlpha,
+--                                  bgColor, bgAlpha }
+--
+-- 填充与背景的透明度是**两个**值：合成一个就只能整条一起淡化，分不开。
 --
 -- runes 的槽位由 Core 完成排序后填入——本模块只管"第 i 格画成什么样"。
 --
@@ -160,13 +164,12 @@ local function ApplyFillable(part, st)
         return
     end
 
-    local alpha = st.alpha or 1
     local bg = st.bgColor
-    part.bg:SetVertexColor(bg[1], bg[2], bg[3], alpha)
+    part.bg:SetVertexColor(bg[1], bg[2], bg[3], st.bgAlpha or 1)
 
     if showFill then
         local fc = st.fillColor
-        part.fill:SetVertexColor(fc[1], fc[2], fc[3], alpha)
+        part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
         -- rotation 可能是秘密值：只能原样交给 setter
         part.mask:SetRotation(st.rotation)
     end
@@ -199,6 +202,6 @@ function Elements.Apply(state)
     if ch then
         parts.crosshair:SetShown(ch.visible ~= false)
         local fc = ch.fillColor
-        parts.crosshair:SetVertexColor(fc[1], fc[2], fc[3], ch.alpha or 1)
+        parts.crosshair:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
     end
 end
