@@ -1,0 +1,14 @@
+## Interface: 120100
+## Title: |cff7fafcbMYUI|r 准星HUD
+## Notes: 屏幕中心准星HUD：生命值条、能量条与职业资源条。
+## Category: MYUI
+## Group: MYUI
+## Author: MYUI
+## Version: 0.1.0
+## Dependencies: EllesmereUI, MYUI
+## SavedVariables: MYUI_CrosshairHUDDB
+
+Logic.lua
+Elements.lua
+Config.lua
+Core.lua

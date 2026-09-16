@@ -1,0 +1,149 @@
+{
+  "coordinateSystem": {
+    "width": 256,
+    "height": 256,
+    "center": [
+      128,
+      128
+    ]
+  },
+  "exportScale": 2,
+  "format": "PNG RGBA",
+  "assets": [
+    {
+      "file": "crosshair.png",
+      "pixelSize": [
+        128,
+        128
+      ],
+      "displaySize": [
+        64,
+        64
+      ],
+      "centerOffset": [
+        0,
+        0
+      ]
+    },
+    {
+      "file": "health_arc.png",
+      "pixelSize": [
+        128,
+        256
+      ],
+      "displaySize": [
+        64,
+        128
+      ],
+      "centerOffset": [
+        -32,
+        16
+      ]
+    },
+    {
+      "file": "power_arc.png",
+      "pixelSize": [
+        128,
+        256
+      ],
+      "displaySize": [
+        64,
+        128
+      ],
+      "centerOffset": [
+        32,
+        16
+      ]
+    },
+    {
+      "file": "resource_01.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        -38,
+        -38
+      ]
+    },
+    {
+      "file": "resource_02.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        -24,
+        -48
+      ]
+    },
+    {
+      "file": "resource_03.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        -8,
+        -53
+      ]
+    },
+    {
+      "file": "resource_04.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        8,
+        -53
+      ]
+    },
+    {
+      "file": "resource_05.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        24,
+        -48
+      ]
+    },
+    {
+      "file": "resource_06.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        38,
+        -38
+      ]
+    }
+  ]
+}
