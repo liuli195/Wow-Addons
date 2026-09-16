@@ -1,6 +1,8 @@
 ## Interface: 120100
-## Title: Crosshair HUD
+## Title: |cff7fafcbMYUI|r Crosshair HUD
 ## Notes: 屏幕中心准星 HUD：血量、符能与死亡骑士符文。
+## Category: MYUI
+## Group: MYUI
 ## Author: MYUI
 ## Version: 0.1.0
 ## Dependencies: EllesmereUI, MYUI

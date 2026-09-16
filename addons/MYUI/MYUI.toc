@@ -1,6 +1,6 @@
 ## Interface: 120100
-## Title: MYUI
+## Title: |cff7fafcbMYUI|r
 ## Notes: MYUI 系列插件的共享素材（目前是准星 HUD 的纹理）。请勿单独禁用：依赖它的功能插件会因此丢失全部纹理，而且纹理路径失效不会报错。
+## Category: MYUI
 ## Author: MYUI
 ## Version: 0.1.0
-## X-Category: Library

@@ -28,7 +28,7 @@ P0–P3 属实施，走仓库的开发流程；P4 是游戏内人工验收，不
 
 ```
 addons/MYUI/
-  MYUI.toc                       ## Interface: 120100 ／ ## Title: MYUI
+  MYUI.toc                       组根：## Category: MYUI，**不带** ## Group
   Media/CrosshairHUD/*.png       10 个成品纹理（已就位，见第 7 节）
 ```
 
@@ -53,8 +53,12 @@ addons/MYUI_CrosshairHUD/
 
 ```
 ## Interface: 120100
-## Title: Crosshair HUD
-## Notes: 屏幕中心准星 HUD：血量、符能与死亡骑士符文
+## Title: |cff7fafcbMYUI|r Crosshair HUD
+## Notes: 屏幕中心准星 HUD：血量、符能与死亡骑士符文。
+## Category: MYUI
+## Group: MYUI
+## Author: MYUI
+## Version: 0.1.0
 ## Dependencies: EllesmereUI, MYUI
 ## SavedVariables: MYUI_CrosshairHUDDB
 
@@ -63,6 +67,8 @@ Elements.lua
 Config.lua
 Core.lua
 ```
+
+**`## Group` 是"看起来像一个系列"的关键，不能漏。** EUI 的做法是：主插件**不带** `## Group`，20 个兄弟插件全部写 `## Group: EllesmereUI`，于是插件列表里归成一组、可以折叠展开；再配 `## Category` 与带品牌色的 `## Title` 前缀。少了这个字段，用户会在插件列表和插件管理器里看到**两个毫不相干的插件**，而不是一个系列——这正是首次部署时踩到的坑。本项目的对应写法：公共核心 `MYUI` 作为组根（不带 `## Group`），功能插件写 `## Group: MYUI`。品牌色取设计稿符能弧的蓝 `|cff7fafcb`。
 
 **加载清单不是可选的**：`scripts/dev/check.py` 对空清单直接 `raise`「加载清单为空」（`:33-34`），对每个列出的文件还要求存在且不越界（`:37`）。**清单里的文件顺序就是依赖方向唯一的落地手段**（`Logic → Elements → Config → Core`），`Logic.lua` 必须排第一。
 
