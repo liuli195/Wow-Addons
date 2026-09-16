@@ -162,28 +162,7 @@ Parent（来源）: [Crosshair HUD 实施计划](../crosshair-hud/plan.md)（way
 - **后面两个接口的键都不是职业令牌**，要先用 EUI 的映射表推出名字，再拿名字去查色表——传职业令牌查不到，页面上的色块会画成黑：能量色用 `CLASS_POWER_MAP`（DK → `RUNIC_POWER`），职业资源色用 `CLASS_RESOURCE_MAP`（DK → `Runes`）。本职业在表里没登记时，把那个色块**收起来**而不是留一个黑方块。
 - 元素关掉时控件要置灰不可点：滑块的 `disabled` 直接用 EUI 的；色块没有现成的可传，`Update()` 里自己压暗、点击自己挡。
 
-- **颜色行照 EUI 原文写**（用户实机多次指正后从 EUI 单位框体页面拿到原文）。一格有两种形状：
-
-  ```
-  -- 只有色块的格
-  slot = { type="multiSwatch", text="Fill Color", swatches = { ... } }
-  -- 色块与滑块同格（条背景就是这种：色块内联挂在滑块左侧）
-  slot = { type="slider", text="Bar Background", min=0, max=100, step=1, ... }
-  --   然后：setPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
-  --        rgn._lastInline = 色块
-  row, h = W:DualRow(parent, y, leftSlot, rightSlot)
-  ```
-
-  - **一格之内的组成**：填充颜色 = 自定义色块 + 来源色块（透明度在它右边那一格）；**条背景 = 自定义色块 + 职业色块 + 透明度滑块，三者同格**；填充不透明度 = 一个滑块（准星没有背景时右格就给它）。
-  - `multiSwatch` 的色块 cfg 本来就认 `onClick`（点它切来源，原取色器点击被 slot 存进 `_eabOrigClick`）、`refreshAlpha`（未选中的压到 0.3 = 选中态）、`disabled`（slot 自己灰化并挡住点击）、`hasAlpha`（**只影响取色器弹窗，不生成行内滑块**）。内联的不是 slot，是裸 `BuildColorSwatch`，点击与选中态要照 EUI 那个分支自己接。
-  - 自定义那块按 EUI 约定：已在自定义上时再点才开取色器；来源那块不可编辑（`setValue` 空），点它只表示"用这个来源"。
-  - 取不到色（本职业在映射表里没登记）时把那个色块**藏掉**，而不是留一个画成黑的方块。
-  - 每个 slot 都会自带一个 14px 左侧标签；省略 `text` 会走到 `L(nil)` 上去，要显式给。
-- **一行里放色块 + 一个透明度滑块，没有"来源"下拉**：左色块=自定义颜色，右色块=职业颜色，点哪个用哪个；滑块是这一项的透明度。**填充与背景各有各的透明度**——合成一个就只能整条一起淡化，分不开。
-- **只有填充有职业色，背景就是自定义色**（用户实机指正）。填充选了职业色之后背景必须原样不动。
-- 这套交互不自己发明：用 EUI 公开的 `EllesmereUI.BuildTrioColorSwatch`（`getMode`／`setMode`／`getCustomRGB`／`setCustomRGB`／`hasClassColor`），未选中的色块由它自己压到 **0.3**（白边框随之变暗）作选择指示。它约定的"点未选中的自定义色块只切选择，已经在自定义上时再点才开取色器"照单全收。三元组还返回一个「默认色」色块，本插件没有这个概念，建完即隐藏。
-- **`onChange` 里必须调一次 `EllesmereUI:RefreshPage()`**：选择态是 EUI 那个 `Update()` 画的、挂在控件刷新列表上，只调自己的刷新会让选择态一直停在初始值。
-- 色块按 EUI 的内联惯例挂在右半控件的左侧（`row._rightRegion._control`），并在 `EllesmereUI._prebuilding` 期间跳过不建。
+- **取色与选中态全部交给 EUI**：色块内联用裸 `EllesmereUI.BuildColorSwatch`（位置挂在该格控件的左侧，`_lastInline` 惯例）；点击与选中态照 EUI 自己的写法接——原取色器点击存进 `_eabOrigClick`、未选中的压到 **0.3**、挂 `EllesmereUI.RegisterWidgetRefresh` 让刷新收敛；切了来源后调一次 `EllesmereUI:RefreshPage()`，否则选中态不动。不用自己发明控件，也不自己拼多色块行。
 - **职业色的取值链**：EUI 的颜色缓存（能反映用户改过的职业色）→ `C_ClassColor.GetClassColor` → 老牌全局色表。**第一级吃不了秘密令牌**——`UnitClass` 在受限上下文里交回的是秘密令牌，而秘密值不能当表键，查表会直接抛错并静默回落到默认色（EUI 源码对此有注释）。退回 Blizzard 接口会丢掉"用户自定义的职业色"这个次要诉求，但保证拿得到正确的职业色。
 
 - **填充色**是"职业配色 / 自定义颜色"二选一的复合控件，计入一项。**背景色只有自定义**。
