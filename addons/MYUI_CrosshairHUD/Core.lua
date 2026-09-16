@@ -734,7 +734,8 @@ local function RegisterModule()
 
     api._modules[ADDON] = {
         title = "准星HUD",
-        description = "屏幕中心准星HUD：生命值条、能量条与死亡骑士的职业资源条。",
+        -- 文案通用，不写死职业：这个 HUD 以后要扩展到全职业
+        description = "屏幕中心准星HUD：生命值条、能量条与职业资源条。",
         pages = { "准星HUD" },
         buildPage = Config.BuildPage,
         onReset = function()

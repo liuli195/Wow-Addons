@@ -1,6 +1,6 @@
 ## Interface: 120100
 ## Title: |cff7fafcbMYUI|r 准星HUD
-## Notes: 屏幕中心准星 HUD：血量、符能与死亡骑士符文。
+## Notes: 屏幕中心准星HUD：生命值条、能量条与职业资源条。
 ## Category: MYUI
 ## Group: MYUI
 ## Author: MYUI

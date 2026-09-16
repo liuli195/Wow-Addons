@@ -202,6 +202,18 @@ local module = api._modules["MYUI_CrosshairHUD"]
 assert(module, "模块必须已注册，否则 ShowModule 不会选中它")
 assert(module.title == DISPLAY_NAME,
     "菜单里那一行的标题应是「" .. DISPLAY_NAME .. "」，实得 " .. tostring(module.title))
+
+-- 界面文案必须是**通用**的，不能写死职业
+--
+-- 这个 HUD 以后要扩展到全职业。首版只有死亡骑士这件事只写在开发文档里，
+-- 不进界面——界面上就说"能量条""职业资源条"。
+local FORBIDDEN = { "死亡骑士", "死骑", "Death Knight", "DEATHKNIGHT" }
+for _, word in ipairs(FORBIDDEN) do
+    assert(not module.description:find(word, 1, true),
+        "模块说明写死了职业（出现「" .. word .. "」）：" .. module.description)
+end
+assert(module.description:find("能量", 1, true),
+    "模块说明里应说「能量」这一通用说法")
 assert(type(module.pages) == "table" and #module.pages == 1
     and module.pages[1] == DISPLAY_NAME,
     "页面标签也应是「" .. DISPLAY_NAME .. "」")
@@ -236,3 +248,15 @@ def test_unlock_element_contract():
         )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS: unlock element contract" in result.stdout
+
+
+def test_toc_notes_are_class_agnostic():
+    """`.toc` 的 Notes 会显示在插件列表里——同样是界面文案，也不许写死职业。
+
+    （"首版只有死亡骑士"这类话属于开发文档，`## Notes` 是玩家看的。）
+    """
+    toc = (ADDON / "MYUI_CrosshairHUD.toc").read_text(encoding="utf-8")
+    notes = next(line for line in toc.splitlines() if line.startswith("## Notes:"))
+    for word in ("死亡骑士", "死骑", "Death Knight", "DEATHKNIGHT"):
+        assert word not in notes, f"插件说明写死了职业（出现「{word}」）：{notes}"
+    assert "能量" in notes, "插件说明里应说「能量」这一通用说法"
