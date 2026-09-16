@@ -24,6 +24,7 @@ local GetRuneCooldown = _G.GetRuneCooldown
 local GetTime = _G.GetTime
 local InCombatLockdown = _G.InCombatLockdown
 local SlashCmdList = assert(rawget(_G, "SlashCmdList"))
+local UIParent = _G.UIParent
 local UnitHealth = _G.UnitHealth
 local UnitHealthMax = _G.UnitHealthMax
 local UnitPower = _G.UnitPower
@@ -132,9 +133,9 @@ end
 -- 显示状态表
 --------------------------------------------------------------------------
 
--- 填充色的来源：自定义取配置里的值；职业配色由票据 05 接上 EUI 的职业色接口
+-- 填充色的来源交给配置层解析（职业配色取不到时它自己回落到自定义色）
 local function FillColor(elementConfig)
-    return elementConfig.fill
+    return Config.ResolveFill(elementConfig)
 end
 
 local function ElementState(elementConfig, fill, runeState)
@@ -314,18 +315,64 @@ end)
 -- 启动
 --------------------------------------------------------------------------
 
+-- 位置：存的是 UIParent 单位的坐标；父框整体缩放了 k 倍，而 SetPoint 的偏移量
+-- 读的是**框体自身空间**，所以要除以 k（未缩放时 k == 1，是恒等变换）。
+local function ApplyPosition()
+    local frame = Elements.frame
+    if not frame then return end
+    local scale = Config.Get().scale or 1.0
+    local pos = Config.Get().position
+
+    frame:ClearAllPoints()
+    if not (pos and pos.point) then
+        frame:SetPoint("CENTER")
+        return
+    end
+
+    local x, y = pos.x or 0, pos.y or 0
+    local EUI = rawget(_G, "EllesmereUI")
+    local PP = EUI and EUI.PP
+    if PP and UIParent then
+        local uiScale = UIParent:GetEffectiveScale()
+        local isCenter = pos.point == "CENTER"
+            and (pos.relPoint == "CENTER" or pos.relPoint == nil)
+        -- 居中锚点必须用 SnapCenterForDim：普通吸附会让奇数像素尺寸的框体
+        -- 每次保存/退出或切专精漂 1 像素
+        if isCenter and PP.SnapCenterForDim then
+            local width = frame:GetWidth() * (frame:GetEffectiveScale() / uiScale)
+            local height = frame:GetHeight() * (frame:GetEffectiveScale() / uiScale)
+            x = PP.SnapCenterForDim(x, width, uiScale)
+            y = PP.SnapCenterForDim(y, height, uiScale)
+        elseif PP.SnapForES then
+            x = PP.SnapForES(x, uiScale)
+            y = PP.SnapForES(y, uiScale)
+        end
+    end
+
+    frame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, x / scale, y / scale)
+end
+Core.ApplyPosition = ApplyPosition
+
 local function ApplyScaleAndStrata()
     local cfg = Config.Get()
     Elements.SetScale(cfg.scale or 1.0)
     Elements.SetStrata(cfg.strata or "MEDIUM")
+    ApplyPosition()
 end
 Core.ApplyScaleAndStrata = ApplyScaleAndStrata
+
+-- 配置页里的每一项改完都走这里
+function Core.ApplyConfig()
+    ApplyScaleAndStrata()
+    Refresh()
+end
 
 local boot = CreateFrame("Frame")
 boot:RegisterEvent("PLAYER_LOGIN")
 boot:SetScript("OnEvent", function(self)
     self:UnregisterAllEvents()
 
+    Config.Load()
     Elements.Create()
     ApplyScaleAndStrata()
     if NS.Mount then NS.Mount() end      -- 票据 07 接入
@@ -379,4 +426,131 @@ SlashCmdList["MYUICHH"] = function(msg)
         return
     end
     Report()
+end
+
+--------------------------------------------------------------------------
+-- EUI 挂载（票据 07）
+--
+-- 侧边栏读三张挂在 EllesmereUI 命名空间上的普通表；文件夹名没有前缀要求。
+-- 注入必须早于用户首次打开 EUI 面板——行只在首次建面板时创建。
+--------------------------------------------------------------------------
+
+local UNLOCK_KEY = "MYUI_CrosshairHUD"
+local UNLOCK_ORDER = 900
+
+local function EUIAPI()
+    return rawget(_G, "EllesmereUI")
+end
+
+-- **屏幕上的宽高**（UIParent 单位）。EUI 的拖动框画在 UIParent 空间，而我们的
+-- 父框整体缩放了 k 倍——上报设计稿尺寸会让拖动框大小错一圈。
+local function ScreenSize()
+    local frame = Elements.frame
+    if not frame then return 1, 1 end
+    local uiScale = UIParent:GetEffectiveScale()
+    local frameScale = frame:GetEffectiveScale()
+    if not (uiScale and uiScale > 0 and frameScale and frameScale > 0) then return 1, 1 end
+    local k = frameScale / uiScale
+    -- 永远返回数字：返回 nil 会让 EUI 的尺寸判断直接报错
+    return frame:GetWidth() * k, frame:GetHeight() * k
+end
+
+local function SavePos(_, point, relPoint, x, y)
+    if not (point and x and y) then return end
+    local cfg = Config.Get()
+    -- EUI 交来的坐标已经是 UIParent 单位、锚点已归一成 CENTER/CENTER
+    cfg.position = { point = point, relPoint = relPoint or point, x = x, y = y }
+    local api = EUIAPI()
+    if not (api and api._unlockActive) then
+        ApplyPosition()
+    end
+end
+
+local function LoadPos()
+    local pos = Config.Get().position
+    if not pos then return nil end
+    return { point = pos.point, relPoint = pos.relPoint or pos.point, x = pos.x, y = pos.y }
+end
+
+local function ClearPos()
+    Config.Get().position = nil
+    -- EUI 不会替我们复位，只会因为 loadPos 返回 nil 而不再动它——所以自己摆回正中
+    ApplyPosition()
+end
+
+local function RegisterUnlockElement()
+    local api = EUIAPI()
+    if not (api and api.RegisterUnlockElements and api.MakeUnlockElement) then
+        return   -- EUI 未装，或旧客户端上 EUI 整体停摆（接口根本不存在）
+    end
+
+    api:RegisterUnlockElements({
+        api.MakeUnlockElement({
+            key = UNLOCK_KEY,
+            label = "Crosshair HUD",
+            group = "MYUI",
+            order = UNLOCK_ORDER,
+            getFrame = function() return Elements.frame end,
+            getSize = ScreenSize,
+            savePos = SavePos,
+            loadPos = LoadPos,
+            clearPos = ClearPos,
+            applyPos = function() ApplyPosition() end,
+            -- 主开关关闭 → 报告隐藏 → 每次同步都会收起 mover，不留可拖动空框
+            isHidden = Core.IsHidden,
+            -- 本 HUD 有整体缩放，自动改宽高与尺寸匹配的语义对它不成立，先关掉
+            noResize = true,
+            noSizeMatchTarget = true,
+        }),
+    }, ADDON)
+end
+
+local function InjectSidebar()
+    local api = EUIAPI()
+    if not (api and api._modules and api._addonInfoByFolder and api.ADDON_GROUPS) then
+        return false
+    end
+    if api._addonInfoByFolder[ADDON] then return true end   -- 幂等
+
+    -- 不设 alwaysLoaded：本插件是真插件，保留行右边的电源按钮
+    api._addonInfoByFolder[ADDON] = { folder = ADDON, display = "Crosshair HUD" }
+    if api._syncExempt then api._syncExempt[ADDON] = true end
+
+    local group
+    for _, candidate in ipairs(api.ADDON_GROUPS) do
+        if candidate.key == "myui" then group = candidate break end
+    end
+    if not group then
+        group = { key = "myui", label = "MYUI", members = {} }
+        api.ADDON_GROUPS[#api.ADDON_GROUPS + 1] = group
+    end
+    group.members[#group.members + 1] = ADDON
+    return true
+end
+
+local function RegisterModule()
+    local api = EUIAPI()
+    if not (api and api._modules) then return end
+    if api._modules[ADDON] then return end
+
+    api._modules[ADDON] = {
+        title = "Crosshair HUD",
+        description = "屏幕中心准星 HUD：血量、符能与死亡骑士符文。",
+        pages = { "Crosshair HUD" },
+        buildPage = Config.BuildPage,
+        onReset = function()
+            local saved = rawget(_G, "MYUI_CrosshairHUDDB")
+            if type(saved) == "table" then
+                for key in pairs(saved) do saved[key] = nil end
+            end
+            Config.Load()
+            Core.ApplyConfig()
+        end,
+    }
+end
+
+function NS.Mount()
+    InjectSidebar()
+    RegisterModule()
+    RegisterUnlockElement()
 end
