@@ -12,6 +12,9 @@ class CandidateError(ValueError):
 
 
 ROOT = Path(__file__).resolve().parents[2]
+# 可接受的原生报告构建号。历史报告在其对应版本上依然有效，客户端升级时追加新编号，
+# 不删除旧编号；清单之外的版本仍照旧拒绝。
+ACCEPTED_BUILD_LEVELS = (69587, 69814)
 COMMON = ['item_db_source=local', 'threads=1', 'seed=20260912', 'target_error=0',
           'fixed_time=1', 'vary_combat_length=0', 'fight_style=Patchwerk', 'desired_targets=1',
           'optimal_raid=0', 'potion=disabled', 'flask=disabled', 'food=disabled',
@@ -162,7 +165,7 @@ def check_report(report, character, iterations):
     if (player['sim2gse_class'] != character.class_name or player['level'] != character.level or
             (character.spec_id is not None and player['sim2gse_spec_id'] != character.spec_id) or
             (character.spec_id is not None and player['race'] != character.race) or player['talents'] != character.fields['talents'] or
-            sim['options']['dbc']['Live']['build_level'] != 69587 or
+            sim['options']['dbc']['Live']['build_level'] not in ACCEPTED_BUILD_LEVELS or
             sim['options']['dbc']['version_used'] != 'Live'):
         raise ValueError('原生报告没有保持角色或固定版本')
     metadata_only = []
