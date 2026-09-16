@@ -3,8 +3,8 @@
   "completion.autoRequire": false,
   "workspace.checkThirdParty": false,
   "workspace.library": [
-    "annotations/wow-api",
-    "annotations/wow-api-scriptobject",
+    "scripts/dev/annotations/api",
+    "scripts/dev/annotations/scriptobject",
     ".tools/wow-api/Annotations/Core"
   ],
   "diagnostics.globals": ["EllesmereUI"],

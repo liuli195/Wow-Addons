@@ -23,7 +23,6 @@
         "checkParallel": true,
         "paths": [
           "addons/EUI_FacetedPortrait/**",
-          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -33,7 +32,6 @@
         ],
         "inputs": [
           "addons/EUI_FacetedPortrait/**",
-          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -48,7 +46,6 @@
         "checkParallel": true,
         "paths": [
           "addons/EUI_FacetedPortrait/**",
-          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -58,7 +55,6 @@
         ],
         "inputs": [
           "addons/EUI_FacetedPortrait/**",
-          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -401,7 +397,6 @@
         "checkParallel": true,
         "paths": [
           "scripts/dev/**",
-          "annotations/**",
           ".build-and-verify/config.json",
           ".tools/wow-api/wowdoc/loader/doc_widgets.lua",
           ".luarc.json",
@@ -412,7 +407,6 @@
         ],
         "inputs": [
           "scripts/dev/**",
-          "annotations/**",
           ".build-and-verify/config.json",
           ".tools/wow-api/wowdoc/loader/doc_widgets.lua",
           ".luarc.json",

@@ -88,8 +88,8 @@ def main():
     # 产出行外文本，这条断言专门盯住那个缺陷。
     syntax = ROOT / "scripts/dev/check_syntax.lua"
     lua = ROOT / ".tools/lua-5.1.5/src/lua.exe"
-    produced = sorted((ROOT / "annotations/wow-api/Blizzard_APIDocumentationGenerated").glob("*.lua"))
-    produced += sorted((ROOT / "annotations/wow-api-scriptobject").glob("*.lua"))
+    produced = sorted((ROOT / "scripts/dev/annotations/api/Blizzard_APIDocumentationGenerated").glob("*.lua"))
+    produced += sorted((ROOT / "scripts/dev/annotations/scriptobject").glob("*.lua"))
     assert produced, "注解产出为空"
     broken = [path.name for path in produced
               if subprocess.run([str(lua), str(syntax), str(path)],

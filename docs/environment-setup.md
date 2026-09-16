@@ -45,8 +45,8 @@ build-and-verify verify --project .
 
 | 类型名 | 来源 | 位置 |
 | --- | --- | --- |
-| API 系统（`C_*` 命名空间函数、结构体、回调别名） | **本仓库生成** | `annotations/wow-api/` |
-| 部件与脚本对象方法 | 上游已有 1127 个，**本仓库补 666 个** | `annotations/wow-api-scriptobject/` 补，类由上游声明 |
+| API 系统（`C_*` 命名空间函数、结构体、回调别名） | **本仓库生成** | `scripts/dev/annotations/api/` |
+| 部件与脚本对象方法 | 上游已有 1127 个，**本仓库补 666 个** | `scripts/dev/annotations/scriptobject/` 补，类由上游声明 |
 | Lua 标准库、第三方库（Ace3 等）、类型别名、枚举值、界面源码注解 | 上游手工维护 | `.tools/wow-api/Annotations/Core/` |
 
 未覆盖：事件负载（`Payload`）的类型未生成；暴雪文档里只含枚举值的系统不产出注解（枚举值不影响类型检查）。上游的界面源码注解子模块已下载但未作为语言检查库加载，以免把旧界面实现误当成 12.1 定义。项目扩展全局 `EllesmereUI`（界面插件）单独声明，动态依赖内部字段没有完整类型检查。

@@ -19,10 +19,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / ".tools/wow-ui-source/Interface/AddOns/Blizzard_APIDocumentationGenerated"
 TOC = SOURCE / "Blizzard_APIDocumentationGenerated.toc"
-OUTPUT = ROOT / "annotations/wow-api/Blizzard_APIDocumentationGenerated"
+OUTPUT = ROOT / "scripts/dev/annotations/api/Blizzard_APIDocumentationGenerated"
 # 部件方法单独输出：上游 `Widget/` 已声明这些类（`---@class Frame : Region, ScriptObject`）
 # 及其 1127 个方法，这里只补上游没有的方法，不重复声明类。
-SCRIPT_OUTPUT = ROOT / "annotations/wow-api-scriptobject"
+SCRIPT_OUTPUT = ROOT / "scripts/dev/annotations/scriptobject"
 WIDGET_DOCS = ROOT / ".tools/wow-api/Annotations/Core/Widget"
 UPSTREAM_DOC_WIDGETS = ROOT / ".tools/wow-api/wowdoc/loader/doc_widgets.lua"
 METHOD_NAME = re.compile(r"^function [A-Za-z0-9_]+[.:]([A-Za-z0-9_]+)\(", re.M)
