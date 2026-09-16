@@ -216,11 +216,14 @@ end
 --
 -- **背景没有第二个色块**：背景只有自定义色一种。这条有回归测试盯着
 -- （test_config_color.py），因为它来回漂过好几次——不要再给背景加来源色。
+-- `editable = false` 是**规则的一部分**：来源色由 EUI 统一管理，这里只能选用、
+-- 不能改色，点了方框之后再点也绝不开取色器。页面照这个标志决定点击行为，
+-- test_config_plan.py 断言它——实机上报过"再点会弹取色器"，就是漏了这条。
 Config.FILL_SOURCE = {
-    health    = { mode = "class",    tooltip = "Class Colored" },
-    power     = { mode = "power",    tooltip = "Power Colored" },
-    runes     = { mode = "resource", tooltip = "Class Resource Color" },
-    crosshair = { mode = "class",    tooltip = "Class Colored" },
+    health    = { mode = "class",    tooltip = "Class Colored",        editable = false },
+    power     = { mode = "power",    tooltip = "Power Colored",        editable = false },
+    runes     = { mode = "resource", tooltip = "Class Resource Color", editable = false },
+    crosshair = { mode = "class",    tooltip = "Class Colored",        editable = false },
 }
 
 --- 某一格的第二个色块用哪个来源。**"背景只有自定义色"这条规则的唯一出口**：
@@ -408,6 +411,7 @@ function Config.BuildPage(_, parent, yOffset)
                 tooltip = source.tooltip,
                 getRGB = function() return Config.SourceColor(source.mode) end,
                 setRGB = function() end,      -- 不可编辑：点它只表示"用这个来源"
+                editable = source.editable == true,
                 select = function() elementConfig[modeKey] = source.mode end,
                 isSelected = function() return Selected(source.mode) end,
                 alpha = function()
