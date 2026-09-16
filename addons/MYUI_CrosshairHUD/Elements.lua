@@ -158,7 +158,11 @@ local function ApplyFillable(part, st)
 
     -- 空转必须整格背景色：隐藏填充纹理，而不是把角度设成 0。
     -- 比例为 0 的情形不需要在这里拦：那时遮罩本来就什么都不露。
-    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and st.rotation ~= nil
+    --
+    -- **"有没有角度"看 hasRotation 这个普通布尔，不许去比较 rotation 本身**：
+    -- rotation 可能是秘密值，而秘密值不许参与比较——Core 的读数段里连"读到了吗"
+    -- 都是用另一个布尔表示的，这里不能开这个口子。
+    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and st.hasRotation == true
     part.fill:SetShown(showFill)
     if not visible then
         return

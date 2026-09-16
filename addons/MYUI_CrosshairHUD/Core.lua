@@ -389,8 +389,9 @@ local function OnEvent(_, event)
             Refresh()
         end)
     elseif event == "UI_SCALE_CHANGED" then
-        -- 界面缩放变化后重新摆放：否则 HUD 会偏移
-        Elements.SetScale(Config.Get().scale)
+        -- 界面缩放变化后要**重走整套摆放**：只调 SetScale 是白调（重算的还是同一组
+        -- 值，与界面缩放无关），像素吸附只发生在 ApplyPosition 里——漏了它就偏移。
+        Core.ApplyScaleAndStrata()
     else
         UpdateRunes()
         Refresh()

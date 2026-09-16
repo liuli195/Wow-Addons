@@ -333,6 +333,39 @@ assert(defaults2.crosshair.fillAlpha ~= nil and defaults2.crosshair.bgAlpha == n
     "准星是线，没有背景透明度")
 assert(defaults2.health.alpha == nil, "单一的 alpha 键必须已经去掉")
 
+----------------------------------------------------------------------
+-- 八、"有没有角度"必须看 hasRotation 这个**普通布尔**，不许比较 rotation 本身
+--
+-- rotation 是可能为秘密值的量，而秘密值不许参与比较（Core 的读数段就是这么写的，
+-- 那里连"读到了吗"都用另一个布尔表示）。渲染层曾经用 `st.rotation ~= nil` 去判断，
+-- 等于给那条规矩开了个口子。
+-- 用一份"自称没有角度、却带着角度"的状态来验：填充必须隐藏；若渲染层看的是
+-- rotation 本身，它会照画不误。
+----------------------------------------------------------------------
+Elements.Apply({
+    health = { visible = true, rotation = 1, hasRotation = false,
+               fillColor = { 1, 1, 1 }, fillAlpha = 1,
+               bgColor = { 0, 0, 0 }, bgAlpha = 1 },
+    runes = {},
+    crosshair = { visible = false, fillColor = { 1, 1, 1 }, fillAlpha = 1 },
+})
+assert(healthFill.shown == false,
+    "hasRotation=false 时填充必须隐藏——渲染层不许去比较 rotation 本身")
+
+----------------------------------------------------------------------
+-- 九、假数据模式（`/chh demo`）下准星的透明度也必须生效
+--
+-- 状态表契约里准星带的是 fillAlpha。DemoState 曾经写的是 `alpha`——键名与契约不符，
+-- 渲染层读不到，于是 demo 下调准星透明度毫无反应。两个构造状态的地方必须同契约，
+-- 所以这条从真实入口（Core.demo + Core.Refresh）验，而不是手搓一张状态表。
+----------------------------------------------------------------------
+Config.Get().elements.crosshair.fillAlpha = 0.25
+Core.demo = true
+Core.Refresh()
+Near(crosshair.vertex[4], 0.25, "假数据模式下准星要用配置的透明度")
+Core.demo = false
+Config.Get().elements.crosshair.fillAlpha = 1
+
 io.write("PASS: config color and alpha\n")
 '''
 
