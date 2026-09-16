@@ -48,6 +48,17 @@ Logic.PIPS = { start = 219, step = 18, span = 12, count = 6 }
 -- reverse：填充从**另一端**长起。此时切口在 c = start + span - span·f，而遮罩保留的
 -- 永远只是切口的某一侧，所以要把遮罩整体再转 180°（保留另一侧），**不是翻转 f**——
 -- 翻转 f 会让 f=0 时反而整条弧全亮。
+-- 弧线填充曲线的两个端点。
+--
+-- 「比例 → 角度」对比例是**仿射**映射，两个端点就把它定死了。这一点在受限上下文里
+-- 是决定性的：那里血量和符能是秘密值，加法都做不了，比例根本进不了 Lua 参与运算；
+-- 唯一的办法是把这条映射做成 Enum.LuaCurveType.Linear 曲线交给引擎端求值
+-- （见 Core 的弧线角度那一节）。端点从 MaskAngle 导出，两者不许各写一份。
+function Logic.ArcCurvePoints(start, span, reverse)
+    return Logic.MaskAngle(start, span, 0, reverse),
+           Logic.MaskAngle(start, span, 1, reverse)
+end
+
 function Logic.MaskAngle(start, span, f, reverse)
     if reverse then
         return math.rad(-((start + span - span * f) + 180) - 90)

@@ -199,6 +199,25 @@ for i = 1, 3 do
 end
 assert(oa[1] == 3 and oa[2] == 2 and oa[3] == 1, "索引降序决胜")
 
+----------------------------------------------------------------------
+-- 曲线端点：比例 → 角度是**仿射**映射，两个端点就把它定死
+--
+-- 受限上下文里比例是秘密值，只能把这条映射做成曲线交给引擎求值，所以"端点"
+-- 是整个几何的对外出口——它必须由 MaskAngle 导出，不许另写一份。这里顺带
+-- 核实端点之间的线性求值与原公式处处相等：那是"曲线等价于公式"的全部依据。
+----------------------------------------------------------------------
+for _, arc in ipairs({ Logic.ARCS.health, Logic.ARCS.power }) do
+    local low, high = Logic.ArcCurvePoints(arc.start, arc.span, arc.reverse)
+    assert(low == Logic.MaskAngle(arc.start, arc.span, 0, arc.reverse), "曲线起点")
+    assert(high == Logic.MaskAngle(arc.start, arc.span, 1, arc.reverse), "曲线终点")
+    for i = 0, 20 do
+        local f = i / 20
+        local linear = low + (high - low) * f
+        assert(math.abs(linear - Logic.MaskAngle(arc.start, arc.span, f, arc.reverse)) < 1e-12,
+            "端点间的线性求值必须等于 MaskAngle（f=" .. f .. "）")
+    end
+end
+
 io.write("PASS: logic seam (", checked, " 个弧上采样点逐点核对)\n")
 '''
 

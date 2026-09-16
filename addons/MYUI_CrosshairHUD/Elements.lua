@@ -3,13 +3,18 @@
 -- 持有全部纹理对象与遮罩，**不读配置、不读游戏数据**。
 -- 对外只接受一张「显示状态表」，由 Core 从「配置 + 游戏读数」算好后整表下发：
 --
---   state.health / state.power = { visible, fill, state, fillColor, bgColor, alpha }
+--   state.health / state.power = { visible, rotation, state, fillColor, bgColor, alpha }
 --   state.crosshair            = { visible, fillColor, alpha }          （准星是线，没有背景色）
---   state.runes[1..6]          = { visible, fill, state, fillColor, bgColor, alpha }
+--   state.runes[1..6]          = { visible, rotation, state, fillColor, bgColor, alpha }
 --
 -- runes 的槽位由 Core 完成排序后填入——本模块只管"第 i 格画成什么样"。
 --
--- 关键约定：**空转态（state == "empty"）要求完全隐藏填充纹理，不是把比例设成 0。**
+-- 关键约定一：**这里收的是遮罩的旋转角，不是填充比例。**
+-- 受限上下文里血量与符能是秘密值，比例进不了 Lua；Core 把「比例 → 角度」做成曲线
+-- 交给引擎求值，本模块拿到的角度**可能是秘密值**——只许原样交给 SetRotation，
+-- 绝不比较、绝不运算、绝不转成字符串。
+--
+-- 关键约定二：**空转态（state == "empty"）要求完全隐藏填充纹理，不是把角度设成 0。**
 -- 调用方不得越过这张表去直接操作本模块内部的纹理。
 
 local NS = _G.MYUI_CHH or {}
@@ -139,13 +144,13 @@ end
 
 --------------------------------------------------------------------------
 
-local function ApplyFillable(part, start, span, st, reverse)
+local function ApplyFillable(part, st)
     local visible = st.visible ~= false
     part.bg:SetShown(visible)
 
-    local fill = st.fill or 0
-    -- 空转必须整格背景色：隐藏填充纹理，而不是把比例设成 0
-    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and fill > 0
+    -- 空转必须整格背景色：隐藏填充纹理，而不是把角度设成 0。
+    -- 比例为 0 的情形不需要在这里拦：那时遮罩本来就什么都不露。
+    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and st.rotation ~= nil
     part.fill:SetShown(showFill)
     if not visible then
         return
@@ -158,7 +163,8 @@ local function ApplyFillable(part, start, span, st, reverse)
     if showFill then
         local fc = st.fillColor
         part.fill:SetVertexColor(fc[1], fc[2], fc[3], alpha)
-        part.mask:SetRotation(Logic.MaskAngle(start, span, fill, reverse))
+        -- rotation 可能是秘密值：只能原样交给 setter
+        part.mask:SetRotation(st.rotation)
     end
 end
 
@@ -171,20 +177,17 @@ function Elements.Apply(state)
     end
     Elements.SetVisible(true)
 
-    local arcs = Logic.ARCS
     if state.health then
-        ApplyFillable(parts.health, arcs.health.start, arcs.health.span, state.health)
+        ApplyFillable(parts.health, state.health)
     end
     if state.power then
-        ApplyFillable(parts.power, arcs.power.start, arcs.power.span, state.power,
-            arcs.power.reverse)
+        ApplyFillable(parts.power, state.power)
     end
 
     for i = 1, Logic.PIPS.count do
         local slot = state.runes and state.runes[i]
         if slot then
-            local start = Logic.PIPS.start + (i - 1) * Logic.PIPS.step
-            ApplyFillable(parts.runes[i], start, Logic.PIPS.span, slot)
+            ApplyFillable(parts.runes[i], slot)
         end
     end
 

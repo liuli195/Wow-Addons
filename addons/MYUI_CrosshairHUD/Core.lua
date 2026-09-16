@@ -27,8 +27,10 @@ local SlashCmdList = assert(rawget(_G, "SlashCmdList"))
 local UIParent = _G.UIParent
 local UnitHealth = _G.UnitHealth
 local UnitHealthMax = _G.UnitHealthMax
+local UnitHealthPercent = _G.UnitHealthPercent
 local UnitPower = _G.UnitPower
 local UnitPowerMax = _G.UnitPowerMax
+local UnitPowerPercent = _G.UnitPowerPercent
 local print = _G.print
 
 local POLL_INTERVAL = 0.1      -- 符文必须轮询：回复速度变化不保证触发事件
@@ -40,10 +42,13 @@ Core.mediaRoot = MEDIA_ROOT
 --------------------------------------------------------------------------
 -- 读数：秘密值防御
 --
--- 四个血量／符能接口都可能返回秘密值，其中 UnitHealth 是 SecretReturns
--- （可能**无条件**返回），另三个是"受限时才可能"。
--- 取到不可读值时返回 nil，由调用方**跳过本次更新、保留上一次的值**，
--- 绝不让秘密值参与比较或算术。
+-- 受限上下文（副本、PvP）里 UnitHealth／UnitPower 返回的是**秘密值**：实机探针
+-- 确认它们连加法都做不了（pcall 直接失败），所以「读到血量比例再自己算角度」这
+-- 条路在那里根本不存在——秘密值永远进不了 Lua 参与运算。
+--
+-- 血量与符能的弧线因此改走**引擎端求值**（见下方「弧线角度」）。这里剩下的
+-- Unreadable／MaybeNumber／MaybeBoolean 只服务符文读数：GetRuneCooldown 结构上
+-- 不返回秘密值，但仍然按"读到不可读的值就保留上一次"处理，绝不猜一个数字。
 --------------------------------------------------------------------------
 
 local function Unreadable(value)
@@ -58,19 +63,6 @@ local function Unreadable(value)
         if not ok or secret then return true end
     end
     return false
-end
-
-local function ReadNumber(call)
-    local ok, value = pcall(call)
-    if not ok or Unreadable(value) then return nil end
-    local arith, copy = pcall(function() return value + 0 end)
-    if not arith or type(copy) ~= "number" then return nil end
-    return copy
-end
-
-local function Clamp01(value)
-    if value < 0 then return 0 elseif value > 1 then return 1 end
-    return value
 end
 
 ---@param value number
@@ -88,29 +80,93 @@ local function MaybeBoolean(value)
 end
 
 --------------------------------------------------------------------------
--- 最近一次成功读到的值（读不到就保留它）
+-- 弧线角度：比例 → 角度交给引擎求值
+--
+-- 血量和符能的比例在受限上下文里是秘密值，拿不到 Lua 里来。官方给的途径是把这条
+-- 映射做成曲线交给引擎：UnitHealthPercent／UnitPowerPercent 接收一条曲线，文档写明
+-- 「可用曲线缩放以用于显示」，返回的是**用百分比求值曲线的结果**；数值曲线的
+-- AddPoint 收的就是数字，而求值结果正好可以原样喂给纹理的 SetRotation——Rotation
+-- 正是 Enum.SecretAspect 之一，旋转本来就能被秘密值驱动。全程本插件不读那个值，
+-- 只是把它从 setter 转交到 setter（EllesmereUI 对血量取色用的是同一套做法）。
+--
+-- MaskAngle 对比例是**仿射**的，所以两个端点就精确等价于原公式；端点由
+-- Logic.ArcCurvePoints 从 MaskAngle 导出，离线测试继续守着几何。
 --------------------------------------------------------------------------
 
-local last = { health = 0, power = 0, runes = {} }
+local arcCurves = {}
+
+local function NewArcCurve(start, span, reverse)
+    local CurveUtil = _G.C_CurveUtil
+    local linear = Enum and Enum.LuaCurveType and Enum.LuaCurveType.Linear
+    if not (CurveUtil and CurveUtil.CreateCurve and linear) then return nil end
+
+    local ok, curve = pcall(CurveUtil.CreateCurve)
+    if not ok or not curve or not curve.AddPoint then return nil end
+
+    local low, high = Logic.ArcCurvePoints(start, span, reverse)
+    local built = pcall(function()
+        curve:SetType(linear)
+        curve:AddPoint(0, low)
+        curve:AddPoint(1, high)
+    end)
+    if not built then return nil end
+    return curve
+end
+
+-- 曲线在 PLAYER_LOGIN 时建；也导出给离线测试，让测试走同一段装配
+function Core.BuildArcCurves()
+    arcCurves.health = NewArcCurve(Logic.ARCS.health.start, Logic.ARCS.health.span,
+        Logic.ARCS.health.reverse)
+    arcCurves.power = NewArcCurve(Logic.ARCS.power.start, Logic.ARCS.power.span,
+        Logic.ARCS.power.reverse)
+end
+
+local function PowerType()
+    return Enum and Enum.PowerType and Enum.PowerType.RunicPower
+end
+
+--------------------------------------------------------------------------
+-- 最近一次成功读到的值（读不到就保留它）
+--
+-- 弧线的角度**可能是秘密值**：只许原样存放、原样转交，绝不检查、比较或运算。
+-- "有没有读到"一律用另一个普通布尔值表示，绝不用 `angle ~= nil` 去测它。
+--------------------------------------------------------------------------
+
+local last = { hasHealthArc = false, hasPowerArc = false, runes = {} }
 for i = 1, Logic.PIPS.count do
     last.runes[i] = { index = i, frac = 0, state = Logic.RUNE_EMPTY, remaining = nil }
 end
 
-local function UpdateHealth()
-    local current = ReadNumber(function() return UnitHealth("player") end)
-    local maximum = ReadNumber(function() return UnitHealthMax("player") end)
-    if current and maximum and maximum > 0 then
-        last.health = Clamp01(current / maximum)
+-- 返回：普通布尔「读到了吗」，以及角度（可能秘密，调用方只许转交）
+local function HealthArc()
+    local curve = arcCurves.health
+    if not (curve and UnitHealthPercent) then return false end
+    local ok, angle = pcall(UnitHealthPercent, "player", false, curve)
+    if not ok then return false end
+    return true, angle
+end
+
+local function PowerArc()
+    local curve = arcCurves.power
+    local powerType = PowerType()
+    if not (curve and UnitPowerPercent and powerType) then return false end
+    -- 参数次序是 单位、能量类型、unmodified、曲线
+    local ok, angle = pcall(UnitPowerPercent, "player", powerType, false, curve)
+    if not ok then return false end
+    return true, angle
+end
+
+local function UpdateHealthArc()
+    local got, angle = HealthArc()
+    if got then
+        last.healthRotation, last.hasHealthArc = angle, true
     end
 end
 
-local function UpdatePower()
-    local powerType = Enum and Enum.PowerType and Enum.PowerType.RunicPower
-    if not powerType then return end
-    local current = ReadNumber(function() return UnitPower("player", powerType) end)
-    local maximum = ReadNumber(function() return UnitPowerMax("player", powerType) end)
-    if current and maximum and maximum > 0 then
-        last.power = Clamp01(current / maximum)
+local function UpdatePowerArc()
+    local got, angle = PowerArc()
+    if got then
+        last.powerRotation, last.hasPowerArc = angle, true
     end
 end
 
@@ -138,10 +194,12 @@ local function FillColor(elementConfig)
     return Config.ResolveFill(elementConfig)
 end
 
-local function ElementState(elementConfig, fill, runeState)
+-- rotation 可能是秘密值：本函数只转交，不检查
+local function ElementState(elementConfig, rotation, hasRotation, runeState)
     return {
         visible = elementConfig.enabled ~= false,
-        fill = fill,
+        rotation = rotation,
+        hasRotation = hasRotation == true,
         state = runeState,
         fillColor = FillColor(elementConfig),
         bgColor = elementConfig.bg,
@@ -154,8 +212,8 @@ local function BuildState()
     local elements = cfg.elements
     local state = {}
 
-    state.health = ElementState(elements.health, last.health)
-    state.power = ElementState(elements.power, last.power)
+    state.health = ElementState(elements.health, last.healthRotation, last.hasHealthArc)
+    state.power = ElementState(elements.power, last.powerRotation, last.hasPowerArc)
 
     -- 符文：先排序得到「槽位 → 符文索引」，再把每个符文的状态铺到槽位上。
     -- 6 张符文格纹理各自是环上不同角度的弧段，位置固定——重排换的是显示哪个
@@ -164,7 +222,11 @@ local function BuildState()
     state.runes = {}
     for slot = 1, Logic.PIPS.count do
         local rune = last.runes[order[slot]]
-        state.runes[slot] = ElementState(elements.runes, rune.frac, rune.state)
+        -- 符文的角度由本插件自己算（这条接口不返回秘密值）；比例 0 的情形不必
+        -- 特殊处理——那时遮罩本来就什么都不露。
+        local start = Logic.PIPS.start + (slot - 1) * Logic.PIPS.step
+        state.runes[slot] = ElementState(elements.runes,
+            Logic.MaskAngle(start, Logic.PIPS.span, rune.frac), true, rune.state)
     end
 
     local crosshair = elements.crosshair
@@ -184,6 +246,11 @@ Core.demo = false          -- /chh demo：用假数据驱动，便于在没有�
 
 local demoFill = 0
 
+-- 假数据是普通数值，角度直接算；实机那条路必须经引擎求值（见「弧线角度」）
+local function ArcRotation(arc, fill)
+    return Logic.MaskAngle(arc.start, arc.span, fill, arc.reverse)
+end
+
 local function DemoState()
     demoFill = (demoFill + 0.01) % 1.2
     if demoFill > 1 then demoFill = 1 end
@@ -192,13 +259,17 @@ local function DemoState()
     local state = {}
     -- 方向必须与真实行为一致，否则拿它检查外观会得出相反的结论：
     -- 血条满血起、逐步掉；符能空起、逐步涨。
-    state.health = ElementState(elements.health, 1 - demoFill)
-    state.power = ElementState(elements.power, demoFill)
+    state.health = ElementState(elements.health,
+        ArcRotation(Logic.ARCS.health, 1 - demoFill), true)
+    state.power = ElementState(elements.power,
+        ArcRotation(Logic.ARCS.power, demoFill), true)
     state.runes = {}
     for slot = 1, Logic.PIPS.count do
         local fill = 1.8 * demoFill - (slot - 1) * 0.16
         if fill < 0 then fill = 0 elseif fill > 1 then fill = 1 end
-        state.runes[slot] = ElementState(elements.runes, fill)
+        local start = Logic.PIPS.start + (slot - 1) * Logic.PIPS.step
+        state.runes[slot] = ElementState(elements.runes,
+            Logic.MaskAngle(start, Logic.PIPS.span, fill), true)
     end
     state.crosshair = {
         visible = elements.crosshair.enabled ~= false,
@@ -231,13 +302,25 @@ end
 -- 最近一次**成功读到**的读数。既是诊断入口，也是秘密值降级那条分支的
 -- 唯一可测面——那条分支在实机无法按需触发，只能离线验。
 function Core.GetReadings()
-    return { health = last.health, power = last.power }
+    local runes = {}
+    for i = 1, Logic.PIPS.count do
+        local rune = last.runes[i]
+        runes[i] = { index = rune.index, frac = rune.frac, state = rune.state }
+    end
+    return {
+        hasHealth = last.hasHealthArc,
+        hasPower = last.hasPowerArc,
+        -- 实机里这两个是秘密值，只许原样转交；离线测试里它们是普通数值，可断言
+        healthRotation = last.healthRotation,
+        powerRotation = last.powerRotation,
+        runes = runes,
+    }
 end
 
 -- 重新读一遍三条资源。事件处理与离线测试都走这里，避免两套路径。
 function Core.UpdateReadings()
-    UpdateHealth()
-    UpdatePower()
+    UpdateHealthArc()
+    UpdatePowerArc()
     UpdateRunes()
 end
 
@@ -269,11 +352,11 @@ local talentPending = false
 
 local function OnEvent(_, event)
     if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
-        UpdateHealth()
+        UpdateHealthArc()
         Refresh()
     elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT"
         or event == "UNIT_MAXPOWER" then
-        UpdatePower()
+        UpdatePowerArc()
         Refresh()
     elseif event == "RUNE_POWER_UPDATE" then
         -- 事件负载可能不可读：忽略参数、整表重读
@@ -379,6 +462,7 @@ boot:SetScript("OnEvent", function(self)
 
     Config.Load()
     Elements.Create()
+    Core.BuildArcCurves()
     ApplyScaleAndStrata()
     if NS.Mount then NS.Mount() end      -- 票据 07 接入
     Core.UpdateReadings()
@@ -435,9 +519,15 @@ local function Report()
     print(string.format("  启用=%s  缩放=%.2f  层级=%s  假数据=%s",
         tostring(cfg.enabled), cfg.scale or 1, cfg.strata or "MEDIUM",
         Core.demo and "开" or "关"))
-    print(string.format("  最近读数：血量 %.3f  符能 %.3f", last.health, last.power))
+    -- 只报"有没有取到"，绝不打印角度本身：实机里它是秘密值，不允许转字符串
+    print(string.format("  弧线角度：血量%s  符能%s",
+        last.hasHealthArc and "已取到" or "没取到",
+        last.hasPowerArc and "已取到" or "没取到"))
 
-    -- 读数探针：血量／符能两条弧都空着时，唯一的嫌疑就是这里被判成不可读。
+    -- 读数探针：血量／符能两条弧都空着时，先看是取数接口的问题还是求值链的问题。
+    print("  弧线求值链：C_CurveUtil=" .. Presence(_G.C_CurveUtil ~= nil)
+        .. "  UnitHealthPercent=" .. Presence(UnitHealthPercent ~= nil)
+        .. "  UnitPowerPercent=" .. Presence(UnitPowerPercent ~= nil))
     print("  读数探针：")
     Probe("UnitHealth", function() return UnitHealth("player") end)
     Probe("UnitHealthMax", function() return UnitHealthMax("player") end)
