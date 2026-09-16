@@ -334,8 +334,18 @@ function Config.BuildPage(_, parent, yOffset)
         swatch._eabOrigClick = swatch:GetScript("OnClick")
         swatch:SetScript("OnClick", function(self)
             if grayed() then return end
-            -- 未选中的先切选择，已经在它上面了才开取色器（EUI 的色块约定）
-            if not (spec.isSelected and spec.isSelected()) then
+            local selected = spec.isSelected and spec.isSelected()
+            -- **来源色块永远不可编辑**：职业色／能量色／职业资源色由 EUI 统一管理，
+            -- 这里只能选、不能改——再点一次也绝不开取色器（EUI 的色块约定是
+            -- "已选中时再点开取色器"，但那是对可编辑的自定义色块说的）。
+            if not spec.editable then
+                if not selected then
+                    spec.select()
+                    Changed()
+                end
+                return
+            end
+            if not selected then
                 spec.select()
                 Changed()
                 return
@@ -372,6 +382,7 @@ function Config.BuildPage(_, parent, yOffset)
             select = function() elementConfig[modeKey] = "custom" end,
             isSelected = function() return Selected("custom") end,
             alpha = function() return Selected("custom") and 1 or 0.3 end,
+            editable = true,      -- 只有自定义色块能开取色器
         } }
         if source then
             list[2] = {
