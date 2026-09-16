@@ -411,13 +411,7 @@ function Config.BuildPage(_, parent, yOffset)
         local row, height = W:DualRow(parent, y,
             { type = "multiSwatch", text = "填充颜色", disabled = grayed,
               swatches = fillSwatches },
-            right or { type = "slider", text = "填充不透明度", min = 0, max = 100, step = 1,
-              getValue = function() return (elementConfig.fillAlpha or 1) * 100 end,
-              setValue = function(value)
-                  elementConfig.fillAlpha = value / 100
-                  refresh()
-              end,
-              disabled = grayed })
+            right or { type = "spacer" })
         y = y - height
         return row
     end
@@ -425,25 +419,29 @@ function Config.BuildPage(_, parent, yOffset)
     local _, h = W:SectionHeader(parent, "常规", y)
     y = y - h
 
-    _, h = W:Toggle(parent, "启用准星 HUD", y,
-        function() return cfg.enabled ~= false end,
-        function(value)
-            cfg.enabled = value
-            refresh()
-            -- 总开关会改变四个子开关的可用状态，重走一遍刷新列表
-            if EUI and EUI.RefreshPage then EUI:RefreshPage() end
-        end)
-    y = y - h
-
+    -- **每一项只占半格，成对排列**：开关与滑块同行（EUI 参考页也是这么配的）。
+    -- 别用满行的 Toggle：那是通栏，与"左右分栏"不是一回事。
     _, h = W:DualRow(parent, y,
+        { type = "toggle", text = "启用准星 HUD",
+          getValue = function() return cfg.enabled ~= false end,
+          setValue = function(value)
+              cfg.enabled = value
+              refresh()
+              -- 总开关会改变四个子开关的可用状态，重走一遍刷新列表
+              if EUI and EUI.RefreshPage then EUI:RefreshPage() end
+          end },
         { type = "slider", text = "HUD 缩放",
           min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
           tooltip = "整体等比缩放。1.0 为设计稿原始大小。",
           getValue = function() return cfg.scale or 1.0 end,
-          setValue = function(value) cfg.scale = value; refresh() end },
+          setValue = function(value) cfg.scale = value; refresh() end })
+    y = y - h
+
+    _, h = W:DualRow(parent, y,
         { type = "dropdown", text = "图层", values = STRATA_VALUES, order = STRATA_ORDER,
           getValue = function() return cfg.strata or "MEDIUM" end,
-          setValue = function(value) cfg.strata = value; refresh() end })
+          setValue = function(value) cfg.strata = value; refresh() end },
+        { type = "spacer" })
     y = y - h
 
     -- 位置**不在这里配**：解锁模式里点齿轮（元素选项）就能改 X/Y，那是 EUI 现成的
@@ -456,21 +454,31 @@ function Config.BuildPage(_, parent, yOffset)
         _, h = W:SectionHeader(parent, label, y)
         y = y - h
 
-        _, h = W:Toggle(parent, "启用", y,
-            function() return element.enabled ~= false end,
-            function(value) element.enabled = value; refresh() end,
-            nil,
-            function() return Config.Grayed(key) end)
-        y = y - h
-
         local grayed = function() return Config.Grayed(key) end
         local function Changed()
             refresh()
             if EUI.RefreshPage then EUI:RefreshPage() end
         end
 
-        -- 右格：条背景（色块与透明度滑块**同格**）。准星是线不是块，没有背景色，
-        -- 右格留给填充不透明度。
+        -- 第一行：启用 | 填充不透明度。（填充不透明度在这里，不能在"没有背景时的
+        -- 右格"里——有背景的元素右格被条背景占了，那样它哪儿都不会出现。）
+        _, h = W:DualRow(parent, y,
+            { type = "toggle", text = "启用",
+              getValue = function() return element.enabled ~= false end,
+              setValue = function(value) element.enabled = value; refresh() end,
+              -- 总开关关掉时子开关置灰不可点
+              disabled = function() return Config.Get().enabled == false end },
+            { type = "slider", text = "填充不透明度", min = 0, max = 100, step = 1,
+              getValue = function() return (element.fillAlpha or 1) * 100 end,
+              setValue = function(value)
+                  element.fillAlpha = value / 100
+                  refresh()
+              end,
+              disabled = grayed })
+        y = y - h
+
+        -- 第二行右格：条背景（色块与透明度滑块**同格**）。
+        -- 准星是线不是块，没有背景色，右格留空。
         local bgSlot
         if key ~= "crosshair" then
             bgSlot = { type = "slider", text = "条背景", min = 0, max = 100, step = 1,
