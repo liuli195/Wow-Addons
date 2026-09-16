@@ -6,7 +6,7 @@ Status（状态）: open
 Assignee（领取者）: unassigned
 Mode（方式）: AFK（代理驱动；成文后交用户审阅）
 Parent（所属地图）: [Crosshair HUD（准星 HUD，EllesmereUI 扩展插件）实施地图](../spec.md)
-Blocked by（前置事项）: [弧线渲染实机原型：技术选型与默认尺寸](02-arc-fill-prototype.md)；[EUI 集成契约核实：侧边栏挂载与配置档案切换](03-eui-integration-contract.md)；[死亡骑士符文读数契约](04-deathknight-rune-contract.md)；[素材重导规格与进入仓库素材流水线](05-media-reexport-spec.md)；[测试与验收策略](06-test-acceptance-strategy.md)
+Blocked by（前置事项）: [弧线渲染实机原型：技术选型与默认尺寸](02-arc-fill-prototype.md)；[EUI 集成契约核实：侧边栏挂载与配置档案切换](03-eui-integration-contract.md)；[死亡骑士符文读数契约](04-deathknight-rune-contract.md)；[素材重导规格与进入仓库素材流水线](05-media-reexport-spec.md)；[测试与验收策略](06-test-acceptance-strategy.md)；[HUD 的框架层级](09-hud-frame-strata.md)
 
 ## Question（问题）
 
