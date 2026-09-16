@@ -1,8 +1,8 @@
 # Crosshair HUD（准星 HUD，EllesmereUI 扩展插件）实施地图
 
 Label（标签）: wayfinder:map
-Status（状态）: open
-Assignee（领取者）: unassigned
+Status（状态）: closed
+Assignee（领取者）: Codex（主代理）
 
 ## Destination（目标）
 
@@ -29,6 +29,7 @@ Assignee（领取者）: unassigned
 
 - [需求追问：准星 HUD 的范围与集成决策](issues/01-requirements-grilling.md)：交付物为方案计划加一次性弧线渲染原型；v1 只做死亡骑士、符文充能按角度填充、不做两侧数值文字；素材允许从 SVG 重导但不改图形；默认尺寸留到原型定；四元素各自独立配置填充色／背景色／透明度；硬依赖 EUI 且不做兜底；每功能一个真插件（`MYUI` 公共核心 + `MYUI_CrosshairHUD`）；配置跟随 EUI 配置档案。
 - [弧线渲染实机原型：技术选型与默认尺寸](issues/02-arc-fill-prototype.md)：实机选定**技术 A（旋转半平面遮罩）**、**默认尺寸 1.0 倍**、符文格用**动态重排**。A 与 B 都能渲染，但 B 的扫掠切线是几何硬边、**没有抗锯齿**，观感明显不如 A。技术 A **不需要重切素材**，只需额外一张半平面遮罩图；两条换算公式经数值验证（8 条弧 × 101 个填充值 × 399 个采样点，零错误）可直接实现。
+- [方案计划成文](issues/07-plan-writeup.md)：产出 **[Crosshair HUD 实施计划](plan.md)**（376 行，零待填位），用户审阅后确认作为实施依据。计划含路线图、插件结构、模块划分、渲染契约、读数契约、集成契约、20 项配置、素材规格、测试与验收、**7 张实施票据拆分建议**、已知偏差与前提假设。相对设计稿**无偏差**。**本票关闭即地图终点达成。**
 - [测试与验收策略](issues/06-test-acceptance-strategy.md)：把**三块纯逻辑抽进同一个文件**做自动化测试（角度↔填充换算语义、符文充能比例、符文排序），其余靠游戏验收；落点 `tests/addons/MYUI_CrosshairHUD/test_logic.py`，Python 驱动本机 Lua 5.1。游戏内人工验收**清单 13 条，用户确认全做**（含"禁用 EUI 后本插件不加载"与一条性能轻度观察）。性能不用纯函数替代观察，但也无需基准——解析估算约百来次 C 调用/秒。
 - [素材重导规格与进入仓库素材流水线](issues/05-media-reexport-spec.md)：**9 张成品不重新导出**——素材是 2 像素/设计稿单位，而缩放上限 2.0 恰好对应 1:1，全范围内不会被放大，原样逐字节复制（与素材包 SHA-256 完全相同）。格式用 PNG（原型已实机验证）。**唯一新增素材是半平面遮罩**，它与角度换算公式是一对、方向已由校验脚本断言。流水线并入统一构建入口 `scripts/media/build_assets.py`，来源固化在 `assets/CrosshairHUDMedia/`，成品出到 `addons/MYUI/Media/CrosshairHUD/`。本机**没有 SVG 光栅化工具**。
 - [HUD 的框架层级](issues/09-hud-frame-strata.md)：默认 `MEDIUM`（与 EUI 自家资源条、单位框体同层，低于设置窗口的 `DIALOG` 与下拉菜单的 `FULLSCREEN_DIALOG`），并**做成配置项**。配置项总数由 19 变为 20。
