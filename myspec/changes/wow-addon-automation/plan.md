@@ -203,9 +203,9 @@
 
 | # | 问题 | 影响 |
 | --- | --- | --- |
-| 1 | **探针以哪一版为底**：游戏目录里的 v0.1.4（`RegisterMessage` + `GSE_MODS_VISIBLE` 消息总线）还是仓库里的 v0.1.0（`hooksecurefunc` + `HookScript`）？ | **阻塞 P5**。v0.1.4 走 GSE 官方扩展点更稳，但**从未提交，重装即丢失** |
+| 1 | **探针以哪一版为底**：游戏目录里的 v0.1.4（`RegisterMessage` + `GSE_MODS_VISIBLE` 消息总线）还是仓库里的 v0.1.0（`hooksecurefunc` + `HookScript`）？ | **已定**：v0.1.4 在本地分支 `codex/fix-sim2gse-probe-relay-capture` 上（9 个提交，与游戏安装版逐字节一致），等该分支工作完成后合入主干时解决冲突，本轮不动 |
 | 2 | 是否授权把 BugGrabber 部署进游戏目录 | 阻塞 P2 |
-| 3 | 客户端版本对齐：`scripts/dev/versions.json` 与 `docs/environment-setup.md` 仍写 69587，实际已是 69814（`live` 分支对应构建）。是否现在对齐 | 影响后续所有接口核实的基准；准星 HUD 那 5 轮实机验收实际跑在 69814 上 |
+| 3 | 客户端版本对齐：`scripts/dev/versions.json` 与 `docs/environment-setup.md` 仍写 69587，实际已是 69814（`live` 分支对应构建）。是否现在对齐 | **已解决（2026-09-17）**：固定版本对齐到 69814，注解改由 `scripts/dev/build_wow_annotations.py` 自行生成（不再依赖停更的上游） |
 | 4 | P6 是否值得投入（须先过 G2） | 若 G2 不通过则无需决策 |
 
 ---

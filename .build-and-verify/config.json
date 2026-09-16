@@ -23,6 +23,7 @@
         "checkParallel": true,
         "paths": [
           "addons/EUI_FacetedPortrait/**",
+          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -32,6 +33,7 @@
         ],
         "inputs": [
           "addons/EUI_FacetedPortrait/**",
+          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -46,6 +48,7 @@
         "checkParallel": true,
         "paths": [
           "addons/EUI_FacetedPortrait/**",
+          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -55,6 +58,7 @@
         ],
         "inputs": [
           "addons/EUI_FacetedPortrait/**",
+          "annotations/**",
           "scripts/dev/**",
           ".build-and-verify/config.json",
           ".luarc.json",
@@ -384,6 +388,33 @@
         "inputs": [
           "scripts/dev/**",
           ".build-and-verify/config.json",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
+        ]
+      },
+      {
+        "id": "verify.annotation-build",
+        "command": ".venv\\Scripts\\python.exe tests/dev/test_build_wow_annotations.py",
+        "checkParallel": true,
+        "paths": [
+          "scripts/dev/**",
+          "annotations/**",
+          ".build-and-verify/config.json",
+          ".tools/wow-api/wowdoc/loader/doc_widgets.lua",
+          ".luarc.json",
+          ".luacheckrc",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "tests/dev/**"
+        ],
+        "inputs": [
+          "scripts/dev/**",
+          "annotations/**",
+          ".build-and-verify/config.json",
+          ".tools/wow-api/wowdoc/loader/doc_widgets.lua",
           ".luarc.json",
           ".luacheckrc",
           ".github/workflows/verify.yml",

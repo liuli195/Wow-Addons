@@ -1,0 +1,4 @@
+---@meta _
+---@class CursorFileInfo
+---@field name string
+---@field hasBaseBlp boolean
