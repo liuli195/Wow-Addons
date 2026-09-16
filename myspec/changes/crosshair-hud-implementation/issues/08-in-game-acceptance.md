@@ -1,8 +1,8 @@
 # 08：游戏内验收
 
 Triage（分拣）: ready-for-agent
-Status（状态）: open
-Assignee（领取者）: unassigned
+Status（状态）: closed
+Assignee（领取者）: Codex（主代理）
 Parent（来源）: [Crosshair HUD 实施规格](../spec.md)
 Blocked by（前置事项）: [07：EUI 挂载与交互](07-eui-integration.md)
 
@@ -116,3 +116,5 @@ Blocked by（前置事项）: [07：EUI 挂载与交互](07-eui-integration.md)
 **其余变更**：`addons/CrosshairHUDProto/` 及验证配置里的三条 `verify.crosshairhud-proto-*` 已按用户要求移除；AGENTS.md 与 README 的插件/素材清单已补上 MYUI 系列。
 
 **仍然存在的未验证项**：本轮两条"保留待复验"；以及受限上下文（副本/PvP）里秘密值路径的**实机**表现——它只能在受限内容里偶然撞上，离线测试覆盖了策略，实机只验过常规场景。
+
+**本票关闭**：16 条清单全部有实机证据；两条修复后的复验（验收 15 与解锁模式位置跳动）已由用户实机确认通过。
