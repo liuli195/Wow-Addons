@@ -1,5 +1,5 @@
 ## Interface: 120100
-## Title: |cff7fafcbMYUI|r Crosshair HUD
+## Title: |cff7fafcbMYUI|r 准星HUD
 ## Notes: 屏幕中心准星 HUD：血量、符能与死亡骑士符文。
 ## Category: MYUI
 ## Group: MYUI

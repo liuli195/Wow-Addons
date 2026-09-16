@@ -136,7 +136,11 @@ local elem = registeredElements[1]
 ----------------------------------------------------------------------
 assert(elem.key == "MYUI_CrosshairHUD", "元素 key 应是插件目录名")
 assert(elem.group == "MYUI", "元素应挂在 MYUI 分组下")
-assert(type(elem.label) == "string" and elem.label ~= "", "元素要有可读的 label")
+
+-- 界面上露出的名字一律用中文（key/folder 这类内部标识保持英文，不进界面）
+local DISPLAY_NAME = "准星HUD"
+assert(elem.label == DISPLAY_NAME,
+    "拖动框上的名字应是「" .. DISPLAY_NAME .. "」，实得 " .. tostring(elem.label))
 
 ----------------------------------------------------------------------
 -- **不许设 noResize**：EUI 把 X/Y 位置输入也一起放在 canResize 块里
@@ -196,6 +200,11 @@ assert(nav, "齿轮的「元素选项」只认这张表，缺了它那一项就�
 assert(nav.module == "MYUI_CrosshairHUD", "跳转目标模块应是本插件")
 local module = api._modules["MYUI_CrosshairHUD"]
 assert(module, "模块必须已注册，否则 ShowModule 不会选中它")
+assert(module.title == DISPLAY_NAME,
+    "菜单里那一行的标题应是「" .. DISPLAY_NAME .. "」，实得 " .. tostring(module.title))
+assert(type(module.pages) == "table" and #module.pages == 1
+    and module.pages[1] == DISPLAY_NAME,
+    "页面标签也应是「" .. DISPLAY_NAME .. "」")
 local pageOK = false
 for _, name in ipairs(module.pages or {}) do
     if name == nav.page then pageOK = true end

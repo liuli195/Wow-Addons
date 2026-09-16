@@ -32,7 +32,7 @@ MYUI.GROUP_LABEL = "MYUI"
 
 -- 系列名册。folder 是插件目录名，display 是侧边栏上显示的名字。
 MYUI.SERIES = {
-    { folder = "MYUI_CrosshairHUD", display = "Crosshair HUD" },
+    { folder = "MYUI_CrosshairHUD", display = "准星HUD" },
 }
 
 local function EUI()

@@ -76,6 +76,9 @@ for _, entry in ipairs(MYUI.SERIES) do
     assert(info, "功能插件没加载，行也必须在册：" .. entry.folder)
     assert(info.folder == entry.folder and type(info.display) == "string",
         "行信息要带 folder 与 display")
+    -- 侧边栏上露出的名字用中文；key/folder 这类内部标识仍是英文
+    assert(info.display == "准星HUD",
+        "侧边栏那一行应显示「准星HUD」，实得 " .. tostring(info.display))
     -- alwaysLoaded 会让 EUI 把被禁用的行画成启用、并藏起电源按钮
     assert(info.alwaysLoaded == nil, "不许设 alwaysLoaded")
 end

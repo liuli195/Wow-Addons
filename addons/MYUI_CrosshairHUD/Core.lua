@@ -700,7 +700,7 @@ local function RegisterUnlockElement()
     api:RegisterUnlockElements({
         api.MakeUnlockElement({
             key = UNLOCK_KEY,
-            label = "Crosshair HUD",
+            label = "准星HUD",
             group = "MYUI",
             order = UNLOCK_ORDER,
             getFrame = function() return Elements.frame end,
@@ -733,9 +733,9 @@ local function RegisterModule()
     if api._modules[ADDON] then return end
 
     api._modules[ADDON] = {
-        title = "Crosshair HUD",
-        description = "屏幕中心准星 HUD：生命值条、能量条与死亡骑士的职业资源条。",
-        pages = { "Crosshair HUD" },
+        title = "准星HUD",
+        description = "屏幕中心准星HUD：生命值条、能量条与死亡骑士的职业资源条。",
+        pages = { "准星HUD" },
         buildPage = Config.BuildPage,
         onReset = function()
             local saved = rawget(_G, "MYUI_CrosshairHUDDB")
@@ -758,7 +758,7 @@ local function RegisterSettingsNav()
 
     map[UNLOCK_KEY] = {
         module = ADDON,
-        page = "Crosshair HUD",
+        page = "准星HUD",
         -- 跳过去之后高亮这一行，让人一眼看到跟尺寸有关的设置在哪
         highlightText = "HUD 缩放",
     }
