@@ -2,8 +2,8 @@
 
 Label（标签）: wayfinder:grilling
 Triage（分拣）: ready-for-human
-Status（状态）: open
-Assignee（领取者）: unassigned
+Status（状态）: closed
+Assignee（领取者）: Codex（主代理）
 Mode（方式）: HITL（与用户共同决策）
 Parent（所属地图）: [Crosshair HUD（准星 HUD，EllesmereUI 扩展插件）实施地图](../spec.md)
 Blocked by（前置事项）: 无
@@ -42,4 +42,28 @@ Blocked by（前置事项）: 无
 
 ## Comments（讨论）
 
-尚未领取；结论在本节追加，不提前填入答案。
+### 2026-09-16 用户决议：改为独立存储
+
+用户明确答复：*"配置这么复杂的话，那就不用搞跟随档案了，我们用独立的方式来做，配置文件独立就好了。"*
+
+**结论：配置存在功能插件自己的 SavedVariables 里，不跟随 EUI 配置档案，不使用 `Lite.NewDB`。**
+
+#### 这条决定消掉的东西
+
+- **不需要包装 `EllesmereUI.RefreshAllAddons`**——档案切换时我们本来就没有东西需要重新应用，[EUI 集成契约核实](03-eui-integration-contract.md)发现的唯一偏门挂点可以完全不要。
+- 不需要 `Lite.NewDB`，也就避开了它清空插件自身 SavedVariables 的行为，以及对那个无文档内部框架的依赖。
+- 不存在"缓存 `db.profile` 会静默写进废弃表"这个陷阱——那是 `RepointAllDBs` 的行为，我们不参与。
+- 不需要依赖 `EllesmereUIDB` 在加载时已是真表，少一条加载顺序风险。
+
+#### 这条决定带来的东西
+
+- `.toc` 声明自己的 `## SavedVariables: MYUI_CrosshairHUDDB`，数据由我们自己读写。
+- 需要自己的默认值合并逻辑（读取时用 `or 默认值` 兜底，或启动时一次性补齐缺键）。不再有 EUI 的 `DeepMergeDefaults` 与 `StripDefaults` 帮我们做这件事。
+- **配置不跟随档案切换**——这是用户已知并接受的取舍。
+- 配置与 EUI 的档案导出串彻底无关：既不会被导出带走，也不会被导入覆盖。将来若要分享配置，需要我们自己提供序列化（属可选增强，记入地图的"尚待明确"）。
+
+#### 对下游的影响
+
+- [需求追问](01-requirements-grilling.md)第 13 项决策已就地更正为"独立存储"。
+- [方案计划成文](07-plan-writeup.md)的配置章节按此改写：删除"档案切换重新应用"整节，改记 SavedVariables 的键结构与默认值补齐方式。
+- [EUI 集成契约核实](03-eui-integration-contract.md)中"张力"一段已就地标注为已解决；其余结论（侧边栏挂载、注入时机、`alwaysLoaded`、`buildPage` 契约）**不受影响，继续有效**。

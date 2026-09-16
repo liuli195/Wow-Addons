@@ -179,6 +179,20 @@ end
 2. 冷却进行中回复速率改变时，客户端是否**就地改写** `start`、就绪时刻是否保持不变——这决定能否缓存并逐帧插值；在验证之前一律按"每轮全量重读"实现。
 3. 12.1 当前赛季套装是否含改变符文上限的效果（资料未见，但赛季内容变化快）。
 
+### 2026-09-16 追问：符文逻辑能否复用 EllesmereUI
+
+用户提问：符文的充能、重排等功能，EUI 有没有可复用、可直接调用的能力？已查实，**结论是不能复用，但可以照抄规则**。
+
+- `EllesmereUIResourceBars` 通过 `EllesmereUI._ModuleNS[ADDON_NAME] = ns`（该文件 `:10`）把自己的 `ns` 表暴露给 LoD 选项文件。但该表上挂的全是**渲染／布局／计时器**工具——`ns.ERB`、`ns.EASE`、`ns.IsVerticalOrientation`、`ns.ApplyFillOpacity`、`ns.ClearPipFillOpacity`、`ns.AnchorBgToFillEdge`、`ns.InvalidateThresholdCaches` 与几个 `ns.*Tick` 计时器——**没有任何符文读取或排序函数**。
+- 父插件里有三个公开的职业资源读取函数 `EllesmereUI.GetSoulFragments`、`GetMaelstromWeapon`、`GetTipOfTheSpear`（`EllesmereUI.lua:4761`、`:4794`、`:4737`），**唯独没有符文的**。规律清楚：那三个是需要外部引擎喂值的非标准资源，所以 Ellesmere 才包了公开接口；符文走标准接口 `GetRuneCooldown`，从未被包装。
+- 符文的读取与排序都在 `GetSecondaryResource()` / `UpdateSecondaryResource()` 内部，**均为文件局部函数**，外部不可达。
+
+**即使可达也不应采用**：那是 9701 行第一方文件的私有实现，EUI 更新随时会变（同项目已在 `RegisterModule` 白名单上吃过一次静默拒绝的教训）；其排序耦合在自身的 pip 布局与状态缓存上，脱离其重建流程单独调用行为无保障；而我们自己的读数逻辑只有约 40 行（本票骨架），复用省不下什么却多背一层依赖。
+
+**决定：自己实现读数与排序，照抄其排序规则**（就绪在前 → 充能中按剩余时间升序 → 空转垫底）。与[需求追问](01-requirements-grilling.md)中"职业资源分派表自己写"的结论一致。
+
+（附注：EUI 内部有 C 引擎驱动的 `EllesmereUI.Tick.NewAnimTicker`，理论上可用于本票要求的 ~10Hz 轮询。但那同样是内部实现，而自己写节流只有几行，不采用。）
+
 ### 本票对下游的交付
 
 - 方案计划的资源读数章节直接采用上述接口、状态机与轮询要求。

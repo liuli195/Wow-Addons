@@ -109,9 +109,9 @@ if not EllesmereUI._myuiRefreshHooked then
 end
 ```
 
-> **张力**：用户在[需求追问](01-requirements-grilling.md)里选了"配置跟随 EUI 配置档案"，同时明确排斥偏门用法（否决虚拟文件夹名）。而让"跟随档案"真正生效，**恰好需要一个偏门挂点**。已就此新开[配置存储方式复议](08-config-storage-reconsideration.md)。
+> **张力与解决**：用户在[需求追问](01-requirements-grilling.md)里选了"配置跟随 EUI 配置档案"，同时明确排斥偏门用法（否决虚拟文件夹名）。而让"跟随档案"真正生效，**恰好需要一个偏门挂点**。用户于 2026-09-16 经[配置存储方式复议](08-config-storage-reconsideration.md)决定**改为独立存储**——档案切换时本来就没有东西需要重新应用，**这个挂点不再需要**。
 >
-> 附带说明：若改为独立存储，档案切换时本来就没有东西需要重新应用，**这个挂点可以完全去掉**。
+> 本节关于 `RefreshAllAddons` 包装的调查内容**保留为记录**，供将来万一需要档案联动时参考；实现时不采用。
 
 #### 六、`RepointAllDBs` 的陷阱：绝不能缓存 `db.profile`
 
@@ -124,7 +124,7 @@ end
 - **`StripDefaults`（`EllesmereUI_Lite.lua:187-200`）只删除 defaults 里存在的键**，递归比较，等于默认值的叶子键被删、空子表（非数组）被删、数组即使空也保留。**defaults 里没有的键永不删除。**
 - "缺失的键等于默认值"成立，但机制不是读取兜底、而是 `DeepMergeDefaults` 在 `NewDB` 时和每次切档案时补齐。**注意 `false`／`0`／`""` 这类默认值与"未设置"不可区分**（`Lite.lua:172-179`）。
 - **硬约束（静默失败）**：`Lite.NewDB` 从 SavedVariables 名反推文件夹键（`svName:match("^(.+)DB$")`，`Lite.lua:259`）。因此 **SavedVariables 名必须恰好是 `插件文件夹名 .. "DB"`**，否则 `db.folder` 与侧边栏／同步／导出的 folder 分裂成两套键，配置看起来"丢失"。
-  → 对本项目即：功能插件的 `.toc` 写 `## SavedVariables: MYUI_CrosshairHUDDB`。（修正[需求追问](01-requirements-grilling.md)中"不写 SavedVariables"的表述——该变量虽为宿主占位、会被清空，但必须声明，因为它是文件夹键的来源。）
+  → 这是**走 `Lite.NewDB` 路线时的硬约束**。本项目已在[配置存储方式复议](08-config-storage-reconsideration.md)中改为独立存储，因此不适用；`## SavedVariables: MYUI_CrosshairHUDDB` 仍然声明，但它是我们**自己的真实存储**，不再是宿主占位。（同时更正[需求追问](01-requirements-grilling.md)中"不写 SavedVariables"的表述。）
 - **迁移不会动外部插件**：`EllesmereUI_Migration.lua` 里对 `addons[...]` 只有具名访问，没有通用遍历。
 - **导入保留、导出不包含**：档案导出只遍历 `ADDON_DB_MAP`（`Profiles.lua:987-1000`），**外部插件的配置不会随导出串走**（静默限制，需在方案里注明）；导入侧是透传语义，不会删你的数据。
 - **专精／条件覆盖的间接风险**：外部文件夹不在黑名单、**可被捕获**进覆盖，但应用时 `REFRESH_FNS` 命中不到 → 走全量兜底，而全量兜底不含你 → 界面停在覆盖前的旧值。**把 apply 挂在 `RefreshAllAddons` 上可以顺带修掉这个坑。**
