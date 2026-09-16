@@ -615,6 +615,22 @@ local function ClearPos()
     ApplyPosition()
 end
 
+-- 解锁模式齿轮面板里的「宽度／高度」。本 HUD 是正方形的等比缩放，所以这两个框改的
+-- 就是整体缩放本身——与配置页的缩放滑块共用同一个值，不另存一份。
+-- 齿轮里的 X/Y 不需要本插件做任何事：它走的就是 EUI 原有的位置四件套。
+local function SetHUDSize(_, value)
+    local size = tonumber(value)
+    if not size or size <= 0 then return end
+    local design = Elements.DESIGN_SIZE or 128
+    local scale = size / design
+    local low = Config.SCALE_MIN or 0.5
+    local high = Config.SCALE_MAX or 2.0
+    if scale < low then scale = low elseif scale > high then scale = high end
+    if scale == Config.Get().scale then return end
+    Config.Get().scale = scale
+    Core.ApplyConfig()
+end
+
 local function RegisterUnlockElement()
     local api = EUIAPI()
     if not (api and api.RegisterUnlockElements and api.MakeUnlockElement) then
@@ -635,8 +651,17 @@ local function RegisterUnlockElement()
             applyPos = function() ApplyPosition() end,
             -- 主开关关闭 → 报告隐藏 → 每次同步都会收起 mover，不留可拖动空框
             isHidden = Core.IsHidden,
-            -- 本 HUD 有整体缩放，自动改宽高与尺寸匹配的语义对它不成立，先关掉
-            noResize = true,
+            -- **不要设 noResize**：EUI 把齿轮面板里的宽度/高度/X/Y 几行全放在
+            -- `if canResize and elem then` 块里，设了它就等于把 X/Y 输入也一起藏掉。
+            -- 本元素的"尺寸"就是整体缩放，交给下面两个 setter 承接。
+            setWidth = SetHUDSize,
+            setHeight = SetHUDSize,
+            linkedDimensions = true,
+            -- 尺寸匹配对等比缩放的框体语义不成立（换算会差一个缩放因子），
+            -- 给出理由让匹配按钮不可用，比默默改错值好
+            matchUnavailable = function()
+                return "准星 HUD 的尺寸由整体缩放决定"
+            end,
             noSizeMatchTarget = true,
         }),
     }, ADDON)
@@ -663,6 +688,22 @@ local function RegisterModule()
     }
 end
 
+-- 解锁模式齿轮菜单里的「元素选项」→ 直接跳到本元素的设置页。
+-- EUI 只在 _ELEMENT_SETTINGS_MAP 里有这个 key 时才画出那一项，所以第三方要做的
+-- 全部事情就是把条目写进去；页面名必须是 RegisterModule 里声明过的那个。
+local function RegisterSettingsNav()
+    local api = EUIAPI()
+    local map = api and api._ELEMENT_SETTINGS_MAP
+    if not map then return end
+
+    map[UNLOCK_KEY] = {
+        module = ADDON,
+        page = "Crosshair HUD",
+        -- 跳过去之后高亮这一行，让人一眼看到跟尺寸有关的设置在哪
+        highlightText = "HUD 缩放",
+    }
+end
+
 function NS.Mount()
     -- 侧边栏那一行由核心 MYUI 登记：核心不会被行上的电源按钮禁用，所以行一直在册，
     -- 本插件被禁用后只会置灰、还能点回来。这里再调一次是幂等兜底，防的是核心的
@@ -672,4 +713,5 @@ function NS.Mount()
 
     RegisterModule()
     RegisterUnlockElement()
+    RegisterSettingsNav()
 end

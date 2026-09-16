@@ -67,6 +67,10 @@ Config.ELEMENT_LABELS = {
 
 local STRATA_VALUES = { "LOW", "MEDIUM", "HIGH", "DIALOG" }
 
+-- 整体缩放的取值范围。配置页的滑块与解锁模式齿轮面板里的宽度／高度共用这一份，
+-- 两条入口改的是同一个值，不许各存一份。
+Config.SCALE_MIN, Config.SCALE_MAX = 0.5, 2.0
+
 local settings = nil
 
 --------------------------------------------------------------------------
@@ -183,7 +187,8 @@ function Config.BuildPage(_, parent, yOffset)
     y = y - h
 
     _, h = W:DualRow(parent, y,
-        { type = "slider", text = "HUD 缩放", min = 0.5, max = 2.0, step = 0.05,
+        { type = "slider", text = "HUD 缩放",
+          min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
           tooltip = "整体等比缩放。1.0 为设计稿原始大小。",
           getValue = function() return cfg.scale or 1.0 end,
           setValue = function(value) cfg.scale = value; refresh() end },
@@ -192,44 +197,8 @@ function Config.BuildPage(_, parent, yOffset)
           setValue = function(value) cfg.strata = value; refresh() end })
     y = y - h
 
-    -- 位置：**直接用 EUI 现成的位置控件**（锚点下拉 + X/Y 小滑块），不自建
-    _, h = W:DropdownWithOffsets(parent, y,
-        { text = "位置",
-          values = { "CENTER", "TOP", "BOTTOM", "LEFT", "RIGHT" },
-          getValue = function()
-              local pos = Config.Get().position
-              return pos and pos.point or "CENTER"
-          end,
-          setValue = function(value)
-              local pos = Config.Get().position or {}
-              pos.point = value
-              pos.relPoint = value
-              Config.Get().position = pos
-              refresh()
-          end },
-        { text = "X", min = -1000, max = 1000, step = 1,
-          getValue = function()
-              local pos = Config.Get().position
-              return pos and pos.x or 0
-          end,
-          setValue = function(value)
-              local pos = Config.Get().position or { point = "CENTER", relPoint = "CENTER" }
-              pos.x = value
-              Config.Get().position = pos
-              refresh()
-          end },
-        { text = "Y", min = -1000, max = 1000, step = 1,
-          getValue = function()
-              local pos = Config.Get().position
-              return pos and pos.y or 0
-          end,
-          setValue = function(value)
-              local pos = Config.Get().position or { point = "CENTER", relPoint = "CENTER" }
-              pos.y = value
-              Config.Get().position = pos
-              refresh()
-          end })
-    y = y - h
+    -- 位置**不在这里配**：解锁模式里点齿轮（元素选项）就能改 X/Y，那是 EUI 现成的
+    -- 能力，而且与拖动框同处一个会话，比在配置页里另开一套更顺。这里自建只会重复。
 
     for _, key in ipairs(Config.ELEMENT_ORDER) do
         local element = cfg.elements[key]

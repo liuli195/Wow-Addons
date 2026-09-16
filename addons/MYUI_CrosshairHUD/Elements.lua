@@ -32,6 +32,10 @@ local UIParent = _G.UIParent
 local SQUARE = 128          -- 容器边长（设计稿单位），圆心居中
 local PIP_SIZE = 32
 
+-- 容器是正方形的，所以「宽度 ÷ 设计边长」就是整体缩放——解锁模式的齿轮面板里
+-- 改宽度／高度要走这条换算，Core 因此需要这个常量
+Elements.DESIGN_SIZE = SQUARE
+
 -- 纹理摆放（设计稿单位，偏移相对圆心、y 向下；与素材包 manifest 一致）
 local PLACEMENT = {
     crosshair = { file = "crosshair",   w = 64, h = 64,  ox = 0,   oy = 0 },
