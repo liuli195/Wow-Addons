@@ -249,13 +249,16 @@ for _, event in ipairs({
     "TRAIT_CONFIG_UPDATED", "PLAYER_TALENT_UPDATE",
     "PLAYER_ENTERING_WORLD", "PLAYER_DEAD", "PLAYER_ALIVE",
     "ZONE_CHANGED_NEW_AREA", "UI_SCALE_CHANGED",
+    -- RUNE_POWER_UPDATE 是**普通事件**不是单位事件：它自带 runeIndex 负载，
+    -- 没有单位令牌。用 RegisterUnitEvent 注册会在加载期直接报
+    -- "Attempt to register unknown event"，整个文件从此不再执行。
+    "RUNE_POWER_UPDATE",
 }) do
     events:RegisterEvent(event)
 end
 for _, event in ipairs({
     "UNIT_HEALTH", "UNIT_MAXHEALTH",
     "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER",
-    "RUNE_POWER_UPDATE",
 }) do
     events:RegisterUnitEvent(event, "player")
 end

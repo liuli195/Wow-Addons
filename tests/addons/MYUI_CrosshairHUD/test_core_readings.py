@@ -55,11 +55,24 @@ C_AddOns = { GetAddOnMetadata = function() return "test" end,
              IsAddOnLoaded = function() return true end }
 C_Timer = { After = function() end, NewTicker = function() return {} end }
 
+-- 事件注册**必须校验**，否则这个 mock 会放过真实的加载期错误：
+-- 真客户端对单位事件有白名单，注册了非单位事件会直接抛错、中断整个文件，
+-- 而空函数 mock 一声不吭。这里用"单位事件一律以 UNIT_ 开头"这条近似约束兜住它。
+local registered = {}
+local function isUnitEvent(name) return name:sub(1, 5) == "UNIT_" end
+
 local firstFrame
 function CreateFrame(_, name)
     local frame = { name = name, scripts = {} }
-    function frame:RegisterEvent() end
-    function frame:RegisterUnitEvent() end
+    function frame:RegisterEvent(event)
+        registered[#registered + 1] = event
+    end
+    function frame:RegisterUnitEvent(event, unit)
+        assert(isUnitEvent(event),
+            "RegisterUnitEvent 收到了非单位事件：" .. tostring(event))
+        assert(unit == "player", "本插件只注册 player 单位")
+        registered[#registered + 1] = event
+    end
     function frame:SetScript(kind, callback) self.scripts[kind] = callback end
     function frame:UnregisterAllEvents() end
     function frame:GetFrameLevel() return 1 end
