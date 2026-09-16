@@ -434,57 +434,62 @@ function Config.BuildPage(_, parent, yOffset)
         _, h = W:SectionHeader(parent, label, y)
         y = y - h
 
-        -- 第一行：启用 | 空。每项只占半格，成对排列，末行右边留空不凑满。
-        _, h = W:DualRow(parent, y,
-            { type = "toggle", text = "启用",
-              getValue = function() return element.enabled ~= false end,
-              setValue = function(value) element.enabled = value; refresh() end,
-              -- 总开关关掉时子开关置灰不可点
-              disabled = function() return Config.Get().enabled == false end },
-            { type = "spacer" })
-        y = y - h
-
-        -- 第二行：填充颜色 | 条背景。**色块与它自己的透明度滑块同处一格**，
-        -- 所以两格都是 slider + 内联色块；没有背景的元素（准星）右格留空。
-        local fillSpecs = CellSwatches(element, "fill", "fillMode",
-            Config.FILL_SOURCE[key])
-        local bgSpecs = key ~= "crosshair"
-            and CellSwatches(element, "bg", "bgMode", BG_SOURCE) or nil
-
-        local row
-        row, h = W:DualRow(parent, y,
-            { type = "slider", text = "填充颜色", min = 0, max = 100, step = 1,
-              getValue = function() return (element.fillAlpha or 1) * 100 end,
-              setValue = function(value)
-                  element.fillAlpha = value / 100
-                  refresh()
-              end,
-              disabled = grayed },
-            bgSpecs and {
-                type = "slider", text = "条背景", min = 0, max = 100, step = 1,
-                getValue = function() return (element.bgAlpha or 1) * 100 end,
+        -- 每项按顺序占半格，成对成行，**末行右边留空**——不为了填满而挪动配置项。
+        -- 颜色那两格是 slider + 内联色块：色块与它自己的透明度滑块同处一格。
+        local cells = {
+            { cfg = { type = "toggle", text = "启用",
+                getValue = function() return element.enabled ~= false end,
+                setValue = function(value) element.enabled = value; refresh() end,
+                -- 总开关关掉时子开关置灰不可点
+                disabled = function() return Config.Get().enabled == false end } },
+            { cfg = { type = "slider", text = "填充颜色", min = 0, max = 100, step = 1,
+                getValue = function() return (element.fillAlpha or 1) * 100 end,
                 setValue = function(value)
-                    element.bgAlpha = value / 100
+                    element.fillAlpha = value / 100
                     refresh()
                 end,
-                disabled = grayed,
-            } or { type = "spacer" })
-        y = y - h
+                disabled = grayed },
+              specs = CellSwatches(element, "fill", "fillMode", Config.FILL_SOURCE[key]) },
+        }
+        if key ~= "crosshair" then
+            cells[3] = {
+                cfg = { type = "slider", text = "条背景", min = 0, max = 100, step = 1,
+                    getValue = function() return (element.bgAlpha or 1) * 100 end,
+                    setValue = function(value)
+                        element.bgAlpha = value / 100
+                        refresh()
+                    end,
+                    disabled = grayed },
+                specs = CellSwatches(element, "bg", "bgMode", BG_SOURCE),
+            }
+        end
 
-        if not EUI._prebuilding and EUI.BuildColorSwatch then
-            local left = row and row._leftRegion
-            if left then
-                for i = #fillSpecs, 1, -1 do
-                    AttachSwatch(left, fillSpecs[i], grayed, Changed)
+        local index = 1
+        while cells[index] do
+            local left = cells[index]
+            local right = cells[index + 1]
+            local row
+            row, h = W:DualRow(parent, y, left.cfg,
+                right and right.cfg or { type = "spacer" })
+            y = y - h
+
+            if not EUI._prebuilding and EUI.BuildColorSwatch then
+                local leftRgn = row and row._leftRegion
+                if left.specs and leftRgn then
+                    for i = #left.specs, 1, -1 do
+                        AttachSwatch(leftRgn, left.specs[i], grayed, Changed)
+                    end
+                end
+                local rightRgn = row and row._rightRegion
+                if right and right.specs and rightRgn then
+                    for i = #right.specs, 1, -1 do
+                        AttachSwatch(rightRgn, right.specs[i], grayed, Changed)
+                    end
                 end
             end
-            local right = row and row._rightRegion
-            if bgSpecs and right then
-                for i = #bgSpecs, 1, -1 do
-                    AttachSwatch(right, bgSpecs[i], grayed, Changed)
-                end
-            end
+            index = index + 2
         end
     end
+
     return math.abs(y)
 end
