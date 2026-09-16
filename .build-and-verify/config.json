@@ -140,6 +140,23 @@
         ]
       },
       {
+        "id": "verify.crosshair-media",
+        "command": ".venv\\Scripts\\python.exe scripts/media/verify_crosshair_media.py",
+        "checkParallel": true,
+        "paths": [
+          "assets/CrosshairHUDMedia/**",
+          "addons/MYUI/Media/CrosshairHUD/**",
+          "scripts/media/**",
+          ".build-and-verify/config.json"
+        ],
+        "inputs": [
+          "assets/CrosshairHUDMedia/**",
+          "addons/MYUI/Media/CrosshairHUD/**",
+          "scripts/media/**",
+          ".build-and-verify/config.json"
+        ]
+      },
+      {
         "id": "verify.crosshairhud-proto-luals",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals --source addons/CrosshairHUDProto",
         "checkParallel": true,
