@@ -54,4 +54,13 @@ Inkscape / rsvg-convert；`convert` 是 Windows 自带的磁盘转换工具，�
 - 构建：`scripts/media/build_crosshair_media.py` → 输出到 `addons/MYUI/Media/CrosshairHUD/`
 - 校验：`scripts/media/verify_crosshair_media.py`（尺寸、中性度、蒙版纯度、遮罩方向）
 
+> **只刷新准星素材时，直接运行 `build_crosshair_media.py`，不要用裸的 `build_assets.py`。**
+>
+> 统一入口 `build_assets.py` 会连带重建 EUI_FacetedMedia 的 TGA 素材，而**那两个成品相对构建脚本已经过期**
+> （重跑会产生不同字节，构建本身是确定性的，说明脚本或源图在成品提交之后变过）。裸跑会在无关文件上留下差异。
+> `verify.assets` 对新旧两版都通过，所以校验拦不住这个差异。
+>
+> 仓库统一构建检查用的是 `build_assets.py --output-root .local/build/assets`（只写 `.local/`，不碰仓库文件），
+> 那条路径不受影响。
+
 两者的详细规格与决策依据见 `myspec/changes/crosshair-hud/issues/05-media-reexport-spec.md`。
