@@ -160,11 +160,18 @@ Parent（来源）: [Crosshair HUD 实施计划](../crosshair-hud/plan.md)（way
 - **后面两个接口的键都不是职业令牌**，要先用 EUI 的映射表推出名字，再拿名字去查色表——传职业令牌查不到，页面上的色块会画成黑：能量色用 `CLASS_POWER_MAP`（DK → `RUNIC_POWER`），职业资源色用 `CLASS_RESOURCE_MAP`（DK → `Runes`）。本职业在表里没登记时，把那个色块**收起来**而不是留一个黑方块。
 - 元素关掉时控件要置灰不可点：滑块的 `disabled` 直接用 EUI 的；色块没有现成的可传，`Update()` 里自己压暗、点击自己挡。
 
-- **颜色行是三栏，不是一栏塞满**（用户实机两次指正）：`TripleRow(自定义色 | 第二种来源色 | 透明度滑块)`，栏间由 EUI 画分隔线。背景没有第二种来源时中栏放 `spacer`，保持三栏对齐。
-  - 为什么不能塞进一栏：DualRow 的 `colorpicker` 列**只生成一个色块**，`hasAlpha` 只影响取色器弹窗、**不生成行内滑块**——"两个色块 + 滑块"本来就不是一栏装得下的东西。
-  - 色块直接由 `colorpicker` 列生成，位置与取色器都交给 EUI；只在其上覆盖交互（来源那块不可编辑、点它=选来源；自定义那块按 EUI 约定"已经在自定义上时再点才开取色器"）。
-  - 元素关掉时的压暗由自己的 `Update()` 统一画，**不给色块传 `disabled`**——EUI 的 disabled 与选择态会互相覆盖。
-  - 空 `text` 要显式给：EUI 每个分区都会自带一个 14px 标签，省略会走到 `L(nil)` 上去。
+- **颜色行照 EUI 原文写**（用户实机三次指正后从 EUI 单位框体页面拿到原文）：左栏 `{ type="multiSwatch", text=颜色标签, swatches={...} }`，右栏 `{ type="slider", text=透明度标签, 0–100 }`，两者放进同一个 `DualRow`。
+
+  ```
+  leftSlot  = { type="multiSwatch", text="Fill Color", swatches = { ... } }
+  rightSlot = { type="slider", text="Fill Opacity", min=0, max=100, step=1, ... }
+  row, h = W:DualRow(parent, y, leftSlot, rightSlot)
+  ```
+
+  - **不要自己拼色块**：`multiSwatch` 的色块 cfg 本来就认 `onClick`（点它切来源，原取色器点击被 slot 存进 `_eabOrigClick`）、`refreshAlpha`（未选中的压到 0.3 = 选中态）、`disabled`（slot 自己灰化并挡住点击）、`hasAlpha`（**只影响取色器弹窗，不生成行内滑块**）。这些一律交回给 EUI。
+  - 自定义那块按 EUI 约定：已在自定义上时再点才开取色器；来源那块不可编辑（`setValue` 空），点它只表示"用这个来源"。
+  - 本职业在映射表里没登记（没有对应的源色）时，那个色块的 `refreshAlpha` 返回 0 把它藏掉，而不是留一个取不到色、画成黑的方块。
+  - 每个 slot 都会自带一个 14px 左侧标签，所以不需要额外给空 `text`——但省略 `text` 会走到 `L(nil)` 上去，要显式给。
 - **一行里放色块 + 一个透明度滑块，没有"来源"下拉**：左色块=自定义颜色，右色块=职业颜色，点哪个用哪个；滑块是这一项的透明度。**填充与背景各有各的透明度**——合成一个就只能整条一起淡化，分不开。
 - **只有填充有职业色，背景就是自定义色**（用户实机指正）。填充选了职业色之后背景必须原样不动。
 - 这套交互不自己发明：用 EUI 公开的 `EllesmereUI.BuildTrioColorSwatch`（`getMode`／`setMode`／`getCustomRGB`／`setCustomRGB`／`hasClassColor`），未选中的色块由它自己压到 **0.3**（白边框随之变暗）作选择指示。它约定的"点未选中的自定义色块只切选择，已经在自定义上时再点才开取色器"照单全收。三元组还返回一个「默认色」色块，本插件没有这个概念，建完即隐藏。
