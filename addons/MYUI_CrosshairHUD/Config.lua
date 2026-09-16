@@ -302,24 +302,19 @@ function Config.BuildPage(_, parent, yOffset)
         if Apply then Apply() end
     end
 
-    -- 一格的形状照 EUI 原文：
-    --   * 只有色块的格   -> `{ type="multiSwatch", text=..., swatches={...} }`
-    --     （这个 slot 本来就认 onClick / refreshAlpha / disabled / hasAlpha）
-    --   * 色块与滑块同格 -> `{ type="slider", ... }` + 色块**内联挂在它左侧**
-    --     （EUI 的 `_lastInline` 惯例，见 EUI_UnitFrames_Options 的 boss 分支）。
-    --     内联的是裸 BuildColorSwatch，点击与选中态要照那个分支自己接。
+    -- 一格的形状照 EUI 原文：**这一格是 slider，色块内联挂在它左侧**
+    -- （EUI 的 `_lastInline` 惯例，见 EUI_UnitFrames_Options 的 boss 分支）——
+    -- 于是"标签 + 色块 + 透明度滑块"同处一格。填充颜色与条背景都是这个形状。
+    -- 内联的是裸 BuildColorSwatch，所以点击与选中态照那个分支自己接。
     --
-    -- 一格的组成（与参考图一致，**色块和它的透明度滑块在同一格**）：
-    --   填充颜色     = 自定义色块 + 来源色块（透明度在它旁边那一格）
-    --   条背景       = 自定义色块 + 职业色块 + 透明度滑块（三者同格）
-    --   填充不透明度 = 一个滑块
+    -- 页面按半格成对排列：每项只占半格、从左到右填，**最后一行右边可以留空**，
+    -- 不为了填满而挪动配置项。
     --
     -- 来源色块的含义由元素决定（见 Config.FILL_SOURCE）：血弧与准星是职业色，
-    -- 符能弧是能量色，符文格是职业资源色。
+    -- 符能弧是能量色，符文格是职业资源色。背景的第二种来源固定是职业色。
 
     -- 内联色块：挂在该格控件的左侧，可挂多个（自右向左）。
     -- spec = { tooltip, getRGB, setRGB, select, isSelected, alpha }
-    -- 没有 select 表示这格只有它一块色块：点它直接开取色器。
     local function AttachSwatch(rgn, spec, grayed, Changed)
         local swatch = EUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, spec.getRGB,
             spec.setRGB, false, 20)
@@ -336,8 +331,8 @@ function Config.BuildPage(_, parent, yOffset)
         swatch._eabOrigClick = swatch:GetScript("OnClick")
         swatch:SetScript("OnClick", function(self)
             if grayed() then return end
-            -- 多块时：未选中的先切选择，已经在它上面了才开取色器（EUI 的色块约定）
-            if spec.select and not (spec.isSelected and spec.isSelected()) then
+            -- 未选中的先切选择，已经在它上面了才开取色器（EUI 的色块约定）
+            if not (spec.isSelected and spec.isSelected()) then
                 spec.select()
                 Changed()
                 return
@@ -355,65 +350,41 @@ function Config.BuildPage(_, parent, yOffset)
         return swatch
     end
 
-    -- 一行「填充颜色 | 右格」。right 为 nil 时右格是填充不透明度滑块。
-    -- 返回该行，调用方可以再往右格里内联挂色块。
-    local function ColorRow(elementKey, elementConfig, source, right)
-        local grayed = function() return Config.Grayed(elementKey) end
-        local function Changed()
-            refresh()
-            -- 选中态挂在 EUI 的控件刷新列表上：必须叫一次页面刷新，否则不动
-            if EUI.RefreshPage then EUI:RefreshPage() end
+    -- 一格里的色块：自定义 +（可选）第二种来源。
+    -- modeKey 是"用哪个来源"存在哪：填充是 fillMode，背景是 bgMode。
+    local function CellSwatches(elementConfig, colorKey, modeKey, source)
+        local function Selected(mode)
+            return (elementConfig[modeKey] or "custom") == mode
         end
-        local function IsCustom()
-            return (elementConfig.fillMode or "custom") == "custom"
-        end
-
-        local fillSwatches = { {
-            tooltip = "Custom Color", hasAlpha = false,
-            getValue = function()
-                local c = elementConfig.fill
+        local list = { {
+            tooltip = "Custom Color",
+            getRGB = function()
+                local c = elementConfig[colorKey]
                 return c[1], c[2], c[3]
             end,
-            setValue = function(r, g, b)
-                elementConfig.fill = { r, g, b }
-                if source then elementConfig.fillMode = "custom" end
-                Changed()
+            setRGB = function(r, g, b)
+                elementConfig[colorKey] = { r, g, b }
+                elementConfig[modeKey] = "custom"
             end,
-            onClick = source and function(self)
-                if IsCustom() then
-                    if self._eabOrigClick then self._eabOrigClick(self) end
-                    return
-                end
-                elementConfig.fillMode = "custom"
-                Changed()
-            end or nil,
-            refreshAlpha = function()
-                if not source then return 1 end
-                return IsCustom() and 1 or 0.3
-            end,
+            select = function() elementConfig[modeKey] = "custom" end,
+            isSelected = function() return Selected("custom") end,
+            alpha = function() return Selected("custom") and 1 or 0.3 end,
         } }
         if source then
-            fillSwatches[2] = {
-                tooltip = source.tooltip, hasAlpha = false,
-                getValue = function() return Config.SourceColor(source.mode) end,
-                setValue = function() end,
-                onClick = function()
-                    elementConfig.fillMode = source.mode
-                    Changed()
-                end,
-                refreshAlpha = function()
+            list[2] = {
+                tooltip = source.tooltip,
+                getRGB = function() return Config.SourceColor(source.mode) end,
+                setRGB = function() end,      -- 不可编辑：点它只表示"用这个来源"
+                select = function() elementConfig[modeKey] = source.mode end,
+                isSelected = function() return Selected(source.mode) end,
+                alpha = function()
+                    -- 取不到色（本职业在映射表里没登记）时藏掉，而不是留一个黑方块
                     if not Config.SourceColor(source.mode) then return 0 end
-                    return elementConfig.fillMode == source.mode and 1 or 0.3
+                    return Selected(source.mode) and 1 or 0.3
                 end,
             }
         end
-
-        local row, height = W:DualRow(parent, y,
-            { type = "multiSwatch", text = "填充颜色", disabled = grayed,
-              swatches = fillSwatches },
-            right or { type = "spacer" })
-        y = y - height
-        return row
+        return list
     end
 
     local _, h = W:SectionHeader(parent, "常规", y)
@@ -447,87 +418,73 @@ function Config.BuildPage(_, parent, yOffset)
     -- 位置**不在这里配**：解锁模式里点齿轮（元素选项）就能改 X/Y，那是 EUI 现成的
     -- 能力，而且与拖动框同处一个会话，比在配置页里另开一套更顺。这里自建只会重复。
 
+    -- 背景的第二种来源固定是职业色（与 EUI 自己的"职业着色背景"一致）
+    local BG_SOURCE = { mode = "class", tooltip = "Class Colored Background" }
+
     for _, key in ipairs(Config.ELEMENT_ORDER) do
         local element = cfg.elements[key]
         local label = Config.ELEMENT_LABELS[key]
+        local grayed = function() return Config.Grayed(key) end
+        local function Changed()
+            refresh()
+            -- 选中态挂在 EUI 的控件刷新列表上：必须叫一次页面刷新，否则不动
+            if EUI.RefreshPage then EUI:RefreshPage() end
+        end
 
         _, h = W:SectionHeader(parent, label, y)
         y = y - h
 
-        local grayed = function() return Config.Grayed(key) end
-        local function Changed()
-            refresh()
-            if EUI.RefreshPage then EUI:RefreshPage() end
-        end
-
-        -- 第一行：启用 | 填充不透明度。（填充不透明度在这里，不能在"没有背景时的
-        -- 右格"里——有背景的元素右格被条背景占了，那样它哪儿都不会出现。）
+        -- 第一行：启用 | 空。每项只占半格，成对排列，末行右边留空不凑满。
         _, h = W:DualRow(parent, y,
             { type = "toggle", text = "启用",
               getValue = function() return element.enabled ~= false end,
               setValue = function(value) element.enabled = value; refresh() end,
               -- 总开关关掉时子开关置灰不可点
               disabled = function() return Config.Get().enabled == false end },
-            { type = "slider", text = "填充不透明度", min = 0, max = 100, step = 1,
+            { type = "spacer" })
+        y = y - h
+
+        -- 第二行：填充颜色 | 条背景。**色块与它自己的透明度滑块同处一格**，
+        -- 所以两格都是 slider + 内联色块；没有背景的元素（准星）右格留空。
+        local fillSpecs = CellSwatches(element, "fill", "fillMode",
+            Config.FILL_SOURCE[key])
+        local bgSpecs = key ~= "crosshair"
+            and CellSwatches(element, "bg", "bgMode", BG_SOURCE) or nil
+
+        local row
+        row, h = W:DualRow(parent, y,
+            { type = "slider", text = "填充颜色", min = 0, max = 100, step = 1,
               getValue = function() return (element.fillAlpha or 1) * 100 end,
               setValue = function(value)
                   element.fillAlpha = value / 100
                   refresh()
               end,
-              disabled = grayed })
-        y = y - h
-
-        -- 第二行右格：条背景（色块与透明度滑块**同格**）。
-        -- 准星是线不是块，没有背景色，右格留空。
-        local bgSlot
-        if key ~= "crosshair" then
-            bgSlot = { type = "slider", text = "条背景", min = 0, max = 100, step = 1,
+              disabled = grayed },
+            bgSpecs and {
+                type = "slider", text = "条背景", min = 0, max = 100, step = 1,
                 getValue = function() return (element.bgAlpha or 1) * 100 end,
                 setValue = function(value)
                     element.bgAlpha = value / 100
                     refresh()
                 end,
-                disabled = grayed }
-        end
+                disabled = grayed,
+            } or { type = "spacer" })
+        y = y - h
 
-        local fillRow = ColorRow(key, element, Config.FILL_SOURCE[key], bgSlot)
-
-        -- 条背景的两个色块内联挂在它那一格滑块的左侧：自定义色 + 职业色
-        if bgSlot and not EUI._prebuilding then
-            local rgn = fillRow and fillRow._rightRegion
-            if rgn and EUI.BuildColorSwatch then
-                local function BgCustom()
-                    return (element.bgMode or "custom") == "custom"
+        if not EUI._prebuilding and EUI.BuildColorSwatch then
+            local left = row and row._leftRegion
+            if left then
+                for i = #fillSpecs, 1, -1 do
+                    AttachSwatch(left, fillSpecs[i], grayed, Changed)
                 end
-                AttachSwatch(rgn, {
-                    tooltip = "Custom Colored Background",
-                    getRGB = function()
-                        local c = element.bg
-                        return c[1], c[2], c[3]
-                    end,
-                    setRGB = function(r, g, b)
-                        element.bg = { r, g, b }
-                        element.bgMode = "custom"
-                    end,
-                    select = function() element.bgMode = "custom" end,
-                    isSelected = BgCustom,
-                    alpha = function() return BgCustom() and 1 or 0.3 end,
-                }, grayed, Changed)
-                AttachSwatch(rgn, {
-                    tooltip = "Class Colored Background",
-                    getRGB = function() return Config.SourceColor("class") end,
-                    setRGB = function() end,      -- 不可编辑：点它只表示"用职业色"
-                    select = function() element.bgMode = "class" end,
-                    isSelected = function() return element.bgMode == "class" end,
-                    alpha = function()
-                        -- 取不到职业色时把它藏掉，而不是留一个黑方块
-                        if not Config.SourceColor("class") then return 0 end
-                        return element.bgMode == "class" and 1 or 0.3
-                    end,
-                }, grayed, Changed)
+            end
+            local right = row and row._rightRegion
+            if bgSpecs and right then
+                for i = #bgSpecs, 1, -1 do
+                    AttachSwatch(right, bgSpecs[i], grayed, Changed)
+                end
             end
         end
     end
-
     return math.abs(y)
 end
