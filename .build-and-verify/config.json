@@ -157,6 +157,75 @@
         ]
       },
       {
+        "id": "verify.crosshairhud-luals",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals --source addons/MYUI_CrosshairHUD",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json",
+          ".luarc.json"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json",
+          ".luarc.json"
+        ]
+      },
+      {
+        "id": "verify.crosshairhud-luacheck",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luacheck --source addons/MYUI_CrosshairHUD",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "scripts/dev/check.py",
+          ".build-and-verify/config.json",
+          ".luacheckrc"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD/**",
+          "scripts/dev/check.py",
+          ".build-and-verify/config.json",
+          ".luacheckrc"
+        ]
+      },
+      {
+        "id": "verify.crosshairhud-toc",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py toc --source addons/MYUI_CrosshairHUD",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD/**",
+          "scripts/dev/check.py",
+          "scripts/dev/versions.json",
+          ".build-and-verify/config.json"
+        ]
+      },
+      {
+        "id": "verify.crosshairhud-logic",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          ".build-and-verify/config.json"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".build-and-verify/config.json"
+        ]
+      },
+      {
         "id": "verify.crosshairhud-proto-luals",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals --source addons/CrosshairHUDProto",
         "checkParallel": true,
