@@ -64,7 +64,8 @@ FireLogin()                       -- 事件路径上也不许报错
 ----------------------------------------------------------------------
 local api = {
     _addonInfoByFolder = {},
-    ADDON_GROUPS = {},
+    -- 先摆一个 EUI 自家的分组：本系列必须插到它前面，而不是追在末尾
+    ADDON_GROUPS = { { key = "eui-own", label = "EllesmereUI", members = { "SomeEUIAddon" } } },
     _syncExempt = {},
 }
 _G.EllesmereUI = api
@@ -85,6 +86,11 @@ for _, candidate in ipairs(api.ADDON_GROUPS) do
 end
 assert(group, "应建出 MYUI 分组")
 assert(group.label == MYUI.GROUP_LABEL, "分组名应是 MYUI")
+
+-- 侧边栏的分组顺序就是这张数组的顺序：本系列必须排在最上面
+assert(api.ADDON_GROUPS[1] == group, "MYUI 分组必须排在侧边栏最上面")
+assert(api.ADDON_GROUPS[2] and api.ADDON_GROUPS[2].key == "eui-own",
+    "EUI 原有分组应顺延到其后，而不是被顶掉")
 for _, entry in ipairs(MYUI.SERIES) do
     local found = 0
     for _, member in ipairs(group.members) do
@@ -100,6 +106,7 @@ local groupCount = #api.ADDON_GROUPS
 MYUI.InjectSidebar()
 MYUI.InjectSidebar()
 assert(#api.ADDON_GROUPS == groupCount, "重复注入不许再建分组")
+assert(api.ADDON_GROUPS[1] == group, "重复注入后仍应排在最上面")
 for _, entry in ipairs(MYUI.SERIES) do
     local found = 0
     for _, member in ipairs(group.members) do
@@ -107,6 +114,16 @@ for _, entry in ipairs(MYUI.SERIES) do
     end
     assert(found == 1, "重复注入后 " .. entry.folder .. " 仍应只属于分组一次")
 end
+
+----------------------------------------------------------------------
+-- 分组已存在但不在最前面时，注入要把它挪上去
+--
+-- 钉的是"保证"而不是"只在新建时插队"：别处若先建过这个分组，它也得上得来。
+----------------------------------------------------------------------
+table.remove(api.ADDON_GROUPS, 1)
+api.ADDON_GROUPS[#api.ADDON_GROUPS + 1] = group
+MYUI.InjectSidebar()
+assert(api.ADDON_GROUPS[1] == group, "已存在的分组也必须被挪到最上面")
 
 ----------------------------------------------------------------------
 -- 核心与功能插件各自注入时也必须收敛（功能插件那边有一次幂等兜底调用）

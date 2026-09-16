@@ -18,6 +18,9 @@
 --   `_addonInfoByFolder[folder] = { folder, display }`  → 决定"有没有这一行"
 --   `ADDON_GROUPS` 里对应分组的 members 里加上 folder   → 决定"这行挂在哪个分组下"
 --
+-- 分组的**显示顺序就是 `ADDON_GROUPS` 的数组顺序**，所以本系列是插在最前面的
+-- （EUI 自己的独立版构建也是这么把自己那个分组插到第 1 位的）。
+--
 -- **不设 alwaysLoaded**：那是"不提供电源按钮"的意思，不是"行常驻"。
 -- 设了它反而会让被禁用的行显示成启用、并把电源按钮藏起来。
 
@@ -50,7 +53,18 @@ function MYUI.InjectSidebar()
     end
     if not group then
         group = { key = MYUI.GROUP_KEY, label = MYUI.GROUP_LABEL, members = {} }
-        api.ADDON_GROUPS[#api.ADDON_GROUPS + 1] = group
+        table.insert(api.ADDON_GROUPS, 1, group)
+    end
+
+    -- 本系列排在侧边栏最上面：EUI 就是按 ADDON_GROUPS 的数组顺序渲染的。
+    -- 无条件钉一次，而不是只在新建时插队——分组若已存在（比如别处先建过一行），
+    -- 也要把它挪上来。
+    for i, candidate in ipairs(api.ADDON_GROUPS) do
+        if candidate == group and i ~= 1 then
+            table.remove(api.ADDON_GROUPS, i)
+            table.insert(api.ADDON_GROUPS, 1, group)
+            break
+        end
     end
 
     local function InGroup(folder)
