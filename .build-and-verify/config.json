@@ -211,7 +211,7 @@
       },
       {
         "id": "verify.crosshairhud-logic",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py tests/addons/MYUI_CrosshairHUD/test_core_readings.py",
         "checkParallel": true,
         "paths": [
           "addons/MYUI_CrosshairHUD/**",
