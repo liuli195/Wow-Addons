@@ -2,7 +2,7 @@
 
 Triage（分拣）: ready-for-agent
 Status（状态）: open
-Assignee（领取者）: unassigned
+Assignee（领取者）: Codex（主代理）
 Parent（来源）: [Crosshair HUD 实施规格](../spec.md)
 Blocked by（前置事项）: 无
 
@@ -22,3 +22,32 @@ Blocked by（前置事项）: 无
 - [ ] 斜杠命令能打印插件版本、依赖状态与素材可读性
 - [ ] 禁用公共核心后功能插件因硬依赖而不加载（对应验收 12）
 - [ ] 清单检查能通过（清单非空、每个列出的文件存在、Lua 5.1 语法通过）
+
+## Comments（讨论）
+
+### 2026-09-16 离线部分完成，待实机确认
+
+**已产出**：
+
+- `addons/MYUI/`：`MYUI.toc`（**无 Lua、无依赖、无 SavedVariables、不进侧边栏**，`## Notes` 写明"请勿单独禁用"并说明后果）+ 已就位的 10 个成品纹理。
+- `addons/MYUI_CrosshairHUD/`：`.toc` 含**完整的四文件加载清单与顺序**（`Logic → Elements → Config → Core`），声明 `## Dependencies: EllesmereUI, MYUI` 与 `## SavedVariables: MYUI_CrosshairHUDDB`；四个模块文件按各自的边界职责就位（本票只有骨架，实现留给后续票）。
+- 斜杠命令 `/chh` 诊断入口：打印版本、EUI 与 MYUI 的就位状态、加载顺序、素材目录与 10 个成品文件名。另有 `/chh media` 只列素材。
+
+**离线验收证据**：
+
+| 检查 | 结果 |
+| --- | --- |
+| 清单检查（票据 01 的验收项） | PASS |
+| 语言服务 | PASS（0 问题） |
+| 静态检查 | PASS（4 文件 0 警告） |
+| 文档与测试登记 | PASS |
+
+过程中修掉一处：`Core.lua` 最初写 `_G.EllesmereUI` 被语言服务判为未定义字段，改用 `rawget`。
+
+**关于素材可读性的诚实说明**：魔兽对**缺失纹理不报错**，所以诊断命令无法真正验证素材可读——它只能列出预期路径与文件名供人工核对。这正是公共核心的 `## Notes` 必须写明"请勿单独禁用"的原因。
+
+**仍待实机**（本票剩余的验收项）：
+
+- 两个插件在游戏里可加载、不报错、在插件列表可见
+- `/chh` 能打印上述信息
+- 禁用公共核心后功能插件因硬依赖而不加载（对应验收 12）
