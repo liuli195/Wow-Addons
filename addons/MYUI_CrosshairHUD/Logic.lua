@@ -33,6 +33,16 @@ Logic.ARCS = {
 
 Logic.PIPS = { start = 219, step = 18, span = 12, count = 6 }
 
+-- 填充两端各留出的角度余量（度）。
+--
+-- 为什么需要它：遮罩的不透明侧**在切口之前就开始变淡**（实测软边 2 像素 = 1 个
+-- 设计单位 ≈ 1.06°），素材的弧尖也略超出标称起点。把切口当零宽度的硬边时，f=0 的
+-- 切口正好压在弧起点上，那点余量就被点亮——实机表现为弧起点露出 1–2 像素的边。
+-- 所以切口要**退到起点之前**、f=1 时再**盖过终点**，两头都不留缝。
+-- test_logic.py 断言它不小于规格值；scripts/media/verify_crosshair_media.py 反向
+-- 断言遮罩的软边不超过它。
+Logic.FILL_MARGIN = 2
+
 --------------------------------------------------------------------------
 -- 弧线填充换算
 --
@@ -59,11 +69,19 @@ function Logic.ArcCurvePoints(start, span, reverse)
            Logic.MaskAngle(start, span, 1, reverse)
 end
 
+-- 切口在 [起点 − δ, 起点 + 跨度] 之间走（δ = FILL_MARGIN）：
+--   f=0 → 退到起点之前，弧上一点不亮（软边与描边余量都落在弧外）
+--   f=1 → 盖过终点，整条弧全亮
+-- reverse：填充从**另一端**长起，切口对称地从另一头走。遮罩保留的永远只是切口的
+-- 某一侧，所以反向要把遮罩整体再转 180°（保留另一侧），**不是翻转 f**——翻转 f
+-- 会让 f=0 时反而整条弧全亮。
 function Logic.MaskAngle(start, span, f, reverse)
+    local reach = span + Logic.FILL_MARGIN
     if reverse then
-        return math.rad(-((start + span - span * f) + 180) - 90)
+        local cut = start + span + Logic.FILL_MARGIN - reach * f
+        return math.rad(-(cut + 180) - 90)
     end
-    return math.rad(-(start + span * f) - 90)
+    return math.rad(-((start - Logic.FILL_MARGIN) + reach * f) - 90)
 end
 
 --------------------------------------------------------------------------

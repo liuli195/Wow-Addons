@@ -76,31 +76,52 @@ for i = 1, Logic.PIPS.count do
     }
 end
 
+----------------------------------------------------------------------
+-- 填充的映射：切口从「弧起点往回 δ」走到「弧终点」
+--
+-- δ 是留给遮罩软边与素材描边余量的角度。实机上弧的起点会露出 1–2 像素的一条边：
+-- 遮罩的不透明侧在切口之前就开始变淡、素材的弧尖也略超出标称起点，而把切口当作
+-- **零宽度的硬边**时，f=0 的切口正好压在弧起点上，那点余量就被点着了。
+-- 所以切口要退到起点之前，f=1 时再盖过终点——两头都不留缝。
+----------------------------------------------------------------------
+local DELTA = 2          -- 规格值：余量至少 2°（实测软边 ≈ 1.06°，留一点裕度）
+
+local function Cut(span, f)
+    return (span + DELTA) * f - DELTA
+end
+
+assert(Cut(102, 0) <= -DELTA + 1e-9, "f=0 时切口必须退到弧起点之前")
+assert(Cut(102, 1) >= 102 - 1e-9, "f=1 时切口必须盖过弧终点")
+
 local checked = 0
 for _, curve in ipairs(curves) do
+    local span = curve.span
     for fi = 0, 100 do
         local f = fi / 100
-        local theta = Logic.MaskAngle(curve.start, curve.span, f, curve.reverse)
+        local theta = Logic.MaskAngle(curve.start, span, f, curve.reverse)
+        local cut = Cut(span, f)
         for ai = 1, 399 do
             local t = ai / 400
-            -- 用容差而不是相等：f 与 t 都是除法得来的浮点数，数学上落在切线上的点
-            -- 未必浮点相等（1-0.18 是 0.8200000000000001），会被漏掉而误报。
-            if math.abs(t - f) > 1e-9 and math.abs(t - (1 - f)) > 1e-9 then
-                local phi = curve.start + curve.span * t
-                -- 显式分支，不用 and/or 三元式：反向判据在 t 落在 [0,1-f] 时中间分支为
-                -- false，会被 or 悄悄换成正向判据，测试从此测不到反向这条分支。
-                local want
-                if curve.reverse then want = t > 1 - f else want = t < f end
+            local along = curve.reverse and span * (1 - t) or span * t
+            -- 跳过正好落在切线上的采样点：它归哪边都不影响外观，而浮点相等
+            -- 不可靠（1-0.18 是 0.8200000000000001）。
+            if math.abs(along - cut) > 1e-6 then
+                local phi = curve.start + span * t
+                local want = along < cut
                 local got = MaskReveals(theta, phi)
                 assert(want == got, string.format(
-                    "%s f=%.2f t=%.4f 期望 %s 实得 %s",
-                    curve.name, f, t, tostring(want), tostring(got)))
+                    "%s f=%.2f t=%.4f 距起点 %.3f 切口 %.3f 期望 %s 实得 %s",
+                    curve.name, f, t, along, cut, tostring(want), tostring(got)))
                 checked = checked + 1
             end
         end
     end
 end
 assert(checked > 300000, "核对点数异常偏少")
+
+-- 余量必须是具名的常量，供实现与素材侧校验共用
+assert(type(Logic.FILL_MARGIN) == "number" and Logic.FILL_MARGIN >= DELTA,
+    "要有具名的余量常量 Logic.FILL_MARGIN，且不小于规格值 " .. DELTA)
 
 ----------------------------------------------------------------------
 -- 方向（点名核对，便于失败时一眼看出是哪条弧反了）

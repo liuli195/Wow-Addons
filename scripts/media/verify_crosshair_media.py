@@ -26,6 +26,7 @@ MEDIA = REPO / "addons" / "MYUI" / "Media" / "CrosshairHUD"
 MASK_NAME = "mask_half.png"
 MASK_PX_PER_UNIT = 2
 MASK_UNITS = 128
+RING_RADIUS = 54          # 设计稿圆环半径，与 Logic.RING.radius 一致
 
 failures = []
 
@@ -89,6 +90,19 @@ def verify_mask():
     row = alpha[h // 2, max(0, mid - 4):mid + 5]
     check(np.all(np.diff(row) <= 0), f"{MASK_NAME}: 中线过渡不是从左侧不透明向右侧透明的单调下降（可能被镜像翻转）")
     check(row[0] > row[-1], f"{MASK_NAME}: 中线两侧明暗关系反了")
+
+    # 软边宽度必须**不超过**渲染侧预留的余量
+    #
+    # 渲染侧把切口退到弧起点之前 FILL_MARGIN 度（Logic.lua），正是为了盖住这条软边与
+    # 素材描边的余量。两边是一对：软边一旦比余量宽，弧的起点就会重新露边（实机上
+    # 出现过 1–2 像素的露边）。这里反向钉住，
+    # 常量见 addons/MYUI_CrosshairHUD/Logic.lua 的 Logic.FILL_MARGIN。
+    fill_margin_deg = 2.0
+    soft_px = int(np.count_nonzero((alpha[h // 2, :mid] > 0) & (alpha[h // 2, :mid] < 255)))
+    # 1 像素 = 1 / MASK_PX_PER_UNIT 个设计单位；换算成角度要除以环半径
+    soft_deg = np.degrees(soft_px / MASK_PX_PER_UNIT / RING_RADIUS)
+    check(soft_deg <= fill_margin_deg,
+        f"{MASK_NAME}: 软边 {soft_deg:.2f}° 超过了渲染侧预留的 {fill_margin_deg}° 余量，弧起点会露边")
 
 
 def main():
