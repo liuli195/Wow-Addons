@@ -35,6 +35,10 @@ assert(Logic, "全局表上应有 Logic")
 assert(Logic.RING.radius == 54 and Logic.RING.stroke == 6, "圆环常量")
 assert(Logic.ARCS.health.start == 99 and Logic.ARCS.health.span == 102, "血弧常量")
 assert(Logic.ARCS.power.start == 339 and Logic.ARCS.power.span == 102, "符能弧常量")
+-- 两条弧都必须**从靠近 6 点钟那端向上长**：左弧顺时针、右弧逆时针。
+-- 右弧的几何跨度是 339°→441°，从 441°（下方）那端长起就是逆时针，故必须 reverse。
+assert(Logic.ARCS.power.reverse == true, "符能弧必须反向填充")
+assert(Logic.ARCS.health.reverse ~= true, "血弧是正向填充")
 assert(Logic.PIPS.start == 219 and Logic.PIPS.step == 18
     and Logic.PIPS.span == 12 and Logic.PIPS.count == 6, "符文格常量")
 
@@ -52,13 +56,17 @@ end
 ----------------------------------------------------------------------
 -- 弧线填充：逐点核对
 --
--- 语义：弧上参数 t ∈ [0,1] 的点被填充，当且仅当 t < f。
+-- 语义：弧上参数 t ∈ [0,1] 的点被填充，当且仅当
+--     正向（reverse 为假）：t < f          —— 从 start 那端长起
+--     反向（reverse 为真）：t > 1 - f      —— 从另一端长起
 -- 独立模型：该点被遮罩露出，当且仅当它落在不透明半平面内。
 -- 两者必须处处一致。跳过切线本身（该点归哪边不影响外观）。
 ----------------------------------------------------------------------
 local curves = {
-    { name = "血弧",   start = Logic.ARCS.health.start, span = Logic.ARCS.health.span },
-    { name = "符能弧", start = Logic.ARCS.power.start,  span = Logic.ARCS.power.span },
+    { name = "血弧",   start = Logic.ARCS.health.start, span = Logic.ARCS.health.span,
+      reverse = Logic.ARCS.health.reverse },
+    { name = "符能弧", start = Logic.ARCS.power.start,  span = Logic.ARCS.power.span,
+      reverse = Logic.ARCS.power.reverse },
 }
 for i = 1, Logic.PIPS.count do
     curves[#curves + 1] = {
@@ -72,12 +80,17 @@ local checked = 0
 for _, curve in ipairs(curves) do
     for fi = 0, 100 do
         local f = fi / 100
-        local theta = Logic.MaskAngle(curve.start, curve.span, f)
+        local theta = Logic.MaskAngle(curve.start, curve.span, f, curve.reverse)
         for ai = 1, 399 do
             local t = ai / 400
-            if t ~= f then
+            -- 用容差而不是相等：f 与 t 都是除法得来的浮点数，数学上落在切线上的点
+            -- 未必浮点相等（1-0.18 是 0.8200000000000001），会被漏掉而误报。
+            if math.abs(t - f) > 1e-9 and math.abs(t - (1 - f)) > 1e-9 then
                 local phi = curve.start + curve.span * t
-                local want = t < f
+                -- 显式分支，不用 and/or 三元式：反向判据在 t 落在 [0,1-f] 时中间分支为
+                -- false，会被 or 悄悄换成正向判据，测试从此测不到反向这条分支。
+                local want
+                if curve.reverse then want = t > 1 - f else want = t < f end
                 local got = MaskReveals(theta, phi)
                 assert(want == got, string.format(
                     "%s f=%.2f t=%.4f 期望 %s 实得 %s",
@@ -88,6 +101,29 @@ for _, curve in ipairs(curves) do
     end
 end
 assert(checked > 300000, "核对点数异常偏少")
+
+----------------------------------------------------------------------
+-- 方向（点名核对，便于失败时一眼看出是哪条弧反了）
+--
+-- 血弧 99°→201°，99° 是刚过 6 点钟；符能弧 339°→441°，441°≡81° 是刚到 6 点钟之前。
+-- 两条弧「靠近 6 点钟的那端」分别是参数上的 t=0 与 t=1——填充必须从那里开始。
+----------------------------------------------------------------------
+local thetaSmall = Logic.MaskAngle(99, 102, 0.1)
+assert(MaskReveals(thetaSmall, 99 + 102 * 0.05), "血弧应从 99°（近 6 点钟）那端长起")
+assert(not MaskReveals(thetaSmall, 99 + 102 * 0.95), "血弧不该从远端长起")
+
+thetaSmall = Logic.MaskAngle(339, 102, 0.1, true)
+assert(MaskReveals(thetaSmall, 339 + 102 * 0.95), "符能弧应从 81°（近 6 点钟）那端长起")
+assert(not MaskReveals(thetaSmall, 339 + 102 * 0.05), "符能弧不该从 339° 那端长起")
+
+-- 两个端点值：f=0 全暗、f=1 全亮。反向分支最容易在这里做反（错把切口当保留侧）。
+for _, case in ipairs({ { 99, 102, false }, { 339, 102, true } }) do
+    local mid = case[1] + case[2] * 0.5
+    assert(not MaskReveals(Logic.MaskAngle(case[1], case[2], 0, case[3]), mid),
+        "f=0 必须整条弧全暗")
+    assert(MaskReveals(Logic.MaskAngle(case[1], case[2], 1, case[3]), mid),
+        "f=1 必须整条弧全亮")
+end
 
 ----------------------------------------------------------------------
 -- 符文充能：三态与全部边界

@@ -22,9 +22,13 @@ Logic.RING = {
     stroke = 6,
 }
 
+-- reverse = 填充从弧的**另一端**开始。
+-- 设计稿里两条弧都从靠近 6 点钟那端向上生长：左弧顺时针（角度递增 ✓），
+-- 右弧逆时针（角度递减）。右弧的几何跨度是 339° → 441°，逆时针生长意味着
+-- 从 441° 那端往回长，所以它必须 reverse。
 Logic.ARCS = {
     health = { start = 99,  span = 102 },
-    power  = { start = 339, span = 102 },
+    power  = { start = 339, span = 102, reverse = true },
 }
 
 Logic.PIPS = { start = 219, step = 18, span = 12, count = 6 }
@@ -41,7 +45,13 @@ Logic.PIPS = { start = 219, step = 18, span = 12, count = 6 }
 -- 逐点核对，而不是断言本函数的返回值等于某个数。
 --------------------------------------------------------------------------
 
-function Logic.MaskAngle(start, span, f)
+-- reverse：填充从**另一端**长起。此时切口在 c = start + span - span·f，而遮罩保留的
+-- 永远只是切口的某一侧，所以要把遮罩整体再转 180°（保留另一侧），**不是翻转 f**——
+-- 翻转 f 会让 f=0 时反而整条弧全亮。
+function Logic.MaskAngle(start, span, f, reverse)
+    if reverse then
+        return math.rad(-((start + span - span * f) + 180) - 90)
+    end
     return math.rad(-(start + span * f) - 90)
 end
 

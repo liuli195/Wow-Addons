@@ -139,7 +139,7 @@ end
 
 --------------------------------------------------------------------------
 
-local function ApplyFillable(part, start, span, st)
+local function ApplyFillable(part, start, span, st, reverse)
     local visible = st.visible ~= false
     part.bg:SetShown(visible)
 
@@ -158,7 +158,7 @@ local function ApplyFillable(part, start, span, st)
     if showFill then
         local fc = st.fillColor
         part.fill:SetVertexColor(fc[1], fc[2], fc[3], alpha)
-        part.mask:SetRotation(Logic.MaskAngle(start, span, fill))
+        part.mask:SetRotation(Logic.MaskAngle(start, span, fill, reverse))
     end
 end
 
@@ -176,7 +176,8 @@ function Elements.Apply(state)
         ApplyFillable(parts.health, arcs.health.start, arcs.health.span, state.health)
     end
     if state.power then
-        ApplyFillable(parts.power, arcs.power.start, arcs.power.span, state.power)
+        ApplyFillable(parts.power, arcs.power.start, arcs.power.span, state.power,
+            arcs.power.reverse)
     end
 
     for i = 1, Logic.PIPS.count do

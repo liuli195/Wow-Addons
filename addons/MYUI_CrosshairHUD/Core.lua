@@ -398,6 +398,31 @@ local function Version()
     return "未知"
 end
 
+-- 读数探针：逐条报告"这一次读数究竟发生了什么"。
+-- 只报告**类型与判定结果**，绝不把数值本身转成字符串（秘密值可能不允许转字符串）。
+local function Probe(label, call)
+    local results = { pcall(call) }
+    if not results[1] then
+        print("  " .. label .. "：调用抛错 → " .. tostring(results[2]))
+        return
+    end
+
+    local value = results[2]
+    local detector = rawget(_G, "issecretvalue")
+    local verdict
+    if not detector then
+        verdict = "无 issecretvalue"
+    else
+        local detOk, secret = pcall(detector, value)
+        verdict = detOk and ("issecretvalue=" .. tostring(secret))
+            or ("issecretvalue 抛错：" .. tostring(secret))
+    end
+
+    local arithOk = pcall(function() return value + 0 end)
+    print(string.format("  %s：返回%d个 type=%s  %s  可取数=%s",
+        label, #results - 1, type(value), verdict, tostring(arithOk)))
+end
+
 local function Report()
     local cfg = Config.Get()
     print("|cff9fd4ff" .. ADDON .. "|r 诊断：")
@@ -409,6 +434,18 @@ local function Report()
         tostring(cfg.enabled), cfg.scale or 1, cfg.strata or "MEDIUM",
         Core.demo and "开" or "关"))
     print(string.format("  最近读数：血量 %.3f  符能 %.3f", last.health, last.power))
+
+    -- 读数探针：血量／符能两条弧都空着时，唯一的嫌疑就是这里被判成不可读。
+    print("  读数探针：")
+    Probe("UnitHealth", function() return UnitHealth("player") end)
+    Probe("UnitHealthMax", function() return UnitHealthMax("player") end)
+    local powerType = Enum and Enum.PowerType and Enum.PowerType.RunicPower
+    print("  符能类型：Enum.PowerType.RunicPower=" .. tostring(powerType))
+    if powerType then
+        Probe("UnitPower", function() return UnitPower("player", powerType) end)
+        Probe("UnitPowerMax", function() return UnitPowerMax("player", powerType) end)
+    end
+    Probe("GetRuneCooldown(1)", function() return GetRuneCooldown(1) end)
     if InCombatLockdown and InCombatLockdown() then
         print("  （战斗中）")
     end
