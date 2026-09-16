@@ -83,8 +83,8 @@ local STRATA_ORDER = { "LOW", "MEDIUM", "HIGH", "DIALOG" }
 -- 导出给测试：键必须是魔兽认的层级名，测试就是盯这个的
 Config.STRATA_VALUES, Config.STRATA_ORDER = STRATA_VALUES, STRATA_ORDER
 
--- 整体缩放的取值范围。配置页的滑块与解锁模式齿轮面板里的宽度／高度共用这一份，
--- 两条入口改的是同一个值，不许各存一份。
+-- 整体缩放的取值范围。**尺寸的唯一入口是解锁模式齿轮里的宽度／高度**（它们写的就是
+-- 这个 scale），这里是那个入口的钳位范围——超范围不会静默生效，齿轮回读实际值回写。
 Config.SCALE_MIN, Config.SCALE_MAX = 0.5, 2.0
 
 local settings = nil
@@ -233,6 +233,17 @@ Config.FILL_SOURCE = {
 function Config.SourceFor(elementKey, slot)
     if slot ~= "fill" then return nil end
     return Config.FILL_SOURCE[elementKey]
+end
+
+--- 常规节的格子清单。与元素节同一套规则：每项半格、成对成行。
+--- **不含缩放**——尺寸由解锁模式齿轮里的宽度／高度负责（它们写的是同一个 scale，
+--- 两个框互相联动，超范围还会钳位后回写实际值）。页面上再放一个缩放就是第二个
+--- 入口，用户明确要求去掉。test_config_plan.py 断言这里没有它。
+function Config.GeneralCells()
+    return {
+        { kind = "toggle", text = "启用准星HUD", key = "enabled" },
+        { kind = "dropdown", text = "图层" },
+    }
 end
 
 --- 页面上的格子清单。**每项只占半格**：页面按顺序两格一行渲染，末行不足则右边留空
@@ -446,30 +457,35 @@ function Config.BuildPage(_, parent, yOffset)
     local _, h = W:SectionHeader(parent, "常规", y)
     y = y - h
 
-    -- **每一项只占半格，成对排列**：开关与滑块同行（EUI 参考页也是这么配的）。
-    -- 别用满行的 Toggle：那是通栏，与"左右分栏"不是一回事。
-    _, h = W:DualRow(parent, y,
-        { type = "toggle", text = "启用准星 HUD",
-          getValue = function() return cfg.enabled ~= false end,
-          setValue = function(value)
-              cfg.enabled = value
-              refresh()
-              -- 总开关会改变四个子开关的可用状态，重走一遍刷新列表
-              if EUI and EUI.RefreshPage then EUI:RefreshPage() end
-          end },
-        { type = "slider", text = "HUD 缩放",
-          min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
-          tooltip = "整体等比缩放。1.0 为设计稿原始大小。",
-          getValue = function() return cfg.scale or 1.0 end,
-          setValue = function(value) cfg.scale = value; refresh() end })
-    y = y - h
+    -- 常规节也照清单渲染（Config.GeneralCells）：每项半格、成对成行。
+    -- **这里不再有缩放**——尺寸归解锁模式齿轮里的宽度／高度管，两者是同一个 scale。
+    local function GeneralSlot(cell)
+        if cell.kind == "toggle" then
+            local key = cell.key
+            return { type = "toggle", text = cell.text,
+                getValue = function() return cfg[key] ~= false end,
+                setValue = function(value)
+                    cfg[key] = value
+                    refresh()
+                    -- 总开关会改变四个子开关的可用状态，重走一遍刷新列表
+                    if EUI and EUI.RefreshPage then EUI:RefreshPage() end
+                end }
+        end
+        return { type = "dropdown", text = cell.text,
+            values = STRATA_VALUES, order = STRATA_ORDER,
+            getValue = function() return cfg.strata or "MEDIUM" end,
+            setValue = function(value) cfg.strata = value; refresh() end }
+    end
 
-    _, h = W:DualRow(parent, y,
-        { type = "dropdown", text = "图层", values = STRATA_VALUES, order = STRATA_ORDER,
-          getValue = function() return cfg.strata or "MEDIUM" end,
-          setValue = function(value) cfg.strata = value; refresh() end },
-        { type = "spacer" })
-    y = y - h
+    local general = Config.GeneralCells()
+    local gindex = 1
+    while general[gindex] do
+        local left, right = general[gindex], general[gindex + 1]
+        _, h = W:DualRow(parent, y, GeneralSlot(left),
+            right and GeneralSlot(right) or { type = "spacer" })
+        y = y - h
+        gindex = gindex + 2
+    end
 
     -- 位置**不在这里配**：解锁模式里点齿轮（元素选项）就能改 X/Y，那是 EUI 现成的
     -- 能力，而且与拖动框同处一个会话，比在配置页里另开一套更顺。这里自建只会重复。

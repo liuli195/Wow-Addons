@@ -113,6 +113,31 @@ for _, key in ipairs(ORDER) do
 end
 
 ----------------------------------------------------------------------
+-- 常规节的格子清单：**不含缩放**
+--
+-- 尺寸由解锁模式齿轮里的宽度／高度负责（它们写的就是同一个 scale，且两个框互相
+-- 联动、超范围会钳位后回写实际值）。页面上再放一个缩放滑块就是第二个入口，
+-- 用户明确要求去掉。
+----------------------------------------------------------------------
+assert(type(Config.GeneralCells) == "function", "需要 Config.GeneralCells 这个出口函数")
+local general = Config.GeneralCells()
+assert(type(general) == "table" and #general > 0, "常规节要有格子")
+
+local texts = {}
+for i = 1, #general do
+    texts[general[i].text] = true
+    assert(not general[i].text:find("缩放", 1, true),
+        "常规节不该再有缩放：" .. general[i].text)
+end
+assert(texts["启用准星HUD"], "常规节要有总开关")
+assert(texts["图层"], "常规节要有图层")
+
+for i = 1, #general do
+    assert(general[i].kind == "toggle" or general[i].kind == "dropdown",
+        "常规节的格子只能是开关或下拉")
+end
+
+----------------------------------------------------------------------
 -- 置灰：总开关关掉时所有子项都算关掉（子开关与色块一起失效）
 ----------------------------------------------------------------------
 for _, key in ipairs(ORDER) do
