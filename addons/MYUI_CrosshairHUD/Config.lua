@@ -153,15 +153,21 @@ end
 -- 所以顺序是：先用 EUI 的缓存（能反映用户在 EUI 里改过的职业色），它吃不了秘密
 -- 令牌就退回 Blizzard 自己的接口——那个能吃秘密令牌，代价只是拿不到用户改过的色。
 -- "取不到"是缺陷，"不是自定义的那个色"只是次要诉求。
-local function ClassColor()
-    -- 优先用 EUI 自己缓存的类名令牌（`_playerClass`）：它加载时就取好了，
-    -- 不受之后上下文变化影响，EUI 自家的色块也是用它取职业色的。
+-- 玩家职业令牌。优先用 EUI 缓存好的那个（`_playerClass`）：它加载时就取好了，
+-- 不受之后上下文变化影响，EUI 自家的色块也是用它取色的。
+local function PlayerClass()
     local EUI = rawget(_G, "EllesmereUI")
-    local classFile = EUI and EUI._playerClass or nil
-    if classFile == nil and UnitClass then
+    if EUI and EUI._playerClass then return EUI._playerClass end
+    if UnitClass then
         local ok, _, file = pcall(UnitClass, "player")
-        if ok then classFile = file end
+        if ok then return file end
     end
+    return nil
+end
+
+local function ClassColor()
+    local EUI = rawget(_G, "EllesmereUI")
+    local classFile = PlayerClass()
     if classFile == nil then return nil end
 
     if EUI and EUI.GetClassColor then
@@ -188,11 +194,59 @@ local function ClassColor()
     return nil
 end
 
--- 「职业配色」取不到时**回落到自定义色**，而不是画成黑色或什么都不画。
--- 只有**填充**有职业色这一说：背景就是自定义色，不给它第二种来源。
+--- 第二种来源的取色。**三个来源在 EUI 里都有现成接口，本插件不自己定色**：
+---   class    → 职业色（血弧、准星）
+---   power    → 能量色（符能弧）——按玩家的主能量类型取，DK 是 RUNIC_POWER
+---   resource → 职业资源色（符文格）
+--- 返回 {r,g,b}（通道可能是秘密值，只许原样转交），取不到返回 nil。
+--- 可用与否只看**颜色对象在不在**，绝不去判断通道。
+local function SourceColor(source)
+    if source == "class" then return ClassColor() end
+
+    local EUI = rawget(_G, "EllesmereUI")
+    if not EUI then return nil end
+    local classFile = PlayerClass()
+    if classFile == nil then return nil end
+
+    if source == "power" then
+        local map = EUI.CLASS_POWER_MAP
+        local okKey, powerKey = pcall(function() return map and map[classFile] end)
+        if not (okKey and powerKey and EUI.GetPowerColor) then return nil end
+        local ok, color = pcall(EUI.GetPowerColor, powerKey)
+        return ok and Channels(color) or nil
+    end
+
+    if source == "resource" then
+        if not EUI.GetClassResourceColor then return nil end
+        local ok, color = pcall(EUI.GetClassResourceColor, classFile)
+        return ok and Channels(color) or nil
+    end
+
+    return nil
+end
+
+-- 第二个色块的含义是**设计决定，不是用户配置**：血弧与准星用职业色，
+-- 符能弧用能量色，符文格用职业资源色。tooltip 用 EUI 自己的词条键，由它本地化。
+Config.FILL_SOURCE = {
+    health    = { mode = "class",    tooltip = "Class Colored" },
+    power     = { mode = "power",    tooltip = "Power Colored" },
+    runes     = { mode = "resource", tooltip = "Class Resource Color" },
+    crosshair = { mode = "class",    tooltip = "Class Colored" },
+}
+
+-- 供页面显示第二个色块用（返回散开的通道，取不到什么都不返回）
+function Config.SourceColor(source)
+    local channels = SourceColor(source)
+    if not channels then return nil end
+    return channels[1], channels[2], channels[3]
+end
+
+-- 第二种来源取不到时**回落到自定义色**，而不是画成黑色或什么都不画。
+-- 只有**填充**有第二种来源：背景就是自定义色。
 function Config.ResolveFill(elementConfig)
-    if elementConfig.fillMode == "class" then
-        local color = ClassColor()
+    local mode = elementConfig.fillMode
+    if mode and mode ~= "custom" then
+        local color = SourceColor(mode)
         if color then return color end
     end
     return elementConfig.fill
@@ -231,15 +285,17 @@ function Config.BuildPage(_, parent, yOffset)
         if Apply then Apply() end
     end
 
-    -- 一行「标签 | 色块 + 透明度滑块」。
+    -- 一行「标签 | 色块 + 透明度滑块」。**左右分栏**：左半标签、右半控件，与 EUI 一致。
     --
-    -- **左右分栏**：左半是标签，右半是控件——与 EUI 自己的行一致，不做通栏。
-    -- 色块用 EUI 公开的 BuildTrioColorSwatch：**自定义在左、职业在右**，点哪个用哪个；
-    -- 未选中的那个由它自己压到 0.3（白边框随之变暗），这就是选中态。只有填充有职业色，
-    -- 背景就是自定义色一种。三元组还会返回一个「默认色」色块，本插件没有这个概念，
-    -- 建完即隐藏。
-    local function ColorRow(text, elementKey, elementConfig, modeKey, colorKey, alphaKey,
-        withClass)
+    -- 左色块是自定义色，右色块是**第二种来源**——含义由元素决定（见
+    -- Config.FILL_SOURCE）：血弧与准星是职业色，符能弧是能量色，符文格是职业资源色。
+    -- 点哪个用哪个，未选中的压到 0.3 作选择态。
+    --
+    -- 交互照抄 EUI 的 BuildTrioColorSwatch 约定（点未选中的自定义色块只切选择、
+    -- 已经在自定义上时再点才开取色器），但那一个把第二个色块写死成职业色，
+    -- 而符能弧要能量色、符文格要职业资源色，所以这里用公开的 BuildColorSwatch
+    -- 自己拼一对。source 为 nil 时只有自定义色块（背景就是这种）。
+    local function ColorRow(text, elementKey, elementConfig, colorKey, alphaKey, source)
         local row, height = W:DualRow(parent, y,
             { type = "label", text = text },
             -- 右半的滑块不写字：每个分区都会自带一个 14px 标签，留空才不重复。
@@ -249,49 +305,102 @@ function Config.BuildPage(_, parent, yOffset)
               setValue = function(value)
                   elementConfig[alphaKey] = value / 100
                   refresh()
-              end })
+              end,
+              -- 该元素关掉时置灰不可点，与页面上其它控件一致
+              disabled = function() return Config.Grayed(elementKey) end })
         y = y - height
 
         -- 预建阶段不创建任何内联控件
         if EUI._prebuilding then return end
         local rgn = row._rightRegion
         local ctrl = rgn and rgn._control
-        if not (ctrl and EUI.BuildTrioColorSwatch) then return end
+        if not (ctrl and EUI.BuildColorSwatch) then return end
 
-        -- 选中态是 EUI 那个 Update() 画的，而它挂在控件刷新列表上：**onChange 里
-        -- 必须叫一次 RefreshPage**——只调自己的刷新，选择态会一直停在初始值。
-        local function changed()
+        local custom, sourceSwatch
+
+        local function Changed()
             refresh()
+            -- 选择态挂在 EUI 的控件刷新列表上：必须叫一次页面刷新，否则不动
             if EUI.RefreshPage then EUI:RefreshPage() end
         end
 
-        local custom, default, class = EUI.BuildTrioColorSwatch(
-            rgn, rgn:GetFrameLevel() + 5, {
-                getMode = function()
-                    return (modeKey and elementConfig[modeKey]) or "custom"
-                end,
-                setMode = function(mode)
-                    if modeKey then elementConfig[modeKey] = mode end
-                end,
-                getCustomRGB = function()
-                    local c = elementConfig[colorKey]
-                    return c[1], c[2], c[3]
-                end,
-                setCustomRGB = function(r, g, b) elementConfig[colorKey] = { r, g, b } end,
-                hasClassColor = withClass == true,
-                onChange = changed,
-                disabled = function() return Config.Grayed(elementKey) end,
-                overrideSize = 20,
-            })
-        if default then default:Hide() end
-
-        -- 自右向左挂，于是视觉上自定义在左、职业在右
-        local anchor = ctrl
-        if class then
-            class:SetPoint("RIGHT", anchor, "LEFT", -10, 0)
-            anchor = class
+        -- 元素关掉时整体压暗，与滑块那条 disabled 对齐（色块没有现成的 disabled 可传，
+        -- 所以自己画；点击也要自己挡）
+        local function Update()
+            local grayed = Config.Grayed(elementKey)
+            if not source then
+                custom:SetAlpha(grayed and 0.3 or 1)
+                return
+            end
+            local mode = elementConfig.fillMode or "custom"
+            custom:SetAlpha(grayed and 0.3 or (mode == "custom" and 1 or 0.3))
+            sourceSwatch:SetAlpha(grayed and 0.3 or (mode == source.mode and 1 or 0.3))
         end
-        if custom then custom:SetPoint("RIGHT", anchor, "LEFT", -8, 0) end
+
+        custom = EUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
+            function()
+                local c = elementConfig[colorKey]
+                return c[1], c[2], c[3], elementConfig[alphaKey] or 1
+            end,
+            function(r, g, b, a)
+                elementConfig[colorKey] = { r, g, b }
+                if a then elementConfig[alphaKey] = a end
+                -- 只有存在第二种来源时才碰来源：背景没有来源，挑背景色不该动填充的选择
+                if source then elementConfig.fillMode = "custom" end
+                Changed()
+            end,
+            true, 20)
+        custom:HookScript("OnEnter", function()
+            if EUI.ShowWidgetTooltip then EUI.ShowWidgetTooltip(custom, "Custom Color") end
+        end)
+        custom:HookScript("OnLeave", function()
+            if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+        end)
+        if source then
+            -- 已经在自定义上时再点才开取色器；否则只切选择（EUI 的全局色块约定）
+            custom._eabOrigClick = custom:GetScript("OnClick")
+            custom:SetScript("OnClick", function(self)
+                if Config.Grayed(elementKey) then return end
+                if (elementConfig.fillMode or "custom") ~= "custom" then
+                    elementConfig.fillMode = "custom"
+                    Changed()
+                    return
+                end
+                if self._eabOrigClick then self._eabOrigClick(self) end
+            end)
+        end
+
+        if source then
+            -- 不可编辑：点它只表示"用这个来源"，所以 setValue 是空的、也不开取色器
+            sourceSwatch = EUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
+                function() return Config.SourceColor(source.mode) end,
+                function() end,
+                false, 20)
+            sourceSwatch:SetScript("OnClick", function()
+                if Config.Grayed(elementKey) then return end
+                elementConfig.fillMode = source.mode
+                Changed()
+            end)
+            sourceSwatch:HookScript("OnEnter", function()
+                if EUI.ShowWidgetTooltip then
+                    EUI.ShowWidgetTooltip(sourceSwatch, source.tooltip)
+                end
+            end)
+            sourceSwatch:HookScript("OnLeave", function()
+                if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
+            end)
+        end
+
+        -- 自右向左挂，于是视觉上自定义在左、来源色在右
+        local anchor = ctrl
+        if sourceSwatch then
+            sourceSwatch:SetPoint("RIGHT", anchor, "LEFT", -10, 0)
+            anchor = sourceSwatch
+        end
+        custom:SetPoint("RIGHT", anchor, "LEFT", -8, 0)
+
+        Update()
+        if EUI.RegisterWidgetRefresh then EUI.RegisterWidgetRefresh(Update) end
     end
 
     local _, h = W:SectionHeader(parent, "常规", y)
@@ -335,12 +444,12 @@ function Config.BuildPage(_, parent, yOffset)
             function() return Config.Grayed(key) end)
         y = y - h
 
-        -- 填充：自定义 + 职业两个色块
-        ColorRow("填充色", key, element, "fillMode", "fill", "fillAlpha", true)
+        -- 填充：自定义 + 该元素的第二种来源（血=职业色，符能=能量色，符文=职业资源色）
+        ColorRow("填充色", key, element, "fill", "fillAlpha", Config.FILL_SOURCE[key])
 
-        -- 准星是线不是块：**没有背景色**。背景也没有职业色，只有自定义一种。
+        -- 准星是线不是块：**没有背景色**。背景也没有第二种来源，只有自定义色。
         if key ~= "crosshair" then
-            ColorRow("条背景", key, element, nil, "bg", "bgAlpha", false)
+            ColorRow("条背景", key, element, "bg", "bgAlpha", nil)
         end
     end
 

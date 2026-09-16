@@ -102,6 +102,8 @@ local blizzardColor, blizzardThrows = nil, false
 local raidColors = nil
 
 local DK = "DEATHKNIGHT"
+local powerColor, powerThrows = nil, false
+local resourceColor, resourceThrows = nil, false
 _G.EllesmereUI = {
     -- EUI 加载时就缓存好的类名令牌，优先于现读 UnitClass
     _playerClass = DK,
@@ -109,6 +111,17 @@ _G.EllesmereUI = {
         assert(token == DK, "取职业色要拿 EUI 缓存的令牌，实得 " .. tostring(token))
         if euiThrows then error("table index is nil") end   -- 秘密令牌当表键就是这个错
         return euiColor
+    end,
+    CLASS_POWER_MAP = { DEATHKNIGHT = "RUNIC_POWER" },
+    GetPowerColor = function(key)
+        assert(key == "RUNIC_POWER", "能量色要按玩家主能量类型取，实得 " .. tostring(key))
+        if powerThrows then error("no power color") end
+        return powerColor
+    end,
+    GetClassResourceColor = function(token)
+        assert(token == DK, "职业资源色按职业令牌取，实得 " .. tostring(token))
+        if resourceThrows then error("no resource color") end
+        return resourceColor
     end,
 }
 
@@ -141,14 +154,50 @@ Near(c[1], 0.11, "第一级：EUI 缓存的色应优先"); Near(c[2], 0.22, "g")
 assert(unitClassCalls == 0, "有 EUI 缓存的类名令牌时，不该再去现读 UnitClass")
 
 ----------------------------------------------------------------------
--- 填充与背景互不影响：背景**没有**职业色这一说
+-- 第二个来源**按元素不同**，而且三个来源在 EUI 里各有各的接口
 --
--- 只有填充有"自定义／职业"两种来源；背景就是自定义色一种。填充选了职业色之后，
--- 背景必须原样不动。
+--   血弧、准星 → 职业色（GetClassColor）
+--   符能弧     → 能量色（GetPowerColor，键按玩家的主能量类型）
+--   符文格     → 职业资源色（GetClassResourceColor）
+-- 一律不许自己定色。
+----------------------------------------------------------------------
+powerColor = { r = 0.31, g = 0.52, b = 0.93 }
+resourceColor = { r = 0.44, g = 0.61, b = 0.66 }
+
+element.fillMode = "power"
+Near(Config.ResolveFill(element)[1], 0.31, "符能弧取的是能量色")
+Near(Config.ResolveFill(element)[2], 0.52, "g")
+
+element.fillMode = "resource"
+Near(Config.ResolveFill(element)[1], 0.44, "符文格取的是职业资源色")
+
+-- 元素的第二个来源是设计决定，不是用户配置
+local sources = Config.FILL_SOURCE
+assert(sources.health.mode == "class", "血弧的第二个来源是职业色")
+assert(sources.power.mode == "power", "符能弧的第二个来源是能量色")
+assert(sources.runes.mode == "resource", "符文格的第二个来源是职业资源色")
+assert(sources.crosshair.mode == "class", "准星的第二个来源是职业色")
+assert(sources.power.tooltip == "Power Colored", "提示语用 EUI 自己的词条键")
+
+----------------------------------------------------------------------
+-- 来源取不到时一律回落到自定义色，不许画成黑
+----------------------------------------------------------------------
+powerThrows = true
+element.fillMode = "power"
+Near(Config.ResolveFill(element)[1], element.fill[1], "能量色取不到就回落自定义色")
+powerThrows = false
+
+resourceThrows = true
+element.fillMode = "resource"
+Near(Config.ResolveFill(element)[1], element.fill[1], "资源色取不到就回落自定义色")
+resourceThrows = false
+
+----------------------------------------------------------------------
+-- 填充与背景互不影响：背景**没有**第二种来源
 ----------------------------------------------------------------------
 element.fillMode = "class"
 Near(Config.ResolveFill(element)[1], 0.11, "填充应是职业色")
-assert(element.bgMode == nil, "背景不该有职业色来源这一项")
+assert(element.bgMode == nil, "背景不该有第二种来源这一项")
 
 ----------------------------------------------------------------------
 -- 二、**实机那个 bug**：EUI 缓存吃不了秘密令牌，抛错后必须退回 Blizzard 的接口
