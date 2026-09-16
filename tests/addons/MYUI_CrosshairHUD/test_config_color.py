@@ -135,6 +135,7 @@ for _, name in ipairs({ "Logic", "Elements", "Config", "Core" }) do
 end
 local NS = assert(_G.MYUI_CHH)
 local Config = assert(NS.Config)
+local Core = assert(NS.Core)
 local Elements = assert(NS.Elements)
 local Logic = assert(NS.Logic)
 

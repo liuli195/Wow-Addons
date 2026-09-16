@@ -190,8 +190,8 @@ end
 -- 显示状态表
 --------------------------------------------------------------------------
 
--- 填充色交给配置层解析（职业配色取不到时它自己回落到自定义色）。
--- 背景的来源固定是职业色，同样走配置层的回落。
+-- 填充色交给配置层解析（取不到来源色时它自己回落到自定义色）。
+-- 背景**只有自定义色一种**，没有第二种来源（见 Config.ResolveBg）。
 local function FillColor(elementConfig)
     return Config.ResolveFill(elementConfig)
 end
@@ -282,7 +282,9 @@ local function DemoState()
     state.crosshair = {
         visible = elements.crosshair.enabled ~= false,
         fillColor = FillColor(elements.crosshair),
-        alpha = elements.crosshair.alpha or 1,
+        -- 键名必须与状态表契约一致（准星带的是 fillAlpha，不是 alpha）——
+        -- 写错了渲染层读不到，表现是 demo 下调准星透明度毫无反应。
+        fillAlpha = elements.crosshair.fillAlpha or 1,
     }
     return state
 end

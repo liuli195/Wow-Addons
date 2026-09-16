@@ -347,7 +347,7 @@ function Config.BuildPage(_, parent, yOffset)
     -- 不为了填满而挪动配置项。
     --
     -- 来源色块的含义由元素决定（见 Config.FILL_SOURCE）：血弧与准星是职业色，
-    -- 符能弧是能量色，符文格是职业资源色。背景的第二种来源固定是职业色。
+    -- 符能弧是能量色，符文格是职业资源色。**背景没有第二种来源**（只有自定义色）。
 
     -- 内联色块：挂在该格控件的左侧，可挂多个（自右向左）。
     -- spec = { tooltip, getRGB, setRGB, select, isSelected, alpha }
