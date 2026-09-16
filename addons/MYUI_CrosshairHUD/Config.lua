@@ -236,12 +236,16 @@ function Config.SourceFor(elementKey, slot)
 end
 
 --- 常规节的格子清单。与元素节同一套规则：每项半格、成对成行。
---- **不含缩放**——尺寸由解锁模式齿轮里的宽度／高度负责（它们写的是同一个 scale，
---- 两个框互相联动，超范围还会钳位后回写实际值）。页面上再放一个缩放就是第二个
---- 入口，用户明确要求去掉。test_config_plan.py 断言这里没有它。
+---
+--- **缩放留着**：它与解锁模式齿轮里的宽度／高度走的是同一个 scale（三者改哪个都
+--- 一样），所以不冲突，多一个入口反而方便。范围与钳位共用 Config.SCALE_MIN/MAX，
+--- 两处各写一份就会出现"滑块拖到 3.0、实际被钳到 2.0"的静默不一致。
 function Config.GeneralCells()
     return {
         { kind = "toggle", text = "启用准星HUD", key = "enabled" },
+        { kind = "slider", text = "HUD 缩放", key = "scale",
+          min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
+          tooltip = "整体等比缩放。与解锁模式齿轮里的宽度／高度是同一个值。" },
         { kind = "dropdown", text = "图层" },
     }
 end
@@ -470,6 +474,13 @@ function Config.BuildPage(_, parent, yOffset)
                     -- 总开关会改变四个子开关的可用状态，重走一遍刷新列表
                     if EUI and EUI.RefreshPage then EUI:RefreshPage() end
                 end }
+        end
+        if cell.kind == "slider" then
+            local key = cell.key
+            return { type = "slider", text = cell.text,
+                min = cell.min, max = cell.max, step = cell.step, tooltip = cell.tooltip,
+                getValue = function() return cfg[key] or 1.0 end,
+                setValue = function(value) cfg[key] = value; refresh() end }
         end
         return { type = "dropdown", text = cell.text,
             values = STRATA_VALUES, order = STRATA_ORDER,

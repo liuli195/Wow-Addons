@@ -113,11 +113,11 @@ for _, key in ipairs(ORDER) do
 end
 
 ----------------------------------------------------------------------
--- 常规节的格子清单：**不含缩放**
+-- 常规节的格子清单：总开关 + **缩放** + 图层
 --
--- 尺寸由解锁模式齿轮里的宽度／高度负责（它们写的就是同一个 scale，且两个框互相
--- 联动、超范围会钳位后回写实际值）。页面上再放一个缩放滑块就是第二个入口，
--- 用户明确要求去掉。
+-- 缩放**要在**（用户复议：宽度／高度／缩放三者走的是同一个 scale，改哪个都一样，
+-- 所以留着不冲突，多一个入口更方便）。它的范围必须与 SetHUDSize 的钳位共用同一份
+-- 常量——两处各写一份就会出现"滑块能拖到 3.0、实际被钳到 2.0"这种静默不一致。
 ----------------------------------------------------------------------
 assert(type(Config.GeneralCells) == "function", "需要 Config.GeneralCells 这个出口函数")
 local general = Config.GeneralCells()
@@ -126,15 +126,23 @@ assert(type(general) == "table" and #general > 0, "常规节要有格子")
 local texts = {}
 for i = 1, #general do
     texts[general[i].text] = true
-    assert(not general[i].text:find("缩放", 1, true),
-        "常规节不该再有缩放：" .. general[i].text)
 end
 assert(texts["启用准星HUD"], "常规节要有总开关")
 assert(texts["图层"], "常规节要有图层")
 
+local scaleCell
 for i = 1, #general do
-    assert(general[i].kind == "toggle" or general[i].kind == "dropdown",
-        "常规节的格子只能是开关或下拉")
+    if general[i].text:find("缩放", 1, true) then scaleCell = general[i] end
+end
+assert(scaleCell, "常规节要有缩放")
+assert(scaleCell.kind == "slider", "缩放应是个滑块")
+assert(scaleCell.min == Config.SCALE_MIN and scaleCell.max == Config.SCALE_MAX,
+    "缩放滑块的范围必须与钳位共用 Config.SCALE_MIN/MAX")
+
+for i = 1, #general do
+    local kind = general[i].kind
+    assert(kind == "toggle" or kind == "dropdown" or kind == "slider",
+        "常规节的格子只能是开关、下拉或滑块，实得 " .. tostring(kind))
 end
 
 ----------------------------------------------------------------------
