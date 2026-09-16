@@ -289,105 +289,78 @@ function Config.BuildPage(_, parent, yOffset)
         if Apply then Apply() end
     end
 
-    -- 一行「标签 | 色块 + 透明度滑块」。**左右分栏**：左半标签、右半控件，与 EUI 一致。
+    -- 一行**三栏**：自定义色 | 第二种来源色 | 透明度滑块。
     --
-    -- 左色块是自定义色，右色块是**第二种来源**——含义由元素决定（见
-    -- Config.FILL_SOURCE）：血弧与准星是职业色，符能弧是能量色，符文格是职业资源色。
-    -- 点哪个用哪个，未选中的压到 0.3 作选择态。
+    -- 必须用分栏而不是把控件塞进一个右半：每个 slot 一个色块、每栏之间 EUI 会画分隔线，
+    -- 这才是 EUI 自己的行长相。色块的 slot 用 `colorpicker`（可选 text 作为该栏标签，
+    -- `hasAlpha` 只影响取色器弹窗，不生成行内滑块——滑块是我们自己那一栏）。
     --
-    -- 交互照抄 EUI 的 BuildTrioColorSwatch 约定（点未选中的自定义色块只切选择、
-    -- 已经在自定义上时再点才开取色器），但那一个把第二个色块写死成职业色，
-    -- 而符能弧要能量色、符文格要职业资源色，所以这里用公开的 BuildColorSwatch
-    -- 自己拼一对。source 为 nil 时只有自定义色块（背景就是这种）。
+    -- 第二个色块的含义由元素决定（见 Config.FILL_SOURCE）：血弧与准星是职业色，
+    -- 符能弧是能量色，符文格是职业资源色。点哪个用哪个，未选中的压到 0.3 作选择态；
+    -- "已经在自定义上时再点才开取色器"照抄 EUI 的色块约定。
+    -- source 为 nil 时中栏留空（背景没有第二种来源）。
     local function ColorRow(text, elementKey, elementConfig, colorKey, alphaKey, source)
-        local row, height = W:DualRow(parent, y,
-            { type = "label", text = text },
-            -- 右半的滑块不写字：每个分区都会自带一个 14px 标签，留空才不重复。
-            -- 留空而不是省略 text——省略会走到 L(nil) 上去。
-            { type = "slider", text = "", min = 0, max = 100, step = 1,
-              getValue = function() return (elementConfig[alphaKey] or 1) * 100 end,
-              setValue = function(value)
-                  elementConfig[alphaKey] = value / 100
-                  refresh()
-              end,
-              -- 该元素关掉时置灰不可点，与页面上其它控件一致
-              disabled = function() return Config.Grayed(elementKey) end })
-        y = y - height
-
-        -- 预建阶段不创建任何内联控件
-        if EUI._prebuilding then return end
-        local rgn = row._rightRegion
-        local ctrl = rgn and rgn._control
-        if not (ctrl and EUI.BuildColorSwatch) then return end
-
-        local custom, sourceSwatch
-
+        local grayed = function() return Config.Grayed(elementKey) end
         local function Changed()
             refresh()
             -- 选择态挂在 EUI 的控件刷新列表上：必须叫一次页面刷新，否则不动
             if EUI.RefreshPage then EUI:RefreshPage() end
         end
 
-        -- 元素关掉时整体压暗，与滑块那条 disabled 对齐（色块没有现成的 disabled 可传，
-        -- 所以自己画；点击也要自己挡）
+        local row, height = W:TripleRow(parent, y,
+            { type = "colorpicker", text = text, hasAlpha = false,
+              getValue = function()
+                  local c = elementConfig[colorKey]
+                  return c[1], c[2], c[3], 1
+              end,
+              setValue = function(r, g, b)
+                  elementConfig[colorKey] = { r, g, b }
+                  -- 只有存在第二种来源时才碰来源：背景没有来源，挑背景色不该动填充的选择
+                  if source then elementConfig.fillMode = "custom" end
+                  Changed()
+              end },
+            -- 中栏：第二种来源色。不可编辑（点它只表示"用这个来源"），所以 setValue 是空的、
+            -- 也不给它 disabled——该元素关掉时两块的压暗由下面那个 Update 一起画，
+            -- 用 EUI 的 disabled 会和选择态互相覆盖。
+            source and { type = "colorpicker", text = "", hasAlpha = false,
+              getValue = function() return Config.SourceColor(source.mode) end,
+              setValue = function() end }
+              or { type = "spacer" },
+            { type = "slider", text = "", min = 0, max = 100, step = 1,
+              getValue = function() return (elementConfig[alphaKey] or 1) * 100 end,
+              setValue = function(value)
+                  elementConfig[alphaKey] = value / 100
+                  refresh()
+              end,
+              disabled = grayed })
+        y = y - height
+
+        -- 预建阶段不碰控件；三块色块的位置与交互都交给 EUI 的 slot
+        if EUI._prebuilding then return end
+        local custom = row._leftRegion and row._leftRegion._control
+        local sourceSwatch = source and row._midRegion and row._midRegion._control
+        if not custom then return end
+
+        -- 元素关掉时整体压暗（色块没有现成的 disabled 可传，所以自己画；点击也要自己挡）
         local function Update()
-            local grayed = Config.Grayed(elementKey)
-            if not source then
-                custom:SetAlpha(grayed and 0.3 or 1)
-                return
-            end
+            custom:SetAlpha(grayed() and 0.3 or 1)
+            if not sourceSwatch then return end
             local mode = elementConfig.fillMode or "custom"
-            -- 这个职业没有对应的源色（比如表格里没登记的职业）时，把那个色块收起来，
+            -- 这个职业没有对应的源色（映射表里没登记的职业）时把中栏收起来，
             -- 而不是留一个取不到色、画成黑的方块
             sourceSwatch:SetShown(Config.SourceColor(source.mode) ~= nil)
-            custom:SetAlpha(grayed and 0.3 or (mode == "custom" and 1 or 0.3))
-            sourceSwatch:SetAlpha(grayed and 0.3 or (mode == source.mode and 1 or 0.3))
+            custom:SetAlpha(grayed() and 0.3 or (mode == "custom" and 1 or 0.3))
+            sourceSwatch:SetAlpha(grayed() and 0.3 or (mode == source.mode and 1 or 0.3))
         end
 
-        custom = EUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
-            function()
-                local c = elementConfig[colorKey]
-                return c[1], c[2], c[3], elementConfig[alphaKey] or 1
-            end,
-            function(r, g, b, a)
-                elementConfig[colorKey] = { r, g, b }
-                if a then elementConfig[alphaKey] = a end
-                -- 只有存在第二种来源时才碰来源：背景没有来源，挑背景色不该动填充的选择
-                if source then elementConfig.fillMode = "custom" end
-                Changed()
-            end,
-            true, 20)
         custom:HookScript("OnEnter", function()
             if EUI.ShowWidgetTooltip then EUI.ShowWidgetTooltip(custom, "Custom Color") end
         end)
         custom:HookScript("OnLeave", function()
             if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
         end)
-        if source then
-            -- 已经在自定义上时再点才开取色器；否则只切选择（EUI 的全局色块约定）
-            custom._eabOrigClick = custom:GetScript("OnClick")
-            custom:SetScript("OnClick", function(self)
-                if Config.Grayed(elementKey) then return end
-                if (elementConfig.fillMode or "custom") ~= "custom" then
-                    elementConfig.fillMode = "custom"
-                    Changed()
-                    return
-                end
-                if self._eabOrigClick then self._eabOrigClick(self) end
-            end)
-        end
 
-        if source then
-            -- 不可编辑：点它只表示"用这个来源"，所以 setValue 是空的、也不开取色器
-            sourceSwatch = EUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
-                function() return Config.SourceColor(source.mode) end,
-                function() end,
-                false, 20)
-            sourceSwatch:SetScript("OnClick", function()
-                if Config.Grayed(elementKey) then return end
-                elementConfig.fillMode = source.mode
-                Changed()
-            end)
+        if sourceSwatch then
             sourceSwatch:HookScript("OnEnter", function()
                 if EUI.ShowWidgetTooltip then
                     EUI.ShowWidgetTooltip(sourceSwatch, source.tooltip)
@@ -396,15 +369,24 @@ function Config.BuildPage(_, parent, yOffset)
             sourceSwatch:HookScript("OnLeave", function()
                 if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end
             end)
-        end
+            sourceSwatch:SetScript("OnClick", function()
+                if grayed() then return end
+                elementConfig.fillMode = source.mode
+                Changed()
+            end)
 
-        -- 自右向左挂，于是视觉上自定义在左、来源色在右
-        local anchor = ctrl
-        if sourceSwatch then
-            sourceSwatch:SetPoint("RIGHT", anchor, "LEFT", -10, 0)
-            anchor = sourceSwatch
+            -- 已经在自定义上时再点才开取色器；否则只切选择（EUI 的全局色块约定）
+            custom._eabOrigClick = custom:GetScript("OnClick")
+            custom:SetScript("OnClick", function(self)
+                if grayed() then return end
+                if (elementConfig.fillMode or "custom") ~= "custom" then
+                    elementConfig.fillMode = "custom"
+                    Changed()
+                    return
+                end
+                if self._eabOrigClick then self._eabOrigClick(self) end
+            end)
         end
-        custom:SetPoint("RIGHT", anchor, "LEFT", -8, 0)
 
         Update()
         if EUI.RegisterWidgetRefresh then EUI.RegisterWidgetRefresh(Update) end
