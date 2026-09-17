@@ -5,7 +5,7 @@
 | 目录 | 内容与运行条件 |
 | --- | --- |
 | `dev/` | 开发检查器回归，使用本机已准备的 Lua（脚本语言）检查工具 |
-| `addons/` | 插件离线测试：`.tools/lua-5.1.5` 沙箱 + 伪造游戏接口，断言插件留下的 SavedVariables；当前有 `addons/AddonProbe/`、`addons/Sim2GSEProbe/` |
+| `addons/` | 插件离线测试：`.tools/lua-5.1.5` 沙箱 + 伪造游戏接口，断言插件留下的 SavedVariables；当前有 `AddonProbe/`、`Sim2GSEProbe/`、`MYUI/`、`MYUI_CrosshairHUD/` |
 | `sim2gse/` | 序列项目测试；`test_*.py` 使用构造样例，`manual_native_task.py`、`manual_search_task.py`、`manual_interface.py` 依赖本机私人角色数据 |
 | `sim2gse/research/` | 独立运行的原型与源码检查；`prototype-engine-check.py` 同样依赖本机私人角色数据 |
 | `gear-planner/` | 装备规划器回归；纯 JavaScript（脚本语言）检查进入 PR（拉取请求），Python（编程语言）计算和浏览器检查需要本机引擎与数据 |

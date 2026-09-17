@@ -10,8 +10,9 @@
 --   AddonProbe.DetectFlip(before, after)  默认规则：spell 消失且 macro 出现
 --   /probe start|mark|stop|status|clear   主动触发的证据采集
 --
--- 新增一个诊断目标 = 在 PRESET_HANDLERS / INSTALLERS 里各加一段（看哪两个
--- 函数、用哪条规则），通用部分不用动。
+-- 新增一个诊断目标 = 在 PRESET_HANDLERS 加一段处理器，并把目标登记进
+-- DECLARED_TARGETS 与 TARGET_OWNERS（用哪两个函数、走哪条规则）；安装、报告
+-- 都从登记派生，通用部分不用动。不登记处理器也能挂，走通用 call 记录。
 --
 -- 用法：/reload → 打开一次 GSE 编辑器（GSE_GUI 是 LoadOnDemand，钩子要等它加载）
 -- → /probe status 看到「钩子 3/3」且「SetText 钩子 ≥1 个」→ /probe start → 复现
@@ -31,12 +32,14 @@
 --
 -- 已知取舍：写记录一律带调用栈（这就是证据），所以有 MAX_RECORDS 上限；
 -- 超出后停止记录并置 session.truncated。ticker（定时轮询）兜底的记录没有栈（不在调用里）。
+-- 通用 call（任意函数）也带栈，另有 MAX_CALLS 上限，避免热函数把写记录挤出去。
 -- 12.x 战斗保密值读不出来时记 "unavailable"（与 Sim2GSEProbe 同一套词汇），
 -- 绝不因为单个字段读不出来就丢掉整条记录。
 
 local PREFIX = "|cff58c7ffAddonProbe:|r "
 local SCHEMA = 1
 local MAX_RECORDS = 400
+local MAX_CALLS = 50
 local MAX_SESSIONS = 5
 local MAX_TEXT = 80
 local SWEEP_INTERVAL = 0.5
@@ -56,6 +59,7 @@ local issecretvalue = _G.issecretvalue
 local AddonProbe = {}
 _G.AddonProbe = AddonProbe
 AddonProbe.MAX_RECORDS = MAX_RECORDS
+AddonProbe.MAX_CALLS = MAX_CALLS
 AddonProbe.UNAVAILABLE = UNAVAILABLE
 
 local state = {
@@ -387,7 +391,13 @@ local function AddRecord(record)
     session.records[#session.records + 1] = record
 end
 
+-- 前向声明：BeginSession 要先关掉上一段仍在记录的会话
+local EndSession
+
 local function BeginSession()
+    if state.session and state.session.armed then
+        EndSession("被新的 start 关闭")
+    end
     local db = GetDB()
     local session = {
         startedAt = GetTime and GetTime() or 0,
@@ -400,7 +410,7 @@ local function BeginSession()
     Say("开始记录。复现后用 /probe mark <说明> 标注，再 /probe stop。")
 end
 
-local function EndSession()
+EndSession = function(reason)
     local session = state.session
     if not session then
         Say("当前没有在记录。")
@@ -420,14 +430,18 @@ local function EndSession()
         poolSeen = poolSeen,
         poolHooked = poolHooked,
         fires = #setTextFires,
+        calls = session.calls or 0,
         setTextTrail = #setTextTrail,
     }
     state.session = nil
+    local suffix = reason and "" or "现在 /reload 落地 SavedVariables。"
     Say(
         string.format(
-            "已停止：%d 条记录%s。现在 /reload 落地 SavedVariables。",
+            "已停止%s：%d 条记录%s。%s",
+            reason and ("（" .. reason .. "）") or "",
             #session.records,
-            session.truncated and "（已达上限，被截断）" or ""
+            session.truncated and "（已达上限，被截断）" or "",
+            suffix
         )
     )
 end
@@ -477,6 +491,10 @@ function AddonProbe.Watch(owner, name, opts)
         -- 没有预设处理器也照挂：通用记录 = 函数名 + 参数摘要 + 调用栈。
         -- 这条路径保证"任意表上的具名函数"都能用，而不是必须先写预设。
         handler = function(...)
+            local session = state.session
+            if not (session and session.armed) then return end
+            session.calls = (session.calls or 0) + 1
+            if session.calls > MAX_CALLS then return end
             local args = {}
             for index = 1, select("#", ...) do
                 args[index] = SafeText((select(index, ...)))
@@ -651,16 +669,18 @@ PRESET_HANDLERS = {
 }
 
 INSTALLERS = {
+    -- 从 DECLARED_TARGETS + TARGET_OWNERS 派生：加目标只改登记表一处。
+    -- gse.GUI 是 LoadOnDemand，未加载时目标解析不出来，保持重试。
     gse = function()
         local gse = ResolveGSE()
         if not gse then return false end
         local done = true
-        if not InstallTarget("gse", gse, "CreateSpellEditBox") then done = false end
-        if gse.GUI then
-            if not InstallTarget("gse", gse.GUI, "RefreshActionIconFor") then done = false end
-            if not InstallTarget("gse", gse.GUI, "RefreshMacroEditorColoredText") then done = false end
-        else
-            done = false
+        for _, target in ipairs(DECLARED_TARGETS) do
+            if target.preset == "gse" then
+                local resolve = TARGET_OWNERS[target.name]
+                local owner = resolve and resolve(gse) or nil
+                if not (owner and InstallTarget("gse", owner, target.name)) then done = false end
+            end
         end
         return done
     end,
@@ -758,7 +778,7 @@ if events then
     -- 所以这里挂上的入口钩子能在 GSE 把私有表推进去之前就位
     events:SetScript("OnEvent", function(_, event)
         if event == "PLAYER_LOGOUT" then
-            if state.session and state.session.armed then EndSession() end
+            if state.session and state.session.armed then EndSession("登出") end
             return
         end
         GetDB()

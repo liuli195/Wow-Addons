@@ -562,6 +562,114 @@ io.write("PASS: unreadable key\n")
     assert "PASS: unreadable key" in result.stdout
 
 
+def test_second_start_closes_the_previous_session():
+    """连续 start 不能让上一段会话一直 armed（否则登出兜底只关最后一段）。"""
+    harness = PRELUDE + r'''
+local real = { GUI = {} }
+function real.CreateSpellEditBox() end
+function real.GUI.RefreshActionIconFor() end
+function real.GUI.RefreshMacroEditorColoredText() end
+FakeGSE(real)
+
+assert(loadfile(source))()
+GSE_Utils_Initialize(real)
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+local commands = assert(_G.SlashCmdList).ADDONPROBE
+commands("start")
+now = 1000
+commands("start")            -- 不 stop 直接再来一段
+commands("stop")
+
+local sessions = _G.AddonProbeDB.sessions
+local previous = sessions[#sessions - 1]
+assert(previous.armed == false, "新的 start 必须关闭上一段会话")
+assert(previous.endedAt ~= nil, "上一段会话要写结束时间")
+io.write("PASS: start closes previous\n")
+'''
+    result = run_harness(harness)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: start closes previous" in result.stdout
+
+
+def test_generic_calls_are_capped_and_do_not_crowd_out_writes():
+    """通用 call 记录要有自己的上限，热函数不能挤掉写记录。"""
+    harness = PRELUDE + r'''
+local real = { GUI = {} }
+function real.CreateSpellEditBox() end
+function real.GUI.RefreshActionIconFor() end
+function real.GUI.RefreshMacroEditorColoredText() end
+FakeGSE(real)
+
+assert(loadfile(source))()
+local AddonProbe = assert(_G.AddonProbe)
+GSE_Utils_Initialize(real)
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+
+local hot = { n = 0 }
+function hot:Tick() self.n = self.n + 1 end
+assert(AddonProbe.Watch(hot, "Tick") == true)
+
+local commands = assert(_G.SlashCmdList).ADDONPROBE
+commands("start")
+now = 1100
+for _ = 1, AddonProbe.MAX_CALLS + 25 do hot:Tick() end
+
+-- 热函数刷屏之后，写记录仍然要能进来
+local sequence = { MetaData = { Name = "TESTSEQ" },
+    Versions = { [1] = { Actions = { ["3"] = { type = "spell", spell = 49998 } } } } }
+real.CreateSpellEditBox(sequence.Versions[1].Actions["3"], 1, "3", sequence)
+sequence.Versions[1].Actions["3"].macro = "灵界打击"
+sequence.Versions[1].Actions["3"].spell = nil
+real.GUI.RefreshActionIconFor(sequence, 1, "3")
+commands("stop")
+
+local session = _G.AddonProbeDB.sessions[#_G.AddonProbeDB.sessions]
+local calls, writes = 0, 0
+for _, record in ipairs(session.records) do
+    if record.kind == "call" then calls = calls + 1 end
+    if record.kind == "write" then writes = writes + 1 end
+end
+assert(calls <= AddonProbe.MAX_CALLS, "call 记录必须有自己的上限，实得 " .. calls)
+assert(session.diagnostics.calls >= calls, "自检要报告 call 条数")
+assert(writes == 1, "写记录不能被热函数挤掉")
+io.write("PASS: call cap\n")
+'''
+    result = run_harness(harness)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: call cap" in result.stdout
+
+
+def test_logout_stop_message_matches_the_scene():
+    """登出时的停止提示不该让用户再去 /reload。"""
+    harness = PRELUDE + r'''
+local real = { GUI = {} }
+function real.CreateSpellEditBox() end
+function real.GUI.RefreshActionIconFor() end
+function real.GUI.RefreshMacroEditorColoredText() end
+FakeGSE(real)
+
+assert(loadfile(source))()
+GSE_Utils_Initialize(real)
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+local commands = assert(_G.SlashCmdList).ADDONPROBE
+
+commands("start")
+commands("stop")
+local manual = messages[#messages]
+assert(string.find(manual, "/reload", 1, true), "手动 stop 仍要提示 /reload：" .. manual)
+
+commands("start")
+messages = {}
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGOUT")
+local logout = messages[#messages]
+assert(not string.find(logout, "/reload", 1, true), "登出时不该提示再 /reload：" .. logout)
+io.write("PASS: logout wording\n")
+'''
+    result = run_harness(harness)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: logout wording" in result.stdout
+
+
 def test_late_targets_get_hooked_and_status_reports_gaps():
     """GSE_GUI 是 LoadOnDemand、CreateSpellEditBox 是懒创建：目标晚到也必须挂上。"""
     harness = PRELUDE + r'''
