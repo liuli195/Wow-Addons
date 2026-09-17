@@ -115,6 +115,12 @@ function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(1) end
 -- 整条语句结束后才进作用域，写反了就会落到全局上（本文件已经踩过一次）。
 local sharedVerdict = true     -- EUI 共享引擎的判定（仅在配了多选模式集时被问到）
 local inCombat = false         -- 旧标量兜底要用的交互状态
+local optionsVeto = false      -- 选项通道的隐藏否决（目标／敌对目标／骑乘中…这一类）
+
+-- ⚠ 这一条不能漏：EUI 的判定链里，**选项通道的隐藏否决排在模式集之前**，
+-- 而且它是独立的一半。漏掉它的后果不是报错，是「目标／敌对目标／骑乘中／
+-- 御空术坐骑／副本／住宅／休息中／载具」这一整类条件静默地什么都不做。
+-- 实机复现过：用户勾了「敌对目标」毫无反应。
 
 local api
 api = {
@@ -151,6 +157,7 @@ api = {
         return true
     end,
     IsInCombat = function() return inCombat end,
+    CheckVisibilityOptions = function() return optionsVeto end,
 }
 _G.EllesmereUI = api
 
@@ -193,6 +200,7 @@ api.EvalVisibilityExtended = nil
 api.CheckVisibilityMode = nil
 api.RegisterVisibilityUpdater = nil
 api.IsInCombat = nil
+api.CheckVisibilityOptions = nil
 
 local NS = Load()
 FireLogin()
@@ -614,6 +622,46 @@ io.write("PASS: unlock-bypass\n")
 '''
 
 
+# 场景七：选项通道的隐藏否决。
+#
+# 实机报过：勾「目标」「敌对目标」「骑乘中」「御空术坐骑」全部毫无反应。
+# 根因是判定链只实现了一半——那一整类条件走的是**选项通道**（存在 visOnly*／
+# visHide* 字段里），由独立的一个函数判定，而它排在模式集之前。
+SCENARIO_OPTION_VETO = r'''
+api.RegisterVisibilityUpdater = function(fn)
+    api._updaters = api._updaters or {}
+    api._updaters[#api._updaters + 1] = fn
+end
+
+local NS = Load()
+FireLogin()
+
+local elem = assert(api._elements and api._elements[1], "应注册解锁元素")
+local frame = assert(NS.Elements.frame, "应建出框体")
+
+-- 没否决时正常显示
+optionsVeto = false
+NS.Core.Refresh()
+assert(frame.shown == true, "选项通道没否决时应当显示")
+assert(elem.isHidden(elem.key) == false, "同上")
+
+-- 选项通道否决：必须隐藏
+optionsVeto = true
+NS.Core.Refresh()
+assert(frame.shown == false,
+    "选项通道否决时必须隐藏——「目标」「敌对目标」「骑乘中」「御空术坐骑」"
+    .. "「副本」「住宅」「休息中」「载具」这一整类条件走的就是这条路")
+assert(elem.isHidden(elem.key) == true, "同上：两处必须一致")
+
+-- 否决解除后恢复
+optionsVeto = false
+api._updaters[1]()
+assert(frame.shown == true, "否决解除后应当恢复显示")
+
+io.write("PASS: option-veto\n")
+'''
+
+
 def _run(scenario: str, marker: str):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "visibility_harness.lua"
@@ -656,3 +704,8 @@ def test_settings_row_position_default_caps_and_greying():
 def test_unlock_mode_bypasses_conditions_but_not_off_states():
     """解锁模式里条件让路；总开关与「从不」不让路。"""
     _run(SCENARIO_UNLOCK_BYPASS, "unlock-bypass")
+
+
+def test_option_lane_veto_hides_the_hud():
+    """选项通道（目标／敌对目标／骑乘中／御空术坐骑…）的否决必须生效。"""
+    _run(SCENARIO_OPTION_VETO, "option-veto")

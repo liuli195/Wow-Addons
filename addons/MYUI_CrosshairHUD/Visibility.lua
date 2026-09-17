@@ -58,12 +58,30 @@ function Visibility.ShouldShow()
     end
 
     local api = EUI()
-    if not (api and api.EvalVisibilityExtended) then
+    if not api then
         return true
     end
 
     local config = Cfg()
     local settings = config and config.Get and config.Get() or nil
+
+    -- 判定链照 EUI 自家消费者的顺序，**三步缺一不可**（见资源条的 ShouldShowSecondary）：
+    --   1. 选项通道的隐藏否决
+    --   2. 多选模式集
+    --   3. 旧标量兜底
+    --
+    -- 第 1 步是**独立的一半判定**，漏掉的后果不是报错，而是一整类条件静默地
+    -- 什么都不做——「目标」「敌对目标」「骑乘中」「御空术坐骑」「副本」「住宅」
+    -- 「休息中」「载具」全都存在选项通道的字段里，不在这条链的第 2 步里。
+    -- 实机复现过：勾「敌对目标」毫无反应。
+    if api.CheckVisibilityOptions and settings
+        and api.CheckVisibilityOptions(settings) then
+        return false
+    end
+
+    if not api.EvalVisibilityExtended then
+        return true
+    end
 
     local verdict = api.EvalVisibilityExtended(settings, "visibility", nil,
         config and config.VIS_CAPS or nil)
