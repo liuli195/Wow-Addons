@@ -11,4 +11,5 @@
 Logic.lua
 Elements.lua
 Config.lua
+Visibility.lua
 Core.lua

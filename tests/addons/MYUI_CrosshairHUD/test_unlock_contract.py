@@ -54,7 +54,9 @@ function CreateFrame()
     function f:SetPoint() end
     function f:ClearAllPoints() end
     function f:SetFrameStrata() end
-    function f:SetShown() end
+    -- 记录实参而不是空实现：「屏幕上到底有没有它」本身就是被测行为之一，
+    -- 空函数会让那一整类断言失去意义（可见性契约也复用同一条约定）。
+    function f:SetShown(v) f.shown = v ~= false end
     function f:GetWidth() return f.width or 0 end
     function f:GetHeight() return f.height or 0 end
     function f:GetEffectiveScale() return 1 end

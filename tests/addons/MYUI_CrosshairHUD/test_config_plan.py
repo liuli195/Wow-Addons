@@ -113,7 +113,10 @@ for _, key in ipairs(ORDER) do
 end
 
 ----------------------------------------------------------------------
--- 常规节的格子清单：总开关 + **缩放** + 图层
+-- 常规节的格子清单：总开关 + **可见性** + 缩放 + 图层
+--
+-- 四项正好两行填满。可见性排在总开关右边，是因为总开关关掉时它会置灰——
+-- 两个相邻才看得出从属关系。
 --
 -- 缩放**要在**（用户复议：宽度／高度／缩放三者走的是同一个 scale，改哪个都一样，
 -- 所以留着不冲突，多一个入口更方便）。它的范围必须与 SetHUDSize 的钳位共用同一份
@@ -139,11 +142,19 @@ assert(scaleCell.kind == "slider", "缩放应是个滑块")
 assert(scaleCell.min == Config.SCALE_MIN and scaleCell.max == Config.SCALE_MAX,
     "缩放滑块的范围必须与钳位共用 Config.SCALE_MIN/MAX")
 
+-- 格子类型是**封闭集合**：新加一种必须在这里显式登记，不能顺手就混进来。
+-- `visibility` 是 2026-09-18 有意加的一种：它由 EUI 的共享可见性清单填充，
+-- 只需要一个槽位，因此和别的格子一样占半格、走同一套自适应排布。
+local ALLOWED = { toggle = true, dropdown = true, slider = true, visibility = true }
 for i = 1, #general do
     local kind = general[i].kind
-    assert(kind == "toggle" or kind == "dropdown" or kind == "slider",
-        "常规节的格子只能是开关、下拉或滑块，实得 " .. tostring(kind))
+    assert(ALLOWED[kind],
+        "常规节的格子只能是开关、下拉、滑块或可见性，实得 " .. tostring(kind))
 end
+
+-- 可见性紧挨总开关：总开关关掉时它会置灰，相邻才看得出从属关系。
+assert(general[2] and general[2].kind == "visibility",
+    "第 2 项应是可见性格子，实得 " .. tostring(general[2] and general[2].kind))
 
 ----------------------------------------------------------------------
 -- 置灰：总开关关掉时所有子项都算关掉（子开关与色块一起失效）

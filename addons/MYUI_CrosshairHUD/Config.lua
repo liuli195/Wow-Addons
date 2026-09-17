@@ -19,9 +19,28 @@ local UnitClass = _G.UnitClass
 
 local SAVED = "MYUI_CrosshairHUDDB"
 
+-- 交给 EUI 共享可见性系统的能力集。
+--
+-- 一处定义、两处使用（设置页那一行与运行期求值），避免两边悄悄跑偏。
+--   partyIncludesRaid = false  「队伍」与「团队」互斥，与 EUI 自家语义一致
+--   luaDragonriding   = true   御空术判定走 Lua 侧（我们不使用安全宏驱动）
+--   noMouseover       = true   不做鼠标悬停：EUI 的共享悬停服务会对注册对象调用
+--                              EnableMouse(true)，那会让屏幕正中吃掉鼠标，直接
+--                              违反「点击必须穿透到游戏」那条既有规格
+Config.VIS_CAPS = {
+    partyIncludesRaid = false,
+    luaDragonriding = true,
+    noMouseover = true,
+}
+
 -- 19 项配置的默认值。键名即 SavedVariables 里的键名。
 Config.DEFAULTS = {
     enabled = true,                 -- 总开关
+    -- 可见性：显式写「总是」。升级前后行为必须完全一致，而且显式写能让设置页那行
+    -- 一开始就正确显示，而不是留一个看似「没设置过」的空白。
+    -- 其余可见性状态（多选条件、匹配模式、覆盖）由 EUI 的共享系统按需写进本表，
+    -- Merge 只补默认值、不动多余键，所以那些字段不会被清掉。
+    visibility = "always",
     scale = 1.0,                    -- 整体等比缩放 0.5–2.0
     position = nil,                 -- 由 EUI 的位置控件写入；nil = 默认锚点（屏幕居中）
     strata = "MEDIUM",              -- 框架层级
@@ -243,6 +262,9 @@ end
 function Config.GeneralCells()
     return {
         { kind = "toggle", text = "启用准星HUD", key = "enabled" },
+        -- 紧挨总开关：总开关关掉时这一格会置灰，两个相邻才一眼看得出从属关系。
+        -- 它和别的格子一样只占半格，排布交给清单的自适应规则，不另开分支。
+        { kind = "visibility", text = "可见性" },
         { kind = "slider", text = "HUD 缩放", key = "scale",
           min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
           tooltip = "整体等比缩放。与解锁模式齿轮里的宽度／高度是同一个值。" },
@@ -478,18 +500,59 @@ function Config.BuildPage(_, parent, yOffset)
                 getValue = function() return cfg[key] or 1.0 end,
                 setValue = function(value) cfg[key] = value; refresh() end }
         end
+        if cell.kind == "visibility" then
+            -- 可见性控件由 EUI 的共享清单填充：这里先落一个占位下拉，建完行再把
+            -- 清单挂到该槽位上（EUI 自己的 BuildVisibilityRow 内部也是这个做法，
+            -- 只是它固定挂在左槽，而本页的清单顺序把可见性排在了右槽）。
+            return { type = "dropdown", text = cell.text,
+                values = { __placeholder = "..." }, order = { "__placeholder" },
+                getValue = function() return "__placeholder" end,
+                setValue = function() end }
+        end
+
         return { type = "dropdown", text = cell.text,
             values = STRATA_VALUES, order = STRATA_ORDER,
             getValue = function() return cfg.strata or "MEDIUM" end,
             setValue = function(value) cfg.strata = value; refresh() end }
     end
 
+    -- 把共享可见性清单挂到某一格上。交给 EUI 的存储是**取值函数**而不是表：
+    -- 配置加载会替换整个表对象，交缓存表的人会从此读写一张废表。
+    local function AttachVisibilityCell(row, cell, regionName)
+        if not (cell and cell.kind == "visibility") then return end
+        local region = row and row[regionName]
+        if not (EUI.AttachVisibilityChecklist and region) then return end
+        -- 条件变化后请 EUI 重算，它再回调本插件注册的更新器。
+        -- 页面刷新由 EUI 那一行自己负责，这里不重复调 RefreshPage。
+        local function RequestUpdate()
+            if EUI.RequestVisibilityUpdate then EUI.RequestVisibilityUpdate() end
+        end
+
+        EUI.AttachVisibilityChecklist(region, {
+            getStore = function() return Config.Get() end,
+            legacyKey = "visibility",
+            caps = Config.VIS_CAPS,
+            -- 注意实参形状：EUI 以 `applyScalarFn(store, mode)` 两个参数调用
+            -- （EllesmereUI_Visibility.lua 的 SetVisibilitySelection 与
+            -- VisCopySelection 都是这个形状）。只写一个形参的话，收到的是 store
+            -- 本身，标量会被写成一张表——后果是整条兜底链落空、条件静默失效。
+            applyScalarFn = function(_, mode) Config.Get().visibility = mode end,
+            onChanged = RequestUpdate,
+            onOptionChanged = RequestUpdate,
+            -- 总开关是主：它关掉时这一格置灰不可点，两个开关不会平起平坐。
+            disabledFn = function() return Config.Get().enabled == false end,
+        })
+    end
+
     local general = Config.GeneralCells()
     local gindex = 1
     while general[gindex] do
         local left, right = general[gindex], general[gindex + 1]
-        _, h = W:DualRow(parent, y, GeneralSlot(left),
+        local row
+        row, h = W:DualRow(parent, y, GeneralSlot(left),
             right and GeneralSlot(right) or { type = "spacer" })
+        AttachVisibilityCell(row, left, "_leftRegion")
+        AttachVisibilityCell(row, right, "_rightRegion")
         y = y - h
         gindex = gindex + 2
     end
