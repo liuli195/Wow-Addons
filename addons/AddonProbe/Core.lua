@@ -4,7 +4,7 @@
 -- 事后也没有痕迹，所以要把"改动发生的那一刻"存下来：调用栈 + 改前改后。
 --
 -- 通用部分（不针对任何插件）：
---   AddonProbe.Watch(owner, name, opts)   在任意表上挂具名函数的 secure hook
+--   AddonProbe.Watch(owner, name, opts)   在任意表上挂具名函数的 secure hook（安全挂钩）
 --   AddonProbe.Snapshot(action)           只取受跟踪字段，值归一成字符串
 --   AddonProbe.ChangedFields(before, after) 两次快照之间真正变了的字段
 --   AddonProbe.DetectFlip(before, after)  默认规则：spell 消失且 macro 出现
@@ -30,7 +30,7 @@
 -- 把真表截下来——本插件名以 A 开头、加载早于 GSE，ADDON_LOADED 处理器先注册先执行。
 --
 -- 已知取舍：写记录一律带调用栈（这就是证据），所以有 MAX_RECORDS 上限；
--- 超出后停止记录并置 session.truncated。ticker 兜底的记录没有栈（不在调用里）。
+-- 超出后停止记录并置 session.truncated。ticker（定时轮询）兜底的记录没有栈（不在调用里）。
 -- 12.x 战斗保密值读不出来时记 "unavailable"（与 Sim2GSEProbe 同一套词汇），
 -- 绝不因为单个字段读不出来就丢掉整条记录。
 
@@ -111,7 +111,8 @@ function AddonProbe.Scalar(value)
     return text
 end
 
-local function Clamp(value)
+-- 安全读成文本：读不出来给空串，长度由 Scalar 截断。命名如实反映它不做夹取。
+local function SafeText(value)
     return AddonProbe.Scalar(value) or ""
 end
 
@@ -143,7 +144,7 @@ function AddonProbe.Snapshot(action)
     local snapshot = {}
     for _, field in ipairs(TRACKED_FIELDS) do
         local value = action[field]
-        if value ~= nil then snapshot[field] = Clamp(value) end
+        if value ~= nil then snapshot[field] = SafeText(value) end
     end
     return snapshot
 end
@@ -230,12 +231,12 @@ local function NoteSetText(box, text)
     local now = GetTime and GetTime() or 0
     local last = setTextTrail[#setTextTrail]
     -- 包装器转发到内层是同一次调用：同文本、同一瞬间只记一条
-    if last and last.text == Clamp(text) and (now - last.t) < 0.001 then return end
+    if last and last.text == SafeText(text) and (now - last.t) < 0.001 then return end
     if #setTextTrail >= SETTEXT_TRAIL_MAX then table.remove(setTextTrail, 1) end
     setTextTrail[#setTextTrail + 1] = {
         t = now,
         box = BoxId(box),
-        text = Clamp(text),
+        text = SafeText(text),
         stack = CaptureStack(),
     }
 end
@@ -247,7 +248,7 @@ local function NoteFire(box, text)
     setTextFires[#setTextFires + 1] = {
         t = GetTime and GetTime() or 0,
         box = BoxId(box),
-        text = Clamp(text or ""),
+        text = SafeText(text or ""),
         stack = CaptureStack(),
     }
 end
@@ -300,9 +301,10 @@ local function InstallCreateHook()
     if not (ui and type(ui.Create) == "function") then return end
     local original = ui.Create
     wrappedCreate = function(self, typeName, ...)
-        local widget = original(self, typeName, ...)
-        if widget ~= nil then WatchBox(widget) end
-        return widget
+        -- 观测性包装：参数原样转发，返回值原样放回（含多返回值），只多看一眼控件身份
+        local result = { original(self, typeName, ...) }
+        if result[1] ~= nil then WatchBox(result[1]) end
+        return unpack(result)
     end
     ui.Create = wrappedCreate
     createHooked = true
@@ -333,22 +335,31 @@ local function ScanPool()
     end
 end
 
--- 翻转记录配一次痕迹：文本相同、且在时间窗内
-local function RecentSetText(text)
+-- 配最近一条痕迹：文本相同、且在时间窗内。两条轨迹共用（按时间有序，越界即停）。
+local function RecentEntry(trail, text)
     local now = GetTime and GetTime() or 0
-    local wanted = Clamp(text)
-    for index = #setTextTrail, 1, -1 do
-        local entry = setTextTrail[index]
+    local wanted = SafeText(text)
+    for index = #trail, 1, -1 do
+        local entry = trail[index]
         if (now - entry.t) > SETTEXT_MATCH_WINDOW then return nil end
         if entry.text == wanted then return entry end
     end
     return nil
 end
 
+-- 轨迹落盘用的浅拷贝（只留证据字段）
+local function CopyTrail(trail)
+    local copy = {}
+    for index, entry in ipairs(trail) do
+        copy[index] = { t = entry.t, box = entry.box, text = entry.text, stack = entry.stack }
+    end
+    return copy
+end
+
 -- 同一只框的证明：同文本 + 同框编号 + 都在时间窗内。两条轨迹按时间有序，越界即停。
 local function PairTrails(text)
     local now = GetTime and GetTime() or 0
-    local wanted = Clamp(text)
+    local wanted = SafeText(text)
     for index = #setTextFires, 1, -1 do
         local fire = setTextFires[index]
         if (now - fire.t) > SETTEXT_MATCH_WINDOW then break end
@@ -361,17 +372,6 @@ local function PairTrails(text)
                 end
             end
         end
-    end
-    return nil
-end
-
-local function RecentFire(text)
-    local now = GetTime and GetTime() or 0
-    local wanted = Clamp(text)
-    for index = #setTextFires, 1, -1 do
-        local entry = setTextFires[index]
-        if (now - entry.t) > SETTEXT_MATCH_WINDOW then return nil end
-        if entry.text == wanted then return entry end
     end
     return nil
 end
@@ -409,16 +409,8 @@ local function EndSession()
     session.armed = false
     session.endedAt = GetTime and GetTime() or 0
     -- 两条轨迹整个落盘：即使没能和某条翻转配上，也能按时间离线比对
-    local trail = {}
-    for index, entry in ipairs(setTextTrail) do
-        trail[index] = { t = entry.t, box = entry.box, text = entry.text, stack = entry.stack }
-    end
-    session.setTextTrail = trail
-    local fires = {}
-    for index, entry in ipairs(setTextFires) do
-        fires[index] = { t = entry.t, box = entry.box, text = entry.text, stack = entry.stack }
-    end
-    session.setTextFires = fires
+    session.setTextTrail = CopyTrail(setTextTrail)
+    session.setTextFires = CopyTrail(setTextFires)
     -- 自检落盘：离线读文件就能知道覆盖有没有生效，不用靠聊天框复述
     session.diagnostics = {
         hooks = AddonProbe.HookReport(),
@@ -445,7 +437,7 @@ local function Mark(label)
         Say("先 /probe start 再 mark。")
         return
     end
-    AddRecord({ kind = "mark", label = Clamp(label ~= "" and label or "mark") })
+    AddRecord({ kind = "mark", label = SafeText(label ~= "" and label or "mark") })
 end
 
 local function Status()
@@ -478,11 +470,28 @@ local INSTALLERS
 function AddonProbe.Watch(owner, name, opts)
     if not hooksecurefunc then return false end
     if type(owner) ~= "table" or type(owner[name]) ~= "function" then return false end
-    local handlers = PRESET_HANDLERS[(opts or {}).preset]
-    if not handlers or not handlers[name] then return false end
+    opts = opts or {}
+    local handlers = PRESET_HANDLERS[opts.preset]
+    local handler = handlers and handlers[name]
+    if not handler then
+        -- 没有预设处理器也照挂：通用记录 = 函数名 + 参数摘要 + 调用栈。
+        -- 这条路径保证"任意表上的具名函数"都能用，而不是必须先写预设。
+        handler = function(...)
+            local args = {}
+            for index = 1, select("#", ...) do
+                args[index] = SafeText((select(index, ...)))
+            end
+            AddRecord({
+                kind = "call",
+                fn = tostring(name),
+                args = args,
+                stack = CaptureStack(),
+            })
+        end
+    end
     hooksecurefunc(owner, name, function(...)
         -- 探针自身的错误绝不能破坏被观察的界面
-        local ok, err = pcall(handlers[name], ...)
+        local ok, err = pcall(handler, ...)
         if not ok then Say("记录出错：" .. tostring(err)) end
     end)
     return true
@@ -502,18 +511,28 @@ local function InstallTarget(preset, owner, name)
 end
 
 -- 钩子挂不上时，先说清卡在哪一环：公开代理在不在、私有表拿到没、具体函数有没有
+-- 目标列表从 DECLARED_TARGETS 派生：加目标只改一处，报告不会漏项
+local TARGET_OWNERS = {
+    CreateSpellEditBox = function(gse) return gse end,
+    RefreshActionIconFor = function(gse) return gse and gse.GUI end,
+    RefreshMacroEditorColoredText = function(gse) return gse and gse.GUI end,
+}
+
 function AddonProbe.TargetReport()
     local proxy = rawget(_G, "GSE")
     local gse = ResolveGSE()
-    local gui = gse and gse.GUI
     local function yes(value) return value and "有" or "无" end
-    return table.concat({
+    local parts = {
         "GSE 公开代理 " .. yes(proxy),
         "GSE 私有表 " .. yes(gse),
-        "GSE.GUI " .. yes(gui),
-        "CreateSpellEditBox " .. yes(gse and type(gse.CreateSpellEditBox) == "function"),
-        "RefreshActionIconFor " .. yes(gui and type(gui.RefreshActionIconFor) == "function"),
-    }, " / ")
+        "GSE.GUI " .. yes(gse and gse.GUI),
+    }
+    for _, target in ipairs(DECLARED_TARGETS) do
+        local resolve = TARGET_OWNERS[target.name]
+        local owner = resolve and resolve(gse) or nil
+        parts[#parts + 1] = target.name .. " " .. yes(owner and type(owner[target.name]) == "function")
+    end
+    return table.concat(parts, " / ")
 end
 
 function AddonProbe.HookReport()
@@ -535,7 +554,7 @@ local function SequenceName(sequence)
     local metadata = sequence and sequence.MetaData
     local name = metadata and (metadata.Name or metadata.name)
     if name == nil then return "?" end
-    return Clamp(name)
+    return SafeText(name)
 end
 
 local function SequenceActions(sequence, version)
@@ -575,8 +594,8 @@ local function WriteRecord(sequence, version, keyPath, detectedBy)
     -- 翻转时把触发它的那次 SetText 也钉上：那条栈才是"谁干的"
     local pairFire, pairSetText
     if flip and after then pairFire, pairSetText = PairTrails(after.macro) end
-    local setText = pairSetText or (flip and after and RecentSetText(after.macro) or nil)
-    local fire = pairFire or (flip and after and RecentFire(after.macro) or nil)
+    local setText = pairSetText or (flip and after and RecentEntry(setTextTrail, after.macro) or nil)
+    local fire = pairFire or (flip and after and RecentEntry(setTextFires, after.macro) or nil)
     local now = GetTime and GetTime() or 0
     local record = {
         kind = "write",
@@ -665,7 +684,9 @@ local function Sweep()
             changed[#changed + 1] = keyPath
         end
     end
-    table.sort(changed, function(left, right) return tostring(left) < tostring(right) end)
+    table.sort(changed, function(left, right)
+        return AddonProbe.PathText(left) < AddonProbe.PathText(right)
+    end)
     for _, keyPath in ipairs(changed) do
         WriteRecord(sequence, version, keyPath, "ticker")
     end
@@ -731,9 +752,15 @@ local events = CreateFrame("Frame")
 if events then
     events:RegisterEvent("PLAYER_LOGIN")
     events:RegisterEvent("ADDON_LOADED")
+    -- 忘记 stop 就 /reload 或掉线时，会话不能丢：登出前补写一次
+    events:RegisterEvent("PLAYER_LOGOUT")
     -- 子模块 ADDON_LOADED 先于 GSE 自己的派发器执行（本插件加载更早），
     -- 所以这里挂上的入口钩子能在 GSE 把私有表推进去之前就位
-    events:SetScript("OnEvent", function()
+    events:SetScript("OnEvent", function(_, event)
+        if event == "PLAYER_LOGOUT" then
+            if state.session and state.session.armed then EndSession() end
+            return
+        end
         GetDB()
         TryInstall()
     end)

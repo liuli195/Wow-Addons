@@ -1,6 +1,6 @@
 # GSE #2106：删除一个动作块把其它 spell 动作改写成 macro
 
-> 状态：调研结论（2026-09-17）。**待归类**——本文件暂放 `docs/` 根，见 `docs/` 整理提案。
+> 状态：调研结论（2026-09-17）。归档位置：`docs/research/`（目录索引见 `docs/README.md`）。
 > 对象：第三方插件 GSE（TimothyLuke/GSE-Advanced-Macro-Compiler）3.3.34，本机实机复现。
 
 ## 结论（一段话）

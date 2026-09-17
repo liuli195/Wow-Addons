@@ -41,7 +41,7 @@
 - **被外部引用的文档**（`AGENTS.md`、`myspec/`、`projects/`、`tests/`、`.build-and-verify/config.json`）：移动或改名必须同步改引用。
   当前集合：`agents/*`、`CONTEXT.md`、`environment-setup.md`、`wow-addon-development-guide.md`、`research/wow-addon-automation-research.md`、`sim2gse/implementation-plan.md`。
 - 移动后核对相对链接（`scripts/dev/check.py docs` 只管编码、代码围栏和 JSON 示例，不管链接）。
-- 命名统一 kebab-case（`Sim2GSE_Implementation_Plan.md` 已改为 `sim2gse/implementation-plan.md`）。
+- 命名统一 kebab-case（短横线命名）（`Sim2GSE_Implementation_Plan.md` 已改为 `sim2gse/implementation-plan.md`）。
 
 ## 待办（已知，未处理）
 

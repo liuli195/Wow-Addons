@@ -364,7 +364,7 @@ local widget = MakeBox()          -- 池子里那只
 local created = MakeBox()         -- 创建点发放那只
 local real = { GUI = {}, UI = { widgetPool = { MultiLineEditBox = { widget } } } }
 function real.UI.Create(self, typeName)
-    if typeName == "MultiLineEditBox" then return created end
+    if typeName == "MultiLineEditBox" then return created, "第二个返回值" end
 end
 function real.CreateSpellEditBox() end
 function real.GUI.RefreshActionIconFor() end
@@ -383,8 +383,9 @@ assert(AddonProbe.BoxHooks() >= 1, "池子扫描必须钩上框：" .. AddonProb
 local commands = assert(_G.SlashCmdList).ADDONPROBE
 commands("start")
 FirePending()                        -- 让创建点钩子先挂上
-local fromCreate = real.UI.Create(real.UI, "MultiLineEditBox")
+local fromCreate, secondFromCreate = real.UI.Create(real.UI, "MultiLineEditBox")
 assert(fromCreate == created, "UI:Create 的返回值不能被包装改掉")
+assert(secondFromCreate == "第二个返回值", "包装必须保留全部返回值，不只第一个")
 assert(AddonProbe.BoxHooks() >= 2, "创建点发放的控件也要钩上：" .. AddonProbe.BoxHooks())
 now = 605
 created:SetText("血液沸腾")          -- 走创建点拿到的框
@@ -442,6 +443,123 @@ io.write("PASS: pool scan\n")
     result = run_harness(harness)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS: pool scan" in result.stdout
+
+
+def test_watch_without_preset_records_a_generic_call():
+    """需求：任意表上的具名函数都要能挂——没有预设处理器时走通用记录路径。"""
+    harness = PRELUDE + r'''
+local real = { GUI = {} }
+function real.CreateSpellEditBox() end
+function real.GUI.RefreshActionIconFor() end
+function real.GUI.RefreshMacroEditorColoredText() end
+FakeGSE(real)
+
+assert(loadfile(source))()
+local AddonProbe = assert(_G.AddonProbe)
+GSE_Utils_Initialize(real)
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+
+-- 一个与任何预设无关的目标
+local arbitrary = { Counter = 0 }
+function arbitrary:DoThing(first, second) self.Counter = self.Counter + 1 end
+
+assert(AddonProbe.Watch(arbitrary, "DoThing") == true, "任意具名函数都要能挂上")
+
+local commands = assert(_G.SlashCmdList).ADDONPROBE
+commands("start")
+now = 700
+arbitrary:DoThing("甲", 42)
+commands("stop")
+
+local records = _G.AddonProbeDB.sessions[#_G.AddonProbeDB.sessions].records
+assert(#records == 1 and records[1].kind == "call", "通用记录要落盘")
+assert(records[1].fn == "DoThing", "记录要带函数名")
+assert(records[1].stack and records[1].stack:find("STACK", 1, true), "通用记录也要带调用栈")
+-- 参数原样记录（第一个是 self，渲染成字符串）；索引因此从 2 起
+assert(records[1].args and records[1].args[2] == "甲" and records[1].args[3] == "42",
+    "参数摘要：" .. table.concat(records[1].args or {}, ","))
+io.write("PASS: generic watch\n")
+'''
+    result = run_harness(harness)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: generic watch" in result.stdout
+
+
+def test_logout_flushes_an_armed_session():
+    """忘记 /probe stop 就 /reload 或掉线时，自检与轨迹必须仍然落盘。"""
+    harness = PRELUDE + r'''
+local real = { GUI = {} }
+function real.CreateSpellEditBox() end
+function real.GUI.RefreshActionIconFor() end
+function real.GUI.RefreshMacroEditorColoredText() end
+FakeGSE(real)
+
+assert(loadfile(source))()
+GSE_Utils_Initialize(real)
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+local commands = assert(_G.SlashCmdList).ADDONPROBE
+commands("start")                      -- 故意不 stop
+now = 800
+
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGOUT")
+
+local session = _G.AddonProbeDB.sessions[#_G.AddonProbeDB.sessions]
+assert(session.armed == false, "登出必须关闭仍开着的会话")
+assert(session.endedAt ~= nil, "登出必须写结束时间")
+assert(session.diagnostics ~= nil, "登出必须落自检")
+assert(session.setTextTrail ~= nil and session.setTextFires ~= nil, "登出必须落两条轨迹")
+io.write("PASS: logout flush\n")
+'''
+    result = run_harness(harness)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: logout flush" in result.stdout
+
+
+def test_sweep_survives_an_unreadable_path_key():
+    """扫尾排序不能因为键读不出来就中断整轮（键也要走安全渲染）。"""
+    harness = PRELUDE + r'''
+local throwing = setmetatable({}, { __tostring = function() error("secret key") end })
+local sequence = { MetaData = { Name = "TESTSEQ" },
+    Versions = { [1] = { Actions = {
+        ["2"] = { type = "spell", spell = 49020 },
+        [throwing] = { type = "spell", spell = 49998 },
+    } } } }
+local real = { GUI = {} }
+function real.CreateSpellEditBox() end
+function real.GUI.RefreshActionIconFor() end
+function real.GUI.RefreshMacroEditorColoredText() end
+FakeGSE(real)
+
+assert(loadfile(source))()
+GSE_Utils_Initialize(real)
+eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
+local commands = assert(_G.SlashCmdList).ADDONPROBE
+commands("start")
+
+-- 先建基线（普通键与不可读键各一）
+real.CreateSpellEditBox(sequence.Versions[1].Actions["2"], 1, "2", sequence)
+real.CreateSpellEditBox(sequence.Versions[1].Actions[throwing], 1, throwing, sequence)
+
+-- 两者都变：排序时碰到读不出来的键也不能炸
+sequence.Versions[1].Actions["2"].macro = "灵界打击"
+sequence.Versions[1].Actions["2"].spell = nil
+sequence.Versions[1].Actions[throwing].macro = "符文打击"
+sequence.Versions[1].Actions[throwing].spell = nil
+now = 900
+FirePending()
+
+local records = _G.AddonProbeDB.sessions[#_G.AddonProbeDB.sessions].records
+assert(#records >= 1, "整轮扫描不能被不可读的键中断")
+local found
+for _, record in ipairs(records) do
+    if record.keyPath == "2" then found = record end
+end
+assert(found and found.flip == true, "可读的那个键仍要被抓到")
+io.write("PASS: unreadable key\n")
+'''
+    result = run_harness(harness)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: unreadable key" in result.stdout
 
 
 def test_late_targets_get_hooked_and_status_reports_gaps():
