@@ -116,6 +116,7 @@ function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(1) end
 local sharedVerdict = true     -- EUI 共享引擎的判定（仅在配了多选模式集时被问到）
 local inCombat = false         -- 旧标量兜底要用的交互状态
 local optionsVeto = false      -- 选项通道的隐藏否决（目标／敌对目标／骑乘中…这一类）
+local overrideValue = nil      -- EUI 专精覆盖的值（本插件不接受它，但会话中会短暂存在）
 
 -- ⚠ 这一条不能漏：EUI 的判定链里，**选项通道的隐藏否决排在模式集之前**，
 -- 而且它是独立的一半。漏掉它的后果不是报错，是「目标／敌对目标／骑乘中／
@@ -143,6 +144,13 @@ api = {
     -- 这条路是常态：EUI 把「只勾了一个条件」直接存进标量，与旧版单选逐字节一致。
     -- 夹具抄错的话测试会绿而实机静默失败，所以这里照契约写、并且**让它可翻转**。
     EvalVisibilityExtended = function(store)
+        -- 专精覆盖**排在模式集之前**并替换整份配置（EUI 的实现就是这个顺序）。
+        -- 夹具漏掉这一段，会让「覆盖说总是」被误判成隐藏——正是本文件的夹具
+        -- 第三次没跟上真实契约。
+        if store and overrideValue then
+            if overrideValue == "never" then return false end
+            return true
+        end
         if store and store.visibilityModes then return sharedVerdict end
         return nil
     end,
@@ -158,6 +166,7 @@ api = {
     end,
     IsInCombat = function() return inCombat end,
     CheckVisibilityOptions = function() return optionsVeto end,
+    VisOverrideValue = function() return overrideValue end,
 }
 _G.EllesmereUI = api
 
@@ -658,7 +667,79 @@ optionsVeto = false
 api._updaters[1]()
 assert(frame.shown == true, "否决解除后应当恢复显示")
 
+----------------------------------------------------------------------
+-- 否决必须**领跑**模式集
+--
+-- 少了这条，实现被改成「先问模式集，只在它返回空时才问否决」也照样全绿——
+-- 而 All 模式下「多选集合 + 选项隐藏」会因此重新静默失效，正是本次修的缺陷类。
+-- 这里让模式集明确说「显示」，只有否决能把它压成隐藏。
+----------------------------------------------------------------------
+NS.Config.Get().visibilityModes = { in_combat = true }
+sharedVerdict = true
+optionsVeto = true
+NS.Core.Refresh()
+assert(frame.shown == false,
+    "选项通道的否决必须排在模式集**之前**：多选说显示也盖不过它")
+assert(elem.isHidden(elem.key) == true, "同上：两处一致")
+
+NS.Config.Get().visibilityModes = nil
+optionsVeto = false
+
 io.write("PASS: option-veto\n")
+'''
+
+
+# 场景八：专精覆盖下的「关掉状态」。
+#
+# 本插件**不接受**专精覆盖（配置独立存放，EUI 会在覆盖会话结束后清掉写进来的值），
+# 但会话进行中它确实短暂存在，而且 EUI 全家消费者都认它。那时若我们仍按存下来的
+# 「从不」判死，就会出现「EUI 的模块都显示了，只有准星不显示」的不一致。
+SCENARIO_OVERRIDE = r'''
+api.RegisterVisibilityUpdater = function(fn)
+    api._updaters = api._updaters or {}
+    api._updaters[#api._updaters + 1] = fn
+end
+
+local NS = Load()
+FireLogin()
+
+local elem = assert(api._elements and api._elements[1], "应注册解锁元素")
+local frame = assert(NS.Elements.frame, "应建出框体")
+local Config = NS.Config
+local Visibility = assert(NS.Visibility, "应有可见性模块")
+
+Config.Get().visibility = "never"
+NS.Core.Refresh()
+assert(Visibility.IsOff() == true, "没有覆盖时，「从不」是关掉状态")
+assert(frame.shown == false, "同上：不该显示")
+
+-- 覆盖说「总是」：整份可见性配置被它替换，「从不」不再算关掉
+overrideValue = "always"
+NS.Core.Refresh()
+assert(Visibility.IsOff() == false,
+    "EUI 的专精覆盖替换整份可见性配置，说「总是」时「从不」就不该再算关掉——"
+    .. "否则会出现「EUI 自家模块都显示了，只有准星不显示」")
+assert(frame.shown == true, "同上：应当显示")
+
+-- 但总开关仍然是主，覆盖盖不过它
+Config.Get().enabled = false
+NS.Core.Refresh()
+assert(Visibility.IsOff() == true, "总开关关着时，覆盖说了也不算")
+assert(frame.shown == false, "同上：不该显示")
+Config.Get().enabled = true
+
+-- 覆盖说「从不」时确实是关掉
+overrideValue = "never"
+NS.Core.Refresh()
+assert(Visibility.IsOff() == true, "覆盖说「从不」时是关掉状态")
+assert(frame.shown == false, "同上：不该显示")
+
+overrideValue = nil
+Config.Get().visibility = "always"
+NS.Core.Refresh()
+assert(frame.shown == true, "覆盖撤掉后回到正常判定")
+
+io.write("PASS: override\n")
 '''
 
 
@@ -707,5 +788,10 @@ def test_unlock_mode_bypasses_conditions_but_not_off_states():
 
 
 def test_option_lane_veto_hides_the_hud():
-    """选项通道（目标／敌对目标／骑乘中／御空术坐骑…）的否决必须生效。"""
+    """选项通道（目标／敌对目标／骑乘中／御空术坐骑…）的否决必须生效，且领跑模式集。"""
     _run(SCENARIO_OPTION_VETO, "option-veto")
+
+
+def test_override_replaces_the_off_state_but_not_the_master_switch():
+    """专精覆盖替换整份可见性配置；总开关是主，覆盖盖不过它。"""
+    _run(SCENARIO_OVERRIDE, "override")

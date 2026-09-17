@@ -118,7 +118,20 @@ function Visibility.IsOff()
     local config = Cfg()
     local settings = config and config.Get and config.Get() or nil
     if not settings then return false end
+
+    -- 总开关是主：任何覆盖都盖不过它。
     if settings.enabled == false then return true end
+
+    -- EUI 的专精覆盖会替换**整份**可见性配置。本插件不接受覆盖（配置独立存放，
+    -- EUI 会在覆盖会话结束后把写进来的值清掉），但会话进行中它确实短暂存在，
+    -- 而 EUI 全家消费者都认它。那时以它为准，免得出现「EUI 自家的模块都显示了、
+    -- 只有准星不显示」这种只有我们对不上的局面。
+    local api = EUI()
+    if api and api.VisOverrideValue then
+        local override = api.VisOverrideValue(settings)
+        if override then return override == "never" end
+    end
+
     if settings.visibility == "never" then return true end
     return false
 end
