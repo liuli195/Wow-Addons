@@ -280,7 +280,7 @@
       },
       {
         "id": "verify.crosshairhud-tests",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py tests/addons/MYUI_CrosshairHUD/test_core_readings.py tests/addons/MYUI_CrosshairHUD/test_unlock_contract.py tests/addons/MYUI_CrosshairHUD/test_config_color.py tests/addons/MYUI_CrosshairHUD/test_config_plan.py",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py tests/addons/MYUI_CrosshairHUD/test_core_readings.py tests/addons/MYUI_CrosshairHUD/test_unlock_contract.py tests/addons/MYUI_CrosshairHUD/test_config_color.py tests/addons/MYUI_CrosshairHUD/test_config_plan.py tests/addons/MYUI_CrosshairHUD/test_visibility.py",
         "checkParallel": true,
         "paths": [
           "addons/MYUI_CrosshairHUD/**",

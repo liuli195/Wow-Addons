@@ -784,4 +784,8 @@ function NS.Mount()
     RegisterModule()
     RegisterUnlockElement()
     RegisterSettingsNav()
+
+    -- 可见性接线。接不上时模块自己降级为「一直显示」，不影响上面三件。
+    local visibility = NS.Visibility
+    if visibility and visibility.Install then visibility.Install() end
 end
