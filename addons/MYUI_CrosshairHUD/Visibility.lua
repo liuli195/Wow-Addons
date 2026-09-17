@@ -29,6 +29,20 @@ local function Cfg()
     return ns and ns.Config
 end
 
+-- 旧标量兜底要用的状态表。**语义必须与 EUI 的调度器逐条对齐**：
+-- 「队伍」排除团队（它内部就是 `IsInGroup() and not inRaid`），交互状态取 EUI 自己的
+-- 缓存值而不是 `InCombatLockdown()`——两套谓词混用会让 EUI 的判定与本插件触发的
+-- 重算在锁定期窗口里对同一状态给出不同答案。
+local function VisibilityState()
+    local api = EUI()
+    local inRaid = _G.IsInRaid and _G.IsInRaid() or false
+    return {
+        inCombat = (api and api.IsInCombat and api.IsInCombat()) or false,
+        inRaid = inRaid,
+        inParty = (_G.IsInGroup and _G.IsInGroup() and not inRaid) or false,
+    }
+end
+
 -- 唯一的对外问答：现在该不该显示。
 --
 -- 降级方向是**认不出来就显示**。理由是降级发生时配置页上那一行很可能同时失效
@@ -51,15 +65,40 @@ function Visibility.ShouldShow()
     local verdict = api.EvalVisibilityExtended(settings, "visibility", nil,
         config and config.VIS_CAPS or nil)
 
-    -- 「空」的语义是「回落旧标量逻辑」，不是「显示」。本插件没有旧标量可回落，
-    -- 于是按「无条件」处理——自造第三种状态只会多一处静默。
+    -- 「空」的语义是「回落旧标量逻辑」，**不是**「显示」。
+    --
+    -- 这条路是**常态而非常态之外的兜底**：EUI 把「只勾了一个条件」直接存进标量
+    -- （与旧版单选逐字节一致），共享引擎对这种情况一律交回空，由调用方按标量
+    -- 自己判。把它当成「显示」的后果是——只勾「仅战斗中」时整个条件静默失效。
     if verdict == nil then
+        local mode = settings and settings.visibility or "always"
+        if mode == "never" then return false end
+        if mode == "always" then return true end
+        -- 本版不做悬停，它落到显示侧
+        if mode == "mouseover" then return true end
+        if api.CheckVisibilityMode then
+            return api.CheckVisibilityMode(mode, VisibilityState()) and true or false
+        end
         return true
     end
 
     -- 只把「明确的假」判为隐藏。四值协议里的「悬停」是真值字符串，若写成
     -- 「如果是真」会在悬停模式下静默判错；本版不启用悬停，所以它落到显示侧。
     return verdict ~= false
+end
+
+-- 「这东西不该存在」——与「现在不满足条件」相对。
+--
+-- 解锁模式的让路规则要靠它把两类分开：条件隐藏是**活的**，编辑时该让你调得到；
+-- 而总开关关着、或选了「从不」，是「这东西本就不该有」，那时冒出一个能拖的空框
+-- 只会让人对着不存在的东西拖。
+function Visibility.IsOff()
+    local config = Cfg()
+    local settings = config and config.Get and config.Get() or nil
+    if not settings then return false end
+    if settings.enabled == false then return true end
+    if settings.visibility == "never" then return true end
+    return false
 end
 
 -- 装配接线。幂等：装配入口可以被再走一遍（界面重载等），不能越接越多。

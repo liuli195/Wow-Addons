@@ -111,6 +111,11 @@ function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(1) end
 -- 先 `local api` 再赋值：`local api = { f = function() api.x = 1 end }` 里的
 -- `api` 会落到全局——局部变量要整条语句结束后才进作用域。
 ----------------------------------------------------------------------
+-- 场景可翻转的两个开关。**必须先声明**：下面的闭包引用它们，而局部变量要等
+-- 整条语句结束后才进作用域，写反了就会落到全局上（本文件已经踩过一次）。
+local sharedVerdict = true     -- EUI 共享引擎的判定（仅在配了多选模式集时被问到）
+local inCombat = false         -- 旧标量兜底要用的交互状态
+
 local api
 api = {
     _modules = {},
@@ -124,8 +129,33 @@ api = {
     },
     MakeUnlockElement = function(opts) return opts end,
     RegisterUnlockElements = function(_, list) api._elements = list end,
+
+    -- 忠实模拟 EUI 的求值器契约：
+    --   配了**多选模式集**（store.visibilityModes 有东西）→ 共享引擎给判定
+    --   否则（单个条件被存进旧标量）→ 交回「空」，由调用方自己按标量兜底
+    --
+    -- 这条路是常态：EUI 把「只勾了一个条件」直接存进标量，与旧版单选逐字节一致。
+    -- 夹具抄错的话测试会绿而实机静默失败，所以这里照契约写、并且**让它可翻转**。
+    EvalVisibilityExtended = function(store)
+        if store and store.visibilityModes then return sharedVerdict end
+        return nil
+    end,
+    CheckVisibilityMode = function(mode, state)
+        if mode == "never" then return false end
+        if mode == "always" then return true end
+        if mode == "in_combat" then return state.inCombat end
+        if mode == "out_of_combat" then return not state.inCombat end
+        if mode == "in_raid" then return state.inRaid end
+        if mode == "in_party" then return state.inParty end
+        if mode == "solo" then return not state.inRaid and not state.inParty end
+        return true
+    end,
+    IsInCombat = function() return inCombat end,
 }
 _G.EllesmereUI = api
+
+function IsInRaid() return false end
+function IsInGroup() return false end
 
 ----------------------------------------------------------------------
 -- 装配入口：与实机同一段路——按清单顺序加载，再触发 PLAYER_LOGIN
@@ -200,8 +230,6 @@ io.write("PASS: wiring\n")
 # 算一遍——一条决定画不画，一条决定给不给拖动框。两处算得不一致，症状就是
 # 「屏幕上看不见它，正中却留着一个能拖的空框」。所以两处必须由同一次通知驱动。
 SCENARIO_VERDICT = r'''
-local verdict = true
-api.EvalVisibilityExtended = function() return verdict end
 api.RegisterVisibilityUpdater = function(fn)
     api._updaters = api._updaters or {}
     api._updaters[#api._updaters + 1] = fn
@@ -213,11 +241,16 @@ FireLogin()
 local elem = assert(api._elements and api._elements[1], "应注册解锁元素")
 local frame = assert(NS.Elements.frame, "应建出框体")
 
+-- 配一个多选条件：这样判定才走 EUI 的共享引擎，而不是旧标量兜底那条路
+NS.Config.Get().visibilityModes = { in_combat = true }
+sharedVerdict = true
+NS.Core.Refresh()
+
 assert(frame.shown == true, "判定为显示时，框体应当在屏幕上")
 assert(elem.isHidden(elem.key) == false, "判定为显示时，不应报告隐藏")
 
 -- 翻转判定，再走 EUI 通知更新器那条路（这正是实机里条件变化时的路径）
-verdict = false
+sharedVerdict = false
 assert(api._updaters and api._updaters[1], "应已注册更新器")
 api._updaters[1]()
 
@@ -227,7 +260,7 @@ assert(elem.isHidden(elem.key) == true,
     .. "「屏幕上看不见它，正中却留着一个能拖的空框」")
 
 -- 翻回来也要一致
-verdict = true
+sharedVerdict = true
 api._updaters[1]()
 assert(frame.shown == true, "判定回到显示时，框体应当回来")
 assert(elem.isHidden(elem.key) == false, "判定回到显示时，不应再报告隐藏")
@@ -242,7 +275,6 @@ io.write("PASS: verdict\n")
 # 旧存档没有可见性配置，等价于「总是」；演示模式是为了在条件不满足时也能调样式，
 # 所以它绕过条件。两者都不该让准星消失。
 SCENARIO_LEGACY_AND_DEMO = r'''
-api.EvalVisibilityExtended = function() return nil end   -- 旧标量：共享引擎交回「空」
 api.RegisterVisibilityUpdater = function(fn)
     api._updaters = api._updaters or {}
     api._updaters[#api._updaters + 1] = fn
@@ -253,16 +285,46 @@ FireLogin()
 
 local elem = assert(api._elements and api._elements[1], "应注册解锁元素")
 local frame = assert(NS.Elements.frame, "应建出框体")
+local Config = NS.Config
 
--- 「空」的语义是「回落旧标量」，不是「显示」；本插件没有旧标量可回落，
--- 于是按「无条件」处理。旧存档因此与升级前完全一致。
+-- 旧存档：没有 visibilityModes，标量是默认的「总是」。
+-- 共享引擎交回「空」，本插件按标量兜底 → 总是显示。升级前后完全一致。
 assert(frame.shown == true, "没有可见性配置的旧存档，行为必须与升级前一致")
 assert(elem.isHidden(elem.key) == false, "同上：不该报告隐藏")
 
--- 换成一个明确的隐藏判定，确认上一段不是碰巧
-api.EvalVisibilityExtended = function() return false end
-api._updaters[1]()
-assert(frame.shown == false, "明确的隐藏判定下应当消失")
+----------------------------------------------------------------------
+-- 单个条件走**旧标量**，这条路是常态：EUI 把「只勾了一个条件」直接存进标量。
+-- 共享引擎对它一律交回「空」，所以兜底链必须在——漏掉的话，
+-- 只勾「仅战斗中」时整个条件会静默失效。
+----------------------------------------------------------------------
+Config.Get().visibility = "in_combat"
+inCombat = false
+NS.Core.Refresh()
+assert(frame.shown == false, "标量是「仅战斗中」且不在战斗时，必须隐藏")
+assert(elem.isHidden(elem.key) == true, "同上：不该报告可见")
+
+inCombat = true
+NS.Core.Refresh()
+assert(frame.shown == true, "进入战斗后应当显示——这证明兜底链真的按标量判了")
+assert(elem.isHidden(elem.key) == false, "同上")
+inCombat = false
+
+Config.Get().visibility = "out_of_combat"
+NS.Core.Refresh()
+assert(frame.shown == true, "「仅脱战」且不在战斗时应当显示")
+
+-- 「从不」是最硬的关
+Config.Get().visibility = "never"
+NS.Core.Refresh()
+assert(frame.shown == false, "标量「从不」必须隐藏")
+Config.Get().visibility = "always"
+
+----------------------------------------------------------------------
+-- 演示模式：绕过条件
+----------------------------------------------------------------------
+Config.Get().visibility = "in_combat"
+NS.Core.Refresh()
+assert(frame.shown == false, "条件不满足时隐藏")
 
 NS.Core.demo = true
 NS.Core.Refresh()
@@ -401,6 +463,78 @@ io.write("PASS: settings-row\n")
 '''
 
 
+# 场景六：解锁模式的让路规则。
+#
+# 要分开的是两类隐藏：
+#   「现在不满足条件」——它是活的，编辑时该让你调得到，所以让路；
+#   「这东西不该存在」——总开关关着、或选了「从不」，不该冒出一个能拖的空框。
+#
+# 后半段特意让判定返回**显示**：这样一旦隐藏，只可能来自「关掉状态」那条规则，
+# 而不是判定本身——否则测出来的是别的东西。
+SCENARIO_UNLOCK_BYPASS = r'''
+api.RegisterVisibilityUpdater = function(fn)
+    api._updaters = api._updaters or {}
+    api._updaters[#api._updaters + 1] = fn
+end
+
+local NS = Load()
+FireLogin()
+
+local elem = assert(api._elements and api._elements[1], "应注册解锁元素")
+local frame = assert(NS.Elements.frame, "应建出框体")
+local Config = NS.Config
+
+-- 把条件设成「仅战斗中」，人却不在战斗——正是用户在城里想调位置时的处境
+Config.Get().visibility = "in_combat"
+inCombat = false
+NS.Core.Refresh()
+assert(frame.shown == false, "非解锁模式下，条件不满足就该隐藏")
+
+----------------------------------------------------------------------
+-- 解锁模式：条件让路
+----------------------------------------------------------------------
+api._unlockActive = true
+NS.Core.Refresh()
+assert(frame.shown == true,
+    "解锁模式下条件必须让路——否则把条件设成「仅战斗中」之后就再也拖不到它了")
+assert(elem.isHidden(elem.key) == false, "同上：这时候必须给拖动框")
+
+----------------------------------------------------------------------
+-- 但「这东西不该存在」不让路
+--
+-- 这两段的判定本身是「显示」的，所以一旦隐藏，只可能来自「关掉状态」那条规则。
+----------------------------------------------------------------------
+Config.Get().enabled = false
+NS.Core.Refresh()
+assert(frame.shown == false, "总开关关着时，解锁模式也不该把它显示出来")
+assert(elem.isHidden(elem.key) == true, "同上：不该冒出一个能拖的空框")
+
+Config.Get().enabled = true
+NS.Core.Refresh()
+assert(frame.shown == true, "总开关打开后，解锁模式里又该能拖了")
+
+Config.Get().visibility = "never"
+NS.Core.Refresh()
+assert(frame.shown == false, "选了「从不」时，解锁模式也不该显示——那与总开关是同一类")
+assert(elem.isHidden(elem.key) == true, "同上：不该冒出一个能拖的空框")
+
+----------------------------------------------------------------------
+-- 退出解锁模式：回到条件判定
+----------------------------------------------------------------------
+Config.Get().visibility = "in_combat"
+api._unlockActive = false
+NS.Core.Refresh()
+assert(frame.shown == false, "退出解锁模式后行为必须复原")
+
+-- 条件满足时不受影响
+inCombat = true
+NS.Core.Refresh()
+assert(frame.shown == true, "条件满足时应当显示")
+
+io.write("PASS: unlock-bypass\n")
+'''
+
+
 def _run(scenario: str, marker: str):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "visibility_harness.lua"
@@ -438,3 +572,8 @@ def test_legacy_save_and_demo_mode_stay_visible():
 def test_settings_row_position_default_caps_and_greying():
     """可见性那一行的位置、默认值、能力集、置灰与离屏安全。"""
     _run(SCENARIO_SETTINGS_ROW, "settings-row")
+
+
+def test_unlock_mode_bypasses_conditions_but_not_off_states():
+    """解锁模式里条件让路；总开关与「从不」不让路。"""
+    _run(SCENARIO_UNLOCK_BYPASS, "unlock-bypass")

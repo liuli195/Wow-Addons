@@ -301,10 +301,22 @@ local function ShouldShow()
         return true
     end
     local visibility = NS.Visibility
-    if visibility and visibility.ShouldShow then
-        return visibility.ShouldShow() and true or false
+    if not (visibility and visibility.ShouldShow) then
+        return Config.Get().enabled ~= false
     end
-    return Config.Get().enabled ~= false
+
+    -- 解锁模式是**编辑模式**：条件让路，这样把可见性设成「仅战斗中」之后，
+    -- 人在城里也拖得到它——否则就再也调不了位置了。
+    --
+    -- 但「这东西不该存在」（总开关关着、「从不」）不让路：那时给一个拖动框，
+    -- 只会让人对着一个不存在的东西拖。
+    local api = rawget(_G, "EllesmereUI")
+    if api and api._unlockActive
+        and visibility.IsOff and not visibility.IsOff() then
+        return true
+    end
+
+    return visibility.ShouldShow() and true or false
 end
 
 local function Refresh()
