@@ -49,11 +49,11 @@ end
 -- （同一批接口），用户没有任何自救手段；显示至少还能用——「条件不起作用」与
 -- 「东西没了」在用户眼里是两码事。
 function Visibility.ShouldShow()
-    local config = Cfg()
-    local settings = config and config.Get and config.Get() or nil
-
-    -- 总开关是主：它关着一律不显示，可见性条件不参与。
-    if settings and settings.enabled == false then
+    -- 「关掉状态」（总开关关、「从不」）排在**降级之前**：它是我们自己存的数据，
+    -- 不需要 EUI 就能判，因此接口全没了也照样隐藏。这与「条件判不出来」是两回事
+    -- ——后者才走降级。放在这里还有一个好处：这条语义只有 IsOff 一处定义，
+    -- 不会在别处再抄一遍。
+    if Visibility.IsOff() then
         return false
     end
 
@@ -61,6 +61,9 @@ function Visibility.ShouldShow()
     if not (api and api.EvalVisibilityExtended) then
         return true
     end
+
+    local config = Cfg()
+    local settings = config and config.Get and config.Get() or nil
 
     local verdict = api.EvalVisibilityExtended(settings, "visibility", nil,
         config and config.VIS_CAPS or nil)
@@ -78,6 +81,8 @@ function Visibility.ShouldShow()
             local mode = settings and settings.visibility or "always"
             return api.CheckVisibilityMode(mode, VisibilityState()) and true or false
         end
+        -- 判定函数也没了：这是「条件判不出来」，走降级（显示）。
+        -- 「从不」到不了这里——上面已经由 IsOff 拦掉了。
         return true
     end
 

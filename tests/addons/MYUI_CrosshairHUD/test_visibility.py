@@ -184,6 +184,16 @@ end
 
 # 场景一：EUI 一个可见性接口都没有——降级必须答「显示」。
 SCENARIO_DEGRADATION = r'''
+-- **真的把可见性接口全部拆掉。**
+--
+-- 这条断言曾经是空转的：共享 mock 后来加上了齐全的求值器，而这个场景的注释
+-- 仍声称「EUI 一个可见性接口都没有」——它从此只测到一个布尔类型，却照旧全绿。
+-- 声明与行为分了家且不报错，所以这里必须显式地拆，并由下面几条断言钉住。
+api.EvalVisibilityExtended = nil
+api.CheckVisibilityMode = nil
+api.RegisterVisibilityUpdater = nil
+api.IsInCombat = nil
+
 local NS = Load()
 FireLogin()
 
@@ -195,9 +205,35 @@ assert(type(verdict) == "boolean",
     "必须返回真布尔——四值协议（真／假／悬停／空）要压在这个模块里面，实得 "
     .. type(verdict) .. "：" .. tostring(verdict))
 assert(verdict == true,
-    "EUI 没有可见性接口时必须答「显示」：降级时配置页那一行多半也一起失效了，"
+    "接口认不出来时必须答「显示」：降级时配置页那一行多半也一起失效了，"
     .. "用户没有自救手段，显示至少还能用")
 
+----------------------------------------------------------------------
+-- 但「关掉状态」不受降级影响
+--
+-- 总开关与「从不」是**我们自己存的数据**，不需要 EUI 就能判。它们表达的是
+-- 「这东西不该存在」，与「条件判不出来」不是一回事——所以接口没了，
+-- 它们照样要隐藏。
+----------------------------------------------------------------------
+local Config = NS.Config
+
+Config.Get().visibility = "never"
+assert(Visibility.ShouldShow() == false,
+    "「从不」是我们自己的数据，不依赖 EUI——接口认不出来时它照样该隐藏")
+assert(Visibility.IsOff() == true, "「从不」属于关掉状态")
+
+Config.Get().visibility = "always"
+Config.Get().enabled = false
+assert(Visibility.ShouldShow() == false,
+    "总开关关着同样是我们自己的数据，接口没了也不该显示")
+assert(Visibility.IsOff() == true, "总开关关着属于关掉状态")
+
+Config.Get().enabled = true
+Config.Get().visibility = "in_combat"
+assert(Visibility.ShouldShow() == true,
+    "而「条件判不出来」才是降级：这条路径答显示")
+
+Config.Get().visibility = "always"
 io.write("PASS: degradation\n")
 '''
 
@@ -474,6 +510,12 @@ assert(opts.caps == Config.VIS_CAPS, "设置页必须用与求值同一份能力
 -- 从不调用的话，参数个数写错也照样全绿，而实机的后果是：
 -- 标量被写成一张表 → 兜底链全部落空 → 条件静默失效。
 -- 所以这里照 EUI 的调用形状**真的调一次**。
+--
+-- **已知残留缺口**：这个调用形状是从 EUI 源码抄来的，不是由夹具模拟它的调用点
+-- 产生的。EUI 哪天改了契约，这里不会自动变红。出处（本机 9.1.8，复核时对着看）：
+--   EllesmereUI/EllesmereUI_Visibility.lua  SetVisibilitySelection :561
+--                                           VisCopySelection      :1204
+--   EllesmereUIOptions/EllesmereUI_Widgets.lua 文档注释          :8360
 ----------------------------------------------------------------------
 assert(type(opts.applyScalarFn) == "function", "要交出标量写回回调")
 local settings = Config.Get()
