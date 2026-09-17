@@ -23,26 +23,50 @@ local function EUI()
     return rawget(_G, "EllesmereUI")
 end
 
+-- 每次都现取：配置加载会**替换整个表对象**，缓存引用的人会从此读写一张废表。
+local function Cfg()
+    local ns = _G.MYUI_CHH
+    return ns and ns.Config
+end
+
 -- 唯一的对外问答：现在该不该显示。
 --
 -- 降级方向是**认不出来就显示**。理由是降级发生时配置页上那一行很可能同时失效
 -- （同一批接口），用户没有任何自救手段；显示至少还能用——「条件不起作用」与
 -- 「东西没了」在用户眼里是两码事。
 function Visibility.ShouldShow()
+    local config = Cfg()
+    local settings = config and config.Get and config.Get() or nil
+
+    -- 总开关是主：它关着一律不显示，可见性条件不参与。
+    if settings and settings.enabled == false then
+        return false
+    end
+
     local api = EUI()
     if not (api and api.EvalVisibilityExtended) then
         return true
     end
 
-    -- 判定链尚未接入，见票据 02。
-    return true
+    local verdict = api.EvalVisibilityExtended(settings, "visibility", nil,
+        config and config.VIS_CAPS or nil)
+
+    -- 「空」的语义是「回落旧标量逻辑」，不是「显示」。本插件没有旧标量可回落，
+    -- 于是按「无条件」处理——自造第三种状态只会多一处静默。
+    if verdict == nil then
+        return true
+    end
+
+    -- 只把「明确的假」判为隐藏。四值协议里的「悬停」是真值字符串，若写成
+    -- 「如果是真」会在悬停模式下静默判错；本版不启用悬停，所以它落到显示侧。
+    return verdict ~= false
 end
 
 -- 装配接线。幂等：装配入口可以被再走一遍（界面重载等），不能越接越多。
 --
 -- 漏接的后果是**静默的**——条件永远不生效，而且不报错、不显示异常，看起来只是
 -- 「设置好像没用」。所以这条由装配入口的测试盯着。
-function Visibility.Install()
+function Visibility.Install(onChange)
     if installed then return end
 
     local api = EUI()
@@ -53,6 +77,6 @@ function Visibility.Install()
 
     installed = true
     api.RegisterVisibilityUpdater(function()
-        -- 判定重算的落点，见票据 02。
+        if onChange then onChange() end
     end)
 end

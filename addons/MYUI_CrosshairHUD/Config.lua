@@ -19,6 +19,20 @@ local UnitClass = _G.UnitClass
 
 local SAVED = "MYUI_CrosshairHUDDB"
 
+-- 交给 EUI 共享可见性系统的能力集。
+--
+-- 一处定义、两处使用（设置页那一行与运行期求值），避免两边悄悄跑偏。
+--   partyIncludesRaid = false  「队伍」与「团队」互斥，与 EUI 自家语义一致
+--   luaDragonriding   = true   御空术判定走 Lua 侧（我们不使用安全宏驱动）
+--   noMouseover       = true   不做鼠标悬停：EUI 的共享悬停服务会对注册对象调用
+--                              EnableMouse(true)，那会让屏幕正中吃掉鼠标，直接
+--                              违反「点击必须穿透到游戏」那条既有规格
+Config.VIS_CAPS = {
+    partyIncludesRaid = false,
+    luaDragonriding = true,
+    noMouseover = true,
+}
+
 -- 19 项配置的默认值。键名即 SavedVariables 里的键名。
 Config.DEFAULTS = {
     enabled = true,                 -- 总开关

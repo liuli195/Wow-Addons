@@ -194,6 +194,91 @@ io.write("PASS: wiring\n")
 '''
 
 
+# 场景三：判定真的驱动准星，而且**两处同时改变**。
+#
+# 这是本能力唯一可能破坏既有验收的地方：「该不该显示」会被两条不同的代码路径分别
+# 算一遍——一条决定画不画，一条决定给不给拖动框。两处算得不一致，症状就是
+# 「屏幕上看不见它，正中却留着一个能拖的空框」。所以两处必须由同一次通知驱动。
+SCENARIO_VERDICT = r'''
+local verdict = true
+api.EvalVisibilityExtended = function() return verdict end
+api.RegisterVisibilityUpdater = function(fn)
+    api._updaters = api._updaters or {}
+    api._updaters[#api._updaters + 1] = fn
+end
+
+local NS = Load()
+FireLogin()
+
+local elem = assert(api._elements and api._elements[1], "应注册解锁元素")
+local frame = assert(NS.Elements.frame, "应建出框体")
+
+assert(frame.shown == true, "判定为显示时，框体应当在屏幕上")
+assert(elem.isHidden(elem.key) == false, "判定为显示时，不应报告隐藏")
+
+-- 翻转判定，再走 EUI 通知更新器那条路（这正是实机里条件变化时的路径）
+verdict = false
+assert(api._updaters and api._updaters[1], "应已注册更新器")
+api._updaters[1]()
+
+assert(frame.shown == false, "判定为隐藏时，框体必须从屏幕上消失")
+assert(elem.isHidden(elem.key) == true,
+    "同一次翻转下，解锁元素必须同时报告隐藏——两处不一致的可见症状是"
+    .. "「屏幕上看不见它，正中却留着一个能拖的空框」")
+
+-- 翻回来也要一致
+verdict = true
+api._updaters[1]()
+assert(frame.shown == true, "判定回到显示时，框体应当回来")
+assert(elem.isHidden(elem.key) == false, "判定回到显示时，不应再报告隐藏")
+
+io.write("PASS: verdict\n")
+'''
+
+
+# 场景四：旧存档兼容与演示模式。
+#
+# 两件事同源——**「不满足条件」与「不该有这东西」是两回事**：
+# 旧存档没有可见性配置，等价于「总是」；演示模式是为了在条件不满足时也能调样式，
+# 所以它绕过条件。两者都不该让准星消失。
+SCENARIO_LEGACY_AND_DEMO = r'''
+api.EvalVisibilityExtended = function() return nil end   -- 旧标量：共享引擎交回「空」
+api.RegisterVisibilityUpdater = function(fn)
+    api._updaters = api._updaters or {}
+    api._updaters[#api._updaters + 1] = fn
+end
+
+local NS = Load()
+FireLogin()
+
+local elem = assert(api._elements and api._elements[1], "应注册解锁元素")
+local frame = assert(NS.Elements.frame, "应建出框体")
+
+-- 「空」的语义是「回落旧标量」，不是「显示」；本插件没有旧标量可回落，
+-- 于是按「无条件」处理。旧存档因此与升级前完全一致。
+assert(frame.shown == true, "没有可见性配置的旧存档，行为必须与升级前一致")
+assert(elem.isHidden(elem.key) == false, "同上：不该报告隐藏")
+
+-- 换成一个明确的隐藏判定，确认上一段不是碰巧
+api.EvalVisibilityExtended = function() return false end
+api._updaters[1]()
+assert(frame.shown == false, "明确的隐藏判定下应当消失")
+
+NS.Core.demo = true
+NS.Core.Refresh()
+assert(frame.shown == true,
+    "演示模式必须绕过可见性条件——它存在的意义就是「条件不满足时也能看」")
+assert(elem.isHidden(elem.key) == false,
+    "演示模式既然显示着，就不能报告隐藏，否则拖动框会缺席")
+
+NS.Core.demo = false
+NS.Core.Refresh()
+assert(frame.shown == false, "退出演示模式后回到条件判定")
+
+io.write("PASS: legacy-demo\n")
+'''
+
+
 def _run(scenario: str, marker: str):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "visibility_harness.lua"
@@ -216,3 +301,13 @@ def test_visibility_falls_open_without_eui_interfaces():
 def test_assembly_registers_visibility_updater_once():
     """装配时必须把更新器接上——漏接的话条件永远不生效，而且症状是静默的。"""
     _run(SCENARIO_WIRING, "wiring")
+
+
+def test_verdict_drives_hud_and_unlock_element_together():
+    """一次判定翻转，屏幕上有没有它、给不给拖动框，两个答案必须同时变。"""
+    _run(SCENARIO_VERDICT, "verdict")
+
+
+def test_legacy_save_and_demo_mode_stay_visible():
+    """旧存档等价于「总是」；演示模式绕过条件——两者都不该让准星消失。"""
+    _run(SCENARIO_LEGACY_AND_DEMO, "legacy-demo")

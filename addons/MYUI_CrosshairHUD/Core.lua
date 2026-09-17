@@ -289,24 +289,44 @@ local function DemoState()
     return state
 end
 
+-- 「现在该不该显示」的唯一出口。
+--
+-- 之所以收成一处：渲染侧（画不画）与解锁元素侧（给不给拖动框）问的是同一个问题。
+-- 两处各写一遍的话，一旦不一致，症状就是「屏幕上看不见它，正中却留着一个能拖的
+-- 空框」——那正是本模块存在的理由。
+local function ShouldShow()
+    if Core.demo then
+        -- 演示模式存在的意义就是「条件不满足时也能看」，所以它绕过可见性。
+        -- 与它绕过总开关是同一个道理。
+        return true
+    end
+    local visibility = NS.Visibility
+    if visibility and visibility.ShouldShow then
+        return visibility.ShouldShow() and true or false
+    end
+    return Config.Get().enabled ~= false
+end
+
 local function Refresh()
     if not Elements.frame then return end
 
-    if Core.demo then
-        Elements.Apply(DemoState())
+    if not ShouldShow() then
+        Elements.Apply(nil)
         return
     end
-    if not Config.Get().enabled then
-        Elements.Apply(nil)
+
+    if Core.demo then
+        Elements.Apply(DemoState())
         return
     end
     Elements.Apply(BuildState())
 end
 Core.Refresh = Refresh
 
--- 票据 07 用：解锁元素是否应当报告为隐藏
+-- 票据 07 用：解锁元素是否应当报告为隐藏。
+-- 与渲染侧共用同一个出口，两处不可能给出不同答案。
 function Core.IsHidden()
-    return not Config.Get().enabled
+    return not ShouldShow()
 end
 
 -- 最近一次**成功读到**的读数。既是诊断入口，也是秘密值降级那条分支的
@@ -785,7 +805,8 @@ function NS.Mount()
     RegisterUnlockElement()
     RegisterSettingsNav()
 
-    -- 可见性接线。接不上时模块自己降级为「一直显示」，不影响上面三件。
+    -- 可见性接线。条件变化时 EUI 会回调这里，重算后两处一起更新。
+    -- 接不上时模块自己降级为「一直显示」，不影响上面三件。
     local visibility = NS.Visibility
-    if visibility and visibility.Install then visibility.Install() end
+    if visibility and visibility.Install then visibility.Install(Refresh) end
 end
