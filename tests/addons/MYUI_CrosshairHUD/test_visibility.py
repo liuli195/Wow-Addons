@@ -279,6 +279,128 @@ io.write("PASS: legacy-demo\n")
 '''
 
 
+# 场景五：设置页那一行——位置、默认值、能力集、置灰、离屏安全。
+#
+# 这一条只加载 Config.lua（仓库的文件级接缝）：页面清单不碰魔兽接口，也不碰 EUI。
+# 控件工厂里页面构建只用到 DualRow 与 SectionHeader 两个方法，所以 mock 得住。
+SCENARIO_SETTINGS_ROW = r'''
+local dir = assert(arg[1])
+assert(loadfile(dir .. "/Config.lua"))()
+local Config = assert(_G.MYUI_CHH, "Config.lua 应导出命名空间表").Config
+
+Config.Load()
+
+----------------------------------------------------------------------
+-- 位置：常规清单第 2 项，紧随总开关
+--
+-- 清单是自适应排版的（每行两项、奇数时末行右边留空），可见性就是清单里的普通
+-- 一项，不为它做特殊处理——所以位置只能靠清单顺序表达。
+----------------------------------------------------------------------
+local general = Config.GeneralCells()
+assert(type(general) == "table" and general[2], "常规清单至少要有两项")
+assert(general[1].text == "启用准星HUD",
+    "第 1 项应仍是总开关，实得「" .. tostring(general[1].text) .. "」")
+assert(general[2].text == "可见性",
+    "可见性应紧挨总开关（第 2 项），实得「" .. tostring(general[2].text) .. "」")
+assert(general[2].kind == "visibility",
+    "可见性格子的类型应是 visibility，实得 " .. tostring(general[2].kind))
+assert(#general == 4,
+    "常规清单应为 4 项（启用／可见性／缩放／图层），正好两行填满，实得 " .. #general)
+
+----------------------------------------------------------------------
+-- 默认值：显式写「总是」
+--
+-- 升级前后行为必须完全一致；显式写还能让设置页那行一开始就正确显示，
+-- 而不是留一个看似「没设置过」的空白。
+----------------------------------------------------------------------
+assert(Config.Get().visibility == "always",
+    "默认值应显式为 always（总是），实得 " .. tostring(Config.Get().visibility))
+
+----------------------------------------------------------------------
+-- 能力集：一处定义，设置页与运行期求值共用
+----------------------------------------------------------------------
+local caps = assert(Config.VIS_CAPS, "能力集要导出，设置页与求值共用一份")
+assert(caps.noMouseover == true,
+    "必须声明不做鼠标悬停：共享悬停服务会对注册对象 EnableMouse(true)，"
+    .. "那会让屏幕正中吃掉鼠标，违反「点击必须穿透」那条既有规格")
+assert(caps.partyIncludesRaid == false, "「队伍」与「团队」必须互斥")
+assert(caps.luaDragonriding == true, "御空术判定走 Lua 侧")
+
+----------------------------------------------------------------------
+-- 离屏安全：控件工厂不可用时必须安全返回数字，绝不索引 nil
+----------------------------------------------------------------------
+_G.EllesmereUI = {}
+local offscreen = Config.BuildPage(nil, nil, 0)
+assert(type(offscreen) == "number",
+    "控件工厂缺失时必须返回数字高度，实得 " .. type(offscreen))
+
+----------------------------------------------------------------------
+-- 控件工厂可用时：行被建出，且参数形状正确
+----------------------------------------------------------------------
+local attached = {}
+-- 控件 mock：显式列出页面会用到的那些方法。
+-- **不用万能元表兜底**——那样连拼错的 API 也会被吞掉，夹具就失去了把关作用。
+local function Widget()
+    local w = {}
+    for _, name in ipairs({
+        "SetPoint", "ClearAllPoints", "SetSize", "SetWidth", "SetHeight",
+        "SetAlpha", "SetScale", "SetShown", "Show", "Hide",
+        "SetFrameStrata", "SetFrameLevel", "SetParent", "EnableMouse",
+        "RegisterForClicks", "HookScript", "SetScript", "SetText",
+        "SetJustifyH", "SetJustifyV", "SetFontString",
+    }) do
+        w[name] = function() end
+    end
+    w.GetScript = function() return nil end
+    w.GetWidth = function() return 100 end
+    w.GetHeight = function() return 20 end
+    w.GetFrameLevel = function() return 1 end
+    w.GetEffectiveScale = function() return 1 end
+    return w
+end
+local function Region()
+    return { _control = Widget(), GetFrameLevel = function() return 1 end }
+end
+local W = {}
+function W:DualRow()
+    return { _leftRegion = Region(), _rightRegion = Region() }, 10
+end
+function W:SectionHeader() return {}, 20 end
+
+_G.EllesmereUI = {
+    Widgets = W,
+    BuildColorSwatch = function() return Widget() end,
+    RegisterWidgetRefresh = function() end,
+    ShowWidgetTooltip = function() end,
+    HideWidgetTooltip = function() end,
+    AttachVisibilityChecklist = function(region, opts) attached[#attached + 1] = opts end,
+}
+
+local height = Config.BuildPage(nil, nil, 0)
+assert(type(height) == "number", "建完页仍要返回数字高度，实得 " .. type(height))
+assert(#attached == 1, "应恰好挂一份可见性清单，实得 " .. #attached)
+
+local opts = attached[1]
+assert(opts.legacyKey == "visibility",
+    "键名必须是 visibility，实得 " .. tostring(opts.legacyKey))
+assert(type(opts.getStore) == "function",
+    "存储必须以**取值函数**交出：配置加载会替换整个表对象，交缓存表会读写废表")
+assert(opts.caps == Config.VIS_CAPS, "设置页必须用与求值同一份能力集")
+
+----------------------------------------------------------------------
+-- 置灰：总开关关掉时该格不可点
+----------------------------------------------------------------------
+assert(type(opts.disabledFn) == "function", "要给出置灰回调，否则两个开关会平起平坐")
+Config.Get().enabled = true
+assert(opts.disabledFn() == false, "总开关开着时不该置灰")
+Config.Get().enabled = false
+assert(opts.disabledFn() == true, "总开关关掉时该格必须置灰，让「谁是主」一眼可见")
+Config.Get().enabled = true
+
+io.write("PASS: settings-row\n")
+'''
+
+
 def _run(scenario: str, marker: str):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "visibility_harness.lua"
@@ -311,3 +433,8 @@ def test_verdict_drives_hud_and_unlock_element_together():
 def test_legacy_save_and_demo_mode_stay_visible():
     """旧存档等价于「总是」；演示模式绕过条件——两者都不该让准星消失。"""
     _run(SCENARIO_LEGACY_AND_DEMO, "legacy-demo")
+
+
+def test_settings_row_position_default_caps_and_greying():
+    """可见性那一行的位置、默认值、能力集、置灰与离屏安全。"""
+    _run(SCENARIO_SETTINGS_ROW, "settings-row")
