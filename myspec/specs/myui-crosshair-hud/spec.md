@@ -294,3 +294,62 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 - **WHEN** 玩家查看配置页与插件说明
 - **THEN** 文案里没有任何具体职业名称
+### Requirement: Visibility conditions decide when the HUD appears
+
+系统 MUST 遵循 EllesmereUI 共享可见性系统给出的判定，决定**整条**准星 HUD 是否出现——判定针对整条 HUD，各元素的取舍由元素开关负责，两者是相互独立的两个维度。可选条件 MUST 覆盖该共享系统提供的全部条件（从不、总是、战斗中、脱战、团队、队伍、单人、御空术空中、非御空术空中、御空术坐骑、副本、住宅、骑乘中、目标、敌对目标、休息中、载具），MUST 支持「全部满足／任一满足」两种匹配模式，并 MUST 支持「显示」与「隐藏」两条通道。MUST NOT 提供鼠标悬停条件：共享悬停机制会在光标进入时对元素打开鼠标交互，与《The HUD never intercepts mouse input》相抵触。系统 MUST 在设置面板的常规分区提供一行可见性控件，MUST 紧随总开关之后，且 MUST 与其他配置项一样以「每行两项」的方式参与排布。总开关关闭时，该控件 MUST 置灰不可操作。当共享系统的接口不可用或返回值不可识别时，HUD MUST 保持可见，MUST NOT 因此消失。
+
+#### Scenario: A single condition is set
+
+- **WHEN** 玩家把可见性设为「战斗中」并脱离战斗
+- **THEN** HUD 消失
+- **AND** 重新进入战斗后 HUD 出现
+
+#### Scenario: Several conditions are combined
+
+- **WHEN** 玩家同时勾选多个条件并切换「全部满足」与「任一满足」
+- **THEN** HUD 的显示与否随各条件对应的游戏状态按所选匹配模式变化
+
+#### Scenario: An option-lane condition is set
+
+- **WHEN** 玩家勾选涉及目标、骑乘、副本、住宅、休息或载具的条件
+- **THEN** HUD 按该条件对应的游戏状态显示或隐藏
+
+#### Scenario: A hide condition overrides a passing show condition
+
+- **WHEN** 玩家同时勾选了一个已经满足的显示条件与一个已满足的隐藏条件
+- **THEN** HUD 隐藏
+
+#### Scenario: The master switch is turned off while a condition is set
+
+- **WHEN** 玩家在设定了可见性条件之后关闭总开关
+- **THEN** HUD 消失，且可见性控件置灰不可操作
+
+#### Scenario: The visibility control is placed next to the master switch
+
+- **WHEN** 玩家打开设置面板的常规分区
+- **THEN** 可见性控件出现在总开关右边那一格
+
+#### Scenario: Unlock mode while a condition currently fails
+
+- **WHEN** 玩家把可见性设为「战斗中」，在非战斗状态下进入解锁模式
+- **THEN** 屏幕中心出现可拖动的框
+
+#### Scenario: Unlock mode while the HUD is turned off
+
+- **WHEN** 玩家关闭总开关，或在可见性里选择「从不」，然后进入解锁模式
+- **THEN** 屏幕中心没有可拖动的空框
+
+#### Scenario: Demo mode while a condition fails
+
+- **WHEN** 玩家在可见性条件不满足时开启演示模式
+- **THEN** HUD 照常显示
+
+#### Scenario: Upgrading from a save without visibility settings
+
+- **WHEN** 既有玩家升级后首次进入游戏，且从未设置过可见性
+- **THEN** HUD 的显示与升级前完全一致
+
+#### Scenario: The shared visibility interfaces cannot be recognised
+
+- **WHEN** 共享可见性接口缺失，或其返回值不可识别
+- **THEN** HUD 保持可见且不报错
