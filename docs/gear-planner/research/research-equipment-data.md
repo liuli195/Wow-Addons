@@ -90,12 +90,12 @@ Wago（客户端数据浏览工具）的中文表导出未取得稳定的本轮�
 
 工具和下载缓存仅位于 `.tools/gear-planner-research/`；运行输入、输出和探针位于 `.local/gear-planner-research/`，均沿用仓库忽略规则，没有放入正式网站目录。
 
-- 本机探针：[probe-simc.py（复用验证脚本）](../../.local/gear-planner-research/probe-simc.py)
-- 来源快照与筛选结果：[data-source-results.json（数据核验结果）](../../.local/gear-planner-research/data-source-results.json)
-- 装备解析结果：[simc-probe-results.json（解析结果）](../../.local/gear-planner-research/simc-probe-results.json)
+- 本机探针：[probe-simc.py（复用验证脚本）](../../../.local/gear-planner-research/probe-simc.py)
+- 来源快照与筛选结果：[data-source-results.json（数据核验结果）](../../../.local/gear-planner-research/data-source-results.json)
+- 装备解析结果：[simc-probe-results.json（解析结果）](../../../.local/gear-planner-research/simc-probe-results.json)
 - 固定物品集 SHA-256（内容校验）：`e04844c086d2d9c189971d436e3541abb599367ed40de0d49078f4476b311330`
 - 名称集校验：`4e55b757aa03142754c86c36abece3a7d1272edd0d8c506147c0cddf1af2ce98`
 
 这些本地证据在新检出环境不会自动出现；应按报告中的固定来源重新取得。公开请求成功不等于已确认再分发许可；本轮没有作批量再分发或公开发布决定。
 
-[对应研究事项](issues/01-equipment-data.md)的现成来源与样本可行性已经有具体答案；完整中文覆盖、各制作变体的合法装等和正式目录验收仍须在后续支持边界中明确。
+[对应研究事项](../issues/01-equipment-data.md)的现成来源与样本可行性已经有具体答案；完整中文覆盖、各制作变体的合法装等和正式目录验收仍须在后续支持边界中明确。

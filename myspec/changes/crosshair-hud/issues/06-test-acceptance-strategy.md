@@ -41,7 +41,7 @@ Blocked by（前置事项）: 无
 
 方案计划的测试与验收章节；正式实现时按此落地并与实施票据一同登记。
 
-原始依据：仓库的[测试说明](../../../tests/README.md)、[协作指南](../../../docs/wow-addon-development-guide.md)与用户 2026-09-16 的 v1 范围决议。
+原始依据：仓库的[测试说明](../../../../tests/README.md)、[协作指南](../../../../docs/wow-addon-development-guide.md)与用户 2026-09-16 的 v1 范围决议。
 
 ## Comments（讨论）
 

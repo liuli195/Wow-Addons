@@ -3,7 +3,7 @@
 本目录是项目入口，与同级的 `gear-planner/`（配装器）统一放在 `projects/`（项目目录）下。当前已建立角色读取、离线导出、同一序列原生模拟、自动搜索、独立复测及取消恢复；第四票已将同一程序接入三步界面。职业、专精和职责交给固定引擎判断，统一优化伤害。最新测试与审查记录见[第四票](../../myspec/changes/sim2gse-implementation/issues/04-three-step-interface.md)，运行方式和状态边界见[本地任务说明](../../docs/sim2gse/local-task.md)。
 
 - [实施地图](../../myspec/changes/sim2gse-wayfinder/spec.md)
-- [实施方案](../../docs/Sim2GSE_Implementation_Plan.md)
+- [实施方案](../../docs/sim2gse/implementation-plan.md)
 - [项目目录与维护边界](../../docs/sim2gse/project-boundary-proposal.md)
 - [邪恶角色与独立原版基线](../../docs/sim2gse/target-evidence.md)
 - [原生动作来源与首轮能力映射](../../docs/sim2gse/action-capabilities.md)

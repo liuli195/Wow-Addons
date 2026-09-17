@@ -129,7 +129,7 @@ output=指定文本报告
 
 戒指附魔变更未改变需求中的属性等级，不能据此声称引擎漏算：主代理独立运行原生诊断，确认该附魔法术 1236701 每枚增加暴击伤害及暴击治疗 2%，不增加暴击等级。空肩部同时影响装备与可能的被动条件，只作为状态变化探针，不能当成唯一的可加来源贡献。
 
-证据：[编辑检查脚本](../../.local/gear-planner-research/probe-cn-edits.py)、[七组编辑结果](../../.local/gear-planner-research/cn-edit-results.json)。除基线外，这些修改没有相应游戏截图，属于原生行为和适配验证。
+证据：[编辑检查脚本](../../../.local/gear-planner-research/probe-cn-edits.py)、[七组编辑结果](../../../.local/gear-planner-research/cn-edit-results.json)。除基线外，这些修改没有相应游戏截图，属于原生行为和适配验证。
 
 ### 已定位的常驻效果及研究决议
 
@@ -145,11 +145,11 @@ output=指定文本报告
 | 种族被动 255658 | 固定全能 +1 个百分比点 | 333 等级经换算加种族效果，得到 7.166667% |
 | 戒指附魔 1236701 | 每枚暴击伤害、暴击治疗乘数 +2% | 不影响暴击等级；两枚乘数为 1.0404 |
 
-证据：[常驻效果摘录](../../.local/gear-planner-research/cn-passive-extract.txt)。原生逻辑的主要入口为[角色被动解析](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/player/player.cpp#L16363)及[死亡骑士模块](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/class_modules/sc_death_knight.cpp#L15147)。制作字段覆盖涉及[物品附加编号应用](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/dbc/sc_item_data.cpp#L481)与[显式属性解码](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/item/item.cpp#L1731)，应使用固定源码审阅，不将冲突字段任意相加。
+证据：[常驻效果摘录](../../../.local/gear-planner-research/cn-passive-extract.txt)。原生逻辑的主要入口为[角色被动解析](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/player/player.cpp#L16363)及[死亡骑士模块](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/class_modules/sc_death_knight.cpp#L15147)。制作字段覆盖涉及[物品附加编号应用](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/dbc/sc_item_data.cpp#L481)与[显式属性解码](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/engine/item/item.cpp#L1731)，应使用固定源码审阅，不将冲突字段任意相加。
 
 **研究决议**：保留原版引擎作为唯一属性计算来源；本地适配只负责输入验证、相互关联字段的同步、禁用临时效果、读取快照、平均装等槽位口径及诊断。无需另写职业基础属性、等级换算、递减、缩放或天赋树计算。原始装备/宝石/附魔贡献与常驻乘数、递减分开表达；受控差分可解释某次变更，却不能当作唯一可相加的来源归属。
 
-原生可运行性、当前角色主要字段、额外急速来源和制作编辑冲突已经有可重复证据，因此计算复用研究可关闭。敏捷/智力尚无游戏读数、整数取整边界、空槽和非鲜血武器布局、完整特效覆盖与来源拆分展示，继续由[准确性验收与支持边界](issues/04-accuracy-contract.md)明确，不将这些未验收项描述为已通过，也不无限重复研究已确认的引擎能力。
+原生可运行性、当前角色主要字段、额外急速来源和制作编辑冲突已经有可重复证据，因此计算复用研究可关闭。敏捷/智力尚无游戏读数、整数取整边界、空槽和非鲜血武器布局、完整特效覆盖与来源拆分展示，继续由[准确性验收与支持边界](../issues/04-accuracy-contract.md)明确，不将这些未验收项描述为已通过，也不无限重复研究已确认的引擎能力。
 
 ### 用户真实角色对照（2026-09-08）
 
@@ -170,20 +170,20 @@ output=指定文本报告
 
 这是复用原生引擎的真实角色证据，范围限于当前配置、截图可见字段及其显示精度；不代表全部属性来源、装备变更和取整边界的验收已经完成。
 
-- [匿名角色输入](../../.local/gear-planner-research/cn-user-20260908.input.simc)
-- [本地面板截图](../../.local/gear-planner-research/cn-user-20260908.panel.png)
-- [可重复执行的对照检查](../../.local/gear-planner-research/check-cn-reference.py)
-- [对照结果](../../.local/gear-planner-research/cn-user-20260908.check.json)
+- [匿名角色输入](../../../.local/gear-planner-research/cn-user-20260908.input.simc)
+- [本地面板截图](../../../.local/gear-planner-research/cn-user-20260908.panel.png)
+- [可重复执行的对照检查](../../../.local/gear-planner-research/check-cn-reference.py)
+- [对照结果](../../../.local/gear-planner-research/cn-user-20260908.check.json)
 
 ### 前期探针
 
-- [复用探针脚本](../../.local/gear-planner-research/probe-simc.py)
-- [装备解析结果](../../.local/gear-planner-research/simc-probe-results.json)
-- [七个快照结果](../../.local/gear-planner-research/snapshot-probe-results.json)
-- [递减阈值结果](../../.local/gear-planner-research/rating-boundary-results.json)
-- [精通法术查询](../../.local/gear-planner-research/blood-mastery-spell.txt)
+- [复用探针脚本](../../../.local/gear-planner-research/probe-simc.py)
+- [装备解析结果](../../../.local/gear-planner-research/simc-probe-results.json)
+- [七个快照结果](../../../.local/gear-planner-research/snapshot-probe-results.json)
+- [递减阈值结果](../../../.local/gear-planner-research/rating-boundary-results.json)
+- [精通法术查询](../../../.local/gear-planner-research/blood-mastery-spell.txt)
 
-以上文件在本地忽略目录中，不随新检出自动存在。上游配置来源为[固定第二赛季鲜血配置](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/profiles/MID2/MID2_Death_Knight_Blood.simc)。研究结论是原生计算复用路径已经证实可运行；[属性研究事项](issues/02-stat-rules.md)中的完整面板口径与覆盖仍须按上述缺口处理，不能宣称所有准确性要求已经满足。
+以上文件在本地忽略目录中，不随新检出自动存在。上游配置来源为[固定第二赛季鲜血配置](https://github.com/simulationcraft/simc/blob/c1935b92f40d1063696861b0f4f6701e714ebd09/profiles/MID2/MID2_Death_Knight_Blood.simc)。研究结论是原生计算复用路径已经证实可运行；[属性研究事项](../issues/02-stat-rules.md)中的完整面板口径与覆盖仍须按上述缺口处理，不能宣称所有准确性要求已经满足。
 
 ## 2026-09-09 配套游戏读数核对
 
@@ -197,7 +197,7 @@ output=指定文本报告
 | 智力 | 334 | 334 | 本配置一致 |
 | 护甲 | 3449.028 | 3449 | 整数显示一致，仍不能区分截断与四舍五入 |
 
-归一化输入 [当前样本](../../.local/gear-planner-research/cn-user-20260909-0349.input.simc) 省略身份及不生效注释，沿用旧样本相同的有效字段并更新护腕奖励；[计算输出](../../.local/gear-planner-research/cn-user-20260909-0349.result.json) 保留版本与装备配置。截图来自用户本轮附件 `codex-clipboard-452e0cea-ddf8-44d8-8084-86ae58f46e39.png`。敏捷与智力证据缺口在当前角色配置下已补足，不推广为全职业证明。
+归一化输入 [当前样本](../../../.local/gear-planner-research/cn-user-20260909-0349.input.simc) 省略身份及不生效注释，沿用旧样本相同的有效字段并更新护腕奖励；[计算输出](../../../.local/gear-planner-research/cn-user-20260909-0349.result.json) 保留版本与装备配置。截图来自用户本轮附件 `codex-clipboard-452e0cea-ddf8-44d8-8084-86ae58f46e39.png`。敏捷与智力证据缺口在当前角色配置下已补足，不推广为全职业证明。
 
 最小边界样本已离线筛选：仅卸下无附魔的雾猎者罩衫（272226），其余装备与天赋保持本次导出，原生护甲为 3347.586。若仅最后一步截断，候选为 3347；若仅最后一步四舍五入，候选为 3348。实际游戏返回值尚待用户提供；其他结果亦应原样记录以定位中间步骤取整或其他修正，不能强制二选一。此计算没有改动浏览器方案或游戏装备。
 
