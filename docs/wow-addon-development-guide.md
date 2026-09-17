@@ -8,7 +8,7 @@
 
 **需求和验收 → 固定基线与功能分支 → 核实接口 → 小步实现 → 本机快速验证 → 游戏验收 → 提交与推送 → 远端完整验证和审查 → 合并 → 清理 → 按需发布安装包。**
 
-本指南描述方案与工作约定，实际落地环境见[环境使用说明](environment-setup.md)。前期工具能力和社区采用证据见[研究笔记](wow-addon-debug-testing.md)。本指南中的技能限制以本次读取的本机 2.0.0 版技能为依据；升级后重新读取技能，不照抄旧参数。
+本指南描述方案与工作约定，实际落地环境见[环境使用说明](environment-setup.md)。前期工具能力和社区采用证据见[研究笔记](research/wow-addon-debug-testing.md)。本指南中的技能限制以本次读取的本机 2.0.0 版技能为依据；升级后重新读取技能，不照抄旧参数。
 
 ## 1. 本仓库现状与第一期范围
 
@@ -145,7 +145,7 @@ Luacheck 的 .luacheckrc（检查配置）声明实际使用的魔兽全局量�
 
 ### 2.6 魔兽专用 MCP（模型上下文协议服务）与技能
 
-补充核查日期：2026-09-08。前期指南遗漏了这类工具；已有可用候选，尤其是 Mechanic（魔兽开发诊断平台）。以下是源码与文档审查结论，本次没有安装或运行这些新工具。详细证据、维护快照和技能比较见[专用人工智能工具研究](wow-addon-ai-tools-research.md)。
+补充核查日期：2026-09-08。前期指南遗漏了这类工具；已有可用候选，尤其是 Mechanic（魔兽开发诊断平台）。以下是源码与文档审查结论，本次没有安装或运行这些新工具。详细证据、维护快照和技能比较见[专用人工智能工具研究](research/wow-addon-ai-tools-research.md)。
 
 | 候选 | 能补齐什么 | 对本仓库的判断 |
 | --- | --- | --- |
@@ -505,9 +505,9 @@ BigWigs Packager（插件打包器）是通用魔兽插件打包工具，不要�
 
 以下是本次实际读取的本机文档；属于版本快照，执行时应重新从宿主清单发现入口：
 
-- [构建与验证技能](C:/Users/liuli/.codex/plugins/cache/build-and-verify/build-and-verify/2.0.0/skills/build-and-verify/SKILL.md)：快速与完整模式、固定基线、缓存及跳过语义。
-- [构建与验证初始化](C:/Users/liuli/.codex/plugins/cache/build-and-verify/build-and-verify/2.0.0/skills/build-and-verify-init/SKILL.md)：配置确认与正式写入入口。
-- [拉取请求初始化](C:/Users/liuli/.codex/plugins/cache/my-agent-skills-marketplace/pr-flow/2.0.0/skills/pr-flow-init/SKILL.md)：本地文件与远端待办边界。
-- [拉取请求诊断](C:/Users/liuli/.codex/plugins/cache/my-agent-skills-marketplace/pr-flow/2.0.0/skills/pr-flow/SKILL.md)：状态读取及停止状态。
-- [拉取请求收尾](C:/Users/liuli/.codex/plugins/cache/my-agent-skills-marketplace/pr-flow/2.0.0/skills/pr-flow-complete/SKILL.md)：合并与安全清理。
+- 构建与验证技能（`build-and-verify` 技能）：快速与完整模式、固定基线、缓存及跳过语义。
+- 构建与验证初始化（`build-and-verify-init` 技能）：配置确认与正式写入入口。
+- 拉取请求初始化（`pr-flow-init` 技能）：本地文件与远端待办边界。
+- 拉取请求诊断（`pr-flow` 技能）：状态读取及停止状态。
+- 拉取请求收尾（`pr-flow-complete` 技能）：合并与安全清理。
 - [完整开发编排](C:/Users/liuli/.agents/skills/dev-flow/SKILL.md)：本仓库开发入口，负责阶段顺序、依赖和确认门禁；执行时从宿主清单重新解析当前入口。

@@ -6,7 +6,7 @@
 
 本报告承接 [插件调试与测试研究](wow-addon-debug-testing.md)（2026-09-07）与[插件专用人工智能工具研究](wow-addon-ai-tools-research.md)（2026-09-08）。那两份文档的候选清单本次逐条复核，**其中三条结论需要更正**，见第四节。
 
-**落地方案见[实施计划](../myspec/changes/wow-addon-automation/plan.md)**：把本报告的结论按投入产出比排成可施工的顺序，每项标注投入、收益、确定性与前置验证。
+**落地方案见[实施计划](../../myspec/changes/wow-addon-automation/plan.md)**：把本报告的结论按投入产出比排成可施工的顺序，每项标注投入、收益、确定性与前置验证。
 
 ## 一、结论摘要
 
@@ -124,7 +124,7 @@ end
 
 ### 3.1 现状：已经自动化的部分
 
-[仓库测试说明](../tests/README.md)与 `.build-and-verify/config.json` 登记的内容已覆盖：LuaLS 类型检查、Luacheck 静态检查、`.toc` 清单校验、准星 HUD 的 5 组离线逻辑测试（Python 驱动本机 Lua 5.1）、素材一致性、文档锚点，外加两道元闸门（`test_inventory.py` 拦截未登记的测试，`test_checks.py` 是检查器自身的回归）。
+[仓库测试说明](../../tests/README.md)与 `.build-and-verify/config.json` 登记的内容已覆盖：LuaLS 类型检查、Luacheck 静态检查、`.toc` 清单校验、准星 HUD 的 5 组离线逻辑测试（Python 驱动本机 Lua 5.1）、素材一致性、文档锚点，外加两道元闸门（`test_inventory.py` 拦截未登记的测试，`test_checks.py` 是检查器自身的回归）。
 
 这套配置**已经高于社区主流**。【读源码】WeakAuras2、DBM、BigWigs 的 CI 只有 lint 加打包，Details、Plater 连 lint 都没有；主流插件里唯一真正跑测试的是 WeakAuras2 自研的 sandbox 套件（`lua5.1 tests/run.lua`），而它服务的是**安全回归**，不是功能回归，且作者明写「跑绿不是安全证明」。
 
@@ -265,9 +265,9 @@ end
 
 `docs/environment-setup.md` 写着「本机游戏可执行文件和安装版本记录均为正式服 12.1.0.69587」，`myspec/changes/sim2gse-wayfinder/issues/01` 也记过「Wow.exe 文件版本为 12.1.0.69587，与仓库锁定值相同」。**该结论今天已不成立。**
 
-影响：接口号未变所以没有立刻出错，但**准星 HUD 的 5 轮实机验收（9/16–9/17）实际跑在 69814 上，而仓库固定的接口文档与注解是 69587 那一版**。按[协作指南](wow-addon-development-guide.md)的版本纪律，`versions.json`、受影响的固定提交与 `docs/environment-setup.md` 需要一次对齐。
+影响：接口号未变所以没有立刻出错，但**准星 HUD 的 5 轮实机验收（9/16–9/17）实际跑在 69814 上，而仓库固定的接口文档与注解是 69587 那一版**。按[协作指南](../wow-addon-development-guide.md)的版本纪律，`versions.json`、受影响的固定提交与 `docs/environment-setup.md` 需要一次对齐。
 
-**处置记录（2026-09-17）**：已对齐。`scripts/dev/versions.json` 的 `client.build` 改为 69814、`wow-ui-source` 固定提交改为 `live` 分支对应的 `4e3cbb8c`，两份文档的版本快照同步。注解那一半改得更彻底：上游 `vscode-wow-api` 的更新停在 12.0.1 且它要求 Lua 5.4 与 5 个 C 模块（其 `setup/README.md` 劝阻在 Windows 安装），改为由本仓库的 `scripts/dev/build_wow_annotations.py` 从已固定的暴雪文档自行生成，见[环境说明](environment-setup.md)的接口资料一节。另两处相关处置：探针版本已归一到分支 `codex/fix-sim2gse-probe-relay-capture`（等该分支合入主干时解决冲突）；Sim2GSE 的 `engine.py` 构建号校验改为接受集合，历史报告继续有效。
+**处置记录（2026-09-17）**：已对齐。`scripts/dev/versions.json` 的 `client.build` 改为 69814、`wow-ui-source` 固定提交改为 `live` 分支对应的 `4e3cbb8c`，两份文档的版本快照同步。注解那一半改得更彻底：上游 `vscode-wow-api` 的更新停在 12.0.1 且它要求 Lua 5.4 与 5 个 C 模块（其 `setup/README.md` 劝阻在 Windows 安装），改为由本仓库的 `scripts/dev/build_wow_annotations.py` 从已固定的暴雪文档自行生成，见[环境说明](../environment-setup.md)的接口资料一节。另两处相关处置：探针版本已归一到分支 `codex/fix-sim2gse-probe-relay-capture`（等该分支合入主干时解决冲突）；Sim2GSE 的 `engine.py` 构建号校验改为接受集合，历史报告继续有效。
 
 反向参考：两个上游项目的记录都指向 69814——wowless 的 `data/products/wow/build.yaml` 记正式服为 **12.1.0 / 69814 / 120100**；SimC 源码的 `CLIENT_DATA_WOW_VERSION` 同样是 **12.1.0.69814**（其版本号写作 4 位的 `1210-01`，不使用接口号 120100）。
 

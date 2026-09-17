@@ -56,7 +56,7 @@ KeystoneLoot 升级表中的 `quality`（品质参数）仅用于显示颜色，
 
 ## 可重复证据与交付限制
 
-- [目录生成和交叉检查脚本](../../.local/gear-planner-research/check-epic-catalog.py)
-- [编号清单、计数和来源内容校验](../../.local/gear-planner-research/epic-catalog-results.json)
+- [目录生成和交叉检查脚本](../../../.local/gear-planner-research/check-epic-catalog.py)
+- [编号清单、计数和来源内容校验](../../../.local/gear-planner-research/epic-catalog-results.json)
 
 工具、上游缓存、编号清单均在本地忽略目录；没有安装插件、修改游戏或制作网站。完整中文名称覆盖率仍未确认，继续复用中文查名与缓存途径，缺失时保留英文和编号，不伪造中文。最终选择器还须逐项保留来源、转化、职业和特殊装等约束；基础成品数不能替代完整变体测试。
