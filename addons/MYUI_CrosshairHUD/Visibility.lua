@@ -71,12 +71,11 @@ function Visibility.ShouldShow()
     -- （与旧版单选逐字节一致），共享引擎对这种情况一律交回空，由调用方按标量
     -- 自己判。把它当成「显示」的后果是——只勾「仅战斗中」时整个条件静默失效。
     if verdict == nil then
-        local mode = settings and settings.visibility or "always"
-        if mode == "never" then return false end
-        if mode == "always" then return true end
-        -- 本版不做悬停，它落到显示侧
-        if mode == "mouseover" then return true end
+        -- 标量本身的语义**全归 EUI**：它自己的判定函数就认这几个标量
+        -- （never 落到假，always 与 mouseover 都落到真），这里不再各写一份——
+        -- 各写一份就会有第二处需要跟着 EUI 同步的副本。
         if api.CheckVisibilityMode then
+            local mode = settings and settings.visibility or "always"
             return api.CheckVisibilityMode(mode, VisibilityState()) and true or false
         end
         return true

@@ -1,8 +1,8 @@
 # 01：地基：可见性模块、接线与降级
 
 Triage（分拣）: ready-for-agent
-Status（状态）: open
-Assignee（领取者）: 待领取
+Status（状态）: closed
+Assignee（领取者）: Codex（主代理）
 Parent（来源）: [Crosshair HUD 可见性规格](../spec.md)
 Blocked by（前置事项）: 无
 
@@ -26,3 +26,9 @@ Blocked by（前置事项）: 无
 - [ ] 不新建全局变量（导出走插件自己的命名空间），否则静态检查失败
 - [ ] 新增测试文件已登记进统一验证入口，否则清单检查失败
 - [ ] 离线检查通过
+
+## Comments（讨论）
+
+**完成证据**（提交 `3d4c2eb`）：红灯为 `cannot open Visibility.lua`，实现后转绿。`verify.crosshairhud-luals` / `-luacheck`（0 警告）/ `-toc` 全通过；新测试已登记进 `verify.crosshairhud-tests`，`test-inventory` 报告「所有测试入口均已登记」。固定基线 `7dc917a` 上的完整验证 `status: passed`。
+
+**降级方向**经独立审查确认与规格一致，未发现偏差。**接线覆盖**由同一条装配入口上的断言盯着——只测内部函数的话，接线漏了测试照样全绿，而这正是本能力最容易发生的静默失败。

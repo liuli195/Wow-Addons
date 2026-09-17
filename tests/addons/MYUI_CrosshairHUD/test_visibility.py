@@ -249,6 +249,12 @@ NS.Core.Refresh()
 assert(frame.shown == true, "判定为显示时，框体应当在屏幕上")
 assert(elem.isHidden(elem.key) == false, "判定为显示时，不应报告隐藏")
 
+-- 接线：交给 EUI 的模块表里，建页函数必须就是本插件那一个。
+-- 光测「建页函数本身能建出可见性行」不够——它可能根本没被挂上去。
+local module = assert(api._modules["MYUI_CrosshairHUD"], "模块应已注册")
+assert(module.buildPage == NS.Config.BuildPage,
+    "模块表里的建页函数必须是本插件的，否则设置页永远不会被调起")
+
 -- 翻转判定，再走 EUI 通知更新器那条路（这正是实机里条件变化时的路径）
 sharedVerdict = false
 assert(api._updaters and api._updaters[1], "应已注册更新器")
@@ -423,9 +429,15 @@ end
 local function Region()
     return { _control = Widget(), GetFrameLevel = function() return 1 end }
 end
+-- 记下每个槽位落在第几行、哪一侧：只断言「清单里第 2 项」是不够的，
+-- 那只证明数据序，证不了建出来的行真的把它放在了总开关右边。
+local rowIndex = 0
 local W = {}
 function W:DualRow()
-    return { _leftRegion = Region(), _rightRegion = Region() }, 10
+    rowIndex = rowIndex + 1
+    local left, right = Region(), Region()
+    left.spot, right.spot = rowIndex .. ":left", rowIndex .. ":right"
+    return { _leftRegion = left, _rightRegion = right }, 10
 end
 function W:SectionHeader() return {}, 20 end
 
@@ -435,19 +447,44 @@ _G.EllesmereUI = {
     RegisterWidgetRefresh = function() end,
     ShowWidgetTooltip = function() end,
     HideWidgetTooltip = function() end,
-    AttachVisibilityChecklist = function(region, opts) attached[#attached + 1] = opts end,
+    AttachVisibilityChecklist = function(region, opts)
+        attached[#attached + 1] = { opts = opts, spot = region.spot }
+    end,
 }
 
 local height = Config.BuildPage(nil, nil, 0)
 assert(type(height) == "number", "建完页仍要返回数字高度，实得 " .. type(height))
 assert(#attached == 1, "应恰好挂一份可见性清单，实得 " .. #attached)
 
-local opts = attached[1]
+-- 位置不能只看清单数据序：要断言它真的被挂在了总开关右边那一格
+assert(attached[1].spot == "1:right",
+    "可见性必须挂在第一行的右槽（总开关右边），实得 " .. tostring(attached[1].spot))
+
+local opts = attached[1].opts
 assert(opts.legacyKey == "visibility",
     "键名必须是 visibility，实得 " .. tostring(opts.legacyKey))
 assert(type(opts.getStore) == "function",
     "存储必须以**取值函数**交出：配置加载会替换整个表对象，交缓存表会读写废表")
 assert(opts.caps == Config.VIS_CAPS, "设置页必须用与求值同一份能力集")
+
+----------------------------------------------------------------------
+-- 标量写回：**必须按 EUI 的实参个数调用**
+--
+-- EUI 的契约是 `applyScalarFn(store, mode)`——两个参数。夹具只把它记下来、
+-- 从不调用的话，参数个数写错也照样全绿，而实机的后果是：
+-- 标量被写成一张表 → 兜底链全部落空 → 条件静默失效。
+-- 所以这里照 EUI 的调用形状**真的调一次**。
+----------------------------------------------------------------------
+assert(type(opts.applyScalarFn) == "function", "要交出标量写回回调")
+local settings = Config.Get()
+opts.applyScalarFn(settings, "never")
+assert(settings.visibility == "never",
+    "写回的应是**模式字符串**，实得 " .. type(settings.visibility) .. "：" ..
+    tostring(settings.visibility) .. "——若这里是 table，说明回调只接了一个参数，"
+    .. "收到的是 store 本身")
+opts.applyScalarFn(settings, "in_combat")
+assert(settings.visibility == "in_combat", "第二次写回同样要落到模式字符串上")
+settings.visibility = "always"
 
 ----------------------------------------------------------------------
 -- 置灰：总开关关掉时该格不可点

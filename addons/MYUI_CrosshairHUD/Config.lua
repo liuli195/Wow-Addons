@@ -522,19 +522,23 @@ function Config.BuildPage(_, parent, yOffset)
         if not (cell and cell.kind == "visibility") then return end
         local region = row and row[regionName]
         if not (EUI.AttachVisibilityChecklist and region) then return end
+        -- 条件变化后请 EUI 重算，它再回调本插件注册的更新器。
+        -- 页面刷新由 EUI 那一行自己负责，这里不重复调 RefreshPage。
+        local function RequestUpdate()
+            if EUI.RequestVisibilityUpdate then EUI.RequestVisibilityUpdate() end
+        end
+
         EUI.AttachVisibilityChecklist(region, {
             getStore = function() return Config.Get() end,
             legacyKey = "visibility",
             caps = Config.VIS_CAPS,
-            applyScalarFn = function(value) Config.Get().visibility = value end,
-            -- 条件变化后请 EUI 重算，它再回调本插件注册的更新器。
-            -- 页面刷新由 EUI 那一行自己负责，这里不重复调 RefreshPage。
-            onChanged = function()
-                if EUI.RequestVisibilityUpdate then EUI.RequestVisibilityUpdate() end
-            end,
-            onOptionChanged = function()
-                if EUI.RequestVisibilityUpdate then EUI.RequestVisibilityUpdate() end
-            end,
+            -- 注意实参形状：EUI 以 `applyScalarFn(store, mode)` 两个参数调用
+            -- （EllesmereUI_Visibility.lua 的 SetVisibilitySelection 与
+            -- VisCopySelection 都是这个形状）。只写一个形参的话，收到的是 store
+            -- 本身，标量会被写成一张表——后果是整条兜底链落空、条件静默失效。
+            applyScalarFn = function(_, mode) Config.Get().visibility = mode end,
+            onChanged = RequestUpdate,
+            onOptionChanged = RequestUpdate,
             -- 总开关是主：它关掉时这一格置灰不可点，两个开关不会平起平坐。
             disabledFn = function() return Config.Get().enabled == false end,
         })
