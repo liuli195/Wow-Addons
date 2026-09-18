@@ -8,8 +8,11 @@
 4. 边缘不做预乘 alpha——预乘会让抗锯齿边缘染色后发黑。
 5. 遮罩的左半全不透明、右半全透明、中线单调过渡——镜像翻转会让所有填充方向整体反向，
    而这一条光看代码发现不了。
-6. 弧线的描边宽度与设计稿一致——条加粗是"AOE 混战里看得清"这件事的依据，改细改粗都会
-   让它失去依据，而线宽只有量过才知道。
+6. 条沿半径方向的跨度与设计稿一致——条加粗是"AOE 混战里看得清"这件事的依据，
+   改细改粗都会让它失去依据，而这个跨度只有量过才知道。（对两条弧它就是线宽；
+   六个资源格是实心块，量到的是整块的径向长度，见 measure_radial_span_units。）
+7. 准星正中要有中心定位点——它没有源几何上的依赖，掉了也看不出来。
+8. 阴影必须**被柔化过**（半透明裙边大于不透明核心）——硬边是明确否决过的做法。
 
 用法：python scripts/media/verify_crosshair_media.py
 """
@@ -30,7 +33,7 @@ MASK_PX_PER_UNIT = 2
 MASK_UNITS = 128
 RING_RADIUS = 54          # 设计稿圆环半径，与 Logic.RING.radius 一致
 DESIGN_CENTER = 128       # 设计稿坐标系里的圆环中心
-ARC_STROKE = 7.8          # 设计稿定稿的弧线线宽（设计单位）
+ARC_STROKE = 7.8          # 设计稿定稿的条宽（设计单位）：两条弧是线宽，资源格是半径跨度
 ARC_STROKE_TOL = 0.3
 CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
 DOT_CHECK_RADIUS = 4      # 中心定位点的检查半径（像素）；设计稿上它是一个直径 10 像素的点
@@ -79,11 +82,15 @@ def verify_texture(name, want_size):
             check(not (corr > 0.9 and lum.max() < 200), f"{name}: 疑似预乘 alpha（边缘染色会发黑）")
 
 
-def measure_stroke_units(image, asset, scale):
-    """量弧线描边宽度（设计单位）。
+def measure_radial_span_units(image, asset, scale):
+    """量图形沿半径方向的跨度（设计单位）。
 
-    取 alpha 过半覆盖的像素——那正是描边的轮廓——它们到圆环中心的距离跨度就是线宽。
-    平口端点沿半径切，不会把这个跨度撑大。
+    取 alpha 过半覆盖的像素，量它们到圆环中心的距离跨度。
+
+    **对血弧／符能弧，这个跨度就是描边宽度**（细弧 + 平口端点沿半径切，端点不撑大跨度）。
+    **对六个资源格不是**：它们是**实心块**（设计稿上是带描边的矢量，填充把描边连成了一片），
+    量到的是整块沿半径方向的长度。两者都随"加粗"一起变大，所以这条断言对两者都抓得住
+    变化；但**读数只对两条弧等于线宽**，别把资源格那个数当线宽看。
     """
     h, w = image.shape[:2]
     yy, xx = np.mgrid[0:h, 0:w]
@@ -109,12 +116,12 @@ def verify_arc_stroke(asset, scale):
     if image is None:
         return
 
-    got = measure_stroke_units(image, asset, scale)
+    got = measure_radial_span_units(image, asset, scale)
     if got is None:
-        check(False, f"{name}: 量不出描边宽度（没有过半覆盖的像素）")
+        check(False, f"{name}: 量不出半径方向的跨度（没有过半覆盖的像素）")
         return
     check(abs(got - ARC_STROKE) <= ARC_STROKE_TOL,
-        f"{name}: 弧线宽度应为 {ARC_STROKE} 设计单位，实测 {got:.2f}")
+        f"{name}: 沿半径的跨度应为 {ARC_STROKE} 设计单位，实测 {got:.2f}")
 
 
 def verify_center_dot(asset):

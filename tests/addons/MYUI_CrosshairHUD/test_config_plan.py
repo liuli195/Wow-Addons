@@ -173,9 +173,14 @@ for i = 1, #general do
     end
 end
 assert(shadowCell, "常规节要有阴影颜色格")
+assert(shadowCell.text == "阴影", "阴影格的文字，实得「" .. tostring(shadowCell.text) .. "」")
 assert(shadowCell.alphaKey == "shadowAlpha", "阴影格带的是**它自己**的浓淡")
 assert(shadowCell.modeKey == nil, "阴影没有第二种来源，不该有 modeKey")
 assert(shadowCell.source == nil, "阴影只有自定义色，**不能**有来源色块")
+
+-- 顺序：阴影排在**末位**，而前两项（总开关、可见性）的位置由上面的断言钉住不动。
+-- 它会多出来一行（5 项 → 三行、末行右边留空），这是清单自己的排布规则，不是破例。
+assert(general[#general] == shadowCell, "阴影格应在常规清单末位")
 
 ----------------------------------------------------------------------
 -- 置灰：总开关关掉时所有子项都算关掉（子开关与色块一起失效）
