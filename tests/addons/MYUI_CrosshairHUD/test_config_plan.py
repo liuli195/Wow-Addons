@@ -178,6 +178,18 @@ assert(shadowCell.alphaKey == "shadowAlpha", "阴影格带的是**它自己**的
 assert(shadowCell.modeKey == nil, "阴影没有第二种来源，不该有 modeKey")
 assert(shadowCell.source == nil, "阴影只有自定义色，**不能**有来源色块")
 
+-- **默认即上限**：素材是按最重档烘的，只允许往下调。
+--
+-- 这条规则落在**一对数字**上：滑杆的上限，与默认浓淡。滑杆范围原先写死在渲染函数里，
+-- 与 DEFAULTS.shadowAlpha 各说各话——分家了不会有任何征兆，只会默默允许调过头
+-- （或者一装上就不是最重档）。所以范围收进格子描述符，断言盯住这一对。
+assert(shadowCell.max == Config.SHADOW_ALPHA_MAX,
+    "阴影滑杆的上限应是 SHADOW_ALPHA_MAX，实得 " .. tostring(shadowCell.max))
+assert(shadowCell.min == 0, "阴影滑杆的下限应是 0（调到 0 就是关掉阴影）")
+assert(math.abs(Config.DEFAULTS.shadowAlpha * 100 - shadowCell.max) < 0.001,
+    string.format("默认浓淡 %g 必须正好是上限 %g——「默认即上限」就是这么落的",
+        Config.DEFAULTS.shadowAlpha * 100, shadowCell.max))
+
 -- 顺序：阴影排在**末位**，而前两项（总开关、可见性）的位置由上面的断言钉住不动。
 -- 它会多出来一行（5 项 → 三行、末行右边留空），这是清单自己的排布规则，不是破例。
 assert(general[#general] == shadowCell, "阴影格应在常规清单末位")

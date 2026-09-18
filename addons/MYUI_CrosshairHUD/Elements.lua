@@ -107,6 +107,16 @@ local function Place(texture, spec)
     texture:SetPoint("CENTER", Elements.frame, "CENTER", spec.ox * s, -spec.oy * s)
 end
 
+-- 一个元素身上**可重定位的图层**。加一层只改这里，不用把 SetScale 逐层再抄一遍。
+-- 缺哪层就跳过哪层：准星只有 shadow 与 art，资源格四层齐全。
+local LAYERS = { "shadow", "bg", "fill", "art" }
+
+local function PlaceLayers(part, spec)
+    for _, layer in ipairs(LAYERS) do
+        if part[layer] then Place(part[layer], spec) end
+    end
+end
+
 local function NewMask()
     local mask = Elements.frame:CreateMaskTexture()
     mask:SetTexture(MEDIA .. "mask_half.png", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
@@ -126,9 +136,7 @@ local function BuildFillable(key, spec)
 
     parts[key] = { shadow = shadow, bg = bg, fill = fill, mask = mask }
     placements[key] = spec
-    Place(shadow, spec)
-    Place(bg, spec)
-    Place(fill, spec)
+    PlaceLayers(parts[key], spec)
 end
 
 --------------------------------------------------------------------------
@@ -154,12 +162,14 @@ function Elements.Create()
         placements.runes[i] = entry
     end
 
-    parts.crosshair = NewTexture(SUB_CROSSHAIR, PLACEMENT.crosshair.file)
-    parts.crosshairShadow = NewTexture(SUB_SHADOW,
-        PLACEMENT.crosshair.file .. SHADOW_SUFFIX)
+    -- 与其它元素同一个形状：部件表里按图层名取。准星没有 bg/fill（它是线不是块），
+    -- 所以只有 shadow 与 art 两层——层名统一，别在别处另起一个叫法。
+    parts.crosshair = {
+        shadow = NewTexture(SUB_SHADOW, PLACEMENT.crosshair.file .. SHADOW_SUFFIX),
+        art = NewTexture(SUB_CROSSHAIR, PLACEMENT.crosshair.file),
+    }
     placements.crosshair = PLACEMENT.crosshair
-    Place(parts.crosshairShadow, PLACEMENT.crosshair)
-    Place(parts.crosshair, PLACEMENT.crosshair)
+    PlaceLayers(parts.crosshair, PLACEMENT.crosshair)
 
     return frame
 end
@@ -175,19 +185,12 @@ function Elements.SetScale(scale)
     if not Elements.frame then return end
     Elements.frame:SetSize(SQUARE * scale, SQUARE * scale)
 
-    Place(parts.health.shadow, placements.health)
-    Place(parts.health.bg, placements.health)
-    Place(parts.health.fill, placements.health)
-    Place(parts.power.shadow, placements.power)
-    Place(parts.power.bg, placements.power)
-    Place(parts.power.fill, placements.power)
+    PlaceLayers(parts.health, placements.health)
+    PlaceLayers(parts.power, placements.power)
     for i = 1, Logic.PIPS.count do
-        Place(parts.runes[i].shadow, placements.runes[i])
-        Place(parts.runes[i].bg, placements.runes[i])
-        Place(parts.runes[i].fill, placements.runes[i])
+        PlaceLayers(parts.runes[i], placements.runes[i])
     end
-    Place(parts.crosshairShadow, placements.crosshair)
-    Place(parts.crosshair, placements.crosshair)
+    PlaceLayers(parts.crosshair, placements.crosshair)
 end
 
 function Elements.SetVisible(visible)
@@ -264,15 +267,15 @@ function Elements.Apply(state)
 
     local ch = state.crosshair
     if ch then
-        parts.crosshair:SetShown(ch.visible ~= false)
-        parts.crosshairShadow:SetShown(ch.visible ~= false)
+        parts.crosshair.art:SetShown(ch.visible ~= false)
+        parts.crosshair.shadow:SetShown(ch.visible ~= false)
         pcall(function()
             local fc = ch.fillColor
-            parts.crosshair:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
+            parts.crosshair.art:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
         end)
         pcall(function()
             local sc = ch.shadowColor
-            parts.crosshairShadow:SetVertexColor(sc[1], sc[2], sc[3], ch.shadowAlpha or 1)
+            parts.crosshair.shadow:SetVertexColor(sc[1], sc[2], sc[3], ch.shadowAlpha or 1)
         end)
     end
 end

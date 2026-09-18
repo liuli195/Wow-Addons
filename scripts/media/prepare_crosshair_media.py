@@ -43,8 +43,6 @@ REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "assets" / "CrosshairHUDMedia"
 DEFAULT_OUT = SRC / "Textures"
 
-DEFAULT_EXPORT_SCALE = 8
-
 # Figma 端的导出倍率。这个值是给**人**在 Figma 里填的，脚本只拿它核对源图尺寸。
 #
 # 两边差一个系数：Figma 画板用的是**预览单位**，1 预览单位 = 0.5 设计稿单位
@@ -124,8 +122,8 @@ def prepare(source, name, want_size, is_shadow):
 def main():
     parser = argparse.ArgumentParser(description="把 Figma 高倍导出加工成成品纹理")
     parser.add_argument("source", help="Figma 导出目录")
-    parser.add_argument("--scale", type=int, default=DEFAULT_EXPORT_SCALE,
-                        help=f"成品密度，缺省 {DEFAULT_EXPORT_SCALE}")
+    parser.add_argument("--scale", type=int, default=None,
+                        help="成品密度，缺省用清单里的 exportScale")
     parser.add_argument("--out", default=None, help="成品输出目录，缺省写回 assets/Textures")
     parser.add_argument("--figma-scale", type=int, default=FIGMA_SCALE,
                         help=f"Figma 端用的导出倍数，缺省 {FIGMA_SCALE}（只用于核对源图尺寸）")
@@ -136,14 +134,19 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     manifest = load_manifest()
+    # 密度缺省从清单读，别在这儿另写一份——三个兄弟脚本都读清单，只有这里写死就会分叉
+    scale = args.scale if args.scale is not None else manifest["exportScale"]
+
     placement = {}
     for asset in manifest["assets"]:
         name = asset["file"][:-4]                       # 去掉 .png
         is_shadow = name.endswith(SHADOW_SUFFIX)
-        dw, dh = asset["displaySize"]
-        want = (dw * args.scale, dh * args.scale)
+        # **用 contentSize（补边前的画布），不是 displaySize（补边后的画布）**。
+        # Figma 那边导出的是前者，补边是本脚本之后才做的。搞混了这条核对就永远对不上。
+        dw, dh = asset["contentSize"]
+        want = (dw * scale, dh * scale)
 
-        # 核对导出尺寸：源图应当是「显示尺寸 × 2（预览单位）× Figma 端倍数」
+        # 核对导出尺寸：源图应当是「补边前的画布 × 2（预览单位）× Figma 端倍数」
         with Image.open(source / f"{name}.png") as probe:
             sw, sh = probe.size
         expect = (dw * PREVIEW_PER_DESIGN * args.figma_scale,
@@ -155,7 +158,7 @@ def main():
         image = prepare(source, name, want, is_shadow)
         image, pot = pad_to_pot(image)
         image.save(out / asset["file"])
-        placement[asset["file"]] = [pot[0] // args.scale, pot[1] // args.scale]
+        placement[asset["file"]] = [pot[0] // scale, pot[1] // scale]
 
         pad = (pot[0] - want[0]) // 2
         note = f"补边 {pad}px" if pad or pot[1] != want[1] else "已是 2 的幂"

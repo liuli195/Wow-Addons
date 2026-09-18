@@ -26,6 +26,7 @@
 
 from pathlib import Path
 import json
+import math
 import sys
 
 import numpy as np
@@ -48,7 +49,11 @@ DESIGN_CENTER = 128       # 设计稿坐标系里的圆环中心
 ARC_STROKE = 7.8          # 设计稿定稿的条宽（设计单位）：两条弧是线宽，资源格是半径跨度
 ARC_STROKE_TOL = 0.3
 CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
-DOT_CHECK_RADIUS = 4      # 中心定位点的检查半径（像素）；设计稿上它是一个直径 10 像素的点
+# 中心定位点：设计稿上是准星圆心处一个直径 10 预览单位（＝5 设计稿单位）的实心白点。
+# 检查半径只是"有没有点"的粗查；**直径另有一条断言，画大画小都算偏离设计稿**。
+DOT_CHECK_RADIUS = 4
+DOT_DESIGN_UNITS = 5.0
+DOT_TOL = 0.75            # 容差：量的是不透明段，含边缘那圈过渡
 SHADOW_SUFFIX = "_shadow"
 
 # 边缘过渡带的最小宽度，单位是**纹理像素**。
@@ -136,10 +141,14 @@ def measure_radial_span_units(image, asset, scale):
 
     取 alpha 过半覆盖的像素，量它们到圆环中心的距离跨度。
 
-    **对血弧／符能弧，这个跨度就是描边宽度**（细弧 + 平口端点沿半径切，端点不撑大跨度）。
-    **对六个资源格不是**：它们是**实心块**（设计稿上是带描边的矢量，填充把描边连成了一片），
-    量到的是整块沿半径方向的长度。两者都随"加粗"一起变大，所以这条断言对两者都抓得住
-    变化；但**读数只对两条弧等于线宽**，别把资源格那个数当线宽看。
+    **八张图的读数都是 7.8**，但那个数对两者含义不同，别混：
+
+    - **两条弧**是细弧（平口端点沿半径切，端点不撑大跨度），所以读数**就是描边宽度**。
+    - **六个资源格是实心块**（实测：bbox 内部没有洞，是菱形／长条），读数**是整块沿半径
+      方向的长度**——它**恰好也等于 7.8**，因为设计稿给两者用的是同一个值。
+
+    两者都随"加粗"一起变大，所以这条断言对两者都抓得住变化。**别因为读数相同就以为
+    资源格是弧线**：它没有弧，也没有沿角度的分段。
     """
     h, w = image.shape[:2]
     yy, xx = np.mgrid[0:h, 0:w]
@@ -173,11 +182,14 @@ def verify_arc_stroke(asset, scale):
         f"{name}: 沿半径的跨度应为 {ARC_STROKE} 设计单位，实测 {got:.2f}")
 
 
-def verify_center_dot(asset):
-    """准星正中必须有中心定位点。
+def verify_center_dot(asset, scale):
+    """准星正中必须有中心定位点，**大小还要与设计稿一致**。
 
     设计稿上它是准星圆心处一个实心的白点——AOE 混战里快速转头之后，玩家靠它
-    把视线拉回屏幕正中。它没有源几何上的依赖，掉了也看不出来，所以钉在这里。
+    把视线拉回屏幕正中。它没有源几何上的依赖，掉了看不出来，**画大画小同样看不出来**
+    （都是"有个点"），所以尺寸也得量。
+
+    量法：十字线在正中是断开的，所以过中心那一条不透明段的长度就是点的直径。
     """
     name = asset["file"]
     if name != CROSSHAIR_NAME:
@@ -188,10 +200,30 @@ def verify_center_dot(asset):
 
     h, w = image.shape[:2]
     cy, cx = h // 2, w // 2
+
     r = DOT_CHECK_RADIUS
     window = image[:, :, 3][cy - r:cy + r + 1, cx - r:cx + r + 1]
     check(window.max() == 255,
         f"{name}: 正中缺少中心定位点（中心 {r * 2 + 1}×{r * 2 + 1} 窗口最大不透明度 {window.max()}）")
+
+    alpha = image[:, :, 3]
+    if alpha[cy, cx] == 0:
+        return  # 点都没有，上面那条已经报过了
+
+    def run_length(line, at):
+        lo = at
+        while lo > 0 and line[lo - 1] > 0:
+            lo -= 1
+        hi = at
+        while hi < len(line) - 1 and line[hi + 1] > 0:
+            hi += 1
+        return hi - lo + 1
+
+    for line, axis in ((alpha[cy, :], "水平"), (alpha[:, cx], "垂直")):
+        units = run_length(line, cx if axis == "水平" else cy) / scale
+        check(abs(units - DOT_DESIGN_UNITS) <= DOT_TOL,
+            f"{name}: 中心定位点{axis}直径应为 {DOT_DESIGN_UNITS} 设计单位，"
+            f"实测 {units:.2f}（画大了画小了都偏离设计稿）")
 
 
 def verify_shadow_softness(asset):
@@ -257,6 +289,25 @@ def verify_edge_softness(asset):
 
 
 
+def next_pot(n):
+    return 1 if n <= 1 else 2 ** math.ceil(math.log2(n))
+
+
+def verify_canvas_padding(asset, scale):
+    """画布必须正好是「补边前的画布按密度算像素、再对称补到 2 的幂」。
+
+    清单里 `contentSize` 是 Figma 那边的画布，`displaySize` 是补过边的画布，两者由这条
+    规则绑定。分叉就说明有一步被手工改过而另一步没跟上——而 `displaySize` 同时是渲染侧
+    摆放表的依据，错了会让 HUD 整体错位或缩放，不是报错而是**静默变形**。
+    """
+    cw, ch = asset["contentSize"]
+    dw, dh = asset["displaySize"]
+    want = (next_pot(cw * scale) // scale, next_pot(ch * scale) // scale)
+    check((dw, dh) == want,
+        f"{asset['file']}: 画布应是补边后的 {want[0]}x{want[1]}，"
+        f"清单写的是 {dw}x{dh}（补边前的画布是 {cw}x{ch}）")
+
+
 def verify_mask():
     image = load(MEDIA / MASK_NAME)
     if image is None:
@@ -300,9 +351,10 @@ def main():
         want = (asset["displaySize"][0] * scale, asset["displaySize"][1] * scale)
         verify_texture(asset["file"], want)
         verify_arc_stroke(asset, scale)
-        verify_center_dot(asset)
+        verify_center_dot(asset, scale)
         verify_shadow_softness(asset)
         verify_edge_softness(asset)
+        verify_canvas_padding(asset, scale)
     verify_mask()
 
     if failures:
