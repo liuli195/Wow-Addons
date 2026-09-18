@@ -4,12 +4,16 @@
 -- 对外只接受一张「显示状态表」，由 Core 从「配置 + 游戏读数」算好后整表下发：
 --
 --   state.health / state.power = { visible, rotation, state, fillColor, fillAlpha,
---                                  bgColor, bgAlpha }
---   state.crosshair            = { visible, fillColor, fillAlpha }   （准星是线，没有背景色）
+--                                  bgColor, bgAlpha, shadowColor, shadowAlpha }
+--   state.crosshair            = { visible, fillColor, fillAlpha,
+--                                  shadowColor, shadowAlpha }   （准星是线，没有背景色）
 --   state.runes[1..6]          = { visible, rotation, state, fillColor, fillAlpha,
---                                  bgColor, bgAlpha }
+--                                  bgColor, bgAlpha, shadowColor, shadowAlpha }
 --
--- 填充与背景的透明度是**两个**值：合成一个就只能整条一起淡化，分不开。
+-- 填充、背景、阴影的透明度是**三个**值：合成一个就只能整条一起淡化，分不开。
+--
+-- 阴影是画在底图**之下**的一层。它**不挂遮罩**——包住整条轮廓，不随填充比例变化；
+-- 也**不参与空转的隐藏**：空转时填充整格消失，但阴影要留着，那正是它标位置的时候。
 --
 -- runes 的槽位由 Core 完成排序后填入——本模块只管"第 i 格画成什么样"。
 --
@@ -34,6 +38,15 @@ local CreateFrame = _G.CreateFrame
 local UIParent = _G.UIParent
 
 local SQUARE = 128          -- 容器边长（设计稿单位），圆心居中
+
+-- 子层级：阴影必须**低于**底图，否则会盖住条本身（那看起来只是"颜色偏暗"，不报错）。
+local SUB_SHADOW = -1
+local SUB_BG = 0
+local SUB_FILL = 1
+local SUB_CROSSHAIR = 2
+
+-- 阴影贴图与形状贴图同名，只多这个后缀（见素材清单的命名约定）
+local SHADOW_SUFFIX = "_shadow"
 
 -- 容器是正方形的，所以「宽度 ÷ 设计边长」就是整体缩放——解锁模式的齿轮面板里
 -- 改宽度／高度要走这条换算，Core 因此需要这个常量
@@ -84,15 +97,19 @@ local function NewMask()
     return mask
 end
 
--- 底图 + 填充图 + 遮罩。填充图用遮罩切出已填充的角度区间。
+-- 阴影图 + 底图 + 填充图 + 遮罩。
+--
+-- 填充图用遮罩切出已填充的角度区间；阴影在图的最下面一层，**不挂遮罩**。
 local function BuildFillable(key, spec)
-    local bg = NewTexture(0, spec.file)
-    local fill = NewTexture(1, spec.file)
+    local shadow = NewTexture(SUB_SHADOW, spec.file .. SHADOW_SUFFIX)
+    local bg = NewTexture(SUB_BG, spec.file)
+    local fill = NewTexture(SUB_FILL, spec.file)
     local mask = NewMask()
     fill:AddMaskTexture(mask)
 
-    parts[key] = { bg = bg, fill = fill, mask = mask }
+    parts[key] = { shadow = shadow, bg = bg, fill = fill, mask = mask }
     placements[key] = spec
+    Place(shadow, spec)
     Place(bg, spec)
     Place(fill, spec)
 end
@@ -120,8 +137,11 @@ function Elements.Create()
         placements.runes[i] = entry
     end
 
-    parts.crosshair = NewTexture(2, PLACEMENT.crosshair.file)
+    parts.crosshair = NewTexture(SUB_CROSSHAIR, PLACEMENT.crosshair.file)
+    parts.crosshairShadow = NewTexture(SUB_SHADOW,
+        PLACEMENT.crosshair.file .. SHADOW_SUFFIX)
     placements.crosshair = PLACEMENT.crosshair
+    Place(parts.crosshairShadow, PLACEMENT.crosshair)
     Place(parts.crosshair, PLACEMENT.crosshair)
 
     return frame
@@ -138,14 +158,18 @@ function Elements.SetScale(scale)
     if not Elements.frame then return end
     Elements.frame:SetSize(SQUARE * scale, SQUARE * scale)
 
+    Place(parts.health.shadow, placements.health)
     Place(parts.health.bg, placements.health)
     Place(parts.health.fill, placements.health)
+    Place(parts.power.shadow, placements.power)
     Place(parts.power.bg, placements.power)
     Place(parts.power.fill, placements.power)
     for i = 1, Logic.PIPS.count do
+        Place(parts.runes[i].shadow, placements.runes[i])
         Place(parts.runes[i].bg, placements.runes[i])
         Place(parts.runes[i].fill, placements.runes[i])
     end
+    Place(parts.crosshairShadow, placements.crosshair)
     Place(parts.crosshair, placements.crosshair)
 end
 
@@ -160,6 +184,8 @@ end
 local function ApplyFillable(part, st)
     local visible = st.visible ~= false
     part.bg:SetShown(visible)
+    -- 阴影不跟填充走：空转时填充整格消失，阴影要留着——那正是它标位置的时候
+    part.shadow:SetShown(visible)
 
     -- 空转必须整格背景色：隐藏填充纹理，而不是把角度设成 0。
     -- 比例为 0 的情形不需要在这里拦：那时遮罩本来就什么都不露。
@@ -178,6 +204,12 @@ local function ApplyFillable(part, st)
     pcall(function()
         local bg = st.bgColor
         part.bg:SetVertexColor(bg[1], bg[2], bg[3], st.bgAlpha or 1)
+    end)
+
+    -- 阴影的颜色与浓淡也是各自独立的两个值；同样 pcalled
+    pcall(function()
+        local sc = st.shadowColor
+        part.shadow:SetVertexColor(sc[1], sc[2], sc[3], st.shadowAlpha or 1)
     end)
 
     if showFill then
@@ -216,9 +248,14 @@ function Elements.Apply(state)
     local ch = state.crosshair
     if ch then
         parts.crosshair:SetShown(ch.visible ~= false)
+        parts.crosshairShadow:SetShown(ch.visible ~= false)
         pcall(function()
             local fc = ch.fillColor
             parts.crosshair:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
+        end)
+        pcall(function()
+            local sc = ch.shadowColor
+            parts.crosshairShadow:SetVertexColor(sc[1], sc[2], sc[3], ch.shadowAlpha or 1)
         end)
     end
 end

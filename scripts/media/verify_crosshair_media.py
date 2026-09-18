@@ -34,6 +34,7 @@ ARC_STROKE = 7.8          # 设计稿定稿的弧线线宽（设计单位）
 ARC_STROKE_TOL = 0.3
 CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
 DOT_CHECK_RADIUS = 4      # 中心定位点的检查半径（像素）；设计稿上它是一个直径 10 像素的点
+SHADOW_SUFFIX = "_shadow"
 
 failures = []
 
@@ -101,7 +102,8 @@ def measure_stroke_units(image, asset, scale):
 
 def verify_arc_stroke(asset, scale):
     name = asset["file"]
-    if name == CROSSHAIR_NAME:
+    # 准星是线不是弧；阴影是被**模糊过**的，本来就比形状宽，两者都不适用这条
+    if name == CROSSHAIR_NAME or name.endswith(SHADOW_SUFFIX + ".png"):
         return
     image = load(MEDIA / name)
     if image is None:
@@ -134,6 +136,29 @@ def verify_center_dot(asset):
     window = image[:, :, 3][cy - r:cy + r + 1, cx - r:cx + r + 1]
     check(window.max() == 255,
         f"{name}: 正中缺少中心定位点（中心 {r * 2 + 1}×{r * 2 + 1} 窗口最大不透明度 {window.max()}）")
+
+
+def verify_shadow_softness(asset):
+    """阴影必须**被柔化过**。
+
+    判据是结构性的，不拍阈值：柔化过的阴影，**半透明的裙边比不透明的核心更大**；
+    硬边形状正相反（核心一大片，只有一圈 1 像素的抗锯齿边）。
+
+    这条盯的是一个被明确否决过的做法——"不是让你在准心的圆圈和十字线边上加黑边"。
+    硬边同样能提供分离度，但那是另一种观感，且不是设计稿的样子。
+    """
+    name = asset["file"]
+    if not name.endswith(SHADOW_SUFFIX + ".png"):
+        return
+    image = load(MEDIA / name)
+    if image is None:
+        return
+
+    alpha = image[:, :, 3]
+    soft = int(np.count_nonzero((alpha > 0) & (alpha < 245)))
+    solid = int(np.count_nonzero(alpha >= 245))
+    check(soft > solid,
+        f"{name}: 像是硬边而不是柔化阴影（半透明 {soft} 像素 ≤ 不透明 {solid} 像素）")
 
 
 def verify_mask():
@@ -178,6 +203,7 @@ def main():
         verify_texture(asset["file"], want)
         verify_arc_stroke(asset, scale)
         verify_center_dot(asset)
+        verify_shadow_softness(asset)
     verify_mask()
 
     if failures:

@@ -200,6 +200,13 @@ local function BgColor(elementConfig)
     return Config.ResolveBg(elementConfig)
 end
 
+-- 阴影的颜色与浓淡。
+--
+-- **本票先用固定值**（纯黑、最重）：阴影层先画出来，可调是下一票的事——做成一处的
+-- 出口，下一票改成读配置时只需要动这里。三处构造状态表的地方都从这里取。
+local SHADOW_COLOR = { 0, 0, 0 }
+local SHADOW_ALPHA = 1
+
 -- rotation 可能是秘密值：本函数只转交，不检查
 local function ElementState(elementConfig, rotation, hasRotation, runeState)
     return {
@@ -211,6 +218,8 @@ local function ElementState(elementConfig, rotation, hasRotation, runeState)
         fillAlpha = elementConfig.fillAlpha or 1,
         bgColor = BgColor(elementConfig),
         bgAlpha = elementConfig.bgAlpha or 1,
+        shadowColor = SHADOW_COLOR,
+        shadowAlpha = SHADOW_ALPHA,
     }
 end
 
@@ -241,6 +250,8 @@ local function BuildState()
         visible = crosshair.enabled ~= false,
         fillColor = FillColor(crosshair),
         fillAlpha = crosshair.fillAlpha or 1,
+        shadowColor = SHADOW_COLOR,
+        shadowAlpha = SHADOW_ALPHA,
     }
     return state
 end
@@ -285,6 +296,8 @@ local function DemoState()
         -- 键名必须与状态表契约一致（准星带的是 fillAlpha，不是 alpha）——
         -- 写错了渲染层读不到，表现是 demo 下调准星透明度毫无反应。
         fillAlpha = elements.crosshair.fillAlpha or 1,
+        shadowColor = SHADOW_COLOR,
+        shadowAlpha = SHADOW_ALPHA,
     }
     return state
 end

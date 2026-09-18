@@ -26,7 +26,37 @@
       ]
     },
     {
+      "file": "crosshair_shadow.png",
+      "pixelSize": [
+        140,
+        140
+      ],
+      "displaySize": [
+        70,
+        70
+      ],
+      "centerOffset": [
+        0,
+        0
+      ]
+    },
+    {
       "file": "health_arc.png",
+      "pixelSize": [
+        140,
+        256
+      ],
+      "displaySize": [
+        70,
+        128
+      ],
+      "centerOffset": [
+        -32,
+        16
+      ]
+    },
+    {
+      "file": "health_arc_shadow.png",
       "pixelSize": [
         140,
         256
@@ -56,7 +86,37 @@
       ]
     },
     {
+      "file": "power_arc_shadow.png",
+      "pixelSize": [
+        140,
+        256
+      ],
+      "displaySize": [
+        70,
+        128
+      ],
+      "centerOffset": [
+        32,
+        16
+      ]
+    },
+    {
       "file": "resource_01.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        -38,
+        -38
+      ]
+    },
+    {
+      "file": "resource_01_shadow.png",
       "pixelSize": [
         64,
         64
@@ -86,7 +146,37 @@
       ]
     },
     {
+      "file": "resource_02_shadow.png",
+      "pixelSize": [
+        66,
+        64
+      ],
+      "displaySize": [
+        33,
+        32
+      ],
+      "centerOffset": [
+        -24,
+        -48
+      ]
+    },
+    {
       "file": "resource_03.png",
+      "pixelSize": [
+        68,
+        64
+      ],
+      "displaySize": [
+        34,
+        32
+      ],
+      "centerOffset": [
+        -8,
+        -53
+      ]
+    },
+    {
+      "file": "resource_03_shadow.png",
       "pixelSize": [
         68,
         64
@@ -116,6 +206,21 @@
       ]
     },
     {
+      "file": "resource_04_shadow.png",
+      "pixelSize": [
+        68,
+        64
+      ],
+      "displaySize": [
+        34,
+        32
+      ],
+      "centerOffset": [
+        8,
+        -53
+      ]
+    },
+    {
       "file": "resource_05.png",
       "pixelSize": [
         66,
@@ -131,7 +236,37 @@
       ]
     },
     {
+      "file": "resource_05_shadow.png",
+      "pixelSize": [
+        66,
+        64
+      ],
+      "displaySize": [
+        33,
+        32
+      ],
+      "centerOffset": [
+        24,
+        -48
+      ]
+    },
+    {
       "file": "resource_06.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        38,
+        -38
+      ]
+    },
+    {
+      "file": "resource_06_shadow.png",
       "pixelSize": [
         64,
         64
