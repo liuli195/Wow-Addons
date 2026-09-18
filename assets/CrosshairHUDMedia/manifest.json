@@ -7,59 +7,128 @@
       128
     ]
   },
-  "exportScale": 2,
+  "exportScale": 8,
   "format": "PNG RGBA",
   "assets": [
     {
       "file": "crosshair.png",
       "pixelSize": [
-        128,
-        128
+        1024,
+        1024
       ],
       "displaySize": [
-        64,
-        64
+        128,
+        128
       ],
       "centerOffset": [
         0,
         0
+      ],
+      "contentSize": [
+        70,
+        70
+      ]
+    },
+    {
+      "file": "crosshair_shadow.png",
+      "pixelSize": [
+        1024,
+        1024
+      ],
+      "displaySize": [
+        128,
+        128
+      ],
+      "centerOffset": [
+        0,
+        0
+      ],
+      "contentSize": [
+        70,
+        70
       ]
     },
     {
       "file": "health_arc.png",
       "pixelSize": [
-        128,
-        256
+        1024,
+        1024
       ],
       "displaySize": [
-        64,
+        128,
         128
       ],
       "centerOffset": [
         -32,
         16
+      ],
+      "contentSize": [
+        70,
+        128
+      ]
+    },
+    {
+      "file": "health_arc_shadow.png",
+      "pixelSize": [
+        1024,
+        1024
+      ],
+      "displaySize": [
+        128,
+        128
+      ],
+      "centerOffset": [
+        -32,
+        16
+      ],
+      "contentSize": [
+        70,
+        128
       ]
     },
     {
       "file": "power_arc.png",
       "pixelSize": [
-        128,
-        256
+        1024,
+        1024
       ],
       "displaySize": [
-        64,
+        128,
         128
       ],
       "centerOffset": [
         32,
         16
+      ],
+      "contentSize": [
+        70,
+        128
+      ]
+    },
+    {
+      "file": "power_arc_shadow.png",
+      "pixelSize": [
+        1024,
+        1024
+      ],
+      "displaySize": [
+        128,
+        128
+      ],
+      "centerOffset": [
+        32,
+        16
+      ],
+      "contentSize": [
+        70,
+        128
       ]
     },
     {
       "file": "resource_01.png",
       "pixelSize": [
-        64,
-        64
+        256,
+        256
       ],
       "displaySize": [
         32,
@@ -68,73 +137,188 @@
       "centerOffset": [
         -38,
         -38
+      ],
+      "contentSize": [
+        32,
+        32
+      ]
+    },
+    {
+      "file": "resource_01_shadow.png",
+      "pixelSize": [
+        256,
+        256
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        -38,
+        -38
+      ],
+      "contentSize": [
+        32,
+        32
       ]
     },
     {
       "file": "resource_02.png",
       "pixelSize": [
-        64,
-        64
+        512,
+        256
       ],
       "displaySize": [
-        32,
+        64,
         32
       ],
       "centerOffset": [
         -24,
         -48
+      ],
+      "contentSize": [
+        33,
+        32
+      ]
+    },
+    {
+      "file": "resource_02_shadow.png",
+      "pixelSize": [
+        512,
+        256
+      ],
+      "displaySize": [
+        64,
+        32
+      ],
+      "centerOffset": [
+        -24,
+        -48
+      ],
+      "contentSize": [
+        33,
+        32
       ]
     },
     {
       "file": "resource_03.png",
       "pixelSize": [
-        64,
-        64
+        512,
+        256
       ],
       "displaySize": [
-        32,
+        64,
         32
       ],
       "centerOffset": [
         -8,
         -53
+      ],
+      "contentSize": [
+        34,
+        32
+      ]
+    },
+    {
+      "file": "resource_03_shadow.png",
+      "pixelSize": [
+        512,
+        256
+      ],
+      "displaySize": [
+        64,
+        32
+      ],
+      "centerOffset": [
+        -8,
+        -53
+      ],
+      "contentSize": [
+        34,
+        32
       ]
     },
     {
       "file": "resource_04.png",
       "pixelSize": [
-        64,
-        64
+        512,
+        256
       ],
       "displaySize": [
-        32,
+        64,
         32
       ],
       "centerOffset": [
         8,
         -53
+      ],
+      "contentSize": [
+        34,
+        32
+      ]
+    },
+    {
+      "file": "resource_04_shadow.png",
+      "pixelSize": [
+        512,
+        256
+      ],
+      "displaySize": [
+        64,
+        32
+      ],
+      "centerOffset": [
+        8,
+        -53
+      ],
+      "contentSize": [
+        34,
+        32
       ]
     },
     {
       "file": "resource_05.png",
       "pixelSize": [
-        64,
-        64
+        512,
+        256
       ],
       "displaySize": [
-        32,
+        64,
         32
       ],
       "centerOffset": [
         24,
         -48
+      ],
+      "contentSize": [
+        33,
+        32
+      ]
+    },
+    {
+      "file": "resource_05_shadow.png",
+      "pixelSize": [
+        512,
+        256
+      ],
+      "displaySize": [
+        64,
+        32
+      ],
+      "centerOffset": [
+        24,
+        -48
+      ],
+      "contentSize": [
+        33,
+        32
       ]
     },
     {
       "file": "resource_06.png",
       "pixelSize": [
-        64,
-        64
+        256,
+        256
       ],
       "displaySize": [
         32,
@@ -143,6 +327,29 @@
       "centerOffset": [
         38,
         -38
+      ],
+      "contentSize": [
+        32,
+        32
+      ]
+    },
+    {
+      "file": "resource_06_shadow.png",
+      "pixelSize": [
+        256,
+        256
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        38,
+        -38
+      ],
+      "contentSize": [
+        32,
+        32
       ]
     }
   ]

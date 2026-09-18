@@ -200,6 +200,18 @@ local function BgColor(elementConfig)
     return Config.ResolveBg(elementConfig)
 end
 
+-- 阴影的颜色与浓淡。**全局一处设置**，由配置层解析后投影到每个元素的阴影层上
+-- （状态表本身仍是逐元素的，契约不变）。三处构造状态表的地方都从这里取。
+local SHADOW_FALLBACK = { 0, 0, 0 }   -- 配置缺项时的兜底；正常不会走到
+
+local function ShadowColor()
+    return Config.ResolveShadow() or SHADOW_FALLBACK
+end
+
+local function ShadowAlpha()
+    return Config.ResolveShadowAlpha()
+end
+
 -- rotation 可能是秘密值：本函数只转交，不检查
 local function ElementState(elementConfig, rotation, hasRotation, runeState)
     return {
@@ -211,6 +223,8 @@ local function ElementState(elementConfig, rotation, hasRotation, runeState)
         fillAlpha = elementConfig.fillAlpha or 1,
         bgColor = BgColor(elementConfig),
         bgAlpha = elementConfig.bgAlpha or 1,
+        shadowColor = ShadowColor(),
+        shadowAlpha = ShadowAlpha(),
     }
 end
 
@@ -241,6 +255,8 @@ local function BuildState()
         visible = crosshair.enabled ~= false,
         fillColor = FillColor(crosshair),
         fillAlpha = crosshair.fillAlpha or 1,
+        shadowColor = ShadowColor(),
+        shadowAlpha = ShadowAlpha(),
     }
     return state
 end
@@ -285,6 +301,8 @@ local function DemoState()
         -- 键名必须与状态表契约一致（准星带的是 fillAlpha，不是 alpha）——
         -- 写错了渲染层读不到，表现是 demo 下调准星透明度毫无反应。
         fillAlpha = elements.crosshair.fillAlpha or 1,
+        shadowColor = ShadowColor(),
+        shadowAlpha = ShadowAlpha(),
     }
     return state
 end

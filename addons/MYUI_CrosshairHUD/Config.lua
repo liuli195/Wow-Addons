@@ -45,6 +45,12 @@ Config.DEFAULTS = {
     position = nil,                 -- 由 EUI 的位置控件写入；nil = 默认锚点（屏幕居中）
     strata = "MEDIUM",              -- 框架层级
 
+    -- 阴影是**一处全局**设置，不挂在任何元素上：它是"把 HUD 从混乱背景里抠出来"
+    -- 这一件事，天然只需要一个口径。颜色只有自定义色（与「背景色只有自定义」同理，
+    -- 没有第二种来源）；浓淡默认 1，即最重——游戏内只能往下调。
+    shadow = { 0, 0, 0 },
+    shadowAlpha = 1,      -- 见 Config.SHADOW_ALPHA_MAX：默认值必须正好是上限
+
     -- 填充与背景各有各的透明度：合成一个只能整条一起淡化，分不开。
     -- 「填充色来源」放在颜色之外单独一项——它是"用哪个色"的选择，不是颜色本身。
     elements = {
@@ -105,6 +111,13 @@ Config.STRATA_VALUES, Config.STRATA_ORDER = STRATA_VALUES, STRATA_ORDER
 -- 整体缩放的取值范围。**尺寸的唯一入口是解锁模式齿轮里的宽度／高度**（它们写的就是
 -- 这个 scale），这里是那个入口的钳位范围——超范围不会静默生效，齿轮回读实际值回写。
 Config.SCALE_MIN, Config.SCALE_MAX = 0.5, 2.0
+
+-- 阴影浓淡滑杆的取值范围（百分比）。**上限就是默认值**：素材是按最重档烘的，
+-- 调过头只会把轮廓糊掉，所以只允许从默认往下调。
+--
+-- `DEFAULTS.shadowAlpha`（0–1）必须正好等于 `SHADOW_ALPHA_MAX ÷ 100`，
+-- `test_config_plan.py` 盯着这一对——两处各写一份就会悄悄分家。
+Config.SHADOW_ALPHA_MAX = 100
 
 local settings = nil
 
@@ -269,6 +282,13 @@ function Config.GeneralCells()
           min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
           tooltip = "整体等比缩放。与解锁模式齿轮里的宽度／高度是同一个值。" },
         { kind = "dropdown", text = "图层" },
+        -- 阴影是**全局一格**：颜色 + 它自己的浓淡同格（与元素那些颜色格同形）。
+        -- 只有自定义色——与「条背景只有自定义」同理，没有第二种来源。
+        -- 阴影的浓淡滑杆范围**写在这里**，别写在渲染函数里：它是"默认即上限"这条
+        -- 规则的载体——`DEFAULTS.shadowAlpha` 必须正好等于 max ÷ 100，测试盯着这一对。
+        -- 素材是按最重档烘的，调过头只会糊，所以上限就是默认值。
+        { kind = "color", text = "阴影", colorKey = "shadow", alphaKey = "shadowAlpha",
+          min = 0, max = Config.SHADOW_ALPHA_MAX },
     }
 end
 
@@ -325,6 +345,17 @@ end
 -- 直接用存下来的自定义色。
 function Config.ResolveBg(elementConfig)
     return elementConfig.bg
+end
+
+-- 阴影同上：只有自定义色一种，而且它是**全局**的——不挂在元素上。
+function Config.ResolveShadow()
+    return Config.Get().shadow
+end
+
+function Config.ResolveShadowAlpha()
+    local a = Config.Get().shadowAlpha
+    if a == nil then return 1 end
+    return a
 end
 
 --------------------------------------------------------------------------
@@ -466,8 +497,11 @@ function Config.BuildPage(_, parent, yOffset)
                 -- 总开关关掉时子开关置灰不可点
                 disabled = function() return Config.Get().enabled == false end }
         end
-        -- 颜色格：滑块是**这一格自己的**透明度，色块随后内联挂在它左侧
-        return { type = "slider", text = cell.text, min = 0, max = 100, step = 1,
+        -- 颜色格：滑块是**这一格自己的**透明度，色块随后内联挂在它左侧。
+        -- 范围优先取格子自己声明的（阴影声明了，因为它"默认即上限"；元素那些没声明，
+        -- 用 0–100 的常规范围）。
+        return { type = "slider", text = cell.text,
+            min = cell.min or 0, max = cell.max or 100, step = 1,
             getValue = function() return (element[cell.alphaKey] or 1) * 100 end,
             setValue = function(value)
                 element[cell.alphaKey] = value / 100
@@ -499,6 +533,14 @@ function Config.BuildPage(_, parent, yOffset)
                 min = cell.min, max = cell.max, step = cell.step, tooltip = cell.tooltip,
                 getValue = function() return cfg[key] or 1.0 end,
                 setValue = function(value) cfg[key] = value; refresh() end }
+        end
+        if cell.kind == "color" then
+            -- 与元素那一格同形：本格是一个 slider（**这一格自己的**浓淡），
+            -- 色块随后内联挂在它左侧。这个形状由 EUI 的 `_lastInline` 惯例支撑。
+            local key = cell.alphaKey
+            return { type = "slider", text = cell.text, min = 0, max = 100, step = 1,
+                getValue = function() return (cfg[key] or 1) * 100 end,
+                setValue = function(value) cfg[key] = value / 100; refresh() end }
         end
         if cell.kind == "visibility" then
             -- 可见性控件由 EUI 的共享清单填充：这里先落一个占位下拉，建完行再把
@@ -544,6 +586,21 @@ function Config.BuildPage(_, parent, yOffset)
         })
     end
 
+    -- 颜色格的色块：内联挂到该格左侧。**三处都是同一件事**——常规节的左右两格、
+    -- 元素格的左右两格——所以收在这里，别再各抄一份。
+    --
+    -- 倒序挂是因为挂上去的顺序决定显示顺序，而 `CellSwatches` 是按主次排的。
+    -- `grayed` 由调用方给：元素格随元素开关置灰，常规节的项（缩放、图层、阴影）
+    -- 不随总开关置灰。
+    local function AttachCellSwatch(region, cell, store, grayed, onChanged)
+        if not (cell and cell.kind == "color" and region) then return end
+        if EUI._prebuilding or not EUI.BuildColorSwatch then return end
+        local specs = CellSwatches(store, cell.colorKey, cell.modeKey, cell.source)
+        for i = #specs, 1, -1 do
+            AttachSwatch(region, specs[i], grayed, onChanged)
+        end
+    end
+
     local general = Config.GeneralCells()
     local gindex = 1
     while general[gindex] do
@@ -553,6 +610,12 @@ function Config.BuildPage(_, parent, yOffset)
             right and GeneralSlot(right) or { type = "spacer" })
         AttachVisibilityCell(row, left, "_leftRegion")
         AttachVisibilityCell(row, right, "_rightRegion")
+
+        -- 常规节的颜色格走**同一套**色块逻辑，只是配置对象是顶层 cfg，不是某个元素。
+        local notGrayed = function() return false end
+        AttachCellSwatch(row and row._leftRegion, left, cfg, notGrayed, refresh)
+        AttachCellSwatch(row and row._rightRegion, right, cfg, notGrayed, refresh)
+
         y = y - h
         gindex = gindex + 2
     end
@@ -586,24 +649,8 @@ function Config.BuildPage(_, parent, yOffset)
                 right and CellSlot(element, right, grayed) or { type = "spacer" })
             y = y - h
 
-            if not EUI._prebuilding and EUI.BuildColorSwatch then
-                local leftRgn = row and row._leftRegion
-                if left.kind == "color" and leftRgn then
-                    local specs = CellSwatches(element, left.colorKey, left.modeKey,
-                        left.source)
-                    for i = #specs, 1, -1 do
-                        AttachSwatch(leftRgn, specs[i], grayed, Changed)
-                    end
-                end
-                local rightRgn = row and row._rightRegion
-                if right and right.kind == "color" and rightRgn then
-                    local specs = CellSwatches(element, right.colorKey, right.modeKey,
-                        right.source)
-                    for i = #specs, 1, -1 do
-                        AttachSwatch(rightRgn, specs[i], grayed, Changed)
-                    end
-                end
-            end
+            AttachCellSwatch(row and row._leftRegion, left, element, grayed, Changed)
+            AttachCellSwatch(row and row._rightRegion, right, element, grayed, Changed)
             index = index + 2
         end
     end

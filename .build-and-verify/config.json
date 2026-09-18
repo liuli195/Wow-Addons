@@ -280,18 +280,20 @@
       },
       {
         "id": "verify.crosshairhud-tests",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py tests/addons/MYUI_CrosshairHUD/test_core_readings.py tests/addons/MYUI_CrosshairHUD/test_unlock_contract.py tests/addons/MYUI_CrosshairHUD/test_config_color.py tests/addons/MYUI_CrosshairHUD/test_config_plan.py tests/addons/MYUI_CrosshairHUD/test_visibility.py",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py tests/addons/MYUI_CrosshairHUD/test_core_readings.py tests/addons/MYUI_CrosshairHUD/test_unlock_contract.py tests/addons/MYUI_CrosshairHUD/test_config_color.py tests/addons/MYUI_CrosshairHUD/test_config_plan.py tests/addons/MYUI_CrosshairHUD/test_visibility.py tests/addons/MYUI_CrosshairHUD/test_media_placement.py",
         "checkParallel": true,
         "paths": [
           "addons/MYUI_CrosshairHUD/**",
           "tests/addons/MYUI_CrosshairHUD/**",
-          ".build-and-verify/config.json"
+          ".build-and-verify/config.json",
+          "assets/CrosshairHUDMedia/**"
         ],
         "inputs": [
           "addons/MYUI_CrosshairHUD/**",
           "tests/addons/MYUI_CrosshairHUD/**",
           ".tools/lua-5.1.5/src/lua.exe",
-          ".build-and-verify/config.json"
+          ".build-and-verify/config.json",
+          "assets/CrosshairHUDMedia/**"
         ]
       },
       {

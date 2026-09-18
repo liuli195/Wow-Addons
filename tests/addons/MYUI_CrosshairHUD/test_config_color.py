@@ -1,6 +1,6 @@
 """颜色与透明度的离线测试。
 
-两件事，各锁一个已经出过问题的地方：
+三件事，各锁一个已经出过问题的地方：
 
 1. **颜色只从 EUI 取。** 职业色／能量色／职业资源色都由 EUI 统一管理，本插件不能
    打破这一条。实机上曾经"选了职业配色但毫无变化"，根因是 EUI 的颜色缓存**以类名
@@ -9,9 +9,13 @@
    （`C_ClassColor`／`RAID_CLASS_COLORS`）——那会拿到暴雪默认色而不是用户在 EUI 里
    配的色。取不到就回落到自定义色，绝不能是 nil 或黑；这条用探针钉死。
 
-2. **填充与背景的透明度是两个值。** 合成一个就只能整条一起淡化。断言在渲染层的
+2. **填充、背景与阴影的透明度是三个值。** 合成一个就只能整条一起淡化。断言在渲染层的
    公开入口（`Elements.Apply`）上做——那里是这套契约最高的接缝：喂一张状态表进去，
-   看两个纹理各自收到了哪个 alpha。顺带覆盖秘密通道必须原封不动地转交。
+   看每条纹理各自收到了哪个 alpha。顺带覆盖秘密通道必须原封不动地转交。
+
+3. **阴影是画在底图之下的一层，且空转时留着。** 画在上面会盖住条本身，那看起来只是
+   「颜色偏暗」不报错；跟着填充一起隐藏则会让空转的符文格彻底失去位置标记。两条都只能
+   靠断言守。构造状态表的三处（逐元素、准星、假数据模式）必须同契约，所以从真实入口验。
 """
 
 import subprocess
@@ -37,7 +41,7 @@ local function NewTexture(_, _, _, sub)
     function t:SetSize() end
     function t:SetPoint() end
     function t:SetAllPoints() end
-    function t:AddMaskTexture() end
+    function t:AddMaskTexture() t.masked = true end
     function t:SetShown(v) t.shown = v end
     function t:SetRotation() end
     function t:SetVertexColor(r, g, b, a) t.vertex = { r, g, b, a } end
@@ -365,6 +369,137 @@ Core.Refresh()
 Near(crosshair.vertex[4], 0.25, "假数据模式下准星要用配置的透明度")
 Core.demo = false
 Config.Get().elements.crosshair.fillAlpha = 1
+
+----------------------------------------------------------------------
+-- 十、阴影层：画在底图**之下**，颜色与浓淡各是独立的一个值
+--
+-- 阴影是独立的一层纹理。两件事必须成立：
+--
+--   1. 它比底图**低**。画在上面就盖住条本身了，而那看起来只是"颜色偏暗"，
+--      不会报错，只能靠断言守。
+--   2. 颜色与浓淡是**两个**值，且与填充、背景各不相干。合成一个就只能整层一起淡化。
+--
+-- 另外它**不挂遮罩**：阴影是包住整条弧的轮廓，不随填充比例变化。
+----------------------------------------------------------------------
+Elements.Apply({
+    health = { visible = true, rotation = 1, hasRotation = true,
+               fillColor = { 0.1, 0.2, 0.3 }, fillAlpha = 0.4,
+               bgColor = { 0.5, 0.6, 0.7 }, bgAlpha = 0.8,
+               shadowColor = { 0, 0, 0 }, shadowAlpha = 0.7 },
+    runes = {},
+    crosshair = { visible = true, fillColor = { 1, 1, 1 }, fillAlpha = 1,
+                  shadowColor = { 0.2, 0.1, 0.05 }, shadowAlpha = 0.35 },
+})
+
+local function FindShadow(fragment)
+    for _, t in ipairs(textures) do
+        if t.path and t.path:find(fragment, 1, true) then return t end
+    end
+end
+
+local healthShadow = FindShadow("health_arc_shadow")
+assert(healthShadow, "生命值条要有自己的一层阴影纹理")
+assert(healthShadow.sub ~= nil and healthBg.sub ~= nil and healthShadow.sub < healthBg.sub,
+    "阴影层必须画在底图之下（阴影 sublevel=" .. tostring(healthShadow.sub)
+    .. "，底图 sublevel=" .. tostring(healthBg.sub) .. "）")
+assert(healthShadow.vertex, "阴影层要收到顶点色")
+Near(healthShadow.vertex[1], 0, "阴影颜色 R")
+Near(healthShadow.vertex[2], 0, "阴影颜色 G")
+Near(healthShadow.vertex[3], 0, "阴影颜色 B")
+Near(healthShadow.vertex[4], 0.7, "阴影浓淡是它自己的一个值，不与填充、背景共用")
+assert(healthShadow.masked == nil, "阴影层不挂遮罩——它包住整条弧，不随填充比例变化")
+
+-- 颜色确实会被用上（不是写死黑）
+local crosshairShadow = FindShadow("crosshair_shadow")
+assert(crosshairShadow, "准星也要有一层自己的阴影纹理")
+assert(crosshairShadow.vertex, "准星的阴影层要收到顶点色")
+Near(crosshairShadow.vertex[1], 0.2, "阴影颜色跟着配置走，不是写死的黑")
+Near(crosshairShadow.vertex[4], 0.35, "准星阴影的浓淡也是独立的")
+
+----------------------------------------------------------------------
+-- 十一、真实入口必须把阴影色与浓淡填进状态表
+--
+-- 渲染层会画阴影，但状态表里没有这两个字段就等于没画。构造状态表的地方有三处
+-- （逐元素、准星、假数据模式），三处都得填——假数据模式那次就因为键名与契约不符
+-- 翻过车，所以这条从真实入口（Core.Refresh）验，不手搓状态表。
+----------------------------------------------------------------------
+Core.demo = false
+Core.Refresh()
+local liveShadow = FindShadow("health_arc_shadow")
+assert(liveShadow and liveShadow.vertex,
+    "常规路径下阴影层没收到顶点色——Core 构造状态表时漏了阴影字段")
+Near(liveShadow.vertex[1], 0, "本票先用固定值：阴影纯黑")
+Near(liveShadow.vertex[4], 1, "本票先用固定值：阴影最重")
+
+Core.demo = true
+Core.Refresh()
+local demoShadow = FindShadow("crosshair_shadow")
+assert(demoShadow and demoShadow.vertex,
+    "假数据模式下准星阴影没收到顶点色——DemoState 漏了阴影字段")
+Core.demo = false
+Core.Refresh()
+
+----------------------------------------------------------------------
+-- 十二、空转态：填充整格消失，阴影要**留着**
+--
+-- 空转时最需要阴影——它正是"这里本该有个槽"的标记。跟着填充一起消失的话，
+-- 六个符文格在 AOE 里就彻底看不出位置了。
+----------------------------------------------------------------------
+local blk = { 0, 0, 0 }
+Elements.Apply({
+    health = { visible = true, rotation = 1, hasRotation = true,
+               fillColor = { 1, 1, 1 }, fillAlpha = 1,
+               bgColor = blk, bgAlpha = 1, shadowColor = blk, shadowAlpha = 1 },
+    runes = { [1] = { visible = true, rotation = 1, hasRotation = true,
+                      state = Logic.RUNE_EMPTY,
+                      fillColor = { 1, 1, 1 }, fillAlpha = 1,
+                      bgColor = blk, bgAlpha = 1, shadowColor = blk, shadowAlpha = 1 } },
+    crosshair = { visible = true, fillColor = { 1, 1, 1 }, fillAlpha = 1,
+                  shadowColor = blk, shadowAlpha = 1 },
+})
+
+local runeFill = Find("resource_01", 1)
+local runeShadow = FindShadow("resource_01_shadow")
+assert(runeFill and runeFill.shown == false, "空转时填充必须隐藏")
+assert(runeShadow and runeShadow.shown == true, "空转的符文格仍然要显示阴影轮廓")
+
+----------------------------------------------------------------------
+-- 十三、阴影的颜色与浓淡来自**一处全局设置**，并投影到每个元素
+--
+-- 用户选的是"一个设置项"：不是每个元素各一套。所以改一处，所有元素的阴影一起变。
+-- 这条从真实入口（Core.Refresh）验，不手搓状态表——构造状态表的地方有三处。
+----------------------------------------------------------------------
+local cfg = Config.Get()
+cfg.shadow = { 0.25, 0.5, 0.75 }
+cfg.shadowAlpha = 0.4
+Core.Refresh()
+
+local hs = FindShadow("health_arc_shadow")
+assert(hs and hs.vertex, "阴影层要收到顶点色")
+Near(hs.vertex[1], 0.25, "阴影颜色 R 跟着全局设置走")
+Near(hs.vertex[2], 0.5, "阴影颜色 G")
+Near(hs.vertex[3], 0.75, "阴影颜色 B")
+Near(hs.vertex[4], 0.4, "阴影浓淡跟着全局设置走")
+
+local ps = FindShadow("power_arc_shadow")
+assert(ps and ps.vertex, "能量条的阴影层要收到顶点色")
+Near(ps.vertex[1], 0.25, "一处设置管住所有元素：能量条阴影同色")
+Near(ps.vertex[4], 0.4, "一处设置管住所有元素：能量条阴影同浓淡")
+
+local cs = FindShadow("crosshair_shadow")
+assert(cs and cs.vertex, "准星的阴影层要收到顶点色")
+Near(cs.vertex[4], 0.4, "准星走的是同一个全局值")
+
+Core.demo = true
+Core.Refresh()
+local ds = FindShadow("resource_01_shadow")
+assert(ds and ds.vertex, "假数据模式下符文格阴影也要收到顶点色")
+Near(ds.vertex[4], 0.4, "假数据模式走的是同一个全局值")
+Core.demo = false
+
+cfg.shadow = { 0, 0, 0 }
+cfg.shadowAlpha = 1
+Core.Refresh()
 
 io.write("PASS: config color and alpha\n")
 '''

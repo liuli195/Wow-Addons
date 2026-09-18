@@ -145,16 +145,54 @@ assert(scaleCell.min == Config.SCALE_MIN and scaleCell.max == Config.SCALE_MAX,
 -- 格子类型是**封闭集合**：新加一种必须在这里显式登记，不能顺手就混进来。
 -- `visibility` 是 2026-09-18 有意加的一种：它由 EUI 的共享可见性清单填充，
 -- 只需要一个槽位，因此和别的格子一样占半格、走同一套自适应排布。
-local ALLOWED = { toggle = true, dropdown = true, slider = true, visibility = true }
+-- `color` 是 2026-09-19 有意加的一种：阴影是全局一格（颜色 + 浓淡同格），
+-- 与元素那些颜色格走同一套 CellSwatches/AttachSwatch，只是配置对象是顶层 cfg。
+local ALLOWED = { toggle = true, dropdown = true, slider = true, visibility = true,
+                  color = true }
 for i = 1, #general do
     local kind = general[i].kind
     assert(ALLOWED[kind],
-        "常规节的格子只能是开关、下拉、滑块或可见性，实得 " .. tostring(kind))
+        "常规节的格子只能是开关、下拉、滑块、可见性或颜色，实得 " .. tostring(kind))
 end
 
 -- 可见性紧挨总开关：总开关关掉时它会置灰，相邻才看得出从属关系。
 assert(general[2] and general[2].kind == "visibility",
     "第 2 项应是可见性格子，实得 " .. tostring(general[2] and general[2].kind))
+
+----------------------------------------------------------------------
+-- 阴影：**全局一格**，颜色与浓淡同格，且只有自定义色
+--
+-- 用户选的是「一个设置项」——不是每个元素各一套。它是"把 HUD 从混乱背景里抠出来"
+-- 这一件事，天然只需要一个口径；所以它落在常规节，不进 Config.CellPlan。
+-- 颜色只有自定义色，与「条背景只有自定义」同理，**不能**有来源色块。
+----------------------------------------------------------------------
+local shadowCell
+for i = 1, #general do
+    if general[i].kind == "color" and general[i].colorKey == "shadow" then
+        shadowCell = general[i]
+    end
+end
+assert(shadowCell, "常规节要有阴影颜色格")
+assert(shadowCell.text == "阴影", "阴影格的文字，实得「" .. tostring(shadowCell.text) .. "」")
+assert(shadowCell.alphaKey == "shadowAlpha", "阴影格带的是**它自己**的浓淡")
+assert(shadowCell.modeKey == nil, "阴影没有第二种来源，不该有 modeKey")
+assert(shadowCell.source == nil, "阴影只有自定义色，**不能**有来源色块")
+
+-- **默认即上限**：素材是按最重档烘的，只允许往下调。
+--
+-- 这条规则落在**一对数字**上：滑杆的上限，与默认浓淡。滑杆范围原先写死在渲染函数里，
+-- 与 DEFAULTS.shadowAlpha 各说各话——分家了不会有任何征兆，只会默默允许调过头
+-- （或者一装上就不是最重档）。所以范围收进格子描述符，断言盯住这一对。
+assert(shadowCell.max == Config.SHADOW_ALPHA_MAX,
+    "阴影滑杆的上限应是 SHADOW_ALPHA_MAX，实得 " .. tostring(shadowCell.max))
+assert(shadowCell.min == 0, "阴影滑杆的下限应是 0（调到 0 就是关掉阴影）")
+assert(math.abs(Config.DEFAULTS.shadowAlpha * 100 - shadowCell.max) < 0.001,
+    string.format("默认浓淡 %g 必须正好是上限 %g——「默认即上限」就是这么落的",
+        Config.DEFAULTS.shadowAlpha * 100, shadowCell.max))
+
+-- 顺序：阴影排在**末位**，而前两项（总开关、可见性）的位置由上面的断言钉住不动。
+-- 它会多出来一行（5 项 → 三行、末行右边留空），这是清单自己的排布规则，不是破例。
+assert(general[#general] == shadowCell, "阴影格应在常规清单末位")
 
 ----------------------------------------------------------------------
 -- 置灰：总开关关掉时所有子项都算关掉（子开关与色块一起失效）

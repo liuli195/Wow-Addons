@@ -189,12 +189,17 @@
 - **THEN** 最后一项独占左侧半格，右侧留空
 ### Requirement: The HUD is positioned in EllesmereUI's unlock mode
 
-系统 MUST 复用 EllesmereUI 的解锁模式定位：进入解锁模式时出现拖动框、可以拖动，X/Y 微调 MUST 在解锁模式的元素选项面板里提供，配置页 MUST NOT 另设一套位置控件。拖动框 MUST 与 HUD 严格重合；在解锁模式里改宽度或高度时位置 MUST NOT 跳走；退出解锁模式并重载后位置 MUST 保持。元素选项面板里 MUST 提供跳到本插件配置页的入口。
+系统 MUST 复用 EllesmereUI 的解锁模式定位：进入解锁模式时出现拖动框、可以拖动，X/Y 微调 MUST 在解锁模式的元素选项面板里提供，配置页 MUST NOT 另设一套位置控件。拖动框 MUST 与 HUD 的**元素本体**严格重合：看得见的内容（不透明度不低于 12%）MUST NOT 伸出框外。柔化阴影那圈极淡的尾巴 MAY 伸出框外，但 MUST NOT 超过 4 个设计稿单位——阴影本就比元素大一圈，把它裁到框边会切出一条硬边，反而丢掉分离度。在解锁模式里改宽度或高度时位置 MUST NOT 跳走；退出解锁模式并重载后位置 MUST 保持。元素选项面板里 MUST 提供跳到本插件配置页的入口。
 
 #### Scenario: Entering unlock mode
 
 - **WHEN** 玩家进入 EllesmereUI 的解锁模式
-- **THEN** 出现与 HUD 严格重合的拖动框，可以拖动它改变位置
+- **THEN** 出现与 HUD 元素本体严格重合的拖动框，可以拖动它改变位置
+
+#### Scenario: Shadow tail at the drag box edge
+
+- **WHEN** 校验元素贴图相对拖动框的范围
+- **THEN** 看得见的部分（不透明度 ≥12%）全在框内，整条阴影尾巴伸出框外的距离不超过 4 个设计稿单位
 
 #### Scenario: Size is changed while positioned
 
@@ -280,12 +285,22 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 三条资源按循环变化的比例显示，可以独立检查外观
 ### Requirement: Shipped textures are used as designed with one added mask
 
-系统 MUST 原样使用设计稿导出的成品纹理：不重新导出、不重切、不改图形。唯一新增的素材 MUST 是用于角度填充的半平面遮罩，它的明暗方向与软边宽度 MUST 与填充换算的约定一致，使缩放到上限时纹理仍不被放大。
+系统 MUST 使用从设计稿导出、并在发布前加工过的成品纹理：每张纹理的像素边长 MUST 是 2 的幂，边缘 MUST 带有按设计稿单位算足够宽的过渡带；九个形状每个 MUST 配一张柔化阴影贴图；角度填充 MUST 使用一张半平面遮罩，它的明暗方向与软边宽度 MUST 与填充换算的约定一致，使缩放到上限时纹理仍不被放大。玩家把 HUD 缩放到范围内的**任意**档位时，元素边缘 MUST NOT 出现锯齿，也 MUST NOT 因放大而发糊。
 
 #### Scenario: Shipped textures are verified
 
 - **WHEN** 校验随插件发布的纹理
-- **THEN** 尺寸与素材规格一致，半平面遮罩的明暗方向与软边宽度符合约定
+- **THEN** 每张的像素边长都是 2 的幂、过渡带宽度达标，九个形状各有一张阴影贴图，半平面遮罩的明暗方向与软边宽度符合约定
+
+#### Scenario: HUD is scaled to the low end
+
+- **WHEN** 玩家把 HUD 缩放到允许范围的最小档
+- **THEN** 元素边缘清晰，看不到锯齿
+
+#### Scenario: HUD is scaled to the high end
+
+- **WHEN** 玩家把 HUD 缩放到允许范围的最大档
+- **THEN** 元素边缘清晰，不发糊
 ### Requirement: User-facing text names no specific class
 
 界面文案 MUST 使用与职业无关的名称（生命值条、能量条、职业资源条、准星），MUST NOT 出现任何具体职业名称。
@@ -353,3 +368,52 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 - **WHEN** 共享可见性接口缺失，或其返回值不可识别
 - **THEN** HUD 保持可见且不报错
+### Requirement: Every element carries a soft shadow beneath its base image
+
+系统 MUST 在每个元素的底图**之下**再叠一层黑色柔化阴影。阴影的形状 MUST 跟随元素轮廓，MUST NOT 随填充比例变化；处于空转（没有任何填充）的元素 MUST 仍然显示自己的阴影。阴影层 MUST NOT 参与填充换算，MUST 与元素一起缩放、一起受框架层级影响，并 MUST NOT 拦截鼠标。
+
+#### Scenario: Element is empty
+
+- **WHEN** 某个元素处于空转、没有填充
+- **THEN** 它的阴影轮廓仍然可见，能看出这里本该有个元素
+
+#### Scenario: HUD is scaled
+
+- **WHEN** 玩家缩放 HUD
+- **THEN** 阴影与元素始终对齐，不跑位
+### Requirement: Shadow colour and opacity are one global setting
+
+阴影的颜色与浓淡 MUST 是**一处全局设置**，MUST NOT 按元素分别配置。颜色 MUST 只有自定义色。浓淡 MUST 取值 0–100，且默认值 MUST 就是上限——素材按最重档烘制，只允许往下调。浓淡调到 0 时阴影 MUST 消失，而元素本身 MUST NOT 受任何影响。该设置 MUST 与其它配置一样存在插件自己的存档里。
+
+#### Scenario: Colour or opacity is changed
+
+- **WHEN** 玩家修改阴影的颜色或浓淡
+- **THEN** 所有元素的阴影当场一起改变，元素本身的颜色不受影响
+
+#### Scenario: Opacity is turned all the way down
+
+- **WHEN** 玩家把阴影浓淡调到 0
+- **THEN** 阴影消失，元素本身完好如初
+
+#### Scenario: Opacity is pushed past the default
+
+- **WHEN** 玩家尝试把浓淡调到比默认值更重
+- **THEN** 调不上去：默认档就是上限
+### Requirement: The crosshair carries a centre dot
+
+准星 MUST 在正中带一个白点（中心定位点），它的直径 MUST 与设计稿一致。它是**准星的一部分**：MUST NOT 单独成元素，MUST NOT 有单独的开关；显示、隐藏与染色 MUST 都跟着准星走。
+
+#### Scenario: Crosshair is hidden
+
+- **WHEN** 玩家关掉准星
+- **THEN** 中心定位点一并消失
+
+#### Scenario: Crosshair is recoloured
+
+- **WHEN** 玩家给准星改颜色
+- **THEN** 中心定位点跟着变成同一个颜色
+
+#### Scenario: Crosshair texture is verified
+
+- **WHEN** 校验准星贴图
+- **THEN** 正中有一个直径与设计稿一致的白点
