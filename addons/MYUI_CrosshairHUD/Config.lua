@@ -45,6 +45,12 @@ Config.DEFAULTS = {
     position = nil,                 -- 由 EUI 的位置控件写入；nil = 默认锚点（屏幕居中）
     strata = "MEDIUM",              -- 框架层级
 
+    -- 阴影是**一处全局**设置，不挂在任何元素上：它是"把 HUD 从混乱背景里抠出来"
+    -- 这一件事，天然只需要一个口径。颜色只有自定义色（与「背景色只有自定义」同理，
+    -- 没有第二种来源）；浓淡默认 1，即最重——游戏内只能往下调。
+    shadow = { 0, 0, 0 },
+    shadowAlpha = 1,
+
     -- 填充与背景各有各的透明度：合成一个只能整条一起淡化，分不开。
     -- 「填充色来源」放在颜色之外单独一项——它是"用哪个色"的选择，不是颜色本身。
     elements = {
@@ -269,6 +275,9 @@ function Config.GeneralCells()
           min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
           tooltip = "整体等比缩放。与解锁模式齿轮里的宽度／高度是同一个值。" },
         { kind = "dropdown", text = "图层" },
+        -- 阴影是**全局一格**：颜色 + 它自己的浓淡同格（与元素那些颜色格同形）。
+        -- 只有自定义色——与「条背景只有自定义」同理，没有第二种来源。
+        { kind = "color", text = "阴影", colorKey = "shadow", alphaKey = "shadowAlpha" },
     }
 end
 
@@ -325,6 +334,17 @@ end
 -- 直接用存下来的自定义色。
 function Config.ResolveBg(elementConfig)
     return elementConfig.bg
+end
+
+-- 阴影同上：只有自定义色一种，而且它是**全局**的——不挂在元素上。
+function Config.ResolveShadow()
+    return Config.Get().shadow
+end
+
+function Config.ResolveShadowAlpha()
+    local a = Config.Get().shadowAlpha
+    if a == nil then return 1 end
+    return a
 end
 
 --------------------------------------------------------------------------
@@ -500,6 +520,14 @@ function Config.BuildPage(_, parent, yOffset)
                 getValue = function() return cfg[key] or 1.0 end,
                 setValue = function(value) cfg[key] = value; refresh() end }
         end
+        if cell.kind == "color" then
+            -- 与元素那一格同形：本格是一个 slider（**这一格自己的**浓淡），
+            -- 色块随后内联挂在它左侧。这个形状由 EUI 的 `_lastInline` 惯例支撑。
+            local key = cell.alphaKey
+            return { type = "slider", text = cell.text, min = 0, max = 100, step = 1,
+                getValue = function() return (cfg[key] or 1) * 100 end,
+                setValue = function(value) cfg[key] = value / 100; refresh() end }
+        end
         if cell.kind == "visibility" then
             -- 可见性控件由 EUI 的共享清单填充：这里先落一个占位下拉，建完行再把
             -- 清单挂到该槽位上（EUI 自己的 BuildVisibilityRow 内部也是这个做法，
@@ -553,6 +581,21 @@ function Config.BuildPage(_, parent, yOffset)
             right and GeneralSlot(right) or { type = "spacer" })
         AttachVisibilityCell(row, left, "_leftRegion")
         AttachVisibilityCell(row, right, "_rightRegion")
+
+        -- 常规节的颜色格：色块内联挂到该格左侧。它与元素那些颜色格走**同一套**
+        -- CellSwatches/AttachSwatch——只是配置对象是顶层 cfg，不是某个元素。
+        -- 常规节的项不随总开关置灰（缩放、图层也不置灰），所以 grayed 恒假。
+        local function AttachGeneralSwatch(region, cell)
+            if not (cell and cell.kind == "color" and region) then return end
+            if EUI._prebuilding or not EUI.BuildColorSwatch then return end
+            local specs = CellSwatches(cfg, cell.colorKey, cell.modeKey, cell.source)
+            for i = #specs, 1, -1 do
+                AttachSwatch(region, specs[i], function() return false end, refresh)
+            end
+        end
+        AttachGeneralSwatch(row and row._leftRegion, left)
+        AttachGeneralSwatch(row and row._rightRegion, right)
+
         y = y - h
         gindex = gindex + 2
     end

@@ -145,16 +145,37 @@ assert(scaleCell.min == Config.SCALE_MIN and scaleCell.max == Config.SCALE_MAX,
 -- 格子类型是**封闭集合**：新加一种必须在这里显式登记，不能顺手就混进来。
 -- `visibility` 是 2026-09-18 有意加的一种：它由 EUI 的共享可见性清单填充，
 -- 只需要一个槽位，因此和别的格子一样占半格、走同一套自适应排布。
-local ALLOWED = { toggle = true, dropdown = true, slider = true, visibility = true }
+-- `color` 是 2026-09-19 有意加的一种：阴影是全局一格（颜色 + 浓淡同格），
+-- 与元素那些颜色格走同一套 CellSwatches/AttachSwatch，只是配置对象是顶层 cfg。
+local ALLOWED = { toggle = true, dropdown = true, slider = true, visibility = true,
+                  color = true }
 for i = 1, #general do
     local kind = general[i].kind
     assert(ALLOWED[kind],
-        "常规节的格子只能是开关、下拉、滑块或可见性，实得 " .. tostring(kind))
+        "常规节的格子只能是开关、下拉、滑块、可见性或颜色，实得 " .. tostring(kind))
 end
 
 -- 可见性紧挨总开关：总开关关掉时它会置灰，相邻才看得出从属关系。
 assert(general[2] and general[2].kind == "visibility",
     "第 2 项应是可见性格子，实得 " .. tostring(general[2] and general[2].kind))
+
+----------------------------------------------------------------------
+-- 阴影：**全局一格**，颜色与浓淡同格，且只有自定义色
+--
+-- 用户选的是「一个设置项」——不是每个元素各一套。它是"把 HUD 从混乱背景里抠出来"
+-- 这一件事，天然只需要一个口径；所以它落在常规节，不进 Config.CellPlan。
+-- 颜色只有自定义色，与「条背景只有自定义」同理，**不能**有来源色块。
+----------------------------------------------------------------------
+local shadowCell
+for i = 1, #general do
+    if general[i].kind == "color" and general[i].colorKey == "shadow" then
+        shadowCell = general[i]
+    end
+end
+assert(shadowCell, "常规节要有阴影颜色格")
+assert(shadowCell.alphaKey == "shadowAlpha", "阴影格带的是**它自己**的浓淡")
+assert(shadowCell.modeKey == nil, "阴影没有第二种来源，不该有 modeKey")
+assert(shadowCell.source == nil, "阴影只有自定义色，**不能**有来源色块")
 
 ----------------------------------------------------------------------
 -- 置灰：总开关关掉时所有子项都算关掉（子开关与色块一起失效）

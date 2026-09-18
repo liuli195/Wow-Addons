@@ -463,6 +463,44 @@ local runeShadow = FindShadow("resource_01_shadow")
 assert(runeFill and runeFill.shown == false, "空转时填充必须隐藏")
 assert(runeShadow and runeShadow.shown == true, "空转的符文格仍然要显示阴影轮廓")
 
+----------------------------------------------------------------------
+-- 十三、阴影的颜色与浓淡来自**一处全局设置**，并投影到每个元素
+--
+-- 用户选的是"一个设置项"：不是每个元素各一套。所以改一处，所有元素的阴影一起变。
+-- 这条从真实入口（Core.Refresh）验，不手搓状态表——构造状态表的地方有三处。
+----------------------------------------------------------------------
+local cfg = Config.Get()
+cfg.shadow = { 0.25, 0.5, 0.75 }
+cfg.shadowAlpha = 0.4
+Core.Refresh()
+
+local hs = FindShadow("health_arc_shadow")
+assert(hs and hs.vertex, "阴影层要收到顶点色")
+Near(hs.vertex[1], 0.25, "阴影颜色 R 跟着全局设置走")
+Near(hs.vertex[2], 0.5, "阴影颜色 G")
+Near(hs.vertex[3], 0.75, "阴影颜色 B")
+Near(hs.vertex[4], 0.4, "阴影浓淡跟着全局设置走")
+
+local ps = FindShadow("power_arc_shadow")
+assert(ps and ps.vertex, "能量条的阴影层要收到顶点色")
+Near(ps.vertex[1], 0.25, "一处设置管住所有元素：能量条阴影同色")
+Near(ps.vertex[4], 0.4, "一处设置管住所有元素：能量条阴影同浓淡")
+
+local cs = FindShadow("crosshair_shadow")
+assert(cs and cs.vertex, "准星的阴影层要收到顶点色")
+Near(cs.vertex[4], 0.4, "准星走的是同一个全局值")
+
+Core.demo = true
+Core.Refresh()
+local ds = FindShadow("resource_01_shadow")
+assert(ds and ds.vertex, "假数据模式下符文格阴影也要收到顶点色")
+Near(ds.vertex[4], 0.4, "假数据模式走的是同一个全局值")
+Core.demo = false
+
+cfg.shadow = { 0, 0, 0 }
+cfg.shadowAlpha = 1
+Core.Refresh()
+
 io.write("PASS: config color and alpha\n")
 '''
 
