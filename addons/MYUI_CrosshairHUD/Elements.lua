@@ -57,16 +57,25 @@ Elements.DESIGN_SIZE = SQUARE
 -- 尺寸取**清单里的显示尺寸**，不是图形本身的尺寸：贴图外圈留了给阴影的余量，
 -- 而每个元素需要的留量不同，所以六个资源格的画布并不等大（32 / 33 / 34）。
 -- 这几行与清单是一对，由 test_media_placement.py 钉住，改一边另一边必须跟上。
+-- 摆放尺寸就是贴图的**画布**尺寸（设计稿单位），不是内容的尺寸。
+--
+-- 画布比内容大，是因为它被**对称补过边到 2 的幂**——魔兽只对 2 的幂贴图生成 mipmap，
+-- 没有 mipmap 的话 HUD 缩到 1.0 以下就会出锯齿。对称补边的好处是圆心不动：
+-- 内容位置与大小都和补边前一样，多出来的只是透明边。
+--
+-- 所以这里的数字跟 `assets/CrosshairHUDMedia/manifest.json` 的 displaySize 必须一致，
+-- 由 test_media_placement.py 守着（它从清单生成期望值，不是把这张表抄一遍）。
 local PLACEMENT = {
-    crosshair = { file = "crosshair",   w = 70, h = 70,  ox = 0,   oy = 0 },
-    health    = { file = "health_arc",  w = 70, h = 128, ox = -32, oy = 16 },
-    power     = { file = "power_arc",   w = 70, h = 128, ox = 32,  oy = 16 },
+    crosshair = { file = "crosshair",   w = 128, h = 128, ox = 0,   oy = 0 },
+    health    = { file = "health_arc",  w = 128, h = 128, ox = -32, oy = 16 },
+    power     = { file = "power_arc",   w = 128, h = 128, ox = 32,  oy = 16 },
 }
 
+-- 资源格 1 与 6 的画布本来就是 2 的幂（32 单位 = 256 像素），不需要补边。
 local PIP_PLACEMENT = {
-    { w = 32, h = 32, ox = -38, oy = -38 }, { w = 33, h = 32, ox = -24, oy = -48 },
-    { w = 34, h = 32, ox = -8,  oy = -53 }, { w = 34, h = 32, ox = 8,   oy = -53 },
-    { w = 33, h = 32, ox = 24,  oy = -48 }, { w = 32, h = 32, ox = 38,  oy = -38 },
+    { w = 32, h = 32, ox = -38, oy = -38 }, { w = 64, h = 32, ox = -24, oy = -48 },
+    { w = 64, h = 32, ox = -8,  oy = -53 }, { w = 64, h = 32, ox = 8,   oy = -53 },
+    { w = 64, h = 32, ox = 24,  oy = -48 }, { w = 32, h = 32, ox = 38,  oy = -38 },
 }
 
 Elements.frame = nil

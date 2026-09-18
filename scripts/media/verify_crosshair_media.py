@@ -17,6 +17,9 @@
    定稿的样子，而这条只有量过才知道。2026-09-19 从 Figma 重导时它丢了，游戏里边缘出现
    锯齿，当时**所有断言都是绿的**：图还是那张图、尺寸还对、颜色还白，只有过渡带没了。
    这条就是那次留下的。判据为什么用「宽度」而不是「占比」，见 EDGE_TRANSITION_MIN。
+10. 贴图的像素边长必须是 **2 的幂**——这是「缩小显示不出锯齿」真正依赖的那一条，
+   而补边是没写代码就看不出来的东西：画布悄悄变大、内容原地不动，图还是那张图。
+   理由与实机验证记录见 POT_REQUIRED。
 
 用法：python scripts/media/verify_crosshair_media.py
 """
@@ -64,18 +67,20 @@ SHADOW_SUFFIX = "_shadow"
 # (1.57, 2.38) 是一段空档，2.0 落在正中。
 EDGE_TRANSITION_MIN = 2.0
 
-# 过渡带的宽度还必须按**设计稿单位**够宽。
+# 贴图的**像素边长必须是 2 的幂**。这是「缩小显示不出锯齿」真正依赖的那一条。
 #
-# 这条比上一条更重要，它管的是「贴图缩小显示时会不会出锯齿」。屏幕像素永远比设计稿
-# 单位粗，过渡带在设计稿单位上不够宽，缩小后就会窄于一个屏幕像素——等于硬边。
-# 魔兽的默认过滤（LINEAR）不采样 mipmap，没有更低频的层级可退，所以只能靠这一条。
+# 魔兽的 `SetTexture` 只有在过滤模式给 `TRILINEAR` 且**贴图边长是 2 的幂**时才用得上
+# mipmap。少了任何一条，它就只能双线性采样：缩小显示时每个屏幕像素只读 4 个纹素，
+# 高频全丢，边缘出锯齿。2026-09-19 实机逐条验过：
 #
-# 0.8 取自实测：老素材（实机各缩放档位都正常）是 1.22 – 1.59；2026-09-19 那次把密度
-# 提到 8、但过渡带只有 0.30 的版本，实机报「缩到 0.8 档锯齿明显」。中间空档很宽。
+#     密度 8 + 边长非 2 的幂 + TRILINEAR   → 缩到 0.8 档锯齿明显
+#     密度 8 + 边长 2 的幂   + TRILINEAR   → **锐利且无锯齿**（实机确认）
 #
-# **密度越高这条越容易被违反**：降采样得到的过渡带在**像素**上是恒定的两三像素，
-# 密度一翻倍，它在设计稿单位上就窄一半。提密度必须同时把过渡带按比例放宽。
-EDGE_TRANSITION_MIN_UNITS = 0.8
+# **不能靠"把边缘抹软"来绕**：软边确实也能消锯齿，但那是拿锐度换的（实机原话：
+# 「它不锐利，但是很柔」）。2 的幂这一条才是既锐利又不锯的正路。
+#
+# 补边必须**四周对称**地补：圆心偏移不变，内容位置与大小不变，只有透明边变多。
+POT_REQUIRED = True
 
 failures = []
 
@@ -98,6 +103,12 @@ def verify_texture(name, want_size):
         return
     h, w = image.shape[:2]
     check((w, h) == want_size, f"{name}: 尺寸应为 {want_size}，实际 ({w}, {h})")
+
+    if POT_REQUIRED:
+        is_pot = lambda n: n > 0 and (n & (n - 1)) == 0
+        check(is_pot(w) and is_pot(h),
+            f"{name}: 边长 {w}x{h} 不是 2 的幂——魔兽只对 2 的幂贴图生成 mipmap，"
+            f"少了它缩小时必出锯齿（见 POT_REQUIRED）")
 
     alpha = image[:, :, 3]
     opaque = alpha > 0
@@ -244,11 +255,6 @@ def verify_edge_softness(asset):
         f"{name}: 边缘像是硬的（过渡带只有 {transition:.2f} 像素宽，"
         f"应不少于 {EDGE_TRANSITION_MIN}）——贴图丢了过渡，游戏里会是一圈锯齿")
 
-    density = asset["pixelSize"][0] / asset["displaySize"][0]
-    units = transition / density
-    check(units >= EDGE_TRANSITION_MIN_UNITS,
-        f"{name}: 过渡带在设计稿单位上太窄（{units:.2f} 个单位，应不少于 "
-        f"{EDGE_TRANSITION_MIN_UNITS}）——贴图缩小显示时它窄于一个屏幕像素，会出锯齿")
 
 
 def verify_mask():

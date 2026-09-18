@@ -1,44 +1,48 @@
 """把 Figma 的高倍导出加工成仓库里的成品纹理。
 
-**为什么需要这一步**：Figma 的导出**不带抗锯齿**。这不是导出配置问题，是它的渲染
-结果——形状的边缘落在整数像素网格上时，硬边就是那个分辨率下的正确渲染。实测：
-
-    素材                      中间像素占非透明像素
-    Figma SCALE 1 导出        3.8%   ← 现役贴图就是它，游戏里边缘呈锯齿
-    Figma SCALE 2 导出        2.1%
-    Figma SCALE 8 导出        0.6%   ← 只是把同样的硬边放大了
-    老素材（高倍导出再降采样） 77.9%  ← 目标手感
-
-**提高导出倍率本身不解决问题**：整数倍箱式平均（也就是 GPU mipmap 的行为）会把
-硬边原封不动保留——8 倍图按箱式降到 1 倍，中间像素仍然只有 4.4%。必须**带权重地
-降采样**，把软边烘进贴图；烘进去之后再过 GPU 缩小也不会被磨掉（实测 67.4%）。
-
-所以流程是：**Figma 里按 10 倍导出 → 本脚本降到成品倍率**。
-
     python scripts/media/prepare_crosshair_media.py <导出目录> [--scale 8] [--out 暂存目录]
 
 - `<导出目录>`：Figma 里选中 18 个画板、Export 倍数填 10x、导出的那个目录。
   画板名必须与清单里的文件名（去掉扩展名）一致。
-- `--scale`：成品倍率，与 `manifest.json` 的 `exportScale` 同义（成品像素 = 显示尺寸 × 它）。
-  缺省 8，即每设计单位 8 像素。
-- `--out`：成品写到哪。缺省直接写 `assets/CrosshairHUDMedia/Textures/`；给暂存目录则先落在那儿。
+- `--scale`：成品密度，与 `manifest.json` 的 `exportScale` 同义（成品像素 = 显示尺寸 × 它）。
+- `--out`：成品写到哪。缺省直接写 `assets/CrosshairHUDMedia/Textures/`。
 
-**阴影**额外做两件事：把 RGB 统一成纯白（染色是乘法，阴影的颜色由顶点色给），
+## 为什么不能直接用 Figma 的导出
+
+**Figma 的导出不带过渡**。这不是配置问题，是它的渲染结果——形状边缘落在整数像素网格上
+时，硬边就是那个分辨率下的正确渲染。所以要先按 10 倍导出，再降到成品密度，**降采样本身
+留下的那圈过渡就是抗锯齿**。实测（准星）：直接导出 0.08 像素，降采样后 2.4 像素。
+
+## 为什么画布要补成 2 的幂
+
+**这是"缩小显示不出锯齿"真正依赖的一条。** 魔兽的 `SetTexture` 只在过滤模式给
+`TRILINEAR`**且贴图边长是 2 的幂**时才用得上 mipmap；少任何一条就只能双线性采样，
+缩小显示时每屏幕像素只读 4 个纹素、高频全丢。2026-09-19 实机逐条验过：
+
+    密度 8 + 边长非 2 的幂 + TRILINEAR  → 缩到 0.8 档锯齿明显
+    密度 8 + 边长 2 的幂   + TRILINEAR  → 锐利且无锯齿
+
+**不能靠"把边缘抹软"来绕**：软边确实也消锯齿，但那是拿锐度换的。补边才是既锐利又不锯的路。
+
+补边**四周对称**，所以圆心偏移不变、内容位置与大小不变，只有透明边变多；
+`displaySize` 跟着变成新画布的尺寸（它按显示尺寸 × 密度算像素，不跟着改就错位）。
+
+**阴影**额外做两件事：把 RGB 统一成纯白（染色是乘法，颜色由顶点色给），
 并把 alpha 峰值归一化到 255（"最重档"＝通道上限，游戏内只能往下调）。
 """
 
 import argparse
+import json
 import math
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "assets" / "CrosshairHUDMedia"
 DEFAULT_OUT = SRC / "Textures"
 
-# 成品倍率：成品像素 = 显示尺寸 × 它。与 manifest.json 的 exportScale 同义。
 DEFAULT_EXPORT_SCALE = 8
 
 # Figma 端的导出倍率。这个值是给**人**在 Figma 里填的，脚本只拿它核对源图尺寸。
@@ -51,32 +55,8 @@ PREVIEW_PER_DESIGN = 2
 
 SHADOW_SUFFIX = "_shadow"
 
-# 过渡带的目标宽度，单位是**设计稿单位**。
-#
-# **这是防锯齿的那一条**，比"多少个像素"重要得多。屏幕像素永远比设计稿单位粗，
-# 过渡带在设计稿单位上不够宽，贴图缩小显示后它就会窄于一个屏幕像素——等于硬边。
-# 魔兽默认的过滤模式（LINEAR）不采样 mipmap，没有更低频的层级可退，只能靠它。
-#
-# **它不随密度缩放，这一点是反直觉的**：降采样得到的过渡带在**像素**上恒定两三像素，
-# 所以密度一翻倍，它在设计稿单位上就窄一半。2026-09-19 提密度到 8 时正是栽在这里——
-# 过渡带只剩 0.30 个单位，实机缩到 0.8 档满屏锯齿。
-#
-# 1.4 取原始素材包实测宽度（1.22 – 1.59）的中值附近——那是实机各档位都被接受过的值。
-SOFTEN_UNITS = 1.4
-
-# 降采样本身（LANCZOS）大约会留下这么宽的过渡带，抹开时要把这份算进去，免得抹过头。
-DOWNSAMPLE_TRANSITION_PX = 2.4
-
-# 高斯模糊半径换算成过渡带宽度的系数。
-#
-# **4.2 是实测标定出来的，不是理论值**：理论上的 10%–90% 宽度是 2.56σ，但本脚本量的是
-# alpha 落在 (0,245) 之间的**全部**像素（接近 1%–99%，约 4.65σ），而且还要叠上降采样
-# 留下的底子。实测：σ=2.93 时两条弧的过渡带是 14.62 像素，σ=0 时是 2.38 像素。
-GAUSS_SPAN = 4.2
-
 
 def load_manifest():
-    import json
     return json.loads((SRC / "manifest.json").read_text(encoding="utf-8"))
 
 
@@ -102,21 +82,28 @@ def normalize_peak(alpha):
     return np.rint(alpha.astype(np.float64) * 255.0 / peak).astype(np.uint8)
 
 
-def soften(image, density):
-    """把边缘的过渡带抹到 SOFTEN_UNITS 那么宽（设计稿单位）。
+def next_pot(n):
+    return 2 ** math.ceil(math.log2(n))
 
-    不清这一步也能过「过渡带不少于两像素」那条断言——但那条只管"不是硬边"。
-    真正决定**贴图缩小显示时会不会出锯齿**的，是过渡带在**设计稿单位**上的宽度，
-    理由见 SOFTEN_UNITS。
+
+def pad_to_pot(image):
+    """四周**对称**补透明边到 2 的幂。返回 (新图, 新尺寸)。
+
+    对称是必须的：圆心偏移不变，内容位置与大小不变，只有透明边变多。
     """
-    target_px = SOFTEN_UNITS * density
-    extra = target_px - DOWNSAMPLE_TRANSITION_PX
-    if extra <= 0:
-        return image
-    return image.filter(ImageFilter.GaussianBlur(radius=extra / GAUSS_SPAN))
+    w, h = image.size
+    pw, ph = next_pot(w), next_pot(h)
+    if (pw, ph) == (w, h):
+        return image, (w, h)
+
+    data = np.asarray(image)
+    canvas = np.zeros((ph, pw, 4), dtype=np.uint8)
+    ox, oy = (pw - w) // 2, (ph - h) // 2
+    canvas[oy:oy + h, ox:ox + w] = data
+    return Image.fromarray(canvas, mode="RGBA"), (pw, ph)
 
 
-def prepare(source, name, want_size, is_shadow, density):
+def prepare(source, name, want_size, is_shadow):
     path = source / f"{name}.png"
     if not path.exists():
         raise FileNotFoundError(f"{path} 不存在——Figma 那边导出了吗？画板名对得上吗？")
@@ -124,28 +111,21 @@ def prepare(source, name, want_size, is_shadow, density):
     with Image.open(path) as image:
         image = image.convert("RGBA")
 
-    # 先降采样、再归一化。顺序反过来会让降采样的加权平均把峰值拉离 255。
-    # 用的是 LANCZOS：它按缩放比例放大滤波核的支撑，这正是"带权重"的含义，
-    # 也是软边的来源。NEAREST/BOX 会原样保留硬边（见模块文档的实测）。
+    # 用 LANCZOS 降采样：它按缩放比例放大滤波核的支撑，这正是"带权重"的含义，
+    # 也是那圈过渡的来源。NEAREST/BOX 会原样保留硬边（见模块文档的实测）。
     resized = image.resize(want_size, Image.LANCZOS)
 
-    # 先统一成白图再模糊：否则透明区的 RGB 会被模糊晕进边缘，染色时会偏色
     data = white_rgb(resized)
     if is_shadow:
-        # 阴影本来就是模糊出来的，过渡带够宽，不需要再抹；
-        # 只把 alpha 峰值归一化（"最重档"＝通道上限，游戏内只能往下调）
         data[:, :, 3] = normalize_peak(data[:, :, 3])
-        return Image.fromarray(data, mode="RGBA")
-
-    softened = soften(Image.fromarray(data, mode="RGBA"), density)
-    return Image.fromarray(white_rgb(softened), mode="RGBA")   # 模糊会把 RGB 晕花，再统一一次
+    return Image.fromarray(data, mode="RGBA")
 
 
 def main():
     parser = argparse.ArgumentParser(description="把 Figma 高倍导出加工成成品纹理")
     parser.add_argument("source", help="Figma 导出目录")
     parser.add_argument("--scale", type=int, default=DEFAULT_EXPORT_SCALE,
-                        help=f"成品倍率，缺省 {DEFAULT_EXPORT_SCALE}")
+                        help=f"成品密度，缺省 {DEFAULT_EXPORT_SCALE}")
     parser.add_argument("--out", default=None, help="成品输出目录，缺省写回 assets/Textures")
     parser.add_argument("--figma-scale", type=int, default=FIGMA_SCALE,
                         help=f"Figma 端用的导出倍数，缺省 {FIGMA_SCALE}（只用于核对源图尺寸）")
@@ -156,6 +136,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     manifest = load_manifest()
+    placement = {}
     for asset in manifest["assets"]:
         name = asset["file"][:-4]                       # 去掉 .png
         is_shadow = name.endswith(SHADOW_SUFFIX)
@@ -171,16 +152,19 @@ def main():
             f"{name}: 导出尺寸应为 {expect}，实际 {(sw, sh)}——"
             f"Figma 端的倍数是不是没填对（应填 {args.figma_scale}x）？")
 
-        image = prepare(source, name, want, is_shadow, args.scale)
+        image = prepare(source, name, want, is_shadow)
+        image, pot = pad_to_pot(image)
         image.save(out / asset["file"])
-        alpha = np.asarray(image)[:, :, 3]
-        nontransparent = int((alpha > 0).sum())
-        soft = int(((alpha > 0) & (alpha < 255)).sum())
-        ratio = soft / nontransparent if nontransparent else 0.0
-        print(f"  {asset['file']:<26} {sw}x{sh} → {want[0]}x{want[1]}   "
-              f"中间像素 {ratio:5.1%}")
+        placement[asset["file"]] = [pot[0] // args.scale, pot[1] // args.scale]
+
+        pad = (pot[0] - want[0]) // 2
+        note = f"补边 {pad}px" if pad or pot[1] != want[1] else "已是 2 的幂"
+        print(f"  {asset['file']:<26} {sw}x{sh} → {want[0]}x{want[1]} → "
+              f"{pot[0]}x{pot[1]}  {note}")
 
     print(f"\n已写入 {out}（{len(manifest['assets'])} 张）")
+    print("\n新画布变了，清单的 displaySize 与渲染侧摆放表都要跟着改：")
+    print(json.dumps(placement, ensure_ascii=False, indent=4))
     return 0
 
 

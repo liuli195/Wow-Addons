@@ -13,12 +13,12 @@
     {
       "file": "crosshair.png",
       "pixelSize": [
-        560,
-        560
+        1024,
+        1024
       ],
       "displaySize": [
-        70,
-        70
+        128,
+        128
       ],
       "centerOffset": [
         0,
@@ -28,12 +28,12 @@
     {
       "file": "crosshair_shadow.png",
       "pixelSize": [
-        560,
-        560
+        1024,
+        1024
       ],
       "displaySize": [
-        70,
-        70
+        128,
+        128
       ],
       "centerOffset": [
         0,
@@ -43,11 +43,11 @@
     {
       "file": "health_arc.png",
       "pixelSize": [
-        560,
+        1024,
         1024
       ],
       "displaySize": [
-        70,
+        128,
         128
       ],
       "centerOffset": [
@@ -58,11 +58,11 @@
     {
       "file": "health_arc_shadow.png",
       "pixelSize": [
-        560,
+        1024,
         1024
       ],
       "displaySize": [
-        70,
+        128,
         128
       ],
       "centerOffset": [
@@ -73,11 +73,11 @@
     {
       "file": "power_arc.png",
       "pixelSize": [
-        560,
+        1024,
         1024
       ],
       "displaySize": [
-        70,
+        128,
         128
       ],
       "centerOffset": [
@@ -88,11 +88,11 @@
     {
       "file": "power_arc_shadow.png",
       "pixelSize": [
-        560,
+        1024,
         1024
       ],
       "displaySize": [
-        70,
+        128,
         128
       ],
       "centerOffset": [
@@ -133,11 +133,11 @@
     {
       "file": "resource_02.png",
       "pixelSize": [
-        264,
+        512,
         256
       ],
       "displaySize": [
-        33,
+        64,
         32
       ],
       "centerOffset": [
@@ -148,11 +148,11 @@
     {
       "file": "resource_02_shadow.png",
       "pixelSize": [
-        264,
+        512,
         256
       ],
       "displaySize": [
-        33,
+        64,
         32
       ],
       "centerOffset": [
@@ -163,11 +163,11 @@
     {
       "file": "resource_03.png",
       "pixelSize": [
-        272,
+        512,
         256
       ],
       "displaySize": [
-        34,
+        64,
         32
       ],
       "centerOffset": [
@@ -178,11 +178,11 @@
     {
       "file": "resource_03_shadow.png",
       "pixelSize": [
-        272,
+        512,
         256
       ],
       "displaySize": [
-        34,
+        64,
         32
       ],
       "centerOffset": [
@@ -193,11 +193,11 @@
     {
       "file": "resource_04.png",
       "pixelSize": [
-        272,
+        512,
         256
       ],
       "displaySize": [
-        34,
+        64,
         32
       ],
       "centerOffset": [
@@ -208,11 +208,11 @@
     {
       "file": "resource_04_shadow.png",
       "pixelSize": [
-        272,
+        512,
         256
       ],
       "displaySize": [
-        34,
+        64,
         32
       ],
       "centerOffset": [
@@ -223,11 +223,11 @@
     {
       "file": "resource_05.png",
       "pixelSize": [
-        264,
+        512,
         256
       ],
       "displaySize": [
-        33,
+        64,
         32
       ],
       "centerOffset": [
@@ -238,11 +238,11 @@
     {
       "file": "resource_05_shadow.png",
       "pixelSize": [
-        264,
+        512,
         256
       ],
       "displaySize": [
-        33,
+        64,
         32
       ],
       "centerOffset": [
