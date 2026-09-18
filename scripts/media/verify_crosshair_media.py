@@ -64,6 +64,19 @@ SHADOW_SUFFIX = "_shadow"
 # (1.57, 2.38) 是一段空档，2.0 落在正中。
 EDGE_TRANSITION_MIN = 2.0
 
+# 过渡带的宽度还必须按**设计稿单位**够宽。
+#
+# 这条比上一条更重要，它管的是「贴图缩小显示时会不会出锯齿」。屏幕像素永远比设计稿
+# 单位粗，过渡带在设计稿单位上不够宽，缩小后就会窄于一个屏幕像素——等于硬边。
+# 魔兽的默认过滤（LINEAR）不采样 mipmap，没有更低频的层级可退，所以只能靠这一条。
+#
+# 0.8 取自实测：老素材（实机各缩放档位都正常）是 1.22 – 1.59；2026-09-19 那次把密度
+# 提到 8、但过渡带只有 0.30 的版本，实机报「缩到 0.8 档锯齿明显」。中间空档很宽。
+#
+# **密度越高这条越容易被违反**：降采样得到的过渡带在**像素**上是恒定的两三像素，
+# 密度一翻倍，它在设计稿单位上就窄一半。提密度必须同时把过渡带按比例放宽。
+EDGE_TRANSITION_MIN_UNITS = 0.8
+
 failures = []
 
 
@@ -230,6 +243,12 @@ def verify_edge_softness(asset):
     check(transition >= EDGE_TRANSITION_MIN,
         f"{name}: 边缘像是硬的（过渡带只有 {transition:.2f} 像素宽，"
         f"应不少于 {EDGE_TRANSITION_MIN}）——贴图丢了过渡，游戏里会是一圈锯齿")
+
+    density = asset["pixelSize"][0] / asset["displaySize"][0]
+    units = transition / density
+    check(units >= EDGE_TRANSITION_MIN_UNITS,
+        f"{name}: 过渡带在设计稿单位上太窄（{units:.2f} 个单位，应不少于 "
+        f"{EDGE_TRANSITION_MIN_UNITS}）——贴图缩小显示时它窄于一个屏幕像素，会出锯齿")
 
 
 def verify_mask():

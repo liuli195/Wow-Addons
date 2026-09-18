@@ -28,10 +28,11 @@
 """
 
 import argparse
+import math
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "assets" / "CrosshairHUDMedia"
@@ -49,6 +50,29 @@ FIGMA_SCALE = 10
 PREVIEW_PER_DESIGN = 2
 
 SHADOW_SUFFIX = "_shadow"
+
+# 过渡带的目标宽度，单位是**设计稿单位**。
+#
+# **这是防锯齿的那一条**，比"多少个像素"重要得多。屏幕像素永远比设计稿单位粗，
+# 过渡带在设计稿单位上不够宽，贴图缩小显示后它就会窄于一个屏幕像素——等于硬边。
+# 魔兽默认的过滤模式（LINEAR）不采样 mipmap，没有更低频的层级可退，只能靠它。
+#
+# **它不随密度缩放，这一点是反直觉的**：降采样得到的过渡带在**像素**上恒定两三像素，
+# 所以密度一翻倍，它在设计稿单位上就窄一半。2026-09-19 提密度到 8 时正是栽在这里——
+# 过渡带只剩 0.30 个单位，实机缩到 0.8 档满屏锯齿。
+#
+# 1.4 取原始素材包实测宽度（1.22 – 1.59）的中值附近——那是实机各档位都被接受过的值。
+SOFTEN_UNITS = 1.4
+
+# 降采样本身（LANCZOS）大约会留下这么宽的过渡带，抹开时要把这份算进去，免得抹过头。
+DOWNSAMPLE_TRANSITION_PX = 2.4
+
+# 高斯模糊半径换算成过渡带宽度的系数。
+#
+# **4.2 是实测标定出来的，不是理论值**：理论上的 10%–90% 宽度是 2.56σ，但本脚本量的是
+# alpha 落在 (0,245) 之间的**全部**像素（接近 1%–99%，约 4.65σ），而且还要叠上降采样
+# 留下的底子。实测：σ=2.93 时两条弧的过渡带是 14.62 像素，σ=0 时是 2.38 像素。
+GAUSS_SPAN = 4.2
 
 
 def load_manifest():
@@ -78,7 +102,21 @@ def normalize_peak(alpha):
     return np.rint(alpha.astype(np.float64) * 255.0 / peak).astype(np.uint8)
 
 
-def prepare(source, name, want_size, is_shadow):
+def soften(image, density):
+    """把边缘的过渡带抹到 SOFTEN_UNITS 那么宽（设计稿单位）。
+
+    不清这一步也能过「过渡带不少于两像素」那条断言——但那条只管"不是硬边"。
+    真正决定**贴图缩小显示时会不会出锯齿**的，是过渡带在**设计稿单位**上的宽度，
+    理由见 SOFTEN_UNITS。
+    """
+    target_px = SOFTEN_UNITS * density
+    extra = target_px - DOWNSAMPLE_TRANSITION_PX
+    if extra <= 0:
+        return image
+    return image.filter(ImageFilter.GaussianBlur(radius=extra / GAUSS_SPAN))
+
+
+def prepare(source, name, want_size, is_shadow, density):
     path = source / f"{name}.png"
     if not path.exists():
         raise FileNotFoundError(f"{path} 不存在——Figma 那边导出了吗？画板名对得上吗？")
@@ -91,10 +129,16 @@ def prepare(source, name, want_size, is_shadow):
     # 也是软边的来源。NEAREST/BOX 会原样保留硬边（见模块文档的实测）。
     resized = image.resize(want_size, Image.LANCZOS)
 
+    # 先统一成白图再模糊：否则透明区的 RGB 会被模糊晕进边缘，染色时会偏色
     data = white_rgb(resized)
     if is_shadow:
+        # 阴影本来就是模糊出来的，过渡带够宽，不需要再抹；
+        # 只把 alpha 峰值归一化（"最重档"＝通道上限，游戏内只能往下调）
         data[:, :, 3] = normalize_peak(data[:, :, 3])
-    return Image.fromarray(data, mode="RGBA")
+        return Image.fromarray(data, mode="RGBA")
+
+    softened = soften(Image.fromarray(data, mode="RGBA"), density)
+    return Image.fromarray(white_rgb(softened), mode="RGBA")   # 模糊会把 RGB 晕花，再统一一次
 
 
 def main():
@@ -127,7 +171,7 @@ def main():
             f"{name}: 导出尺寸应为 {expect}，实际 {(sw, sh)}——"
             f"Figma 端的倍数是不是没填对（应填 {args.figma_scale}x）？")
 
-        image = prepare(source, name, want, is_shadow)
+        image = prepare(source, name, want, is_shadow, args.scale)
         image.save(out / asset["file"])
         alpha = np.asarray(image)[:, :, 3]
         nontransparent = int((alpha > 0).sum())
