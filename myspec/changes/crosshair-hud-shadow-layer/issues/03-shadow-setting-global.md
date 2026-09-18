@@ -1,7 +1,7 @@
 # 03：阴影设置：全局一项（颜色 ＋ 浓淡）
 
 Triage（分拣）: ready-for-agent
-Status（状态）: ready-for-agent
+Status（状态）: done
 Assignee（领取者）: 主代理
 Parent（来源）: [Crosshair HUD 阴影图层规格](../spec.md)
 Blocked by（前置事项）: 02（阴影层得先在游戏里看得见）
@@ -49,3 +49,8 @@ Blocked by（前置事项）: 02（阴影层得先在游戏里看得见）
 **实施结果**：切片 A（全局设置流到状态表，含常规/准星/假数据三条路径）与切片 B
 （设置页出现阴影格、只有自定义色）都是红灯 → 绿灯；准星 HUD 套件 15 项全过，
 统一验证 `status: passed`。
+
+## Comments（讨论）
+
+**状态改为 done（2026-09-19）**：全部验收条件已满足。「默认即上限」这条原先没有任何断言，
+本次补上（滑杆范围从渲染函数收进格子描述符，与 DEFAULTS.shadowAlpha 结成一对由测试盯住）。
