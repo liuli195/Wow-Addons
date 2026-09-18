@@ -8,6 +8,8 @@
 4. 边缘不做预乘 alpha——预乘会让抗锯齿边缘染色后发黑。
 5. 遮罩的左半全不透明、右半全透明、中线单调过渡——镜像翻转会让所有填充方向整体反向，
    而这一条光看代码发现不了。
+6. 弧线的描边宽度与设计稿一致——条加粗是"AOE 混战里看得清"这件事的依据，改细改粗都会
+   让它失去依据，而线宽只有量过才知道。
 
 用法：python scripts/media/verify_crosshair_media.py
 """
@@ -27,6 +29,11 @@ MASK_NAME = "mask_half.png"
 MASK_PX_PER_UNIT = 2
 MASK_UNITS = 128
 RING_RADIUS = 54          # 设计稿圆环半径，与 Logic.RING.radius 一致
+DESIGN_CENTER = 128       # 设计稿坐标系里的圆环中心
+ARC_STROKE = 7.8          # 设计稿定稿的弧线线宽（设计单位）
+ARC_STROKE_TOL = 0.3
+CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
+DOT_CHECK_RADIUS = 4      # 中心定位点的检查半径（像素）；设计稿上它是一个直径 10 像素的点
 
 failures = []
 
@@ -71,6 +78,64 @@ def verify_texture(name, want_size):
             check(not (corr > 0.9 and lum.max() < 200), f"{name}: 疑似预乘 alpha（边缘染色会发黑）")
 
 
+def measure_stroke_units(image, asset, scale):
+    """量弧线描边宽度（设计单位）。
+
+    取 alpha 过半覆盖的像素——那正是描边的轮廓——它们到圆环中心的距离跨度就是线宽。
+    平口端点沿半径切，不会把这个跨度撑大。
+    """
+    h, w = image.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    cx = DESIGN_CENTER + asset["centerOffset"][0]
+    cy = DESIGN_CENTER + asset["centerOffset"][1]
+    dw, dh = asset["displaySize"]
+    dx = cx - dw / 2.0 + (xx + 0.5) / scale
+    dy = cy - dh / 2.0 + (yy + 0.5) / scale
+    dist = np.hypot(dx - DESIGN_CENTER, dy - DESIGN_CENTER)
+
+    sel = image[:, :, 3] >= 128
+    if not sel.any():
+        return None
+    return float(dist[sel].max() - dist[sel].min())
+
+
+def verify_arc_stroke(asset, scale):
+    name = asset["file"]
+    if name == CROSSHAIR_NAME:
+        return
+    image = load(MEDIA / name)
+    if image is None:
+        return
+
+    got = measure_stroke_units(image, asset, scale)
+    if got is None:
+        check(False, f"{name}: 量不出描边宽度（没有过半覆盖的像素）")
+        return
+    check(abs(got - ARC_STROKE) <= ARC_STROKE_TOL,
+        f"{name}: 弧线宽度应为 {ARC_STROKE} 设计单位，实测 {got:.2f}")
+
+
+def verify_center_dot(asset):
+    """准星正中必须有中心定位点。
+
+    设计稿上它是准星圆心处一个实心的白点——AOE 混战里快速转头之后，玩家靠它
+    把视线拉回屏幕正中。它没有源几何上的依赖，掉了也看不出来，所以钉在这里。
+    """
+    name = asset["file"]
+    if name != CROSSHAIR_NAME:
+        return
+    image = load(MEDIA / name)
+    if image is None:
+        return
+
+    h, w = image.shape[:2]
+    cy, cx = h // 2, w // 2
+    r = DOT_CHECK_RADIUS
+    window = image[:, :, 3][cy - r:cy + r + 1, cx - r:cx + r + 1]
+    check(window.max() == 255,
+        f"{name}: 正中缺少中心定位点（中心 {r * 2 + 1}×{r * 2 + 1} 窗口最大不透明度 {window.max()}）")
+
+
 def verify_mask():
     image = load(MEDIA / MASK_NAME)
     if image is None:
@@ -111,6 +176,8 @@ def main():
     for asset in manifest["assets"]:
         want = (asset["displaySize"][0] * scale, asset["displaySize"][1] * scale)
         verify_texture(asset["file"], want)
+        verify_arc_stroke(asset, scale)
+        verify_center_dot(asset)
     verify_mask()
 
     if failures:

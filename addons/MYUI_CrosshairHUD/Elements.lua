@@ -34,22 +34,26 @@ local CreateFrame = _G.CreateFrame
 local UIParent = _G.UIParent
 
 local SQUARE = 128          -- 容器边长（设计稿单位），圆心居中
-local PIP_SIZE = 32
 
 -- 容器是正方形的，所以「宽度 ÷ 设计边长」就是整体缩放——解锁模式的齿轮面板里
 -- 改宽度／高度要走这条换算，Core 因此需要这个常量
 Elements.DESIGN_SIZE = SQUARE
 
--- 纹理摆放（设计稿单位，偏移相对圆心、y 向下；与素材包 manifest 一致）
+-- 纹理摆放（设计稿单位，偏移相对圆心、y 向下；以素材清单 manifest.json 为准）
+--
+-- 尺寸取**清单里的显示尺寸**，不是图形本身的尺寸：贴图外圈留了给阴影的余量，
+-- 而每个元素需要的留量不同，所以六个资源格的画布并不等大（32 / 33 / 34）。
+-- 这几行与清单是一对，由 test_media_placement.py 钉住，改一边另一边必须跟上。
 local PLACEMENT = {
-    crosshair = { file = "crosshair",   w = 64, h = 64,  ox = 0,   oy = 0 },
-    health    = { file = "health_arc",  w = 64, h = 128, ox = -32, oy = 16 },
-    power     = { file = "power_arc",   w = 64, h = 128, ox = 32,  oy = 16 },
+    crosshair = { file = "crosshair",   w = 70, h = 70,  ox = 0,   oy = 0 },
+    health    = { file = "health_arc",  w = 70, h = 128, ox = -32, oy = 16 },
+    power     = { file = "power_arc",   w = 70, h = 128, ox = 32,  oy = 16 },
 }
 
-local PIP_OFFSETS = {
-    { ox = -38, oy = -38 }, { ox = -24, oy = -48 }, { ox = -8, oy = -53 },
-    { ox = 8,   oy = -53 }, { ox = 24,  oy = -48 }, { ox = 38, oy = -38 },
+local PIP_PLACEMENT = {
+    { w = 32, h = 32, ox = -38, oy = -38 }, { w = 33, h = 32, ox = -24, oy = -48 },
+    { w = 34, h = 32, ox = -8,  oy = -53 }, { w = 34, h = 32, ox = 8,   oy = -53 },
+    { w = 33, h = 32, ox = 24,  oy = -48 }, { w = 32, h = 32, ox = 38,  oy = -38 },
 }
 
 Elements.frame = nil
@@ -108,8 +112,9 @@ function Elements.Create()
     parts.runes = {}
     placements.runes = {}
     for i = 1, Logic.PIPS.count do
-        local entry = { file = "resource_0" .. i, w = PIP_SIZE, h = PIP_SIZE,
-                        ox = PIP_OFFSETS[i].ox, oy = PIP_OFFSETS[i].oy }
+        local spec = PIP_PLACEMENT[i]
+        local entry = { file = "resource_0" .. i, w = spec.w, h = spec.h,
+                        ox = spec.ox, oy = spec.oy }
         BuildFillable("rune" .. i, entry)
         parts.runes[i] = parts["rune" .. i]
         placements.runes[i] = entry

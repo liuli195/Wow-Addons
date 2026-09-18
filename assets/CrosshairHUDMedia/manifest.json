@@ -13,12 +13,12 @@
     {
       "file": "crosshair.png",
       "pixelSize": [
-        128,
-        128
+        140,
+        140
       ],
       "displaySize": [
-        64,
-        64
+        70,
+        70
       ],
       "centerOffset": [
         0,
@@ -28,11 +28,11 @@
     {
       "file": "health_arc.png",
       "pixelSize": [
-        128,
+        140,
         256
       ],
       "displaySize": [
-        64,
+        70,
         128
       ],
       "centerOffset": [
@@ -43,11 +43,11 @@
     {
       "file": "power_arc.png",
       "pixelSize": [
-        128,
+        140,
         256
       ],
       "displaySize": [
-        64,
+        70,
         128
       ],
       "centerOffset": [
@@ -73,11 +73,11 @@
     {
       "file": "resource_02.png",
       "pixelSize": [
-        64,
+        66,
         64
       ],
       "displaySize": [
-        32,
+        33,
         32
       ],
       "centerOffset": [
@@ -88,11 +88,11 @@
     {
       "file": "resource_03.png",
       "pixelSize": [
-        64,
+        68,
         64
       ],
       "displaySize": [
-        32,
+        34,
         32
       ],
       "centerOffset": [
@@ -103,11 +103,11 @@
     {
       "file": "resource_04.png",
       "pixelSize": [
-        64,
+        68,
         64
       ],
       "displaySize": [
-        32,
+        34,
         32
       ],
       "centerOffset": [
@@ -118,11 +118,11 @@
     {
       "file": "resource_05.png",
       "pixelSize": [
-        64,
+        66,
         64
       ],
       "displaySize": [
-        32,
+        33,
         32
       ],
       "centerOffset": [
