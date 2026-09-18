@@ -10,6 +10,10 @@
 判据取自清单本身（Python 从 manifest.json 生成后注入），不是把摆放表的值抄一遍——
 那样就成了自己跟自己对账。
 
+**还有一条不是"摆放"的断言也在这里**：元素贴图必须请求 mipmap 采样。它和摆放一样，
+是"渲染模块怎么创建纹理"这件事的一部分，而且同样**光看代码看不出来、只有实机能发现**
+（实机报过：HUD 缩到 0.8 时边缘锯齿，放到 2.0 反而清楚）。理由写在那段断言上方。
+
 只加载 `Logic.lua` 与 `Elements.lua` 就够：摆放表不碰配置，也不碰 EUI。
 """
 
@@ -37,8 +41,8 @@ UIParent = { GetEffectiveScale = function() return 1 end }
 local textures = {}
 local frame
 local function NewTexture(_, _, _, sub)
-    local t = { sub = sub, path = nil, size = nil, point = nil }
-    function t:SetTexture(path) t.path = path end
+    local t = { sub = sub, path = nil, size = nil, point = nil, filter = nil }
+    function t:SetTexture(path, _, _, filter) t.path = path; t.filter = filter end
     function t:SetSize(w, h) t.size = { w, h } end
     function t:SetPoint(a, b, c, x, y) t.point = { x, y } end
     function t:SetAllPoints() end
@@ -92,6 +96,27 @@ for file, want in pairs(MANIFEST) do
         end
     end
     assert(found > 0, file .. "：渲染模块根本没有为它创建纹理")
+end
+
+----------------------------------------------------------------------
+-- 元素贴图必须请求 mipmap 采样（SetTexture 的第四个参数）
+--
+-- 魔兽的默认过滤模式是 LINEAR——**只做双线性、不采样 mipmap**。贴图被缩小显示时
+-- 它每个屏幕像素只读 4 个纹理像素，于是高频信息全丢、边缘出现锯齿。
+--
+-- 实机上报过这个：HUD 缩放到 0.8 时锯齿明显，放到 2.0 反而清楚——正因为 2.0 接近
+-- 1:1 不需要缩小。素材密度越高、缩小比例越大，这个问题越明显（本次把密度从 2 提到 8
+-- 就是这么把它放大出来的）。修法是按暴雪自家地图代码的写法传 "TRILINEAR"。
+--
+-- 遮罩不在此列：它是一条线性渐变，没有高频可言，缩小时双线性就够。
+----------------------------------------------------------------------
+for _, t in ipairs(textures) do
+    if t.path and t.path:sub(-4) == ".png" and t.path:sub(-13) ~= "mask_half.png" then
+        assert(t.filter == "TRILINEAR",
+            string.format("%s：采样模式是 %s，必须是 TRILINEAR —— " ..
+                "默认的 LINEAR 不采样 mipmap，贴图缩小显示时会出现锯齿",
+                t.path, tostring(t.filter)))
+    end
 end
 
 io.write("PASS: media placement\n")

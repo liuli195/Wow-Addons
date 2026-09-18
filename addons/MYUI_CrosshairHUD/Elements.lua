@@ -77,9 +77,17 @@ local placements = {}     -- key -> 摆放规格，供 SetScale 重新摆放
 
 --------------------------------------------------------------------------
 
+-- 采样模式必须是 TRILINEAR（第 4 个参数）。
+--
+-- 魔兽的默认模式是 LINEAR —— **只做双线性、不采样 mipmap**。贴图被缩小显示时，
+-- 它每个屏幕像素只读 4 个纹理像素，高频信息全丢，边缘就出锯齿。HUD 缩放调到 1.0
+-- 以下时贴图是缩小的，正是这种情况；调到 2.0 时接近 1:1，反而看着更清楚。
+--
+-- TRILINEAR 会采样 mipmap，缩小多少就用对应层级的预过滤图。暴雪自家会被缩放的
+-- 贴图（地图）也是这么传的。
 local function NewTexture(sub, file)
     local texture = Elements.frame:CreateTexture(nil, "ARTWORK", nil, sub)
-    texture:SetTexture(MEDIA .. file .. ".png")
+    texture:SetTexture(MEDIA .. file .. ".png", nil, nil, "TRILINEAR")
     return texture
 end
 
