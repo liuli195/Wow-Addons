@@ -13,6 +13,10 @@
    六个资源格是实心块，量到的是整块的径向长度，见 measure_radial_span_units。）
 7. 准星正中要有中心定位点——它没有源几何上的依赖，掉了也看不出来。
 8. 阴影必须**被柔化过**（半透明裙边大于不透明核心）——硬边是明确否决过的做法。
+9. 形状贴图的边缘必须**有足够宽的过渡带**（不少于 2 个纹理像素）——「边缘平滑」是设计稿
+   定稿的样子，而这条只有量过才知道。2026-09-19 从 Figma 重导时它丢了，游戏里边缘出现
+   锯齿，当时**所有断言都是绿的**：图还是那张图、尺寸还对、颜色还白，只有过渡带没了。
+   这条就是那次留下的。判据为什么用「宽度」而不是「占比」，见 EDGE_TRANSITION_MIN。
 
 用法：python scripts/media/verify_crosshair_media.py
 """
@@ -29,8 +33,13 @@ ASSETS = REPO / "assets" / "CrosshairHUDMedia"
 MEDIA = REPO / "addons" / "MYUI" / "Media" / "CrosshairHUD"
 
 MASK_NAME = "mask_half.png"
-MASK_PX_PER_UNIT = 2
+# 必须与 build_crosshair_media.py 的同名常量一致。两处一旦分叉，下面
+# verify_mask 的尺寸断言会立刻失败——这正是那条断言存在的意义之一。
+MASK_PX_PER_UNIT = 8
 MASK_UNITS = 128
+# 中线过渡带的宽度（像素）。**下面断言的两侧纯净区要从它推导，不能写死**
+# ——过渡带一宽，写死的边界就会把过渡像素当成"左半"，报出假的"左半不纯"。
+MASK_SOFTNESS_PX = 8
 RING_RADIUS = 54          # 设计稿圆环半径，与 Logic.RING.radius 一致
 DESIGN_CENTER = 128       # 设计稿坐标系里的圆环中心
 ARC_STROKE = 7.8          # 设计稿定稿的条宽（设计单位）：两条弧是线宽，资源格是半径跨度
@@ -38,6 +47,22 @@ ARC_STROKE_TOL = 0.3
 CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
 DOT_CHECK_RADIUS = 4      # 中心定位点的检查半径（像素）；设计稿上它是一个直径 10 像素的点
 SHADOW_SUFFIX = "_shadow"
+
+# 边缘过渡带的最小宽度，单位是**纹理像素**。
+#
+# 判据是「中间像素数 ÷ 周长」——过渡带有多宽，这个数就是多少。它**与密度无关**，
+# 这正是它胜过「半透明像素占比」的地方：占比会随密度变化，密度一提，
+# 同一条过渡带占的比例就变小，于是明明做对了也会被判成硬的（我第一版就栽在这）。
+#
+# 2.0 是从实测的空档里取的。2026-09-19 三组素材实测：
+#
+#     素材                        过渡带宽度
+#     老素材（目标手感）           2.45 – 3.17 px
+#     现役（硬边，重导丢了过渡）   0.08 – 1.57 px
+#     改成高倍导出＋降采样之后     2.38 – 3.10 px
+#
+# (1.57, 2.38) 是一段空档，2.0 落在正中。
+EDGE_TRANSITION_MIN = 2.0
 
 failures = []
 
@@ -168,6 +193,45 @@ def verify_shadow_softness(asset):
         f"{name}: 像是硬边而不是柔化阴影（半透明 {soft} 像素 ≤ 不透明 {solid} 像素）")
 
 
+def verify_edge_softness(asset):
+    """形状贴图的边缘必须有足够宽的过渡带。
+
+    判据是**过渡带宽度 = 中间像素数 ÷ 周长**（单位：纹理像素）。周长用「实心区域与其
+    一像素腐蚀之差」估。硬边只有图元自身那不到一像素的抗锯齿，读数在 1 上下；真正
+    柔化过的边读数在 2 以上。**这个数不随密度变化**，所以换个导出倍率也不用重标门槛。
+
+    它盯的是 2026-09-19 那次重导丢掉的过渡。那次**其余断言全是绿的**——丢的是"过渡"
+    而不是"内容"：尺寸没变、颜色没偏、该有的图形一个不少，游戏里却是一圈锯齿。
+
+    阴影不走这条：它是靠模糊出来的、本来就没"实心核心"可言，由 verify_shadow_softness 管。
+    """
+    name = asset["file"]
+    if name.endswith(SHADOW_SUFFIX + ".png"):
+        return
+    image = load(MEDIA / name)
+    if image is None:
+        return
+
+    alpha = image[:, :, 3]
+    solid = alpha >= 245
+    if not solid.any():
+        return  # 没有实心区域，由 verify_texture 负责报，这里不重复
+
+    eroded = solid.copy()
+    eroded[1:, :] &= solid[:-1, :]
+    eroded[:-1, :] &= solid[1:, :]
+    eroded[:, 1:] &= solid[:, :-1]
+    eroded[:, :-1] &= solid[:, 1:]
+    perimeter = int(np.count_nonzero(solid & ~eroded))
+    if perimeter == 0:
+        return
+
+    transition = int(np.count_nonzero((alpha > 0) & (alpha < 245))) / perimeter
+    check(transition >= EDGE_TRANSITION_MIN,
+        f"{name}: 边缘像是硬的（过渡带只有 {transition:.2f} 像素宽，"
+        f"应不少于 {EDGE_TRANSITION_MIN}）——贴图丢了过渡，游戏里会是一圈锯齿")
+
+
 def verify_mask():
     image = load(MEDIA / MASK_NAME)
     if image is None:
@@ -178,13 +242,15 @@ def verify_mask():
 
     alpha = image[:, :, 3]
     mid = w // 2
-    left = alpha[:, :mid - 1]
+    # 过渡带是 [mid - 软边 + 1, mid]，两侧之外才该是纯的
+    left = alpha[:, :mid - MASK_SOFTNESS_PX + 1]
     right = alpha[:, mid + 1:]
     check(np.all(left == 255), f"{MASK_NAME}: 左半不是全不透明")
     check(np.all(right == 0), f"{MASK_NAME}: 右半不是全透明")
 
-    # 中线必须是单调过渡，且整体从左(255)向右(0)下降；反转即方向错
-    row = alpha[h // 2, max(0, mid - 4):mid + 5]
+    # 中线必须是单调过渡，且整体从左(255)向右(0)下降；反转即方向错。
+    # 取整条过渡带，不是它的一小段——方向反了要能一眼看出来。
+    row = alpha[h // 2, max(0, mid - MASK_SOFTNESS_PX):mid + 2]
     check(np.all(np.diff(row) <= 0), f"{MASK_NAME}: 中线过渡不是从左侧不透明向右侧透明的单调下降（可能被镜像翻转）")
     check(row[0] > row[-1], f"{MASK_NAME}: 中线两侧明暗关系反了")
 
@@ -211,6 +277,7 @@ def main():
         verify_arc_stroke(asset, scale)
         verify_center_dot(asset)
         verify_shadow_softness(asset)
+        verify_edge_softness(asset)
     verify_mask()
 
     if failures:

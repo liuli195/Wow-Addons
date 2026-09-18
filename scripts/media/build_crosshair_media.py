@@ -23,6 +23,7 @@ from pathlib import Path
 import json
 import shutil
 
+import numpy as np
 from PIL import Image
 
 REPO = Path(__file__).resolve().parents[2]
@@ -31,8 +32,15 @@ DEFAULT_OUT = REPO / "addons" / "MYUI" / "Media" / "CrosshairHUD"
 
 MASK_NAME = "mask_half.png"
 MASK_UNITS = 128      # 遮罩画布边长（设计稿单位），圆心居中；须覆盖环外径 57
-MASK_PX_PER_UNIT = 2  # 与素材包同密度
-MASK_SOFTNESS_PX = 2  # 中线过渡宽度；实机基线，可调
+MASK_SOFTNESS_PX = 8  # 中线过渡宽度（像素）；**与密度同步**，见下
+
+# 遮罩密度（像素/设计稿单位）。**必须与成品纹理的密度一致。**
+#
+# 中线过渡宽度在**设计稿单位**上是恒定的 1 个单位（MASK_SOFTNESS_PX ÷ 本值），
+# 这是实机基线。变的只是它被采样得多细：2 像素/单位时整个过渡只有 **1 个**中间
+# 采样点，在 4K（约 2.8 物理像素/设计稿单位）上摊开就是一条有台阶的切线；
+# 8 像素/单位时有 7 个采样点，角分辨率从 0.53°/像素细到 0.13°/像素。
+MASK_PX_PER_UNIT = 8
 
 
 def copy_textures(manifest, out_dir):
@@ -51,22 +59,27 @@ def copy_textures(manifest, out_dir):
 
 
 def build_mask(out_dir):
-    """生成半平面遮罩：左半不透明，右半全透明，中线线性过渡。"""
+    """生成半平面遮罩：左半不透明，右半全透明，中线线性过渡。
+
+    逐列算出 alpha 后广播成整幅——过渡带是垂直的，每行都一样。
+    """
     side = MASK_UNITS * MASK_PX_PER_UNIT
-    mask = Image.new("RGBA", (side, side), (255, 255, 255, 0))
-    data = mask.load()
     mid = side // 2
-    for x in range(side):
-        if x < mid - MASK_SOFTNESS_PX + 1:
-            alpha = 255
-        elif x <= mid:
-            alpha = int(255 * (mid - x) / MASK_SOFTNESS_PX)
-        else:
-            alpha = 0
-        for y in range(side):
-            data[x, y] = (255, 255, 255, alpha)
-    mask.save(out_dir / MASK_NAME)
-    print(f"  mask   {MASK_NAME:<18} {side}x{side}  过渡 {MASK_SOFTNESS_PX}px")
+    x = np.arange(side)
+    column = np.where(
+        x < mid - MASK_SOFTNESS_PX + 1,
+        255,
+        np.where(x <= mid, 255 * (mid - x) // MASK_SOFTNESS_PX, 0),
+    ).astype(np.uint8)
+
+    data = np.zeros((side, side, 4), dtype=np.uint8)
+    data[:, :, :3] = 255
+    data[:, :, 3] = column[np.newaxis, :]
+    Image.fromarray(data, mode="RGBA").save(out_dir / MASK_NAME)
+
+    soft = int(np.count_nonzero((column > 0) & (column < 255)))
+    print(f"  mask   {MASK_NAME:<18} {side}x{side}  "
+          f"过渡 {MASK_SOFTNESS_PX}px（{soft} 个中间采样点）")
 
 
 def build(out_dir):

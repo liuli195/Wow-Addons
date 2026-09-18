@@ -7,14 +7,14 @@
       128
     ]
   },
-  "exportScale": 2,
+  "exportScale": 8,
   "format": "PNG RGBA",
   "assets": [
     {
       "file": "crosshair.png",
       "pixelSize": [
-        140,
-        140
+        560,
+        560
       ],
       "displaySize": [
         70,
@@ -28,8 +28,8 @@
     {
       "file": "crosshair_shadow.png",
       "pixelSize": [
-        140,
-        140
+        560,
+        560
       ],
       "displaySize": [
         70,
@@ -43,8 +43,8 @@
     {
       "file": "health_arc.png",
       "pixelSize": [
-        140,
-        256
+        560,
+        1024
       ],
       "displaySize": [
         70,
@@ -58,8 +58,8 @@
     {
       "file": "health_arc_shadow.png",
       "pixelSize": [
-        140,
-        256
+        560,
+        1024
       ],
       "displaySize": [
         70,
@@ -73,8 +73,8 @@
     {
       "file": "power_arc.png",
       "pixelSize": [
-        140,
-        256
+        560,
+        1024
       ],
       "displaySize": [
         70,
@@ -88,8 +88,8 @@
     {
       "file": "power_arc_shadow.png",
       "pixelSize": [
-        140,
-        256
+        560,
+        1024
       ],
       "displaySize": [
         70,
@@ -103,8 +103,8 @@
     {
       "file": "resource_01.png",
       "pixelSize": [
-        64,
-        64
+        256,
+        256
       ],
       "displaySize": [
         32,
@@ -118,8 +118,8 @@
     {
       "file": "resource_01_shadow.png",
       "pixelSize": [
-        64,
-        64
+        256,
+        256
       ],
       "displaySize": [
         32,
@@ -133,8 +133,8 @@
     {
       "file": "resource_02.png",
       "pixelSize": [
-        66,
-        64
+        264,
+        256
       ],
       "displaySize": [
         33,
@@ -148,8 +148,8 @@
     {
       "file": "resource_02_shadow.png",
       "pixelSize": [
-        66,
-        64
+        264,
+        256
       ],
       "displaySize": [
         33,
@@ -163,8 +163,8 @@
     {
       "file": "resource_03.png",
       "pixelSize": [
-        68,
-        64
+        272,
+        256
       ],
       "displaySize": [
         34,
@@ -178,8 +178,8 @@
     {
       "file": "resource_03_shadow.png",
       "pixelSize": [
-        68,
-        64
+        272,
+        256
       ],
       "displaySize": [
         34,
@@ -193,8 +193,8 @@
     {
       "file": "resource_04.png",
       "pixelSize": [
-        68,
-        64
+        272,
+        256
       ],
       "displaySize": [
         34,
@@ -208,8 +208,8 @@
     {
       "file": "resource_04_shadow.png",
       "pixelSize": [
-        68,
-        64
+        272,
+        256
       ],
       "displaySize": [
         34,
@@ -223,8 +223,8 @@
     {
       "file": "resource_05.png",
       "pixelSize": [
-        66,
-        64
+        264,
+        256
       ],
       "displaySize": [
         33,
@@ -238,8 +238,8 @@
     {
       "file": "resource_05_shadow.png",
       "pixelSize": [
-        66,
-        64
+        264,
+        256
       ],
       "displaySize": [
         33,
@@ -253,8 +253,8 @@
     {
       "file": "resource_06.png",
       "pixelSize": [
-        64,
-        64
+        256,
+        256
       ],
       "displaySize": [
         32,
@@ -268,8 +268,8 @@
     {
       "file": "resource_06_shadow.png",
       "pixelSize": [
-        64,
-        64
+        256,
+        256
       ],
       "displaySize": [
         32,
