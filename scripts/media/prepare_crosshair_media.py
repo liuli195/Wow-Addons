@@ -121,7 +121,8 @@ def prepare(source, name, want_size, is_shadow):
 
 def main():
     parser = argparse.ArgumentParser(description="把 Figma 高倍导出加工成成品纹理")
-    parser.add_argument("source", help="Figma 导出目录")
+    parser.add_argument("source", nargs="?", default=str(SRC / "Exports"),
+                        help="Figma 导出目录，缺省用仓库里的 assets/CrosshairHUDMedia/Exports")
     parser.add_argument("--scale", type=int, default=None,
                         help="成品密度，缺省用清单里的 exportScale")
     parser.add_argument("--out", default=None, help="成品输出目录，缺省写回 assets/Textures")

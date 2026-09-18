@@ -10,6 +10,7 @@
 | 内容 | 说明 |
 | --- | --- |
 | `Source/*.svg` | 11 个矢量源，含 `hud_master.svg`（256×256 总图，9 条弧线路径都在上面） |
+| `Exports/*.png` | **Figma 按 10 倍导出的原图**（9 形状 + 9 阴影），加工成成品的**输入** |
 | `Textures/*.png` | 18 张成品位图（9 形状 + 9 阴影），8 像素/设计稿单位 |
 | `manifest.json` | 显示尺寸与相对圆心的偏移；坐标系与导出倍率的权威来源 |
 | `hud_reference.png` | 设计参考图，仅用于对位与配色采样，不参与构建 |
@@ -109,8 +110,9 @@
 
 ## 流水线
 
-- **加工**（只有重导素材时才跑）：`scripts/media/prepare_crosshair_media.py <导出目录>`
-  → 把 Figma 的 10 倍导出降到成品密度、统一成白图、归一化阴影峰值，写回 `Textures/`
+- **加工**（只有重导素材时才跑）：`scripts/media/prepare_crosshair_media.py Exports`
+  → 把 `Exports/` 里的 10 倍导出降到成品密度、画布补成 2 的幂、统一成白图、
+  归一化阴影峰值，写回 `Textures/`。**默认读 `Exports/`，所以不用再翻别处的目录。**
 - 构建：`scripts/media/build_crosshair_media.py` → 输出到 `addons/MYUI/Media/CrosshairHUD/`
 - 校验：`scripts/media/verify_crosshair_media.py`
   （尺寸、中性度、蒙版纯度、遮罩方向、**弧线线宽**、**中心定位点存在**）

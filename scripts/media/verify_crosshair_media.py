@@ -87,6 +87,21 @@ EDGE_TRANSITION_MIN = 2.0
 # 补边必须**四周对称**地补：圆心偏移不变，内容位置与大小不变，只有透明边变多。
 POT_REQUIRED = True
 
+# 拖动框的容差。
+#
+# 规格要求「拖动框与 HUD 严格重合」，但**柔化阴影的尾巴做不到**：环半径 54 ＋ 条粗 7.8
+# ＋ 阴影扩散已经大于框的半宽 64，而把阴影裁到框边会切出一条硬边——那正是这次改动
+# 要消灭的东西。所以规格放了一条明确的容差，这里量住它：
+#
+#   - **看得见的部分（不透明度 ≥ 12%）必须在框内**
+#   - 整条尾巴（含极淡的过渡）最多溢出 4 个设计稿单位
+#
+# 实测（2026-09-19）：两条弧与资源格 3/4 的阴影尾巴溢出 2.75–3.00 个单位，
+# 溢出部分的不透明度全部 ≤ 12%。
+DRAG_BOX_HALF = 64            # 拖动框半宽（设计稿单位），= Elements.lua 的 SQUARE / 2
+SHADOW_TAIL_VISIBLE_ALPHA = 31   # ≈12%：再淡就在视觉上消失了
+SHADOW_TAIL_MAX_OVERFLOW = 4.0   # 设计稿单位
+
 failures = []
 
 
@@ -308,6 +323,46 @@ def verify_canvas_padding(asset, scale):
         f"清单写的是 {dw}x{dh}（补边前的画布是 {cw}x{ch}）")
 
 
+def verify_drag_box(asset, scale):
+    """看得见的影子必须落在拖动框里，极淡的尾巴最多溢出一点点。
+
+    规格要求「拖动框与 HUD 严格重合」，阴影的容差见 SHADOW_TAIL_VISIBLE_ALPHA 的说明。
+    这条**光看图看不出来**——贴图各自都正常，超出的部分要换算到 HUD 坐标才看得见。
+    """
+    name = asset["file"]
+    image = load(MEDIA / name)
+    if image is None:
+        return
+
+    alpha = image[:, :, 3]
+    if not alpha.any():
+        return
+    ox, oy = asset["centerOffset"]
+    half_w = image.shape[1] / 2.0 / scale
+    half_h = image.shape[0] / 2.0 / scale   # 行号向下、设计稿 y 向上；这里只取绝对值，无妨
+
+    def farthest(sel):
+        ys, xs = np.where(sel)
+        if not len(ys):
+            return None
+        side = max(ox - half_w + xs.min() / scale, ox - half_w + xs.max() / scale,
+                   oy - half_h + ys.min() / scale, oy - half_h + ys.max() / scale,
+                   -(ox - half_w + xs.min() / scale), -(ox - half_w + xs.max() / scale),
+                   -(oy - half_h + ys.min() / scale), -(oy - half_h + ys.max() / scale))
+        return float(side)
+
+    visible = farthest(alpha >= SHADOW_TAIL_VISIBLE_ALPHA)
+    check(visible is not None and visible <= DRAG_BOX_HALF,
+        f"{name}: 看得见的部分（不透明度 ≥{SHADOW_TAIL_VISIBLE_ALPHA}）伸出了拖动框"
+        f"（最远 {visible:.2f} > {DRAG_BOX_HALF} 设计稿单位）")
+
+    everything = farthest(alpha > 0)
+    overflow = (everything or 0) - DRAG_BOX_HALF
+    check(overflow <= SHADOW_TAIL_MAX_OVERFLOW,
+        f"{name}: 阴影尾巴溢出拖动框 {overflow:.2f} 个设计稿单位，"
+        f"容差是 {SHADOW_TAIL_MAX_OVERFLOW}")
+
+
 def verify_mask():
     image = load(MEDIA / MASK_NAME)
     if image is None:
@@ -355,6 +410,7 @@ def main():
         verify_shadow_softness(asset)
         verify_edge_softness(asset)
         verify_canvas_padding(asset, scale)
+        verify_drag_box(asset, scale)
     verify_mask()
 
     if failures:
