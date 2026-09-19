@@ -1,5 +1,9 @@
 {
-  "client": {"version": "12.1.0", "build": "69814", "interface": 120100},
+  "client": {
+    "version": "12.1.0",
+    "build": "69814",
+    "interface": 120100
+  },
   "luals": {
     "version": "3.19.1",
     "url": "https://github.com/LuaLS/lua-language-server/releases/download/3.19.1/lua-language-server-3.19.1-win32-x64.zip",
@@ -16,9 +20,45 @@
     "sha256": "2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333"
   },
   "repositories": {
-    "wow-ui-source": {"url": "https://github.com/Gethe/wow-ui-source.git", "commit": "4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59"},
-    "wow-resources": {"url": "https://github.com/Ketho/BlizzardInterfaceResources.git", "commit": "36dd01db2d8fa5086dffda5cbfb3d55f4a70e526"},
-    "wow-api": {"url": "https://github.com/Ketho/vscode-wow-api.git", "commit": "d0b5b51fac4c52c493371b9b18e66ce604ea4326"}
+    "wow-ui-source": {
+      "url": "https://github.com/Gethe/wow-ui-source.git",
+      "commit": "4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59"
+    },
+    "wow-resources": {
+      "url": "https://github.com/Ketho/BlizzardInterfaceResources.git",
+      "commit": "36dd01db2d8fa5086dffda5cbfb3d55f4a70e526"
+    },
+    "wow-api": {
+      "url": "https://github.com/Ketho/vscode-wow-api.git",
+      "commit": "d0b5b51fac4c52c493371b9b18e66ce604ea4326"
+    }
   },
-  "annotationsStatus": "API 注解与部件方法由 scripts/dev/build_wow_annotations.py 从已固定的暴雪文档生成（annotations/），随客户端补丁重跑；上游 wow-api 仅提供 Lua 标准库、第三方库、类型别名、枚举值与界面源码注解。"
+  "annotationsStatus": "API 注解与部件方法由 scripts/dev/build_wow_annotations.py 从已固定的暴雪文档生成（annotations/），随客户端补丁重跑；上游 wow-api 仅提供 Lua 标准库、第三方库、类型别名、枚举值与界面源码注解。",
+  "wow-addon-test": {
+    "kind": "vendored-skill",
+    "source": {
+      "form": "用户以目录形式提供",
+      "path": "D:\\Downloads\\wow-addon-test",
+      "version": "1.0.0",
+      "acquired": "2026-09-19"
+    },
+    "license": "工具未附 LICENSE；assets/reference/native.lua 为暴雪界面源码方法摘录，权利属原权利人（见技能内 references/THIRD_PARTY_NOTICES.md）",
+    "installed_at": ".agents/skills/wow-addon-test",
+    "fork": {
+      "maintained_in_repo": true,
+      "changes": [
+        "目录按技能规范重排（入口/参考资料/脚本/载荷）",
+        "数据资产改为压缩容器存放，完整性仍按解压后的原始内容校验",
+        "新增数据检查规则库第一条：切换步骤必须让被比较的量可区分",
+        "取值时刻口径写入 references/CONTRACT.md，并加固定顺序回归",
+        "清理检查拆成「适用性」与「结果」两个字段",
+        "自测报告输出参数化，默认写系统临时目录",
+        "压缩资产去掉头部生成时刻（mtime=0），重生成字节可复现，并加自测项看住",
+        "catalog/validate 补 --output：屏幕输出受预算限制，完整结果必须另有去处",
+        "参考文档修正失效路径（bootstrap/run.cmd/examples/reports/reference 等旧目录），并加检查看住"
+      ],
+      "upgrade": "上游更新按合并处理，不整体替换"
+    },
+    "notes": "自测与示例回归随技能分发；根目录登记统一验证入口，见 .build-and-verify/config.json"
+  }
 }

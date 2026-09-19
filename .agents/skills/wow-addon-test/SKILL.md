@@ -19,7 +19,9 @@ python <技能目录>/scripts/wowtest.py run --config <项目>/.wow-test/wowtest
        --output <项目>/.wow-test/report.json --json
 ```
 
-Lua 后端由环境变量 `WOWTEST_LUA` 指定（本仓库固定指向仓库自带的 Lua 5.1 解释器）。
+Lua 后端由环境变量 `WOWTEST_LUA` 指定（宿主仓库若固定了后端，会通过这个变量传进来）；
+未设置时 `doctor` 会按「`lupa.lua51` → 本机 Lua 共享库 → 本机 Lua 程序」的顺序自动探测并报出
+选了哪一个。技能自身不安装任何东西。
 
 ## 流程
 

@@ -19,6 +19,18 @@ def selftest(report_path=None):
         except typ:return True
         raise AssertionError('expected exception')
     check('data_integrity_and_40_spec_ids',lambda:core.validate_data(cases,profiles,baseline))
+    # 压缩资产不得带生成时刻：带时间戳的容器每次重生成字节都不同，摘要会对不上，
+    # 版本管理里产生假差异，也毁掉「重生成可复现」这条承诺。
+    def gzip_assets_are_timestamp_free():
+        stamped=[]
+        for asset in sorted(ASSETS.glob('data/*.gz')):
+            head=asset.read_bytes()[:10]
+            yes(head[:2]==b'\x1f\x8b','不是 gzip 容器：'+asset.name)
+            mtime=int.from_bytes(head[4:8],'little')
+            if mtime!=0:stamped.append(f'{asset.name} 的头部时间戳={mtime}')
+        yes(not stamped,'压缩资产带生成时刻：'+'; '.join(stamped))
+        return {'assets':len(list(ASSETS.glob('data/*.gz')))}
+    check('gzip_assets_are_timestamp_free',gzip_assets_are_timestamp_free)
     # 数据检查规则库第一条：切换步骤必须让**被比较的量**可区分。
     # 判据走正式比较口径 diff，不采用「数值不相等」这种宽判据。
     def discriminating():

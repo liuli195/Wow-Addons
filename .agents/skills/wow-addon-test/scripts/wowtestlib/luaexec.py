@@ -31,7 +31,9 @@ def backend() -> dict:
             path = shutil.which(name)
             if path:
                 return {'available': True, 'kind': 'executable', 'path': path}
-    return {'available': False, 'reason': '需要 Lupa，或 WOWTEST_LUA 指定的 Lua 程序。执行 bootstrap.py。'}
+    return {'available': False,
+            'reason': '未找到可用的 Lua 后端：设置 WOWTEST_LUA 指向 Lua 程序或共享库，'
+                      '或安装 lupa.lua51。本技能不修改系统与用户级环境。'}
 
 def _library_eval(source: str, path: str) -> str:
     lib = ctypes.CDLL(path)

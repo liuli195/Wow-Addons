@@ -155,8 +155,10 @@ def main():
  for name,data in [('profiles.json',ps),('cases.json',cs)]:
   target=ASSETS/'data'/(name+'.gz')
   target.parent.mkdir(parents=True,exist_ok=True)
-  with gzip.open(target,'wt',encoding='utf-8',newline='\n') as handle:
-   handle.write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+  # mtime=0：容器里不留生成时刻，重生成才是字节可复现的（与 maintain.py 一致）
+  payload=(json.dumps(data,ensure_ascii=False,indent=2)+'\n').encode('utf-8')
+  with gzip.GzipFile(target,'wb',compresslevel=9,mtime=0) as handle:
+   handle.write(payload)
   (ASSETS/'data'/name).unlink(missing_ok=True)
  print(f'{len(ps)} specs; {len(cs)} cases; {sum(len(c["steps"])for c in cs)} checkpoints')
 if __name__=='__main__':main()

@@ -4,7 +4,7 @@
 
 ## 工具启动
 
-运行本技能 `scripts/wowtest.py doctor --json`。目录中存在 `.venv` 时优先使用该环境的 Python。缺 Lua 时，用户已授权安装则执行工具根目录 `bootstrap.py`；需要网络仅发生在依赖安装，不上传代码。
+运行本技能 `scripts/wowtest.py doctor --json`。技能是纯 Python 标准库实现，**不需要安装任何 Python 依赖**，也不往用户级写东西。Lua 后端由 `doctor` 报出：优先 `WOWTEST_LUA` 指定的程序，其次 `lupa.lua51`，再次本机 Lua 共享库或可执行程序。三者都没有时，把 `WOWTEST_LUA` 指向一个 Lua 程序即可——这一步由用户决定，技能不代为安装。
 
 ## 定位生产逻辑
 

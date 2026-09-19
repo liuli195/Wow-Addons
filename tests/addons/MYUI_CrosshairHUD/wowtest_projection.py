@@ -34,14 +34,25 @@ RATIO_TOLERANCE = 1e-6
 RUNE_STALENESS_TOLERANCE = 0.02
 
 # 已批准的产品差异：仅适用于下列用例中**事先确认的那些字段**，其它字段仍然照常判失败。
+# 已批准的产品差异：**逐字段**登记，且每一条都带「该产品期望是什么」。
+# 只放行被登记的那一个字段，并核对观测值确实符合事先确认的产品期望——
+# 不符合的，即使是已登记的用例、组件，仍然判失败。
+FIXED_POWER_TYPE = 6  # 死亡骑士：符能
+
 KNOWN_DIFFERENCES = {
     "disconnect-reconnect": {
-        "components": ("health", "primary"),
-        "reason": "断线期间保持既有读数链，不采用原生的满格＋置灰表现（已批准）",
+        "fields": {
+            ("health", "ratio"): ("input", "断线期间继续遵循既有读数链：比例应等于该步输入"),
+            ("primary", "ratio"): ("input", "断线期间继续遵循既有读数链：比例应等于该步输入"),
+        },
+        "reason": "不采用原生的满格＋置灰表现（已批准）",
     },
     "primary-type-roundtrip": {
-        "components": ("primary",),
-        "reason": "主资源类型固定为符能（死亡骑士专用插件），不跟随被报告的类型（已批准）",
+        "fields": {
+            ("primary", "type"): ("fixed_power_type", "主资源类型固定为符能，不跟随被报告的类型"),
+            ("primary", "ratio"): ("fixed_power_ratio", "按固定的符能读数：比例应等于符能的比例"),
+        },
+        "reason": "死亡骑士专用插件（已批准）",
     },
 }
 
@@ -101,7 +112,7 @@ def project_reference(snapshot, step_time):
     return reference
 
 
-def project_observed(observed, step_time):
+def project_observed(observed):
     """插件实际观测 → 观测比例与状态。缺失读数显式标为无效，不补默认值。"""
     actual = {"health": {"valid": observed.get("has_health") is True}}
     # 类型取自适配器观测到的**实际请求值**；观测不到时留空，不做猜测
@@ -126,27 +137,72 @@ def _close(left, right, tolerance=RATIO_TOLERANCE):
     return left is not None and right is not None and abs(left - right) <= tolerance
 
 
-def compare_component(component, reference, actual, known):
-    """返回该组件的差异列表；已登记的产品差异只放行它自己的那些字段。"""
+def _registered(policy, component, kind):
+    """取出该字段的登记条目（期望口径 + 文字说明）；没登记就是 None。"""
+    return (policy or {}).get("fields", {}).get((component, kind))
+
+
+def _input_ratio(step_state, component):
+    """该步输入里对应的资源比例：生命取生命档，主资源取**被报告的那个类型**档。"""
+    if component == "health":
+        health = step_state["health"]
+        return health["current"] / (health["maximum"] or 1)
+    entry = step_state["powers"][str(step_state["primary"]["type"])]
+    return entry["current"] / (entry["maximum"] or 1)
+
+
+def approved_expectation(component, kind, policy, step_state):
+    """已登记差异的「该产品期望值」；没登记就返回 None——不放行。"""
+    entry = _registered(policy, component, kind)
+    if entry is None:
+        return None
+    expectation = entry[0]
+    if expectation == "input":
+        return _input_ratio(step_state, component)
+    if expectation == "fixed_power_type":
+        return FIXED_POWER_TYPE
+    if expectation == "fixed_power_ratio":  # 固定读符能：应等于符能那一档的比例
+        resource = step_state["powers"][str(FIXED_POWER_TYPE)]
+        return resource["current"] / (resource["maximum"] or 1)
+    return None
+
+
+def _classified(component, kind, reference_value, observed_value, policy, step_state):
+    """把一处差异归类：已登记**且观测值符合事先确认的产品期望**才算已知差异。"""
+    difference = {"component": component, "kind": kind,
+                  "expected": reference_value, "observed": observed_value}
+    entry = _registered(policy, component, kind)
+    approved = approved_expectation(component, kind, policy, step_state)
+    if approved is None:
+        difference["known"] = False
+        difference["detail"] = "该字段未登记已知差异，按失败处理"
+        return difference
+    difference["approved_expected"] = approved
+    if _close(approved, observed_value):
+        difference["known"] = True
+        difference["approved_by"] = entry[1]
+        return difference
+    difference["known"] = False
+    difference["detail"] = f"该字段已登记差异，但观测值不符合已批准的产品期望（期望 {approved}）"
+    return difference
+
+
+def compare_component(component, reference, actual, policy, step_state,
+                      components=core.COMPONENTS):
+    """返回该组件的差异列表；已登记的产品差异**逐字段**放行，并核对产品期望。"""
     differences = []
     if component in ("health", "primary"):
         if not actual.get("valid"):
             differences.append({"component": component, "kind": "unreadable", "detail": "插件未产出读数"})
             return differences
         if not _close(reference.get("ratio"), actual.get("ratio")):
-            differences.append({
-                "component": component, "kind": "ratio",
-                "expected": reference.get("ratio"), "observed": actual.get("ratio"),
-                "known": component in known,
-            })
+            differences.append(_classified(component, "ratio", reference.get("ratio"),
+                                           actual.get("ratio"), policy, step_state))
         # 类型只在**两侧都观测到**时比较；观测不到时列入「未比较」，不冒充已验证
         if component == "primary" and actual.get("type") is not None \
                 and reference.get("type") != actual.get("type"):
-            differences.append({
-                "component": component, "kind": "type",
-                "expected": reference.get("type"), "observed": actual.get("type"),
-                "known": component in known,
-            })
+            differences.append(_classified(component, "type", reference.get("type"),
+                                           actual.get("type"), policy, step_state))
         return differences
     ref_nodes = reference.get("nodes", [])
     act_nodes = actual.get("nodes", [])
@@ -170,7 +226,7 @@ def judge(cases, baseline, actual, components=core.COMPONENTS):
     """逐用例、逐检查点判定。返回可直接复核的报告。"""
     case_of = {c["id"]: c for c in cases}
     ref_of = {r["id"]: r for r in baseline}
-    rows, totals = [], {"cases": 0, "passed": 0, "known_difference": 0, "difference": 0, "errors": 0, "checkpoints": 0}
+    rows, totals = [], {"cases": 0, "pass": 0, "known_difference": 0, "difference": 0, "errors": 0, "checkpoints": 0}
     for record in actual:
         case = case_of.get(record["id"])
         reference_case = ref_of.get(record["id"])
@@ -180,7 +236,7 @@ def judge(cases, baseline, actual, components=core.COMPONENTS):
             rows.append(row)
             totals["errors"] += 1
             continue
-        known = KNOWN_DIFFERENCES.get(record["id"].split(".", 1)[1], {}).get("components", ())
+        policy = KNOWN_DIFFERENCES.get(record["id"].split(".", 1)[1])
         snapshots = record.get("snapshots") or []
         if len(snapshots) != len(case["steps"]):
             row["errors"].append({"stage": "snapshots", "message": "检查点数目与用例步骤不一致"})
@@ -195,9 +251,11 @@ def judge(cases, baseline, actual, components=core.COMPONENTS):
                 row["errors"].append({"stage": "observed", "step": index, "message": "适配器未交出可读快照"})
                 continue
             reference = project_reference(expected, step["state"]["time"])
-            projection = project_observed(actual_row, step["state"]["time"])
+            projection = project_observed(actual_row)
             for component in components:
-                for difference in compare_component(component, reference[component], projection[component], known):
+                for difference in compare_component(component, reference[component],
+                                                    projection[component], policy,
+                                                    step["state"], components):
                     difference["step"] = index
                     row["differences"].append(difference)
         blocked = [d for d in row["differences"] if not d.get("known")]
@@ -206,4 +264,5 @@ def judge(cases, baseline, actual, components=core.COMPONENTS):
         rows.append(row)
         totals["cases"] += 1
         totals[row["status"]] = totals.get(row["status"], 0) + 1
-    return {"totals": totals, "cases": rows, "known_differences": KNOWN_DIFFERENCES}
+    return {"totals": totals, "cases": rows, "known_differences": KNOWN_DIFFERENCES,
+            "not_compared": NOT_COMPARED}

@@ -72,6 +72,8 @@ def main(argv=None):
     sub=parser.add_subparsers(dest='cmd',required=True)
     for name in ('doctor','catalog','validate'):
         p=sub.add_parser(name);p.add_argument('--json',action='store_true')
+        # 输出预算只约束**屏幕上那一份**；完整内容必须另有去处，否则会被静默截掉拿不回来
+        p.add_argument('--output',default=None,help='把完整结果落盘（不受输出预算限制）')
     p=sub.add_parser('selftest');p.add_argument('--json',action='store_true')
     p.add_argument('--output',default=None,help='自测报告落盘路径；默认写系统临时目录，不写技能目录')
     p=sub.add_parser('init');p.add_argument('--project',default='.');p.add_argument('--name',default='MyAddon');p.add_argument('--json',action='store_true')
@@ -89,8 +91,13 @@ def main(argv=None):
             b=backend();obj={'version':__version__,'python':sys.version.split()[0],'platform':platform.platform(),'data_integrity':'pass','lua':b,'scope':manifest['scope'],'note':'联网只用于可选依赖安装/源码复核；测试不联网。'}
             emit(obj,args);return 0 if b['available']else 2
         if args.cmd=='catalog':
-            emit({'version':__version__,'data_summary':core.validate_data(cases,profiles,baseline),'scope':manifest['scope'],'profiles':profiles,'contract':'docs/CONTRACT.md','sources':'reference/sources.json'},args);return 0
-        if args.cmd=='validate':emit(core.validate_data(cases,profiles,baseline),args);return 0
+            obj={'version':__version__,'data_summary':core.validate_data(cases,profiles,baseline),'scope':manifest['scope'],'profiles':profiles,'contract':'references/CONTRACT.md','sources':'assets/reference/sources.json'}
+            if args.output:core.write_json(args.output,obj)
+            emit(obj,args);return 0
+        if args.cmd=='validate':
+            obj=core.validate_data(cases,profiles,baseline)
+            if args.output:core.write_json(args.output,obj)
+            emit(obj,args);return 0
         if args.cmd=='selftest':
             from tests.verify import selftest
             obj=selftest(getattr(args,'output',None));emit(obj,args);return 0 if obj['status']=='pass'else 1
