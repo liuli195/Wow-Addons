@@ -1,0 +1,262 @@
+{
+  "status": "pass",
+  "checks": 32,
+  "passed": 32,
+  "results": [
+    {
+      "name": "data_integrity_and_40_spec_ids",
+      "status": "pass",
+      "details": {
+        "specs": 40,
+        "cases": 846,
+        "checkpoints": 1613
+      }
+    },
+    {
+      "name": "boolean_not_equal_to_number",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "missing_fields_detected",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "list_length_detected",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "absolute_float_tolerance",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "nonfinite_numbers_rejected",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "unknown_spec_not_zero_pass",
+      "status": "pass",
+      "details": true
+    },
+    {
+      "name": "empty_case_selection_not_pass",
+      "status": "pass",
+      "details": true
+    },
+    {
+      "name": "missing_actual_case_not_pass",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "duplicate_actual_ids_rejected",
+      "status": "pass",
+      "details": true
+    },
+    {
+      "name": "syntax_error_reported",
+      "status": "pass",
+      "details": true
+    },
+    {
+      "name": "infinite_loop_terminated",
+      "status": "pass",
+      "details": true
+    },
+    {
+      "name": "unconfigured_api_input_fails",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "unit_event_filter",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "timers_order_and_cancellation",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "nil_rune_tuple_preserved",
+      "status": "pass",
+      "details": null
+    },
+    {
+      "name": "event_addon_full_matrix",
+      "status": "pass",
+      "details": {
+        "cases": 846,
+        "passed": 846,
+        "differences": 0,
+        "errors": 0,
+        "compared_checkpoints": 1613,
+        "selected_specs": 40
+      }
+    },
+    {
+      "name": "poll_addon_full_matrix",
+      "status": "pass",
+      "details": {
+        "cases": 846,
+        "passed": 846,
+        "differences": 0,
+        "errors": 0,
+        "compared_checkpoints": 1613,
+        "selected_specs": 40
+      }
+    },
+    {
+      "name": "deterministic_repeat",
+      "status": "pass",
+      "details": {
+        "cases": 135
+      }
+    },
+    {
+      "name": "mutation_frozen_resource_capacity",
+      "status": "pass",
+      "details": {
+        "detected_cases": 1,
+        "first_case": "spec-259.resource-cap-roundtrip",
+        "first_diff": {
+          "path": "$.resource.capacity",
+          "expected": 7,
+          "actual": 6,
+          "step": 2,
+          "label": "resource-cap-roundtrip/2"
+        }
+      }
+    },
+    {
+      "name": "mutation_stale_primary_type",
+      "status": "pass",
+      "details": {
+        "detected_cases": 1,
+        "first_case": "spec-259.primary-type-roundtrip",
+        "first_diff": {
+          "path": "$.primary.maximum",
+          "expected": 1000,
+          "actual": 100,
+          "step": 2,
+          "label": "primary-type-roundtrip/2"
+        }
+      }
+    },
+    {
+      "name": "mutation_double_shard_conversion",
+      "status": "pass",
+      "details": {
+        "detected_cases": 27,
+        "first_case": "spec-267.health-empty",
+        "first_diff": {
+          "path": "$.resource.amount",
+          "expected": 2,
+          "actual": 0.2,
+          "step": 1,
+          "label": "health-empty/1"
+        }
+      }
+    },
+    {
+      "name": "mutation_missing_sixth_rune",
+      "status": "pass",
+      "details": {
+        "detected_cases": 26,
+        "first_case": "spec-250.health-empty",
+        "first_diff": {
+          "path": "$.resource.nodes.length",
+          "expected": 6,
+          "actual": 5,
+          "step": 1,
+          "label": "health-empty/1"
+        }
+      }
+    },
+    {
+      "name": "mutation_missing_maxpower_event",
+      "status": "pass",
+      "details": {
+        "detected_cases": 2,
+        "first_case": "spec-259.primary-max-roundtrip",
+        "first_diff": {
+          "path": "$.primary.maximum",
+          "expected": 200,
+          "actual": 100,
+          "step": 2,
+          "label": "primary-max-roundtrip/2"
+        }
+      }
+    },
+    {
+      "name": "cleanup_does_not_hide_timer_leak",
+      "status": "pass",
+      "details": "live timer detected before forced environment disposal"
+    },
+    {
+      "name": "project_path_escape_rejected",
+      "status": "pass",
+      "details": true
+    },
+    {
+      "name": "non_destructive_init_and_skill_install",
+      "status": "pass",
+      "details": "init and skill do not overwrite user edits"
+    },
+    {
+      "name": "input_answer_separation",
+      "status": "pass",
+      "details": "input artifacts and oracle artifacts are separate; not an adversarial sandbox"
+    },
+    {
+      "name": "unicode_and_space_project_path",
+      "status": "pass",
+      "details": {
+        "cases": 10,
+        "passed": 10,
+        "differences": 0,
+        "errors": 0,
+        "compared_checkpoints": 30,
+        "selected_specs": 2
+      }
+    },
+    {
+      "name": "installed_skill_entry_works",
+      "status": "pass",
+      "details": "installed skill resolves shared tool from another working directory"
+    },
+    {
+      "name": "source_audit_lexer",
+      "status": "pass",
+      "details": "strings/comments and token matching checked; network fetch not executed"
+    },
+    {
+      "name": "native_method_regeneration_exact",
+      "status": "pass",
+      "details": {
+        "cases": 846
+      }
+    }
+  ],
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "lua": {
+      "available": true,
+      "kind": "executable",
+      "path": "D:\\My Project\\Wow Addons\\.tools\\lua-5.1.5\\src\\lua.exe"
+    }
+  },
+  "duration_seconds": 5.084,
+  "not_executed": [
+    "Windows installation/runtime",
+    "Actual MYUI integration",
+    "Real WoW client/talents/Secret Values",
+    "Codex or Claude end-to-end autonomous onboarding"
+  ]
+}

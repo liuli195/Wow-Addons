@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "project_root": ".",
+  "addon_name": "poll-hud",
+  "adapter": "adapter.lua",
+  "files": [
+    "addon.lua"
+  ],
+  "specs": "all",
+  "components": [
+    "health",
+    "primary",
+    "resource"
+  ],
+  "require_cleanup": true,
+  "timeout_seconds": 60
+}

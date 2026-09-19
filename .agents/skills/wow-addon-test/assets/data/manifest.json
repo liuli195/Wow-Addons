@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "version": "1.0.0",
+  "reference": {
+    "repository": "Gethe/wow-ui-source",
+    "commit": "78282522143e25c3540583734fd192c3d69be910",
+    "build": "12.1.0.69875",
+    "execution": "reviewed_original_method_excerpts",
+    "client_verified": false
+  },
+  "scope": {
+    "components": [
+      "health",
+      "primary",
+      "resource"
+    ],
+    "specs": 40,
+    "cases": 846,
+    "checkpoints": 1613,
+    "kind": "synthetic-basic-logic",
+    "native_resource_families": [
+      "combo",
+      "druid_combo",
+      "holy",
+      "chi",
+      "arcane",
+      "shards",
+      "essence",
+      "runes",
+      "stagger"
+    ],
+    "none_policy": "explicit-basic-contract-not-gameplay-absence",
+    "extra_resource_gaps": [
+      263,
+      581,
+      1480,
+      1473
+    ],
+    "secret_values": false,
+    "pixel_tests": false
+  },
+  "sha256": {
+    "data/profiles.json": "9ca144159b099ad73694f63dee00423d405a5919973b24f4f0ccbad04b3ebd53",
+    "data/cases.json": "615869c0230265ebb1bf94101b2bf0b0891967a4395f9a60fa2c9d807696beea",
+    "data/baselines.json": "1dc020c0a3f8c858c804afcbac4bd17c59a1632dcb307d4eaf4fdb163e75f12e",
+    "reference/native.lua": "6d1dd1d14c7426b06f1a3fa10f3d8a76ffbb96099664f75699cae7bc0d61a1b9",
+    "reference/driver.lua": "96def56117fffd5cccadd630ab121090e2454ec0aa259c642cbc52b47c919333",
+    "reference/sources.json": "52174f50b83bf9398479ceb9a18228e813fe0218e990aaebfabd3e5c6b1cd5c1",
+    "runtime/base.lua": "01ee8571cc87e9be2eb8ec58d23a690154458b65036a4cfedd5454025e80dcd7",
+    "runtime/consumer.lua": "c18f4e3ec2581c9dfaa9b74df4ef15505132ba9169bb16b78feab5522ca68739"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "repository": "Gethe/wow-ui-source",
+  "commit": "78282522143e25c3540583734fd192c3d69be910",
+  "build": "12.1.0.69875",
+  "base_path": "Interface/AddOns/Blizzard_UnitFrame/Mainline/",
+  "execution_scope": "Original method excerpts; source-selected scalar/class resource leaves, not complete client/XML initialization",
+  "files": {
+    "UnitFrame.lua": {"git_blob": "b0c5302b4770a59e7910ce9fc131a3af0b666f03", "methods": ["UnitFrameHealthBar_Update", "UnitFrameManaBar_UpdateType", "UnitFrameManaBar_Update"]},
+    "ClassResourceBarTemplate.lua": {"git_blob": "ea9be26b93e5e98f996a8aebeb88fd4585587b74", "methods": ["ClassResourceBarMixin:UpdateMaxPower"]},
+    "RogueComboPointBar.lua": {"git_blob": "9578361a19efdc0e427a7f827adbe3c5de5b0152", "methods": ["RogueComboPointBarMixin:UpdatePower"]},
+    "DruidComboPointBar.lua": {"git_blob": "a244c5c0c174a9b9d02156080661833c2864ed96", "methods": ["DruidComboPointBarMixin:ShouldShowBar", "DruidComboPointBarMixin:UpdatePower"]},
+    "MageArcaneChargesBar.lua": {"git_blob": "22d1e5ecf373649f585758aa0b24b2100c34f2b6", "methods": ["MagePowerBar:UpdatePower"]},
+    "MonkHarmonyBar.lua": {"git_blob": "4f569e09beafb72193398d018099a206a383f8c6", "methods": ["MonkPowerBar:UpdatePower"]},
+    "PaladinPowerBar.lua": {"git_blob": "c162bda6972d9391649de723d998310408df6295", "methods": ["PaladinPowerBar:UpdatePower"]},
+    "ShardBar.lua": {"git_blob": "2efc82d7f64ac81fd5ecd979c696dc6f6cfbeffc", "methods": ["WarlockPowerBar:UpdatePower", "WarlockPowerBar:UnitPower"]},
+    "EssenceFramePlayer.lua": {"git_blob": "2c309ca224da6ae26888806859e58b6160c4e557", "methods": ["EssencePowerBar:UpdatePower"]},
+    "RuneFrame.lua": {"git_blob": "02c1885abb7d10313b6e9fdf080d1c9765ee6ba2", "methods": ["RuneButtonMixin:UpdateState"]},
+    "MonkStaggerBar.lua": {"git_blob": "17c0b4e95370da80afa1f023a931b50d7b5f1eb4", "methods": ["MonkStaggerBarMixin:GetCurrentPower", "MonkStaggerBarMixin:GetCurrentMinMaxPower"]}
+  },
+  "identity_source": {
+    "repository": "Twintop/TwintopInsanityBar",
+    "commit": "4fd9767274df462f70b01cce96c0ff011cf6cc67",
+    "path": "Localization/Localization.lua",
+    "git_blob": "678bce6832b7cfe93334e14aeb8a4006cbfd14fe",
+    "claim": "40 specialization IDs; not a complete independently sampled resource mapping"
+  },
+  "review": {
+    "method_contents": "Read via GitHub connector and included as original statements; whitespace/comments may differ",
+    "byte_complete_upstream_download": false,
+    "original_method_execution": true,
+    "full_xml_inheritance_execution": false,
+    "live_client_execution": false,
+    "prelude": "Mixin tables, Paladin/Rune state constants and Essence FillingAnimationTime are explicit initial declarations copied semantically from the same files",
+    "observation_boundaries": {
+      "health_primary": "SetValue and SetMinMaxValues requests; appearance and heal prediction excluded",
+      "discrete_points": "Point Update/SetActive arguments after native capacity update",
+      "holy": "Rune SetVisualState projected to full vs inactive; not animation readiness",
+      "shards": "Processed amount passed by the original Warlock bar; not per-pixel tenths rounding",
+      "essence": "Full/empty/recharge requests at a fresh settled sample; duration normalized from the native multiplier",
+      "runes": "Original UpdateState branch requests, not cooldown swipe or sorted placement",
+      "stagger": "Original GetCurrentPower/GetCurrentMinMaxPower results",
+      "none": "Explicit local basic contract; not a native proof of no other resource"
+    }
+  }
+}
