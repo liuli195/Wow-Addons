@@ -312,6 +312,24 @@
         ]
       },
       {
+        "id": "verify.wowaddontest-dk",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          ".agents/skills/wow-addon-test/**",
+          ".build-and-verify/config.json"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          ".agents/skills/wow-addon-test/**",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".build-and-verify/config.json"
+        ]
+      },
+      {
         "id": "verify.sim2gse-probe-test",
         "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/Sim2GSEProbe/test_probe.py",
         "checkParallel": true,
