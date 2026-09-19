@@ -84,6 +84,60 @@ class DeathKnightComparisonTest(unittest.TestCase):
         self.assertEqual(errors, [], f"存在执行错误：{errors[:3]}")
 
 
+class LockedDataCheckTest(unittest.TestCase):
+    """逐条核对与失败路径：不只看总数，也不允许"缺读数"被当成通过。"""
+
+    def _locked(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from wowtestlib import core
+        _, cases, baseline, _ = core.data()
+        dk_cases = [c for c in cases if c["spec_id"] in (250, 251, 252)]
+        dk_ref = [b for b in baseline if b["id"].split(".")[0][5:] in DK_SPECS]
+        return dk_cases, dk_ref
+
+    def test_every_locked_case_and_checkpoint_is_accounted_for(self):
+        _, report, _ = run_tool("dk-run.json")
+        dk_cases, _ = self._locked()
+        expected = {c["id"]: len(c["steps"]) for c in dk_cases}
+        actual = {r["id"]: len(r.get("snapshots") or [])
+                  for r in json.loads(ACTUAL.read_text(encoding="utf-8"))}
+        self.assertEqual(set(expected), set(actual), "用例清单与锁定数据不一致")
+        mismatched = {cid: (steps, actual[cid]) for cid, steps in expected.items()
+                      if actual[cid] != steps}
+        self.assertEqual(mismatched, {}, f"检查点数与锁定数据不一致：{list(mismatched)[:3]}")
+
+    def test_empty_selection_is_not_a_pass(self):
+        result = subprocess.run(
+            [sys.executable, str(ENTRY), "run", "--config", str(CONFIG),
+             "--case", "no-such-case", "--output", str(OUTPUT_DIR / "dk-empty.json"), "--json"],
+            capture_output=True, text=True, encoding="utf-8", timeout=600,
+        )
+        self.assertNotEqual(result.returncode, 0, "空选择不得返回成功")
+        self.assertIn("tool_error", result.stderr, "空选择应显式报错（工具把错误写 stderr）")
+
+    def test_unreadable_reading_is_not_a_silent_pass(self):
+        """缺读数必须被显式判为无效，不得补默认值后通过。"""
+        _, report, _ = run_tool("dk-run.json")
+        dk_cases, dk_ref = self._locked()
+        observed = json.loads(ACTUAL.read_text(encoding="utf-8"))
+        for record in observed:
+            record["snapshots"] = [dict(s, observed=dict(s["observed"], has_health=False))
+                                   for s in record["snapshots"]]
+        import wowtest_projection as projection
+        judged = projection.judge(dk_cases, dk_ref, observed)
+        self.assertEqual(judged["totals"].get("pass", 0), 0, "缺读数却仍有用例被判通过")
+        self.assertGreater(judged["totals"].get("difference", 0), 0, "缺读数未被判为差异")
+
+    def test_repeat_run_leaves_tracked_files_unchanged(self):
+        def tracked_state():
+            return subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                                  capture_output=True, text=True, encoding="utf-8").stdout
+        before = tracked_state()
+        run_tool("dk-run.json")
+        run_tool("dk-run.json")
+        self.assertEqual(before, tracked_state(), "重复运行改动了受版本控制的文件")
+
+
 class DefectDetectionTest(unittest.TestCase):
     """定向缺陷注入：证明这套比较真的能抓到错误，而不是橡皮图章。
 
