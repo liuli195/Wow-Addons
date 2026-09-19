@@ -13,7 +13,9 @@ def generate(cases,profiles):
  return evaluate(source,120)
 def basewrap(code):return 'function()\n'+code+'\nend'
 if __name__=='__main__':
- cs=json.loads((ASSETS/'data/cases.json').read_text('utf-8'));ps=json.loads((ASSETS/'data/profiles.json').read_text('utf-8'))
+ import sys as _sys;_sys.path.insert(0,str(ROOT/'scripts'))
+ from wowtestlib import core as _core
+ cs=_core.load_json(ASSETS/'data/cases.json');ps=_core.load_json(ASSETS/'data/profiles.json')
  path=pathlib.Path(sys.argv[1]) if len(sys.argv)>1 else ROOT/'reports/reference-candidate.json'
  if path.exists():raise SystemExit(f'拒绝覆盖已有候选文件: {path}')
  path.parent.mkdir(parents=True,exist_ok=True)

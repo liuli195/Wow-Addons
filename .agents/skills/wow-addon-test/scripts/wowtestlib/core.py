@@ -48,6 +48,54 @@ def check_integrity():
         if hashlib.sha256(read_asset_bytes(p)).hexdigest()!=expected:raise ToolError('基线/参照完整性检查失败: '+name+'；不要通过修改清单掩盖差异')
     return manifest
 
+# ---- 数据检查规则库 ---------------------------------------------------------
+# 规则库 ≠ 用例库：这里放的是**针对数据本身**的机械检查，可长期逐条沉淀。
+# 第一条只解决一个已看到的形状：**切换步骤没有让被比较的量发生变化**——
+# 数值不动，测试就分不出「跟着变了」与「压根没理它」，那条用例的绿不说明任何事。
+SWITCH_RULE_CASES=('primary-type-roundtrip','specialization-roundtrip','druid-forms')
+
+def _power_ratio(state,power_type):
+    entry=state['powers'].get(str(power_type))
+    return None if entry is None else entry['current']/(entry['maximum'] or 1)
+
+def _compared_values(snapshot):
+    """正式比较用到的量：生命比例、主资源比例、职业资源。"""
+    health=snapshot['health']
+    primary=snapshot['primary']
+    return (health['value']/(health['maximum'] or 1),
+            primary['value']/(primary['maximum'] or 1),
+            json.dumps(snapshot['resource'],sort_keys=True))
+
+def _identity(state):
+    i=state['identity']
+    return (i.get('class_id'),i.get('spec_index'),i.get('form'))
+
+def discriminating_gaps(cases,baseline):
+    """返回无判别力清单。判定一律走正式比较口径 diff，不采用「数值不相等」这种宽判据。"""
+    reference={row['id']:row for row in baseline}
+    gaps=[]
+    for case in cases:
+        kind=case['id'].split('.',1)[1]
+        if kind not in SWITCH_RULE_CASES:continue
+        snapshots=reference[case['id']]['snapshots']
+        steps=case['steps']
+        for index in range(1,len(steps)):
+            before,after=steps[index-1]['state'],steps[index]['state']
+            switched=(before['primary']['type']!=after['primary']['type'])or(_identity(before)!=_identity(after))
+            if not switched:continue
+            # 类型可区分：切换后的同一份输入里，新旧两种类型的比例必须能被正式比较区分
+            if before['primary']['type']!=after['primary']['type']:
+                old_ratio=_power_ratio(after,before['primary']['type'])
+                new_ratio=_power_ratio(after,after['primary']['type'])
+                if old_ratio is not None and not diff(old_ratio,new_ratio):
+                    gaps.append({'case':case['id'],'step':index+1,'rule':'类型可区分',
+                                 'detail':f'新旧类型比例同为 {new_ratio}，固定读某类型的实现无法被区分'})
+            # 前后可区分：**本次要验证的那个量**必须相对上一检查点可区分，无关组件的变化不能代替
+            if not diff(_compared_values(snapshots[index-1]),_compared_values(snapshots[index])):
+                gaps.append({'case':case['id'],'step':index+1,'rule':'前后可区分',
+                             'detail':'切换后被比较的量与上一检查点不可区分，沿用旧读数的实现无法被检出'})
+    return gaps
+
 def validate_data(cases,profiles,baseline):
     if len(profiles)!=40 or len({p['spec_id']for p in profiles})!=40:raise ToolError('本版应有 40 个唯一专精')
     pids={p['spec_id']for p in profiles};ids=set()
@@ -175,7 +223,7 @@ def compare(cases,baseline,actual,profiles,components=COMPONENTS,require_cleanup
     wanted={c['id']for c in cases};extras=set(ids)-wanted
     if extras:raise ToolError('actual output contains unselected cases: '+','.join(sorted(extras)[:5]))
     bm={r['id']:r for r in baseline};am={r['id']:r for r in actual}
-    rows=[];passed=differed=errors=0;checks=0
+    rows=[];passed=differed=errors=0;checks=0;cleanup_failures=0
     for c in cases:
         a=am.get(c['id']);r={'id':c['id'],'spec_id':c['spec_id'],'status':'pass','differences':[],'errors':[],'checkpoints':len(c['steps'])}
         if a is None:r['errors'].append({'stage':'output','message':'missing case output'})
@@ -193,7 +241,9 @@ def compare(cases,baseline,actual,profiles,components=COMPONENTS,require_cleanup
                     checks+=1
             if require_cleanup:
                 clean=a.get('cleanup')
-                if not isinstance(clean,dict)or clean!={'event_subscriptions':0,'live_timers':0,'update_scripts':0}:r['errors'].append({'stage':'cleanup','message':'停止后仍有订阅/定时器，或没有清理报告','actual':clean})
+                if not isinstance(clean,dict)or clean!={'event_subscriptions':0,'live_timers':0,'update_scripts':0}:
+                    cleanup_failures+=1
+                    r['errors'].append({'stage':'cleanup','message':'停止后仍有订阅/定时器，或没有清理报告','actual':clean})
         if r['errors']:r['status']='error';errors+=1
         elif r['differences']:r['status']='difference';differed+=1
         else:passed+=1
@@ -204,7 +254,13 @@ def compare(cases,baseline,actual,profiles,components=COMPONENTS,require_cleanup
         coverage.append({'spec_id':p['spec_id'],'class_name':p['class_name'],'spec_name':p['spec_name'],'cases':len(selected),'passed':sum(r['status']=='pass'for r in selected),
          'status':'not_selected'if not selected else 'pass'if all(r['status']=='pass'for r in selected)else 'issues',
          'components':list(components)if selected else [],'native_resource_seed':p['resource_seed'],'extra_resource_gaps':p['extra_resource_gaps'],'gameplay_verified':False})
+    # 清理检查：**适用性与结果分成两个字段**。
+    # 「不适用」不是「通过」——它表示这条断言根本没有执行，不能被算成已满足。
+    cleanup={'applicability':'applied' if require_cleanup else 'not_applicable',
+     'status':('failed' if cleanup_failures else 'passed') if require_cleanup else 'not_run',
+     'reason':'' if require_cleanup else '该插件没有停止生命周期，本项不适用；未执行的断言不计为通过'}
     return {'schema_version':1,'status':'error'if errors else 'difference'if differed else 'pass',
+     'cleanup':cleanup,
      'summary':{'cases':len(cases),'passed':passed,'differences':differed,'errors':errors,'compared_checkpoints':checks,'selected_specs':sum(x['cases']>0 for x in coverage)},
      'limits':['普通数值/接口级人工场景；不是实机天赋配置验证','原生参考是已标注方法摘录，不是完整客户端或完整 XML 初始化','未覆盖的额外职业计数见逐专精 gaps；none 只表示本版未选择次级组件','受限值、污染、受保护执行、画面不在本版验收内'],
      'coverage':coverage,'cases':rows}
@@ -220,5 +276,10 @@ def markdown(report):
     if len(issues)>50:parts.append('更多细节见同名 JSON 完整报告。')
     parts.extend(['\n## 专精覆盖','| 职业/专精 | ID | 用例 | 通过 | 状态 | 额外缺口 |','|---|---:|---:|---:|---|---|'])
     for r in report['coverage']:parts.append(f"| {r['class_name']}/{r['spec_name']} | {r['spec_id']} | {r['cases']} | {r['passed']} | {r['status']} | {'；'.join(r['extra_resource_gaps']) or '—'} |")
+    cleanup=report.get('cleanup') or {}
+    if cleanup:
+        label={'applied':'已适用','not_applicable':'不适用'}.get(cleanup.get('applicability'),cleanup.get('applicability'))
+        state={'passed':'通过','failed':'失败','not_run':'未执行（不计为通过）'}.get(cleanup.get('status'),cleanup.get('status'))
+        parts.append(f"\n## 清理检查\n\n适用性：**{label}**　结果：**{state}**\n\n{cleanup.get('reason') or ''}")
     parts.extend(['\n## 验证边界']+report['limits'])
     return '\n'.join(parts)+'\n'

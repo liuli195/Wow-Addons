@@ -70,8 +70,10 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description='魔兽插件纯逻辑测试：本地 CLI（命令行）+ Skill（技能），无服务。')
     parser.add_argument('--version',action='version',version=__version__)
     sub=parser.add_subparsers(dest='cmd',required=True)
-    for name in ('doctor','catalog','validate','selftest'):
+    for name in ('doctor','catalog','validate'):
         p=sub.add_parser(name);p.add_argument('--json',action='store_true')
+    p=sub.add_parser('selftest');p.add_argument('--json',action='store_true')
+    p.add_argument('--output',default=None,help='自测报告落盘路径；默认写系统临时目录，不写技能目录')
     p=sub.add_parser('init');p.add_argument('--project',default='.');p.add_argument('--name',default='MyAddon');p.add_argument('--json',action='store_true')
     p=sub.add_parser('install-skill');p.add_argument('--project',default='.');p.add_argument('--agent',choices=['codex','claude'],required=True);p.add_argument('--json',action='store_true')
     p=sub.add_parser('run');p.add_argument('--config',required=True);p.add_argument('--specs');p.add_argument('--case');p.add_argument('--output',default='.wow-test/report.json');p.add_argument('--save-actual');p.add_argument('--json',action='store_true')
@@ -91,7 +93,7 @@ def main(argv=None):
         if args.cmd=='validate':emit(core.validate_data(cases,profiles,baseline),args);return 0
         if args.cmd=='selftest':
             from tests.verify import selftest
-            obj=selftest();emit(obj,args);return 0 if obj['status']=='pass'else 1
+            obj=selftest(getattr(args,'output',None));emit(obj,args);return 0 if obj['status']=='pass'else 1
         if args.cmd=='reference-check':
             from reference.generate import generate
             actual=generate(cases,profiles)

@@ -79,8 +79,12 @@ def cases():
    s=copy.deepcopy(b);setpower(s,pt,n);add(p,'primary-'+label,[s],['primary','value'])
   s=copy.deepcopy(b);setpower(s,pt,maximum=mx*2)
   add(p,'primary-max-roundtrip',[b,s,b],['primary','maximum','transition'],[[['UNIT_POWER_UPDATE','player',TOKENS[pt]]],[['UNIT_MAXPOWER','player',TOKENS[pt]]],[['UNIT_MAXPOWER','player',TOKENS[pt]]]])
-  s=copy.deepcopy(b);settype(s,3 if pt!=3 else 0)
-  add(p,'primary-type-roundtrip',[b,s,b],['primary','type','synthetic-fault-injection'],description='接口级类型切换；不声称该专精真实具有此形态')
+  # 切换步骤必须让**被比较的量**变得可区分，否则一个固定读某类型的实现照样通过。
+  # 去的方向：新类型的比例与旧类型不同；回的方向：旧类型的比例与切换后不同。
+  s=copy.deepcopy(b);new_pt=3 if pt!=3 else 0
+  settype(s,new_pt);setpower(s,new_pt,max(1,s['powers'][str(new_pt)]['maximum']//4))
+  back=copy.deepcopy(b);setpower(back,pt,max(1,back['powers'][str(pt)]['maximum']//5))
+  add(p,'primary-type-roundtrip',[b,s,back],['primary','type','synthetic-fault-injection'],description='接口级类型切换；不声称该专精真实具有此形态')
   add(p,'unrelated-events',[b,b,b],['health','primary','resource','filter'],[[['PLAYER_ENTERING_WORLD']],[['UNIT_HEALTH','target'],['UNIT_MAXPOWER','target','MANA']],[['UNIT_POWER_FREQUENT','target','COMBO_POINTS'],['UNIT_HEALTH','pet']]])
   add(p,'duplicate-events',[b,b,b],['health','primary','resource','idempotence'])
   s=copy.deepcopy(b);s['health']['current']=800;setpower(s,pt,min(75,mx))
@@ -127,12 +131,22 @@ def cases():
    add(p,'no-selected-secondary',[b],['resource','none'],description='基本契约未选择额外资源；不证明不存在光环/技能计数')
   if p['class_token']=='DRUID':
    states=[]
-   for typ,form in [(p['primary_seed'],b['identity']['form']),(3,1),(1,5),(0,0),(p['primary_seed'],b['identity']['form'])]:
-    s=copy.deepcopy(b);settype(s,typ);s['identity']['form']=form;states.append(s)
+   forms=[(p['primary_seed'],b['identity']['form']),(3,1),(1,5),(0,0),(p['primary_seed'],b['identity']['form'])]
+   for idx,(typ,form) in enumerate(forms,start=1):
+    s=copy.deepcopy(b);settype(s,typ);s['identity']['form']=form
+    # 每一步都让被比较的量跟着变，否则「形态切了但没反应」的实现无法被检出
+    # 步长取 1/7，避开与其它类型默认值（一半）重合的比例
+    s['powers'][str(typ)]['current']=max(1,s['powers'][str(typ)]['maximum']*idx//7)
+    states.append(s)
    add(p,'druid-forms',states,['primary','resource','form','transition'])
   same=[q for q in ps if q['class_id']==p['class_id']]
   q=same[p['spec_index']%len(same)]
-  add(p,'specialization-roundtrip',[b,state(q),b],['health','primary','resource','specialization','transition'])
+  q_state=state(q);q_type=q_state['primary']['type']
+  q_state['powers'][str(q_type)]['current']=max(1,q_state['powers'][str(q_type)]['maximum']//4)
+  # 回程状态同样要让被比较的量可区分，否则「切回来不重新读」无法被检出
+  back=copy.deepcopy(b)
+  back['powers'][str(pt)]['current']=max(1,back['powers'][str(pt)]['maximum']//5)
+  add(p,'specialization-roundtrip',[b,q_state,back],['health','primary','resource','specialization','transition'])
  return ps,out
 
 def main():

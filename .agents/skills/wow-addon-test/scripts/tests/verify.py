@@ -5,7 +5,7 @@ from wowtestlib.luaexec import backend,evaluate,LuaExecutionError,literal
 ROOT=core.ROOT
 ASSETS=core.ASSETS
 
-def selftest():
+def selftest(report_path=None):
     began=time.perf_counter();checks=[]
     def check(name,fn):
         try:
@@ -19,6 +19,52 @@ def selftest():
         except typ:return True
         raise AssertionError('expected exception')
     check('data_integrity_and_40_spec_ids',lambda:core.validate_data(cases,profiles,baseline))
+    # 数据检查规则库第一条：切换步骤必须让**被比较的量**可区分。
+    # 判据走正式比较口径 diff，不采用「数值不相等」这种宽判据。
+    def discriminating():
+        gaps=core.discriminating_gaps(cases,baseline)
+        yes(not gaps,'无判别力的用例：'+json.dumps(gaps[:3],ensure_ascii=False))
+        return {'covered_case_types':list(core.SWITCH_RULE_CASES)}
+    check('data_rule_switching_cases_are_discriminating',discriminating)
+    def rule_regressions():
+        """反面回归：把比例改回相同，规则必须失败——否则它就是个摆设。"""
+        fired=[]
+        # ① 类型可区分：让切换后的新旧类型比例相同
+        cases_a=copy.deepcopy(cases)
+        target=next(c for c in cases_a if c['id'].endswith('.primary-type-roundtrip'))
+        step=target['steps'][1]['state'];previous=target['steps'][0]['state']
+        step['powers'][str(previous['primary']['type'])]['current']=step['powers'][str(step['primary']['type'])]['current']
+        fired.append(('类型可区分',bool(core.discriminating_gaps([target],baseline))))
+        # ② 前后可区分：让切换后的被比较量与上一检查点完全相同
+        cases_b=copy.deepcopy(cases);baseline_b=copy.deepcopy(baseline)
+        target=next(c for c in cases_b if c['id'].endswith('.specialization-roundtrip'))
+        reference=next(r for r in baseline_b if r['id']==target['id'])
+        # 被比较的量取自**参考快照**（health/primary/resource 三个组件都在那里）
+        for key in reference['snapshots'][0]:
+            reference['snapshots'][1][key]=copy.deepcopy(reference['snapshots'][0][key])
+        for key in ('health','primary'):
+            target['steps'][1]['state'][key]=copy.deepcopy(target['steps'][0]['state'][key])
+        fired.append(('前后可区分',bool(core.discriminating_gaps([target],baseline_b))))
+        yes(all(hit for _,hit in fired),'反面回归没有触发：'+json.dumps(fired,ensure_ascii=False))
+        return {'regressions_fired':[name for name,_ in fired]}
+    check('data_rule_regressions_fire',rule_regressions)
+    def timing_contract():
+        """把「观测时刻口径」钉成可断言的形状，防止将来被悄悄改动。"""
+        driver=(core.ASSETS/'runtime/consumer.lua').read_text('utf-8')
+        install=driver.index('ctx.set_state');advance=driver.index('ctx.advance')
+        read=driver.index('adapter.snapshot()')   # 取调用点；类型校验里的 adapter.snapshot 不算
+        yes(install<advance<read,'执行顺序必须是「安装该步输入 → 推进到该步时间 → 再读观测」')
+        yes('ctx.advance(step.settle or 0)'in driver,'约定等待必须显式推进，不得省略或改写')
+        # settle 只让实际侧追上**已经定义好的**观测时刻，不得借它移动参考侧的时刻
+        bound=1.0
+        over=[c['id']for c in cases if any((s.get('settle')or 0)>bound for s in c['steps'])]
+        yes(not over,'约定等待超出声明上限：'+','.join(over[:3]))
+        # 排空一轮零延迟回调后不得再推进时间（否则参考侧与实际侧观测的不是同一时刻）
+        # 顺序是：推进到该步时间 → 投递事件 → 推进约定等待 → 排空零延迟 → **再**读观测
+        yes(driver.index('ctx.advance(0)',advance)<read,'读观测前必须先排空零延迟回调')
+        return {'order':'set_state → advance → emit → settle → advance(0) → snapshot',
+                'settle_bound_seconds':bound}
+    check('timing_observation_instant_contract',timing_contract)
     check('boolean_not_equal_to_number',lambda:yes(core.diff(True,1)))
     check('missing_fields_detected',lambda:yes(core.diff({'x':0},{})))
     check('list_length_detected',lambda:yes(core.diff([1],[1,2])))
@@ -131,6 +177,8 @@ def selftest():
     result={'status':'pass'if all(c['status']=='pass'for c in checks)else'fail','checks':len(checks),'passed':sum(c['status']=='pass'for c in checks),'results':checks,
       'environment':{'platform':platform.platform(),'python':sys.version.split()[0],'lua':backend()},'duration_seconds':round(time.perf_counter()-began,3),
       'not_executed':['Windows installation/runtime','Actual MYUI integration','Real WoW client/talents/Secret Values','Codex or Claude end-to-end autonomous onboarding']}
-    core.write_json(ROOT/'reports/selftest.json',result)
+    # 落盘目标由调用方决定：默认写到系统临时目录，**不往技能目录里写受跟踪资产**
+    target=pathlib.Path(report_path) if report_path else pathlib.Path(tempfile.gettempdir())/'wowtest-selftest.json'
+    core.write_json(target,result)
     return result
 if __name__=='__main__':print(json.dumps(selftest(),ensure_ascii=False,indent=2))
