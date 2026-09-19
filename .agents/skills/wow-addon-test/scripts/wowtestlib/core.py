@@ -1,11 +1,25 @@
 """Versioned data, trusted-addon execution and strict comparison. No model/API service."""
 from __future__ import annotations
-import copy, hashlib, json, math, pathlib, re
+import copy, gzip, hashlib, json, math, pathlib, re
 from .luaexec import evaluate, literal
 ROOT=pathlib.Path(__file__).resolve().parents[2]      # 技能根（本文件位于 <技能根>/scripts/wowtestlib/）
 ASSETS=ROOT/'assets'                                  # 工具的输入、参考与运行时资产
 COMPONENTS=('health','primary','resource')
 class ToolError(RuntimeError): pass
+
+def resolve_asset(path):
+    """资产名 → 实际文件；大体积资产以压缩容器存放，明文不存在时回退到 .gz。"""
+    p=pathlib.Path(path)
+    if p.is_file():return p
+    packed=p.with_name(p.name+'.gz')
+    if packed.is_file():return packed
+    return p
+
+def read_asset_bytes(path):
+    """读资产的**原始内容**：压缩容器就地解压，保证摘要与明文一致。"""
+    p=resolve_asset(path)
+    raw=p.read_bytes()
+    return gzip.decompress(raw) if p.suffix=='.gz' else raw
 
 def load_json(path):
     def pairs(items):
@@ -15,7 +29,8 @@ def load_json(path):
             out[k]=v
         return out
     try:
-        return json.loads(pathlib.Path(path).read_text('utf-8-sig'),object_pairs_hook=pairs,parse_constant=lambda x:(_ for _ in ()).throw(ToolError('nonfinite JSON number')))
+        text=read_asset_bytes(path).decode('utf-8-sig')
+        return json.loads(text,object_pairs_hook=pairs,parse_constant=lambda x:(_ for _ in ()).throw(ToolError('nonfinite JSON number')))
     except (OSError,ValueError) as exc:raise ToolError(str(exc)) from exc
 
 def write_json(path,data):
@@ -28,8 +43,9 @@ def check_integrity():
     manifest=load_json(ASSETS/'data/manifest.json')
     for name,expected in manifest['sha256'].items():
         p=(ASSETS/name).resolve()
-        if not p.is_relative_to(ROOT.resolve())or not p.is_file():raise ToolError('manifest file missing or invalid: '+name)
-        if sha(p)!=expected:raise ToolError('基线/参照完整性检查失败: '+name+'；不要通过修改清单掩盖差异')
+        if not p.is_relative_to(ASSETS.resolve())or not resolve_asset(p).is_file():raise ToolError('manifest file missing or invalid: '+name)
+        # 清单摘要按**解压后的原始内容**校验：压缩只是存放方式，不改变被校验的字节
+        if hashlib.sha256(read_asset_bytes(p)).hexdigest()!=expected:raise ToolError('基线/参照完整性检查失败: '+name+'；不要通过修改清单掩盖差异')
     return manifest
 
 def validate_data(cases,profiles,baseline):

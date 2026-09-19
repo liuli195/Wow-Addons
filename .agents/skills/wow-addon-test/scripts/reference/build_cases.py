@@ -1,6 +1,7 @@
 """Reproducible synthetic baseline inputs. Does not infer real talent effects."""
 from __future__ import annotations
 import copy,json,pathlib
+import gzip
 ROOT=pathlib.Path(__file__).resolve().parents[2]  # 技能根
 ASSETS=ROOT/'assets'
 # IDs independently checked in TRB Localization.lua; spell/talent combinations are not inferred.
@@ -136,7 +137,12 @@ def cases():
 
 def main():
  ps,cs=cases()
+ # 大体积资产以压缩容器存放：明文会被删除，读取端按原始内容解压（见 wowtestlib.core.resolve_asset）
  for name,data in [('profiles.json',ps),('cases.json',cs)]:
-  (ASSETS/'data'/name).write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n','utf-8')
+  target=ASSETS/'data'/(name+'.gz')
+  target.parent.mkdir(parents=True,exist_ok=True)
+  with gzip.open(target,'wt',encoding='utf-8',newline='\n') as handle:
+   handle.write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+  (ASSETS/'data'/name).unlink(missing_ok=True)
  print(f'{len(ps)} specs; {len(cs)} cases; {sum(len(c["steps"])for c in cs)} checkpoints')
 if __name__=='__main__':main()

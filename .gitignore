@@ -21,3 +21,6 @@ __pycache__/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# 技能目录连接：真身在 .agents/skills/，此处仅为代理侧的目录连接，不入库
+/.claude/skills/wow-addon-test/

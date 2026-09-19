@@ -7,11 +7,39 @@ from wowtestlib import core
 from wowtestlib.luaexec import backend,LuaExecutionError
 ROOT=pathlib.Path(__file__).resolve().parents[1]   # 技能根：本文件位于 <技能根>/scripts/
 
+# 面向代理的唯一有界出口。
+# 预算只约束**展示**：完整报告始终写进 --output 指定的产物位置，不因缩裁而少跑任何用例。
+OUTPUT_BUDGET_BYTES=16*1024
+PREVIEW_LIMIT=10
+FIELD_LIMIT=512
+NESTING_LIMIT=6
+
+def _bound(node,depth=0):
+    """把结构压到可安全输出的形状：限条数、限字段长度、限嵌套深度。"""
+    if depth>NESTING_LIMIT:return '…'
+    if isinstance(node,str):
+        return node if len(node)<=FIELD_LIMIT else node[:FIELD_LIMIT]+'…'
+    if isinstance(node,list):
+        head=[_bound(x,depth+1) for x in node[:PREVIEW_LIMIT]]
+        if len(node)>PREVIEW_LIMIT:head.append({'omitted':len(node)-PREVIEW_LIMIT})
+        return head
+    if isinstance(node,dict):
+        return {k:_bound(v,depth+1) for k,v in node.items()}
+    return node
+
+def _encode(obj):
+    return json.dumps(obj,ensure_ascii=False,indent=2)
+
 def emit(obj,args):
-    if getattr(args,'json',False):print(json.dumps(obj,ensure_ascii=False,indent=2))
-    else:
-        if 'summary'in obj:print(json.dumps({'status':obj['status'],**obj['summary']},ensure_ascii=False,indent=2))
-        else:print(json.dumps(obj,ensure_ascii=False,indent=2))
+    body={'status':obj['status'],**obj['summary']} if (not getattr(args,'json',False) and 'summary'in obj) else obj
+    text=_encode(body)
+    if len(text.encode('utf-8'))>OUTPUT_BUDGET_BYTES:
+        bounded=_bound(body)
+        if not isinstance(bounded,dict):bounded={'result':bounded}
+        bounded['details_truncated']=True
+        bounded['budget_bytes']=OUTPUT_BUDGET_BYTES
+        text=_encode(bounded)
+    print(text)
 
 def install_skill(project,agent):
     project=pathlib.Path(project).resolve()
