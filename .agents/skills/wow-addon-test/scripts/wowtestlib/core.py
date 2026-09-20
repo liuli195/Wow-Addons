@@ -58,13 +58,16 @@ def _power_ratio(state,power_type):
     entry=state['powers'].get(str(power_type))
     return None if entry is None else entry['current']/(entry['maximum'] or 1)
 
-def _compared_values(snapshot):
-    """正式比较用到的量：生命比例、主资源比例、职业资源。"""
-    health=snapshot['health']
+def _target_value(snapshot):
+    """该检查点上**本次要验证的那个量**：主资源比例。
+
+    这三类用例验证的都是"切换之后主资源还读得对不对"，所以目标量就是主资源比例。
+    把生命和职业资源一起打包进来会有两个毛病：生命随便变一点就能把"主资源根本没变"
+    掩盖过去（规格明令禁止的"无关组件变化代替"）；而且打包成元组之后 diff() 只做
+    整体相等比较，连浮点容差都用不上。
+    """
     primary=snapshot['primary']
-    return (health['value']/(health['maximum'] or 1),
-            primary['value']/(primary['maximum'] or 1),
-            json.dumps(snapshot['resource'],sort_keys=True))
+    return primary['value']/(primary['maximum'] or 1)
 
 def _identity(state):
     i=state['identity']
@@ -91,7 +94,7 @@ def discriminating_gaps(cases,baseline):
                     gaps.append({'case':case['id'],'step':index+1,'rule':'类型可区分',
                                  'detail':f'新旧类型比例同为 {new_ratio}，固定读某类型的实现无法被区分'})
             # 前后可区分：**本次要验证的那个量**必须相对上一检查点可区分，无关组件的变化不能代替
-            if not diff(_compared_values(snapshots[index-1]),_compared_values(snapshots[index])):
+            if not diff(_target_value(snapshots[index-1]),_target_value(snapshots[index])):
                 gaps.append({'case':case['id'],'step':index+1,'rule':'前后可区分',
                              'detail':'切换后被比较的量与上一检查点不可区分，沿用旧读数的实现无法被检出'})
     return gaps
@@ -177,8 +180,38 @@ def config(path):
     if any(pathlib.Path(n).name in prohibited for n in sources):raise ToolError('不得将参考答案加载到被测代码')
     timeout=c.get('timeout_seconds',60)
     if type(timeout)not in(int,float)or timeout<=0 or timeout>600:raise ToolError('timeout must be 0..600 seconds')
+    # 项目专属的投影判定：插件实际输出与工具标准输出不同形时，由项目提供这一层。
+    # 声明了就必须可用——坏掉时显式失败，**不得静默退回通用比较**（那会得出另一套结论）
+    projection=c.get('projection')
+    if projection is not None:
+        c['projection_path']=str(relative_file(root,projection))
+        c['projection_sha256']=hashlib.sha256(pathlib.Path(c['projection_path']).read_bytes()).hexdigest()
     c['components']=components
     return c,root,sources,ap.read_text('utf-8-sig')
+
+def load_projection(cfg):
+    """加载配置声明的投影判定模块；未声明返回 None。接口：judge(cases, baseline, actual)。"""
+    path=cfg.get('projection_path')
+    if not path:return None
+    import importlib.util
+    name='wowtest_projection_'+hashlib.sha256(path.encode('utf-8')).hexdigest()[:12]
+    spec=importlib.util.spec_from_file_location(name,path)
+    if spec is None or spec.loader is None:raise ToolError('无法加载投影模块: '+path)
+    module=importlib.util.module_from_spec(spec)
+    try:spec.loader.exec_module(module)
+    except Exception as exc:raise ToolError('投影模块加载失败: '+str(exc))
+    if not callable(getattr(module,'judge',None)):
+        raise ToolError('投影模块必须提供 judge(cases, baseline, actual)')
+    return module
+
+def project_verdict(module,cfg,cases,baseline,actual):
+    """用项目投影产出正式判定。结果必须是可用报告，缺 status/summary 即失败。"""
+    try:verdict=module.judge(cases,baseline,actual)
+    except Exception as exc:raise ToolError('投影判定失败: '+str(exc))
+    if not isinstance(verdict,dict)or not isinstance(verdict.get('summary'),dict)or not verdict.get('status'):
+        raise ToolError('投影模块必须返回带 status 与 summary 的报告')
+    verdict.setdefault('projection_sha256',cfg.get('projection_sha256'))
+    return verdict
 
 def run(cases,profiles,config_path):
     cfg,root,sources,adapter=config(config_path)
@@ -272,7 +305,12 @@ def markdown(report):
     for r in issues[:50]:
         parts.append('\n### '+r['id'])
         for e in r['errors']:parts.append('```json\n'+json.dumps(e,ensure_ascii=False)+'\n```')
-        for d in r['differences'][:20]:parts.append(f"步骤 {d['step']} · `{d['path']}`：预期 `{d['expected']}`，实际 `{d['actual']}`。")
+        for d in r['differences'][:20]:
+            # 项目投影可以用「组件 · 字段」描述一处差异，不必套用内置比较的 JSON 路径
+            where=d.get('path') or ' · '.join(str(x)for x in (d.get('component'),d.get('kind'))if x)
+            got=d.get('actual',d.get('observed'))
+            step=d.get('step')
+            parts.append(f"步骤 {step} · `{where}`：预期 `{d.get('expected')}`，实际 `{got}`。")
     if len(issues)>50:parts.append('更多细节见同名 JSON 完整报告。')
     parts.extend(['\n## 专精覆盖','| 职业/专精 | ID | 用例 | 通过 | 状态 | 额外缺口 |','|---|---:|---:|---:|---|---|'])
     for r in report['coverage']:parts.append(f"| {r['class_name']}/{r['spec_name']} | {r['spec_id']} | {r['cases']} | {r['passed']} | {r['status']} | {'；'.join(r['extra_resource_gaps']) or '—'} |")

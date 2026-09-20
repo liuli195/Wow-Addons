@@ -11,6 +11,7 @@
   ],
   "specs": [250, 251, 252],
   "components": ["health", "primary", "resource"],
+  "projection": "tests/addons/MYUI_CrosshairHUD/wowtest_projection.py",
   "require_cleanup": false,
   "timeout_seconds": 120
 }

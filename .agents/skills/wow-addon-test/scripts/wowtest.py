@@ -10,36 +10,58 @@ ROOT=pathlib.Path(__file__).resolve().parents[1]   # 技能根：本文件位于
 # 面向代理的唯一有界出口。
 # 预算只约束**展示**：完整报告始终写进 --output 指定的产物位置，不因缩裁而少跑任何用例。
 OUTPUT_BUDGET_BYTES=16*1024
+TOOL_ERROR_LIMIT=2048
 PREVIEW_LIMIT=10
 FIELD_LIMIT=512
 NESTING_LIMIT=6
 
-def _bound(node,depth=0):
+# 逐级收紧的口径。裁剪一次**不保证**字节数：字典的键数不受上面那些限制约束，
+# 字段一多照样能超出预算，所以必须一级级收到真的装下为止。
+BOUND_LEVELS=((PREVIEW_LIMIT,FIELD_LIMIT,NESTING_LIMIT),(4,160,4),(2,64,3),(0,24,2))
+
+def _bound(node,preview,field,nesting,depth=0):
     """把结构压到可安全输出的形状：限条数、限字段长度、限嵌套深度。"""
-    if depth>NESTING_LIMIT:return '…'
+    if depth>nesting:return '…'
     if isinstance(node,str):
-        return node if len(node)<=FIELD_LIMIT else node[:FIELD_LIMIT]+'…'
+        return node if len(node)<=field else node[:field]+'…'
     if isinstance(node,list):
-        head=[_bound(x,depth+1) for x in node[:PREVIEW_LIMIT]]
-        if len(node)>PREVIEW_LIMIT:head.append({'omitted':len(node)-PREVIEW_LIMIT})
+        head=[_bound(x,preview,field,nesting,depth+1) for x in node[:preview]]
+        if len(node)>preview:head.append({'omitted':len(node)-preview})
         return head
     if isinstance(node,dict):
-        return {k:_bound(v,depth+1) for k,v in node.items()}
+        return {k:_bound(v,preview,field,nesting,depth+1) for k,v in node.items()}
     return node
 
 def _encode(obj):
     return json.dumps(obj,ensure_ascii=False,indent=2)
 
+def _fits(text):
+    return len(text.encode('utf-8'))<=OUTPUT_BUDGET_BYTES
+
 def emit(obj,args):
     body={'status':obj['status'],**obj['summary']} if (not getattr(args,'json',False) and 'summary'in obj) else obj
     text=_encode(body)
-    if len(text.encode('utf-8'))>OUTPUT_BUDGET_BYTES:
-        bounded=_bound(body)
+    if _fits(text):
+        print(text);return
+    for preview,field,nesting in BOUND_LEVELS:
+        bounded=_bound(body,preview,field,nesting)
         if not isinstance(bounded,dict):bounded={'result':bounded}
         bounded['details_truncated']=True
         bounded['budget_bytes']=OUTPUT_BUDGET_BYTES
         text=_encode(bounded)
-    print(text)
+        if _fits(text):
+            print(text);return
+    # 最后一道：连收紧后的结构都装不下时，只留状态与计数——**预算优先于细节**
+    minimal={'status':body.get('status') if isinstance(body,dict) else None,
+             'summary':body.get('summary') if isinstance(body,dict) else None,
+             'note':'输出超出预算，已只保留状态与计数；完整结果见 --output',
+             'details_truncated':True,'budget_bytes':OUTPUT_BUDGET_BYTES}
+    text=_encode(minimal)
+    while not _fits(text) and minimal.get('summary'):
+        minimal['summary']={k:minimal['summary'][k] for k in list(minimal['summary'])[:len(minimal['summary'])//2]}
+        text=_encode(minimal)
+    print(text if _fits(text) else _encode({'status':minimal.get('status'),'details_truncated':True,
+                                            'budget_bytes':OUTPUT_BUDGET_BYTES}))
 
 def install_skill(project,agent):
     project=pathlib.Path(project).resolve()
@@ -109,7 +131,21 @@ def main(argv=None):
             cfg,_,_,_=core.config(args.config)
             selected=core.selection(cases,profiles,args.specs or cfg.get('specs','all'),args.case)
             actual,cfg,meta=core.run(selected,profiles,args.config)
-            r=core.compare(selected,baseline,actual,profiles,cfg['components'],cfg.get('require_cleanup',True));r['execution']=meta
+            # 配置声明了项目投影就用它出正式判定，否则退回通用比较。
+            # 由**工具自己**给出最终结论，而不是工具报一堆差异、再由仓库侧程序另行放行。
+            builtin=core.compare(selected,baseline,actual,profiles,cfg['components'],cfg.get('require_cleanup',True))
+            projection=core.load_projection(cfg)
+            if projection is not None:
+                # 判定用项目投影，报告外壳（覆盖表、边界、清理）仍由工具按统一口径生成
+                r=core.project_verdict(projection,cfg,selected,baseline,actual)
+                for section in ('coverage','limits','cleanup'):
+                    if section in builtin:r.setdefault(section,builtin[section])
+                meta['projection_sha256']=cfg.get('projection_sha256')
+                meta['verdict']='project-projection'
+            else:
+                r=builtin
+                meta['verdict']='builtin-comparison'
+            r['execution']=meta
             if args.save_actual:core.write_json(args.save_actual,actual)
         elif args.cmd=='compare':
             comp=args.components.split(',')
@@ -136,5 +172,10 @@ def main(argv=None):
         emit(r,args)
         return 2 if r['status']=='error'else 1 if r['status']=='difference'else 0
     except (core.ToolError,LuaExecutionError,KeyError,TypeError,ValueError,OSError)as exc:
-        print(json.dumps({'status':'tool_error','message':str(exc)},ensure_ascii=False),file=sys.stderr);return 2
+        # 失败也要有上限：Lua 侧的错误信息可以很长，原样打到 stderr 同样会淹掉代理
+        raw=str(exc);cut=len(raw)>TOOL_ERROR_LIMIT
+        print(json.dumps({'status':'tool_error',
+                          'message':raw[:TOOL_ERROR_LIMIT]+('…（已截断）'if cut else''),
+                          'details_truncated':cut,'budget_bytes':TOOL_ERROR_LIMIT},
+                         ensure_ascii=False),file=sys.stderr);return 2
 if __name__=='__main__':raise SystemExit(main())

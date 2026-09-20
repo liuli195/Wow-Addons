@@ -74,9 +74,13 @@ def main(argv=None):
         "data/cases.json": _write_json_gz("data/cases.json", cases),
         "data/baselines.json": _write_json_gz("data/baselines.json", baselines),
     }
-    # 清单保持明文：它是索引而不是大体积载荷，明文便于人工核对
+    # 清单保持明文：它是索引而不是大体积载荷，明文便于人工核对。
+    # 这里重算**清单自己列出的每一个**文件——数据、参照、运行时都算，
+    # 否则改一次运行时摘要就对不上，而清单又会显得"没人负责更新"。
     manifest = json.loads((ASSETS / "data/manifest.json").read_text(encoding="utf-8"))
-    for name, digest in digests.items():
+    for name in sorted(manifest["sha256"]):
+        digest = digests.get(name) or hashlib.sha256(
+            core.read_asset_bytes(ASSETS / name)).hexdigest()
         previous = manifest["sha256"].get(name)
         if previous != digest:
             print(f"清单更新 {name}: {str(previous)[:12]}… → {digest[:12]}…")

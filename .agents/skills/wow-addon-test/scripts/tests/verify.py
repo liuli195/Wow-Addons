@@ -57,26 +57,72 @@ def selftest(report_path=None):
         for key in ('health','primary'):
             target['steps'][1]['state'][key]=copy.deepcopy(target['steps'][0]['state'][key])
         fired.append(('前后可区分',bool(core.discriminating_gaps([target],baseline_b))))
+        # ③ 前后可区分**不能被无关组件代替**：目标量（主资源）与上一检查点相同、
+        #    只改动无关的生命，规则仍必须报缺口。否则"生命变了一点"就能把
+        #    "主资源根本没变"掩盖过去——那正是规格明令禁止的代替。
+        cases_c=copy.deepcopy(cases);baseline_c=copy.deepcopy(baseline)
+        target=next(c for c in cases_c if c['id'].endswith('.druid-forms'))
+        reference=next(r for r in baseline_c if r['id']==target['id'])
+        before,after=reference['snapshots'][0],reference['snapshots'][1]
+        after['primary']=copy.deepcopy(before['primary'])       # 目标量与上一检查点完全相同
+        after['health']['value']=before['health']['value']+1    # 只动无关组件
+        target['steps'][1]['state']['primary']=copy.deepcopy(target['steps'][0]['state']['primary'])
+        target['steps'][1]['state']['health']['current']=target['steps'][0]['state']['health']['current']+1
+        fired.append(('无关组件不能代替',bool(core.discriminating_gaps([target],baseline_c))))
         yes(all(hit for _,hit in fired),'反面回归没有触发：'+json.dumps(fired,ensure_ascii=False))
         return {'regressions_fired':[name for name,_ in fired]}
     check('data_rule_regressions_fire',rule_regressions)
-    def timing_contract():
-        """把「观测时刻口径」钉成可断言的形状，防止将来被悄悄改动。"""
-        driver=(core.ASSETS/'runtime/consumer.lua').read_text('utf-8')
-        install=driver.index('ctx.set_state');advance=driver.index('ctx.advance')
-        read=driver.index('adapter.snapshot()')   # 取调用点；类型校验里的 adapter.snapshot 不算
-        yes(install<advance<read,'执行顺序必须是「安装该步输入 → 推进到该步时间 → 再读观测」')
-        yes('ctx.advance(step.settle or 0)'in driver,'约定等待必须显式推进，不得省略或改写')
-        # settle 只让实际侧追上**已经定义好的**观测时刻，不得借它移动参考侧的时刻
+    def timing_probe():
+        """观测时刻口径：用**真跑一次**验证，不是比对源码字符串。
+
+        探针的计时器在第一个检查点之后、第二个检查点之前到期。它必须读到**第一个**
+        检查点的输入。驱动若先把这一步的状态装好再推进时间，消费侧的计时器就会读到
+        未来的输入——参考侧与实际侧观测的就不是同一个时刻，而且这种错在任何
+        "只看最终快照"的断言里都看不出来。
+        """
+        probe=pathlib.Path(tempfile.mkdtemp(prefix='wowtest-timing-'))
+        try:
+            (probe/'addon.lua').write_text(
+                "local addonName,ns=...\n"
+                "local seen={}\n"
+                # 上下文按**第一个检查点的时间**起算，所以 0.5 秒正好落在两个检查点之间
+                "function ns.Start() C_Timer.After(0.5,function() seen[#seen+1]=UnitHealth('player') end) end\n"
+                "function ns.Snapshot() return {seen=seen, now=GetTime()} end\n"
+                "function ns.Stop() end\n",encoding='utf-8')
+            (probe/'adapter.lua').write_text(
+                "return function(ctx)\n local m={}\n ctx.load('addon.lua','TimingProbe',m)\n"
+                " return {start=m.Start, snapshot=m.Snapshot, stop=m.Stop}\nend\n",encoding='utf-8')
+            (probe/'wowtest.json').write_text(json.dumps({
+                "schema_version":1,"project_root":".","addon_name":"timing-probe",
+                "adapter":"adapter.lua","files":["addon.lua"],"specs":"all",
+                "components":["health"],"require_cleanup":False,"timeout_seconds":30}),
+                encoding='utf-8')
+            case=copy.deepcopy(next(c for c in cases if len(c['steps'])>=2))
+            case['steps']=case['steps'][:2]
+            for step,when,health in ((case['steps'][0],1,500),(case['steps'][1],2,900)):
+                step['state']['time']=when
+                step['state']['health']['current']=health
+                step['state']['health']['maximum']=1000
+                step['state']['health']['connected']=True
+                step['events']=[]
+                step.pop('settle',None)
+            actual,_,_=core.run([case],profiles,str(probe/'wowtest.json'))
+            yes(not actual[0]['errors'],'探针运行出错：'+json.dumps(actual[0]['errors'],ensure_ascii=False)[:200])
+            seen=actual[0]['snapshots'][1]['seen']
+            yes(seen and seen[0]==500,
+                '两个检查点之间到期的计时器读到了未来的输入：'+json.dumps(seen))
+            return {'order':'advance(到该步时间) → set_state → emit → settle → advance(0) → snapshot',
+                    'timer_saw':seen[0]}
+        finally:
+            shutil.rmtree(probe,ignore_errors=True)
+    check('timing_observation_instant_contract',timing_probe)
+    def settle_bound():
+        # settle 只让实际侧追上**已经定义好**的观测时刻，不得借它移动参考侧的时刻
         bound=1.0
         over=[c['id']for c in cases if any((s.get('settle')or 0)>bound for s in c['steps'])]
         yes(not over,'约定等待超出声明上限：'+','.join(over[:3]))
-        # 排空一轮零延迟回调后不得再推进时间（否则参考侧与实际侧观测的不是同一时刻）
-        # 顺序是：推进到该步时间 → 投递事件 → 推进约定等待 → 排空零延迟 → **再**读观测
-        yes(driver.index('ctx.advance(0)',advance)<read,'读观测前必须先排空零延迟回调')
-        return {'order':'set_state → advance → emit → settle → advance(0) → snapshot',
-                'settle_bound_seconds':bound}
-    check('timing_observation_instant_contract',timing_contract)
+        return {'settle_bound_seconds':bound}
+    check('settle_bound_within_declared_limit',settle_bound)
     check('boolean_not_equal_to_number',lambda:yes(core.diff(True,1)))
     check('missing_fields_detected',lambda:yes(core.diff({'x':0},{})))
     check('list_length_detected',lambda:yes(core.diff([1],[1,2])))
