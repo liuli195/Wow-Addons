@@ -198,6 +198,23 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(len(full["profiles"]), 40, "完整结果里专精数不对")
         self.assertNotIn("details_truncated", full, "落盘的完整结果不应被缩裁")
 
+    def test_reference_check_saves_full_result_beyond_output_budget(self):
+        """参考基线复核的完整比较结果必须可取回，不能只剩屏幕预览。"""
+        target = ROOT / ".local" / "tests" / "wow-addon-test" / "reference-check-full.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [sys.executable, str(ENTRY), "reference-check", "--json", "--output", str(target)],
+            capture_output=True, text=True, encoding="utf-8", timeout=600, env=skill_env(),
+        )
+        self.assertEqual(result.returncode, 0, f"参考基线复核失败：{result.stderr[-600:]}")
+        self.assertLessEqual(len(result.stdout.encode("utf-8")), OUTPUT_BUDGET,
+                             "参考基线复核的屏幕输出超出预算")
+        full = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(full["summary"]["cases"], 846, "完整参考复核缺少用例")
+        self.assertEqual(full["summary"]["compared_checkpoints"], 1613,
+                         "完整参考复核缺少检查点")
+        self.assertNotIn("details_truncated", full, "落盘的完整参考复核不应被缩裁")
+
     def test_budget_holds_when_field_count_is_large(self):
         """**字典的键数不受条数限制约束**：字段一多，裁剪一次照样能超出预算。
 

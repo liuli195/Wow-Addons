@@ -108,7 +108,9 @@ def main(argv=None):
     p=sub.add_parser('run');p.add_argument('--config',required=True);p.add_argument('--specs');p.add_argument('--case');p.add_argument('--output',default='.wow-test/report.json');p.add_argument('--save-actual');p.add_argument('--json',action='store_true')
     p=sub.add_parser('compare');p.add_argument('--actual',required=True);p.add_argument('--specs',default='all');p.add_argument('--case');p.add_argument('--components',default='health,primary,resource');p.add_argument('--output',default='.wow-test/report.json');p.add_argument('--json',action='store_true')
     p=sub.add_parser('export');p.add_argument('--output',required=True);p.add_argument('--specs',default='all');p.add_argument('--case');p.add_argument('--inputs-only',action='store_true');p.add_argument('--json',action='store_true')
-    p=sub.add_parser('reference-check');p.add_argument('--json',action='store_true')
+    p=sub.add_parser('reference-check');p.add_argument('--output',default='.wow-test/reference-check.json',
+                                                       help='把完整参考复核结果落盘（屏幕输出仍受预算限制）')
+    p.add_argument('--json',action='store_true')
     args=parser.parse_args(argv)
     try:
         if args.cmd=='init':emit(init(args.project,args.name),args);return 0
@@ -131,8 +133,8 @@ def main(argv=None):
         if args.cmd=='reference-check':
             from reference.generate import generate
             actual=generate(cases,profiles)
-            r=core.compare(cases,baseline,actual,profiles);emit(r,args);return 0 if r['status']=='pass'else 1
-        if args.cmd=='run':
+            r=core.compare(cases,baseline,actual,profiles)
+        elif args.cmd=='run':
             cfg,_,_,_=core.config(args.config)
             selected=core.selection(cases,profiles,args.specs or cfg.get('specs','all'),args.case)
             actual,cfg,meta=core.run(selected,profiles,args.config)

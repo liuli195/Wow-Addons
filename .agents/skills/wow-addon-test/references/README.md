@@ -59,7 +59,7 @@ Linux / macOS（其他桌面系统）把 `python` 换成 `python3`、反斜杠�
 | `python <技能>/scripts/wowtest.py compare --actual <输出.json> --output <报告.json>` | 比较外部测试输出，不要求使用内置运行器 |
 | `python <技能>/scripts/wowtest.py export --specs 259 --output <文件.json>` | 导出包含预期的独立可消费数据 |
 | `python <技能>/scripts/wowtest.py export --inputs-only --specs 259 --output <文件.json>` | 只导出输入，不泄露参照路由字段 |
-| `python <技能>/scripts/wowtest.py reference-check` | 重新执行附带原生方法摘录，与固定基线比较，不改写基线 |
+| `python <技能>/scripts/wowtest.py reference-check --output <报告.json>` | 重新执行附带原生方法摘录，与固定基线比较；屏幕只显示受限摘要，完整结果落盘且不改写基线 |
 | `python <技能>/scripts/wowtest.py selftest` | 执行工具和示例的自动自测（加 `--output <路径>` 才落盘） |
 | `python <技能>/scripts/maintain.py` | 维护入口：重生成用例与基线，带缺口时拒绝写入 |
 
