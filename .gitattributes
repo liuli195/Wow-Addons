@@ -63,3 +63,8 @@
 
 # 本仓库使用的游戏贴图
 *.tga filter=lfs diff=lfs merge=lfs -text
+
+# wow-addon-test 技能载荷：字节必须原样保留
+# 工具自带 sha256 清单按原始字节校验；行尾被转换会让完整性检查失败，
+# 并连带让技能安装的逐字节覆盖保护报错。
+.agents/skills/wow-addon-test/** -text

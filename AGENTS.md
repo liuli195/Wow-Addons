@@ -16,12 +16,7 @@
 
 ## 魔兽背景与工作边界
 
-仅面向 12.1 正式服，客户端、接口和工具版本以[版本清单](scripts/dev/versions.json)为准。新增游戏接口先查 `.tools/wow-ui-source/Interface/AddOns/Blizzard_APIDocumentationGenerated` 及同版本界面源码；注解和本机模拟不能替代游戏验收。环境准备见[环境说明](docs/environment-setup.md)，接口、部署及发布前阅读[协作指南](docs/wow-addon-development-guide.md)对应章节。
-
-自有游戏插件为 `addons/EUI_FacetedPortrait/`；MYUI 系列为 `addons/MYUI/`（公共核心：共享素材与 EUI 侧边栏名册）与 `addons/MYUI_CrosshairHUD/`（准星HUD，硬依赖 EllesmereUI 与公共核心，独立安装但只发布一个项目）；开发诊断探针（probe）为 `addons/Sim2GSEProbe/`（`/s2gprobe`）与 `addons/AddonProbe/`（`/probe`）：第三方副本、素材及个人片段边界见[项目说明](README.md)。游戏部署和安装包发布按任务授权执行；素材缺少源图时保留现有成品。
-
-## 目录导航
-
+仅面向 12.1 正式服，客户端、接口和工具版本以[版本清单](scripts/dev/versions.json)为准。新增游戏接口先查 `.tools/wow-ui-source/Interface/AddOns/Blizzard_APIDocumentationGenerated` 及同版本界面源码；注解和本机模拟不能替代游戏验收。环境准备见[环境说明](docs/environment-setup.md)，接口、部署及发布前阅读[协作指南](docs/wow-addon-development-guide.md)对应章节。                               
 - `addons/`、`projects/`：游戏插件与独立项目；`assets/`：素材。
 - `tests/`：全仓测试，按插件、项目和开发工具分组；新增测试须接入统一验证。
 - `docs/`：项目文档；`myspec/specs/`：正式规格；`myspec/changes/`：变更需求和票据。

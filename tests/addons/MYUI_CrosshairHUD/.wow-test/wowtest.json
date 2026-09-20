@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "project_root": "../../../..",
+  "addon_name": "MYUI_CrosshairHUD",
+  "adapter": "tests/addons/MYUI_CrosshairHUD/.wow-test/adapter.lua",
+  "files": [
+    "addons/MYUI_CrosshairHUD/Logic.lua",
+    "addons/MYUI_CrosshairHUD/Elements.lua",
+    "addons/MYUI_CrosshairHUD/Config.lua",
+    "addons/MYUI_CrosshairHUD/Core.lua"
+  ],
+  "specs": [250, 251, 252],
+  "components": ["health", "primary", "resource"],
+  "projection": "tests/addons/MYUI_CrosshairHUD/wowtest_projection.py",
+  "require_cleanup": false,
+  "timeout_seconds": 120
+}
