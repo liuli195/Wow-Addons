@@ -143,6 +143,24 @@ def selftest(report_path=None):
         row2=[r for r in merged2['coverage']if r['spec_id']==cases_[0]['spec_id']][0]
         yes(row2['status']=='pass'and row2['known_differences']==1,
             '已批准的已知差异被记成了 issues：'+json.dumps(row2,ensure_ascii=False))
+        # ③ 观测齐全、无执行错误，但**投影自己漏了一行**：仍须失败。
+        #    核对基准是已选用例清单，不是"投影返回了多少行"。
+        builtin_ok=core.compare(one,baseline_,[{'id':one[0]['id'],'snapshots':[
+            dict(s)for s in baseline_[0]['snapshots']],'errors':[]}],profiles_)
+        merged3=core.finalize_verdict({'status':'pass','summary':{},'cases':[]},builtin_ok,one,profiles_)
+        yes(merged3['status']=='error','投影漏掉判定行却仍然通过：'+json.dumps(merged3['summary'],ensure_ascii=False))
+        yes(merged3['summary']['cases']==1and merged3['summary']['errors']==1,'漏掉的用例没有被补成错误')
+        # ④ 两套计数必须同源：不能 summary 说一套、totals 说另一套
+        for merged_ in (merged,merged2,merged3):
+            s_,t_=merged_['summary'],merged_['totals']
+            pairs=(('cases','cases'),('passed','pass'),('errors','error'),('differences','difference'))
+            for a,b in pairs:
+                yes(s_[a]==t_[b],f'summary.{a}={s_[a]} 与 totals.{b}={t_[b]} 不一致')
+        # ⑤ 选择范围外的用例不得混进判定
+        merged4=core.finalize_verdict({'status':'pass','summary':{},'cases':[
+            {'id':'spec-999999.not-selected','status':'pass','differences':[],'errors':[]}]},
+            {'cases':[]},one,profiles_)
+        yes(merged4['status']=='error','选择范围外的用例被当成通过')
         return merged['summary']
     check('projection_cannot_swallow_failures',projection_cannot_swallow_failures)
     def settle_bound():

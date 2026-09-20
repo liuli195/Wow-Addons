@@ -216,18 +216,29 @@ def finalize_verdict(verdict,builtin,cases,profiles,components=COMPONENTS,requir
     （实测出现过总判定 72 通过、覆盖行却是 passed=0 的矛盾报告）。
     """
     spec_of={c['id']:c['spec_id']for c in cases}
-    pending={row['id']:list(row.get('errors')or[])for row in builtin.get('cases',[])if row.get('errors')}
+    selected=[c['id']for c in cases]
+    selected_set=set(selected)
+    builtin_errors={row['id']:list(row.get('errors')or[])for row in builtin.get('cases',[])if row.get('errors')}
     rows=list(verdict.get('cases')or[])
+    seen=set()
     for row in rows:
         row.setdefault('errors',[])
-        extra=pending.pop(row.get('id'),None)
-        if extra:
-            row['errors'].extend(extra)
-            row['status']='error'
-    # 投影整个漏掉的用例：按错误补回来，不能被"没遍历到"吞掉
-    for case_id,errors in pending.items():
-        rows.append({'id':case_id,'spec_id':spec_of.get(case_id),'status':'error',
-                     'differences':[],'errors':errors})
+        case_id=row.get('id')
+        if case_id in seen:
+            row['errors'].append({'stage':'verdict','message':'同一个用例出现了多份判定'})
+        seen.add(case_id)
+        if case_id not in selected_set:
+            row['errors'].append({'stage':'verdict','message':'该用例不在本次选择范围内'})
+        extra=builtin_errors.pop(case_id,None)
+        if extra:row['errors'].extend(extra)
+        if row['errors']:row['status']='error'
+    # 核对基准是**已选用例清单**，不是"投影返回了多少行"：投影漏掉判定、
+    # 或原始观测就缺这一条，都会落到这里补成错误，不能靠少给几行缩小验收范围。
+    for case_id in selected:
+        if case_id in seen:continue
+        rows.append({'id':case_id,'spec_id':spec_of.get(case_id),'status':'error','differences':[],
+                     'errors':builtin_errors.pop(case_id,None)or[
+                         {'stage':'verdict','message':'项目投影没有给出该用例的判定'}]})
     for row in rows:row.setdefault('spec_id',spec_of.get(row.get('id')))
     counts={name:0 for name in ('pass','difference','known_difference','error')}
     for row in rows:
@@ -252,6 +263,14 @@ def finalize_verdict(verdict,builtin,cases,profiles,components=COMPONENTS,requir
                          'extra_resource_gaps':p['extra_resource_gaps'],'gameplay_verified':False})
     verdict['cases']=rows
     verdict['summary']=summary
+    # totals 与 summary 必须同源：两套计数各更新各的，同一份报告就会出现
+    # summary 说"0 通过 1 错误"、totals 说"1 通过 0 错误"的自相矛盾
+    verdict['totals']={**dict(verdict.get('totals')or{}),
+                       'cases':len(rows),'pass':counts['pass'],'difference':counts['difference'],
+                       'known_difference':counts['known_difference'],'error':counts['error'],
+                       'errors':counts['error'],
+                       'checkpoints':summary.get('compared_checkpoints',
+                                                 (verdict.get('totals')or{}).get('checkpoints',0))}
     verdict['status']='error'if counts['error']else 'difference'if counts['difference']else 'pass'
     verdict['coverage']=coverage
     verdict['cleanup']=builtin.get('cleanup')or{'applicability':'applied'if require_cleanup else 'not_applicable',
