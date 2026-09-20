@@ -417,3 +417,16 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 - **WHEN** 校验准星贴图
 - **THEN** 正中有一个直径与设计稿一致的白点
+### Requirement: The HUD keeps its own reading chain while the player is disconnected
+
+玩家断线期间，系统 MUST 继续按既有读数链显示当下的读数，MUST NOT 改用"填满并置灰"这类原生断线表现。断线 MUST NOT 让 HUD 报错或停止响应；重新连上之后，两条弧 MUST 恢复正常跟随生命值与能量的变化。
+
+#### Scenario: Player disconnects
+
+- **WHEN** 玩家断线
+- **THEN** 生命值弧与能量弧保持显示读数链当下的比例，既不被填满也不变灰
+
+#### Scenario: Player reconnects
+
+- **WHEN** 玩家重新连上
+- **THEN** 两条弧恢复跟随生命值与能量的变化，且全程不报错
