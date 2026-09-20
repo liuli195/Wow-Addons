@@ -464,12 +464,11 @@ end)
 -- 启动
 --------------------------------------------------------------------------
 
--- 位置：存的是 UIParent 单位的坐标；父框整体缩放了 k 倍，而 SetPoint 的偏移量
--- 读的是**框体自身空间**，所以要除以 k（未缩放时 k == 1，是恒等变换）。
+-- 位置存的是 EUI 归一后的 UIParent 单位坐标。HUD 的 cfg.scale 只改变框体尺寸
+-- 与内部纹理摆放，并没有调用 frame:SetScale；因此 SetPoint 必须直接使用保存坐标。
 local function ApplyPosition()
     local frame = Elements.frame
     if not frame then return end
-    local scale = Config.Get().scale or 1.0
     local pos = Config.Get().position
 
     frame:ClearAllPoints()
@@ -498,7 +497,7 @@ local function ApplyPosition()
         end
     end
 
-    frame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, x / scale, y / scale)
+    frame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, x, y)
 end
 Core.ApplyPosition = ApplyPosition
 
