@@ -103,19 +103,27 @@ class DeathKnightComparisonTest(unittest.TestCase):
                         "报告没有记录所用投影的身份")
 
     def test_tool_fails_loudly_when_the_projection_is_broken(self):
-        """投影声明了却坏掉时必须显式失败，不得静默退回通用比较。"""
-        config = json.loads(CONFIG.read_text(encoding="utf-8"))
-        broken = OUTPUT_DIR / "broken-config.json"
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        config = dict(config, projection="tests/addons/MYUI_CrosshairHUD/no-such-projection.py")
-        broken.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+        """投影声明了却坏掉时必须显式失败，不得静默退回通用比较。
+
+        配置必须放在**项目根正确**的位置，否则会先因为找不到生产文件失败——
+        那样测到的是另一件事，等于这条回归没测到它名字宣称的行为。
+        """
+        project = OUTPUT_DIR / "broken-projection"
+        if project.exists():
+            shutil.rmtree(project)
+        project.mkdir(parents=True)
+        config = dict(json.loads(CONFIG.read_text(encoding="utf-8")),
+                      project_root=str(ROOT), projection="no-such-projection.py")
+        (project / "wowtest.json").write_text(json.dumps(config, ensure_ascii=False),
+                                              encoding="utf-8")
         result = subprocess.run(
-            [sys.executable, str(ENTRY), "run", "--config", str(broken),
-             "--output", str(OUTPUT_DIR / "dk-broken.json"), "--json"],
+            [sys.executable, str(ENTRY), "run", "--config", str(project / "wowtest.json"),
+             "--output", str(project / "out.json"), "--json"],
             capture_output=True, text=True, encoding="utf-8", timeout=600, env=SKILL_ENV,
         )
         self.assertNotEqual(result.returncode, 0, "投影缺失却仍然成功了")
-        self.assertIn("tool_error", result.stderr, "投影缺失没有显式报错")
+        message = json.loads(result.stderr.strip().splitlines()[-1])["message"]
+        self.assertIn("投影", message, f"失败原因不是投影加载：{message[:200]}")
 
     def test_death_knight_run_has_no_execution_errors(self):
         _, report, _ = run_tool("dk-run.json")
@@ -330,6 +338,18 @@ class KnownDifferenceScopeTest(unittest.TestCase):
         self.assertEqual(totals["errors"], totals["cases"], "错误数与出错用例数对不上")
         self.assertEqual(totals["cases"], len(observations), "出错用例被漏计")
 
+    def test_projection_tolerance_matches_the_tool(self):
+        """投影的比例容差必须与工具的正式比较口径同值，不许各写各的。
+
+        两边不一致会出现"数据规则判定可区分、正式比较却认为相同"的自相矛盾，
+        而规格明确要求数据规则的"可区分"一律经正式比较口径判定。
+        """
+        import inspect
+        import wowtest_projection as projection
+        tool_atol = inspect.signature(core.diff).parameters["atol"].default
+        self.assertEqual(projection.RATIO_TOLERANCE, tool_atol,
+                         "投影的容差与工具正式比较口径不一致")
+
     def test_unregistered_case_gets_no_allowance(self):
         """没登记过的用例，出现任何差异都判失败。"""
         observations = self._copy()
@@ -422,31 +442,39 @@ class DefectDetectionTest(unittest.TestCase):
                                            "(now - start) / duration",
                                            "(now - start) / (duration * 2)", "resource")
 
-    def test_event_subscription_defects_are_masked_by_polling(self):
-        """把"漏订阅事件"记成**已实测的不可观测项**，而不是假装测过。
+    def test_injected_event_update_defect_is_detected(self):
+        """事件更新路径：让生命事件分支不再更新读数，必须被抓到。
 
-        摘掉 UNIT_HEALTH 订阅后，78 个用例的差异仍然是 0：0.1 秒的轮询会兜住一切
-        事件更新，而检查点之间的间隔不小于一次轮询。所以本工具能证明"读数算得对"，
-        **不能**证明"事件订阅写对了"——这条口径写在投影的「未参与比较」里。
-
-        留这条测试是为了让它**会响**：一旦哪天事件变得可观测了，它会失败，
-        逼着人回来更新那条口径，而不是让一句过时的免责声明一直挂着。
+        做法是让**两个生命事件都不再进入更新分支**。注意不能只摘掉其中一个：
+        `UNIT_HEALTH` 与 `UNIT_MAXHEALTH` 走的是同一个分支，只摘一个另一个照样触发，
+        看起来"没有差异"，实则是自己的注入没生效——不是"事件不可观测"。
         """
-        judged = self._judge_event_drop()
-        self.assertEqual(judged["totals"]["difference"], 0,
-                         "漏订阅事件现在能被检出了——请更新投影里的「未参与比较」口径")
+        self._component_defect_is_detected(
+            "event-branch", "Core.lua",
+            'if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then',
+            'if event == "UNIT_HEALTH_OFF" or event == "UNIT_MAXHEALTH_OFF" then',
+            "health")
 
-    def _judge_event_drop(self):
-        project = self._temp_project("event-subscription")
-        source = project / "addons" / "MYUI_CrosshairHUD" / "Core.lua"
-        original = source.read_bytes()
-        self.assertIn(b'"UNIT_HEALTH", "UNIT_MAXHEALTH",', original, "未找到订阅点")
-        source.write_bytes(original.replace(b'"UNIT_HEALTH", "UNIT_MAXHEALTH",',
-                                            b'"UNIT_MAXHEALTH",', 1))
-        _, actual = self._run_project(project, "dk-event-drop.json")
-        import wowtest_projection as projection
-        dk_cases, dk_ref = locked_data()
-        return projection.judge(dk_cases, dk_ref, actual)
+    def test_normal_run_fails_after_injection_then_passes_after_restore(self):
+        """完整闭环：正常通过 → 注入后失败 → 换一份干净副本重新通过。
+
+        只证明"注入能被抓到"还不够——还得证明**干净的那份确实是通的**，
+        否则"抓到"可能只是这套比较对什么都报错。
+        """
+        clean = self._temp_project("cycle-clean")
+        report, _ = self._run_project(clean, "dk-cycle-clean.json")
+        self.assertEqual(report["status"], "pass", f"干净副本本应通过：{report['summary']}")
+
+        mutated = self._temp_project("cycle-mutated")
+        source = mutated / "addons" / "MYUI_CrosshairHUD" / "Logic.lua"
+        source.write_bytes(source.read_bytes().replace(b"start = 99", b"start = 111", 1))
+        report, _ = self._run_project(mutated, "dk-cycle-mutated.json")
+        self.assertIn(report["status"], ("difference", "error"),
+                      f"改坏生产代码后工具未报失败：{report['summary']}")
+
+        restored = self._temp_project("cycle-restored")
+        report, _ = self._run_project(restored, "dk-cycle-restored.json")
+        self.assertEqual(report["status"], "pass", "换回干净副本后没有重新通过")
 
     def test_injection_leaves_tracked_production_files_untouched(self):
         """注入全程不得改动受版本控制的生产文件。"""

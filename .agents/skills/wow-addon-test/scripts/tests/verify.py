@@ -116,6 +116,35 @@ def selftest(report_path=None):
         finally:
             shutil.rmtree(probe,ignore_errors=True)
     check('timing_observation_instant_contract',timing_probe)
+    def projection_cannot_swallow_failures():
+        """项目投影只能改**数值比较口径**，不能取消执行失败与账目汇总。
+
+        反例（复审给出）：只选 1 个用例、观测为空时，投影只遍历观测就会得到
+        "0 条用例、0 错误、通过"——内置比较器明明报了"缺少用例输出"，却被覆盖掉。
+        覆盖表也必须从最终逐用例结果汇总，不许与总判定各记各的。
+        """
+        profiles_,cases_,baseline_,_=core.data()
+        one=[cases_[0]]
+        builtin=core.compare(one,baseline_,[],profiles_)
+        yes(builtin['status']=='error','内置比较器没有报出缺用例输出')
+        merged=core.finalize_verdict({'status':'pass','summary':{'cases':0},'cases':[]},
+                                     builtin,one,profiles_)
+        yes(merged['status']=='error','缺用例输出被投影吞掉了：'+json.dumps(merged['summary'],ensure_ascii=False))
+        yes(merged['summary']['cases']==1,'缺用例没有被补回用例数')
+        yes(merged['summary']['errors']==1,'错误数没有反映出来')
+        row=[r for r in merged['coverage']if r['spec_id']==cases_[0]['spec_id']][0]
+        yes(row['cases']==1and row['status']=='issues',
+            '覆盖表与总判定不一致：'+json.dumps(row,ensure_ascii=False))
+        # 已知差异不算失败：覆盖行不得因此变成 issues
+        merged2=core.finalize_verdict(
+            {'status':'pass','summary':{},'cases':[{'id':cases_[0]['id'],'status':'known_difference',
+                                                    'differences':[],'errors':[]}]},
+            {'cases':[]},one,profiles_)
+        row2=[r for r in merged2['coverage']if r['spec_id']==cases_[0]['spec_id']][0]
+        yes(row2['status']=='pass'and row2['known_differences']==1,
+            '已批准的已知差异被记成了 issues：'+json.dumps(row2,ensure_ascii=False))
+        return merged['summary']
+    check('projection_cannot_swallow_failures',projection_cannot_swallow_failures)
     def settle_bound():
         # settle 只让实际侧追上**已经定义好**的观测时刻，不得借它移动参考侧的时刻
         bound=1.0

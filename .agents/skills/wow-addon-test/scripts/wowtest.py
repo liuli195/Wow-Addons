@@ -36,12 +36,17 @@ def _encode(obj):
     return json.dumps(obj,ensure_ascii=False,indent=2)
 
 def _fits(text):
-    return len(text.encode('utf-8'))<=OUTPUT_BUDGET_BYTES
+    # 末尾那个换行是 print 真的会写出去的一个字节，也要算进预算
+    return len(text.encode('utf-8'))+1<=OUTPUT_BUDGET_BYTES
 
 def emit(obj,args):
     body={'status':obj['status'],**obj['summary']} if (not getattr(args,'json',False) and 'summary'in obj) else obj
-    text=_encode(body)
-    if _fits(text):
+    # 条数／字段／嵌套上限**与字节预算无关，一律先执行**：只在超预算时才裁剪的话，
+    # "11 条很短的结果"会原样全部输出——上限形同虚设。
+    first=_bound(body,PREVIEW_LIMIT,FIELD_LIMIT,NESTING_LIMIT)
+    if not isinstance(first,dict):first={'result':first}
+    text=_encode(first)
+    if _encode(body)==text and _fits(text):
         print(text);return
     for preview,field,nesting in BOUND_LEVELS:
         bounded=_bound(body,preview,field,nesting)
@@ -136,10 +141,13 @@ def main(argv=None):
             builtin=core.compare(selected,baseline,actual,profiles,cfg['components'],cfg.get('require_cleanup',True))
             projection=core.load_projection(cfg)
             if projection is not None:
-                # 判定用项目投影，报告外壳（覆盖表、边界、清理）仍由工具按统一口径生成
+                # 判定用项目投影，但执行失败与账目汇总仍归工具：投影只改比较口径，
+                # 不能把"缺用例输出/未加载生产文件/清理失败"一并取消掉
                 r=core.project_verdict(projection,cfg,selected,baseline,actual)
-                for section in ('coverage','limits','cleanup'):
+                for section in ('limits',):
                     if section in builtin:r.setdefault(section,builtin[section])
+                r=core.finalize_verdict(r,builtin,selected,profiles,
+                                        cfg['components'],cfg.get('require_cleanup',True))
                 meta['projection_sha256']=cfg.get('projection_sha256')
                 meta['verdict']='project-projection'
             else:

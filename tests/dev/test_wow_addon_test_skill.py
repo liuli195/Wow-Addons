@@ -249,17 +249,34 @@ class SkillLayoutTest(unittest.TestCase):
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             entry.emit(payload, _JsonArgs())
-        report = json.loads(buffer.getvalue())
-        self.assertLessEqual(len(report["rows"]), 11, "预览条数不受上限约束")
+        text = buffer.getvalue()
+        report = json.loads(text)
+        # 全部很短、总量远未超预算——上限**照样**要生效（这正是原先漏掉的情形）
+        self.assertLessEqual(len(text.encode("utf-8")), OUTPUT_BUDGET, "输出超预算")
+        items = [item for item in report["rows"] if not (isinstance(item, dict) and "omitted" in item)]
+        omitted = [item for item in report["rows"] if isinstance(item, dict) and "omitted" in item]
+        self.assertLessEqual(len(items), 10, f"预览条数超过 10：{len(items)}")
+        self.assertEqual(len(omitted), 1, "没有报出省略条数")
+        self.assertEqual(len(items) + omitted[0]["omitted"], 11, "省略条数对不上")
+        self.assertTrue(report.get("details_truncated"), "裁剪没有被显式标注")
 
     def test_tool_error_message_is_bounded(self):
-        """失败信息同样要有上限：Lua 侧的错误可以很长。"""
-        broken = ROOT / ".local" / "tests" / "wow-addon-test" / "broken-adapter"
-        broken.mkdir(parents=True, exist_ok=True)
-        (broken / "adapter.lua").write_text("this is not lua (((", encoding="utf-8")
+        """失败信息同样要有上限：错误消息可以很长。
+
+        要**真的产生一条长错误**再验截断。用"适配器被列成生产文件"那类错误会先一步
+        拦下，根本走不到超长消息，这条回归就变成名不副实。
+        """
+        broken = ROOT / ".local" / "tests" / "wow-addon-test" / "long-error"
+        if broken.exists():
+            shutil.rmtree(broken)
+        broken.mkdir(parents=True)
+        (broken / "adapter.lua").write_text(
+            "return function(ctx) return {start=function()end,snapshot=function()end,stop=function()end} end",
+            encoding="utf-8")
+        long_name = "x" * 4000 + ".lua"       # 消息里会带上这个名字
         (broken / "wowtest.json").write_text(json.dumps({
-            "schema_version": 1, "project_root": ".", "addon_name": "broken",
-            "adapter": "adapter.lua", "files": ["adapter.lua"], "specs": "all",
+            "schema_version": 1, "project_root": ".", "addon_name": "long-error",
+            "adapter": "adapter.lua", "files": [long_name], "specs": "all",
             "components": ["health"], "require_cleanup": False, "timeout_seconds": 30},
             ensure_ascii=False), encoding="utf-8")
         result = subprocess.run(
@@ -267,11 +284,11 @@ class SkillLayoutTest(unittest.TestCase):
              "--output", str(broken / "out.json"), "--json"],
             capture_output=True, text=True, encoding="utf-8", timeout=300, env=skill_env(),
         )
-        self.assertNotEqual(result.returncode, 0, "坏适配器竟然成功了")
+        self.assertNotEqual(result.returncode, 0, "缺文件竟然成功了")
         report = json.loads(result.stderr.strip().splitlines()[-1])
         self.assertEqual(report["status"], "tool_error")
-        self.assertLessEqual(len(result.stderr.encode("utf-8")), 8 * 1024,
-                             "失败信息没有上限")
+        self.assertTrue(report.get("details_truncated"), "超长失败信息没有被标注截断")
+        self.assertLessEqual(len(report["message"]), 2048 + 16, "失败信息本身没有上限")
 
     def test_small_outputs_are_never_truncated(self):
         """没超预算的命令不该被缩裁——否则代理会以为结果不完整。"""
@@ -285,14 +302,20 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(report.get("cases"), 846, "用例总数不对")
 
     def test_tool_selftest_passes_in_the_repo(self):
-        """工具自带的整套自检要在仓库里真跑一遍——否则它退化成一句没人执行的承诺。"""
+        """工具自带的整套自检要在仓库里真跑一遍——否则它退化成一句没人执行的承诺。
+
+        屏幕上的报告有条数上限（38 项会被截到 10 项），逐项明细走 `--output` 取——
+        这里正好连"完整结果另有去处"这条路一起验了。
+        """
+        target = ROOT / ".local" / "tests" / "wow-addon-test" / "selftest-full.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
-            [sys.executable, str(ENTRY), "selftest", "--json"],
+            [sys.executable, str(ENTRY), "selftest", "--json", "--output", str(target)],
             capture_output=True, text=True, encoding="utf-8", timeout=600,
             env=skill_env(),
         )
         self.assertEqual(result.returncode, 0, f"自检未通过：{result.stdout[-600:]}")
-        report = json.loads(result.stdout)
+        report = json.loads(target.read_text(encoding="utf-8"))
         failed = [c["name"] for c in report["results"] if c["status"] != "pass"]
         self.assertEqual(failed, [], f"自检项失败：{failed}")
         self.assertEqual(report["passed"], report["checks"], "自检项数与通过数不一致")

@@ -184,7 +184,8 @@ def config(path):
     # 声明了就必须可用——坏掉时显式失败，**不得静默退回通用比较**（那会得出另一套结论）
     projection=c.get('projection')
     if projection is not None:
-        c['projection_path']=str(relative_file(root,projection))
+        try:c['projection_path']=str(relative_file(root,projection))
+        except ToolError as exc:raise ToolError('投影模块不可用: '+str(exc))
         c['projection_sha256']=hashlib.sha256(pathlib.Path(c['projection_path']).read_bytes()).hexdigest()
     c['components']=components
     return c,root,sources,ap.read_text('utf-8-sig')
@@ -203,6 +204,60 @@ def load_projection(cfg):
     if not callable(getattr(module,'judge',None)):
         raise ToolError('投影模块必须提供 judge(cases, baseline, actual)')
     return module
+
+def finalize_verdict(verdict,builtin,cases,profiles,components=COMPONENTS,require_cleanup=False):
+    """工具侧的失败保护与账目汇总。
+
+    项目投影可以改**数值比较的口径**，但**不能取消**执行失败、完整性失败与适用的
+    清理失败——那些是工具自己的断言（缺少用例输出、适配器未加载生产文件、清理不到位）。
+    投影若只遍历实际观测，漏输出会变成"零条用例、零错误、通过"，等于把失败吞掉。
+
+    汇总一律从**最终的逐用例结果**产生：覆盖表与总判定不许各记各的
+    （实测出现过总判定 72 通过、覆盖行却是 passed=0 的矛盾报告）。
+    """
+    spec_of={c['id']:c['spec_id']for c in cases}
+    pending={row['id']:list(row.get('errors')or[])for row in builtin.get('cases',[])if row.get('errors')}
+    rows=list(verdict.get('cases')or[])
+    for row in rows:
+        row.setdefault('errors',[])
+        extra=pending.pop(row.get('id'),None)
+        if extra:
+            row['errors'].extend(extra)
+            row['status']='error'
+    # 投影整个漏掉的用例：按错误补回来，不能被"没遍历到"吞掉
+    for case_id,errors in pending.items():
+        rows.append({'id':case_id,'spec_id':spec_of.get(case_id),'status':'error',
+                     'differences':[],'errors':errors})
+    for row in rows:row.setdefault('spec_id',spec_of.get(row.get('id')))
+    counts={name:0 for name in ('pass','difference','known_difference','error')}
+    for row in rows:
+        status=row.get('status','pass')
+        counts[status]=counts.get(status,0)+1
+    summary=dict(verdict.get('summary')or{})
+    summary.update({'cases':len(rows),'passed':counts['pass'],'differences':counts['difference'],
+                    'known_differences':counts['known_difference'],'errors':counts['error'],
+                    'selected_specs':len({r['spec_id']for r in rows if r.get('spec_id')is not None})})
+    coverage=[]
+    for p in profiles:
+        selected=[r for r in rows if r.get('spec_id')==p['spec_id']]
+        # 覆盖行的状态按「有没有**失败**」判：已批准的已知差异不算失败，
+        # 否则会出现"总判定通过、每个专精却都是 issues"的矛盾报告。
+        # 已知差异另有计数，不会被藏起来。
+        failed=[r for r in selected if r['status']in('error','difference')]
+        coverage.append({'spec_id':p['spec_id'],'class_name':p['class_name'],'spec_name':p['spec_name'],
+                         'cases':len(selected),'passed':sum(r['status']=='pass'for r in selected),
+                         'known_differences':sum(r['status']=='known_difference'for r in selected),
+                         'status':'not_selected'if not selected else 'issues'if failed else 'pass',
+                         'components':list(components)if selected else [],'native_resource_seed':p['resource_seed'],
+                         'extra_resource_gaps':p['extra_resource_gaps'],'gameplay_verified':False})
+    verdict['cases']=rows
+    verdict['summary']=summary
+    verdict['status']='error'if counts['error']else 'difference'if counts['difference']else 'pass'
+    verdict['coverage']=coverage
+    verdict['cleanup']=builtin.get('cleanup')or{'applicability':'applied'if require_cleanup else 'not_applicable',
+                                                'status':('failed'if counts['error']else 'passed')if require_cleanup else 'not_run',
+                                                'reason':''if require_cleanup else '该插件没有停止生命周期，本项不适用；未执行的断言不计为通过'}
+    return verdict
 
 def project_verdict(module,cfg,cases,baseline,actual):
     """用项目投影产出正式判定。结果必须是可用报告，缺 status/summary 即失败。"""
