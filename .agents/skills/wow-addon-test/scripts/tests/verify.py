@@ -156,11 +156,18 @@ def selftest(report_path=None):
             pairs=(('cases','cases'),('passed','pass'),('errors','error'),('differences','difference'))
             for a,b in pairs:
                 yes(s_[a]==t_[b],f'summary.{a}={s_[a]} 与 totals.{b}={t_[b]} 不一致')
-        # ⑤ 选择范围外的用例不得混进判定
+        # ⑤ 选择范围外的用例不得混进判定。
+        #    必须同时提供完整的已选结果，否则删掉“范围外”检查后，
+        #    仍会因“漏掉已选用例”失败，无法证明这里测到了正确原因。
+        extra_id='spec-999999.not-selected'
         merged4=core.finalize_verdict({'status':'pass','summary':{},'cases':[
-            {'id':'spec-999999.not-selected','status':'pass','differences':[],'errors':[]}]},
+            {'id':one[0]['id'],'status':'pass','differences':[],'errors':[]},
+            {'id':extra_id,'status':'pass','differences':[],'errors':[]}]},
             {'cases':[]},one,profiles_)
+        extra_row=[r for r in merged4['cases']if r['id']==extra_id][0]
         yes(merged4['status']=='error','选择范围外的用例被当成通过')
+        yes(any('不在本次选择范围内'in e.get('message','')for e in extra_row['errors']),
+            '失败不是由范围外用例检查触发：'+json.dumps(extra_row,ensure_ascii=False))
         return merged['summary']
     check('projection_cannot_swallow_failures',projection_cannot_swallow_failures)
     def settle_bound():
