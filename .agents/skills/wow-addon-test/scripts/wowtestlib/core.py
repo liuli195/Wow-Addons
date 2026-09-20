@@ -354,7 +354,14 @@ def compare(cases,baseline,actual,profiles,components=COMPONENTS,require_cleanup
      'coverage':coverage,'cases':rows}
 
 def markdown(report):
-    s=report['summary'];parts=['# 魔兽插件逻辑比较报告',f"\n状态：**{report['status']}**\n",'| 用例 | 通过 | 差异 | 环境/执行错误 | 检查点 | 专精 |','|---:|---:|---:|---:|---:|---:|',f"| {s['cases']} | {s['passed']} | {s['differences']} | {s['errors']} | {s['compared_checkpoints']} | {s['selected_specs']} |",'\n## 差异与错误']
+    s=report['summary']
+    known=s.get('known_differences',0)
+    parts=['# 魔兽插件逻辑比较报告',f"\n状态：**{report['status']}**\n",
+           '| 用例 | 通过 | 已知差异 | 差异 | 环境/执行错误 | 检查点 | 专精 |',
+           '|---:|---:|---:|---:|---:|---:|---:|',
+           f"| {s['cases']} | {s['passed']} | {known} | {s['differences']} | {s['errors']} | {s['compared_checkpoints']} | {s['selected_specs']} |",
+           '\n**已知差异**是事先批准的产品行为，不是缺陷；每条都核对了批准口径。\n' if known else '',
+           '\n## 差异与错误']
     issues=[r for r in report['cases']if r['status']!='pass']
     if not issues:parts.append('本次选择范围内未发现差异。未选择/未支持范围不计入通过。')
     for r in issues[:50]:
@@ -365,7 +372,16 @@ def markdown(report):
             where=d.get('path') or ' · '.join(str(x)for x in (d.get('component'),d.get('kind'))if x)
             got=d.get('actual',d.get('observed'))
             step=d.get('step')
-            parts.append(f"步骤 {step} · `{where}`：预期 `{d.get('expected')}`，实际 `{got}`。")
+            line=f"步骤 {step} · `{where}`：预期 `{d.get('expected')}`，实际 `{got}`。"
+            if d.get('known'):
+                # 已知差异要**连批准口径一起写出来**：只给原生期望会让读的人以为这是缺陷
+                detail=d.get('approved_by') or '已批准的产品差异'
+                line+=f" **（已知差异）** 批准口径：`{d.get('approved_expected')}`　依据：{detail}"
+            elif d.get('approved_expected') is not None:
+                line+=f" **（失败：不符合批准口径 `{d.get('approved_expected')}`）** {d.get('detail')or''}"
+            elif d.get('detail'):
+                line+=f" {d['detail']}"
+            parts.append(line)
     if len(issues)>50:parts.append('更多细节见同名 JSON 完整报告。')
     parts.extend(['\n## 专精覆盖','| 职业/专精 | ID | 用例 | 通过 | 状态 | 额外缺口 |','|---|---:|---:|---:|---|---|'])
     for r in report['coverage']:parts.append(f"| {r['class_name']}/{r['spec_name']} | {r['spec_id']} | {r['cases']} | {r['passed']} | {r['status']} | {'；'.join(r['extra_resource_gaps']) or '—'} |")
