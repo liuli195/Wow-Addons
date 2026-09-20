@@ -51,7 +51,10 @@ function CreateFrame()
     function f:CreateTexture() return NewTexture() end
     function f:CreateMaskTexture() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
-    function f:SetPoint() end
+    function f:SetPoint(point, relativeTo, relPoint, x, y)
+        f.point = { point = point, relativeTo = relativeTo, relPoint = relPoint,
+                    x = x or 0, y = y or 0 }
+    end
     function f:ClearAllPoints() end
     function f:SetFrameStrata() end
     -- 记录实参而不是空实现：「屏幕上到底有没有它」本身就是被测行为之一，
@@ -98,6 +101,16 @@ end }
 function UnitHealthPercent(_, _, curve) return curve:Evaluate(1) end
 function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(1) end
 
+-- 上一游戏会话由 EUI 保存下来的位置。当前 Lua 进程从这里开始，代表 /reload
+-- 后的新会话；后面的 Config.Load + 正式装配顺序必须恢复到同一根框坐标。
+MYUI_CrosshairHUDDB = {
+    scale = 0.8,
+    position = {
+        point = "CENTER", relPoint = "CENTER",
+        x = 88.610975477431, y = -44.533299763997,
+    },
+}
+
 ----------------------------------------------------------------------
 -- EllesmereUI mock：只实现本契约用到的入口
 ----------------------------------------------------------------------
@@ -125,8 +138,13 @@ for _, name in ipairs({ "Logic", "Elements", "Config", "Core" }) do
 end
 local NS = assert(_G.MYUI_CHH)
 local Core = assert(NS.Core)
+local Config = assert(NS.Config)
+Config.Load()
 NS.Core.BuildArcCurves()
 NS.Elements.Create()          -- 没有框体时 getSize 也得能返回数字，两种情形都测
+Core.ApplyScaleAndStrata()    -- 与 PLAYER_LOGIN 的正式恢复顺序相同
+local reloadPoint = assert(NS.Elements.frame.point,
+    "新会话装配必须从 SavedVariables 恢复位置")
 NS.Mount()
 
 assert(registeredElements, "Mount 应注册解锁元素")
@@ -162,6 +180,29 @@ assert(elem.noResize == nil, "不许设 noResize：它会连齿轮里的 X/Y 输
 assert(elem.noInitHook == true,
     "自作定位的元素必须设 noInitHook，否则改尺寸时位置会被 EUI 重贴到别处")
 
+----------------------------------------------------------------------
+-- EUI 保存的是 UIParent 单位的 CENTER/CENTER 坐标。HUD 的 scale 只改变
+-- 元素尺寸，不是框体 SetScale；新会话恢复时不得再拿尺寸缩放除位置坐标。
+-- 这个样例来自实机：scale=0.8，EUI 保存约 88.611/-44.533。
+----------------------------------------------------------------------
+assert(reloadPoint.point == "CENTER" and reloadPoint.relPoint == "CENTER",
+    "恢复位置必须保持 EUI 的 CENTER/CENTER 契约")
+assert(math.abs(reloadPoint.x - 88.610975477431) < 1e-9,
+    "位置 X 不得再除以 HUD 尺寸缩放，实得 " .. tostring(reloadPoint.x))
+assert(math.abs(reloadPoint.y - -44.533299763997) < 1e-9,
+    "位置 Y 不得再除以 HUD 尺寸缩放，实得 " .. tostring(reloadPoint.y))
+
+-- 同一存档重复恢复必须幂等，不能每次重载再乘除一次而形成累积漂移。
+elem.applyPos(key)
+local reapplied = assert(NS.Elements.frame.point)
+assert(math.abs(reapplied.x - reloadPoint.x) < 1e-9
+    and math.abs(reapplied.y - reloadPoint.y) < 1e-9,
+    "重复恢复必须保持同一位置")
+
+-- 后续既有尺寸契约从默认缩放开始，避免实机回归样例污染其他断言。
+Config.Get().scale = 1.0
+Core.ApplyScaleAndStrata()
+
 -- 于是必须给出尺寸语义，否则宽度/高度那两行改不动任何东西
 assert(type(elem.setWidth) == "function", "要能承接齿轮里的宽度")
 assert(type(elem.setHeight) == "function", "要能承接齿轮里的高度")
@@ -184,7 +225,6 @@ assert(w == 128 and h == 128, "缩放 1.0 时应报设计稿尺寸，实得 " ..
 ----------------------------------------------------------------------
 -- 宽度／高度改的是整体缩放，且与配置页共用同一个值
 ----------------------------------------------------------------------
-local Config = assert(NS.Config)
 local key = elem.key
 
 elem.setWidth(key, 256)
