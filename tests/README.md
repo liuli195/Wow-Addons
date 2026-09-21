@@ -2,9 +2,14 @@
 
 所有自有插件、项目和开发工具的测试统一放在根目录 `tests/`，按被测对象分组。新增插件测试使用 `tests/addons/<插件名>/`，项目测试使用 `tests/<项目名>/`；没有测试的对象不创建空目录。
 
+例外：随 Agent 技能分发、且必须与技能保持同源的自测可以留在技能目录内（当前为
+`.agents/skills/wow-addon-test/scripts/tests/`）。根目录只登记它的统一调用入口，不再复制第二份实现；
+技能接入 MYUI 的行为测试仍放在 `tests/addons/MYUI_CrosshairHUD/`。
+
 | 目录 | 内容与运行条件 |
 | --- | --- |
 | `dev/` | 开发检查器回归，使用本机已准备的 Lua（脚本语言）检查工具 |
+| `addons/` | 插件离线测试：`.tools/lua-5.1.5` 沙箱 + 伪造游戏接口，断言插件留下的 SavedVariables；当前有 `AddonProbe/`、`Sim2GSEProbe/`、`MYUI/`、`MYUI_CrosshairHUD/` |
 | `sim2gse/` | 序列项目测试；`test_*.py` 使用构造样例，`manual_native_task.py`、`manual_search_task.py`、`manual_interface.py` 依赖本机私人角色数据 |
 | `sim2gse/research/` | 独立运行的原型与源码检查；`prototype-engine-check.py` 同样依赖本机私人角色数据 |
 | `gear-planner/` | 装备规划器回归；纯 JavaScript（脚本语言）检查进入 PR（拉取请求），Python（编程语言）计算和浏览器检查需要本机引擎与数据 |

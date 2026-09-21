@@ -1,0 +1,7 @@
+## Interface: 120100
+## Title: Addon Probe
+## Notes: 通用诊断探针：hook 具名函数、记录调用栈与状态 diff，供离线分析。
+## SavedVariables: AddonProbeDB
+## Version: 0.1.0
+
+Core.lua

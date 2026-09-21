@@ -7,7 +7,7 @@
 | 证据 | 当前核对结果 |
 | --- | --- |
 | 官方原生程序 | 本地 `.tools/gear-planner-research/simc-1210.01.c1935b9-win64/simc.exe`，大小 121016832 字节，SHA-256（文件散列）为 `f1281cdc7224d9d08e23cca1c090fa1b144b8b22491ffd8459ccefb8d8120987`；主代理重新计算一致。 |
-| 程序来源 | 对应提交 `c1935b92f40d1063696861b0f4f6701e714ebd09`；上游发布任务和本仓库既有记录可追溯。[官方发布任务](https://github.com/simulationcraft/simc-publish/actions/runs/34184702422)、[现有来源记录](../gear-planner/deathknight-raidbots-validation.md) |
+| 程序来源 | 对应提交 `c1935b92f40d1063696861b0f4f6701e714ebd09`；上游发布任务和本仓库既有记录可追溯。[官方发布任务](https://github.com/simulationcraft/simc-publish/actions/runs/34184702422)、[现有来源记录](../gear-planner/validation/deathknight-raidbots-validation.md) |
 | 本地源码 | `.tools/gear-planner-dk-reference/simulationcraft-simc-b845947` 为归档展开目录，来源提交是 `b845947a34429874433d8e9362326894650dd20a`，不是有版本库元数据的正式补丁工作树。本轮受检的 7 个源码／许可文件与现有固定归档逐字节一致。 |
 | 两份版本关系 | 前轮上游核对与既有记录显示，两提交的 `engine/`（引擎目录）树对象相同，为 `a0f97e0abef4805028dbe849a3adca198fc05052`。可以用本地源码定位引擎入口；完整输入与构建仍须锁定同一提交，不能把两个版本整体混为一体。[上游差异](https://github.com/simulationcraft/simc/compare/b845947a34429874433d8e9362326894650dd20a...c1935b92f40d1063696861b0f4f6701e714ebd09) |
 
@@ -15,7 +15,7 @@
 
 现有 [装备规划器服务](../../projects/gear-planner/server.py)第 22 行仍引用上述官方程序；[研究探测脚本](../../scripts/dev/gear-planner-research/probe-simc.py)也在复用它，因此后续项目补丁不能直接覆盖此程序。
 
-既有脚本已使用该原生程序，但其中有把角色动作替换成属性快照和等待的研究输入。因此这些成功记录不证明正常战斗基线或本项目执行模型成立。[原有探测入口](../../scripts/dev/gear-planner-research/probe-simc.py)、[原有验证边界](../gear-planner/deathknight-raidbots-validation.md)
+既有脚本已使用该原生程序，但其中有把角色动作替换成属性快照和等待的研究输入。因此这些成功记录不证明正常战斗基线或本项目执行模型成立。[原有探测入口](../../scripts/dev/gear-planner-research/probe-simc.py)、[原有验证边界](../gear-planner/validation/deathknight-raidbots-validation.md)
 
 ## 已定位的调用链
 

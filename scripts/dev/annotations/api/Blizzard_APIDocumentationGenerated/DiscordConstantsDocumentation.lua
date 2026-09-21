@@ -1,0 +1,16 @@
+---@meta _
+---@class DiscordChatInfo
+---@field userID any
+---@field globalName string
+---@field type Enum.DiscordDisplayNameType? Default = Default
+---@field lastOnlineGUID WOWGUID
+---@field lastOnlineName string
+---@field hasAttachment boolean
+---@field hasPoll boolean
+---@field hasEmbed boolean
+---@field hasSticker boolean
+---@field hasEmoji boolean
+---@field hasError boolean
+---@field hasForwardedMessage boolean
+---@field forwardedMessage string
+---@field fromDiscord boolean

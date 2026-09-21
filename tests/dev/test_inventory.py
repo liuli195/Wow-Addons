@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPERS = {
     'tests/gear-planner/test-page.cjs': 'tests/gear-planner/check-async.js',
     'tests/sim2gse/research/prototype-export.lua': 'tests/sim2gse/research/prototype-export.py',
+    'tests/addons/MYUI_CrosshairHUD/wowtest_projection.py': 'tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py',
+    'tests/addons/MYUI_CrosshairHUD/.wow-test/adapter.lua': 'tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py',
 }
 LOCAL_ACCEPTANCE = {
     'tests/gear-planner/check-add-socket.py',

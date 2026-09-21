@@ -1,0 +1,5 @@
+---@meta _
+---@class EncounterUnitStatus
+---@field creatureID number
+---@field creatureName string
+---@field remainingHealthPercent number

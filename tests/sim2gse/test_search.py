@@ -145,6 +145,37 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_report_version_gate_accepts_historical_and_current_build(self):
+        """历史报告在其对应版本上有效，升级不得把它们踢掉。"""
+        import engine
+
+        def character():
+            equipment = {"head": SimpleNamespace(raw=",id=1")}
+            return SimpleNamespace(name="角色", class_name="death_knight", level=90, race="scourge",
+                                   spec_id=252, fields={"talents": "talents"}, equipment=equipment)
+
+        def report(build_level, version_used="Live"):
+            player = {"name": "角色", "sim2gse_class": "death_knight", "level": 90,
+                      "sim2gse_spec_id": 252, "race": "scourge", "talents": "talents",
+                      "sim2gse_resource": "runic_power", "sim2gse_class_id": 6,
+                      "sim2gse_spec": "unholy", "role": "attack",
+                      "gear": {"head": {"encoded_item": ",id=1"}},
+                      "collected_data": {"dps": {"mean": 100.0, "count": 99},
+                                         "fight_length": {"mean": 180}}}
+            return {"sim": {"players": [player], "targets": [{}],
+                            "statistics": {"raid_dps": {"mean": 100.0, "count": 99}},
+                            "options": {"dbc": {"Live": {"build_level": build_level},
+                                                "version_used": version_used}}}}
+
+        for build in (69587, 69814):
+            engine.check_report(report(build), character(), 100)
+        # 校验强度不变：清单外的版本照旧拒绝。
+        for build in (69999, 0):
+            with self.assertRaises(ValueError):
+                engine.check_report(report(build), character(), 100)
+        with self.assertRaises(ValueError):
+            engine.check_report(report(69814, "Ptr"), character(), 100)
+
     def test_public_entry_runs_multi_start_search_with_isolated_validation(self):
         import sequence
         real_evaluate = sequence.evaluate

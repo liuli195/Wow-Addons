@@ -5,6 +5,8 @@ import struct
 import numpy as np
 from PIL import Image, ImageFilter
 
+from build_crosshair_media import build as build_crosshair_media
+
 
 REPO = Path(__file__).resolve().parents[2]
 ROOT = REPO / "assets/EUI_FacetedMedia"
@@ -12,6 +14,7 @@ SOURCE = ROOT / "New-Crystal-Set" / "Final-PNG"
 MEDIA = REPO / "addons/EUI_FacetedPortrait/Media"
 STATUSBAR = ROOT / "SharedMedia_MyMedia" / "statusbar"
 BORDER = ROOT / "SharedMedia_MyMedia" / "border"
+CROSSHAIR = REPO / "addons/MYUI/Media/CrosshairHUD"
 RESAMPLE = Image.Resampling.LANCZOS
 
 
@@ -183,6 +186,9 @@ def main():
 
     print(f"Built {3 + len(extras)} WoW TGA assets from New-Crystal-Set.")
 
+    # 准星 HUD 素材：同一入口统一构建（`build` 段只允许产品目标，素材构建并到这里）
+    build_crosshair_media(CROSSHAIR)
+
 
 if __name__ == "__main__":
     import argparse
@@ -196,4 +202,5 @@ if __name__ == "__main__":
         MEDIA = output / 'addons/EUI_FacetedPortrait/Media'
         STATUSBAR = output / 'assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar'
         BORDER = output / 'assets/EUI_FacetedMedia/SharedMedia_MyMedia/border'
+        CROSSHAIR = output / 'addons/MYUI/Media/CrosshairHUD'
     main()

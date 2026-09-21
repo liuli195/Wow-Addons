@@ -8,7 +8,7 @@
 
 **需求和验收 → 固定基线与功能分支 → 核实接口 → 小步实现 → 本机快速验证 → 游戏验收 → 提交与推送 → 远端完整验证和审查 → 合并 → 清理 → 按需发布安装包。**
 
-本指南描述方案与工作约定，实际落地环境见[环境使用说明](environment-setup.md)。前期工具能力和社区采用证据见[研究笔记](wow-addon-debug-testing.md)。本指南中的技能限制以本次读取的本机 2.0.0 版技能为依据；升级后重新读取技能，不照抄旧参数。
+本指南描述方案与工作约定，实际落地环境见[环境使用说明](environment-setup.md)。前期工具能力和社区采用证据见[研究笔记](research/wow-addon-debug-testing.md)。本指南中的技能限制以本次读取的本机 2.0.0 版技能为依据；升级后重新读取技能，不照抄旧参数。
 
 ## 1. 本仓库现状与第一期范围
 
@@ -101,15 +101,15 @@ lua-language-server --check "$repoRoot/addons/EUI_FacetedPortrait" --configpath 
 
 | 资料 | 本次核实结果 | 使用方式 |
 | --- | --- | --- |
-| Gethe/wow-ui-source（暴雪界面源码镜像） | 12.1.0 标签解析为 `8ea15b61e45c0ed4eba01439c90757f86eb78d34`；版本文件为 `12.1.0.69587` | 暴雪生成文档和真实界面调用的主要证据 |
-| Ketho/BlizzardInterfaceResources（游戏接口资源清单） | 12.1.0 标签解析为 `36dd01db2d8fa5086dffda5cbfb3d55f4a70e526`；读取的说明记录构建号 69587、接口号 120100 | 查全局函数、事件、控件方法、模板、枚举等清单 |
+| Gethe/wow-ui-source（暴雪界面源码镜像） | `live` 分支解析为 `4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59`；版本文件为 `12.1.0.69814` | 暴雪生成文档和真实界面调用的主要证据 |
+| Ketho/BlizzardInterfaceResources（游戏接口资源清单） | `live` 分支解析为 `36dd01db2d8fa5086dffda5cbfb3d55f4a70e526`；读取的说明记录构建号 69587、接口号 120100 | 查全局函数、事件、控件方法、模板、枚举等清单 |
 | Ketho/vscode-wow-api（语言服务器接口注解） | 本次主分支提交为 `d0b5b51fac4c52c493371b9b18e66ce604ea4326`；更新记录仅明确写到 12.0.1 | 可作为注解候选，尚未确认完整匹配 12.1，不能直接作为版本基准 |
 
-证据：[源码固定提交版本文件](https://github.com/Gethe/wow-ui-source/blob/8ea15b61e45c0ed4eba01439c90757f86eb78d34/version.txt)、[接口资源说明](https://github.com/Ketho/BlizzardInterfaceResources/tree/36dd01db2d8fa5086dffda5cbfb3d55f4a70e526)、[注解更新记录](https://github.com/Ketho/vscode-wow-api/blob/d0b5b51fac4c52c493371b9b18e66ce604ea4326/CHANGELOG.md)。网页搜索缓存可能落后于直接获取结果，因此版本判断以固定提交文件为准。
+证据：[源码固定提交版本文件](https://github.com/Gethe/wow-ui-source/blob/4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59/version.txt)、[接口资源说明](https://github.com/Ketho/BlizzardInterfaceResources/tree/36dd01db2d8fa5086dffda5cbfb3d55f4a70e526)、[注解更新记录](https://github.com/Ketho/vscode-wow-api/blob/d0b5b51fac4c52c493371b9b18e66ce604ea4326/CHANGELOG.md)。网页搜索缓存可能落后于直接获取结果，因此版本判断以固定提交文件为准。
 
 获取步骤：
 
-1. 在目标正式服客户端执行 `/dump GetBuildInfo()`，记录版本、构建号、构建日期和接口号。当前已找到的快照为 12.1.0 / 69587 / 120100；只有客户端匹配时才采用该快照。12.1 的后续小补丁也不能自动混入。
+1. 在目标正式服客户端执行 `/dump GetBuildInfo()`，记录版本、构建号、构建日期和接口号。当前已找到的快照为 12.1.0 / 69814 / 120100；只有客户端匹配时才采用该快照。12.1 的后续小补丁也不能自动混入。
 2. 下载对应的界面源码快照，重点检索 `Interface/AddOns/Blizzard_APIDocumentationGenerated`（暴雪生成接口文档目录）。其中的 Lua（脚本语言）表描述函数参数、返回值、事件和数据结构，部分还包含受限参数规则。这是数据描述，不能直接当成语言服务器类型声明。
 3. 保留同一份快照的其余界面源码，查模板、混入方法、加载顺序和暴雪实际调用。源码镜像包含不同客户端相关文件时，按正式服加载清单选择，不将全部文件视为正式服可用接口。
 4. 下载匹配版本的接口资源清单，用 `GlobalAPI.lua`、`WidgetAPI.lua`、`ScriptObjectAPI.lua`、`Events.lua`、`Templates.lua` 等补查名称与覆盖范围。函数名清单本身不提供完整参数语义，也不能证明所有按需加载内容都已覆盖。
@@ -119,7 +119,7 @@ lua-language-server --check "$repoRoot/addons/EUI_FacetedPortrait" --configpath 
 
 ~~~powershell
 git clone --filter=blob:none --no-checkout https://github.com/Gethe/wow-ui-source.git .tools/wow-ui-source
-git -C .tools/wow-ui-source checkout --detach 8ea15b61e45c0ed4eba01439c90757f86eb78d34
+git -C .tools/wow-ui-source checkout --detach 4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59
 Get-Content .tools/wow-ui-source/version.txt
 
 git clone --filter=blob:none --no-checkout https://github.com/Ketho/BlizzardInterfaceResources.git .tools/wow-resources
@@ -145,7 +145,7 @@ Luacheck 的 .luacheckrc（检查配置）声明实际使用的魔兽全局量�
 
 ### 2.6 魔兽专用 MCP（模型上下文协议服务）与技能
 
-补充核查日期：2026-09-08。前期指南遗漏了这类工具；已有可用候选，尤其是 Mechanic（魔兽开发诊断平台）。以下是源码与文档审查结论，本次没有安装或运行这些新工具。详细证据、维护快照和技能比较见[专用人工智能工具研究](wow-addon-ai-tools-research.md)。
+补充核查日期：2026-09-08。前期指南遗漏了这类工具；已有可用候选，尤其是 Mechanic（魔兽开发诊断平台）。以下是源码与文档审查结论，本次没有安装或运行这些新工具。详细证据、维护快照和技能比较见[专用人工智能工具研究](research/wow-addon-ai-tools-research.md)。
 
 | 候选 | 能补齐什么 | 对本仓库的判断 |
 | --- | --- | --- |
@@ -505,9 +505,9 @@ BigWigs Packager（插件打包器）是通用魔兽插件打包工具，不要�
 
 以下是本次实际读取的本机文档；属于版本快照，执行时应重新从宿主清单发现入口：
 
-- [构建与验证技能](C:/Users/liuli/.codex/plugins/cache/build-and-verify/build-and-verify/2.0.0/skills/build-and-verify/SKILL.md)：快速与完整模式、固定基线、缓存及跳过语义。
-- [构建与验证初始化](C:/Users/liuli/.codex/plugins/cache/build-and-verify/build-and-verify/2.0.0/skills/build-and-verify-init/SKILL.md)：配置确认与正式写入入口。
-- [拉取请求初始化](C:/Users/liuli/.codex/plugins/cache/my-agent-skills-marketplace/pr-flow/2.0.0/skills/pr-flow-init/SKILL.md)：本地文件与远端待办边界。
-- [拉取请求诊断](C:/Users/liuli/.codex/plugins/cache/my-agent-skills-marketplace/pr-flow/2.0.0/skills/pr-flow/SKILL.md)：状态读取及停止状态。
-- [拉取请求收尾](C:/Users/liuli/.codex/plugins/cache/my-agent-skills-marketplace/pr-flow/2.0.0/skills/pr-flow-complete/SKILL.md)：合并与安全清理。
+- 构建与验证技能（`build-and-verify` 技能）：快速与完整模式、固定基线、缓存及跳过语义。
+- 构建与验证初始化（`build-and-verify-init` 技能）：配置确认与正式写入入口。
+- 拉取请求初始化（`pr-flow-init` 技能）：本地文件与远端待办边界。
+- 拉取请求诊断（`pr-flow` 技能）：状态读取及停止状态。
+- 拉取请求收尾（`pr-flow-complete` 技能）：合并与安全清理。
 - [完整开发编排](C:/Users/liuli/.agents/skills/dev-flow/SKILL.md)：本仓库开发入口，负责阶段顺序、依赖和确认门禁；执行时从宿主清单重新解析当前入口。
