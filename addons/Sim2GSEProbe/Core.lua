@@ -1,9 +1,10 @@
 local PREFIX = "|cff58c7ffSim2GSEProbe:|r "
-local hookedButtons = {}
-local hookedRelays = {}
-local buttonTimes = {}
-local relayTimes = {}
-local createButtonHooked = false
+local GSE_CLICK_MESSAGE = "GSE_MODS_VISIBLE"
+local ACTIONS_PER_ITERATION = 253
+local messageReceiver = {}
+local messageRegistered = false
+local messageSerials = {}
+local nextPositions = {}
 local C_CVar = _G.C_CVar
 local C_Spell = _G.C_Spell
 local CreateFrame = _G.CreateFrame
@@ -12,9 +13,7 @@ local GetNetStats = _G.GetNetStats
 local GetRuneCooldown = _G.GetRuneCooldown
 local GetServerTime = _G.GetServerTime
 local GetTimePreciseSec = _G.GetTimePreciseSec
-local InCombatLockdown = _G.InCombatLockdown
 local UnitPower = _G.UnitPower
-local hooksecurefunc = _G.hooksecurefunc
 local issecretvalue = _G.issecretvalue
 
 local function GetDB()
@@ -23,6 +22,15 @@ end
 
 local function GetGSE()
     return rawget(_G, "GSE")
+end
+
+local function GetMessageBus()
+    local gse = GetGSE()
+    if gse and type(gse.RegisterMessage) == "function" then return gse end
+    local libStub = rawget(_G, "LibStub")
+    if not libStub then return nil end
+    local ok, bus = pcall(libStub, "AceEvent-3.0", true)
+    if ok and bus and type(bus.RegisterMessage) == "function" then return bus end
 end
 
 local function SafeScalar(value)
@@ -40,7 +48,8 @@ local function SafeScalar(value)
         return ok and copy or "unavailable"
     elseif kind == "boolean" then
         local ok, copy = pcall(function() return value == true end)
-        return ok and copy or "unavailable"
+        if not ok then return "unavailable" end
+        return copy
     end
     return "unavailable"
 end
@@ -121,15 +130,17 @@ local function ResolveSpellID(spell)
 end
 
 local function PreviousPosition(sequence, nextStep, nextIteration)
-    if type(sequence) ~= "table" or type(nextStep) ~= "number" or type(nextIteration) ~= "number" then
+    if type(nextStep) ~= "number" or type(nextIteration) ~= "number" then
         return nil, nil
     end
     if nextStep > 1 then return nextIteration, nextStep - 1 end
+    if type(sequence) ~= "table" or #sequence == 0 then return nil, nil end
     local iteration = nextIteration - 1
-    if iteration < 1 then iteration = #sequence end
-    local blocks = sequence[iteration]
-    if type(blocks) ~= "table" then return nil, nil end
-    return iteration, #blocks
+    if iteration < 1 then iteration = math.ceil(#sequence / ACTIONS_PER_ITERATION) end
+    return iteration, math.min(
+        ACTIONS_PER_ITERATION,
+        #sequence - (iteration - 1) * ACTIONS_PER_ITERATION
+    )
 end
 
 local function Environment()
@@ -155,37 +166,28 @@ local function AddRecord(record)
     table.insert(session.records, record)
 end
 
-local function CaptureClick(button)
+local function CaptureClick(button, sequenceName, evidence)
     local observedAt = NowMs()
-    local sequenceName = button and button.GetName and SafeCall(button.GetName, button)
     local gse = GetGSE()
     local sequence = gse and gse.SequencesExec and gse.SequencesExec[sequenceName]
-    local serial = ReadAttribute(button, "gseclickserial")
+    local serial = SafeScalar(evidence.ClickSerial)
     local nextStep = ReadAttribute(button, "step")
     local nextIteration = ReadAttribute(button, "iteration") or 1
-    local iteration, step = PreviousPosition(sequence, nextStep, nextIteration)
+    local previous = nextPositions[sequenceName]
+    if not (previous and serial == previous.serial + 1) then previous = nil end
+    local iteration, step = previous and previous.iteration, previous and previous.step
+    if not previous then
+        iteration, step = PreviousPosition(sequence, nextStep, nextIteration)
+    end
     local spell = ReadAttribute(button, "spell")
     local spellID = ResolveSpellID(spell)
     local baseSpellID = C_Spell and C_Spell.GetBaseSpell and spellID
         and SafeCall(C_Spell.GetBaseSpell, spellID) or nil
     local overrideSpellID = C_Spell and C_Spell.GetOverrideSpell and spellID
         and SafeCall(C_Spell.GetOverrideSpell, spellID) or nil
-    local relayTime = relayTimes[sequenceName]
-    local relayObserved = type(relayTime) == "number" and observedAt >= relayTime and observedAt - relayTime <= 50
-    local clickTime = relayObserved and relayTime or buttonTimes[button] or observedAt
-    local useKeyDown = ReadCVar("ActionButtonUseKeyDown")
-    local triggerEdge = "unknown"
-    if relayObserved then
-        triggerEdge = "keydown-relay-observed"
-    elseif useKeyDown == "0" then
-        triggerEdge = "keyup-configured"
-    end
-    buttonTimes[button] = nil
-    if type(sequenceName) == "string" then relayTimes[sequenceName] = nil end
-
     AddRecord({
         kind = "click",
-        timeMs = clickTime,
+        timeMs = observedAt,
         observedAtMs = observedAt,
         sequence = sequenceName,
         clickSerial = serial,
@@ -199,49 +201,39 @@ local function CaptureClick(button)
         spellID = spellID,
         baseSpellID = baseSpellID,
         overrideSpellID = overrideSpellID,
-        triggerEdge = triggerEdge,
+        hardwareEvent = SafeScalar(evidence.HardwareEvent),
+        spamKey = SafeScalar(evidence.SpamKey),
+        triggerEdge = "gse-execution-message-observed",
         gcd = ReadCooldown(61304),
         spellCooldown = ReadCooldown(spellID),
         runes = ReadRunes(),
         runicPower = ReadRunicPower(),
     })
-end
-
-local function CaptureButtonPress(button)
-    buttonTimes[button] = NowMs()
-end
-
-local function CaptureRelay(button)
-    local name = button and button.GetName and SafeCall(button.GetName, button)
-    if type(name) ~= "string" then return end
-    relayTimes[(name:gsub("_KD$", ""))] = NowMs()
-end
-
-local function HookButtons()
-    if InCombatLockdown and InCombatLockdown() then return 0 end
-    local count = 0
-    local gse = GetGSE()
-    local sequences = gse and gse.SequencesExec
-    if type(sequences) ~= "table" then return count end
-    for name in pairs(sequences) do
-        local button = type(name) == "string" and _G[name]
-        if button and button.HookScript and not hookedButtons[button] then
-            button:HookScript("PreClick", CaptureButtonPress)
-            button:HookScript("PostClick", CaptureClick)
-            hookedButtons[button] = true
-        end
-        local relay = type(name) == "string" and _G[name .. "_KD"]
-        if relay and relay.gseKeyDownRelay == true and relay.HookScript and not hookedRelays[relay] then
-            relay:HookScript("PreClick", CaptureRelay)
-            hookedRelays[relay] = true
-        end
-        if hookedButtons[button] then count = count + 1 end
+    if type(nextStep) == "number" and type(nextIteration) == "number" then
+        nextPositions[sequenceName] = { step = nextStep, iteration = nextIteration, serial = serial }
     end
-    if not createButtonHooked and gse and type(gse.CreateGSE3Button) == "function" then
-        hooksecurefunc(gse, "CreateGSE3Button", HookButtons)
-        createButtonHooked = true
+end
+
+local function CaptureGSEMessage(_, payload)
+    if type(payload) ~= "table" then return end
+    local name = SafeScalar(payload.SequenceName)
+    local serial = SafeScalar(payload.ClickSerial)
+    local previousSerial = type(name) == "string" and messageSerials[name] or nil
+    if type(name) ~= "string" or type(serial) ~= "number"
+        or (type(previousSerial) == "number" and serial <= previousSerial) then return end
+    local button = _G[name]
+    if not button then return end
+    messageSerials[name] = serial
+    CaptureClick(button, name, payload)
+end
+
+local function ConnectGSE()
+    local bus = GetMessageBus()
+    if not messageRegistered and bus then
+        bus.RegisterMessage(messageReceiver, GSE_CLICK_MESSAGE, CaptureGSEMessage)
+        messageRegistered = true
     end
-    return count
+    return messageRegistered
 end
 
 local function Print(message)
@@ -249,7 +241,9 @@ local function Print(message)
 end
 
 local function Start()
-    HookButtons()
+    messageSerials = {}
+    nextPositions = {}
+    ConnectGSE()
     _G.Sim2GSEProbeDB = GetDB() or {}
     local database = GetDB()
     database.schema = 1
@@ -287,12 +281,13 @@ local function Stop()
 end
 
 local function Status()
-    local count = HookButtons()
+    ConnectGSE()
     local database = GetDB()
     local session = database and database.session
     local state = session and session.active and "采集中" or "未采集"
     local records = session and session.records and #session.records or 0
-    Print(string.format("%s；已监听 %d 个 GSE 按钮；记录 %d 条。", state, count, records))
+    local connection = messageRegistered and "已连接" or "未连接"
+    Print(string.format("%s；GSE 消息%s；记录 %d 条。", state, connection, records))
 end
 
 _G.SLASH_SIM2GSEPROBE1 = "/s2gprobe"
@@ -334,7 +329,7 @@ end
 events:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_LOGIN" or event == "PLAYER_REGEN_ENABLED" or event == "ADDON_LOADED" then
         _G.Sim2GSEProbeDB = GetDB() or { schema = 1 }
-        HookButtons()
+        ConnectGSE()
         return
     end
 
