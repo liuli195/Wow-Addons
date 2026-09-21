@@ -48,7 +48,8 @@ local function SafeScalar(value)
         return ok and copy or "unavailable"
     elseif kind == "boolean" then
         local ok, copy = pcall(function() return value == true end)
-        return ok and copy or "unavailable"
+        if not ok then return "unavailable" end
+        return copy
     end
     return "unavailable"
 end
@@ -217,7 +218,9 @@ local function CaptureGSEMessage(_, payload)
     if type(payload) ~= "table" then return end
     local name = SafeScalar(payload.SequenceName)
     local serial = SafeScalar(payload.ClickSerial)
-    if type(name) ~= "string" or type(serial) ~= "number" or messageSerials[name] == serial then return end
+    local previousSerial = type(name) == "string" and messageSerials[name] or nil
+    if type(name) ~= "string" or type(serial) ~= "number"
+        or (type(previousSerial) == "number" and serial <= previousSerial) then return end
     local button = _G[name]
     if not button then return end
     messageSerials[name] = serial

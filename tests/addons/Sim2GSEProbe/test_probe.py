@@ -36,7 +36,7 @@ C_Spell = {
     GetSpellQueueWindow = function() return restricted and secret or 400 end,
     GetSpellCooldown = function()
         if restricted then error("restricted cooldown") end
-        return { startTime = 9, duration = 1.5, isEnabled = true, modRate = 1 }
+        return { startTime = 9, duration = 1.5, isEnabled = false, modRate = 1 }
     end,
     GetBaseSpell = function(id) return id end,
     GetOverrideSpell = function(id) return id == 55090 and 207311 or id end,
@@ -78,6 +78,8 @@ TESTSEQ.attrs = {
 FAKE = NewFrame("FAKE")
 LONGSEQ = NewFrame("LONGSEQ")
 LONGSEQ.attrs = { type = "spell", spell = 55090 }
+SECONDSEQ = NewFrame("SECONDSEQ")
+SECONDSEQ.attrs = { type = "spell", spell = 55090, step = 1, iteration = 1 }
 
 assert(loadfile(source))()
 assert(SLASH_SIM2GSEPROBE1 == "/s2gprobe")
@@ -135,6 +137,8 @@ assert(click.hardwareEvent == "LeftButton")
 assert(click.spamKey == "F6")
 assert(click.triggerEdge == "gse-execution-message-observed")
 assert(click.runicPower == 80 and #click.runes == 6)
+assert(click.runes[3].ready == false)
+assert(click.gcd.isEnabled == false and click.spellCooldown.isEnabled == false)
 
 assert(session.records[4].event == "UNIT_SPELLCAST_SENT")
 assert(session.records[4].castGUID == "Cast-1")
@@ -175,6 +179,35 @@ gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
     SequenceName = "TESTSEQ", ClickSerial = 3,
 })
 assert(Sim2GSEProbeDB.session.records[3].submittedStep == nil)
+TESTSEQ.attrs.step = 2
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 2,
+})
+assert(#Sim2GSEProbeDB.session.records == 3, "stale GSE message was recorded as another click")
+
+now = 19
+SlashCmdList.SIM2GSEPROBE("start")
+TESTSEQ.attrs.step = 2
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 1,
+})
+SECONDSEQ.attrs.step = 2
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "SECONDSEQ", ClickSerial = 1,
+})
+TESTSEQ.attrs.step = 1
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 2,
+})
+SECONDSEQ.attrs.step = 3
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "SECONDSEQ", ClickSerial = 2,
+})
+local interleavedSession = Sim2GSEProbeDB.session
+assert(interleavedSession.records[4].sequence == "TESTSEQ")
+assert(interleavedSession.records[4].submittedStep == 2)
+assert(interleavedSession.records[5].sequence == "SECONDSEQ")
+assert(interleavedSession.records[5].submittedStep == 2)
 
 restricted = true
 now = 20
