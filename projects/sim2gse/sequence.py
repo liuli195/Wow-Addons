@@ -7,6 +7,7 @@ from collections import Counter
 from engine import run, check_report, player_report, CandidateError
 from runtime import replace_file
 from runtime import TaskRuntime
+from simulation_config import config_for
 
 
 def select(capabilities, program=None):
@@ -61,8 +62,9 @@ def compiled_program(candidate):
 
 
 def evaluate(profile, candidate, folder, *, character, iterations=100, seed=20260912, trace=True,
-             mode='controlled', input_times=None, runtime=None):
+             mode='controlled', input_times=None, runtime=None, simulation_config=None):
     runtime = runtime or TaskRuntime()
+    simulation_config = config_for(simulation_config)
     runtime.check()
     if mode != 'controlled':
         raise ValueError('原版引擎不兼容受控序列')
@@ -88,7 +90,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n', encoding='utf-8')
     pending_report = folder / 'native.pending.json'
     log = run(generated, folder, mode,
-              [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'], runtime=runtime)
+              [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'], runtime=runtime,
+              simulation_config=simulation_config)
     native_blocks = []
     for line in log.splitlines():
         if not line.startswith('S2GBLOCK\t'):
@@ -115,7 +118,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 else player_report(report, character)['collected_data']['dps'])
     if measured['mean'] == 0:
         raise CandidateError('合法候选没有有效伤害')
-    summary = check_report(report, character, iterations)
+    summary = check_report(report, character, iterations, simulation_config=simulation_config)
     events = []
     if trace:
         for line in (folder / 'native.txt').read_text(encoding='utf-8').splitlines():

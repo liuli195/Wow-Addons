@@ -23,6 +23,7 @@ import msvcrt
 
 from runtime import replace_file
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
+from simulation_config import config_for as simulation_config_for, engine_options, load_config
 
 
 class TaskError(ValueError):
@@ -87,6 +88,10 @@ _ALLOWED_KEYS = {
     *_ADDITIONAL_KEYS,
 }
 _TOKEN_FIELDS = {"race", "region", "role", "spec", "loot_spec"}
+_OMNI_TALENTS_VALUE = r"(?:\d+:\d+|[a-z][a-z0-9_]*)(?:/(?:\d+:\d+|[a-z][a-z0-9_]*))*"
+_OMNI_TALENTS_LINE = re.compile(
+    rf"^[ \t]*omnium_talents=[ \t]*{_OMNI_TALENTS_VALUE}[ \t]*(?:\r\n|\n|\r)?$"
+)
 _ITEM_OPTIONS = {
     "id",
     "enchant_id",
@@ -226,9 +231,7 @@ def parse_character(raw_text: str) -> Character:
         raise TaskError("professions 的值格式错误")
     if "talents" in fields and not re.fullmatch(r"[A-Za-z0-9+/=]+", fields["talents"]):
         raise TaskError("talents 的值格式错误")
-    if "omnium_talents" in fields and not re.fullmatch(
-        r"(?:\d+:\d+|[a-z][a-z0-9_]*)(?:/(?:\d+:\d+|[a-z][a-z0-9_]*))*", fields["omnium_talents"]
-    ):
+    if "omnium_talents" in fields and not re.fullmatch(_OMNI_TALENTS_VALUE, fields["omnium_talents"]):
         raise TaskError("omnium_talents 的值格式错误")
     for key in _ADDITIONAL_KEYS:
         if key in fields and not re.fullmatch(
@@ -251,7 +254,12 @@ def parse_character(raw_text: str) -> Character:
     )
 
 
-def _profile(character: Character, raw_text: str) -> dict:
+def _profile(character: Character, raw_text: str, *, original_bytes: bytes | None = None,
+             effective_bytes: bytes | None = None) -> dict:
+    original_bytes = raw_text.encode("utf-8") if original_bytes is None else original_bytes
+    effective_bytes = original_bytes if effective_bytes is None else effective_bytes
+    original_sha256 = hashlib.sha256(original_bytes).hexdigest()
+    effective_sha256 = hashlib.sha256(effective_bytes).hexdigest()
     return {
         "identity": {
             "name": character.name,
@@ -270,7 +278,10 @@ def _profile(character: Character, raw_text: str) -> dict:
             {"slot": item.slot, "item_id": item.item_id, "raw": item.raw, "line": item.line_number}
             for item in character.bag_candidates
         ],
-        "input_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+        # 保留旧键供旧读者使用；恢复完整性以两份实际任务副本散列为准。
+        "input_sha256": original_sha256,
+        "input_original_sha256": original_sha256,
+        "input_effective_sha256": effective_sha256,
     }
 
 
@@ -285,15 +296,43 @@ def _json_result(result: dict) -> dict:
     return {key: value for key, value in result.items() if key not in ("character", "output_root")}
 
 
-def _prepare_task(input_path, output_root, *, resume=False):
-    path = Path(input_path).resolve()
-    if not path.is_file():
-        raise TaskError(f"角色文件不存在: {path}")
+def _read_utf8(path: Path, *, description: str) -> tuple[bytes, str]:
     try:
-        raw_text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise TaskError("角色文件必须是 UTF-8 文本") from exc
-    character = parse_character(raw_text)
+        data = path.read_bytes()
+    except OSError as error:
+        raise TaskError(f"{description}不可读取: {path}") from error
+    try:
+        return data, data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise TaskError(f"{description}必须是 UTF-8 文本: {path}") from error
+
+
+def _verify_task_inputs(destination: Path, saved: dict) -> tuple[bytes, bytes]:
+    original, _ = _read_utf8(destination / "input.original.simc", description="原始输入副本")
+    effective, _ = _read_utf8(destination / "input.simc", description="任务输入副本")
+    expected_original = saved.get("input_original_sha256")
+    expected_effective = saved.get("input_effective_sha256")
+    if not expected_original or not expected_effective:
+        raise TaskError("任务缺少完整输入散列，请创建新任务")
+    if hashlib.sha256(original).hexdigest() != expected_original:
+        raise TaskError("恢复任务的原始输入副本已变化，请创建新任务")
+    if hashlib.sha256(effective).hexdigest() != expected_effective:
+        raise TaskError("恢复任务的任务输入副本已变化，请创建新任务")
+    return original, effective
+
+
+def _effective_input_bytes(original_bytes: bytes, raw_text: str, simulation_config: dict) -> bytes:
+    if simulation_config["enable_omnium_talents"]:
+        return original_bytes
+    return "".join(
+        line for line in raw_text.splitlines(keepends=True)
+        if not _OMNI_TALENTS_LINE.fullmatch(line)
+    ).encode("utf-8")
+
+
+def _prepare_task(input_path, output_root, *, resume=False, simulation_config=None):
+    path = Path(input_path).resolve()
+    simulation_config = simulation_config_for(simulation_config)
     if output_root is None:
         raise TaskError("任务输出目录尚未配置")
     destination = Path(output_root).resolve()
@@ -301,32 +340,51 @@ def _prepare_task(input_path, output_root, *, resume=False):
         if not destination.is_dir():
             raise TaskError(f"待恢复任务目录不存在: {destination}")
         saved = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
-        if saved.get("input_sha256") != hashlib.sha256(raw_text.encode("utf-8")).hexdigest():
-            raise TaskError("恢复任务的角色输入已变化，请创建新任务")
-    else:
-        if destination.exists():
-            raise TaskError(f"任务输出目录已存在，不覆盖已有产物: {destination}")
-        destination.mkdir(parents=True)
-        (destination / "input.original.simc").write_bytes(path.read_bytes())
-        (destination / "input.simc").write_text(raw_text, encoding="utf-8")
-        _write_json(destination / "profile.json", _profile(character, raw_text))
+        original_bytes, _ = _verify_task_inputs(destination, saved)
+        try:
+            raw_text = original_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise TaskError("原始输入副本必须是 UTF-8 文本") from error
+        character = parse_character(raw_text)
+        return destination / "input.simc", raw_text, character, destination
+    if not path.is_file():
+        raise TaskError(f"角色文件不存在: {path}")
+    original_bytes, raw_text = _read_utf8(path, description="角色文件")
+    character = parse_character(raw_text)
+    effective_bytes = _effective_input_bytes(original_bytes, raw_text, simulation_config)
+    if destination.exists():
+        raise TaskError(f"任务输出目录已存在，不覆盖已有产物: {destination}")
+    destination.mkdir(parents=True)
+    (destination / "input.original.simc").write_bytes(original_bytes)
+    (destination / "input.simc").write_bytes(effective_bytes)
+    _write_json(destination / "profile.json", _profile(character, raw_text,
+                                                         original_bytes=original_bytes,
+                                                         effective_bytes=effective_bytes))
     return path, raw_text, character, destination
 
 
-def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300):
+def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
+                simulation_config):
     from engine import inspect, reference
     from codec import export
     from sequence import select, evaluate
 
     if type(phase_ms) is not int or not 0 <= phase_ms < interval_ms:
         raise ValueError(f"起始相位必须在 0 至 {interval_ms - 1} 毫秒之间")
-    native = reference(destination / "input.simc", destination / "reference", character, runtime=runtime)
+    native = reference(destination / "input.simc", destination / "reference", character, runtime=runtime,
+                       simulation_config=simulation_config)
     character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-    _write_json(destination / 'profile.json', _profile(character, character.raw_text))
+    _write_json(
+        destination / 'profile.json',
+        _profile(character, character.raw_text,
+                 original_bytes=(destination / 'input.original.simc').read_bytes(),
+                 effective_bytes=(destination / 'input.simc').read_bytes()),
+    )
     capabilities = inspect(native, destination / "capabilities")
     candidate = export(select(capabilities, program), destination / "export", identity=native['identity'], runtime=runtime)
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
-                          input_times=list(range(phase_ms, 180000, interval_ms)), runtime=runtime)
+                          input_times=list(range(phase_ms, 180000, interval_ms)), runtime=runtime,
+                          simulation_config=simulation_config)
     candidate["simulation"] = "passed_native_model"
     result = {
         "status": "offline_ready",
@@ -337,13 +395,14 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
         "native_reference": native,
         "candidate": candidate,
         "controlled_simulation": controlled,
+        "simulation_config": simulation_config,
     }
     (destination / "candidate.txt").write_text(candidate["text"], encoding="ascii")
     _write_json(destination / "result.json", _json_result(result), atomic=True)
     return result
 
 
-def _run_optimize(destination, character, *, config, runtime):
+def _run_optimize(destination, character, *, config, runtime, simulation_config):
     from engine import identity, inspect, reference, COMMON
     from codec import SOURCE, LUA
     from search import TaskStore, digest, optimize
@@ -359,6 +418,15 @@ def _run_optimize(destination, character, *, config, runtime):
             store.save()
     runtime.reservation = reservation
     try:
+        original_bytes, _ = _read_utf8(destination / "input.original.simc", description="原始输入副本")
+        effective_bytes, _ = _read_utf8(destination / "input.simc", description="任务输入副本")
+        input_original_sha256 = hashlib.sha256(original_bytes).hexdigest()
+        input_effective_sha256 = hashlib.sha256(effective_bytes).hexdigest()
+        if (state.get("input_original_sha256") not in (None, input_original_sha256)
+                or state.get("input_effective_sha256") not in (None, input_effective_sha256)):
+            raise TaskError("恢复任务的输入副本已变化，请创建新任务")
+        state.update(input_original_sha256=input_original_sha256,
+                     input_effective_sha256=input_effective_sha256)
         state.setdefault('phase','initialize')
         with store.active(runtime):
             # 恢复核验先于任何模拟；程序及规则变化必须新建任务。
@@ -370,28 +438,39 @@ def _run_optimize(destination, character, *, config, runtime):
             import cbor2
             from importlib.metadata import version
             condition = digest(dict(fields=character.fields, class_name=character.class_name,
-                                    engine=identities, options=COMMON, config=config, cbor2=version('cbor2'),
+                                    engine=identities,
+                                    options=[*COMMON, *engine_options(simulation_config)],
+                                    config=config, simulation_config=simulation_config,
+                                    cbor2=version('cbor2'),
                                     rules={str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}))
             if state.get('condition') and state['condition'] != condition:
                 raise TaskError('恢复任务的版本、配置或角色身份已变化，请创建新任务')
-            state.update(condition=condition, config=config)
+            state.update(condition=condition, config=config, simulation_config=simulation_config,
+                         simulation_options=engine_options(simulation_config))
             state.setdefault('phase', 'initialize')
             if state['phase'] == 'initialize':
                 # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
                 native = reference(destination/'input.simc', destination/'reference', character, runtime=runtime,
-                                   iterations=config['iterations'], seed=config['random_seed'])
+                                   iterations=config['iterations'], seed=config['random_seed'],
+                                   simulation_config=simulation_config)
                 capabilities = inspect(native, destination/'capabilities')
                 state.update(capabilities=capabilities, native=native, phase='search', inflight={})
                 store.save()
             character = replace(character, spec_id=state['native']['identity']['spec_id'], race=state['native']['identity']['race'])
-            _write_json(destination / 'profile.json', _profile(character, character.raw_text))
+            _write_json(
+                destination / 'profile.json',
+                _profile(character, character.raw_text,
+                         original_bytes=original_bytes, effective_bytes=effective_bytes),
+            )
             result = optimize(profile=destination/'input.simc', character=character,
                               capabilities=state['capabilities'], reference=state['native'],
                               destination=destination, runtime=runtime, config=config,
-                              condition_key=condition, store=store)
-            result.update(config=config, character=character, output_root=destination,capabilities=state['capabilities'],
+                              condition_key=condition, store=store,
+                              simulation_config=simulation_config)
+            result.update(config=config, simulation_config=simulation_config,
+                          character=character, output_root=destination,capabilities=state['capabilities'],
                           profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')))
             if result['status'] not in ('cancelled',):
                 (destination/'candidate.txt').write_text(result['candidate']['text'],encoding='ascii')
@@ -437,27 +516,41 @@ def _task_lease(destination):
 
 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
-             mode="optimize", search_config=None, cancel_event=None, resume=False, _runtime=None, _lease=False) -> dict:
+             mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
+             resume=False, _runtime=None, _lease=False) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if resume and not _lease:
         if mode!='optimize':
             raise TaskError('单次评估不支持恢复')
         destination=Path(output_root).resolve()
-        if Path(input_path).read_bytes() != (destination/'input.simc').read_bytes():
-            raise TaskError('恢复输入发生变化，请创建新任务')
-        return resume_task(destination,search_config=search_config,_runtime=_runtime,cancel_event=cancel_event)
+        input_path = Path(input_path).resolve()
+        if input_path != (destination / 'input.simc').resolve():
+            try:
+                current_original = input_path.read_bytes()
+                saved_original = (destination / 'input.original.simc').read_bytes()
+            except OSError as error:
+                raise TaskError('恢复任务的原始输入不可读取，请创建新任务') from error
+            if current_original != saved_original:
+                raise TaskError('恢复任务的原始输入已变化，请创建新任务')
+        return resume_task(destination, search_config=search_config, simulation_config=simulation_config,
+                           _runtime=_runtime, cancel_event=cancel_event)
     if mode=='optimize' and (program is not None or phase_ms!=0):
         raise TaskError('优化入口自动选择动作，手工程序仅用于单次评估')
     if mode not in ("optimize", "single"):
         raise TaskError("任务模式必须是 optimize 或 single")
     from search import config_for
     config = config_for(search_config)
+    simulation_config = simulation_config_for(simulation_config)
     runtime = _runtime or TaskRuntime(config['total_budget_seconds'] if mode == 'optimize' else 600, cancel_event=cancel_event)
-    path, raw_text, character, destination = _prepare_task(input_path, output_root, resume=resume)
+    path, raw_text, character, destination = _prepare_task(
+        input_path, output_root, resume=resume, simulation_config=simulation_config
+    )
     with nullcontext() if _lease else _task_lease(destination):
         if mode == "single":
             try:
-                return _run_single(path, destination, character, program=program, phase_ms=phase_ms, runtime=runtime, interval_ms=config["input_interval_ms"])
+                return _run_single(path, destination, character, program=program, phase_ms=phase_ms,
+                                   runtime=runtime, interval_ms=config["input_interval_ms"],
+                                   simulation_config=simulation_config)
             except TaskCancelled:
                 _write_json(destination / "result.json", dict(status="cancelled", elapsed_seconds=runtime.elapsed_seconds), atomic=True)
                 return dict(status="cancelled", output_root=destination)
@@ -471,7 +564,8 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                 _write_json(destination / "result.json", dict(status="failed", error=message), atomic=True)
                 raise TaskError(message) from error
         try:
-            return _run_optimize(destination, character, config=config, runtime=runtime)
+            return _run_optimize(destination, character, config=config, runtime=runtime,
+                                 simulation_config=simulation_config)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _write_json(destination / "result.json", state, atomic=True)
@@ -541,13 +635,26 @@ def cancel_task(task):
 
 def resume_task(output_root, **kwargs):
     destination = Path(output_root).resolve()
+    simulation_config = simulation_config_for(kwargs.pop("simulation_config", None))
     with _task_lease(destination):
+        try:
+            profile = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise TaskError("恢复任务的角色档案不可读取，请创建新任务") from error
+        if not isinstance(profile, dict):
+            raise TaskError("恢复任务的角色档案格式无效，请创建新任务")
+        _verify_task_inputs(destination, profile)
         from search import TaskStore, config_for
         store = TaskStore(destination)
         try:
             state = store.state
+            _verify_task_inputs(destination, state)
             if not state.get('config'):
                 raise TaskError('任务缺少恢复清单')
+            if not state.get('simulation_config'):
+                raise TaskError('任务缺少恢复模拟配置')
+            if simulation_config != simulation_config_for(state['simulation_config']):
+                raise TaskError('恢复模拟配置发生变化，请创建新任务')
             config = config_for(kwargs.pop('search_config',None) or state['config'])
             if config != config_for(state['config']):
                 raise TaskError('恢复配置发生变化，请创建新任务')
@@ -574,7 +681,8 @@ def resume_task(output_root, **kwargs):
         runtime.used_seconds=used
         runtime.budget_seconds=config['total_budget_seconds']
         runtime.phase_limit=runtime.budget_seconds
-        return run_task(destination/'input.simc',destination,resume=True,_runtime=runtime,_lease=True,search_config=config,**kwargs)
+        return run_task(destination/'input.simc', destination, resume=True, _runtime=runtime, _lease=True,
+                        search_config=config, simulation_config=simulation_config, **kwargs)
 
 
 def read_task(output_root):
@@ -599,15 +707,16 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')
     args = parser.parse_args()
     try:
+        simulation_config = load_config()
         if args.resume:
-            result=resume_task(args.output)
+            result = resume_task(args.output, simulation_config=simulation_config)
         else:
             if args.input is None:
                 parser.error('新任务需要角色文件')
-            result = run_task(args.input, args.output)
+            result = run_task(args.input, args.output, simulation_config=simulation_config)
         print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
         return 0
-    except TaskError as error:
+    except (TaskError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 2
 

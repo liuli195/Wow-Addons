@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "projects" / "sim2gse"))
 
 from interface import serve  # noqa: E402
+from simulation_config import load_config  # noqa: E402
 
 
 def main() -> int:
@@ -20,7 +21,13 @@ def main() -> int:
                         help="只允许本机地址")
     parser.add_argument("--port", type=int, default=8780, help="本地端口，0 表示自动选择")
     args = parser.parse_args()
-    serve(args.output_root, host=args.host, port=args.port)
+    try:
+        simulation_config = load_config()
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    serve(args.output_root, host=args.host, port=args.port,
+          task_options={"simulation_config": simulation_config})
     return 0
 
 
