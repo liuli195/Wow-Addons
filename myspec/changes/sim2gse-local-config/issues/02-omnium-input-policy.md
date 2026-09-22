@@ -29,5 +29,6 @@ Status（状态）: closed
 - 聚焦回归：`.venv\Scripts\python.exe -m pytest -q tests/sim2gse/test_simulation_config.py`；`18 passed, 5 subtests passed`。
 - 本地配置：`load_config(.local/sim2gse/config.toml) == DEFAULT_CONFIG`；五项值已落地，`git check-ignore -v` 确认继续由 `/.local/` 忽略。
 - 规格：正式规格更新已移至 `.local/spec-work/sim2gse-local-config/spec-preview.md`，等待门禁 2 后由 MySpec（自有规格）流程应用。
-- Sim2GSE 全量回归、统一 Build and Verify（构建与验证）及独立审查待主代理继续执行；本票不操作服务。
+- 完整 Build and Verify（构建与验证）：37 个检查项全部通过，Sim2GSE 为 `89 passed, 36 subtests passed`；总耗时 `88.10` 秒，超过 60 秒预算但功能状态为通过。
+- 本机验收：服务已使用本地配置重启，监听进程 `9764`；`http://127.0.0.1:8780/` 返回 `200`，现有页面刷新后显示真实三步界面和默认 300 毫秒间隔。
 - 独立审查：未发现高、中问题，票据 02 获准完成；换行形式的显式子用例列为低风险非阻断项。
