@@ -107,6 +107,79 @@ class SimulationConfigTests(unittest.TestCase):
         self.assertEqual(config["target_name"], DEFAULT_CONFIG["target_name"])
         self.assertEqual(config_for()["target_count"], DEFAULT_CONFIG["target_count"])
 
+    def test_task_entry_removes_only_valid_omnium_line_when_disabled(self) -> None:
+        from task import run_task
+        from test_character_export import sample_profile
+        from test_search import _fast_search_boundary
+
+        value = "136822:1/136819:1/136817:1"
+        source_text = (sample_profile()
+                       .replace('deathknight="中文 角色"',
+                                'deathknight="omnium_talents=inside-name"')
+                       + f"omnium_talents={value}\n"
+                       + "# omnium_talents=comment\n")
+        original = source_text.encode("utf-8")
+        expected_effective = (source_text
+                              .replace(f"omnium_talents={value}\n", "")
+                              .encode("utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_bytes(original)
+            with _fast_search_boundary():
+                run_task(source, destination, search_config=_fast_search_config(),
+                         simulation_config=config_for({"enable_omnium_talents": False}))
+
+            self.assertEqual((destination / "input.original.simc").read_bytes(), original)
+            self.assertEqual((destination / "input.simc").read_bytes(), expected_effective)
+            profile = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
+            self.assertEqual(profile["identity"]["name"], "omnium_talents=inside-name")
+            self.assertEqual(profile["fields"]["omnium_talents"], value)
+            self.assertEqual(profile["input_original_sha256"], hashlib.sha256(original).hexdigest())
+            self.assertEqual(profile["input_effective_sha256"], hashlib.sha256(expected_effective).hexdigest())
+            state = json.loads(_read_state(destination))
+            self.assertEqual(state["input_original_sha256"], profile["input_original_sha256"])
+            self.assertEqual(state["input_effective_sha256"], profile["input_effective_sha256"])
+
+    def test_task_entry_preserves_omnium_line_when_enabled(self) -> None:
+        from task import run_task
+        from test_character_export import sample_profile
+        from test_search import _fast_search_boundary
+
+        source_text = sample_profile() + "omnium_talents=136822:1/136819:1\n"
+        original = source_text.encode("utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_bytes(original)
+            with _fast_search_boundary():
+                run_task(source, destination, search_config=_fast_search_config(),
+                         simulation_config=config_for({"enable_omnium_talents": True}))
+
+            self.assertEqual((destination / "input.original.simc").read_bytes(), original)
+            self.assertEqual((destination / "input.simc").read_bytes(), original)
+
+    def test_omnium_switch_change_rejects_resume_before_simc_start(self) -> None:
+        import task
+        from task import TaskError, resume_task, run_task
+        from test_character_export import sample_profile
+        from test_search import _fast_search_boundary
+
+        source_text = sample_profile() + "omnium_talents=136822:1/136819:1\n"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_text(source_text, encoding="utf-8")
+            with _fast_search_boundary():
+                run_task(source, destination, search_config=_fast_search_config(),
+                         simulation_config=config_for({"enable_omnium_talents": False}))
+
+            with patch.object(task, "run_task", side_effect=AssertionError("SimC must not start")) as rerun:
+                with self.assertRaisesRegex(TaskError, "恢复模拟配置"):
+                    resume_task(destination,
+                                simulation_config=config_for({"enable_omnium_talents": True}))
+            rerun.assert_not_called()
+
     def test_baseline_and_controlled_engines_share_target_options(self) -> None:
         import engine
 

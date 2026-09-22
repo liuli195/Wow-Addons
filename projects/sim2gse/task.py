@@ -88,6 +88,10 @@ _ALLOWED_KEYS = {
     *_ADDITIONAL_KEYS,
 }
 _TOKEN_FIELDS = {"race", "region", "role", "spec", "loot_spec"}
+_OMNI_TALENTS_VALUE = r"(?:\d+:\d+|[a-z][a-z0-9_]*)(?:/(?:\d+:\d+|[a-z][a-z0-9_]*))*"
+_OMNI_TALENTS_LINE = re.compile(
+    rf"^[ \t]*omnium_talents=[ \t]*{_OMNI_TALENTS_VALUE}[ \t]*(?:\r\n|\n|\r)?$"
+)
 _ITEM_OPTIONS = {
     "id",
     "enchant_id",
@@ -227,9 +231,7 @@ def parse_character(raw_text: str) -> Character:
         raise TaskError("professions 的值格式错误")
     if "talents" in fields and not re.fullmatch(r"[A-Za-z0-9+/=]+", fields["talents"]):
         raise TaskError("talents 的值格式错误")
-    if "omnium_talents" in fields and not re.fullmatch(
-        r"(?:\d+:\d+|[a-z][a-z0-9_]*)(?:/(?:\d+:\d+|[a-z][a-z0-9_]*))*", fields["omnium_talents"]
-    ):
+    if "omnium_talents" in fields and not re.fullmatch(_OMNI_TALENTS_VALUE, fields["omnium_talents"]):
         raise TaskError("omnium_talents 的值格式错误")
     for key in _ADDITIONAL_KEYS:
         if key in fields and not re.fullmatch(
@@ -319,8 +321,18 @@ def _verify_task_inputs(destination: Path, saved: dict) -> tuple[bytes, bytes]:
     return original, effective
 
 
-def _prepare_task(input_path, output_root, *, resume=False):
+def _effective_input_bytes(original_bytes: bytes, raw_text: str, simulation_config: dict) -> bytes:
+    if simulation_config["enable_omnium_talents"]:
+        return original_bytes
+    return "".join(
+        line for line in raw_text.splitlines(keepends=True)
+        if not _OMNI_TALENTS_LINE.fullmatch(line)
+    ).encode("utf-8")
+
+
+def _prepare_task(input_path, output_root, *, resume=False, simulation_config=None):
     path = Path(input_path).resolve()
+    simulation_config = simulation_config_for(simulation_config)
     if output_root is None:
         raise TaskError("任务输出目录尚未配置")
     destination = Path(output_root).resolve()
@@ -339,7 +351,7 @@ def _prepare_task(input_path, output_root, *, resume=False):
         raise TaskError(f"角色文件不存在: {path}")
     original_bytes, raw_text = _read_utf8(path, description="角色文件")
     character = parse_character(raw_text)
-    effective_bytes = original_bytes
+    effective_bytes = _effective_input_bytes(original_bytes, raw_text, simulation_config)
     if destination.exists():
         raise TaskError(f"任务输出目录已存在，不覆盖已有产物: {destination}")
     destination.mkdir(parents=True)
@@ -530,7 +542,9 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
     config = config_for(search_config)
     simulation_config = simulation_config_for(simulation_config)
     runtime = _runtime or TaskRuntime(config['total_budget_seconds'] if mode == 'optimize' else 600, cancel_event=cancel_event)
-    path, raw_text, character, destination = _prepare_task(input_path, output_root, resume=resume)
+    path, raw_text, character, destination = _prepare_task(
+        input_path, output_root, resume=resume, simulation_config=simulation_config
+    )
     with nullcontext() if _lease else _task_lease(destination):
         if mode == "single":
             try:
