@@ -30,6 +30,6 @@ Status（状态）: closed
 - RED（第二轮审查修复）：`.venv\Scripts\python.exe -m pytest -q tests/sim2gse/test_simulation_config.py -k before_task_store` 在修复前失败并命中 `TaskStore must not open`；覆盖两份输入副本篡改。
 - GREEN：`.venv\Scripts\python.exe -m pytest -q tests/sim2gse/test_simulation_config.py`；`15 passed, 5 subtests passed`。
 - 回归：`.venv\Scripts\python.exe -m pytest -q tests/sim2gse --dist=worksteal`；`86 passed, 36 subtests passed`。
-- 规格：同步 `myspec/specs/sim2gse-character-input/spec.md`，明确默认单目标且目标数可由已记录本地模拟配置调整。
+- 规格：正式规格更新已移至 `.local/spec-work/sim2gse-local-config/spec-preview.md`，等待门禁 2 后由 MySpec（自有规格）流程应用。
 - 语法与差异检查：`compileall`、`git diff --check` 通过；统一 Build and Verify（构建与验证）及独立审查由主代理继续执行。
 - 独立审查：两轮修复后最终复核未发现高、中问题，票据 01 获准完成。

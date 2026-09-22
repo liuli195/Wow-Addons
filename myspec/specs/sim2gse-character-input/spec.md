@@ -8,22 +8,12 @@
 
 ### Requirement: Sim2GSE preserves the imported character
 
-系统 MUST 保留单个角色导出所声明的等级、种族、专精、天赋和当前装备；中文名称、说明注释和背包装备不得改变当前装备身份，职业、专精及职责是否可运行由固定 SimC（模拟引擎）决定。`input.original.simc` MUST 逐字节保留用户输入；实际模拟副本 `input.simc` 可按已记录的本地开关关闭完整有效的 `omnium_talents=` 行，但不得删除注释或其他包含同名文本的行。
+系统 MUST 保留单个角色导出所声明的等级、种族、专精、天赋和当前装备；中文名称、说明注释和背包装备不得改变当前装备身份，职业、专精及职责是否可运行由固定 SimC（模拟引擎）决定。
 
 #### Scenario: Character export contains bag alternatives
 
 - **WHEN** 用户输入含中文名称、天赋、已装备物品及注释形式背包装备的有效单角色导出
 - **THEN** 系统使用该角色当前装备、专精与天赋进行评估，并保留可核对的原始输入，不替换为背包候选。
-
-#### Scenario: Omnium talents are disabled for the effective copy
-
-- **WHEN** 已记录的本地模拟配置关闭万奥宝典输入
-- **THEN** 系统保留与用户输入逐字节一致的 `input.original.simc`，仅从 `input.simc` 删除完整有效的 `omnium_talents=` 行，并从原始输入解析角色身份。
-
-#### Scenario: Omnium talents are enabled for the effective copy
-
-- **WHEN** 已记录的本地模拟配置开启万奥宝典输入
-- **THEN** 系统的 `input.simc` 与 `input.original.simc` 均与用户输入逐字节一致。
 ### Requirement: Sim2GSE rejects unsupported or unsafe input
 
 系统 MUST 明确拒绝不可解析的角色、多个角色、外部文件引用、输出路径覆盖及未经允许的模拟指令；固定引擎拒绝角色或运行失败时须如实报告，不得自行改写支持范围或静默重试后声称成功。
@@ -57,17 +47,12 @@
 - **THEN** 系统明确报告不支持原因，不能静默删除该动作并声称完整角色评估成功。
 ### Requirement: Sim2GSE keeps comparison conditions consistent
 
-系统 MUST 默认采用静止单目标、每场 180 秒和关闭战斗药剂的条件；目标数缺省为 1，也可由已记录的本地模拟配置调整；模拟按键间隔默认为 300 毫秒，用户调整时同次对照与候选必须使用相同间隔及派生复测情景。
+系统 MUST 在首版采用静止单目标、每场 180 秒和关闭战斗药剂的条件；模拟按键间隔默认为 300 毫秒，用户调整时同次对照与候选必须使用相同间隔及派生复测情景。
 
 #### Scenario: User starts a first-version run
 
 - **WHEN** 用户以默认按键间隔提交固定引擎可运行的角色
-- **THEN** 系统使用配置默认的 1 个静止目标、180 秒、300 毫秒名义间隔且不使用战斗药剂，对照与候选采用相同角色和场景。
-
-#### Scenario: User records a custom target count
-
-- **WHEN** 用户在本地模拟配置中记录大于 1 的目标数并启动任务
-- **THEN** 系统按该已记录目标数运行，对照与候选使用相同目标条件，并将该配置纳入恢复身份。
+- **THEN** 系统使用静止单目标、180 秒、300 毫秒名义间隔且不使用战斗药剂，对照与候选采用相同角色和场景。
 
 #### Scenario: User changes the simulated input interval
 

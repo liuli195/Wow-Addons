@@ -28,6 +28,6 @@ Status（状态）: closed
 - GREEN：同一命令；`3 passed, 15 deselected`。
 - 聚焦回归：`.venv\Scripts\python.exe -m pytest -q tests/sim2gse/test_simulation_config.py`；`18 passed, 5 subtests passed`。
 - 本地配置：`load_config(.local/sim2gse/config.toml) == DEFAULT_CONFIG`；五项值已落地，`git check-ignore -v` 确认继续由 `/.local/` 忽略。
-- 规格：同步 `myspec/specs/sim2gse-character-input/spec.md`，明确原始输入保留与有效副本开关策略。
+- 规格：正式规格更新已移至 `.local/spec-work/sim2gse-local-config/spec-preview.md`，等待门禁 2 后由 MySpec（自有规格）流程应用。
 - Sim2GSE 全量回归、统一 Build and Verify（构建与验证）及独立审查待主代理继续执行；本票不操作服务。
 - 独立审查：未发现高、中问题，票据 02 获准完成；换行形式的显式子用例列为低风险非阻断项。
