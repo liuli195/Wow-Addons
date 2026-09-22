@@ -380,10 +380,12 @@ def _tuple(value):
 
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
-             config, condition_key, store):
+             config, condition_key, store, simulation_config=None):
     from codec import export
     from engine import check_report, player_report, CandidateError
     from sequence import select, evaluate, compiled_program
+    from simulation_config import config_for
+    simulation_config = config_for(simulation_config)
     state = store.state
     state.setdefault('run_nonce', uuid.uuid4().hex)
     state.setdefault('phase', 'search')
@@ -435,7 +437,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 raw = (folder / 'native.json').read_bytes()
                 if hashlib.sha256(raw).hexdigest() != cached['sha256'] or cached['request'] != request:
                     raise ValueError('缓存报告散列或身份不符')
-                summary = check_report(json.loads(raw), character, iterations)
+                summary = check_report(json.loads(raw), character, iterations,
+                                       simulation_config=simulation_config)
                 if summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']:
                     raise ValueError('缓存摘要不符')
                 store.put_batch(key,cached)
@@ -457,7 +460,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         started = time.monotonic()
         try:
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
-                              input_times=times, trace=trace, runtime=runtime)
+                              input_times=times, trace=trace, runtime=runtime,
+                              simulation_config=simulation_config)
             raw = (folder / 'native.json').read_bytes()
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], requested_iterations=iterations,

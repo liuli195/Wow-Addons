@@ -34,7 +34,8 @@ def _fast_capabilities():
                 scope="test", coverage="constructed-test-boundary")
 
 
-def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912):
+def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
+                    simulation_config=None):
     return dict(dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
                 identity=dict(class_id=6, spec_id=252, spec=character.spec, race=character.race,
                               role=character.fields.get("role", "attack"), resource="runic_power"),
@@ -72,7 +73,7 @@ def _fast_report(character, score, samples):
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
-                   runtime=None, score_offset=0):
+                   runtime=None, score_offset=0, simulation_config=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -116,7 +117,7 @@ def _fast_initialization(*, real_engine=False):
         output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
-    def check_report(report, character, iterations):
+    def check_report(report, character, iterations, **kwargs):
         damage = report["sim"]["statistics"]["raid_dps"]
         return dict(dps=damage["mean"], metric="dps", personal_dps=damage["mean"],
                     samples=damage["count"], seconds=180, metadata_only=[], notices=[],

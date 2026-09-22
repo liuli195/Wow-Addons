@@ -6,6 +6,7 @@ import math
 import os
 from runtime import replace_file
 from runtime import BudgetExceeded, ProcessTimeout, TaskCancelled, TaskRuntime, run_command
+from simulation_config import config_for, engine_options
 
 class CandidateError(ValueError):
     """单个合法候选没有有效伤害或单批超时；不代表原生兼容性正常。"""
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # 不删除旧编号；清单之外的版本仍照旧拒绝。
 ACCEPTED_BUILD_LEVELS = (69587, 69814)
 COMMON = ['item_db_source=local', 'threads=1', 'seed=20260912', 'target_error=0',
-          'fixed_time=1', 'vary_combat_length=0', 'fight_style=Patchwerk', 'desired_targets=1',
+          'fixed_time=1', 'vary_combat_length=0', 'fight_style=Patchwerk',
           'optimal_raid=0', 'potion=disabled', 'flask=disabled', 'food=disabled',
           'augmentation=disabled', 'temporary_enchant=disabled', 'override.allow_potions=0',
           'override.allow_food=0', 'override.allow_flasks=0', 'override.allow_augmentations=0']
@@ -48,11 +49,14 @@ def identity(mode, runtime=None):
     return executable, manifest
 
 
-def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30):
+def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30,
+        simulation_config=None):
     runtime = runtime or TaskRuntime(timeout_seconds)
+    simulation_config = config_for(simulation_config)
     executable, manifest = identity(mode, runtime)
     folder.mkdir(parents=True, exist_ok=True)
-    command = [str(executable), os.path.relpath(profile, folder), *COMMON, 'iterations=100', 'max_time=180',
+    command = [str(executable), os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
+               'iterations=100', 'max_time=180',
                'json2=native.json', 'output=native.txt', *options]
     try:
         proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime)
@@ -157,9 +161,10 @@ def player_report(report, character):
     return players[0]
 
 
-def check_report(report, character, iterations):
+def check_report(report, character, iterations, *, simulation_config=None):
+    simulation_config = config_for(simulation_config)
     sim = report['sim']
-    if len(sim['targets']) != 1:
+    if len(sim['targets']) != simulation_config['target_count']:
         raise ValueError('原生报告的目标数量不符')
     player = player_report(report, character)
     if (player['sim2gse_class'] != character.class_name or player['level'] != character.level or
@@ -198,11 +203,12 @@ def check_report(report, character, iterations):
                               spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource']))
 
 
-def reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912):
+def reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
+              simulation_config=None):
     folder = Path(folder)
     runtime = runtime or TaskRuntime()
     run(profile, folder, options=[f'iterations={iterations}', f'seed={seed}',
-        'json2=native.pending.json'], runtime=runtime)
+        'json2=native.pending.json'], runtime=runtime, simulation_config=simulation_config)
     try:
         report = json.loads((folder / 'native.pending.json').read_text(encoding='utf-8'))
     except (OSError, ValueError) as error:
@@ -210,7 +216,8 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     if 'dps' not in player_report(report, character)['collected_data']:
         messages = '; '.join(row['message'] for row in report.get('logs', []))
         raise ValueError('原生未提供此角色的伤害模拟：' + messages)
-    result = dict(check_report(report, character, iterations), mode='native_free_selection')
+    result = dict(check_report(report, character, iterations, simulation_config=simulation_config),
+                  mode='native_free_selection')
     replace_file(folder / 'native.pending.json', folder / 'native.json')
     player = player_report(report, character)
     result['action_sequence'] = player['collected_data'].get('action_sequence', [])
