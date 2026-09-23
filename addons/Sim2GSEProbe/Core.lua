@@ -36,12 +36,15 @@ local function GetMessageBus()
     if ok and bus and type(bus.RegisterMessage) == "function" then return bus end
 end
 
+local function IsSecret(value)
+    if not issecretvalue then return false end
+    local ok, secret = pcall(issecretvalue, value)
+    return not ok or secret
+end
+
 local function SafeScalar(value)
+    if IsSecret(value) then return "unavailable" end
     if value == nil then return nil end
-    if issecretvalue then
-        local ok, secret = pcall(issecretvalue, value)
-        if ok and secret then return "unavailable" end
-    end
     local kind = type(value)
     if kind == "number" then
         local ok, copy = pcall(function() return value + 0 end)
@@ -61,6 +64,10 @@ local function SafeCall(callback, ...)
     local ok, value = pcall(callback, ...)
     if not ok then return "unavailable" end
     return SafeScalar(value)
+end
+
+local function SafeField(object, key)
+    return SafeCall(function() return object[key] end)
 end
 
 local function NowMs()
@@ -94,12 +101,12 @@ local function ReadCooldown(spellID)
     if not spellID then return nil end
     if not (C_Spell and C_Spell.GetSpellCooldown) then return "unavailable" end
     local ok, info = pcall(C_Spell.GetSpellCooldown, spellID)
-    if not ok or type(info) ~= "table" then return "unavailable" end
+    if not ok or IsSecret(info) or type(info) ~= "table" then return "unavailable" end
     return {
-        startTime = SafeScalar(info.startTime),
-        duration = SafeScalar(info.duration),
-        isEnabled = SafeScalar(info.isEnabled),
-        modRate = SafeScalar(info.modRate),
+        startTime = SafeField(info, "startTime"),
+        duration = SafeField(info, "duration"),
+        isEnabled = SafeField(info, "isEnabled"),
+        modRate = SafeField(info, "modRate"),
     }
 end
 
@@ -121,6 +128,22 @@ local function ReadRunicPower()
     local powerType = Enum and Enum.PowerType and Enum.PowerType.RunicPower
     if not (UnitPower and powerType) then return "unavailable" end
     return SafeCall(UnitPower, "player", powerType)
+end
+
+local function ReadCharges(spellID)
+    if not (C_Spell and C_Spell.GetSpellCharges) then return "unavailable" end
+    local ok, info = pcall(C_Spell.GetSpellCharges, spellID)
+    if not ok or IsSecret(info) then return "unavailable" end
+    if info == nil then return nil end
+    if type(info) ~= "table" then return "unavailable" end
+    return {
+        currentCharges = SafeField(info, "currentCharges"),
+        maxCharges = SafeField(info, "maxCharges"),
+        cooldownStartTime = SafeField(info, "cooldownStartTime"),
+        cooldownDuration = SafeField(info, "cooldownDuration"),
+        chargeModRate = SafeField(info, "chargeModRate"),
+        isActive = SafeField(info, "isActive"),
+    }
 end
 
 local function ReadCurrentSpell(spellID)
@@ -166,6 +189,22 @@ local function ReadCandidates()
         candidates[spellID] = ReadCurrentSpell(spellID)
     end
     return candidates
+end
+
+local function ReadObservedCooldowns()
+    local cooldowns = {}
+    for spellID in pairs(observedSpellIDs) do
+        cooldowns[spellID] = ReadCooldown(spellID)
+    end
+    return cooldowns
+end
+
+local function ReadObservedCharges()
+    local charges = {}
+    for spellID in pairs(observedSpellIDs) do
+        charges[spellID] = ReadCharges(spellID)
+    end
+    return charges
 end
 
 local function CaptureState(record, spellID, phase)
@@ -378,6 +417,10 @@ local spellEvents = {
     "UNIT_SPELLCAST_START",
     "UNIT_SPELLCAST_STOP",
     "UNIT_SPELLCAST_SUCCEEDED",
+    "UNIT_SPELLCAST_CHANNEL_START",
+    "UNIT_SPELLCAST_CHANNEL_UPDATE",
+    "UNIT_SPELLCAST_CHANNEL_STOP",
+    "UNIT_SPELLCAST_DELAYED",
 }
 
 local events = CreateFrame("Frame")
@@ -386,6 +429,14 @@ events:RegisterEvent("PLAYER_REGEN_ENABLED")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("CURRENT_SPELL_CAST_CHANGED")
 events:RegisterEvent("UI_ERROR_MESSAGE")
+events:RegisterEvent("RUNE_POWER_UPDATE")
+events:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+events:RegisterEvent("SPELL_UPDATE_CHARGES")
+if events.RegisterUnitEvent then
+    events:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
+else
+    events:RegisterEvent("UNIT_POWER_UPDATE")
+end
 for _, event in ipairs(spellEvents) do
     if events.RegisterUnitEvent then
         events:RegisterUnitEvent(event, "player")
@@ -399,7 +450,53 @@ events:SetScript("OnEvent", function(_, event, ...)
         ConnectGSE()
         return
     end
+    local database = GetDB()
+    if not (database and database.session and database.session.active) then return end
     local eventTimeMs = NowMs()
+
+    if event == "RUNE_POWER_UPDATE" then
+        local runeIndex, added = ...
+        AddRecord(CaptureState({
+            kind = "resource",
+            event = event,
+            timeMs = eventTimeMs,
+            runeIndex = SafeScalar(runeIndex),
+            added = SafeScalar(added),
+        }, nil, "post-event"))
+        return
+    end
+    if event == "UNIT_POWER_UPDATE" then
+        local rawUnit, powerType = ...
+        local unit, safePowerType = SafeScalar(rawUnit), SafeScalar(powerType)
+        if (unit ~= "player" and unit ~= "unavailable")
+            or (safePowerType ~= "RUNIC_POWER" and safePowerType ~= "unavailable") then return end
+        AddRecord(CaptureState({
+            kind = "resource",
+            event = event,
+            timeMs = eventTimeMs,
+            powerType = safePowerType,
+        }, nil, "post-event"))
+        return
+    end
+    if event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_CHARGES" then
+        local spellID, baseSpellID, category, startRecoveryCategory, itemID = ...
+        local safeSpellID = SafeScalar(spellID)
+        local record = {
+            kind = "cooldown",
+            event = event,
+            timeMs = eventTimeMs,
+            spellID = safeSpellID,
+            baseSpellID = SafeScalar(baseSpellID),
+            category = SafeScalar(category),
+            startRecoveryCategory = SafeScalar(startRecoveryCategory),
+            itemID = SafeScalar(itemID),
+            observedSpellCooldowns = ReadObservedCooldowns(),
+            observedSpellCharges = ReadObservedCharges(),
+        }
+        AddRecord(CaptureState(record, type(safeSpellID) == "number" and safeSpellID or nil,
+            "post-event"))
+        return
+    end
 
     if event == "CURRENT_SPELL_CAST_CHANGED" then
         AddRecord(CaptureNativeState({
@@ -422,8 +519,8 @@ events:SetScript("OnEvent", function(_, event, ...)
         return
     end
 
-    local unit = ...
-    if unit ~= "player" then return end
+    local unit = SafeScalar((...))
+    if unit ~= "player" and unit ~= "unavailable" then return end
     if event == "UNIT_SPELLCAST_SENT" then
         local _, target, castGUID, spellID = ...
         AddRecord(CaptureNativeState({
@@ -436,12 +533,25 @@ events:SetScript("OnEvent", function(_, event, ...)
         }, spellID))
     else
         local _, castGUID, spellID = ...
+        local castBarID, interruptedBy
+        if event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+            local _, _, _, interrupterGUID, stopCastBarID = ...
+            interruptedBy = SafeScalar(interrupterGUID)
+            castBarID = SafeScalar(stopCastBarID)
+        elseif event == "UNIT_SPELLCAST_CHANNEL_START"
+            or event == "UNIT_SPELLCAST_CHANNEL_UPDATE"
+            or event == "UNIT_SPELLCAST_DELAYED" then
+            local _, _, _, eventCastBarID = ...
+            castBarID = SafeScalar(eventCastBarID)
+        end
         AddRecord(CaptureNativeState({
             kind = "spellcast",
             event = event,
             timeMs = eventTimeMs,
             castGUID = SafeScalar(castGUID),
             spellID = SafeScalar(spellID),
+            castBarID = castBarID,
+            interruptedBy = interruptedBy,
         }, spellID))
     end
 end)

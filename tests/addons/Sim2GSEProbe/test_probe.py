@@ -17,6 +17,8 @@ local messages = {}
 local gseMessages = {}
 local aceEvent = {}
 local restricted = false
+local cooldownRestrictedFields = false
+local secretReturn = false
 local channeling = false
 local secret = {}
 
@@ -37,7 +39,20 @@ C_Spell = {
     GetSpellQueueWindow = function() return restricted and secret or 400 end,
     GetSpellCooldown = function()
         if restricted then error("restricted cooldown") end
+        if secretReturn then return secret end
+        if cooldownRestrictedFields then
+            return setmetatable({}, { __index = function() error("restricted field") end })
+        end
         return { startTime = 9, duration = 1.5, isEnabled = false, modRate = 1 }
+    end,
+    GetSpellCharges = function(id)
+        if restricted then error("restricted charges") end
+        if secretReturn then return secret end
+        if id == 55090 then
+            return { currentCharges = 1, maxCharges = 2,
+                cooldownStartTime = 9, cooldownDuration = 15, chargeModRate = 1,
+                isActive = true }
+        end
     end,
     GetBaseSpell = function(id) return id end,
     GetOverrideSpell = function(id) return id == 55090 and 207311 or id end,
@@ -59,7 +74,7 @@ end
 local function NewFrame(name)
     local frame = { name = name, scripts = {}, attrs = {}, registered = {} }
     function frame:RegisterEvent(event) self.registered[event] = true end
-    function frame:RegisterUnitEvent() end
+    function frame:RegisterUnitEvent(event, unit) self.registered[event] = unit end
     function frame:SetScript(kind, callback) self.scripts[kind] = callback end
     function frame:GetName() return self.name end
     function frame:GetAttribute(key) return self.attrs[key] end
@@ -292,6 +307,84 @@ assert(channel.kind == "channel" and channel.spellID == 42650)
 assert(channel.startTimeMs == 22000 and channel.endTimeMs == 26000)
 channeling = false
 
+now = 21.6
+SlashCmdList.SIM2GSEPROBE("start")
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 1,
+})
+assert(eventFrame.registered.RUNE_POWER_UPDATE)
+assert(eventFrame.registered.UNIT_POWER_UPDATE == "player")
+assert(eventFrame.registered.SPELL_UPDATE_COOLDOWN)
+assert(eventFrame.registered.SPELL_UPDATE_CHARGES)
+now = 21.601
+eventFrame.scripts.OnEvent(eventFrame, "RUNE_POWER_UPDATE", 2, true)
+now = 21.602
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_POWER_UPDATE", "player", "RUNIC_POWER")
+now = 21.603
+eventFrame.scripts.OnEvent(eventFrame, "SPELL_UPDATE_COOLDOWN", 55090, 55090, 6, 7, nil)
+now = 21.604
+eventFrame.scripts.OnEvent(eventFrame, "SPELL_UPDATE_CHARGES")
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_POWER_UPDATE", "target", "RUNIC_POWER")
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_POWER_UPDATE", "player", "MANA")
+local changes = Sim2GSEProbeDB.session.records
+assert(#changes == 6, "non-player power event was captured")
+assert(changes[3].kind == "resource" and changes[3].runeIndex == 2)
+assert(changes[3].added == true and changes[3].timeMs == 21601)
+assert(changes[3].runicPower == 80 and #changes[3].runes == 6)
+assert(changes[4].kind == "resource" and changes[4].powerType == "RUNIC_POWER")
+assert(changes[4].timeMs == 21602 and changes[4].statePhase == "post-event")
+assert(changes[5].kind == "cooldown" and changes[5].spellID == 55090)
+assert(changes[5].category == 6 and changes[5].startRecoveryCategory == 7)
+assert(changes[5].spellCooldown.duration == 1.5 and changes[5].timeMs == 21603)
+assert(changes[6].kind == "cooldown" and changes[6].event == "SPELL_UPDATE_CHARGES")
+assert(changes[6].observedSpellCooldowns[55090].duration == 1.5)
+assert(changes[6].observedSpellCharges[55090].currentCharges == 1)
+assert(changes[6].observedSpellCharges[55090].cooldownDuration == 15)
+cooldownRestrictedFields = true
+now = 21.605
+eventFrame.scripts.OnEvent(eventFrame, "SPELL_UPDATE_COOLDOWN", 55090)
+assert(changes[7].spellCooldown.startTime == "unavailable")
+assert(changes[7].observedSpellCooldowns[55090].duration == "unavailable")
+cooldownRestrictedFields = false
+secretReturn = true
+now = 21.606
+eventFrame.scripts.OnEvent(eventFrame, "SPELL_UPDATE_CHARGES")
+assert(changes[8].gcd == "unavailable")
+assert(changes[8].observedSpellCharges[55090] == "unavailable")
+secretReturn = false
+SlashCmdList.SIM2GSEPROBE("stop")
+eventFrame.scripts.OnEvent(eventFrame, "RUNE_POWER_UPDATE", 3, false)
+assert(#changes == 9, "resource recording continued after stop")
+
+now = 21.7
+SlashCmdList.SIM2GSEPROBE("start")
+assert(eventFrame.registered.UNIT_SPELLCAST_CHANNEL_START == "player")
+assert(eventFrame.registered.UNIT_SPELLCAST_CHANNEL_UPDATE == "player")
+assert(eventFrame.registered.UNIT_SPELLCAST_CHANNEL_STOP == "player")
+assert(eventFrame.registered.UNIT_SPELLCAST_DELAYED == "player")
+channeling = true
+now = 21.701
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "Cast-3", 42650, 9)
+now = 21.702
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_UPDATE", "player", "Cast-3", 42650, 9)
+channeling = false
+now = 21.703
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "Cast-3", 42650, "Cast-4", 9)
+now = 21.704
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_DELAYED", "player", "Cast-5", 55090, 10)
+local lifecycle = Sim2GSEProbeDB.session.records
+assert(#lifecycle == 5)
+assert(lifecycle[2].event == "UNIT_SPELLCAST_CHANNEL_START")
+assert(lifecycle[2].castGUID == "Cast-3" and lifecycle[2].spellID == 42650)
+assert(lifecycle[2].castBarID == 9 and lifecycle[2].casting.kind == "channel")
+assert(lifecycle[2].timeMs == 21701 and lifecycle[2].statePhase == "post-event")
+assert(lifecycle[3].event == "UNIT_SPELLCAST_CHANNEL_UPDATE" and lifecycle[3].timeMs == 21702)
+assert(lifecycle[4].event == "UNIT_SPELLCAST_CHANNEL_STOP")
+assert(lifecycle[4].interruptedBy == "Cast-4" and lifecycle[4].castBarID == 9)
+assert(lifecycle[5].event == "UNIT_SPELLCAST_DELAYED")
+assert(lifecycle[5].castBarID == 10 and lifecycle[5].casting.kind == "cast")
+assert(lifecycle[5].timeMs == 21704 and lifecycle[5].stateObservedAtMs == 21704)
+
 restricted = true
 now = 22
 SlashCmdList.SIM2GSEPROBE("start")
@@ -304,6 +397,18 @@ assert(restrictedCurrent.candidates[55090] == "unavailable")
 assert(restrictedCurrent.casting.spellID == "unavailable")
 assert(restrictedCurrent.gcd == "unavailable")
 assert(restrictedCurrent.runicPower == "unavailable")
+eventFrame.scripts.OnEvent(eventFrame, "RUNE_POWER_UPDATE", secret, secret)
+eventFrame.scripts.OnEvent(eventFrame, "SPELL_UPDATE_COOLDOWN", secret, secret)
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", secret, secret, 9)
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", secret, secret, secret, 9)
+local restrictedEvents = Sim2GSEProbeDB.session.records
+assert(restrictedEvents[4].runeIndex == "unavailable")
+assert(restrictedEvents[4].added == "unavailable")
+assert(restrictedEvents[5].spellID == "unavailable")
+assert(restrictedEvents[5].observedSpellCooldowns[55090] == "unavailable")
+assert(restrictedEvents[6].castGUID == "unavailable")
+assert(restrictedEvents[6].spellID == "unavailable")
+assert(restrictedEvents[7].event == "UNIT_SPELLCAST_CHANNEL_START")
 
 local globalMessages = {}
 GSE = { SequencesExec = {} }
@@ -315,6 +420,7 @@ UnitCastingInfo = nil
 UnitChannelInfo = nil
 C_Spell.IsCurrentSpell = nil
 C_Spell.GetSpellCooldown = nil
+C_Spell.GetSpellCharges = nil
 GetRuneCooldown = nil
 UnitPower = nil
 eventFrame = nil
@@ -327,6 +433,7 @@ globalMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
     SequenceName = "TESTSEQ", ClickSerial = 1,
 })
 eventFrame.scripts.OnEvent(eventFrame, "CURRENT_SPELL_CAST_CHANGED", false)
+eventFrame.scripts.OnEvent(eventFrame, "SPELL_UPDATE_CHARGES")
 local missingAPI = Sim2GSEProbeDB.session.records
 assert(missingAPI[2].currentSpell == "unavailable")
 assert(missingAPI[3].candidates[55090] == "unavailable")
@@ -334,6 +441,7 @@ assert(missingAPI[3].casting == "unavailable")
 assert(missingAPI[3].gcd == "unavailable")
 assert(missingAPI[3].runes == "unavailable")
 assert(missingAPI[3].runicPower == "unavailable")
+assert(missingAPI[4].observedSpellCharges[55090] == "unavailable")
 io.write("PASS: probe public seam\n")
 '''
     with tempfile.TemporaryDirectory() as directory:
