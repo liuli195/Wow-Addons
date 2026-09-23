@@ -16,6 +16,7 @@ local GetServerTime = _G.GetServerTime
 local GetTimePreciseSec = _G.GetTimePreciseSec
 local UnitPower = _G.UnitPower
 local UnitCastingInfo = _G.UnitCastingInfo
+local UnitChannelInfo = _G.UnitChannelInfo
 local issecretvalue = _G.issecretvalue
 
 local function GetDB()
@@ -90,7 +91,8 @@ local function ReadLatency()
 end
 
 local function ReadCooldown(spellID)
-    if not (spellID and C_Spell and C_Spell.GetSpellCooldown) then return nil end
+    if not spellID then return nil end
+    if not (C_Spell and C_Spell.GetSpellCooldown) then return "unavailable" end
     local ok, info = pcall(C_Spell.GetSpellCooldown, spellID)
     if not ok or type(info) ~= "table" then return "unavailable" end
     return {
@@ -103,7 +105,7 @@ end
 
 local function ReadRunes()
     local runes = {}
-    if not GetRuneCooldown then return runes end
+    if not GetRuneCooldown then return "unavailable" end
     for index = 1, 6 do
         local ok, start, duration, ready = pcall(GetRuneCooldown, index)
         runes[index] = ok and {
@@ -117,7 +119,7 @@ end
 
 local function ReadRunicPower()
     local powerType = Enum and Enum.PowerType and Enum.PowerType.RunicPower
-    if not (UnitPower and powerType) then return nil end
+    if not (UnitPower and powerType) then return "unavailable" end
     return SafeCall(UnitPower, "player", powerType)
 end
 
@@ -127,17 +129,35 @@ local function ReadCurrentSpell(spellID)
 end
 
 local function ReadCurrentCasting()
-    if not UnitCastingInfo then return "unavailable" end
-    local ok, name, _, _, startTimeMs, endTimeMs, _, castGUID, _, spellID =
-        pcall(UnitCastingInfo, "player")
-    if not ok then return "unavailable" end
-    if SafeScalar(name) == nil then return nil end
-    return {
-        spellID = SafeScalar(spellID),
-        castGUID = SafeScalar(castGUID),
-        startTimeMs = SafeScalar(startTimeMs),
-        endTimeMs = SafeScalar(endTimeMs),
-    }
+    if UnitCastingInfo then
+        local ok, name, _, _, startTimeMs, endTimeMs, _, castGUID, _, spellID =
+            pcall(UnitCastingInfo, "player")
+        if not ok then return "unavailable" end
+        if SafeScalar(name) ~= nil then
+            return {
+                kind = "cast",
+                spellID = SafeScalar(spellID),
+                castGUID = SafeScalar(castGUID),
+                startTimeMs = SafeScalar(startTimeMs),
+                endTimeMs = SafeScalar(endTimeMs),
+            }
+        end
+    end
+    if UnitChannelInfo then
+        local ok, name, _, _, startTimeMs, endTimeMs, _, _, spellID =
+            pcall(UnitChannelInfo, "player")
+        if not ok then return "unavailable" end
+        if SafeScalar(name) ~= nil then
+            return {
+                kind = "channel",
+                spellID = SafeScalar(spellID),
+                startTimeMs = SafeScalar(startTimeMs),
+                endTimeMs = SafeScalar(endTimeMs),
+            }
+        end
+    end
+    if UnitCastingInfo and UnitChannelInfo then return nil end
+    return "unavailable"
 end
 
 local function ReadCandidates()

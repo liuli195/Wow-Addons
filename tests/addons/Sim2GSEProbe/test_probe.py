@@ -17,6 +17,7 @@ local messages = {}
 local gseMessages = {}
 local aceEvent = {}
 local restricted = false
+local channeling = false
 local secret = {}
 
 function GetTimePreciseSec() return now end
@@ -47,7 +48,12 @@ C_Spell = {
 }
 function UnitCastingInfo()
     if restricted then return secret, nil, nil, secret, secret, nil, secret, nil, secret end
+    if channeling then return nil end
     return "Frost Strike", "Frost Strike", 1, 10000, 11000, false, "Cast-1", false, 55090, nil, 0
+end
+function UnitChannelInfo()
+    if not channeling then return nil end
+    return "Army of the Dead", "Army of the Dead", 1, 22000, 26000, false, false, 42650
 end
 
 local function NewFrame(name)
@@ -277,6 +283,15 @@ SlashCmdList.SIM2GSEPROBE("stop")
 eventFrame.scripts.OnEvent(eventFrame, "CURRENT_SPELL_CAST_CHANGED", true)
 assert(#nativeSession.records == 6, "recording continued after stop")
 
+channeling = true
+now = 21.5
+SlashCmdList.SIM2GSEPROBE("start")
+eventFrame.scripts.OnEvent(eventFrame, "CURRENT_SPELL_CAST_CHANGED", false)
+local channel = Sim2GSEProbeDB.session.records[2].casting
+assert(channel.kind == "channel" and channel.spellID == 42650)
+assert(channel.startTimeMs == 22000 and channel.endTimeMs == 26000)
+channeling = false
+
 restricted = true
 now = 22
 SlashCmdList.SIM2GSEPROBE("start")
@@ -297,7 +312,11 @@ function GSE.RegisterMessage(receiver, message, callback)
 end
 LibStub = nil
 UnitCastingInfo = nil
+UnitChannelInfo = nil
 C_Spell.IsCurrentSpell = nil
+C_Spell.GetSpellCooldown = nil
+GetRuneCooldown = nil
+UnitPower = nil
 eventFrame = nil
 assert(loadfile(source))()
 eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
@@ -312,6 +331,9 @@ local missingAPI = Sim2GSEProbeDB.session.records
 assert(missingAPI[2].currentSpell == "unavailable")
 assert(missingAPI[3].candidates[55090] == "unavailable")
 assert(missingAPI[3].casting == "unavailable")
+assert(missingAPI[3].gcd == "unavailable")
+assert(missingAPI[3].runes == "unavailable")
+assert(missingAPI[3].runicPower == "unavailable")
 io.write("PASS: probe public seam\n")
 '''
     with tempfile.TemporaryDirectory() as directory:
