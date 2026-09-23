@@ -1,0 +1,28 @@
+diff --git a/engine/player/player.cpp b/engine/player/player.cpp
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -6618,8 +6618,9 @@ void player_t::combat_begin()
+   if (!sim2gse_steps.empty())
+   {
+     make_event(*sim, sim2gse_input_times.empty() ? 0_ms : sim2gse_input_times.front(), [this] { sim2gse_tick(); });
+     for (const auto& [at, from, name] : sim2gse_observed_failure_events)
+-      make_event(*sim, at, [this, from, name] {
++    {
++      auto handle_failure = [this, from, name] {
+         action_t* matched = nullptr;
+         const auto deferred = std::find_if(sim2gse_deferred_dispatches.begin(), sim2gse_deferred_dispatches.end(),
+             [from, &name](const auto& entry) {
+@@ -6685,7 +6686,12 @@ void player_t::combat_begin()
+                  }))
+           sim2gse_record("late_negative_feedback", nullptr, from);
+         sim2gse_record("observed_failed", matched, from);
+-      });
++      };
++      if (at == sim2gse_input_times[from - 1])
++        make_event(*sim, at, [this, handle_failure] { make_event(*sim, 0_ms, handle_failure); });
++      else
++        make_event(*sim, at, handle_failure);
++    }
+   }
+ 
+   sim->print_debug( "Combat begins for {}.", *this );

@@ -1,0 +1,565 @@
+--- a/engine/action/action.hpp
++++ b/engine/action/action.hpp
+@@ -181,6 +181,9 @@ public:
+   /// True if the action can be queued while it is already casting.
+   bool cooldown_allow_casting_success;
+ 
++  /// Sim2GSE queue probe: preserve every readiness condition except the primary cooldown.
++  bool sim2gse_ignore_cooldown_ready = false;
++
+   /// False if channeled action does not reschedule autoattacks, used on abilities such as bladestorm.
+   bool interrupt_auto_attack;
+ 
+--- a/engine/action/action.cpp
++++ b/engine/action/action.cpp
+@@ -2642,7 +2642,7 @@ bool action_t::cost_affordable()
+ bool action_t::ready()
+ {
+   // Check conditions that do NOT pertain to the target before cycle_targets
+-  if ( !cooldown->is_ready() )
++  if ( !sim2gse_ignore_cooldown_ready && !cooldown->is_ready() )
+     return false;
+ 
+   if ( internal_cooldown->down() )
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -30,6 +30,7 @@
+ 
+ #include <map>
+ #include <set>
++#include <tuple>
+ #include <unordered_map>
+ 
+ struct absorb_buff_t;
+@@ -213,12 +214,40 @@ struct player_t : public actor_t
+   bool sim2gse_trace = false;
+   timespan_t sim2gse_window = 400_ms;
+   std::string sim2gse_times;
++  std::string sim2gse_gcd_states;
++  std::string sim2gse_failed_actions;
++  std::string sim2gse_failure_events;
++  timespan_t sim2gse_precombat_gcd = 0_ms;
++  timespan_t sim2gse_precombat_cast = 0_ms;
++  timespan_t sim2gse_precombat_cast_ready = 0_ms;
++  timespan_t sim2gse_client_gcd_ready = 0_ms;
+   std::vector<timespan_t> sim2gse_input_times;
++  std::vector<std::pair<timespan_t, timespan_t>> sim2gse_observed_gcd_states;
++  std::vector<std::string> sim2gse_observed_failed_actions;
++  std::vector<std::tuple<timespan_t, unsigned, std::string>> sim2gse_observed_failure_events;
++  std::vector<std::pair<action_t*, unsigned>> sim2gse_candidates;
++  std::set<std::pair<unsigned, action_t*>> sim2gse_executed_actions;
++  std::map<std::pair<unsigned, action_t*>, event_t*> sim2gse_deferred_dispatches;
++  timespan_t sim2gse_last_observed_gcd_start = 0_ms;
++  timespan_t sim2gse_last_observed_gcd_duration = 0_ms;
++  bool sim2gse_observed_gcd_initialized = false;
++  timespan_t sim2gse_tentative_gcd_start = 0_ms;
++  timespan_t sim2gse_tentative_gcd_duration = 0_ms;
++  timespan_t sim2gse_tentative_old_gcd_start = 0_ms;
++  timespan_t sim2gse_tentative_old_gcd_duration = 0_ms;
++  unsigned sim2gse_tentative_stable_reads = 0;
++  bool sim2gse_tentative_gcd = false;
++  bool sim2gse_waiting_confirmation = false;
++  bool sim2gse_confirmed_tentative_gcd = false;
++  unsigned sim2gse_confirmed_tentative_origin = 0;
++  action_t* sim2gse_confirmed_tentative_action = nullptr;
+   std::vector<std::vector<action_t*>> sim2gse_blocks;
+   std::unordered_map<action_t*, unsigned> sim2gse_button_ids;
+-  unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0, sim2gse_origin = 0;
++  unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0, sim2gse_committed_origin = 0, sim2gse_origin = 0;
+   action_t* sim2gse_pending = nullptr;
++  action_t* sim2gse_committed = nullptr;
+   action_t* sim2gse_dispatch = nullptr;
++  event_t* sim2gse_commit = nullptr;
+   event_t* sim2gse_queue = nullptr;
+   void sim2gse_init();
+   void sim2gse_tick();
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4493,11 +4493,14 @@ void player_t::init_assessors()
+   } );
+ }
+ 
+-static timespan_t sim2gse_action_delay(player_t* p, action_t* a)
++static timespan_t sim2gse_action_delay(player_t* p, action_t* a, bool client_clock)
+ {
+   if (a->gcd() == 0_ms) return 0_ms;
+-  auto delay = std::max(0_ms, p->gcd_ready - p->sim->current_time());
++  const auto ready = client_clock ? p->sim2gse_client_gcd_ready : p->gcd_ready;
++  auto delay = std::max(0_ms, ready - p->sim->current_time());
+   delay = std::max(delay, a->cooldown->remains());
++  if (!a->usable_during_current_cast())
++    delay = std::max(delay, p->sim2gse_precombat_cast_ready - p->sim->current_time());
+   if (p->executing && p->executing->execute_event)
+     delay = std::max(delay, p->executing->execute_event->remains());
+   else if (p->channeling && p->channeling->get_dot())
+@@ -4505,19 +4508,82 @@ static timespan_t sim2gse_action_delay(player_t* p, action_t* a)
+   return delay;
+ }
+ 
++static bool sim2gse_queue_requirements(action_t* a)
++{
++  a->sim2gse_ignore_cooldown_ready = true;
++  const bool ready = a->action_ready();
++  a->sim2gse_ignore_cooldown_ready = false;
++  return ready;
++}
++
++static void sim2gse_finish_committed(player_t* p)
++{
++  auto* committed = p->sim2gse_committed;
++  auto committed_from = p->sim2gse_committed_origin;
++  p->sim2gse_committed = nullptr;
++  p->sim2gse_waiting_confirmation = false;
++  p->sim2gse_candidates.clear();
++  if (committed && p->sim2gse_tentative_gcd)
++  {
++    p->sim2gse_record("queue_confirm", committed, committed_from);
++    p->sim2gse_tentative_gcd = false;
++    p->sim2gse_confirmed_tentative_gcd = true;
++    p->sim2gse_confirmed_tentative_origin = committed_from;
++    p->sim2gse_confirmed_tentative_action = committed;
++  }
++  if (committed) p->sim2gse_dispatch_action(committed, committed_from);
++}
++
++static void sim2gse_execute_committed(player_t* p)
++{
++  if (!p->sim2gse_committed) return;
++  const auto native_delay = sim2gse_action_delay(p, p->sim2gse_committed, false);
++  const auto execute_delay = native_delay + std::max(0_ms, p->rng().gauss(p->sim->queue_lag));
++  p->sim2gse_queue = make_event(*p->sim, execute_delay + 1_ms, [p] {
++    p->sim2gse_queue = nullptr;
++    if (p->sim2gse_tentative_gcd && p->sim2gse_tentative_stable_reads < 2)
++    {
++      p->sim2gse_waiting_confirmation = true;
++      return;
++    }
++    sim2gse_finish_committed(p);
++  });
++}
++
++static void sim2gse_commit_pending(player_t* p, bool defer_execution = false)
++{
++  auto* next = p->sim2gse_pending;
++  auto from = p->sim2gse_pending_origin;
++  p->sim2gse_pending = nullptr;
++  if (!next) return;
++  if (!sim2gse_queue_requirements(next))
++  {
++    p->sim2gse_record("commit_failed", next, from);
++    p->sim2gse_candidates.clear();
++    return;
++  }
++  p->sim2gse_committed = next;
++  p->sim2gse_committed_origin = from;
++  if (p->sim2gse_observed_gcd_states.empty())
++    p->sim2gse_client_gcd_ready = std::max(p->sim->current_time(), p->gcd_ready) + next->gcd();
++  p->sim2gse_record(p->sim2gse_observed_gcd_states.empty() ? "queue_commit" : "queue_tentative", next, from);
++  if (!defer_execution) sim2gse_execute_committed(p);
++}
++
+ // Throwaway task-8 controller. Fixed single-target, instant player actions only.
+ // Queue policy is an experiment, not a claim about the WoW client.
+ static void sim2gse_arm_queue(player_t* p)
+ {
+-  event_t::cancel(p->sim2gse_queue);
++  event_t::cancel(p->sim2gse_commit);
+   if (!p->sim2gse_pending) return;
+-  const auto delay = sim2gse_action_delay(p, p->sim2gse_pending);
+-  p->sim2gse_queue = make_event(*p->sim, delay + 1_ms, [p] {
+-    auto* next = p->sim2gse_pending;
+-    auto from = p->sim2gse_pending_origin;
+-    p->sim2gse_queue = nullptr;
+-    p->sim2gse_pending = nullptr;
+-    if (next) p->sim2gse_dispatch_action(next, from);
++  if (!p->sim2gse_observed_gcd_states.empty()) return;
++  const auto delay = sim2gse_action_delay(p, p->sim2gse_pending, true);
++  const auto commit_lead = p->sim->current_time() < p->sim2gse_precombat_gcd ? 0_ms :
++                           p->sim->queue_gcd_reduction;
++  const auto commit_delay = std::max(0_ms, delay - commit_lead);
++  p->sim2gse_commit = make_event(*p->sim, commit_delay, [p] {
++    p->sim2gse_commit = nullptr;
++    sim2gse_commit_pending(p);
+   });
+ }
+ 
+@@ -4535,6 +4601,43 @@ void player_t::sim2gse_init()
+   }
+   if (sim2gse_input_times.size() > 4096)
+     throw std::runtime_error("too many sim2gse input times");
++  for (auto value : util::string_split(sim2gse_gcd_states, "/"))
++  {
++    if (value.empty()) continue;
++    const auto fields = util::string_split(value, ",");
++    if (fields.size() != 2 ||
++        fields[0].find_first_not_of("0123456789") != std::string::npos ||
++        fields[1].find_first_not_of("0123456789") != std::string::npos)
++      throw std::runtime_error("invalid sim2gse GCD feedback");
++    sim2gse_observed_gcd_states.emplace_back(
++        timespan_t::from_millis(std::stoul(fields[0])),
++        timespan_t::from_millis(std::stoul(fields[1])));
++  }
++  if (!sim2gse_observed_gcd_states.empty() &&
++      sim2gse_observed_gcd_states.size() != sim2gse_input_times.size())
++    throw std::runtime_error("sim2gse GCD feedback must match input times");
++  for (auto value : util::string_split(sim2gse_failed_actions, "/"))
++    sim2gse_observed_failed_actions.push_back(value == "-" ? "" : value);
++  if (!sim2gse_observed_failed_actions.empty() &&
++      sim2gse_observed_failed_actions.size() != sim2gse_input_times.size())
++    throw std::runtime_error("sim2gse failure feedback must match input times");
++  if (!sim2gse_failed_actions.empty() && !sim2gse_failure_events.empty())
++    throw std::runtime_error("sim2gse failure feedback formats cannot be mixed");
++  for (auto value : util::string_split(sim2gse_failure_events, "/"))
++  {
++    if (value.empty()) continue;
++    const auto fields = util::string_split(value, ",");
++    if (fields.size() != 3 || fields[0].empty() || fields[1].empty() || fields[2].empty() ||
++        fields[0].find_first_not_of("0123456789") != std::string::npos ||
++        fields[1].find_first_not_of("0123456789") != std::string::npos)
++      throw std::runtime_error("invalid sim2gse failure event");
++    const auto at = timespan_t::from_millis(std::stoul(fields[0]));
++    const auto from = static_cast<unsigned>(std::stoul(fields[1]));
++    if (at >= sim->max_time || from == 0 || from > sim2gse_input_times.size() ||
++        at < sim2gse_input_times[from - 1])
++      throw std::runtime_error("sim2gse failure event precedes its input or exceeds combat");
++    sim2gse_observed_failure_events.emplace_back(at, from, fields[2]);
++  }
+   if ( is_pet() || is_enemy() || sim->threads != 1 )
+     throw std::runtime_error("sim2gse requires one-thread player");
+   if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
+@@ -4584,10 +4687,14 @@ void player_t::sim2gse_init()
+ 
+ void player_t::sim2gse_record(const char* event, action_t* a, unsigned origin)
+ {
+-  if ( sim2gse_trace && (std::string(event) == "native_execute" || std::string(event) == "native_interrupt") &&
+-       (!origin || std::find(sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].begin(),
+-                            sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end(), a) ==
+-                   sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end()) )
++  const bool native_execute = std::string(event) == "native_execute";
++  const bool native_interrupt = std::string(event) == "native_interrupt";
++  const bool direct = origin && a &&
++    std::find(sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].begin(),
++              sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end(), a) !=
++    sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end();
++  if (native_execute && direct) sim2gse_executed_actions.emplace(origin, a);
++  if (sim2gse_trace && (native_execute || native_interrupt) && !direct)
+     event = "native_derived";
+   if ( sim2gse_trace )
+     sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", sim->current_time().total_millis(),
+@@ -4600,7 +4707,9 @@ void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
+ {
+   if ( resource_regeneration == regen_type::DYNAMIC ) do_dynamic_regen();
+   const bool casting = executing || channeling;
+-  if ( is_sleeping() || (casting && !a->usable_during_current_cast()) || buffs.stunned->check() || !a->action_ready() ||
++  const bool precombat_casting = sim2gse_precombat_cast_ready > sim->current_time();
++  if ( is_sleeping() || ((casting || precombat_casting) && !a->usable_during_current_cast()) ||
++       buffs.stunned->check() || !a->action_ready() ||
+        (a->gcd() > 0_ms && gcd_ready > sim->current_time()) ||
+        !a->cooldown->up() )
+   {
+@@ -4626,35 +4735,122 @@ void player_t::sim2gse_tick()
+   if ( is_sleeping() || sim->event_mgr.canceled ) return;
+   const unsigned origin = ++sim2gse_input;
+   sim2gse_record("input", nullptr, origin);
++  if ( origin == 1 && sim2gse_blocks[sim2gse_step].empty() )
++  {
++    if ( sim2gse_precombat_gcd > 0_ms )
++    {
++      gcd_ready = std::max(gcd_ready, sim->current_time() + sim2gse_precombat_gcd);
++      sim2gse_client_gcd_ready = gcd_ready;
++      sim2gse_record("precombat_gcd", nullptr, origin);
++    }
++    if ( sim2gse_precombat_cast > 0_ms )
++    {
++      sim2gse_precombat_cast_ready = sim->current_time() + sim2gse_precombat_cast;
++      sim2gse_record("precombat_cast", nullptr, origin);
++    }
++  }
++  if (!sim2gse_observed_gcd_states.empty())
++  {
++    const auto& observed = sim2gse_observed_gcd_states[origin - 1];
++    if (observed.second != 0_ms)
++    {
++      const auto previous_start = sim2gse_last_observed_gcd_start;
++      const auto previous_duration = sim2gse_last_observed_gcd_duration;
++      // A duration correction does not start or undo a GCD generation.
++      const bool changed = sim2gse_observed_gcd_initialized && observed.first != previous_start;
++      if (sim2gse_confirmed_tentative_gcd && changed)
++      {
++        if (observed.first == sim2gse_tentative_old_gcd_start &&
++            sim2gse_executed_actions.count({sim2gse_confirmed_tentative_origin,
++                                            sim2gse_confirmed_tentative_action}))
++          sim2gse_record("late_negative_feedback", nullptr, origin);
++        sim2gse_confirmed_tentative_gcd = false;
++        sim2gse_confirmed_tentative_origin = 0;
++        sim2gse_confirmed_tentative_action = nullptr;
++      }
++      if (sim2gse_tentative_gcd && changed)
++      {
++        if (sim2gse_committed)
++          sim2gse_record("queue_rollback", sim2gse_committed, sim2gse_committed_origin);
++        event_t::cancel(sim2gse_queue);
++        sim2gse_committed = nullptr;
++        sim2gse_tentative_gcd = false;
++        sim2gse_tentative_stable_reads = 0;
++        sim2gse_waiting_confirmation = false;
++        sim2gse_candidates.clear();
++      }
++      else if (sim2gse_tentative_gcd &&
++               observed.first == sim2gse_tentative_gcd_start &&
++               ++sim2gse_tentative_stable_reads == 2 && sim2gse_waiting_confirmation)
++        sim2gse_finish_committed(this);
++      sim2gse_client_gcd_ready = observed.first + observed.second;
++      if (changed && !sim2gse_tentative_gcd && sim2gse_pending)
++      {
++        sim2gse_commit_pending(this, true);
++        if (sim2gse_committed)
++        {
++          sim2gse_tentative_gcd = true;
++          sim2gse_tentative_gcd_start = observed.first;
++          sim2gse_tentative_gcd_duration = observed.second;
++          sim2gse_tentative_stable_reads = 0;
++          sim2gse_waiting_confirmation = false;
++          sim2gse_tentative_old_gcd_start = previous_start;
++          sim2gse_tentative_old_gcd_duration = previous_duration;
++          sim2gse_execute_committed(this);
++        }
++      }
++      sim2gse_observed_gcd_initialized = true;
++      sim2gse_last_observed_gcd_start = observed.first;
++      sim2gse_last_observed_gcd_duration = observed.second;
++    }
++  }
+   std::set<unsigned> selected_buttons;
+   for ( auto* a : sim2gse_blocks[sim2gse_step] )
+   {
+     const auto button = sim2gse_button_ids[a];
+     if (button && selected_buttons.count(button)) continue;
++    if (!sim2gse_observed_failed_actions.empty() &&
++        sim2gse_observed_failed_actions[origin - 1] == a->name_str)
++    {
++      sim2gse_record("observed_failed", a, origin);
++      continue;
++    }
+     if ( resource_regeneration == regen_type::DYNAMIC ) do_dynamic_regen();
+     if ( buffs.stunned->check() )
+     {
+       sim2gse_record("busy", a, origin);
+       continue;
+     }
++    if ( a->gcd() > 0_ms && sim2gse_committed )
++    {
++      sim2gse_record("queue_locked", a, origin);
++      continue;
++    }
+     const bool ready_now = a->action_ready();
+-    if (!ready_now && a->cooldown->remains() <= 0_ms)
++    const bool trust_failure_feedback = a->gcd() > 0_ms && !sim2gse_observed_failed_actions.empty();
++    if (!ready_now && !trust_failure_feedback &&
++        (a->cooldown->remains() <= 0_ms || !sim2gse_queue_requirements(a)))
+     {
+       sim2gse_record("not_ready", a, origin);
+       continue;
+     }
+-    const auto delay = sim2gse_action_delay(this, a);
++    const auto delay = sim2gse_action_delay(this, a, true);
+     if ( delay > sim2gse_window )
+     {
+       sim2gse_record("outside_window", a, origin);
+       continue;
+     }
+-    if ( delay > 0_ms )
++    const bool wait_for_gcd_feedback = a->gcd() > 0_ms && !sim2gse_observed_gcd_states.empty();
++    if ( delay > 0_ms || wait_for_gcd_feedback )
+     {
+       if ( sim2gse_pending ) sim2gse_record("replace", sim2gse_pending, sim2gse_pending_origin);
+       event_t::cancel(sim2gse_queue);
+       sim2gse_pending = a;
+       sim2gse_pending_origin = origin;
++      if (a->gcd() > 0_ms && !sim2gse_observed_failure_events.empty())
++        sim2gse_candidates.emplace_back(a, origin);
++      else
++        sim2gse_candidates.clear();
+       sim2gse_record("queue", a, origin);
+       sim2gse_arm_queue(this);
+     }
+@@ -4662,10 +4858,27 @@ void player_t::sim2gse_tick()
+     {
+       if ( a->gcd() > 0_ms )
+       {
++        event_t::cancel(sim2gse_commit);
+         event_t::cancel(sim2gse_queue);
+         sim2gse_pending = nullptr;
++        sim2gse_candidates.clear();
+       }
+-      sim2gse_dispatch_action(a, origin);
++      if ( a->gcd() > 0_ms )
++        sim2gse_client_gcd_ready = sim->current_time() + a->gcd();
++      if (a->gcd() == 0_ms && a->name_str != "auto_attack" &&
++          !sim2gse_observed_failure_events.empty())
++      {
++        auto* deferred = make_event(*sim, 2_ms, [this, origin, a] {
++          const auto found = sim2gse_deferred_dispatches.find({origin, a});
++          if (found == sim2gse_deferred_dispatches.end()) return;
++          sim2gse_deferred_dispatches.erase(found);
++          sim2gse_dispatch_action(a, origin);
++        });
++        sim2gse_deferred_dispatches.emplace(std::make_pair(origin, a), deferred);
++        sim2gse_record("dispatch_deferred", a, origin);
++      }
++      else
++        sim2gse_dispatch_action(a, origin);
+     }
+     if (button) selected_buttons.insert(button);
+   }
+@@ -6361,7 +6574,8 @@ void player_t::combat_begin()
+     {
+       if ( action->action_ready() )
+       {
+-        if (!sim2gse_steps.empty()) sim2gse_record("explicit_precombat", action, 0);
++        if (!sim2gse_steps.empty())
++          sim2gse_record("explicit_precombat", action, 0);
+         if ( action->harmful )
+         {
+           if ( first_cast )
+@@ -6370,6 +6584,11 @@ void player_t::combat_begin()
+               sequence_add( action, action->target );
+ 
+             action->execute();
++            if (!sim2gse_steps.empty())
++            {
++              sim2gse_precombat_gcd = std::max(sim2gse_precombat_gcd, action->gcd());
++              sim2gse_precombat_cast = std::max(sim2gse_precombat_cast, action->execute_time());
++            }
+             first_cast = false;
+           }
+           else
+@@ -6383,6 +6602,11 @@ void player_t::combat_begin()
+             sequence_add( action, action->target );
+ 
+           action->execute();
++          if (!sim2gse_steps.empty())
++          {
++            sim2gse_precombat_gcd = std::max(sim2gse_precombat_gcd, action->gcd());
++            sim2gse_precombat_cast = std::max(sim2gse_precombat_cast, action->execute_time());
++          }
+         }
+       }
+       if ( in_combat && ( action->channeled || action->travel_time() == timespan_t::zero() ) )
+@@ -6391,7 +6615,77 @@ void player_t::combat_begin()
+   }
+   first_cast = false;
+ 
+-  if (!sim2gse_steps.empty()) make_event(*sim, sim2gse_input_times.empty() ? 0_ms : sim2gse_input_times.front(), [this] { sim2gse_tick(); });
++  if (!sim2gse_steps.empty())
++  {
++    make_event(*sim, sim2gse_input_times.empty() ? 0_ms : sim2gse_input_times.front(), [this] { sim2gse_tick(); });
++    for (const auto& [at, from, name] : sim2gse_observed_failure_events)
++      make_event(*sim, at, [this, from, name] {
++        action_t* matched = nullptr;
++        const auto deferred = std::find_if(sim2gse_deferred_dispatches.begin(), sim2gse_deferred_dispatches.end(),
++            [from, &name](const auto& entry) {
++              return entry.first.first == from && entry.first.second->name_str == name;
++            });
++        if (deferred != sim2gse_deferred_dispatches.end())
++        {
++          matched = deferred->first.second;
++          event_t::cancel(deferred->second);
++          sim2gse_deferred_dispatches.erase(deferred);
++          sim2gse_record("observed_failed", matched, from);
++          return;
++        }
++        const auto candidate = std::find_if(sim2gse_candidates.begin(), sim2gse_candidates.end(),
++            [from, &name](const auto& entry) { return entry.second == from && entry.first->name_str == name; });
++        if (candidate != sim2gse_candidates.end())
++        {
++          matched = candidate->first;
++          const bool was_pending = sim2gse_pending == matched && sim2gse_pending_origin == from;
++          const bool was_committed = sim2gse_committed == matched && sim2gse_committed_origin == from;
++          sim2gse_candidates.erase(candidate);
++          if (was_pending)
++          {
++            event_t::cancel(sim2gse_commit);
++            sim2gse_pending = sim2gse_candidates.empty() ? nullptr : sim2gse_candidates.back().first;
++            if (sim2gse_pending)
++            {
++              sim2gse_pending_origin = sim2gse_candidates.back().second;
++              sim2gse_record("queue_restore", sim2gse_pending, sim2gse_pending_origin);
++              sim2gse_arm_queue(this);
++            }
++          }
++          if (was_committed)
++          {
++            event_t::cancel(sim2gse_queue);
++            sim2gse_committed = sim2gse_candidates.empty() ? nullptr : sim2gse_candidates.back().first;
++            sim2gse_waiting_confirmation = false;
++            if (sim2gse_committed)
++            {
++              sim2gse_committed_origin = sim2gse_candidates.back().second;
++              sim2gse_record("queue_restore", sim2gse_committed, sim2gse_committed_origin);
++              sim2gse_execute_committed(this);
++            }
++            else
++            {
++              sim2gse_record("queue_rollback", matched, from);
++              sim2gse_tentative_gcd = false;
++              sim2gse_tentative_stable_reads = 0;
++              sim2gse_client_gcd_ready = sim2gse_tentative_old_gcd_start + sim2gse_tentative_old_gcd_duration;
++            }
++          }
++        }
++        else if (sim2gse_pending && sim2gse_pending_origin == from && sim2gse_pending->name_str == name)
++        {
++          matched = sim2gse_pending;
++          event_t::cancel(sim2gse_commit);
++          sim2gse_pending = nullptr;
++        }
++        else if (std::any_of(sim2gse_executed_actions.begin(), sim2gse_executed_actions.end(),
++                 [from, &name](const auto& executed) {
++                   return executed.first == from && executed.second->name_str == name;
++                 }))
++          sim2gse_record("late_negative_feedback", nullptr, from);
++        sim2gse_record("observed_failed", matched, from);
++      });
++  }
+ 
+   sim->print_debug( "Combat begins for {}.", *this );
+ 
+@@ -6826,9 +7120,24 @@ void player_t::merge( player_t& other )
+  */
+ void player_t::reset()
+ {
+-  sim2gse_step = sim2gse_input = sim2gse_pending_origin = sim2gse_origin = 0;
+-  sim2gse_pending = sim2gse_dispatch = nullptr;
+-  sim2gse_queue = nullptr;
++  sim2gse_step = sim2gse_input = sim2gse_pending_origin = sim2gse_committed_origin = sim2gse_origin = 0;
++  sim2gse_precombat_gcd = sim2gse_precombat_cast = sim2gse_precombat_cast_ready = 0_ms;
++  sim2gse_client_gcd_ready = 0_ms;
++  sim2gse_last_observed_gcd_start = sim2gse_last_observed_gcd_duration = 0_ms;
++  sim2gse_observed_gcd_initialized = false;
++  sim2gse_tentative_gcd_start = sim2gse_tentative_gcd_duration = sim2gse_tentative_old_gcd_start =
++    sim2gse_tentative_old_gcd_duration = 0_ms;
++  sim2gse_tentative_stable_reads = 0;
++  sim2gse_tentative_gcd = false;
++  sim2gse_waiting_confirmation = false;
++  sim2gse_confirmed_tentative_gcd = false;
++  sim2gse_confirmed_tentative_origin = 0;
++  sim2gse_confirmed_tentative_action = nullptr;
++  sim2gse_pending = sim2gse_committed = sim2gse_dispatch = nullptr;
++  sim2gse_candidates.clear();
++  sim2gse_executed_actions.clear();
++  sim2gse_deferred_dispatches.clear();
++  sim2gse_commit = sim2gse_queue = nullptr;
+   sim->print_debug( "Resetting {}.", *this );
+ 
+   last_cast = timespan_t::zero();
+@@ -13472,6 +13781,9 @@ void player_t::create_options()
+   add_option( opt_timespan( "cooldown_tolerance", cooldown_tolerance_ ) );
+   add_option( opt_string("sim2gse_steps", sim2gse_steps) );
+   add_option( opt_string("sim2gse_times", sim2gse_times) );
++  add_option( opt_string("sim2gse_gcd_states", sim2gse_gcd_states) );
++  add_option( opt_string("sim2gse_failed_actions", sim2gse_failed_actions) );
++  add_option( opt_string("sim2gse_failure_events", sim2gse_failure_events) );
+   add_option( opt_bool("sim2gse_trace", sim2gse_trace) );
+   add_option( opt_timespan("sim2gse_window", sim2gse_window) );
+   add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );
