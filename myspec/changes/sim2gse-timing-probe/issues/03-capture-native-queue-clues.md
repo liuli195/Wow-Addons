@@ -6,6 +6,8 @@
 
 **Status:** implemented; real-game acceptance deferred by user
 
+**game_validation:** `not_run`
+
 - [x] 原生当前技能变化及错误提示在活动会话中可从 SavedVariables 读取，候选技能状态和当前读条保留原生语义，不冒充队列承诺。
 - [x] GSE 提交及关键施法反馈记录保留 GCD、技能冷却、符文与符文能量；新增快照标明实际采样时刻。
 - [x] 缺失接口与受限值安全降级；停止采集后不再追加记录，原有记录格式仍可读取。

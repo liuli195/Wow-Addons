@@ -6,6 +6,8 @@
 
 **Status:** implemented; real-game acceptance deferred by user
 
+**game_validation:** `not_run`
+
 - [x] 活动会话的符能、符文、冷却、充能变化有事件时刻和安全读取的状态；非玩家或停止后不追加。
 - [x] 引导开始、更新、停止及施法延迟保存事件标识、技能编号和事件后的施法状态；受限值不中断记录。
 - [x] 沿用插件载入、命令、事件、SavedVariables 的公开测试入口，红灯到绿灯并完成统一快速验证；实际游戏采集另行验收。
