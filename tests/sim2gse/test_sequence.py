@@ -165,6 +165,22 @@ class SequenceSimulationTests(unittest.TestCase):
                                 and e['origin'] == 5 and e['ms'] > 1100 for e in events), events)
             self.assertFalse(any(e['event'] == 'queue_commit' for e in events), events)
 
+    def test_tc_pending_waits_for_default_server_update_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['outbreak'], ['scourge_strike'], ['putrefy'], ['outbreak']])
+            simulation = evaluate(source, candidate, Path(directory) / 'tc-update',
+                                  character=character, iterations=1,
+                                  input_times=[0, 100, 500, 1050, 1100, 1200, 1445],
+                                  mode='tc')
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'tc_replace' and e['origin'] == 5
+                                and e['ms'] == 1445 for e in events), events)
+            self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 5
+                                 for e in events), events)
+            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 7
+                                for e in events), events)
+
     def test_tc_queue_checks_resource_at_execution_not_admission(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate, source, character = self.candidate(

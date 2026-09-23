@@ -12,7 +12,7 @@ index d5d7725..36c998c 100644
    if ( is_pet() || is_enemy() || sim->threads != 1 )
      throw std::runtime_error("sim2gse requires one-thread player");
    if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
-@@ -4730,6 +4733,36 @@ void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
+@@ -4730,6 +4733,39 @@ void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
    sim2gse_origin = 0;
  }
 -
@@ -34,7 +34,10 @@ index d5d7725..36c998c 100644
 +  if (wait > 0_ms)
 +  {
 +    event_t::cancel(p->sim2gse_queue);
-+    p->sim2gse_queue = make_event(*p->sim, wait + 1_ms, [p] {
++    const auto ready_ms = (p->sim->current_time() + wait).total_millis();
++    const auto next_update_ms = (ready_ms / 10 + 1) * 10; // TC default MapUpdateInterval.
++    p->sim2gse_queue = make_event(*p->sim, timespan_t::from_millis(next_update_ms) -
++      p->sim->current_time(), [p] {
 +      p->sim2gse_queue = nullptr;
 +      sim2gse_tc_try_execute(p);
 +    });
@@ -50,7 +53,7 @@ index d5d7725..36c998c 100644
  void player_t::sim2gse_tick()
  {
    if ( is_sleeping() || sim->event_mgr.canceled ) return;
-@@ -4809,75 +4842,23 @@ void player_t::sim2gse_tick()
+@@ -4809,75 +4845,23 @@ void player_t::sim2gse_tick()
    {
      const auto button = sim2gse_button_ids[a];
      if (button && selected_buttons.count(button)) continue;
