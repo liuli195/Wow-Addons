@@ -1,6 +1,6 @@
 # 01: TC 服务端请求队列双场对照
 
-Status（状态）: implemented-pending-verification
+Status（状态）: closed; negative comparison result retained
 Blocked by（阻塞任务）: None（无）
 
 ## What to build
