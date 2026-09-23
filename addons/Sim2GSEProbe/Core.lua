@@ -5,6 +5,7 @@ local messageReceiver = {}
 local messageRegistered = false
 local messageSerials = {}
 local nextPositions = {}
+local observedSpellIDs = {}
 local C_CVar = _G.C_CVar
 local C_Spell = _G.C_Spell
 local CreateFrame = _G.CreateFrame
@@ -14,6 +15,7 @@ local GetRuneCooldown = _G.GetRuneCooldown
 local GetServerTime = _G.GetServerTime
 local GetTimePreciseSec = _G.GetTimePreciseSec
 local UnitPower = _G.UnitPower
+local UnitCastingInfo = _G.UnitCastingInfo
 local issecretvalue = _G.issecretvalue
 
 local function GetDB()
@@ -119,6 +121,49 @@ local function ReadRunicPower()
     return SafeCall(UnitPower, "player", powerType)
 end
 
+local function ReadCurrentSpell(spellID)
+    if not (spellID and C_Spell and C_Spell.IsCurrentSpell) then return "unavailable" end
+    return SafeCall(C_Spell.IsCurrentSpell, spellID)
+end
+
+local function ReadCurrentCasting()
+    if not UnitCastingInfo then return "unavailable" end
+    local ok, name, _, _, startTimeMs, endTimeMs, _, castGUID, _, spellID =
+        pcall(UnitCastingInfo, "player")
+    if not ok then return "unavailable" end
+    if SafeScalar(name) == nil then return nil end
+    return {
+        spellID = SafeScalar(spellID),
+        castGUID = SafeScalar(castGUID),
+        startTimeMs = SafeScalar(startTimeMs),
+        endTimeMs = SafeScalar(endTimeMs),
+    }
+end
+
+local function ReadCandidates()
+    local candidates = {}
+    for spellID in pairs(observedSpellIDs) do
+        candidates[spellID] = ReadCurrentSpell(spellID)
+    end
+    return candidates
+end
+
+local function CaptureState(record, spellID, phase)
+    record.gcd = ReadCooldown(61304)
+    record.spellCooldown = ReadCooldown(spellID)
+    record.runes = ReadRunes()
+    record.runicPower = ReadRunicPower()
+    record.statePhase = phase
+    record.stateObservedAtMs = NowMs()
+    return record
+end
+
+local function CaptureNativeState(record, spellID)
+    record.candidates = ReadCandidates()
+    record.casting = ReadCurrentCasting()
+    return CaptureState(record, spellID, "post-event")
+end
+
 local function ResolveSpellID(spell)
     if type(spell) == "number" then return spell end
     local numeric = tonumber(spell)
@@ -185,7 +230,8 @@ local function CaptureClick(button, sequenceName, evidence)
         and SafeCall(C_Spell.GetBaseSpell, spellID) or nil
     local overrideSpellID = C_Spell and C_Spell.GetOverrideSpell and spellID
         and SafeCall(C_Spell.GetOverrideSpell, spellID) or nil
-    AddRecord({
+    if type(spellID) == "number" then observedSpellIDs[spellID] = true end
+    local record = {
         kind = "click",
         timeMs = observedAt,
         observedAtMs = observedAt,
@@ -204,11 +250,9 @@ local function CaptureClick(button, sequenceName, evidence)
         hardwareEvent = SafeScalar(evidence.HardwareEvent),
         spamKey = SafeScalar(evidence.SpamKey),
         triggerEdge = "gse-execution-message-observed",
-        gcd = ReadCooldown(61304),
-        spellCooldown = ReadCooldown(spellID),
-        runes = ReadRunes(),
-        runicPower = ReadRunicPower(),
-    })
+        currentSpell = spellID and ReadCurrentSpell(spellID) or nil,
+    }
+    AddRecord(CaptureState(record, spellID, "post-gse-message"))
     if type(nextStep) == "number" and type(nextIteration) == "number" then
         nextPositions[sequenceName] = { step = nextStep, iteration = nextIteration, serial = serial }
     end
@@ -243,6 +287,7 @@ end
 local function Start()
     messageSerials = {}
     nextPositions = {}
+    observedSpellIDs = {}
     ConnectGSE()
     _G.Sim2GSEProbeDB = GetDB() or {}
     local database = GetDB()
@@ -319,6 +364,8 @@ local events = CreateFrame("Frame")
 events:RegisterEvent("PLAYER_LOGIN")
 events:RegisterEvent("PLAYER_REGEN_ENABLED")
 events:RegisterEvent("ADDON_LOADED")
+events:RegisterEvent("CURRENT_SPELL_CAST_CHANGED")
+events:RegisterEvent("UI_ERROR_MESSAGE")
 for _, event in ipairs(spellEvents) do
     if events.RegisterUnitEvent then
         events:RegisterUnitEvent(event, "player")
@@ -332,25 +379,49 @@ events:SetScript("OnEvent", function(_, event, ...)
         ConnectGSE()
         return
     end
+    local eventTimeMs = NowMs()
+
+    if event == "CURRENT_SPELL_CAST_CHANGED" then
+        AddRecord(CaptureNativeState({
+            kind = "current-spell",
+            event = event,
+            timeMs = eventTimeMs,
+            cancelledCast = SafeScalar((...)),
+        }))
+        return
+    end
+    if event == "UI_ERROR_MESSAGE" then
+        local errorType, message = ...
+        AddRecord(CaptureNativeState({
+            kind = "ui-error",
+            event = event,
+            timeMs = eventTimeMs,
+            errorType = SafeScalar(errorType),
+            message = SafeScalar(message),
+        }))
+        return
+    end
 
     local unit = ...
     if unit ~= "player" then return end
     if event == "UNIT_SPELLCAST_SENT" then
         local _, target, castGUID, spellID = ...
-        AddRecord({
+        AddRecord(CaptureNativeState({
             kind = "spellcast",
             event = event,
+            timeMs = eventTimeMs,
             target = SafeScalar(target),
             castGUID = SafeScalar(castGUID),
             spellID = SafeScalar(spellID),
-        })
+        }, spellID))
     else
         local _, castGUID, spellID = ...
-        AddRecord({
+        AddRecord(CaptureNativeState({
             kind = "spellcast",
             event = event,
+            timeMs = eventTimeMs,
             castGUID = SafeScalar(castGUID),
             spellID = SafeScalar(spellID),
-        })
+        }, spellID))
     end
 end)

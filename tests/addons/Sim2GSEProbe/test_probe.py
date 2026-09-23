@@ -40,11 +40,19 @@ C_Spell = {
     end,
     GetBaseSpell = function(id) return id end,
     GetOverrideSpell = function(id) return id == 55090 and 207311 or id end,
+    IsCurrentSpell = function(id)
+        if restricted then return secret end
+        return id == 55090
+    end,
 }
+function UnitCastingInfo()
+    if restricted then return secret, nil, nil, secret, secret, nil, secret, nil, secret end
+    return "Frost Strike", "Frost Strike", 1, 10000, 11000, false, "Cast-1", false, 55090, nil, 0
+end
 
 local function NewFrame(name)
-    local frame = { name = name, scripts = {}, attrs = {} }
-    function frame:RegisterEvent() end
+    local frame = { name = name, scripts = {}, attrs = {}, registered = {} }
+    function frame:RegisterEvent(event) self.registered[event] = true end
     function frame:RegisterUnitEvent() end
     function frame:SetScript(kind, callback) self.scripts[kind] = callback end
     function frame:GetName() return self.name end
@@ -83,6 +91,8 @@ SECONDSEQ.attrs = { type = "spell", spell = 55090, step = 1, iteration = 1 }
 
 assert(loadfile(source))()
 assert(SLASH_SIM2GSEPROBE1 == "/s2gprobe")
+assert(eventFrame.registered.CURRENT_SPELL_CAST_CHANGED)
+assert(eventFrame.registered.UI_ERROR_MESSAGE)
 eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
 SlashCmdList.SIM2GSEPROBE("")
 assert(messages[#messages]:find("GSE 消息已连接", 1, true))
@@ -226,16 +236,82 @@ assert(restrictedClick.runicPower == "unavailable")
 assert(restrictedClick.gcd == "unavailable")
 assert(restrictedClick.spellCooldown == "unavailable")
 
+restricted = false
+now = 21
+SlashCmdList.SIM2GSEPROBE("start")
+TESTSEQ.attrs.spell = 55090
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 1,
+})
+now = 21.010
+eventFrame.scripts.OnEvent(eventFrame, "CURRENT_SPELL_CAST_CHANGED", false)
+now = 21.011
+eventFrame.scripts.OnEvent(eventFrame, "UI_ERROR_MESSAGE", 50, "Not ready yet")
+now = 21.012
+eventFrame.scripts.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "Cast-2", 55090)
+local nativeSession = Sim2GSEProbeDB.session
+local nativeClick = nativeSession.records[2]
+assert(nativeClick.currentSpell == true)
+assert(nativeClick.statePhase == "post-gse-message")
+assert(nativeClick.stateObservedAtMs == 21000)
+local current = nativeSession.records[3]
+assert(current.event == "CURRENT_SPELL_CAST_CHANGED" and current.cancelledCast == false)
+assert(current.candidates[55090] == true)
+assert(current.candidates[47541] == nil, "candidate skills leaked across sessions")
+assert(current.timeMs == 21010)
+assert(current.casting.spellID == 55090 and current.casting.castGUID == "Cast-1")
+assert(current.casting.startTimeMs == 10000 and current.casting.endTimeMs == 11000)
+assert(current.gcd.duration == 1.5 and current.runicPower == 80 and #current.runes == 6)
+assert(current.statePhase == "post-event" and current.stateObservedAtMs == 21010)
+local errorRecord = nativeSession.records[4]
+assert(errorRecord.event == "UI_ERROR_MESSAGE" and errorRecord.errorType == 50)
+assert(errorRecord.message == "Not ready yet" and errorRecord.gcd.duration == 1.5)
+assert(errorRecord.candidates[55090] == true)
+local failed = nativeSession.records[5]
+assert(failed.event == "UNIT_SPELLCAST_FAILED" and failed.spellID == 55090)
+assert(failed.candidates[55090] == true and failed.casting.spellID == 55090)
+assert(failed.gcd.duration == 1.5 and failed.spellCooldown.duration == 1.5)
+assert(failed.runicPower == 80 and #failed.runes == 6)
+assert(failed.stateObservedAtMs == 21012)
+SlashCmdList.SIM2GSEPROBE("stop")
+eventFrame.scripts.OnEvent(eventFrame, "CURRENT_SPELL_CAST_CHANGED", true)
+assert(#nativeSession.records == 6, "recording continued after stop")
+
+restricted = true
+now = 22
+SlashCmdList.SIM2GSEPROBE("start")
+gseMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 1,
+})
+eventFrame.scripts.OnEvent(eventFrame, "CURRENT_SPELL_CAST_CHANGED", true)
+local restrictedCurrent = Sim2GSEProbeDB.session.records[3]
+assert(restrictedCurrent.candidates[55090] == "unavailable")
+assert(restrictedCurrent.casting.spellID == "unavailable")
+assert(restrictedCurrent.gcd == "unavailable")
+assert(restrictedCurrent.runicPower == "unavailable")
+
 local globalMessages = {}
 GSE = { SequencesExec = {} }
 function GSE.RegisterMessage(receiver, message, callback)
     globalMessages[message] = callback
 end
 LibStub = nil
+UnitCastingInfo = nil
+C_Spell.IsCurrentSpell = nil
 eventFrame = nil
 assert(loadfile(source))()
 eventFrame.scripts.OnEvent(eventFrame, "PLAYER_LOGIN")
 assert(globalMessages.GSE_MODS_VISIBLE)
+restricted = false
+SlashCmdList.SIM2GSEPROBE("start")
+globalMessages.GSE_MODS_VISIBLE("GSE_MODS_VISIBLE", {
+    SequenceName = "TESTSEQ", ClickSerial = 1,
+})
+eventFrame.scripts.OnEvent(eventFrame, "CURRENT_SPELL_CAST_CHANGED", false)
+local missingAPI = Sim2GSEProbeDB.session.records
+assert(missingAPI[2].currentSpell == "unavailable")
+assert(missingAPI[3].candidates[55090] == "unavailable")
+assert(missingAPI[3].casting == "unavailable")
 io.write("PASS: probe public seam\n")
 '''
     with tempfile.TemporaryDirectory() as directory:
