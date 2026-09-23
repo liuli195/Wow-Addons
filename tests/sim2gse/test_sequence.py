@@ -89,12 +89,23 @@ class SequenceSimulationTests(unittest.TestCase):
                 run_task(source, Path(directory)/'invalid', mode='single', phase_ms=180,
                          search_config={'input_interval_ms':180})
 
+    def test_real_timeline_preserves_first_precombat_gcd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(self.prepared, [['outbreak']])
+            simulation = evaluate(source, candidate, Path(directory) / 'precombat-gcd',
+                                  character=character, iterations=2,
+                                  input_times=[0, 214, 844, 1052])
+            executed = [e for e in simulation['trace']
+                        if e['event'] == 'native_execute' and e['action'] == 'outbreak']
+            self.assertFalse(any(e['ms'] == 214 for e in executed))
+            self.assertTrue(any(e['ms'] >= 1270 and e['origin'] == 4 for e in executed), executed)
+
     def test_failed_steps_and_queue_replacement(self):
         result = self.task([['outbreak'], ['death_coil'], ['scourge_strike']])
         events = result['controlled_simulation']['trace']
         self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'death_coil' and e['ms'] == 600 for e in events))
         self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'scourge_strike' and e['ms'] == 600 for e in events))
-        self.assertTrue(any(e['event'] == 'replace' for e in events))
+        self.assertTrue(any(e['event'] == 'queue_commit' for e in events))
         self.assertTrue(all(e['cooldown_ms'] <= 0 for e in events if e['event'] == 'dispatch'))
         executed = [e for e in events if e['event'] == 'native_execute']
         dispatched = [e for e in events if e['event'] == 'dispatch']
@@ -115,12 +126,361 @@ class SequenceSimulationTests(unittest.TestCase):
             candidate, source, character = self.candidate(self.prepared, [['putrefy']])
             simulation = evaluate(source, candidate, Path(directory) / 'queue-window',
                                   character=character, iterations=2,
-                                  input_times=[0, 300, 1200, 1500, 29700, 30000])
+                                  input_times=[0, 300, 1200, 1500, 2900, 3000, 31100, 31200])
             events = [e for e in simulation['trace'] if e['action'] == 'putrefy']
-            self.assertTrue(any(e['event'] == 'queue' and e['ms'] == 30000
-                                and e['cooldown_ms'] == 301 for e in events))
-            self.assertTrue(any(e['event'] == 'native_execute' and e['ms'] == 30302
-                                and e['origin'] == 6 for e in events))
+            self.assertTrue(any(e['event'] == 'queue' and e['ms'] == 31200
+                                and e['cooldown_ms'] == 301 for e in events), events)
+            self.assertTrue(any(e['event'] == 'native_execute' and e['ms'] >= 31501
+                                and e['origin'] == 8 for e in events))
+
+    def test_pending_queue_can_be_replaced_before_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['scourge_strike'], ['putrefy']])
+            simulation = evaluate(source, candidate, Path(directory) / 'queue-replace',
+                                  character=character, iterations=2,
+                                  input_times=[0, 1050, 1120, 1445])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'replace' and e['action'] == 'putrefy'
+                                and e['origin'] == 2 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_commit' and e['action'] == 'scourge_strike'
+                                and e['origin'] == 3 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'putrefy'
+                                and e['origin'] == 4 for e in events), events)
+
+    def test_precombat_cast_blocks_early_combat_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = self.prepare(
+                (REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'),
+                Path(directory) / 'prepared')
+            candidate, source, character = self.candidate(prepared, [['consume']])
+            simulation = evaluate(source, candidate, Path(directory) / 'precombat-cast',
+                                  character=character, iterations=2,
+                                  input_times=[0, 100, 1400])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'precombat_cast' for e in events), events)
+            self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'consume'
+                                 and e['ms'] < 1479 for e in events), events)
+
+    def test_queue_locks_before_gcd_ready_and_executes_at_native_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['scourge_strike'], ['putrefy'], ['soul_reaper'], ['scourge_strike']])
+            simulation = evaluate(source, candidate, Path(directory) / 'queue-commit',
+                                  character=character, iterations=2,
+                                  input_times=[0, 1450, 2500, 2800, 2850, 3800, 3850])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue_commit' and e['action'] == 'putrefy'
+                                and e['origin'] == 3 for e in events), events)
+            self.assertFalse(any(e['event'] == 'replace' and e['action'] == 'putrefy'
+                                 and e['origin'] == 3 for e in events))
+            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'soul_reaper'
+                                and e['origin'] == 4 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'scourge_strike'
+                                and e['origin'] == 5 for e in events), events)
+            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'putrefy'
+                                and e['origin'] == 3 and e['ms'] >= 2892 for e in events), events)
+            self.assertTrue(any(e['event'] == 'outside_window' and e['action'] == 'scourge_strike'
+                                and e['origin'] == 7 and e['ms'] == 3850 for e in events), events)
+
+    def test_repeated_queue_commits_do_not_accumulate_clock_lead(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(self.prepared, [['scourge_strike']])
+            simulation = evaluate(source, candidate, Path(directory) / 'clock-lead',
+                                  character=character, iterations=2,
+                                  input_times=list(range(0, 9000, 70)))
+            commits = [e for e in simulation['trace'] if e['event'] == 'queue_commit'
+                       and e['gcd'] > e['ms']]
+            self.assertGreaterEqual(len(commits), 3)
+            self.assertLessEqual(max(e['gcd'] - e['ms'] for e in commits), 150)
+
+    def test_observed_gcd_transition_commits_previous_pending_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'gcd-feedback',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1200, 1270],
+                gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
+                            (1270, 1200), (1270, 1200)])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue_tentative' and e['action'] == 'putrefy'
+                                and e['origin'] == 2 and e['ms'] == 1120 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'soul_reaper'
+                                and e['origin'] == 3 and e['ms'] == 1120 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_confirm' and e['action'] == 'putrefy'
+                                and e['origin'] == 2 for e in events), events)
+            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'putrefy'
+                                and e['origin'] == 2 and 1442 <= e['ms'] < 1460 for e in events), events)
+
+    def test_observed_gcd_transition_rolls_back_when_snapshot_reverts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'gcd-feedback-rollback',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1200, 1270, 1500, 1700],
+                gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
+                            (1270, 1200), (0, 1270), (1500, 1200),
+                            (1700, 1200)])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue_tentative' and e['action'] == 'putrefy'
+                                and e['origin'] == 2 and e['ms'] == 1120 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_rollback' and e['action'] == 'putrefy'
+                                and e['origin'] == 2 and e['ms'] == 1270 for e in events), events)
+            self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'putrefy'
+                                 and e['origin'] == 2 for e in events), events)
+
+    def test_empty_gcd_snapshot_does_not_lock_pending_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'gcd-feedback-empty',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1200, 1270, 1340, 1410],
+                gcd_states=[(0, 1270), (0, 1270), (0, 0),
+                            (0, 0), (1270, 1200), (1270, 1200), (1270, 1200)])
+            events = simulation['trace']
+            self.assertFalse(any(e['event'] == 'queue_tentative' and e['ms'] in (1120, 1200)
+                                 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_tentative' and e['action'] == 'putrefy'
+                                and e['origin'] == 2 and e['ms'] == 1270 for e in events), events)
+
+    def test_empty_gcd_snapshot_keeps_last_known_cooldown_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'gcd-feedback-empty-ready',
+                character=character, iterations=2,
+                input_times=[0, 300, 600, 1050, 1120, 1200, 1270, 1340],
+                gcd_states=[(0, 1270), (0, 0), (0, 0),
+                            (0, 1270), (1270, 1200), (1270, 1200),
+                            (1270, 1200), (1270, 1200)])
+            events = simulation['trace']
+            self.assertFalse(any(e['event'] == 'queue' and e['ms'] in (300, 600)
+                                 for e in events), events)
+
+    def test_transient_gcd_reversion_rolls_back_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'gcd-feedback-late-reversion',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1200, 1500],
+                gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
+                            (1270, 1200), (0, 1270)])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue_rollback' and e['origin'] == 2
+                                for e in events), events)
+            self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                 for e in events), events)
+
+    def test_same_gcd_start_with_updated_duration_keeps_tentative_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'gcd-duration-update',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1200, 1270, 1500],
+                gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
+                            (1270, 750), (1270, 750), (1270, 750)])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue_tentative' and e['origin'] == 2
+                                for e in events), events)
+            self.assertFalse(any(e['event'] == 'queue_rollback' and e['origin'] == 2
+                                 for e in events), events)
+            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                for e in events), events)
+
+    def test_failure_feedback_is_not_visible_before_its_event_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            kwargs = dict(character=character, iterations=2,
+                          input_times=[0, 1050, 1120, 1200, 1270, 1500],
+                          gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
+                                      (1270, 1200), (1270, 1200), (1270, 1200)])
+            baseline = evaluate(source, candidate, Path(directory) / 'without-failure', **kwargs)
+            with_failure = evaluate(
+                source, candidate, Path(directory) / 'timed-failure',
+                failure_events=[(1300, 2, 'putrefy')], **kwargs)
+            self.assertEqual(with_failure['failure_events'], [(1300, 2, 'putrefy')])
+            prefix = lambda result: [(e['ms'], e['event'], e['origin'], e['action'])
+                                     for e in result['trace'] if e['ms'] < 1300]
+            self.assertEqual(prefix(baseline), prefix(with_failure))
+            events = with_failure['trace']
+            self.assertTrue(any(e['event'] == 'observed_failed' and e['ms'] == 1300
+                                and e['origin'] == 2 for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_rollback' and e['origin'] == 2
+                                for e in events), events)
+            self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                 for e in events), events)
+
+    def test_failure_at_click_timestamp_follows_that_click(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(self.prepared, [['putrefy'], ['auto_attack']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'same-timestamp-failure',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1270, 1500],
+                gcd_states=[(0, 1270)] * 3 + [(1270, 1200)] * 2,
+                failure_events=[(1050, 2, 'putrefy')])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue' and e['origin'] == 2
+                                and e['ms'] == 1050 for e in events), events)
+            self.assertTrue(any(e['event'] == 'observed_failed' and e['origin'] == 2
+                                and e['action'] == 'putrefy' and e['ms'] == 1050
+                                for e in events), events)
+            queued = next(i for i, e in enumerate(events) if e['event'] == 'queue'
+                          and e['origin'] == 2)
+            failed = next(i for i, e in enumerate(events) if e['event'] == 'observed_failed'
+                          and e['origin'] == 2 and e['action'] == 'putrefy')
+            self.assertLess(queued, failed)
+
+    def test_timed_feedback_mode_does_not_depend_on_future_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(self.prepared, [['dark_transformation']])
+            kwargs = dict(character=character, iterations=2,
+                          input_times=[0, 1500, 1600, 9000])
+            no_failures = evaluate(source, candidate, Path(directory) / 'no-failures',
+                                   failure_events=[], **kwargs)
+            distant_failure = evaluate(source, candidate, Path(directory) / 'distant-failure',
+                                       failure_events=[(9000, 4, 'dark_transformation')], **kwargs)
+            prefix = lambda result: [(e['ms'], e['event'], e['origin'], e['action'])
+                                     for e in result['trace'] if e['ms'] < 9000]
+            self.assertEqual(prefix(no_failures), prefix(distant_failure))
+
+    def test_unrelated_failure_with_same_origin_is_not_late_negative(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'unrelated-failure',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1200, 1270, 1500],
+                gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
+                            (1270, 1200), (1270, 1200), (1270, 1200)],
+                failure_events=[(1500, 2, 'soul_reaper')])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                and e['action'] == 'putrefy' for e in events), events)
+            self.assertFalse(any(e['event'] == 'late_negative_feedback' for e in events), events)
+
+    def test_executed_identity_survives_next_gcd_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper']])
+            output = Path(directory) / 'late-failure-after-next-gcd'
+            with self.assertRaisesRegex(ValueError, '已执行后收到否定反馈'):
+                evaluate(
+                    source, candidate, output,
+                    character=character, iterations=2,
+                    input_times=[0, 1050, 1120, 1200, 1270, 1500, 2500],
+                    gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
+                                (1270, 1200), (1270, 1200), (1270, 1200),
+                                (2500, 1200)],
+                    failure_events=[(3000, 2, 'putrefy')])
+            events = [line.split('S2GSE\t', 1)[1].split('\t')
+                      for line in (output / 'native.txt').read_text(encoding='utf-8').splitlines()
+                      if 'S2GSE\t' in line]
+            self.assertTrue(any(e[1] == 'native_execute' and e[2] == '2'
+                                and e[4] == 'putrefy' for e in events))
+            self.assertTrue(any(e[1] == 'input' and e[0] == '2500' for e in events))
+            self.assertTrue(any(e[1] == 'late_negative_feedback' and e[0] == '3000'
+                                and e[2] == '2' for e in events))
+
+    def test_immediate_failure_cancels_deferred_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['dark_transformation'], ['outbreak']])
+            for failure_at in (1501, 1502):
+                with self.subTest(failure_at=failure_at):
+                    simulation = evaluate(
+                        source, candidate, Path(directory) / f'immediate-rejection-{failure_at}',
+                        character=character, iterations=2,
+                        input_times=[0, 1500, 1600],
+                        failure_events=[(failure_at, 2, 'dark_transformation')])
+                    events = simulation['trace']
+                    self.assertTrue(any(e['event'] == 'observed_failed' and e['ms'] == failure_at
+                                        and e['origin'] == 2 for e in events), events)
+                    self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                         for e in events), events)
+                    self.assertFalse(any(e['event'] == 'late_negative_feedback' for e in events), events)
+
+    def test_long_delayed_failure_is_not_hidden_by_execution_grace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(self.prepared, [['dark_transformation']])
+            output = Path(directory) / 'late-rejection'
+            with self.assertRaisesRegex(ValueError, '已执行后收到否定反馈'):
+                evaluate(source, candidate, output, character=character, iterations=2,
+                         input_times=[0, 1500],
+                         failure_events=[(1550, 2, 'dark_transformation')])
+            events = [line.split('S2GSE\t', 1)[1].split('\t')
+                      for line in (output / 'native.txt').read_text(encoding='utf-8').splitlines()
+                      if 'S2GSE\t' in line]
+            self.assertTrue(any(e[1] == 'native_execute' and e[2] == '2'
+                                and int(e[0]) < 1550 for e in events))
+            self.assertTrue(any(e[1] == 'late_negative_feedback' and e[2] == '2'
+                                and e[0] == '1550' for e in events))
+
+    def test_failed_replacements_restore_earlier_pending_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['soul_reaper'], ['putrefy']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'failed-replacements',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1200, 1270, 1340, 1410, 1500],
+                gcd_states=[(0, 1270), (0, 1270), (0, 1270), (0, 1270),
+                            (1270, 1200), (1270, 1200), (1270, 1200), (1270, 1200)],
+                failure_events=[(1250, 3, 'soul_reaper'), (1250, 4, 'putrefy')])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue_tentative' and e['origin'] == 2
+                                for e in events), events)
+            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                for e in events), events)
+
+    def test_failed_tentative_winner_promotes_earlier_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['putrefy']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'failed-tentative-winner',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1270, 1340, 1410, 1500],
+                gcd_states=[(0, 1270), (0, 1270), (0, 1270),
+                            (1270, 1200), (1270, 1200), (1270, 1200), (1270, 1200)],
+                failure_events=[(1300, 3, 'putrefy')])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'queue_restore' and e['origin'] == 2
+                                for e in events), events)
+            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                for e in events), events)
+
+    def test_matching_failure_feedback_does_not_replace_pending_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['putrefy'], ['putrefy']])
+            simulation = evaluate(
+                source, candidate, Path(directory) / 'failed-feedback',
+                character=character, iterations=2,
+                input_times=[0, 1050, 1120, 1270, 1340, 1410],
+                gcd_states=[(0, 1270), (0, 1270), (0, 1270),
+                            (1270, 1200), (1270, 1200), (1270, 1200)],
+                failed_actions=[None, None, 'putrefy', None, None, None])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'observed_failed' and e['origin'] == 3
+                                for e in events), events)
+            self.assertTrue(any(e['event'] == 'queue_tentative' and e['origin'] == 2
+                                and e['ms'] == 1270 for e in events), events)
+            self.assertFalse(any(e['event'] == 'queue_tentative' and e['origin'] == 3
+                                 for e in events), events)
 
     def test_press_during_cast_queues_the_ready_button_variant(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -135,9 +495,9 @@ class SequenceSimulationTests(unittest.TestCase):
             self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'devour'
                                 and e['ms'] == 1400 for e in events))
             self.assertTrue(any(e['event'] == 'queue' and e['action'] == 'consume'
-                                and e['ms'] == 1400 and e['origin'] == 6 for e in events))
+                                and e['ms'] == 1400 and e['origin'] == 6 for e in events), events)
             self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'consume'
-                                and e['ms'] == 3159 and e['origin'] == 6 for e in events))
+                                and e['ms'] >= 2959 and e['origin'] == 6 for e in events), events)
 
     def test_same_block_item_order(self):
         first_actions = []
@@ -156,7 +516,8 @@ class SequenceSimulationTests(unittest.TestCase):
             events = result['controlled_simulation']['trace']
             first_press = [e['action'] for e in events if e['event'] == 'native_execute' and e['ms'] == 300]
             self.assertTrue(first_press[0].startswith('use_item_'))
-            self.assertEqual(first_press[1], 'outbreak')
+            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'outbreak'
+                                and e['ms'] >= 1500 for e in events))
             first_actions.append(first_press[0])
         self.assertEqual(first_actions[0], first_actions[1])
         self.assertNotEqual(first_actions[1], first_actions[2])

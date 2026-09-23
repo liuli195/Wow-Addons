@@ -1,0 +1,40 @@
+diff --git a/engine/player/player.cpp b/engine/player/player.cpp
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4847,7 +4847,7 @@ void player_t::sim2gse_tick()
+       event_t::cancel(sim2gse_queue);
+       sim2gse_pending = a;
+       sim2gse_pending_origin = origin;
+-      if (a->gcd() > 0_ms && !sim2gse_observed_failure_events.empty())
++      if (a->gcd() > 0_ms && sim2gse_timed_feedback)
+         sim2gse_candidates.emplace_back(a, origin);
+       else
+         sim2gse_candidates.clear();
+@@ -4865,7 +4865,6 @@ void player_t::sim2gse_tick()
+       if ( a->gcd() > 0_ms )
+         sim2gse_client_gcd_ready = sim->current_time() + a->gcd();
+-      if (a->gcd() == 0_ms && a->name_str != "auto_attack" &&
+-          !sim2gse_observed_failure_events.empty())
++      if (a->gcd() == 0_ms && a->name_str != "auto_attack" && sim2gse_timed_feedback)
+       {
+         auto* deferred = make_event(*sim, 2_ms, [this, origin, a] {
+           const auto found = sim2gse_deferred_dispatches.find({origin, a});
+@@ -13789,6 +13788,7 @@ void player_t::create_options()
+   add_option( opt_string("sim2gse_gcd_states", sim2gse_gcd_states) );
+   add_option( opt_string("sim2gse_failed_actions", sim2gse_failed_actions) );
+   add_option( opt_string("sim2gse_failure_events", sim2gse_failure_events) );
++  add_option( opt_bool("sim2gse_timed_feedback", sim2gse_timed_feedback) );
+   add_option( opt_bool("sim2gse_trace", sim2gse_trace) );
+   add_option( opt_timespan("sim2gse_window", sim2gse_window) );
+   add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );
+diff --git a/engine/player/player.hpp b/engine/player/player.hpp
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -211,6 +211,7 @@ struct player_t : public actor_t
+   // Task-8 prototype only: isolated input state, disabled by default.
+   std::string sim2gse_steps;
+   bool sim2gse_trace = false;
++  bool sim2gse_timed_feedback = false;
+   timespan_t sim2gse_window = 400_ms;
+   std::string sim2gse_times;
+   std::string sim2gse_gcd_states;

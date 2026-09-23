@@ -62,7 +62,9 @@ def compiled_program(candidate):
 
 
 def evaluate(profile, candidate, folder, *, character, iterations=100, seed=20260912, trace=True,
-             mode='controlled', input_times=None, runtime=None, simulation_config=None):
+             mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
+             failure_events=None,
+             runtime=None, simulation_config=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
@@ -73,6 +75,26 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             any(type(t) is not int or not 0 <= t < 180000 for t in input_times) or
             any(b <= a for a, b in zip(input_times, input_times[1:]))):
         raise ValueError('输入时刻必须是战斗范围内递增的整数毫秒')
+    if gcd_states is not None and (
+            not isinstance(gcd_states, list) or len(gcd_states) != len(input_times) or
+            any(not isinstance(state, tuple) or len(state) != 2 or
+                any(type(value) is not int or value < 0 for value in state)
+                for state in gcd_states)):
+        raise ValueError('GCD 反馈必须与输入时刻一一对应，并使用非负整数毫秒')
+    if failed_actions is not None and (
+            not isinstance(failed_actions, list) or len(failed_actions) != len(input_times) or
+            any(value is not None and (not isinstance(value, str) or not value)
+                for value in failed_actions)):
+        raise ValueError('失败反馈必须与输入时刻一一对应，并使用动作名或空值')
+    if failure_events is not None and (
+            failed_actions is not None or not isinstance(failure_events, list) or
+            any(not isinstance(event, tuple) or len(event) != 3 or
+                type(event[0]) is not int or not 0 <= event[0] < 180000 or
+                type(event[1]) is not int or not 1 <= event[1] <= len(input_times) or
+                not isinstance(event[2], str) or
+                re.fullmatch(r'[a-z0-9_]+', event[2]) is None
+                for event in failure_events)):
+        raise ValueError('失败事件必须使用真实时刻、输入序号和动作名，且不能与旧式反馈混用')
     blocks = compiled_program(candidate)
     precombat_count = candidate.get('precombat_count', 0)
     if not 0 <= precombat_count < len(blocks):
@@ -84,10 +106,20 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     generated = folder / 'input.simc'
+    feedback = ('' if gcd_states is None else
+                'sim2gse_gcd_states=' + '/'.join(f'{start},{duration}'
+                                                  for start, duration in gcd_states) + '\n')
+    feedback += ('' if failed_actions is None else
+                 'sim2gse_failed_actions=' + '/'.join(value or '-' for value in failed_actions) + '\n')
+    feedback += ('' if failure_events is None else
+                 'sim2gse_timed_feedback=1\n'
+                 + 'sim2gse_failure_events=' + '/'.join(f'{ms},{origin},{action}'
+                                                     for ms, origin, action in failure_events) + '\n')
     generated.write_text(Path(profile).read_text(encoding='utf-8') + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
                          + f'sim2gse_steps={indices}\nsim2gse_trace={int(trace)}\n'
-                         + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n', encoding='utf-8')
+                         + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n'
+                         + feedback, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
     log = run(generated, folder, mode,
               [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'], runtime=runtime,
@@ -132,7 +164,10 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         inputs = [e for e in events if e['event'] == 'input']
         executed = [e for e in events if e['event'] == 'native_execute']
         interrupted = [e for e in events if e['event'] == 'native_interrupt']
-        if not inputs or inputs[0]['ms'] != input_times[0] or not executed:
+        rolled_back = any(e['event'] == 'queue_rollback' for e in events)
+        if any(e['event'] == 'late_negative_feedback' for e in events):
+            raise ValueError('已执行后收到否定反馈，原生轨迹不可信')
+        if not inputs or inputs[0]['ms'] != input_times[0] or (not executed and not rolled_back):
             raise ValueError('缺少原生输入或执行轨迹')
         if any(e['origin'] < 1 or e['origin'] > len(input_times) or e['ms'] != input_times[e['origin'] - 1]
                or e['step'] != (e['origin'] - 1) % len(blocks) for e in inputs):
@@ -162,5 +197,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 any(e['ms'] < starts[key(e)]['ms'] for e in completed)):
             raise ValueError('原生派发与实际执行轨迹不一致')
     replace_file(folder / 'native.pending.json', folder / 'native.json')
-    return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times, consistent=True, summary=summary, report=report, trace=events,
+    return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
+                gcd_states=gcd_states, failed_actions=failed_actions,
+                failure_events=failure_events, consistent=True,
+                summary=summary, report=report, trace=events,
                 game_validation='not_run', model='native_controlled')
