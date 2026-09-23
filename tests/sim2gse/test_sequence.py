@@ -162,8 +162,21 @@ class SequenceSimulationTests(unittest.TestCase):
             self.assertTrue(any(e['event'] == 'tc_replace' and e['action'] == 'putrefy'
                                 and e['origin'] == 4 for e in events), events)
             self.assertTrue(any(e['event'] == 'tc_execute_attempt' and e['action'] == 'outbreak'
-                                and e['origin'] == 5 and e['ms'] > 1100 for e in events), events)
+                                and e['origin'] == 5 and e['ms'] == 1450 for e in events), events)
             self.assertFalse(any(e['event'] == 'queue_commit' for e in events), events)
+
+    def test_tc_pending_drains_on_exact_server_update_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['outbreak'], ['scourge_strike']])
+            simulation = evaluate(source, candidate, Path(directory) / 'tc-exact-update',
+                                  character=character, iterations=1,
+                                  input_times=[0, 1508, 2600], mode='tc')
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'tc_queue' and e['origin'] == 3
+                                and e['gcd'] == 2950 for e in events), events)
+            self.assertTrue(any(e['event'] == 'tc_execute_attempt' and e['origin'] == 3
+                                and e['ms'] == 2950 for e in events), events)
 
     def test_tc_pending_waits_for_default_server_update_check(self):
         with tempfile.TemporaryDirectory() as directory:

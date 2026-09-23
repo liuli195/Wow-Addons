@@ -106,7 +106,7 @@
   ],
   "tc_patch": {
     "path": "projects/sim2gse/native/patches/027-tc-request-queue.patch",
-    "sha256": "4cf7e885c996340a567612b8b095699fde146f55ac9ead78792fde37adae5f78"
+    "sha256": "b7b6cc0664bfb9dd1bddb035c4fd06c9df3916d7afe1992fb87a7e4401e14b70"
   },
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
   "gse_version": 3332,
@@ -147,7 +147,7 @@
     "engine/report/json/report_json.cpp": "f8bffeba6ed81cd6a1fdc76b7ac06cc8c703e608716ed2b0fe760bf0f912a5ac"
   },
   "tc_patched_files": {
-    "engine/player/player.cpp": "ea06ad605410f0312b583d8b3376ba4f43c91a60bba44d6571f30b487614d488"
+    "engine/player/player.cpp": "cc46eb182af66bc0b3930adaee761b79b6032f3b5a54a36f46263bd516f3bd0b"
   },
   "baseline_patches": [
     {

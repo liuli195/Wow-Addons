@@ -35,7 +35,7 @@ index d5d7725..36c998c 100644
 +  {
 +    event_t::cancel(p->sim2gse_queue);
 +    const auto ready_ms = (p->sim->current_time() + wait).total_millis();
-+    const auto next_update_ms = (ready_ms / 10 + 1) * 10; // TC default MapUpdateInterval.
++    const auto next_update_ms = ((ready_ms + 9) / 10) * 10; // TC default MapUpdateInterval.
 +    p->sim2gse_queue = make_event(*p->sim, timespan_t::from_millis(next_update_ms) -
 +      p->sim->current_time(), [p] {
 +      p->sim2gse_queue = nullptr;
