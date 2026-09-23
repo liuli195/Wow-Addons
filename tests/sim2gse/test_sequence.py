@@ -148,6 +148,60 @@ class SequenceSimulationTests(unittest.TestCase):
             self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'putrefy'
                                 and e['origin'] == 4 for e in events), events)
 
+    def test_tc_queue_rejects_early_request_and_replaces_pending_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['outbreak'], ['scourge_strike'], ['putrefy'], ['outbreak']])
+            simulation = evaluate(source, candidate, Path(directory) / 'tc-queue',
+                                  character=character, iterations=1,
+                                  input_times=[0, 100, 500, 1050, 1100, 1200],
+                                  mode='tc')
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'tc_reject' and e['action'] == 'scourge_strike'
+                                and e['origin'] == 3 for e in events), events)
+            self.assertTrue(any(e['event'] == 'tc_replace' and e['action'] == 'putrefy'
+                                and e['origin'] == 4 for e in events), events)
+            self.assertTrue(any(e['event'] == 'tc_execute_attempt' and e['action'] == 'outbreak'
+                                and e['origin'] == 5 and e['ms'] > 1100 for e in events), events)
+            self.assertFalse(any(e['event'] == 'queue_commit' for e in events), events)
+
+    def test_tc_queue_checks_resource_at_execution_not_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(
+                self.prepared, [['death_coil'], ['outbreak']])
+            simulation = evaluate(source, candidate, Path(directory) / 'tc-resource',
+                                  character=character, iterations=1,
+                                  input_times=[0, 1500, 1600],
+                                  mode='tc')
+            events = [e for e in simulation['trace'] if e['action'] == 'death_coil' and e['origin'] == 2]
+            self.assertTrue(any(e['event'] == 'tc_queue' for e in events), events)
+            self.assertTrue(any(e['event'] == 'tc_execute_attempt' for e in events), events)
+            self.assertTrue(any(e['event'] == 'dispatch_failed' for e in events), events)
+
+    def test_tc_queue_checks_skill_cooldown_at_execution_not_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(self.prepared, [['army_of_the_dead']])
+            simulation = evaluate(source, candidate, Path(directory) / 'tc-cooldown',
+                                  character=character, iterations=1,
+                                  input_times=[0, 1500, 2900, 3000], mode='tc')
+            events = [e for e in simulation['trace'] if e['action'] == 'army_of_the_dead']
+            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 2 for e in events), events)
+            final = [e for e in events if e['origin'] == 4]
+            self.assertTrue(any(e['event'] == 'tc_queue' and e['cooldown_ms'] > 0 for e in final), events)
+            self.assertTrue(any(e['event'] == 'tc_execute_attempt' for e in final), events)
+            self.assertTrue(any(e['event'] == 'dispatch_failed' for e in final), events)
+
+    def test_tc_mode_rejects_observed_combat_feedback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate, source, character = self.candidate(self.prepared, [['outbreak']])
+            for feedback in (dict(gcd_states=[(0, 1270)]),
+                             dict(failed_actions=[None]),
+                             dict(failure_events=[])):
+                with self.subTest(feedback=feedback), self.assertRaisesRegex(ValueError, '只接受按键时刻'):
+                    evaluate(source, candidate, Path(directory) / 'tc-feedback',
+                             character=character, iterations=1, input_times=[0],
+                             mode='tc', **feedback)
+
     def test_precombat_cast_blocks_early_combat_action(self):
         with tempfile.TemporaryDirectory() as directory:
             prepared = self.prepare(

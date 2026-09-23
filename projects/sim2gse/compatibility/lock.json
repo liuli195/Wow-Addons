@@ -104,6 +104,10 @@
       "sha256": "f6a4a952c7e90e260f9b09b1430882f834d9e5084d8ef862761afb4bf2a0e506"
     }
   ],
+  "tc_patch": {
+    "path": "projects/sim2gse/native/patches/027-tc-request-queue.patch",
+    "sha256": "6787f27050830cfc33a51380d788c7df0b430cbf807edcfc055bf7bcb9be24e5"
+  },
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
   "gse_version": 3332,
   "cbor2": "6.1.4",
@@ -141,6 +145,9 @@
     "engine/action/action.hpp": "ac201ff2dfaf3aa57206568b86cc4a4c25f9bf80c1547ce2a8879760dff0bb76",
     "engine/class_modules/sc_death_knight.cpp": "812db808a9e68e0c4c28c744093d4bd55606c18b87e4688c0b92f606904dcdbd",
     "engine/report/json/report_json.cpp": "f8bffeba6ed81cd6a1fdc76b7ac06cc8c703e608716ed2b0fe760bf0f912a5ac"
+  },
+  "tc_patched_files": {
+    "engine/player/player.cpp": "0f686f1326474c921dff415c8e60e2be3ab59651e4fc86d258c8fa4eb7979b61"
   },
   "baseline_patches": [
     {

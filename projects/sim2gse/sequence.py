@@ -68,8 +68,10 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
-    if mode != 'controlled':
+    if mode not in ('controlled', 'tc'):
         raise ValueError('原版引擎不兼容受控序列')
+    if mode == 'tc' and any(value is not None for value in (gcd_states, failed_actions, failure_events)):
+        raise ValueError('TC 对照只接受按键时刻，不接受实测状态反馈')
     input_times = list(range(0, 180000, 300)) if input_times is None else input_times
     if (not isinstance(input_times, list) or not 1 <= len(input_times) <= 4096 or
             any(type(t) is not int or not 0 <= t < 180000 for t in input_times) or
@@ -201,4 +203,4 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 gcd_states=gcd_states, failed_actions=failed_actions,
                 failure_events=failure_events, consistent=True,
                 summary=summary, report=report, trace=events,
-                game_validation='not_run', model='native_controlled')
+                game_validation='not_run', model='native_tc' if mode == 'tc' else 'native_controlled')

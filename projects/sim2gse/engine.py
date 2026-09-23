@@ -36,7 +36,14 @@ def identity(mode, runtime=None):
             manifest['build_options'] != lock['build_options'] or
             manifest['binary_sha256'] != hashlib.sha256(executable.read_bytes()).hexdigest()):
         raise ValueError('独立引擎身份或构建状态不符，请重新构建')
-    expected = lock['patches'] if mode == 'controlled' else lock['baseline_patches']
+    if mode == 'tc':
+        expected = lock['patches'] + [lock['tc_patch']]
+    elif mode == 'controlled':
+        expected = lock['patches']
+    elif mode == 'baseline':
+        expected = lock['baseline_patches']
+    else:
+        raise ValueError('未知引擎模式')
     if manifest['patches'] != expected:
         raise ValueError('引擎补丁身份已变化')
     for patch in expected:

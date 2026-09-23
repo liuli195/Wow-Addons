@@ -1,0 +1,137 @@
+diff --git a/engine/player/player.cpp b/engine/player/player.cpp
+index d5d7725..36c998c 100644
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -4638,6 +4638,9 @@ void player_t::sim2gse_init()
+       throw std::runtime_error("sim2gse failure event precedes its input or exceeds combat");
+     sim2gse_observed_failure_events.emplace_back(at, from, fields[2]);
+   }
++  if (!sim2gse_observed_gcd_states.empty() || !sim2gse_observed_failed_actions.empty() ||
++      !sim2gse_observed_failure_events.empty() || sim2gse_timed_feedback)
++    throw std::runtime_error("TC comparison accepts input times only");
+   if ( is_pet() || is_enemy() || sim->threads != 1 )
+     throw std::runtime_error("sim2gse requires one-thread player");
+   if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
+@@ -4730,6 +4733,36 @@ void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
+   sim2gse_origin = 0;
+ }
+-
++
++static timespan_t sim2gse_tc_wait(player_t* p, action_t* a)
++{
++  const auto now = p->sim->current_time();
++  auto wait = a->gcd() > 0_ms ? p->gcd_ready - now : 0_ms;
++  wait = std::max(wait, p->sim2gse_precombat_cast_ready - now);
++  if (p->executing && p->executing->execute_event)
++    wait = std::max(wait, p->executing->execute_event->remains());
++  return std::max(wait, 0_ms);
++}
++
++static void sim2gse_tc_try_execute(player_t* p)
++{
++  if (!p->sim2gse_pending) return;
++  const auto wait = sim2gse_tc_wait(p, p->sim2gse_pending);
++  if (wait > 0_ms)
++  {
++    event_t::cancel(p->sim2gse_queue);
++    p->sim2gse_queue = make_event(*p->sim, wait + 1_ms, [p] {
++      p->sim2gse_queue = nullptr;
++      sim2gse_tc_try_execute(p);
++    });
++    return;
++  }
++  auto* action = p->sim2gse_pending;
++  const auto origin = p->sim2gse_pending_origin;
++  p->sim2gse_pending = nullptr;
++  p->sim2gse_record("tc_execute_attempt", action, origin);
++  p->sim2gse_dispatch_action(action, origin);
++}
++
+ void player_t::sim2gse_tick()
+ {
+   if ( is_sleeping() || sim->event_mgr.canceled ) return;
+@@ -4809,75 +4842,23 @@ void player_t::sim2gse_tick()
+   {
+     const auto button = sim2gse_button_ids[a];
+     if (button && selected_buttons.count(button)) continue;
+-    if (!sim2gse_observed_failed_actions.empty() &&
+-        sim2gse_observed_failed_actions[origin - 1] == a->name_str)
++    if (a->name_str == "auto_attack")
+     {
+-      sim2gse_record("observed_failed", a, origin);
+-      continue;
++      sim2gse_dispatch_action(a, origin);
+     }
+-    if ( resource_regeneration == regen_type::DYNAMIC ) do_dynamic_regen();
+-    if ( buffs.stunned->check() )
++    else if (sim2gse_tc_wait(this, a) > 400_ms)
+     {
+-      sim2gse_record("busy", a, origin);
+-      continue;
++      sim2gse_record("tc_reject", a, origin);
+     }
+-    if ( a->gcd() > 0_ms && sim2gse_committed )
+-    {
+-      sim2gse_record("queue_locked", a, origin);
+-      continue;
+-    }
+-    const bool ready_now = a->action_ready();
+-    const bool trust_failure_feedback = a->gcd() > 0_ms && !sim2gse_observed_failed_actions.empty();
+-    if (!ready_now && !trust_failure_feedback &&
+-        (a->cooldown->remains() <= 0_ms || !sim2gse_queue_requirements(a)))
+-    {
+-      sim2gse_record("not_ready", a, origin);
+-      continue;
+-    }
+-    const auto delay = sim2gse_action_delay(this, a, true);
+-    if ( delay > sim2gse_window )
+-    {
+-      sim2gse_record("outside_window", a, origin);
+-      continue;
+-    }
+-    const bool wait_for_gcd_feedback = a->gcd() > 0_ms && !sim2gse_observed_gcd_states.empty();
+-    if ( delay > 0_ms || wait_for_gcd_feedback )
++    else
+     {
+-      if ( sim2gse_pending ) sim2gse_record("replace", sim2gse_pending, sim2gse_pending_origin);
++      if (sim2gse_pending)
++        sim2gse_record("tc_replace", sim2gse_pending, sim2gse_pending_origin);
+       event_t::cancel(sim2gse_queue);
+       sim2gse_pending = a;
+       sim2gse_pending_origin = origin;
+-      if (a->gcd() > 0_ms && sim2gse_timed_feedback)
+-        sim2gse_candidates.emplace_back(a, origin);
+-      else
+-        sim2gse_candidates.clear();
+-      sim2gse_record("queue", a, origin);
+-      sim2gse_arm_queue(this);
+-    }
+-    else
+-    {
+-      if ( a->gcd() > 0_ms )
+-      {
+-        event_t::cancel(sim2gse_commit);
+-        event_t::cancel(sim2gse_queue);
+-        sim2gse_pending = nullptr;
+-        sim2gse_candidates.clear();
+-      }
+-      if ( a->gcd() > 0_ms )
+-        sim2gse_client_gcd_ready = sim->current_time() + a->gcd();
+-      if (a->gcd() == 0_ms && a->name_str != "auto_attack" && sim2gse_timed_feedback)
+-      {
+-        auto* deferred = make_event(*sim, 2_ms, [this, origin, a] {
+-          const auto found = sim2gse_deferred_dispatches.find({origin, a});
+-          if (found == sim2gse_deferred_dispatches.end()) return;
+-          sim2gse_deferred_dispatches.erase(found);
+-          sim2gse_dispatch_action(a, origin);
+-        });
+-        sim2gse_deferred_dispatches.emplace(std::make_pair(origin, a), deferred);
+-        sim2gse_record("dispatch_deferred", a, origin);
+-      }
+-      else
+-        sim2gse_dispatch_action(a, origin);
++      sim2gse_record("tc_queue", a, origin);
++      sim2gse_tc_try_execute(this);
+     }
+     if (button) selected_buttons.insert(button);
+   }
