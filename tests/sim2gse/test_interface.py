@@ -169,6 +169,68 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("petassist", versions[5]["support_reason"])
         self.assertFalse(result["simulation_started"])
 
+    def test_inspection_and_task_share_case_and_stopmacro_reachability(self) -> None:
+        imported = gse_fixture(["MACRO_REACHABILITY", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                         "macro": "\n".join(("/CAST 77575", "/stopmacro",
+                                                                "/not-a-supported-command"))}]}],
+        }])
+        inspection = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        member = inspection["sequences"][0]
+        self.assertTrue(member["simulation_preflight_passed"], member["support_reason"])
+
+        created = self._json_request("POST", "/api/tasks", {
+            "profile": sample_profile(), "mode": "import", "gse": imported,
+            "sequence_name": "MACRO_REACHABILITY", "version": 1,
+            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+        })
+        deadline = time.monotonic() + 30
+        state = {}
+        while time.monotonic() < deadline:
+            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            if state["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.1)
+        self.assertEqual(state["status"], "completed", state)
+        self.assertGreater(state["dps"], 0)
+
+    def test_repeat_macro_is_rejected_before_task_creation(self) -> None:
+        imported = gse_fixture(["REPEAT_PET_COMMAND", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Repeat", "Interval": 2,
+                                         "type": "macro", "macro": "/petattack [pet]"}]}],
+        }])
+        inspection = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        member = inspection["sequences"][0]
+        self.assertFalse(member["simulation_preflight_passed"])
+        self.assertIn("petattack", member["support_reason"])
+        self.assertIn("Versions[1].Actions[1]", member["support_reason"])
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "REPEAT_PET_COMMAND", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("petattack", json.loads(raised.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
+        self.assertEqual(list(self.server.task_root.iterdir()), [])
+
+    def test_false_conditional_stopmacro_does_not_hide_reachable_lines(self) -> None:
+        imported = gse_fixture(["CONDITIONAL_STOPMACRO", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                         "macro": "\n".join(("/stopmacro [mod:shift]",
+                                                                "/not-a-supported-command"))}]}],
+        }])
+        inspection = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        member = inspection["sequences"][0]
+        self.assertFalse(member["simulation_preflight_passed"])
+        self.assertIn("not-a-supported-command", member["support_reason"])
+        self.assertIn("[行 2]", member["support_reason"])
+
     def test_task_api_rejects_known_unsupported_macro_before_creating_task(self) -> None:
         imported = gse_fixture(["KAREN_MPLUS", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3313}, "Default": 1,

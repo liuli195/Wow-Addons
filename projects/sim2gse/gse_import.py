@@ -415,7 +415,7 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
         if kind is not None:
             if not isinstance(kind, str) or kind not in VALID_TYPES:
                 fail(f"GSE 控制块类型不支持：{kind}")
-            if kind == "Action":
+            if kind in {"Action", "Repeat"}:
                 action_kind = value.get("type")
                 if action_kind not in {"spell", "item", "macro"}:
                     fail(f"GSE 动作类型不支持：{action_kind}")
@@ -653,8 +653,8 @@ def _condition(expression, path, *, pet_ready=True, enemy_target_ready=True):
     return True
 
 
-def _check_macro_preflight(text, path):
-    """检查可静态判断的宏语法；角色技能是否可用留给启动时核验。"""
+def _macro_commands(text, path, *, pet_ready=True, enemy_target_ready=True):
+    """按运行顺序解析可达宏行；预检和编译共用大小写及 stopmacro 规则。"""
     if not isinstance(text, str):
         raise ValueError(f"GSE {path} 的宏文本无效")
     for line_number, raw_line in enumerate(text.splitlines(), 1):
@@ -662,9 +662,10 @@ def _check_macro_preflight(text, path):
         if not line:
             continue
         line_path = f"{path}[行 {line_number}]"
-        if line.lower().startswith("/targetenemy"):
+        if line.casefold().startswith("/targetenemy"):
             if not re.fullmatch(r"/targetenemy \[noharm\]\[dead\]", line, re.IGNORECASE):
                 raise ValueError(f"GSE {line_path} 的 targetenemy 写法不能忠实模拟：{line[:80]}")
+            yield "targetenemy", None, "", line_path, line
             continue
         match = re.fullmatch(
             r"/(cast|use|startattack|petattack|petassist|stopmacro)\s*(?:\[([^]]+)\])?\s*(.*)",
@@ -673,7 +674,18 @@ def _check_macro_preflight(text, path):
             raise ValueError(f"GSE {line_path} 的宏命令不能忠实模拟：{line[:80]}")
         command, condition, argument = match.groups()
         command = command.lower()
-        if condition and not _condition(condition, line_path):
+        if condition and not _condition(condition, line_path, pet_ready=pet_ready,
+                                        enemy_target_ready=enemy_target_ready):
+            continue
+        yield command, condition, argument, line_path, line
+        if command == "stopmacro" and not argument:
+            break
+
+
+def _check_macro_preflight(text, path):
+    """检查可静态判断的宏语法；角色技能是否可用留给启动时核验。"""
+    for command, condition, argument, line_path, line in _macro_commands(text, path):
+        if command == "targetenemy":
             continue
         if command == "stopmacro" and not argument:
             continue
@@ -724,27 +736,17 @@ def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
         raise ValueError(f"GSE {path} 的 {kind} {value} 不能映射到当前角色")
     if kind == "macro":
         block = []
-        for line in step["macrotext"].splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if line.lower().startswith("/targetenemy"):
-                if not re.fullmatch(r"/targetenemy \[noharm\]\[dead\]", line, re.IGNORECASE):
-                    raise ValueError(f"GSE {path} 的 targetenemy 写法不能忠实模拟：{line[:80]}")
+        for command, condition, argument, line_path, line in _macro_commands(
+                step["macrotext"], path, pet_ready=pet_ready,
+                enemy_target_ready=enemy_target_ready):
+            if command == "targetenemy":
                 if not enemy_target_ready:
-                    raise ValueError(f"GSE {path} 的敌方目标状态未确认，不能跳过 targetenemy")
-                continue
-            match = re.fullmatch(r"/(cast|use|startattack|petattack|petassist|stopmacro)\s*(?:\[([^]]+)\])?\s*(.*)", line)
-            if not match:
-                raise ValueError(f"GSE {path} 的宏命令不能忠实模拟：{line[:80]}")
-            command, condition, argument = match.groups()
-            if not _condition(condition, path, pet_ready=pet_ready,
-                              enemy_target_ready=enemy_target_ready):
+                    raise ValueError(f"GSE {line_path} 的敌方目标状态未确认，不能跳过 targetenemy")
                 continue
             if command == "stopmacro" and not argument:
-                break
+                continue
             if command in {"petattack", "petassist"} and not argument:
-                raise ValueError(f"GSE /{command} 命令不能忠实模拟（位置：{path}）")
+                raise ValueError(f"GSE /{command} 命令不能忠实模拟（位置：{line_path}）")
             if command == "cast" and argument:
                 if condition and "@player" in condition.lower():
                     spell = next((a for a in actions
@@ -755,7 +757,7 @@ def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
                     targeting = json.loads((ROOT / "projects/sim2gse/compatibility/spell-target-masks.json")
                                            .read_text(encoding="utf-8"))
                     if spell is None or not (targeting["target_masks"].get(str(spell.get("spell_id")), 0) & 64):
-                        raise ValueError(f"GSE {path} 的 @player 目标不能按当前角色验证")
+                        raise ValueError(f"GSE {line_path} 的 @player 目标不能按当前角色验证")
                 block += _map_step(dict(type="spell", argument=argument), actions, path,
                                    pet_ready=pet_ready, enemy_target_ready=enemy_target_ready)
                 continue
@@ -768,7 +770,7 @@ def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
                 if len(found) == 1:
                     block += found
                     continue
-            raise ValueError(f"GSE {path} 的宏命令不能忠实模拟：{line[:80]}")
+            raise ValueError(f"GSE {line_path} 的宏命令不能忠实模拟：{line[:80]}")
         return block
     raise ValueError(f"GSE {path} 的步骤类型不能模拟：{kind}")
 
