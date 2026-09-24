@@ -4,9 +4,9 @@
 
 **Blocked by:** 02/采集 GSE 安全执行消息（已完成）。
 
-**Status:** implemented; real-game acceptance deferred by user
+**Status:** ready-for-human
 
-**game_validation:** `not_run`
+**game_validation:** `partial`
 
 - [x] 原生当前技能变化及错误提示在活动会话中可从 SavedVariables 读取，候选技能状态和当前读条保留原生语义，不冒充队列承诺。
 - [x] GSE 提交及关键施法反馈记录保留 GCD、技能冷却、符文与符文能量；新增快照标明实际采样时刻。
@@ -16,3 +16,4 @@
 ## Comments
 
 - 2026-09-24：探针 0.1.7 已部署，仓库与游戏目录的插件文件 SHA-256（文件指纹）一致；新增事件尚未在游戏内采集验收。用户选择按当前离线实现交付，实机覆盖保留为已知未验证项。
+- 2026-09-24：后续正式服采集已记录当前技能变化 1,238 条、界面错误提示 565 条，以及 GSE 安全动作提交 880 条；候选技能和公共冷却快照存在。`runicPower`（符能值）为 `unavailable`（不可读取）；本轮未采到当前读条快照，也未触发引导、延迟或读条开始／停止事件。按实际覆盖标为部分验收，详见 `docs/sim2gse/probe-0.1.7-acceptance-2026-09-24.md`。
