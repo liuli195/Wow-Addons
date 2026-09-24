@@ -10,7 +10,7 @@ Status（状态）: in-progress
 
 ## Blocked by
 
-04：原生导入模拟及两条真实 12.1 邪 DK 串的受控 DPS 验收已完成。统一 Build and Verify（构建与验证）和独立审查仍待执行；游戏内验收仍未完成。
+04：原生导入模拟及两条真实 12.1 邪 DK 串的受控 DPS 验收已完成。统一验证已通过，独立 ChatGPT 网页复审与游戏内验收仍待完成。
 
 ## Acceptance criteria
 
