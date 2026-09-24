@@ -26,7 +26,7 @@
 | `kims-unholy-01.txt` | `Main_Spam_UDK` | 3308 | `b1f6e2cbebcc19c7c0adeb736cd07bbc1857c3363ff906810df0a175f06cafc2` |
 | `kims-unholy-02.txt` | `Burst_Cooldowns_UDK` | 3308 | `5a5430d305b7821ba682e74cd3c07d673aa80d3f988f044cfe05f821d60b7824` |
 
-这三条原串的 `inspect`（检查）均成功，四个成员都经过公开导入任务试跑。四个成员均未进入受控 DPS（每秒伤害）模拟：Karen ST 的 `spell 316239` 不在当前角色能力映射中；Karen M+ 的 `[nochanneling]` 条件无法确定；Kim 主循环的 `[channeling]` 条件无法确定；Kim 爆发序列的 `@player` 目标能力无法验证。没有把未识别动作替换为其他技能。
+这三条原串的 `inspect`（检查）均成功，四个成员都经过公开导入任务试跑。首轮没有成员进入受控 DPS（每秒伤害）模拟：Karen ST 的 `spell 316239` 当时不在当前角色能力映射中；Karen M+ 的 `[nochanneling]` 条件无法确定；Kim 主循环的 `[channeling]` 条件无法确定；Kim 爆发序列的 `@player` 目标能力无法验证。2026-09-25 的 Karen ST 重试见下文。没有把未识别动作替换为其他技能。
 
 ## 原样本严格映射结果
 
@@ -34,8 +34,8 @@
 
 | 原串 / 成员 | 编译或映射结果 |
 | --- | --- |
-| Søl `SOL_UDK_AOE` | 首次试跑时 `spell 207317` 未出现在只看已执行动作的窄目录中；2026-09-25 经当前角色动作核对后通过，见下节 |
-| Søl `SOL_UDK_ST` | 首次试跑时 `spell 316239` 未出现在只看已执行动作的窄目录中；2026-09-25 经当前角色动作核对后通过，见下节 |
+| Søl `SOL_UDK_AOE` | 首次试跑时 `spell 207317` 未出现在只看已执行动作的窄目录中；动作编号已由角色查询映射，但原串含条件成立的 `/petattack`，当前拒绝模拟，旧 DPS 无效 |
+| Søl `SOL_UDK_ST` | 首次试跑时 `spell 316239` 未出现在只看已执行动作的窄目录中；动作编号已由角色查询映射，但原串含条件成立的 `/petattack`，当前拒绝模拟，旧 DPS 无效 |
 | Flip 两个成员 | `/castsequence [@target,harm,nodead] reset=target/combat outbreak, null` 不支持 |
 | MOB Unholy 两个成员 | `item 13` 未映射到当前角色；不把它假定为空点击 |
 | MOB Blood | `[nochanneling]` 条件无法确定 |
@@ -44,32 +44,38 @@
 | MOB Shadow `MOB_SP_Myth` | 初测因 `/targetenemy [noharm][dead]` 被拒绝；此后仅精确支持该行在“已有存活且可攻击的敌方目标”场景下的无效果分支，未使用匹配的 Shadow 角色输入重跑 |
 | Violent Benediction | `=GSE.V.VB_IsHeals()` 需要游戏内变量，无法确定 If 分支 |
 
-## 2026-09-25 当前角色动作目录重试
+## 2026-09-25 真实样本复核与重试
+
+### Søl 12.1 原串：旧 DPS 结果无效
 
 两条 Søl 原串未经改动，来自[作者的 12.1 邪 DK 帖](https://wowlazymacros.com/t/sols-12-1-unholy-dk-midnight-12-1-02-09-2026/64010)，GSE 版本 3.3.31（3331），各自选择版本 1。原串 SHA-256 与 manifest 一致：AOE `ae596b6966ac87e9776fe34a36dca6561d79616c0b9f0a1c8e17afc98991f7f9`；ST `033e5853eb3b4253b7764b57035fd907294568444cc503f11746accac070cf88`。本机原始文件是 `.local/sim2gse/gse-corpus/sol-unholy-12-1-01.txt` 和 `sol-unholy-12-1-02.txt`。
 
-导入前使用当前邪 DK 角色单独查询这两条原串引用的法术编号；查询输出保存在忽略目录 `.local/sim2gse/import-action-probe-review-sol-both-20260925/`。SimC（战斗模拟器）仅返回能创建为玩家动作、处于等级范围、可用且非后台/被动/静默的动作。核对结果为：`42650 → army_of_the_dead`、`43265 → death_and_decay`、`46585 → raise_dead`（当前动作原生编号 46584）、`47541 → death_coil`、`49576 → death_grip`、`55090 → scourge_strike`、`207317 → epidemic`、`316239 → festering_strike`（当前动作原生编号 85948）、`343294 → soul_reaper`、`1233448 → dark_transformation`、`1247378 → putrefy`。没有用名称猜测替换技能。
+此前两次任务都错误地把条件成立的 `/petattack [@target,harm,nodead]` 当成无效果行。当前场景明确有存活可攻击的敌方目标和已召唤宠物，因此该命令会执行；现有伤害引擎没有忠实表示宠物攻击命令的能力。`37842.240154123254` 与 `41627.01167663097` 只保留为历史审计数值，不是有效受控 DPS，也不满足验收。现在两个成员都会在模拟前拒绝，位置分别是 `SOL_UDK_AOE v1 Versions[1].Actions[1].macro[行 2]` 与 `SOL_UDK_ST v1 Versions[1].Actions[1].macro[行 2]`。
 
-两个成员均经公开导入任务入口完成编译和受控原生模拟。条件场景相同：无修饰键、已有存活可攻击的敌方目标、宠物已召唤；`click_ms = input_interval_ms = 300`，`gcd_ms = 1500`，seed `20260912`。角色资料为 `.local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc`，未修改。训练木桩设置为 90 级、护甲系数 4531.03、单目标，关闭 Omnium 天赋。
+旧任务目录 `.local/sim2gse/import-review-sol-aoe-20260925/` 和 `.local/sim2gse/import-review-sol-st-20260925-b/` 保存当时的报告；报告没有识别上述语义缺陷，不再作为忠实 DPS 证据。两条原串中的法术编号和其查询映射可作动作目录核对记录，但不改变这项拒绝结论。
 
-| 成员 | 导入结果 | 47 个编译点击的受控 DPS | 独立角色基准 DPS |
-| --- | --- | ---: | ---: |
-| `SOL_UDK_AOE` | `passed_native_model` | 37842.240154123254 | 77044.71054312987 |
-| `SOL_UDK_ST` | `passed_native_model` | 41627.01167663097 | 77044.71054312987 |
+### Karen ST：当前唯一完成的真实原生 DPS 导入样本
 
-表中“47 个编译点击”是导入序列展开后的点击数；受控模拟按 300 ms 间隔循环执行 180 秒，共 600 个输入时点、99 次迭代。右栏 77044.71054312987 是同一角色无导入点击计划的自由选择基准，不能当作导入序列 DPS 或两种序列的比较值。两次任务均已完成，报告标记 `game_validation=not_run`。
+[Karen 邪 DK 原帖](https://wowlazymacros.com/t/karens-unholy-dk-st-and-m-updated-m-macro/62253)中的原始集合串未修改，SHA-256 为 `1550b78b2e625309e018fd8901443ec9fc28c7bfc8f7f47bb932e53605c96497`，本机文件 `.local/sim2gse/gse-corpus-additional/karens-unholy-01.txt`；成员 `unholydk_ST`、版本 1、GSE 3.3.13（3313）。该版本的宏没有 `/petattack` 或 `/petassist`。静态检查通过，角色动作查询严格映射所有成员动作；`316239` 与名称形式 `Festering Strike` 都解析到 `festering_strike`，名称查询返回原生动作编号 85948。证据保存在忽略目录 `.local/sim2gse/import-review-karen-st-20260925-name-map/` 的 `reference/import_action_probe/native.json`、`capabilities/catalogue.json` 和 `result.json`。
 
-两条成员的 47 个点击都保留了逐项上游来源路径；下列第 n 项就是编译计划第 n 次点击的 `source_path`，顺序与两次结果中的 `candidate.compiled_steps` 一致：
+在未修改的角色资料 `.local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc` 上，经导入任务完整编译并完成 180 秒受控原生模拟。场景为无修饰键、存活可攻击的敌方目标存在、宠物已召唤；`click_ms = input_interval_ms = 300 ms`，`gcd_ms = 1500 ms`，seed `20260912`。22 个点击全部保留来源，`source_path` 依次为 `1` 至 `22`；对应动作依次为：
 
 ```text
-1:1, 2:2.1, 3:2.1, 4:2.2, 5:2.1, 6:2.2, 7:2.3, 8:2.1, 9:2.2, 10:2.3,
-11:2.4, 12:2.1, 13:2.2, 14:2.3, 15:2.4, 16:2.5, 17:2.1, 18:2.2, 19:2.3,
-20:2.4, 21:2.5, 22:2.6, 23:2.1, 24:2.1, 25:2.2, 26:2.1, 27:2.2, 28:2.3,
-29:2.1, 30:2.2, 31:2.3, 32:2.4, 33:2.1, 34:2.2, 35:2.3, 36:2.4, 37:2.5,
-38:2.1, 39:2.2, 40:2.3, 41:2.4, 42:2.5, 43:2.6, 44:3.1, 45:3.2, 46:3.3, 47:3.4
+1 auto_attack, 2 army_of_the_dead, 3 dark_transformation, 4 dark_transformation,
+5 outbreak, 6 festering_strike, 7 festering_strike, 8 scourge_strike,
+9 death_coil, 10 putrefy, 11 scourge_strike, 12 death_coil, 13 soul_reaper,
+14 festering_strike, 15 scourge_strike, 16 death_coil, 17 putrefy,
+18 scourge_strike, 19 death_coil, 20 festering_strike, 21 scourge_strike,
+22 death_coil
 ```
 
-完整任务产物（含原始导入副本、编译计划、受控报告和角色基准报告）仅在忽略目录：`.local/sim2gse/import-review-sol-aoe-20260925/` 与 `.local/sim2gse/import-review-sol-st-20260925-b/`。其余 9 个此前试过的真实样本成员仍保持上表所述的明确拒绝状态；本次只关闭 Søl 两个成员的映射缺口，没有扩大条件或技能支持范围。
+| 指标 | 数值 |
+| --- | ---: |
+| 导入序列受控 DPS（`passed_native_model`） | 50873.80836033131 |
+| 同角色自由选择参考 DPS | 77044.71054312987 |
+| 输入时点 | 600（每 300 ms 一次，共 180 秒） |
+
+参考值是同一角色不使用导入点击计划的自由选择模拟，不是导入 DPS 的预期值或比较门槛。受控数值说明本机固定角色、配置和模型上的真实原串完整链路已跑通；报告为 `game_validation=not_run`，不代表游戏内行为验收。Søl 两条 12.1 原串仍因宠物命令被拒绝。其余样本成员仍按具体映射或语义原因处理，没有用未识别动作替换其他技能。
 
 ## 复审修复证据
 

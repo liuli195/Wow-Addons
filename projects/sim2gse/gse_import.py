@@ -366,8 +366,8 @@ def _contains_random_loop(nodes):
     return False
 
 
-def inspect_import(text):
-    decoded = decode_import(text)
+def inspect_import(text, *, decoded=None):
+    decoded = decoded or decode_import(text)
     locked_version = _locked_gse_version()
     syntax = set()
     def visit(value):
@@ -383,12 +383,22 @@ def inspect_import(text):
     entries = []
     for name, seq in decoded["sequences"].items():
         visit(seq["Versions"])
-        gse_version = seq["MetaData"].get("GSEVersion")
-        simulation_supported, support_reason = _simulation_compatibility(gse_version, locked_version)
+        version_support = [
+            _version_preflight(decoded["sequences"], name, seq, version, locked_version)
+            for version in range(1, len(seq["Versions"]) + 1)
+        ]
+        default_version = seq.get("Default", 1)
+        if type(default_version) is not int or not 1 <= default_version <= len(version_support):
+            default_version = 1
+        default_support = version_support[default_version - 1]
         entries.append(dict(name=name, spec_id=seq["MetaData"].get("SpecID"),
-                            gse_version=gse_version, version_count=len(seq["Versions"]),
-                            default_version=seq.get("Default"),
-                            simulation_supported=simulation_supported, support_reason=support_reason))
+                            gse_version=seq["MetaData"].get("GSEVersion"),
+                            version_count=len(seq["Versions"]), default_version=default_version,
+                            version_support=version_support,
+                            simulation_supported=default_support["simulation_supported"],
+                            simulation_preflight_passed=default_support["simulation_preflight_passed"],
+                            support_status=default_support["support_status"],
+                            support_reason=default_support["support_reason"]))
     return dict(status="decoded", format=decoded["envelope"], sha256=decoded["sha256"],
                 sequences=entries, syntax=sorted(syntax), simulation_started=False,
                 support="not_checked")
@@ -405,6 +415,13 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
         if kind is not None:
             if not isinstance(kind, str) or kind not in VALID_TYPES:
                 fail(f"GSE 控制块类型不支持：{kind}")
+            if kind == "Action":
+                action_kind = value.get("type")
+                if action_kind not in {"spell", "item", "macro"}:
+                    fail(f"GSE 动作类型不支持：{action_kind}")
+                if action_kind == "macro":
+                    _check_macro_preflight(value.get("macro", value.get("macrotext", "")),
+                                           f"{path}.macro" if path else "macro")
             if kind == "If":
                 expression = value.get("Variable")
                 constant = expression[1:].strip() if isinstance(expression, str) and expression.startswith("=") else expression
@@ -470,6 +487,33 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
     elif isinstance(value, list):
         for index, item in enumerate(value, 1):
             _check_nodes(item, sequences, seen, f"{path}[{index}]", selected_versions)
+
+
+def _version_preflight(sequences, sequence_name, sequence, version, locked_version):
+    """只报告静态预检；角色技能/物品映射尚未核验时不宣称已受支持。"""
+    gse_version = sequence["MetaData"].get("GSEVersion")
+    supported, reason = _simulation_compatibility(gse_version, locked_version)
+    if not supported:
+        return dict(version=version, simulation_supported=False,
+                    simulation_preflight_passed=False, support_status="unsupported",
+                    support_reason=reason)
+
+    selected_versions = {name: value.get("Default", 1) for name, value in sequences.items()}
+    selected_versions[sequence_name] = version
+    try:
+        _check_nodes(sequence["Versions"][version - 1].get("Actions", []), sequences,
+                     {sequence_name}, path=f"{sequence_name} v{version} Versions[{version}].Actions",
+                     selected_versions=selected_versions)
+    except ValueError as error:
+        return dict(version=version, simulation_supported=False,
+                    simulation_preflight_passed=False, support_status="unsupported",
+                    support_reason=str(error))
+
+    return dict(version=version, simulation_supported=None,
+                simulation_preflight_passed=True,
+                support_status="requires_character_validation",
+                support_reason=("语法和版本预检通过；当前角色的法术与物品映射尚未核对，"
+                                "启动时会继续严格核验，未能映射时不会返回 DPS。"))
 
 
 def _bounded_append(target, values):
@@ -609,6 +653,45 @@ def _condition(expression, path, *, pet_ready=True, enemy_target_ready=True):
     return True
 
 
+def _check_macro_preflight(text, path):
+    """检查可静态判断的宏语法；角色技能是否可用留给启动时核验。"""
+    if not isinstance(text, str):
+        raise ValueError(f"GSE {path} 的宏文本无效")
+    for line_number, raw_line in enumerate(text.splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line_path = f"{path}[行 {line_number}]"
+        if line.lower().startswith("/targetenemy"):
+            if not re.fullmatch(r"/targetenemy \[noharm\]\[dead\]", line, re.IGNORECASE):
+                raise ValueError(f"GSE {line_path} 的 targetenemy 写法不能忠实模拟：{line[:80]}")
+            continue
+        match = re.fullmatch(
+            r"/(cast|use|startattack|petattack|petassist|stopmacro)\s*(?:\[([^]]+)\])?\s*(.*)",
+            line, re.IGNORECASE)
+        if not match:
+            raise ValueError(f"GSE {line_path} 的宏命令不能忠实模拟：{line[:80]}")
+        command, condition, argument = match.groups()
+        command = command.lower()
+        if condition and not _condition(condition, line_path):
+            continue
+        if command == "stopmacro" and not argument:
+            continue
+        if command == "cast" and argument:
+            continue
+        if command == "use" and argument in {"13", "14"}:
+            continue
+        if command == "startattack" and not argument:
+            continue
+        if command in {"petattack", "petassist"} and not argument:
+            raise ValueError(f"GSE /{command} 命令不能忠实模拟（位置：{line_path}）")
+        raise ValueError(f"GSE {line_path} 的宏命令不能忠实模拟：{line[:80]}")
+
+
+def _spell_name_key(name):
+    return re.sub(r"\s+", "_", str(name).strip()).casefold()
+
+
 def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
     kind = step["type"]
     if kind == "click":
@@ -619,9 +702,10 @@ def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
             if action.get("kind") != kind:
                 return False
             if kind == "spell":
-                values = {str(action[key]).casefold() for key in ("spell_id", "name", "simc_action")
+                values = {_spell_name_key(action[key]) for key in
+                          ("spell_id", "native_spell_id", "name", "native_name", "simc_action")
                           if action.get(key) is not None}
-                return value.casefold() in values
+                return _spell_name_key(value) in values
             normalized = value.casefold()
             slots = {"13": 13, "14": 14, "trinket1": 13, "trinket2": 14}
             if normalized in slots:
@@ -660,13 +744,14 @@ def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
             if command == "stopmacro" and not argument:
                 break
             if command in {"petattack", "petassist"} and not argument:
-                if pet_ready:
-                    continue
-                raise ValueError(f"GSE {path} 的宠物状态无法在当前角色中验证")
+                raise ValueError(f"GSE /{command} 命令不能忠实模拟（位置：{path}）")
             if command == "cast" and argument:
                 if condition and "@player" in condition.lower():
-                    spell = next((a for a in actions if str(a.get("spell_id")) == argument or
-                                  str(a.get("name", "")).casefold() == argument.casefold()), None)
+                    spell = next((a for a in actions
+                                  if str(a.get("spell_id")) == argument or
+                                  str(a.get("native_spell_id")) == argument or
+                                  _spell_name_key(a.get("name", "")) == _spell_name_key(argument) or
+                                  _spell_name_key(a.get("simc_action", "")) == _spell_name_key(argument)), None)
                     targeting = json.loads((ROOT / "projects/sim2gse/compatibility/spell-target-masks.json")
                                            .read_text(encoding="utf-8"))
                     if spell is None or not (targeting["target_masks"].get(str(spell.get("spell_id")), 0) & 64):
@@ -720,7 +805,8 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
     selected_versions.update(requested_versions)
     selected_versions[name] = version
     _check_nodes(sequence["Versions"][version - 1].get("Actions", []),
-                 decoded["sequences"], {name}, path=f"Versions[{version}].Actions",
+                 decoded["sequences"], {name},
+                 path=f"{name} v{version} Versions[{version}].Actions",
                  selected_versions=selected_versions)
     if (type(context.get("click_ms")) is not int or not 50 <= context["click_ms"] <= 2000
             or type(context.get("gcd_ms")) is not int or not 500 <= context["gcd_ms"] <= 3000

@@ -69,9 +69,10 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn('id="inspectImport"', page)
         self.assertIn('id="importSequence"', page)
         self.assertIn('id="importStart"', page)
-        self.assertIn('importStart.disabled=running||!supported', page)
-        self.assertIn('entry?.simulation_supported===true', page)
-        self.assertIn('entry.support_reason', page)
+        self.assertIn('importStart.disabled=running||!preflightPassed', page)
+        self.assertIn('simulation_preflight_passed===true', page)
+        self.assertIn('角色技能和物品映射尚未核对', page)
+        self.assertIn('selected.support_reason', page)
         self.assertIn('importStart.disabled=true', page)
         self.assertNotIn('id="gseClick"', page)
         self.assertIn('gse_click_ms:Number(interval.value)', page)
@@ -127,10 +128,80 @@ class InterfaceTests(unittest.TestCase):
         result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
         members = {member["name"]: member for member in result["sequences"]}
         self.assertEqual(result["status"], "decoded")
-        self.assertTrue(members["LOCKED"]["simulation_supported"])
+        self.assertIsNone(members["LOCKED"]["simulation_supported"])
+        self.assertTrue(members["LOCKED"]["simulation_preflight_passed"])
         self.assertFalse(members["FUTURE"]["simulation_supported"])
+        self.assertFalse(members["FUTURE"]["simulation_preflight_passed"])
         self.assertIn("3333", members["FUTURE"]["support_reason"])
         self.assertIn("3332", members["FUTURE"]["support_reason"])
+
+    def test_import_inspection_reports_known_macro_and_block_rejections_per_version(self) -> None:
+        imported = gse_fixture(["PREFLIGHT", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [
+                {"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]},
+                {"Actions": [{"Type": "Action", "type": "macro",
+                               "macro": "/cast [nochanneling] Epidemic"}]},
+                {"Actions": [{"Type": "If", "Variable": "=GSE.V.ExternalFlag()",
+                               1: [{"Type": "Action", "type": "spell", "spell": 77575}]}]},
+                {"Actions": [{"Type": "Action", "type": "macro", "macro": "/petattack [pet]"}]},
+                {"Actions": [{"Type": "Action", "type": "macro",
+                               "macro": "/petassist [@target,harm,nodead]"}]},
+            ],
+        }])
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        member = result["sequences"][0]
+        versions = {item["version"]: item for item in member["version_support"]}
+
+        self.assertTrue(versions[1]["simulation_preflight_passed"])
+        self.assertEqual(versions[1]["support_status"], "requires_character_validation")
+        self.assertIsNone(versions[1]["simulation_supported"])
+        self.assertIn("尚未核对", versions[1]["support_reason"])
+        self.assertFalse(versions[2]["simulation_preflight_passed"])
+        self.assertFalse(versions[2]["simulation_supported"])
+        self.assertIn("nochanneling", versions[2]["support_reason"])
+        self.assertIn("Versions[2].Actions[1]", versions[2]["support_reason"])
+        self.assertFalse(versions[3]["simulation_preflight_passed"])
+        self.assertIn("GSE If 条件需要游戏内变量", versions[3]["support_reason"])
+        self.assertFalse(versions[4]["simulation_preflight_passed"])
+        self.assertIn("petattack", versions[4]["support_reason"])
+        self.assertFalse(versions[5]["simulation_preflight_passed"])
+        self.assertIn("petassist", versions[5]["support_reason"])
+        self.assertFalse(result["simulation_started"])
+
+    def test_task_api_rejects_known_unsupported_macro_before_creating_task(self) -> None:
+        imported = gse_fixture(["KAREN_MPLUS", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3313}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                         "macro": "/cast [nochanneling] Epidemic"}]}],
+        }])
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "KAREN_MPLUS", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("nochanneling", json.loads(raised.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
+        self.assertEqual(list(self.server.task_root.iterdir()), [])
+
+    def test_task_api_rejects_active_pet_command_before_creating_task(self) -> None:
+        imported = gse_fixture(["PET_COMMAND", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                         "macro": "/petassist [pet]"}]}],
+        }])
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "PET_COMMAND", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("petassist", json.loads(raised.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
+        self.assertEqual(list(self.server.task_root.iterdir()), [])
 
     def test_import_inspection_rejects_broken_payload(self) -> None:
         with self.assertRaises(HTTPError) as raised:

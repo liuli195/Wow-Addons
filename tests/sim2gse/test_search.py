@@ -149,8 +149,12 @@ def _fast_search_boundary():
 
 class SearchAndValidationTests(TestCase):
     def test_real_deathknight_search_matches_fixed_baseline_golden(self):
-        """固定基线 fa2ea136 的真实邪 DK 搜索结果不得被导入功能改变。"""
+        """固定基线 fa2ea136 的 DK 测试资料搜索结果和候选顺序不得改变。"""
         expected_key = "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc"
+        expected_record_keys = [
+            "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc",
+            "61dc02485b5367ad0516fa11b3eef3e951b98898ff020269b40be3743a26ee7d",
+        ]
         expected_text = (
             "!GSE3!awoINnKPd7E0NDYyd7V0NDJ1Wuzhm1qS6JJYkrjUxS8xNxVDgVtwQWqyp4vEHy/3YNew1KLizPw8SV4WF4/UnIKI/qdzNrycu+hZV8OL5r1P56x4sXzSi85NL1pmPdnR/bK969mUfe/39Dyfve7ZgvaXC3eDFPQ0P5295Wlb6/s9syHiz6ZueNa7TsHQSM9Qz0DPzNLC0ASo59mKhc+656PLmVqYP25oerZjx7OO/mdTO57Nm/N0w6yn+1pfrup5sb4RKOXhnJGanF1cmutdZmhlkGJgbGFpaeHukpqWWJpTwugBdX5x4yJ3x+QSEKtrsUtIZUGqG4TrUgJku+YmJhflQ8gw/eTE4hKF6Lz85PzcpMSSWAUTM1MLE/yafPSLSxKLShJLShKTs7EoLS5IzcmBkFIMjPrs+JVILptFyAyhSxoErfHfQ0iJMMckAi7ZuZWQGaw2/wiYcd0owDMvqTQzpyQssSgzMSkntXgBAA=="
         )
@@ -188,9 +192,15 @@ class SearchAndValidationTests(TestCase):
             prefix="sim2gse-baseline-search-", dir=REPOSITORY / ".local" / "sim2gse"
         ) as directory:
             source = Path(directory) / "input.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
+            baseline_profile = sample_profile().replace(
+                "# 背包候选\n# trinket1=,id=251221\n", ""
+            )
+            source.write_text(baseline_profile, encoding="utf-8")
             result = run_task(source, Path(directory) / "task", search_config=config)
 
+        self.assertEqual(result["profile"]["input_sha256"],
+                         "147fd9aa883f5784c93752b2c12cdaaaaaeba64b9a066163d57d354b4a52c433")
+        self.assertEqual([row["key"] for row in result["search"]["records"]], expected_record_keys)
         self.assertEqual(result["selected_candidate_key"], expected_key)
         self.assertEqual(result["locked_candidate_key"], expected_key)
         self.assertEqual(result["candidate"]["text"], expected_text)

@@ -171,7 +171,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         options = dict(self.server.task_options)
         options['search_config'] = dict(options.get('search_config') or {}, input_interval_ms=interval)
         if mode == "import":
-            from gse_import import decode_import
+            from gse_import import decode_import, inspect_import
             gse = value.get("gse")
             name = value.get("sequence_name")
             version = value.get("version")
@@ -181,10 +181,15 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 raise TaskError("GSE 导入需要选定序列与版本")
             try:
                 imported = decode_import(gse)
+                inspected = inspect_import(gse, decoded=imported)
             except ValueError as error:
                 raise TaskError(str(error)) from error
             if name not in imported["sequences"] or not 1 <= version <= len(imported["sequences"][name]["Versions"]):
                 raise TaskError("GSE 选定的序列或版本无效")
+            member = next(row for row in inspected["sequences"] if row["name"] == name)
+            support = next(row for row in member["version_support"] if row["version"] == version)
+            if not support["simulation_preflight_passed"]:
+                raise TaskError(support["support_reason"])
             if type(click_ms) is not int or not 50 <= click_ms <= 2000:
                 raise TaskError("GSE 点击间隔必须为 50 至 2000 毫秒")
             if click_ms != interval:

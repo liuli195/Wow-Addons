@@ -14,12 +14,27 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 
 from codec import export, wire_value  # noqa: E402
-from gse_import import _map_step, decode_import, import_action_spell_ids, import_action_spell_names  # noqa: E402
+from gse_import import (_map_step, decode_import, import_action_spell_ids,
+                        import_action_spell_names, inspect_import)  # noqa: E402
 from program import compile_program, from_action_blocks, from_gse_import  # noqa: E402
 from sequence import compiled_program  # noqa: E402
 
 
 class ProgramTests(unittest.TestCase):
+    def test_inspection_does_not_claim_role_actions_are_already_verified(self):
+        sequence = dict(MetaData=dict(Name="PREFLIGHT", SpecID=252, GSEVersion=3331), Default=1,
+                        Versions=[dict(Actions=[{"Type": "Action", "type": "spell", "spell": 77575}])])
+        raw = cbor2.dumps(wire_value(sequence))
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+
+        entry = inspect_import(text)["sequences"][0]
+        version = entry["version_support"][0]
+
+        self.assertTrue(version["simulation_preflight_passed"])
+        self.assertEqual(version["support_status"], "requires_character_validation")
+        self.assertIsNone(version["simulation_supported"])
+        self.assertIn("角色", version["support_reason"])
+
     def test_import_action_spell_ids_include_embedded_repeat_and_macro_actions(self):
         program = dict(nodes=[
             dict(kind="Action", commands=[dict(type="spell", argument=316239)]),
@@ -321,7 +336,7 @@ class ProgramTests(unittest.TestCase):
                           False, False, True, True, True, True])
         self.assertEqual(len(candidate["source_paths"]), 14)
 
-    def test_default_scene_skips_modifier_cast_and_uses_targeted_macro(self):
+    def test_default_scene_rejects_active_petattack_with_its_source_path(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
                         Versions=[dict(Actions=[{"Type": "Action", "type": "macro",
                                                 "macro": "/targetenemy [noharm][dead]\n/cast [mod:shift] 343294\n/petattack [@target,harm,nodead]\n/cast [@player] 43265"}])])
@@ -329,15 +344,11 @@ class ProgramTests(unittest.TestCase):
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
         capabilities = dict(actions=[dict(kind="spell", spell_id=43265, name="Death and Decay",
                                           simc_action="death_and_decay")])
-        with tempfile.TemporaryDirectory() as directory:
-            candidate = compile_program(from_gse_import(text, "MACRO", 1), Path(directory),
-                                        identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
-                                        context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
-        self.assertEqual(compiled_program(candidate), [["death_and_decay"]])
-        self.assertTrue(candidate["compile_context"]["pet_ready"])
-        self.assertTrue(candidate["compile_context"]["enemy_target_ready"])
-        self.assertEqual(candidate["compile_context"]["scene"],
-                         "no_modifiers_enemy_target_ready_pet_ready")
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+                ValueError, r"/petattack.*MACRO v1 Versions\[1\]\.Actions\[1\]"):
+            compile_program(from_gse_import(text, "MACRO", 1), Path(directory),
+                            identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
+                            context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
 
     def test_name_form_macro_maps_through_separately_verified_native_action(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -357,6 +368,24 @@ class ProgramTests(unittest.TestCase):
                                                      gcd_ms=1500, seed=1))
         self.assertEqual(compiled_program(candidate), [["epidemic"]])
 
+    def test_display_name_form_macro_maps_to_queried_simc_action(self):
+        sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
+                        Versions=[dict(Actions=[{"Type": "Action", "type": "macro",
+                                                "macro": "/cast Festering Strike"}])])
+        raw = cbor2.dumps(wire_value(["DISPLAY_NAME", sequence]))
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+        queried_action = dict(kind="spell", spell_id=85948, native_spell_id=85948,
+                              name="festering_strike", simc_action="festering_strike",
+                              data_valid=True, action_initialized=True, available=True,
+                              background=False, passive=False, quiet=False)
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = compile_program(
+                from_gse_import(text, "DISPLAY_NAME", 1), Path(directory),
+                identity=dict(class_id=6, spec_id=252),
+                capabilities=dict(actions=[], import_actions=[queried_action]),
+                context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
+        self.assertEqual(compiled_program(candidate), [["festering_strike"]])
+
     def test_targetenemy_noharm_dead_is_a_noop_only_with_ready_enemy_target(self):
         exact = dict(type="macro", macrotext="/targetenemy [noharm][dead]")
         self.assertEqual(_map_step(exact, [], "Versions[1].Actions[1]", enemy_target_ready=True), [])
@@ -367,19 +396,26 @@ class ProgramTests(unittest.TestCase):
                 _map_step(dict(type="macro", macrotext=line), [], "Versions[1].Actions[1]",
                           enemy_target_ready=True)
 
-    def test_pet_attack_requires_explicit_not_ready_scene_when_pet_is_absent(self):
-        sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                        Versions=[dict(Actions=[{"Type": "Action", "type": "macro",
-                                                "macro": "/petattack\n/cast 77575"}])])
-        raw = cbor2.dumps(wire_value(["PET_NOT_READY", sequence]))
-        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        capabilities = dict(actions=[dict(kind="spell", spell_id=77575, name="Outbreak",
-                                          simc_action="outbreak")])
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "宠物状态"):
-            compile_program(from_gse_import(text, "PET_NOT_READY", 1), Path(directory),
-                            identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
-                            context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500,
-                                         seed=1, pet_ready=False))
+    def test_active_pet_commands_are_rejected_and_inactive_conditions_are_skipped(self):
+        for command in ("petattack", "petassist"):
+            active_cases = [("", True, True), ("[pet]", True, True), ("[nopet]", False, True),
+                            ("[harm]", True, True)]
+            for condition, pet_ready, enemy_target_ready in active_cases:
+                line = f"/{command} {condition}".rstrip()
+                with self.subTest(command=command, condition=condition, active=True), \
+                        self.assertRaisesRegex(ValueError, rf"{command}.*SOURCE v1 Versions\[2\]\.Actions\[3\]"):
+                    _map_step(dict(type="macro", macrotext=line), [],
+                              "SOURCE v1 Versions[2].Actions[3]", pet_ready=pet_ready,
+                              enemy_target_ready=enemy_target_ready)
+
+        inactive_cases = [("/petattack [nopet]", True, True),
+                          ("/petassist [pet]", False, True),
+                          ("/petattack [noharm]", True, True)]
+        for line, pet_ready, enemy_target_ready in inactive_cases:
+            with self.subTest(line=line, active=False):
+                self.assertEqual(_map_step(dict(type="macro", macrotext=line), [],
+                                           "SOURCE v1 Versions[2].Actions[3]", pet_ready=pet_ready,
+                                           enemy_target_ready=enemy_target_ready), [])
 
     def test_embed_uses_child_default_version_and_source_position(self):
         child = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=2,
