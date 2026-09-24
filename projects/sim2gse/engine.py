@@ -146,10 +146,40 @@ def inspect(reference, folder):
     for variants in buttons.values():
         primary = next((a for a in variants if a.get('spell_id') == a.get('base_spell_id')), variants[0])
         grouped.append(dict(primary, variants=variants) if len(variants)>1 else primary)
+    import_actions = []
+    seen_import_actions = set()
+
+    def add_import_action(action):
+        key = (action.get('kind'), action.get('spell_id'), action.get('slot'),
+               action.get('item_id'), action.get('simc_action'))
+        if key not in seen_import_actions:
+            seen_import_actions.add(key)
+            import_actions.append(action)
+
+    for action in grouped:
+        for variant in action.get('variants', [action]):
+            add_import_action(dict(variant))
+    for row in reference.get('import_action_candidates', []):
+        if (row.get('kind') == 'spell' and type(row.get('spell_id')) is int
+                and row['spell_id'] > 0 and row.get('data_valid')
+                and row.get('native_spell_id') and row.get('simc_action')
+                and row.get('available') is True and row.get('background') is False
+                and row.get('passive') is False and row.get('quiet') is False):
+            add_import_action(dict(kind='spell', spell_id=row['spell_id'],
+                                   native_spell_id=row['native_spell_id'], name=row['name'],
+                                   simc_action=row['simc_action'], gcd_ms=row.get('gcd_ms', 0)))
+    for item in items:
+        slot = {'trinket1': 13, 'trinket2': 14}.get(item.get('slot'))
+        if slot is not None and type(item.get('id')) is int and item['id'] > 0:
+            add_import_action(dict(kind='item', slot=slot, item_id=item['id'],
+                                   simc_action=f'use_item,slot={item["slot"]}',
+                                   name=item.get('name', ''),
+                                   driver_spell_id=item.get('driver_spell_id')))
     precombat_program = [dict(precombat_actions[row['name']])
                          for row in reference.get('precombat_sequence', [])
                          if not row.get('queue_failed') and row.get('name') in precombat_actions]
     result = dict(actions=grouped, precombat_actions=precombat_program, sources=sources, protocol=3,
+                  import_actions=import_actions,
                   scope='baseline_executed_player_actions', coverage='all_baseline_iterations')
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'catalogue.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -210,10 +240,27 @@ def check_report(report, character, iterations, *, simulation_config=None):
                               spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource']))
 
 
+def _profile_with_import_queries(profile, folder, spell_ids):
+    if not spell_ids:
+        return profile
+    if (not isinstance(spell_ids, (list, tuple)) or len(spell_ids) > 256
+            or any(type(spell_id) is not int or spell_id <= 0 for spell_id in spell_ids)):
+        raise ValueError('GSE 动作核对的法术编号无效')
+    text = Path(profile).read_text(encoding='utf-8')
+    probe_profile = Path(folder) / 'import-action-query.simc'
+    probe_profile.parent.mkdir(parents=True, exist_ok=True)
+    separator = '' if not text or text.endswith(('\n', '\r')) else '\n'
+    probe_profile.write_text(text + separator +
+                             'sim2gse_action_ids=' + ','.join(map(str, sorted(set(spell_ids)))) + '\n',
+                             encoding='utf-8')
+    return probe_profile
+
+
 def reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-              simulation_config=None):
+              simulation_config=None, import_spell_ids=()):
     folder = Path(folder)
     runtime = runtime or TaskRuntime()
+    probe_profile = _profile_with_import_queries(profile, folder, import_spell_ids)
     run(profile, folder, options=[f'iterations={iterations}', f'seed={seed}',
         'json2=native.pending.json'], runtime=runtime, simulation_config=simulation_config)
     try:
@@ -233,4 +280,15 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     result['executed_actions'] = player.get('sim2gse_actions', [])
     result['precombat_definitions'] = player.get('sim2gse_precombat_actions', [])
     result['active_items'] = player.get('sim2gse_items', [])
+    result['import_action_candidates'] = []
+    if import_spell_ids:
+        probe_folder = folder / 'import_action_probe'
+        run(probe_profile, probe_folder, options=['iterations=1', 'max_time=1'],
+            runtime=runtime, simulation_config=simulation_config)
+        try:
+            probe_report = json.loads((probe_folder / 'native.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            raise ValueError('原生动作查询报告缺失或不是有效 JSON') from error
+        probe_player = player_report(probe_report, character)
+        result['import_action_candidates'] = probe_player.get('sim2gse_import_actions', [])
     return result

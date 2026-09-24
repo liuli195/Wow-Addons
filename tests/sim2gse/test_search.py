@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
+from search import initial_programs
 
 
 def _fast_capabilities():
@@ -146,6 +147,29 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_search_starts_match_fixed_baseline_golden(self):
+        """导入专用动作目录不改变基线搜索起点或顺序。"""
+        capabilities = dict(
+            actions=[
+                dict(kind="spell", spell_id=77575, simc_action="outbreak"),
+                dict(kind="spell", spell_id=47541, simc_action="death_coil"),
+                dict(kind="spell", spell_id=55090, simc_action="scourge_strike"),
+            ],
+            import_actions=[dict(kind="spell", spell_id=316239, simc_action="import_only")],
+        )
+        reference = dict(action_sequence=[
+            dict(name="outbreak"), dict(name="death_coil"), dict(name="outbreak"),
+            dict(name="scourge_strike", queue_failed=True), dict(name="unknown_action"),
+        ])
+        expected = [
+            [["outbreak"], ["death_coil"], ["scourge_strike"]],
+            [["outbreak"], ["outbreak"], ["death_coil"]],
+            [["outbreak"], ["death_coil"], ["outbreak"], ["death_coil"]],
+            [["scourge_strike"], ["death_coil"], ["outbreak"]],
+        ]
+
+        self.assertEqual(initial_programs(capabilities, reference, seed=20260912), expected)
+
     def test_report_version_gate_accepts_historical_and_current_build(self):
         """历史报告在其对应版本上有效，升级不得把它们踢掉。"""
         import engine

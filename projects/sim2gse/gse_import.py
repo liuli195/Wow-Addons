@@ -157,12 +157,14 @@ def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, se
         if not isinstance(action, dict):
             nodes.append(_action_node(action, _position(sequence_name, version, path)))
             continue
+        if action.get("Disabled") is True:
+            continue
         kind = action.get("Type")
         source = _position(sequence_name, version, path)
         if kind == "Action":
             nodes.append(_action_node(action, source))
         elif kind == "Repeat":
-            child_source = _position(sequence_name, version, path + ".action")
+            child_source = source
             repeat = action.get("Interval", action.get("Repeat", 2))
             try:
                 repeat = int(float(repeat))
@@ -241,6 +243,48 @@ def program_from_import(text, name, version, *, context=None, decoded=None):
                              "sha256": decoded["sha256"]})
 
 
+def import_action_spell_ids(program):
+    """收集本次导入实际引用的法术编号，供固定 SimC 核对角色动作工厂。"""
+    spell_ids = set()
+
+    def add_numeric(value):
+        if type(value) is int and value > 0:
+            spell_ids.add(value)
+        elif isinstance(value, str) and value.isdecimal() and int(value) > 0:
+            spell_ids.add(int(value))
+
+    def visit(nodes):
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if node.get("kind") == "Action":
+                for command in node.get("commands", []):
+                    if not isinstance(command, dict):
+                        continue
+                    if command.get("type") == "spell":
+                        add_numeric(command.get("argument"))
+                    elif command.get("type") == "macro":
+                        text = command.get("text", "")
+                        if isinstance(text, str):
+                            for match in re.finditer(
+                                    r"(?im)^\s*/cast\b(?:(?:\s*\[[^]\r\n]*\]))*\s+(\d+)(?=\s|$)",
+                                    text):
+                                add_numeric(match.group(1))
+            visit(node.get("body"))
+            visit(node.get("then"))
+            visit(node.get("else_branch"))
+            action = node.get("action")
+            if isinstance(action, dict):
+                visit([action])
+
+    visit(program.get("nodes", []))
+    if len(spell_ids) > 256:
+        raise ValueError("GSE 导入包含超过 256 个不同法术编号")
+    return sorted(spell_ids)
+
+
 def _compiled_source_map(nodes):
     by_path = {}
     def visit(items):
@@ -290,6 +334,8 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
         raise ValueError(f"{message}（位置：{path or 'Version'}）")
 
     if isinstance(value, dict):
+        if value.get("Disabled") is True:
+            return
         kind = value.get("Type")
         if kind is not None:
             if not isinstance(kind, str) or kind not in VALID_TYPES:
@@ -341,6 +387,10 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
                 if (type(embedded_version) is not int or
                         not 1 <= embedded_version <= len(embedded["Versions"])):
                     fail(f"GSE Embed 选中版本无效：{dep} {embedded_version}")
+                supported, reason = _simulation_compatibility(
+                    embedded["MetaData"].get("GSEVersion"), _locked_gse_version())
+                if not supported:
+                    fail(f"GSE Embed 子序列 {dep}：{reason}")
                 _check_nodes(embedded["Versions"][embedded_version - 1], sequences, seen | {dep},
                              f"{path}.Embed[{dep}].Versions[{embedded_version}]" if path
                              else f"Embed[{dep}].Versions[{embedded_version}]", selected_versions)
@@ -369,33 +419,26 @@ def _process_repeat_nodes(nodes):
     actions = []
     for index, item in enumerate(nodes, 1):
         if isinstance(item, tuple) and item[0] == "repeat":
-            inserts.append((index, item[1] + 1))
+            inserts.append((index, item[1] + 1, item[2]))
         else:
             actions.append(item)
-    for start, interval in inserts:
+    for start, interval, action in inserts:
         insert_count = math.ceil((len(actions) - start) / interval)
         insert_count = math.ceil((len(actions) + insert_count - start) / interval)
         insert_count = max(0, insert_count)
         if len(actions) + 1 + insert_count > 4096:
             raise ValueError("GSE 展开计划超过 4096 次按键")
-        if start > len(actions) + 1:
-            # The pinned Lua 5.1 table.insert permits a position beyond the
-            # contiguous array and leaves a hole; counting it as an append is
-            # a safe upper bound for the later ipairs-based output.
-            actions.append(1)
-        else:
-            actions.insert(start - 1, 1)
+        if start <= len(actions) + 1:
+            actions.insert(start - 1, action)
         for index in range(1, insert_count + 1):
             position = start + index * interval
-            if position > len(actions) + 1:
-                actions.append(1)
-            else:
-                actions.insert(position - 1, 1)
+            if position <= len(actions) + 1:
+                actions.insert(position - 1, action)
     return actions
 
 
-def _estimate_expansion(nodes, context):
-    """按固定 GSE 展开控制块，并在调用上游 Lua 前限制计划大小。"""
+def _compiled_source_plan(nodes, context):
+    """按固定 GSE 展开控制块，保留每次按键的来源身份并限制计划大小。"""
     click_ms, gcd_ms = context["click_ms"], context["gcd_ms"]
 
     def expand(items, depth=0):
@@ -405,9 +448,9 @@ def _estimate_expansion(nodes, context):
         for node in items:
             kind = node["kind"]
             if kind in {"Action", "EmptyClick"}:
-                _bounded_append(output, [1])
+                _bounded_append(output, [node["source"]])
             elif kind == "Repeat":
-                _bounded_append(output, [("repeat", node["interval"])])
+                _bounded_append(output, [("repeat", node["interval"], node["action"]["source"])])
             elif kind == "Pause":
                 duration = node["duration_ms"]
                 if duration in {"GCD", "~~GCD~~"}:
@@ -418,7 +461,7 @@ def _estimate_expansion(nodes, context):
                 else:
                     clicks = node["clicks"]
                 count = math.floor(clicks) if clicks > 1 else 0
-                _bounded_append(output, [1] * count)
+                _bounded_append(output, [node["source"]] * count)
             elif kind == "Loop":
                 body = expand(node["body"], depth + 1)
                 step_function = node["step_function"]
@@ -471,17 +514,27 @@ def _estimate_expansion(nodes, context):
     return _process_repeat_nodes(expand(nodes))
 
 
-def _condition(expression, path):
+def _condition(expression, path, *, pet_ready=True, enemy_target_ready=True):
     """求值本期明确的默认场景；未知条件绝不猜测。"""
     if not expression:
         return True
     outcomes = []
     for token in expression.split(","):
         token = token.strip().lower()
-        if token in {"combat", "harm", "nodead", "exists", "@target", "@player", "nomod", "pet"}:
+        if token in {"combat", "nomod", "@player"}:
             outcomes.append(True)
-        elif token in {"nocombat", "nopet", "noexists", "dead"} or token.startswith("mod:"):
+        elif token in {"nocombat", "dead"} or token.startswith("mod:"):
             outcomes.append(False)
+        elif token in {"harm", "nodead", "exists", "@target"}:
+            outcomes.append(enemy_target_ready)
+        elif token == "noharm":
+            outcomes.append(not enemy_target_ready)
+        elif token == "pet":
+            outcomes.append(pet_ready)
+        elif token == "nopet":
+            outcomes.append(not pet_ready)
+        elif token == "noexists":
+            outcomes.append(not enemy_target_ready)
         else:
             outcomes.append(None)
     if False in outcomes:
@@ -496,12 +549,27 @@ def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
     if kind == "click":
         return []
     if kind in {"spell", "item"}:
-        key = "spell_id" if kind == "spell" else "slot"
         value = step["argument"]
-        found = [action["simc_action"] for action in actions
-                 if action.get("kind") == kind and value.casefold() in
-                 {str(action.get(key)).casefold(), str(action.get("name", "")).casefold(),
-                  str(action.get("simc_action", "")).casefold()}]
+        def matches(action):
+            if action.get("kind") != kind:
+                return False
+            if kind == "spell":
+                values = {str(action[key]).casefold() for key in ("spell_id", "name", "simc_action")
+                          if action.get(key) is not None}
+                return value.casefold() in values
+            normalized = value.casefold()
+            slots = {"13": 13, "14": 14, "trinket1": 13, "trinket2": 14}
+            if normalized in slots:
+                return action.get("slot") == slots[normalized]
+            if normalized.isdecimal():
+                return str(action.get("item_id", "")).casefold() == normalized
+            return normalized == str(action.get("name", "")).casefold()
+        found = [action["simc_action"] for action in actions if matches(action)]
+        if kind == "spell":
+            # A numeric GSE spell may compile to its SimC alias, which is also
+            # present in the baseline catalogue under the native spell ID.
+            # Multiple rows are still unambiguous when all resolve to one action.
+            found = list(dict.fromkeys(found))
         if len(found) == 1:
             return found
         raise ValueError(f"GSE {path} 的 {kind} {value} 不能映射到当前角色")
@@ -521,7 +589,8 @@ def _map_step(step, actions, path, *, pet_ready=True, enemy_target_ready=False):
             if not match:
                 raise ValueError(f"GSE {path} 的宏命令不能忠实模拟：{line[:80]}")
             command, condition, argument = match.groups()
-            if not _condition(condition, path):
+            if not _condition(condition, path, pet_ready=pet_ready,
+                              enemy_target_ready=enemy_target_ready):
                 continue
             if command == "stopmacro" and not argument:
                 break
@@ -596,7 +665,7 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
             or not 50 <= context["input_interval_ms"] <= 2000
             or context["click_ms"] != context["input_interval_ms"]):
         raise ValueError("GSE 点击间隔必须与模拟按键间隔一致")
-    _estimate_expansion(program["nodes"], context)
+    source_plan = _compiled_source_plan(program["nodes"], context)
     pet_ready = context.get("pet_ready", True)
     if type(pet_ready) is not bool:
         raise ValueError("宠物就绪场景必须是布尔值")
@@ -605,7 +674,11 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
     if type(enemy_target_ready) is not bool:
         raise ValueError("敌方目标场景必须是布尔值")
     context["enemy_target_ready"] = enemy_target_ready
-    actions = [variant for action in (capabilities or {}).get("actions", [])
+    capability_data = capabilities or {}
+    # GSE imports can name actions outside the baseline's executed subset.
+    # The task supplies the separately verified import action inventory when available.
+    import_actions = capability_data.get("import_actions", capability_data.get("actions", []))
+    actions = [variant for action in import_actions
                for variant in action.get("variants", [action])]
     spells = {action["spell_id"]: action["name"] for action in actions
               if action.get("kind") == "spell"}
@@ -653,19 +726,16 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
                               source_path=fields[5]))
     if not 1 <= len(steps) <= 4096 or f"PASS\t{len(steps)}" not in log:
         raise ValueError("GSE 上游编译未产生有效的逐次按键计划")
+    if len(source_plan) != len(steps):
+        raise ValueError("GSE 上游编译步骤数量与来源计划不一致")
+    for source, step in zip(source_plan, steps):
+        if step["source_path"] and step["source_path"] != source["path"]:
+            raise ValueError("GSE 上游编译来源路径与 Program 不一致")
     mapped = [_map_step(step, actions, step["source_path"] or str(i + 1), pet_ready=pet_ready,
                         enemy_target_ready=enemy_target_ready)
               for i, step in enumerate(steps)]
     clicks = []
-    source_options = _compiled_source_map(program["nodes"])
-    source_counts = {}
-    for index, (block, step) in enumerate(zip(mapped, steps), 1):
-        path = step["source_path"] or str(index)
-        options = source_options.get(path, [])
-        occurrence = source_counts.get(path, 0)
-        source_counts[path] = occurrence + 1
-        source = (options[min(occurrence, len(options) - 1)] if options
-                  else _position(name, version, path))
+    for source, block in zip(source_plan, mapped):
         if block:
             clicks.append(CompiledActionNode(kind="Action", commands=block, source=source))
         else:

@@ -30,12 +30,12 @@
 
 ## 原样本严格映射结果
 
-2026-09-24 的 11 个旧样本成员均可解码，均未得到 DPS：
+2026-09-24 的 11 个旧样本成员均可解码；下表记录当时首次试跑结果，不覆盖后续重试：
 
 | 原串 / 成员 | 编译或映射结果 |
 | --- | --- |
-| Søl `SOL_UDK_AOE` | `spell 207317` 未映射到当前角色 |
-| Søl `SOL_UDK_ST` | `spell 316239` 未映射到当前角色 |
+| Søl `SOL_UDK_AOE` | 首次试跑时 `spell 207317` 未出现在只看已执行动作的窄目录中；2026-09-25 经当前角色动作核对后通过，见下节 |
+| Søl `SOL_UDK_ST` | 首次试跑时 `spell 316239` 未出现在只看已执行动作的窄目录中；2026-09-25 经当前角色动作核对后通过，见下节 |
 | Flip 两个成员 | `/castsequence [@target,harm,nodead] reset=target/combat outbreak, null` 不支持 |
 | MOB Unholy 两个成员 | `item 13` 未映射到当前角色；不把它假定为空点击 |
 | MOB Blood | `[nochanneling]` 条件无法确定 |
@@ -43,6 +43,33 @@
 | MOB Shadow `MOB_SP_OPENER` | 未替换占位文本 `Need Stuff Here` 不支持 |
 | MOB Shadow `MOB_SP_Myth` | 初测因 `/targetenemy [noharm][dead]` 被拒绝；此后仅精确支持该行在“已有存活且可攻击的敌方目标”场景下的无效果分支，未使用匹配的 Shadow 角色输入重跑 |
 | Violent Benediction | `=GSE.V.VB_IsHeals()` 需要游戏内变量，无法确定 If 分支 |
+
+## 2026-09-25 当前角色动作目录重试
+
+两条 Søl 原串未经改动，来自[作者的 12.1 邪 DK 帖](https://wowlazymacros.com/t/sols-12-1-unholy-dk-midnight-12-1-02-09-2026/64010)，GSE 版本 3.3.31（3331），各自选择版本 1。原串 SHA-256 与 manifest 一致：AOE `ae596b6966ac87e9776fe34a36dca6561d79616c0b9f0a1c8e17afc98991f7f9`；ST `033e5853eb3b4253b7764b57035fd907294568444cc503f11746accac070cf88`。本机原始文件是 `.local/sim2gse/gse-corpus/sol-unholy-12-1-01.txt` 和 `sol-unholy-12-1-02.txt`。
+
+导入前使用当前邪 DK 角色单独查询这两条原串引用的法术编号；查询输出保存在忽略目录 `.local/sim2gse/import-action-probe-review-sol-both-20260925/`。SimC（战斗模拟器）仅返回能创建为玩家动作、处于等级范围、可用且非后台/被动/静默的动作。核对结果为：`42650 → army_of_the_dead`、`43265 → death_and_decay`、`46585 → raise_dead`（当前动作原生编号 46584）、`47541 → death_coil`、`49576 → death_grip`、`55090 → scourge_strike`、`207317 → epidemic`、`316239 → festering_strike`（当前动作原生编号 85948）、`343294 → soul_reaper`、`1233448 → dark_transformation`、`1247378 → putrefy`。没有用名称猜测替换技能。
+
+两个成员均经公开导入任务入口完成编译和受控原生模拟。条件场景相同：无修饰键、已有存活可攻击的敌方目标、宠物已召唤；`click_ms = input_interval_ms = 300`，`gcd_ms = 1500`，seed `20260912`。角色资料为 `.local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc`，未修改。训练木桩设置为 90 级、护甲系数 4531.03、单目标，关闭 Omnium 天赋。
+
+| 成员 | 导入结果 | 47 个编译点击的受控 DPS | 独立角色基准 DPS |
+| --- | --- | ---: | ---: |
+| `SOL_UDK_AOE` | `passed_native_model` | 37842.240154123254 | 77044.71054312987 |
+| `SOL_UDK_ST` | `passed_native_model` | 41627.01167663097 | 77044.71054312987 |
+
+表中“47 个编译点击”是导入序列展开后的点击数；受控模拟按 300 ms 间隔循环执行 180 秒，共 600 个输入时点、99 次迭代。右栏 77044.71054312987 是同一角色无导入点击计划的自由选择基准，不能当作导入序列 DPS 或两种序列的比较值。两次任务均已完成，报告标记 `game_validation=not_run`。
+
+两条成员的 47 个点击都保留了逐项上游来源路径；下列第 n 项就是编译计划第 n 次点击的 `source_path`，顺序与两次结果中的 `candidate.compiled_steps` 一致：
+
+```text
+1:1, 2:2.1, 3:2.1, 4:2.2, 5:2.1, 6:2.2, 7:2.3, 8:2.1, 9:2.2, 10:2.3,
+11:2.4, 12:2.1, 13:2.2, 14:2.3, 15:2.4, 16:2.5, 17:2.1, 18:2.2, 19:2.3,
+20:2.4, 21:2.5, 22:2.6, 23:2.1, 24:2.1, 25:2.2, 26:2.1, 27:2.2, 28:2.3,
+29:2.1, 30:2.2, 31:2.3, 32:2.4, 33:2.1, 34:2.2, 35:2.3, 36:2.4, 37:2.5,
+38:2.1, 39:2.2, 40:2.3, 41:2.4, 42:2.5, 43:2.6, 44:3.1, 45:3.2, 46:3.3, 47:3.4
+```
+
+完整任务产物（含原始导入副本、编译计划、受控报告和角色基准报告）仅在忽略目录：`.local/sim2gse/import-review-sol-aoe-20260925/` 与 `.local/sim2gse/import-review-sol-st-20260925-b/`。其余 9 个此前试过的真实样本成员仍保持上表所述的明确拒绝状态；本次只关闭 Søl 两个成员的映射缺口，没有扩大条件或技能支持范围。
 
 支持的精确宏场景依据：当目标存在、存活且可攻击时，`[noharm]` 和 `[dead]` 条件均不成立，`/targetenemy [noharm][dead]` 不执行；该行占用的输入仍保留为空点击。`enemy_target_ready` 是编译上下文，默认为 true；false 时拒绝。其他 `/targetenemy` 写法仍拒绝。该组合用于缺少可攻击目标或目标已死亡时重新选敌的公开示例见[暴雪论坛讨论](https://eu.forums.blizzard.com/en/wow/t/help-with-targeting-macro/547862)及[另一讨论](https://us.forums.blizzard.com/en/wow/t/help-targeting-next-target-macro/31865)。
 
