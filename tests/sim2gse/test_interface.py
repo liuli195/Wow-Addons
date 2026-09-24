@@ -69,6 +69,10 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn('id="inspectImport"', page)
         self.assertIn('id="importSequence"', page)
         self.assertIn('id="importStart"', page)
+        self.assertIn('importStart.disabled=running||!supported', page)
+        self.assertIn('entry?.simulation_supported===true', page)
+        self.assertIn('entry.support_reason', page)
+        self.assertIn('importStart.disabled=true', page)
         self.assertNotIn('id="gseClick"', page)
         self.assertIn('gse_click_ms:Number(interval.value)', page)
 

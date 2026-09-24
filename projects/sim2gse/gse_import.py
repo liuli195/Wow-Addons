@@ -285,20 +285,85 @@ def import_action_spell_ids(program):
     return sorted(spell_ids)
 
 
+def import_action_spell_names(program):
+    """收集按名称写出的法术，交由固定 SimC 逐字查询角色动作工厂。"""
+    names = {}
+
+    def add_name(value):
+        if not isinstance(value, str):
+            return
+        name = value.strip()
+        if (not name or name.isdecimal() or len(name) > 128
+                or any(ord(character) < 32 or ord(character) == 127 for character in name)):
+            return
+        names.setdefault(name.casefold(), name)
+
+    def visit(nodes):
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if node.get("kind") == "Action":
+                for command in node.get("commands", []):
+                    if not isinstance(command, dict):
+                        continue
+                    if command.get("type") == "spell":
+                        add_name(command.get("argument"))
+                    elif command.get("type") == "macro":
+                        text = command.get("text", "")
+                        if isinstance(text, str):
+                            for match in re.finditer(
+                                    r"(?im)^\s*/cast\b(?:(?:\s*\[[^]\r\n]*\]))*\s+([^\r\n]+?)\s*$",
+                                    text):
+                                add_name(match.group(1))
+            visit(node.get("body"))
+            visit(node.get("then"))
+            visit(node.get("else_branch"))
+            action = node.get("action")
+            if isinstance(action, dict):
+                visit([action])
+
+    visit(program.get("nodes", []))
+    if len(names) > 256:
+        raise ValueError("GSE 导入包含超过 256 个不同法术名称")
+    return sorted(names.values(), key=str.casefold)
+
+
 def _compiled_source_map(nodes):
     by_path = {}
+
+    def add(source):
+        identity = (source["sequence"], source["version"], source["path"])
+        if identity in by_path and by_path[identity] != source:
+            raise ValueError("GSE Program 含有重复来源身份")
+        by_path[identity] = source
+
     def visit(items):
         for node in items:
-            if node["kind"] in {"Action", "Repeat", "Pause"}:
-                by_path.setdefault(node["source"]["path"], []).append(node["source"])
+            if node["kind"] in {"Action", "Pause"}:
+                add(node["source"])
+            elif node["kind"] == "Repeat":
+                # GSE emits the repeated action, whose source is the Repeat block's location.
+                add(node["action"]["source"])
             visit(node.get("body", []))
             visit(node.get("then", []))
             visit(node.get("else_branch", []))
-            if node.get("action"):
-                visit([node["action"]])
 
     visit(nodes)
     return by_path
+
+
+def _contains_random_loop(nodes):
+    for node in nodes:
+        if node.get("kind") == "Loop" and node.get("step_function") == "Random":
+            return True
+        for field in ("body", "then", "else_branch"):
+            if _contains_random_loop(node.get(field, [])):
+                return True
+        if node.get("action") and _contains_random_loop([node["action"]]):
+            return True
+    return False
 
 
 def inspect_import(text):
@@ -666,6 +731,7 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
             or context["click_ms"] != context["input_interval_ms"]):
         raise ValueError("GSE 点击间隔必须与模拟按键间隔一致")
     source_plan = _compiled_source_plan(program["nodes"], context)
+    has_random_loop = _contains_random_loop(program["nodes"])
     pet_ready = context.get("pet_ready", True)
     if type(pet_ready) is not bool:
         raise ValueError("宠物就绪场景必须是布尔值")
@@ -719,23 +785,40 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
     for line in log.splitlines():
         if line.startswith("STEP\t"):
             fields = line.split("\t")
-            if len(fields) != 6 or int(fields[1]) != len(steps) + 1:
-                raise ValueError("GSE 上游编译步骤格式无效")
+            if len(fields) != 8 or int(fields[1]) != len(steps) + 1:
+                raise ValueError(f"GSE 上游编译步骤格式无效（字段数：{len(fields)}）")
             steps.append(dict(type=fields[2], argument=fields[3],
                               macrotext=bytes.fromhex(fields[4]).decode("utf-8"),
-                              source_path=fields[5]))
+                              source_path=bytes.fromhex(fields[5]).decode("utf-8"),
+                              source_sequence=bytes.fromhex(fields[6]).decode("utf-8"),
+                              source_version=int(fields[7])))
     if not 1 <= len(steps) <= 4096 or f"PASS\t{len(steps)}" not in log:
         raise ValueError("GSE 上游编译未产生有效的逐次按键计划")
-    if len(source_plan) != len(steps):
+    if not has_random_loop and len(source_plan) != len(steps):
         raise ValueError("GSE 上游编译步骤数量与来源计划不一致")
-    for source, step in zip(source_plan, steps):
-        if step["source_path"] and step["source_path"] != source["path"]:
+
+    source_map = _compiled_source_map(program["nodes"])
+    sources = []
+    for step in steps:
+        identity = (step["source_sequence"], step["source_version"], step["source_path"])
+        source = source_map.get(identity)
+        if source is None:
+            raise ValueError("GSE 上游编译来源身份与 Program 不一致")
+        sources.append(source)
+    if not has_random_loop:
+        expected_identities = [(source["sequence"], source["version"], source["path"])
+                               for source in source_plan]
+        actual_identities = [(step["source_sequence"], step["source_version"], step["source_path"])
+                             for step in steps]
+        if actual_identities != expected_identities:
             raise ValueError("GSE 上游编译来源路径与 Program 不一致")
-    mapped = [_map_step(step, actions, step["source_path"] or str(i + 1), pet_ready=pet_ready,
+    mapped = [_map_step(step, actions,
+                        f"{step['source_sequence']} v{step['source_version']} {step['source_path']}",
+                        pet_ready=pet_ready,
                         enemy_target_ready=enemy_target_ready)
               for i, step in enumerate(steps)]
     clicks = []
-    for source, block in zip(source_plan, mapped):
+    for source, block in zip(sources, mapped):
         if block:
             clicks.append(CompiledActionNode(kind="Action", commands=block, source=source))
         else:

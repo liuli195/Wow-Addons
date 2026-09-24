@@ -163,6 +163,7 @@ def inspect(reference, folder):
         if (row.get('kind') == 'spell' and type(row.get('spell_id')) is int
                 and row['spell_id'] > 0 and row.get('data_valid')
                 and row.get('native_spell_id') and row.get('simc_action')
+                and row.get('action_initialized') is True
                 and row.get('available') is True and row.get('background') is False
                 and row.get('passive') is False and row.get('quiet') is False):
             add_import_action(dict(kind='spell', spell_id=row['spell_id'],
@@ -240,27 +241,37 @@ def check_report(report, character, iterations, *, simulation_config=None):
                               spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource']))
 
 
-def _profile_with_import_queries(profile, folder, spell_ids):
-    if not spell_ids:
+def _profile_with_import_queries(profile, folder, spell_ids, spell_names=()):
+    if not spell_ids and not spell_names:
         return profile
     if (not isinstance(spell_ids, (list, tuple)) or len(spell_ids) > 256
             or any(type(spell_id) is not int or spell_id <= 0 for spell_id in spell_ids)):
         raise ValueError('GSE 动作核对的法术编号无效')
+    if (not isinstance(spell_names, (list, tuple)) or len(spell_names) > 256
+            or any(not isinstance(name, str) or not name.strip() or len(name) > 128
+                   or any(ord(character) < 32 or ord(character) == 127 for character in name)
+                   for name in spell_names)):
+        raise ValueError('GSE 动作核对的法术名称无效')
     text = Path(profile).read_text(encoding='utf-8')
     probe_profile = Path(folder) / 'import-action-query.simc'
     probe_profile.parent.mkdir(parents=True, exist_ok=True)
     separator = '' if not text or text.endswith(('\n', '\r')) else '\n'
-    probe_profile.write_text(text + separator +
-                             'sim2gse_action_ids=' + ','.join(map(str, sorted(set(spell_ids)))) + '\n',
-                             encoding='utf-8')
+    query_options = []
+    if spell_ids:
+        query_options.append('sim2gse_action_ids=' + ','.join(map(str, sorted(set(spell_ids)))))
+    if spell_names:
+        names = sorted({name.strip() for name in spell_names}, key=str.casefold)
+        encoded = ','.join(name.encode('utf-8').hex() for name in names)
+        query_options.append('sim2gse_action_names_hex=' + encoded)
+    probe_profile.write_text(text + separator + '\n'.join(query_options) + '\n', encoding='utf-8')
     return probe_profile
 
 
 def reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-              simulation_config=None, import_spell_ids=()):
+              simulation_config=None, import_spell_ids=(), import_spell_names=()):
     folder = Path(folder)
     runtime = runtime or TaskRuntime()
-    probe_profile = _profile_with_import_queries(profile, folder, import_spell_ids)
+    probe_profile = _profile_with_import_queries(profile, folder, import_spell_ids, import_spell_names)
     run(profile, folder, options=[f'iterations={iterations}', f'seed={seed}',
         'json2=native.pending.json'], runtime=runtime, simulation_config=simulation_config)
     try:
@@ -281,7 +292,7 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     result['precombat_definitions'] = player.get('sim2gse_precombat_actions', [])
     result['active_items'] = player.get('sim2gse_items', [])
     result['import_action_candidates'] = []
-    if import_spell_ids:
+    if import_spell_ids or import_spell_names:
         probe_folder = folder / 'import_action_probe'
         run(probe_profile, probe_folder, options=['iterations=1', 'max_time=1'],
             runtime=runtime, simulation_config=simulation_config)

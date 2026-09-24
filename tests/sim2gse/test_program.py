@@ -14,7 +14,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 
 from codec import export, wire_value  # noqa: E402
-from gse_import import _map_step, decode_import, import_action_spell_ids  # noqa: E402
+from gse_import import _map_step, decode_import, import_action_spell_ids, import_action_spell_names  # noqa: E402
 from program import compile_program, from_action_blocks, from_gse_import  # noqa: E402
 from sequence import compiled_program  # noqa: E402
 
@@ -29,6 +29,13 @@ class ProgramTests(unittest.TestCase):
                 dict(type="macro", text="/cast [@target,harm] 43265\n/use 13")])]),
         ])
         self.assertEqual(import_action_spell_ids(program), [43265, 316239, 1247378])
+
+    def test_import_action_spell_names_include_name_form_casts(self):
+        program = dict(nodes=[
+            dict(kind="Action", commands=[dict(type="spell", argument="Epidemic")]),
+            dict(kind="Action", commands=[dict(type="macro", text="/cast [@target,harm] Epidemic")]),
+        ])
+        self.assertEqual(import_action_spell_names(program), ["Epidemic"])
 
     def test_upstream_compiles_direct_sequence_object_shell(self):
         sequence = dict(MetaData=dict(Name="DIRECT_SEQUENCE", SpecID=252, GSEVersion=3331),
@@ -63,7 +70,7 @@ class ProgramTests(unittest.TestCase):
         capabilities = dict(actions=[dict(kind="spell", spell_id=77575, name="Outbreak",
                                           simc_action="outbreak")])
         upstream_result = type("Process", (), {"returncode": 0,
-                                                 "stdout": b"STEP\t1\tspell\t77575\t\t1\nPASS\t1\n",
+                                                 "stdout": b"STEP\t1\tspell\t77575\t\t31\t465554555245\t1\nPASS\t1\n",
                                                  "stderr": b""})()
         with tempfile.TemporaryDirectory() as directory, \
              patch("gse_import.run_command", return_value=upstream_result) as run_upstream, \
@@ -185,6 +192,45 @@ class ProgramTests(unittest.TestCase):
                 else:
                     self.assertEqual(compiled, expected[step_function])
 
+    def test_random_loop_repeat_maps_actual_upstream_order_across_seeds(self):
+        actions = [
+            dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak"),
+            dict(kind="spell", spell_id=49998, name="Death Coil", simc_action="death_coil"),
+            dict(kind="spell", spell_id=55090, name="Scourge Strike", simc_action="scourge_strike"),
+            dict(kind="spell", spell_id=43265, name="Death and Decay", simc_action="death_and_decay"),
+        ]
+        loop = {"Type": "Loop", "Repeat": "2", "StepFunction": "Random",
+                1: {"Type": "Action", "type": "spell", "spell": 77575},
+                2: {"Type": "Repeat", "Interval": 2, "type": "spell", "spell": 49998},
+                3: {"Type": "Action", "type": "spell", "spell": 55090},
+                4: {"Type": "Action", "type": "spell", "spell": 43265}}
+        sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
+                        Versions=[dict(Actions=[loop])])
+        raw = cbor2.dumps(wire_value(["RANDOM_SOURCE", sequence]))
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+        by_path = {"1.1": "outbreak", "1.2": "death_coil",
+                   "1.3": "scourge_strike", "1.4": "death_and_decay"}
+        observed_orders = set()
+        for seed in (1, 2, 5, 17):
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory() as directory:
+                candidate = compile_program(from_gse_import(text, "RANDOM_SOURCE", 1), Path(directory),
+                                            identity=dict(class_id=6, spec_id=252),
+                                            capabilities=dict(actions=actions),
+                                            context=dict(click_ms=300, input_interval_ms=300,
+                                                         gcd_ms=1500, seed=seed))
+                steps = candidate["compiled_steps"]
+                clicks = candidate["compiled_program"]["clicks"]
+                observed_orders.add(tuple(step["source_path"] for step in steps))
+                self.assertEqual(len(steps), len(clicks))
+                self.assertTrue({"1.1", "1.2", "1.3", "1.4"} <=
+                                {step["source_path"] for step in steps})
+                for step, click in zip(steps, clicks):
+                    self.assertEqual(click["source"]["sequence"], "RANDOM_SOURCE")
+                    self.assertEqual(click["source"]["version"], 1)
+                    self.assertEqual(click["source"]["path"], step["source_path"])
+                    self.assertEqual(click["commands"], [by_path[step["source_path"]]])
+        self.assertGreater(len(observed_orders), 1)
+
     def test_priority_loop_growth_is_limited_before_upstream(self):
         loop = {"Type": "Loop", "Repeat": "1", "StepFunction": "Priority"}
         for index in range(1, 92):
@@ -292,6 +338,24 @@ class ProgramTests(unittest.TestCase):
         self.assertTrue(candidate["compile_context"]["enemy_target_ready"])
         self.assertEqual(candidate["compile_context"]["scene"],
                          "no_modifiers_enemy_target_ready_pet_ready")
+
+    def test_name_form_macro_maps_through_separately_verified_native_action(self):
+        sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
+                        Versions=[dict(Actions=[{"Type": "Action", "type": "macro",
+                                                "macro": "/cast Epidemic"}])])
+        raw = cbor2.dumps(wire_value(["NAME_FORM", sequence]))
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+        epidemic = dict(kind="spell", spell_id=207317, native_spell_id=207317,
+                        name="epidemic", simc_action="epidemic", data_valid=True,
+                        action_initialized=True, available=True, background=False,
+                        passive=False, quiet=False)
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = compile_program(from_gse_import(text, "NAME_FORM", 1), Path(directory),
+                                        identity=dict(class_id=6, spec_id=252),
+                                        capabilities=dict(actions=[], import_actions=[epidemic]),
+                                        context=dict(click_ms=300, input_interval_ms=300,
+                                                     gcd_ms=1500, seed=1))
+        self.assertEqual(compiled_program(candidate), [["epidemic"]])
 
     def test_targetenemy_noharm_dead_is_a_noop_only_with_ready_enemy_target(self):
         exact = dict(type="macro", macrotext="/targetenemy [noharm][dead]")

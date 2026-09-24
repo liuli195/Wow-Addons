@@ -71,6 +71,12 @@
 
 完整任务产物（含原始导入副本、编译计划、受控报告和角色基准报告）仅在忽略目录：`.local/sim2gse/import-review-sol-aoe-20260925/` 与 `.local/sim2gse/import-review-sol-st-20260925-b/`。其余 9 个此前试过的真实样本成员仍保持上表所述的明确拒绝状态；本次只关闭 Søl 两个成员的映射缺口，没有扩大条件或技能支持范围。
 
+## 复审修复证据
+
+角色动作名称查询不依赖 APL（动作优先列表）是否实际执行该技能。对当前 DK 测试角色单独做 1 秒原生查询，名称形式 `Epidemic` 返回 `available=true`、`action_initialized=true`，但不在普通 `sim2gse_actions` 执行列表中；见 `tests/sim2gse/test_engine.py::test_import_probe_resolves_name_form_action_outside_executed_subset`。查询结果只用于导入时严格映射，不改变搜索候选集合。另以法师 Frost 的 `mirror_image`（镜像）验证较早创建动作后仍完成初始化，并能看到 3 个宠物；对应测试为 `test_import_probe_action_is_initialized_for_mage_pet_setup`。
+
+固定基线 `fa2ea1360858942a8bc3d065fbad81c5a9cef417` 的搜索回归使用测试用邪 DK 角色资料和小预算配置；它不是第三方 GSE 原串，结果也不代表 DPS 验收。固定基线旧代码与当前代码选出同一候选键 `818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc`，生成 GSE 文本 SHA-256 `322b8c36260b2402927d0a5db2b62ff788623193525a8c966f452ea96b404486`，并产生相同的 10 个编译点击。完整 GSE 文本和逐点击结果保存在 `tests/sim2gse/test_search.py::test_real_deathknight_search_matches_fixed_baseline_golden`；因只申请两场，任务状态是 `validation_incomplete`。
+
 支持的精确宏场景依据：当目标存在、存活且可攻击时，`[noharm]` 和 `[dead]` 条件均不成立，`/targetenemy [noharm][dead]` 不执行；该行占用的输入仍保留为空点击。`enemy_target_ready` 是编译上下文，默认为 true；false 时拒绝。其他 `/targetenemy` 写法仍拒绝。该组合用于缺少可攻击目标或目标已死亡时重新选敌的公开示例见[暴雪论坛讨论](https://eu.forums.blizzard.com/en/wow/t/help-with-targeting-macro/547862)及[另一讨论](https://us.forums.blizzard.com/en/wow/t/help-targeting-next-target-macro/31865)。
 
 另有 `wow-wide-64007-1.txt` 与 Violent Benediction 原串 SHA-256 相同，按重复原串去重。维护者 Pause 讨论关联帖 18312、35227，以及后续候选 37781、36270、32673、31200、26914 均未发现可提取的 `!GSE3!` 原串。不得将合成向量称为真实覆盖。

@@ -368,7 +368,7 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     from engine import inspect, reference
     from sequence import select, evaluate
     from program import compile_program, from_action_blocks
-    from gse_import import import_action_spell_ids
+    from gse_import import import_action_spell_ids, import_action_spell_names
 
     if type(phase_ms) is not int or not 0 <= phase_ms < interval_ms:
         raise ValueError(f"起始相位必须在 0 至 {interval_ms - 1} 毫秒之间")
@@ -382,7 +382,9 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     native = reference(destination / "input.simc", destination / "reference", character, runtime=runtime,
                        simulation_config=simulation_config,
                        import_spell_ids=(import_action_spell_ids(gse_program)
-                                         if gse_program is not None else ()))
+                                         if gse_program is not None else ()),
+                       import_spell_names=(import_action_spell_names(gse_program)
+                                           if gse_program is not None else ()))
     character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
     _write_json(
         destination / 'profile.json',

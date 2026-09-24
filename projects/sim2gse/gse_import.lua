@@ -69,13 +69,43 @@ GSE.GetSpellInfo = function(value)
     -- Keep unknown numeric IDs visible so the simulator can reject them with their source value.
     if id then return {spellID = id, name = tostring(value)} end
 end
-math.randomseed(context.seed)
-local compiled = GSE.CompileTemplate(sequence.Versions[version])
+local currentSource = {sequence = name, version = version}
+local processAction = GSE.processAction
+local function attachSourceIdentity(value, identity, seen)
+    if type(value) ~= "table" or seen[value] then return end
+    seen[value] = true
+    if value.blockPath and not value.sourceSequence then
+        value.sourceSequence = identity.sequence
+        value.sourceVersion = identity.version
+    end
+    for _, child in pairs(value) do
+        attachSourceIdentity(child, identity, seen)
+    end
+end
+GSE.processAction = function(action, metaData, variables, path)
+    local previousSource = currentSource
+    if action.Type == "Embed" and action.Sequence then
+        local child = sequences[action.Sequence]
+        if child then
+            currentSource = {
+                sequence = action.Sequence,
+                version = GSE.GetActiveSequenceVersion(action.Sequence)
+            }
+        end
+    end
+    local compiled = processAction(action, metaData, variables, path)
+    attachSourceIdentity(compiled, currentSource, {})
+    currentSource = previousSource
+    return compiled
+end
 local function hex(value)
     return (tostring(value or ""):gsub(".", function(c) return string.format("%02x", c:byte()) end))
 end
+math.randomseed(context.seed)
+local compiled = GSE.CompileTemplate(sequence.Versions[version])
 for index, step in ipairs(compiled) do
     print(table.concat({"STEP", index, step.type or "", tostring(step.spell or step.item or ""),
-                        hex(step.macrotext or step.macro or ""), step.blockPath or ""}, "\t"))
+                        hex(step.macrotext or step.macro or ""), hex(step.blockPath or ""),
+                        hex(step.sourceSequence or ""), tostring(step.sourceVersion or "")}, "\t"))
 end
 print("PASS\t" .. #compiled)

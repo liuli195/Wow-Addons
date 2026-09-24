@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import time
 import shutil
+import hashlib
 from contextlib import contextmanager, nullcontext
 import json
 from pathlib import Path
@@ -147,6 +148,58 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_real_deathknight_search_matches_fixed_baseline_golden(self):
+        """固定基线 fa2ea136 的真实邪 DK 搜索结果不得被导入功能改变。"""
+        expected_key = "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc"
+        expected_text = (
+            "!GSE3!awoINnKPd7E0NDYyd7V0NDJ1Wuzhm1qS6JJYkrjUxS8xNxVDgVtwQWqyp4vEHy/3YNew1KLizPw8SV4WF4/UnIKI/qdzNrycu+hZV8OL5r1P56x4sXzSi85NL1pmPdnR/bK969mUfe/39Dyfve7ZgvaXC3eDFPQ0P5295Wlb6/s9syHiz6ZueNa7TsHQSM9Qz0DPzNLC0ASo59mKhc+656PLmVqYP25oerZjx7OO/mdTO57Nm/N0w6yn+1pfrup5sb4RKOXhnJGanF1cmutdZmhlkGJgbGFpaeHukpqWWJpTwugBdX5x4yJ3x+QSEKtrsUtIZUGqG4TrUgJku+YmJhflQ8gw/eTE4hKF6Lz85PzcpMSSWAUTM1MLE/yafPSLSxKLShJLShKTs7EoLS5IzcmBkFIMjPrs+JVILptFyAyhSxoErfHfQ0iJMMckAi7ZuZWQGaw2/wiYcd0owDMvqTQzpyQssSgzMSkntXgBAA=="
+        )
+        expected_steps = [
+            {"type": "macro", "macrotext": "/cast [nocombat] raise_dead"},
+            {"type": "macro", "macrotext": "/startattack"},
+            {"type": "spell", "spell": 77575},
+            {"type": "spell", "spell": 42650},
+            {"type": "spell", "spell": 1233448},
+            {"type": "spell", "spell": 85948},
+            {"type": "spell", "spell": 1247378},
+            {"type": "spell", "spell": 47541},
+            {"type": "spell", "spell": 343294},
+            {"type": "spell", "spell": 55090},
+        ]
+        config = {
+            "total_budget_seconds": 30,
+            "search_budget_seconds": 10,
+            "candidate_limit": 2,
+            "round_candidate_limit": 1,
+            "no_improvement_rounds": 1,
+            "batch_targets": (2,),
+            "validation_batches": 1,
+            "final_batches": 1,
+            "iterations": 2,
+            "final_iterations": 2,
+            "max_processes": 1,
+            "scenarios": ("nominal",),
+            "random_seed": 20260912,
+            "trace_search": False,
+            "input_interval_ms": 300,
+        }
+
+        with tempfile.TemporaryDirectory(
+            prefix="sim2gse-baseline-search-", dir=REPOSITORY / ".local" / "sim2gse"
+        ) as directory:
+            source = Path(directory) / "input.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            result = run_task(source, Path(directory) / "task", search_config=config)
+
+        self.assertEqual(result["selected_candidate_key"], expected_key)
+        self.assertEqual(result["locked_candidate_key"], expected_key)
+        self.assertEqual(result["candidate"]["text"], expected_text)
+        self.assertEqual(
+            hashlib.sha256(result["candidate"]["text"].encode("ascii")).hexdigest(),
+            "322b8c36260b2402927d0a5db2b62ff788623193525a8c966f452ea96b404486",
+        )
+        self.assertEqual(result["candidate"]["compiled_steps"], expected_steps)
+
     def test_search_starts_match_fixed_baseline_golden(self):
         """导入专用动作目录不改变基线搜索起点或顺序。"""
         capabilities = dict(

@@ -184,13 +184,14 @@
     },
     {
       "path": "projects/sim2gse/native/patches/028-import-action-lookup.patch",
-      "sha256": "c99aa617849b5aa59c57d070b54353a2ec14f05d9ecc2273eb3b65b5d2031450"
+      "sha256": "21fe1e7290383dcbb08576506d0c6514429400de3379f30d0b956eee1f69303a"
     }
   ],
   "baseline_patched_files": {
-    "engine/report/json/report_json.cpp": "a00c88dfd34ff076bc150180ad8adb2818fa0a7561e8544ca83b7cad5f1271a1",
-    "engine/player/player.cpp": "789119e828d9f068eda7e7c840ef9f98c5940f2b7ac034da5b9e76cf3d2509f7",
-    "engine/player/player.hpp": "c15829bb1e2a71e6e1546bccac5045b2a9c8b378d97112e020d4f16c857b7fab"
+    "engine/report/json/report_json.cpp": "27ca275ad6c5cb5ece79ea3485b589ae3fd5bb7e89947fce50804c085a97324a",
+    "engine/player/player.cpp": "01cb2c066e67efd8bd3a463c07c4362b35641fffa9d8f0c82e6e03a4d088252e",
+    "engine/player/player.hpp": "1106796d2f7cfe5cfd2e1d0d229633d8d8e9a47f98534f2dacfec1491888227b",
+    "engine/sim/sim.cpp": "b006a623a9e7fc5e71d14c138df2d0de9a2a19b3155079c8e0b5ffc36e075bcd"
   },
   "client_targeting": {
     "path": "projects/sim2gse/compatibility/spell-target-masks.json",
