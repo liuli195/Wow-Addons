@@ -3,13 +3,22 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>角色按键序列优化器</title>
 <style>
-:root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#e6edf5;background:#10171f;color-scheme:dark}*{box-sizing:border-box}body{max-width:740px;margin:54px auto;padding:0 24px}h1{font-size:28px;margin-bottom:8px}h2{font-size:18px;margin:0 0 18px}p{color:#aebdcc;line-height:1.7}section{padding:25px;margin:22px 0;border:1px solid #344352;border-radius:12px;background:#19232e}label{display:block;margin-bottom:10px}textarea{width:100%;padding:14px;background:#10171f;color:#e6edf5;border:1px solid #526778;border-radius:7px;font:14px/1.7 monospace;resize:vertical}button{margin-top:16px;padding:11px 23px;border:0;border-radius:7px;background:#a2e3cd;color:#11291f;font:600 15px system-ui;cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible,textarea:focus-visible{outline:3px solid #a2e3cd;outline-offset:3px}progress{width:100%;height:12px;accent-color:#a2e3cd}.note{font-size:13px}.number{color:#a2e3cd;margin-right:12px}.error{color:#ffb7af;margin-bottom:0}.success{color:#a2e3cd}#progressText{color:#e6edf5}[hidden]{display:none!important}@media(max-width:500px){body{margin:26px auto;padding:0 14px}section{padding:18px}}
+:root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#e6edf5;background:#10171f;color-scheme:dark}*{box-sizing:border-box}body{max-width:740px;margin:54px auto;padding:0 24px}h1{font-size:28px;margin-bottom:8px}h2{font-size:18px;margin:0 0 18px}p{color:#aebdcc;line-height:1.7}section{padding:25px;margin:22px 0;border:1px solid #344352;border-radius:12px;background:#19232e}label{display:block;margin-bottom:10px}textarea,input,select{width:100%;padding:14px;background:#10171f;color:#e6edf5;border:1px solid #526778;border-radius:7px;font:14px/1.7 monospace}textarea{resize:vertical}button{margin-top:16px;padding:11px 23px;border:0;border-radius:7px;background:#a2e3cd;color:#11291f;font:600 15px system-ui;cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #a2e3cd;outline-offset:3px}progress{width:100%;height:12px;accent-color:#a2e3cd}.note{font-size:13px}.number{color:#a2e3cd;margin-right:12px}.error{color:#ffb7af;margin-bottom:0}.success{color:#a2e3cd}#progressText{color:#e6edf5}[hidden]{display:none!important}@media(max-width:500px){body{margin:26px auto;padding:0 14px}section{padding:18px}}
 </style>
 <header><h1>角色按键序列优化器</h1><p>粘贴角色信息，找到适合你的按键序列。</p></header>
 <main>
 <section><h2><span class="number">01</span>导入角色</h2>
 <label for="profile">角色导出字符串</label><textarea id="profile" rows="7" spellcheck="false" placeholder="在这里粘贴从 SimC（角色导出插件）复制的完整文本"></textarea>
 <p id="error" class="error" role="alert" hidden></p><label for="interval">模拟按键间隔（毫秒）</label><input id="interval" type="number" min="50" max="2000" step="1" value="300"><p class="note">地面技能在角色脚下释放；请确保目标在技能范围内。此间隔仅用于模拟。</p><button id="start">开始运行</button>
+</section>
+<section><h2>导入第三方 GSE 序列并模拟 DPS（每秒伤害）</h2>
+<label for="gseImport">GSE 导入字符串</label><textarea id="gseImport" rows="5" spellcheck="false" placeholder="!GSE3!…"></textarea>
+<button id="inspectImport">检查导入内容</button><p id="importInspection" class="note" role="status">先检查导入内容，再选择序列和版本。</p>
+<div id="importSelection" hidden><label for="importSequence">序列</label><select id="importSequence"></select>
+<label for="importVersion">版本</label><select id="importVersion"></select>
+<label for="gcdMs">公共冷却（毫秒）</label><input id="gcdMs" type="number" min="500" max="3000" step="1" value="1500">
+<p class="note">GSE 点击间隔使用上面的模拟按键间隔；公共冷却共同决定暂停块的点击次数。本机模拟还需准确解释宏命令，无法解释时会报告原因且不显示 DPS。</p>
+<button id="importStart">模拟导入序列</button></div><p id="importResult" class="success" role="status" hidden></p>
 </section>
 <section><h2><span class="number">02</span>运行进度</h2>
 <p id="progressText" role="status" aria-live="polite">等待开始</p><progress id="progress" value="0" max="1" aria-label="实际任务进度"></progress><p id="progressNote" class="note">开始后，这里会展示实际任务进度。</p>
@@ -23,10 +32,12 @@
 const profile=document.getElementById('profile'),start=document.getElementById('start'),copy=document.getElementById('copy'),result=document.getElementById('result');
 const error=document.getElementById('error'),progress=document.getElementById('progress'),progressText=document.getElementById('progressText'),progressNote=document.getElementById('progressNote'),resultNote=document.getElementById('resultNote'),resultSection=document.getElementById('resultSection');
 const interval=document.getElementById('interval');
+const gseImport=document.getElementById('gseImport'),inspectImport=document.getElementById('inspectImport'),importSequence=document.getElementById('importSequence'),importVersion=document.getElementById('importVersion'),importStart=document.getElementById('importStart'),importResult=document.getElementById('importResult');
+const importInspection=document.getElementById('importInspection'),importSelection=document.getElementById('importSelection'),gcdMs=document.getElementById('gcdMs');
 interval.addEventListener('input',resetResult);
 const phases={initialize:'正在读取角色和模拟引擎',search:'正在寻找合适的序列',validation:'正在复测候选序列',final:'正在进行最终复测',complete:'计算完成',done:'计算完成'};
-let running=false,taskId=null,timer=null;
-function resetResult(){resultSection.hidden=true;result.value='';copy.disabled=true;resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';}
+let running=false,taskId=null,timer=null,inspected=null;
+function resetResult(){resultSection.hidden=true;result.value='';copy.disabled=true;resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';importResult.hidden=true;importResult.textContent='';}
 function showError(message){error.textContent=message;error.hidden=false;}
 function resetProgress(){progress.value=0;progressText.textContent='等待开始';progressNote.textContent='开始后，这里会展示实际任务进度。';}
 profile.addEventListener('input',()=>{error.hidden=true;resetResult();resetProgress();});
@@ -37,12 +48,13 @@ async function poll(){
   error.hidden=true;
   progress.value=state.progress||0;progressText.textContent=phases[state.phase]||state.phase||'正在处理';
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
+  if(state.status==='completed'&&state.simulation_ready){importResult.textContent=state.selected_sequence+' · 版本 '+state.selected_version+' · '+Number(state.dps).toFixed(1)+' DPS（每秒伤害）';importResult.hidden=false;finish();return;}
   if(['completed','validation_incomplete'].includes(state.status)&&state.result_ready){result.value=state.candidate_text;resultSection.hidden=false;copy.disabled=false;resultNote.textContent=state.result_note||'结果已就绪，可以复制。';finish();return;}
   if(['failed','cancelled','validation_incomplete','budget_exhausted'].includes(state.status)){showError(state.error||'任务未完成，未生成可复制结果。');finish();return;}
   timer=setTimeout(poll,500);
  }catch(e){showError('暂时无法读取进度，正在重新连接；计算可能仍在继续。');timer=setTimeout(poll,1000);}
 }
-function finish(){running=false;start.disabled=false;profile.disabled=false;interval.disabled=false;start.textContent='开始运行';if(timer)clearTimeout(timer);}
+function finish(){running=false;start.disabled=false;importStart.disabled=false;profile.disabled=false;interval.disabled=false;gseImport.disabled=false;start.textContent='开始运行';importStart.textContent='模拟导入序列';if(timer)clearTimeout(timer);}
 start.addEventListener('click',async()=>{
  if(running)return;
  if(!profile.value.trim()){showError('请先粘贴角色导出字符串。');profile.focus();return;}
@@ -50,6 +62,15 @@ start.addEventListener('click',async()=>{
  running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;start.textContent='运行中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动任务';progressNote.textContent='正在等待真实任务事件。';
  try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,input_interval_ms:Number(interval.value)})});const state=await response.json();if(!response.ok)throw new Error(state.error||'任务启动失败');taskId=state.task_id;poll();}
  catch(e){showError(e.message||'任务启动失败。');finish();}
+});
+function fillVersions(){const entry=inspected.sequences.find(item=>item.name===importSequence.value);importVersion.replaceChildren();if(!entry)return;for(let n=1;n<=entry.version_count;n++){const option=new Option('版本 '+n,String(n));importVersion.add(option);}importVersion.value=String(entry.default_version||1);}
+gseImport.addEventListener('input',()=>{inspected=null;importSelection.hidden=true;importInspection.textContent='导入内容已变化，请重新检查。';resetResult();});
+importSequence.addEventListener('change',fillVersions);
+inspectImport.addEventListener('click',async()=>{if(running)return;try{const response=await fetch('/api/gse/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gse:gseImport.value.trim()})});const data=await response.json();if(!response.ok)throw new Error(data.error||'检查导入内容失败');inspected=data;importSequence.replaceChildren();for(const item of data.sequences)importSequence.add(new Option(item.name,item.name));fillVersions();importSelection.hidden=false;importInspection.textContent='已解析 '+data.sequences.length+' 条序列；语法：'+(data.syntax.join('、')||'无')+'。尚未进行模拟。';error.hidden=true;}catch(e){inspected=null;importSelection.hidden=true;showError(e.message||'检查导入内容失败');}});
+importStart.addEventListener('click',async()=>{if(running||!inspected)return;if(!profile.value.trim()){showError('请先粘贴角色导出字符串。');profile.focus();return;}if(!interval.checkValidity()||!gcdMs.checkValidity()){showError('请检查两个毫秒数输入。');return;}
+ running=true;start.disabled=true;importStart.disabled=true;profile.disabled=true;interval.disabled=true;gseImport.disabled=true;importStart.textContent='模拟中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动导入模拟';
+ try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,mode:'import',gse:gseImport.value.trim(),sequence_name:importSequence.value,version:Number(importVersion.value),gse_click_ms:Number(interval.value),gcd_ms:Number(gcdMs.value),input_interval_ms:Number(interval.value)})});const state=await response.json();if(!response.ok)throw new Error(state.error||'导入模拟启动失败');taskId=state.task_id;poll();}
+ catch(e){showError(e.message||'导入模拟启动失败');finish();}
 });
 copy.addEventListener('click',async()=>{if(!result.value.trim())return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(result.value);status.textContent='已复制。';}catch{result.focus();result.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
 </script>

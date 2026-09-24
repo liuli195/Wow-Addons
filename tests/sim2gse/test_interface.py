@@ -7,8 +7,10 @@ import threading
 import time
 import unittest
 import json
+import base64
 import os
 import subprocess
+import zlib
 from contextlib import nullcontext
 from pathlib import Path
 from urllib.error import HTTPError
@@ -24,6 +26,12 @@ from interface import _friendly_error, _public_state, create_server  # noqa: E40
 from task import run_task  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
 from test_search import _fast_search_boundary  # noqa: E402
+
+
+def gse_fixture(payload):
+    import cbor2
+    from codec import wire_value
+    return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(wire_value(payload)), wbits=-15)).decode("ascii")
 
 
 class InterfaceTests(unittest.TestCase):
@@ -57,6 +65,12 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn('hidden', page.split('id="resultSection"', 1)[1].split(">", 1)[0])
         self.assertNotIn("演示进度", page)
         self.assertNotIn("原型尚未连接", page)
+        self.assertIn('id="gseImport"', page)
+        self.assertIn('id="inspectImport"', page)
+        self.assertIn('id="importSequence"', page)
+        self.assertIn('id="importStart"', page)
+        self.assertNotIn('id="gseClick"', page)
+        self.assertIn('gse_click_ms:Number(interval.value)', page)
 
     def _json_request(self, method: str, path: str, value: dict | None = None) -> dict:
         body = None if value is None else json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -71,6 +85,132 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("粘贴", json.loads(raised.exception.read())['error'])
         self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
+
+    def test_import_inspection_lists_versions_and_nested_syntax_without_simulating(self) -> None:
+        imported = gse_fixture(["THIRD_PARTY", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [
+                {"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]},
+                {"Actions": [{"Type": "Loop", "Repeat": "2", 1: {"Type": "Pause", "Clicks": 2}}]},
+            ],
+        }])
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(result["sequences"][0]["name"], "THIRD_PARTY")
+        self.assertEqual(result["sequences"][0]["version_count"], 2)
+        self.assertEqual(set(result["syntax"]), {"Action", "Loop", "Pause"})
+        self.assertFalse(result["simulation_started"])
+        self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
+
+    def test_import_inspection_accepts_direct_sequence_object(self) -> None:
+        imported = gse_fixture({
+            "MetaData": {"Name": "DIRECT_SEQUENCE", "SpecID": 252, "GSEVersion": 3331},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]}],
+        })
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(result["format"], "direct")
+        self.assertEqual(result["sequences"][0]["name"], "DIRECT_SEQUENCE")
+
+    def test_import_inspection_marks_newer_gse_members_as_not_simulatable(self) -> None:
+        imported = gse_fixture({"type": "COLLECTION", "payload": {"Sequences": {
+            "LOCKED": {"MetaData": {"Name": "LOCKED", "SpecID": 252, "GSEVersion": 3332},
+                       "Default": 1, "Versions": [{"Actions": []}]},
+            "FUTURE": {"MetaData": {"Name": "FUTURE", "SpecID": 252, "GSEVersion": 3333},
+                       "Default": 1, "Versions": [{"Actions": []}]},
+        }}})
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        members = {member["name"]: member for member in result["sequences"]}
+        self.assertEqual(result["status"], "decoded")
+        self.assertTrue(members["LOCKED"]["simulation_supported"])
+        self.assertFalse(members["FUTURE"]["simulation_supported"])
+        self.assertIn("3333", members["FUTURE"]["support_reason"])
+        self.assertIn("3332", members["FUTURE"]["support_reason"])
+
+    def test_import_inspection_rejects_broken_payload(self) -> None:
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": "!GSE3!bad"})
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("导入", json.loads(raised.exception.read())["error"])
+
+    def test_import_inspection_rejects_trailing_cbor_data(self) -> None:
+        import cbor2
+        from codec import wire_value
+        payload = ["THIRD_PARTY", {
+            "MetaData": {"SpecID": 252},
+            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]}],
+        }]
+        raw = cbor2.dumps(wire_value(payload)) + b"\x00"
+        imported = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("编码", json.loads(raised.exception.read())["error"])
+
+    def test_import_inspection_rejects_decompression_over_limit(self) -> None:
+        from gse_import import MAX_DECODED
+        imported = gse_fixture("A" * (MAX_DECODED + 1))
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("过大", json.loads(raised.exception.read())["error"])
+
+    def test_import_inspection_rejects_nested_or_excessive_cbor_nodes(self) -> None:
+        deep = None
+        for _ in range(40):
+            deep = [deep]
+        cases = [deep, [0] * 10001]
+        for payload in cases:
+            with self.subTest(nodes=len(payload) if isinstance(payload, list) else 1):
+                with self.assertRaises(HTTPError) as raised:
+                    self._json_request("POST", "/api/gse/inspect", {"gse": gse_fixture(payload)})
+                self.assertEqual(raised.exception.code, 400)
+                self.assertIn("过深或节点过多", json.loads(raised.exception.read())["error"])
+
+    def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
+        imported = gse_fixture(["THIRD_PARTY", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                         "macro": "/targetenemy [noharm][dead]\n/cast 77575"}]}],
+        }])
+        created = self._json_request("POST", "/api/tasks", {
+            "profile": sample_profile(), "mode": "import", "gse": imported,
+            "sequence_name": "THIRD_PARTY", "version": 1,
+            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+        })
+        deadline = time.monotonic() + 30
+        state = {}
+        while time.monotonic() < deadline:
+            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            if state["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.1)
+        self.assertEqual(state["status"], "completed", state)
+        self.assertEqual(state["selected_sequence"], "THIRD_PARTY")
+        self.assertGreater(state["dps"], 0)
+        self.assertFalse(state["result_ready"])
+
+    def test_public_service_reports_unmapped_import_skill_without_dps(self) -> None:
+        imported = gse_fixture(["THIRD_PARTY", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 99999999}]}],
+        }])
+        created = self._json_request("POST", "/api/tasks", {
+            "profile": sample_profile(), "mode": "import", "gse": imported,
+            "sequence_name": "THIRD_PARTY", "version": 1,
+            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+        })
+        deadline = time.monotonic() + 30
+        state = {}
+        while time.monotonic() < deadline:
+            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            if state["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.1)
+        self.assertEqual(state["status"], "failed", state)
+        self.assertIn("99999999", state["error"])
+        self.assertNotIn("dps", state)
 
     def test_real_task_reaches_candidate_through_the_same_public_service(self) -> None:
         self.server.task_options = {
@@ -217,6 +357,21 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                 self._json_request("POST", "/api/tasks", {"profile": sample_profile(), "input_interval_ms": value})
             self.assertEqual(raised.exception.code, 400)
         self.assertEqual(list(self.server.tasks), [])
+
+    def test_import_rejects_gse_click_rate_that_differs_from_simulation_interval(self):
+        imported = gse_fixture(["THIRD_PARTY", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Pause", "MS": "GCD"}]}],
+        }])
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "THIRD_PARTY", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 400,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("点击间隔", json.loads(raised.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
 
     def test_browser_uses_adjustable_input_interval(self):
         with _fast_search_boundary():

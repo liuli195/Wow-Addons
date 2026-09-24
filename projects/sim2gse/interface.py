@@ -131,6 +131,15 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         try:
+            if path == "/api/gse/inspect":
+                from gse_import import inspect_import
+                value = self._body()
+                try:
+                    inspected = inspect_import(value.get("gse"))
+                except ValueError as error:
+                    raise TaskError(str(error)) from error
+                self._send_json(HTTPStatus.OK, inspected)
+                return
             if path == "/api/tasks":
                 self._create_task()
                 return
@@ -148,6 +157,9 @@ class InterfaceHandler(BaseHTTPRequestHandler):
 
     def _create_task(self) -> None:
         value = self._body()
+        mode = value.get("mode", "optimize")
+        if mode not in ("optimize", "import"):
+            raise TaskError("任务模式无效")
         profile = value.get("profile")
         if not isinstance(profile, str) or not profile.strip():
             raise TaskError("请先粘贴角色导出字符串")
@@ -158,6 +170,31 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             raise TaskError("按键间隔必须为 50 至 2000 毫秒的整数")
         options = dict(self.server.task_options)
         options['search_config'] = dict(options.get('search_config') or {}, input_interval_ms=interval)
+        if mode == "import":
+            from gse_import import decode_import
+            gse = value.get("gse")
+            name = value.get("sequence_name")
+            version = value.get("version")
+            click_ms = value.get("gse_click_ms")
+            gcd_ms = value.get("gcd_ms")
+            if not isinstance(name, str) or not name or type(version) is not int:
+                raise TaskError("GSE 导入需要选定序列与版本")
+            try:
+                imported = decode_import(gse)
+            except ValueError as error:
+                raise TaskError(str(error)) from error
+            if name not in imported["sequences"] or not 1 <= version <= len(imported["sequences"][name]["Versions"]):
+                raise TaskError("GSE 选定的序列或版本无效")
+            if type(click_ms) is not int or not 50 <= click_ms <= 2000:
+                raise TaskError("GSE 点击间隔必须为 50 至 2000 毫秒")
+            if click_ms != interval:
+                raise TaskError("GSE 点击间隔必须与模拟按键间隔一致")
+            if type(gcd_ms) is not int or not 500 <= gcd_ms <= 3000:
+                raise TaskError("GSE 公共冷却必须为 500 至 3000 毫秒")
+            options.update(mode="import", gse_text=gse, sequence_name=name, version=version,
+                           gse_context=dict(click_ms=interval, input_interval_ms=interval,
+                                            gcd_ms=gcd_ms, seed=20260912, pet_ready=True,
+                                            enemy_target_ready=True))
         parse_character(profile)
         task_id = uuid.uuid4().hex
         input_path, destination = self.server.task_paths(task_id)
@@ -212,6 +249,8 @@ def _starting_state() -> dict:
 
 def _friendly_error(error: BaseException) -> str:
     message = str(error).strip()
+    if message.startswith('GSE '):
+        return message.splitlines()[0][:160]
     if message.startswith('原生未提供此角色的伤害模拟'):
         return '原生未提供此角色的伤害模拟，请查看任务中的原生报告。'
     if '主动能力不完整' in message:
@@ -250,6 +289,14 @@ def _public_state(state: dict, destination: Path) -> dict:
     }
     if state.get("error"):
         response["error"] = _friendly_error(TaskError(str(state["error"])))
+    if status == "completed" and (state.get("candidate") or {}).get("source") == "gse":
+        candidate = state["candidate"]
+        response.update(selected_sequence=candidate["selected_sequence"],
+                        selected_version=candidate["selected_version"],
+                        import_sha256=candidate["import_sha256"],
+                        dps=state["controlled_simulation"]["summary"]["dps"],
+                        result_ready=False, simulation_ready=True, progress=1.0)
+        return response
     if status in ("completed", "validation_incomplete"):
         candidate_path = destination / "candidate.txt"
         if candidate_path.is_file():
