@@ -56,7 +56,7 @@
 
 ### Karen ST：当前唯一完成的真实原生 DPS 导入样本
 
-[Karen 邪 DK 原帖](https://wowlazymacros.com/t/karens-unholy-dk-st-and-m-updated-m-macro/62253)中的原始集合串未修改，SHA-256 为 `1550b78b2e625309e018fd8901443ec9fc28c7bfc8f7f47bb932e53605c96497`，本机文件 `.local/sim2gse/gse-corpus-additional/karens-unholy-01.txt`；成员 `unholydk_ST`、版本 1、GSE 3.3.13（3313）。该版本的宏没有 `/petattack` 或 `/petassist`。静态检查通过，角色动作查询严格映射所有成员动作；`316239` 与名称形式 `Festering Strike` 都解析到 `festering_strike`，名称查询返回原生动作编号 85948。证据保存在忽略目录 `.local/sim2gse/import-review-karen-st-20260925-name-map/` 的 `reference/import_action_probe/native.json`、`capabilities/catalogue.json` 和 `result.json`。
+[Karen 邪 DK 原帖](https://wowlazymacros.com/t/karens-unholy-dk-st-and-m-updated-m-macro/62253)中的原始集合串未修改，SHA-256 为 `1550b78b2e625309e018fd8901443ec9fc28c7bfc8f7f47bb932e53605c96497`，本机文件 `.local/sim2gse/gse-corpus-additional/karens-unholy-01.txt`；成员 `unholydk_ST`、版本 1、GSE 3.3.13（3313）。该版本的宏没有 `/petattack` 或 `/petassist`。静态检查通过，角色动作查询严格映射所有成员动作；`316239` 与名称形式 `Festering Strike` 都解析到 `festering_strike`，名称查询返回原生动作编号 85948。旧任务结果已被最终代码 HEAD 下的公开 `run_task` 复跑取代；复跑 HEAD 为 `ce7465d6d3877383cee61c7b8c6c218b8b31f871`，完整输出位于忽略目录 `.local/sim2gse/import-review-karen-st-20260925-final-ce7465d/`，包括 `reference/import_action_probe/native.json`、`capabilities/catalogue.json` 和 `result.json`。
 
 在未修改的角色资料 `.local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc` 上，经导入任务完整编译并完成 180 秒受控原生模拟。场景为无修饰键、存活可攻击的敌方目标存在、宠物已召唤；`click_ms = input_interval_ms = 300 ms`，`gcd_ms = 1500 ms`，seed `20260912`。22 个点击全部保留来源，`source_path` 依次为 `1` 至 `22`；对应动作依次为：
 
@@ -75,7 +75,7 @@
 | 同角色自由选择参考 DPS | 77044.71054312987 |
 | 输入时点 | 600（每 300 ms 一次，共 180 秒） |
 
-参考值是同一角色不使用导入点击计划的自由选择模拟，不是导入 DPS 的预期值或比较门槛。受控数值说明本机固定角色、配置和模型上的真实原串完整链路已跑通；报告为 `game_validation=not_run`，不代表游戏内行为验收。Søl 两条 12.1 原串仍因宠物命令被拒绝。其余样本成员仍按具体映射或语义原因处理，没有用未识别动作替换其他技能。
+本次复跑在代码 HEAD `ce7465d6d3877383cee61c7b8c6c218b8b31f871` 执行，状态为 `completed`，有 22 个已映射点击且 `game_validation=not_run`。同一角色不使用导入计划的自由选择参考 DPS 不是导入 DPS 的预期值或比较门槛。角色资料 SHA-256 为 `27181b0a92bb198a4266762d5f6fb4b6123c06d07786de58e5eae65a8cf5ee59`；最终任务完整报告位于忽略目录 `.local/sim2gse/import-review-karen-st-20260925-final-ce7465d/`。Søl 两条 12.1 原串仍因宠物命令被拒绝。其余样本成员仍按具体映射或语义原因处理，没有用未识别动作替换其他技能。
 
 ## 复审修复证据
 

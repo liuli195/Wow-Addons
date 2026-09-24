@@ -25,6 +25,6 @@ Status（状态）: done
 
 真实 DPS 验收由 Karen 邪 DK 原帖中的未修改 ST 成员完成：集合原串 SHA-256 `1550b78b2e625309e018fd8901443ec9fc28c7bfc8f7f47bb932e53605c96497`，GSE 3.3.13（3313），成员 `unholydk_ST` 版本 1。角色查询严格映射 `316239` 与名称形式 `Festering Strike` 到 `festering_strike`（原生动作编号 85948）；完整动作计划和证据路径见 `docs/sim2gse/gse-import-corpus.md`。
 
-该序列在无修饰键、已有存活可攻击目标、宠物已召唤的场景下展开为 22 个点击；`click_ms = input_interval_ms = 300 ms`、`gcd_ms = 1500 ms`、seed `20260912`。受控原生模型 DPS 为 50873.80836033131；同角色自由选择参考 DPS 为 77044.71054312987，单独报告，不是导入序列的预期值或比较门槛。完整任务产物位于忽略目录 `.local/sim2gse/import-review-karen-st-20260925-name-map/`。此前 Søl 12.1 AOE/ST 的 37842.240154123254 和 41627.01167663097 来自错误地跳过条件成立的 `/petattack [@target,harm,nodead]`，现标记为无效历史结果；两个成员当前都会在模拟前按来源位置拒绝。其余无法严格映射的真实成员仍按具体原因拒绝；没有猜技能、替换 `item 13` 或改动伤害模型。
+该序列已在代码 HEAD `ce7465d6d3877383cee61c7b8c6c218b8b31f871` 上经公开 `run_task(mode="import")` 重新执行，在无修饰键、已有存活可攻击目标、宠物已召唤的场景下展开为 22 个点击；`click_ms = input_interval_ms = 300 ms`、`gcd_ms = 1500 ms`、seed `20260912`。受控原生模型 DPS 为 50873.80836033131；同角色自由选择参考 DPS 为 77044.71054312987，单独报告，不是导入序列的预期值或比较门槛。原始角色资料 SHA-256 为 `27181b0a92bb198a4266762d5f6fb4b6123c06d07786de58e5eae65a8cf5ee59`，任务状态 `completed`、`game_validation=not_run`；完整任务产物位于忽略目录 `.local/sim2gse/import-review-karen-st-20260925-final-ce7465d/`。此前 Søl 12.1 AOE/ST 的 37842.240154123254 和 41627.01167663097 来自错误地跳过条件成立的 `/petattack [@target,harm,nodead]`，现标记为无效历史结果；两个成员当前都会在模拟前按来源位置拒绝。其余无法严格映射的真实成员仍按具体原因拒绝；没有猜技能、替换 `item 13` 或改动伤害模型。
 
 本票功能验收已完成。原生模拟尚未替代游戏内导入和战斗日志验收，该人工验收仍由 05 跟踪。
