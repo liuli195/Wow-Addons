@@ -23,6 +23,6 @@ Status（状态）: in-progress
 
 页面和 HTTP 服务测试覆盖字符串检查、成员/版本选择、异步启动、取消、任务查询、成功 DPS 响应以及编译前拒绝。导入成功用例另验证 `/targetenemy [noharm][dead]` 在默认有效敌方目标场景被严格当作无效果行，并继续执行 `cast`。当前全量 Sim2GSE 测试通过：157 passed、58 个子检查，91.44 秒。此次还核对固定 GSE 上游的稀疏 Repeat 实编译结果，并验证无动作查询时主 reference 报告与原基线逐字段相同。
 
-固定兼容锁下的 baseline、controlled、tc 原生引擎本地构建均 exit=0。统一 Build and Verify（构建与验证）将于功能差异本地提交后，以固定基线 `fa2ea1360858942a8bc3d065fbad81c5a9cef417` 运行；独立审查仍待主代理通过 ChatGPT 网页完成。因此第三项保持未完成。
+固定兼容锁下的 baseline、controlled、tc 原生引擎本地构建均 exit=0。统一 Build and Verify（构建与验证）以固定基线 `fa2ea1360858942a8bc3d065fbad81c5a9cef417` 运行并通过，9 项检查全部 checked，其中 Sim2GSE 为 157 passed、58 个子检查。独立审查仍待主代理通过 ChatGPT 网页完成，因此第三项保持未完成。
 
 两条真实串的来源、完整摘要、成员版本、模拟场景、逐点击来源及受控 DPS 与角色基准 DPS 的区别记录在 `docs/sim2gse/gse-import-corpus.md`。任务报告中的 `game_validation=not_run`。游戏内操作和证据限制记录在 `docs/sim2gse/game-test-feedback.md`：启用 `/gse debug` 并导出原始追踪，同时启用 `/combatlog` 保存战斗日志，记录目标、按键间隔和战斗条件。目前尚未取得真实序列的游戏内导入、追踪与战斗日志，也没有完成游戏内验收；本机模拟不等同于实机验证。
