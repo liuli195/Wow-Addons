@@ -42,7 +42,7 @@ def main():
     env['PATH'] = str(toolchain) + os.pathsep + env['PATH']
     env['GIT_CEILING_DIRECTORIES'] = str(ROOT / '.tools/sim2gse')
     tool = toolchain / 'mingw32-make.exe'
-    for mode in ('baseline', 'controlled', 'tc'):
+    for mode in ('baseline', 'controlled'):
         source = ROOT / '.tools/sim2gse/product' / mode
         output = ROOT / '.local/sim2gse/build' / mode
         output.mkdir(parents=True, exist_ok=True)
