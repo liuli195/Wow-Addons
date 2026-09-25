@@ -932,7 +932,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("Variables[UNSUPPORTED_VARIABLE]",
                       json.loads(raised.exception.read())["error"])
 
-    def test_import_inspection_scopes_bad_nested_macro_to_its_subtree(self) -> None:
+    def test_import_inspection_does_not_let_bad_nested_macro_block_preceding_sequence(self) -> None:
         def sequence(name: str) -> dict:
             return {
                 "MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
@@ -956,9 +956,60 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(members["OUTER_SEQUENCE"]["version_support"][0]
                         ["simulation_preflight_passed"])
         nested_support = members["NESTED_SEQUENCE"]["version_support"][0]
-        self.assertFalse(nested_support["simulation_preflight_passed"])
-        self.assertIn("Macros[OUTER_MACRO].payload.Macros[BAD_NESTED_MACRO]",
-                      nested_support["support_reason"])
+        self.assertTrue(nested_support["simulation_preflight_passed"],
+                        nested_support["support_reason"])
+        self.assertNotIn("Macros[OUTER_MACRO].payload.Macros[BAD_NESTED_MACRO]",
+                         nested_support["support_reason"])
+
+        created = self._json_request("POST", "/api/tasks", {
+            "profile": sample_profile(), "mode": "import", "gse": imported,
+            "sequence_name": "OUTER_SEQUENCE", "version": 1,
+            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+        })
+        self.assertEqual(created["status"], "starting")
+        nested_created = self._json_request("POST", "/api/tasks", {
+            "profile": sample_profile(), "mode": "import", "gse": imported,
+            "sequence_name": "NESTED_SEQUENCE", "version": 1,
+            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+        })
+        self.assertEqual(nested_created["status"], "starting")
+
+    def test_import_inspection_uses_member_keys_not_display_paths_for_order(self) -> None:
+        def sequence(name: str) -> dict:
+            return {
+                "MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
+                "Default": 1,
+                "Versions": [{"Actions": [{"Type": "Action", "type": "spell",
+                                              "spell": 77575}]}],
+            }
+
+        def nested_collection(sequence_name: str, *, bad_variable: bool = False) -> dict:
+            body = {"Sequences": {sequence_name: sequence(sequence_name)}}
+            if bad_variable:
+                body["Variables"] = {"BAD_VARIABLE": {"funct": "return true"}}
+            return {"type": "COLLECTION", "payload": body}
+
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"OUTER_SEQUENCE": sequence("OUTER_SEQUENCE")},
+            "Macros": {
+                "OUTER.payload.WRAPPER_A": nested_collection("INNER_A", bad_variable=True),
+                "OUTER.payload.WRAPPER_B": nested_collection("INNER_B"),
+            },
+        }})
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        members = {member["name"]: member for member in result["sequences"]}
+        self.assertFalse(members["INNER_A"]["version_support"][0]
+                         ["simulation_preflight_passed"])
+        self.assertIn("Macros[OUTER.payload.WRAPPER_A].payload.Variables[BAD_VARIABLE]",
+                      members["INNER_A"]["version_support"][0]["support_reason"])
+        self.assertFalse(members["INNER_B"]["version_support"][0]
+                         ["simulation_preflight_passed"])
+        self.assertIn("pairs 遍历顺序不确定",
+                      members["INNER_B"]["version_support"][0]["support_reason"])
+        self.assertTrue(members["OUTER_SEQUENCE"]["version_support"][0]
+                        ["simulation_preflight_passed"])
 
         created = self._json_request("POST", "/api/tasks", {
             "profile": sample_profile(), "mode": "import", "gse": imported,
@@ -969,12 +1020,11 @@ class InterfaceTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as raised:
             self._json_request("POST", "/api/tasks", {
                 "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "NESTED_SEQUENCE", "version": 1,
+                "sequence_name": "INNER_B", "version": 1,
                 "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
             })
         self.assertEqual(raised.exception.code, 400)
-        self.assertIn("Macros[OUTER_MACRO].payload.Macros[BAD_NESTED_MACRO]",
-                      json.loads(raised.exception.read())["error"])
+        self.assertIn("pairs 遍历顺序不确定", json.loads(raised.exception.read())["error"])
 
     def test_import_inspection_dispatches_raw_sequence_tables_from_variables_and_macros(self) -> None:
         def sequence(name: str, click: int) -> dict:
@@ -1055,7 +1105,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(result["variables"], {})
         self.assertEqual(result["macros"], {})
         self.assertFalse(members["INNER_A"]["version_support"][0]["simulation_preflight_passed"])
-        self.assertIn("pairs 顺序不确定",
+        self.assertIn("Variables 阶段先于目标序列所属阶段导入",
                       members["INNER_A"]["version_support"][0]["support_reason"])
         self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
             "Sequences[WRAPPER].payload.Variables[INNER_V]",

@@ -625,6 +625,8 @@ def decode_import(text):
     collection_object_warnings = {}
     collection_object_locations = {}
     collection_sequence_locations = {}
+    collection_sequence_trajectories = {}
+    collection_blocker_trajectories = {}
     unimportable_sequences = {}
     if isinstance(payload, list) and len(payload) == 2 and isinstance(payload[0], str):
         sequences = {payload[0]: payload[1]}
@@ -686,6 +688,7 @@ def decode_import(text):
             sequences.pop(name, None)
             sequence_paths.pop(name, None)
             collection_sequence_locations.pop(name, None)
+            collection_sequence_trajectories.pop(name, None)
             collection_wire_values.pop(name, None)
             collection_member_warnings.pop(name, None)
             ambiguous_sequences.add(name)
@@ -738,7 +741,7 @@ def decode_import(text):
                                                "raw_value": original_value}]
             locations[source_key] = source_path
 
-        def add_sequence(name, original_value, path, depth, *, decoded_message=None,
+        def add_sequence(name, original_value, path, depth, trajectory, *, decoded_message=None,
                          already_counted=False, raw_table_origin=False):
             if not already_counted:
                 visit_member(path, depth)
@@ -753,7 +756,7 @@ def decode_import(text):
                 nested_body = value.get("payload") or {}
                 if not isinstance(nested_body, dict):
                     raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
-                visit_collection(nested_body, f"{path}.payload", depth + 1)
+                visit_collection(nested_body, f"{path}.payload", depth + 1, trajectory)
                 return
             if encoded:
                 if decoded_message is None:
@@ -769,7 +772,7 @@ def decode_import(text):
                     nested_body = encoded_payload.get("payload") or {}
                     if not isinstance(nested_body, dict):
                         raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
-                    visit_collection(nested_body, f"{path}.payload", depth + 1)
+                    visit_collection(nested_body, f"{path}.payload", depth + 1, trajectory)
                     return
                 if (not protected_member and isinstance(encoded_payload, dict)
                         and encoded_payload.get("objectType") in {"VARIABLE", "MACRO"}):
@@ -859,19 +862,21 @@ def decode_import(text):
             sequence_sources[sequence_name] = [{"source_path": public_path(path),
                                                 "raw_value": original_value}]
             collection_sequence_locations[sequence_name] = public_path(path)
+            collection_sequence_trajectories[sequence_name] = trajectory
             if encoded or is_delta_fork or unimportable_raw_pair or raw_pair_wrapper:
                 collection_wire_values[sequence_name] = original_value
             if member_warnings:
                 collection_member_warnings[sequence_name] = member_warnings
 
-        def add_collection_object(category, name, original_value, path, depth, source_root):
+        def add_collection_object(category, name, original_value, path, depth, source_root,
+                                  trajectory):
             visit_member(path, depth)
             value = original_value
             if isinstance(value, dict) and value.get("type") == "COLLECTION":
                 nested_body = value.get("payload") or {}
                 if not isinstance(nested_body, dict):
                     raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
-                visit_collection(nested_body, f"{path}.payload", depth + 1)
+                visit_collection(nested_body, f"{path}.payload", depth + 1, trajectory)
                 return
             if isinstance(value, str) and value.startswith("!GSE3!"):
                 try:
@@ -887,11 +892,12 @@ def decode_import(text):
                     nested_body = encoded_payload.get("payload") or {}
                     if not isinstance(nested_body, dict):
                         raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
-                    visit_collection(nested_body, f"{path}.payload", depth + 1)
+                    visit_collection(nested_body, f"{path}.payload", depth + 1, trajectory)
                     return
                 if not is_protected:
                     account_decoded_bytes(encoded_raw, path)
                     add_sequence(name, original_value, path, depth,
+                                 trajectory,
                                  decoded_message=(encoded_raw, encoded_payload, False),
                                  already_counted=True)
                     return
@@ -908,6 +914,7 @@ def decode_import(text):
                          or (isinstance(value, dict)
                              and ("MetaData" in value or "Versions" in value))):
                 add_sequence(name, original_value, path, depth,
+                             trajectory,
                              already_counted=True, raw_table_origin=True)
                 return
             if isinstance(value, dict) and not value.get("GSEDeltaFork"):
@@ -915,9 +922,11 @@ def decode_import(text):
                     f"锁定 GSE 3.3.32 的集合 {category} 原始 table 缺少 "
                     "objectType=VARIABLE/MACRO，且不是带 MetaData/Versions 的序列或数组 pair；"
                     f"上游 ImportSerialisedSequence 无法识别该对象（位置：{public_path(path)}）")
-                collection_blockers.append(dict(
+                blocker = dict(
                     category=category, name=name, source_path=public_path(path),
-                    reason=reason, raw_value=original_value, blocks_import=True))
+                    reason=reason, raw_value=original_value, blocks_import=True)
+                collection_blockers.append(blocker)
+                collection_blocker_trajectories[id(blocker)] = trajectory
                 return
             body = {category: {name: original_value}}
             local_blockers = []
@@ -965,7 +974,7 @@ def decode_import(text):
                 if parsed_warnings:
                     warnings[source_key] = parsed_warnings
 
-        def visit_collection(collection_body, source_root, depth):
+        def visit_collection(collection_body, source_root, depth, trajectory=()):
             if depth > MAX_DEPTH:
                 raise ValueError(f"GSE 集合递归过深（位置：{public_path(source_root)}）")
             if not isinstance(collection_body, dict):
@@ -980,42 +989,58 @@ def decode_import(text):
                     collection_object_locations.setdefault(category, {})
                 for name, value in collection_items(raw_members, category, category_path):
                     member_path = f"{category_path}[{name}]"
+                    member_trajectory = trajectory + ((category, name),)
                     if category == "Sequences":
-                        add_sequence(name, value, member_path, depth)
+                        add_sequence(name, value, member_path, depth, member_trajectory)
                     else:
                         add_collection_object(category, name, value, member_path, depth,
-                                              source_root)
+                                              source_root, member_trajectory)
 
         visit_collection(body, "payload", 0)
         blocking_object_members = [
             blocker for blocker in collection_blockers
             if blocker.get("blocks_import") and blocker.get("category") in {"Variables", "Macros"}
         ]
+        category_order = {"Variables": 0, "Sequences": 1, "Macros": 2}
+
+        def blocker_precedes_sequence(blocker_trajectory, sequence_trajectory):
+            for (blocker_category, blocker_key), (sequence_category, sequence_key) in zip(
+                    blocker_trajectory, sequence_trajectory):
+                if blocker_category != sequence_category:
+                    return (category_order[blocker_category] < category_order[sequence_category],
+                            "category")
+                if blocker_key != sequence_key:
+                    return True, "pairs"
+            if len(blocker_trajectory) != len(sequence_trajectory):
+                return True, "nested"
+            return True, "same_member"
+
         for blocker in blocking_object_members:
             source_path = blocker["source_path"]
-            if source_path.startswith("Variables["):
-                blocked_names = list(sequences)
-                reason = ("GSE 集合 Variables 阶段含上游无法导入的原始 table；"
-                          f"该阶段在 Sequences 前运行（来源：{source_path}）")
-            elif source_path.startswith("Sequences["):
-                blocked_names = list(sequences)
-                reason = ("GSE 集合中的坏变量/宏对象位于 Sequences 递归导入期间；"
-                          "同层 pairs 顺序不确定，不能判定哪些序列已经存储，保守阻断模拟预检 "
-                          f"（来源：{source_path}）")
-            elif source_path.startswith("Macros["):
-                macro_root = source_path.split(".payload.", 1)[0]
-                subtree_prefix = f"{macro_root}.payload."
-                blocked_names = [
-                    name for name, member_path in collection_sequence_locations.items()
-                    if member_path.startswith(subtree_prefix)
-                ]
-                reason = ("GSE 集合 Macros 子树含上游无法导入的原始 table；"
-                          f"仅保守阻断该子树序列（来源：{source_path}）")
-            else:
-                blocked_names = list(sequences)
-                reason = ("GSE 集合坏变量/宏对象的嵌套来源无法确定导入顺序，"
-                          f"保守阻断模拟预检（来源：{source_path}）")
-            for sequence_name in blocked_names:
+            blocker_trajectory = collection_blocker_trajectories.get(id(blocker), ())
+            for sequence_name, sequence_trajectory in collection_sequence_trajectories.items():
+                precedes, order_kind = blocker_precedes_sequence(
+                    blocker_trajectory, sequence_trajectory)
+                if not precedes:
+                    continue
+                if order_kind == "category":
+                    first_shared = next(
+                        index for index, (blocker_node, sequence_node) in enumerate(
+                            zip(blocker_trajectory, sequence_trajectory))
+                        if blocker_node[0] != sequence_node[0])
+                    blocker_category = blocker_trajectory[first_shared][0]
+                    reason = (f"GSE 集合 {blocker_category} 阶段先于目标序列所属阶段导入；"
+                              f"上游无法导入该对象（来源：{source_path}）")
+                elif order_kind == "pairs":
+                    shared_category = next(
+                        category for (category, blocker_key), (sequence_category, sequence_key)
+                        in zip(blocker_trajectory, sequence_trajectory)
+                        if category == sequence_category and blocker_key != sequence_key)
+                    reason = (f"GSE 集合同一层 {shared_category} 的 pairs 遍历顺序不确定；"
+                              f"坏对象可能先于目标序列导入，保守阻断（来源：{source_path}）")
+                else:
+                    reason = ("GSE 集合递归轨迹无法确定坏对象与目标序列的先后，"
+                              f"保守阻断模拟预检（来源：{source_path}）")
                 existing_reason = unimportable_sequences.get(sequence_name)
                 unimportable_sequences[sequence_name] = (
                     f"{existing_reason}；{reason}" if existing_reason else reason)
