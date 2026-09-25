@@ -2,21 +2,23 @@
 
 原始导入串保存在 Git 忽略目录 `.local/sim2gse/gse-corpus/` 和 `.local/sim2gse/gse-corpus-additional/`。原串不提交到 Git；文中记录的 SHA-256（内容摘要）用于复核本机文件。作者声称适用某个游戏版本，不代表已完成游戏内验收。
 
-| 来源 | 用途 | 已观察语法 | GSE 版本 |
-| --- | --- | --- | --- |
-| [Søl 邪 DK 12.1](https://wowlazymacros.com/t/sols-12-1-unholy-dk-midnight-12-1-02-09-2026/64010) | AOE（群体）和 ST（单体） | Action（动作）、Loop（循环） | 3.3.31；作者标注 12.1 |
-| [MOB 邪 DK](https://gseunited.com/t/mob-retail-death-knight-unholy/270) | 一条集合原串、两个成员 | Action、Loop | 3.3.13；游戏版本待复核 |
-| [Flip 邪 DK 归档](https://gseunited.com/t/flip-s-unholy-death-knight-st-v3-aoe-v4-archived-12-0-7/669) | 两条旧版序列 | Action | 3.3.13；归档注明 12.0.7 |
-| [MOB 鲜血 DK](https://gseunited.com/t/mob-retail-death-knight-blood/273) | 定期重复序列 | Action、Loop、Repeat（定期重复） | 3.3.13 |
-| [MOB 守护德鲁伊](https://gseunited.com/t/mob-retail-druid-guardian-raid-mythic-delves-leveling/271) | 数组包裹序列 | Action、Loop、Repeat | 3.3.07 |
-| [MOB 暗影牧师](https://gseunited.com/t/mob-retail-priest-shadow/277) | 两成员集合 | Action、Loop、Repeat | 3.3.11 |
-| [Violent Benediction](https://wowlazymacros.com/t/64007) | 条件块 | Action、If（条件） | 原帖未注明 |
-| [Karen 邪 DK](https://wowlazymacros.com/t/karens-unholy-dk-st-and-m-updated-m-macro/62253) | 一条集合原串、ST 与 M+ 两成员 | Action、Loop | 3.3.13 |
-| [Kim 邪 DK](https://wowlazymacros.com/t/kims-unholy-sequence/62086) | 两条原串：主循环、爆发 | Loop、Repeat | 3.3.08 |
-| [DrussRet 邪 DK](https://wowlazymacros.com/t/drussret-s2-updated-18-09-2026-m-raid-aoe-st-herald-templar-addons/60173?page=20) | 一条两成员集合：`DRUSS_ST_v6`、`DRUSS_AOE_v6`；原帖发布于 2026-05-06，未注明游戏版本 | Action、Loop、Pause、Repeat | GSE 3.3.15；原串 SHA-256 `d992c3e47f13ed9e70b594f7f02908224cb6031b5dc3f20f5a03da14e723b0dd` |
-| [Jafoweb 牧师 PVP](https://wowlazymacros.com/t/onlyonebutton-discipline-priest-pvp-oracle-based/62541) | 两条原串：单成员 `Jafo_Master`；两成员 `MPB`、`Jafo_Master`；原帖发布于 2026-05-01，未注明游戏版本 | Action、Embed、Loop、Repeat | GSE 3.3.15；SHA-256 分别为 `e9acce109a55bf6dfc56f3b98537a85624bddc9084543156a4d89bb36167fe94`、`8b83c1cb010ec334b1a3d023ee1b0637cd6abe52e689d68cab8a70c03237540d` |
+| 来源 | 来源帖子与时间（UTC） | 用途 | 已观察语法 | GSE 版本 |
+| --- | --- | --- | --- | --- |
+| [Søl 邪 DK 12.1](https://wowlazymacros.com/t/sols-12-1-unholy-dk-midnight-12-1-02-09-2026/64010) | 主题首帖 #1：2026-09-08T18:28:36.415Z | AOE（群体）和 ST（单体） | Action（动作）、Loop（循环） | 3.3.31；作者标注 12.1 |
+| [MOB 邪 DK](https://gseunited.com/t/mob-retail-death-knight-unholy/270) | 主题首帖 #1：2026-07-16T07:32:35.739Z | 一条集合原串、两个成员 | Action、Loop | 3.3.13；游戏版本待复核 |
+| [Flip 邪 DK 归档](https://gseunited.com/t/flip-s-unholy-death-knight-st-v3-aoe-v4-archived-12-0-7/669) | 主题首帖 #1：2026-08-28T22:29:08.568Z | 两条旧版序列 | Action | 3.3.23；归档注明 12.0.7 |
+| [MOB 鲜血 DK](https://gseunited.com/t/mob-retail-death-knight-blood/273) | 主题首帖 #1：2026-07-16T07:32:38.215Z | 定期重复序列 | Action、Loop、Repeat（定期重复） | 3.3.13 |
+| [MOB 守护德鲁伊](https://gseunited.com/t/mob-retail-druid-guardian-raid-mythic-delves-leveling/271) | 主题首帖 #1：2026-07-16T07:32:36.569Z | 数组包裹序列 | Action、Loop、Repeat | 3.3.07 |
+| [MOB 暗影牧师](https://gseunited.com/t/mob-retail-priest-shadow/277) | 主题首帖 #1：2026-07-16T07:32:41.180Z | 两成员集合 | Action、Loop、Repeat | 3.3.11 |
+| [Violent Benediction](https://wowlazymacros.com/t/64007) | 主题首帖 #1：2026-09-08T18:28:11.805Z | 条件块 | Action、If（条件） | 原帖未注明；原串嵌入 3.3.32 |
+| [Karen 邪 DK](https://wowlazymacros.com/t/karens-unholy-dk-st-and-m-updated-m-macro/62253) | 主题首帖 #1：2026-04-18T00:59:35.387Z | 一条集合原串、ST 与 M+ 两成员 | Action、Loop | 3.3.13 |
+| [Kim 邪 DK](https://wowlazymacros.com/t/kims-unholy-sequence/62086) | 主题首帖 #1：2026-04-11T03:01:14.879Z | 两条原串：主循环、爆发 | Loop、Repeat | 3.3.08 |
+| [DrussRet 惩戒圣骑士](https://wowlazymacros.com/t/drussret-s2-updated-18-09-2026-m-raid-aoe-st-herald-templar-addons/60173?page=20) | 主题首帖 #1：2026-01-21T18:14:38.811Z；样本作者回帖 #388：2026-05-06T00:56:09.806Z | 一条两成员集合：`DRUSS_ST_v6`、`DRUSS_AOE_v6`；未注明游戏版本 | Action、Loop、Pause、Repeat | GSE 3.3.15；原串 SHA-256 `d992c3e47f13ed9e70b594f7f02908224cb6031b5dc3f20f5a03da14e723b0dd` |
+| [Jafoweb 牧师 PVP](https://wowlazymacros.com/t/onlyonebutton-discipline-priest-pvp-oracle-based/62541) | 主题首帖 #1：2026-05-01T09:11:28.560Z | 两条原串：单成员 `Jafo_Master`；两成员 `MPB`、`Jafo_Master`；未注明游戏版本 | Action、Embed、Loop、Repeat | GSE 3.3.15；SHA-256 分别为 `e9acce109a55bf6dfc56f3b98537a85624bddc9084543156a4d89bb36167fe94`、`8b83c1cb010ec334b1a3d023ee1b0637cd6abe52e689d68cab8a70c03237540d` |
 
-截至 2026-09-25，共收集 16 个本机文件、15 条不同 SHA-256 原串（1 个重复文件），其中 10 条为 DK（死亡骑士）原串；Søl 的两条由作者标注适用 12.1。逐文件提交公开 `POST /api/gse/inspect` 后，16/16 均为 HTTP 200 且 `decoded`。检查了 21 组文件级成员/版本，按 SHA 去重后为 20 组；无成员/版本解析失败或未列出的语法路径。
+除 DrussRet 外，表中时间是来源主题首帖 #1 的 `post.created_at`；这表示主题首帖发布时间。DrussRet 样本链接定位到第 20 页，实际样本来源为作者回帖 #388，主题首帖和样本回帖时间分别列出。时间均为 UTC（协调世界时）；逐来源帖子编号、时间和 SHA-256（内容摘要）位于忽略目录 `.local/sim2gse/gse-corpus-inspection/source-publication-dates-2026-09-25.json` 与语料清单。
+
+截至 2026-09-25，共收集 16 个本机文件、15 条不同 SHA-256 原串（1 个重复文件），其中 9 条为 DK（死亡骑士）原串；DrussRet 两成员的 `SpecID（专精编号）=70`，属于惩戒圣骑士，不计入 DK 样本。Søl 的两条由作者标注适用 12.1。逐文件提交公开 `POST /api/gse/inspect` 后，16/16 均为 HTTP 200 且 `decoded`。检查了 21 组文件级成员/版本，按 SHA 去重后为 20 组；无成员/版本解析失败或未列出的语法路径。
 
 真实原串共观察到六类语法：Action 268 处、Loop 20 处、Repeat 30 处、If 4 处、Pause 2 处、Embed 2 处。没有 `collection_compatibility_blocks`。DrussRet 的 `DRUSS_ST_v6` 第 1 版没有 `Actions` 数组，解析器保留该版本数值块并给出 warning（警告），路径为 `Sequences[DRUSS_ST_v6].Versions[1].Actions`；这属于解析成功但不能模拟。21 组版本中，19 组模拟门禁状态为 `unsupported`，2 组为 `requires_character_validation`；公开检查没有启动 DPS（每秒伤害）模拟。
 

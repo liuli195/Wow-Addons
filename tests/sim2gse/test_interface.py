@@ -948,6 +948,76 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("not-a-supported-command", member["support_reason"])
         self.assertIn("[行 2]", member["support_reason"])
 
+    def test_inspection_rejects_unknown_combat_macro_conditions(self) -> None:
+        for condition in ("combat", "nocombat"):
+            with self.subTest(condition=condition):
+                imported = gse_fixture(["UNKNOWN_COMBAT", {
+                    "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+                    "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                                 "macro": f"/cast [{condition}] 77575"}]}],
+                }])
+                result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+                member = result["sequences"][0]
+
+                self.assertFalse(member["simulation_preflight_passed"], member)
+                self.assertIn("宏条件不能确定", member["support_reason"])
+                self.assertIn(f"[{condition}]", member["support_reason"])
+                self.assertIn(
+                    "Sequences[UNKNOWN_COMBAT].Versions[1].Actions[1].macro[行 1]",
+                    member["support_reason"],
+                )
+
+    def test_task_api_rejects_unknown_combat_macro_condition_before_creating_task(self) -> None:
+        for condition in ("combat", "nocombat"):
+            with self.subTest(condition=condition):
+                imported = gse_fixture(["UNKNOWN_COMBAT", {
+                    "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+                    "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                                 "macro": f"/cast [{condition}] 77575"}]}],
+                }])
+
+                with self.assertRaises(HTTPError) as raised:
+                    self._json_request("POST", "/api/tasks", {
+                        "profile": sample_profile(), "mode": "import", "gse": imported,
+                        "sequence_name": "UNKNOWN_COMBAT", "version": 1,
+                        "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+                    })
+
+                self.assertEqual(raised.exception.code, 400)
+                error = json.loads(raised.exception.read())["error"]
+                self.assertIn("宏条件不能确定", error)
+                self.assertIn(
+                    f"Sequences[UNKNOWN_COMBAT].Versions[1].Actions[1].macro[行 1]",
+                    error,
+                )
+                self.assertEqual(self.server.tasks, {})
+                self.assertEqual(list(self.server.task_root.iterdir()), [])
+
+    def test_known_false_macro_condition_still_skips_its_unreachable_command(self) -> None:
+        imported = gse_fixture(["KNOWN_FALSE_CONDITION", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                         "macro": "/cast [combat,nopet] 99999999\n/cast 77575"}]}],
+        }])
+        inspection = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        member = inspection["sequences"][0]
+        self.assertTrue(member["simulation_preflight_passed"], member["support_reason"])
+
+        created = self._json_request("POST", "/api/tasks", {
+            "profile": sample_profile(), "mode": "import", "gse": imported,
+            "sequence_name": "KNOWN_FALSE_CONDITION", "version": 1,
+            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+        })
+        deadline = time.monotonic() + 30
+        state = {}
+        while time.monotonic() < deadline:
+            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            if state["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.1)
+        self.assertEqual(state["status"], "completed", state)
+        self.assertGreater(state["dps"], 0)
+
     def test_task_api_rejects_known_unsupported_macro_before_creating_task(self) -> None:
         imported = gse_fixture(["KAREN_MPLUS", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3313}, "Default": 1,

@@ -149,10 +149,6 @@ def _version_get(sequence, version):
     return dict(_version_items(sequence.get("Versions"), "Versions")).get(version)
 
 
-def _raw_version_get(sequence, version):
-    return dict(_version_items(sequence.get("Versions"), "Versions")).get(version)
-
-
 def _version_runtime_issue(sequence, version):
     items = _version_items(sequence.get("Versions"), "Versions")
     indexes = [index for index, _ in items]
@@ -868,7 +864,7 @@ def program_from_import(text, name, version, *, context=None, decoded=None):
                    metadata={"input_text": text, "name": name, "version": version,
                              "sha256": decoded["sha256"],
                              "raw_sequence": _json_value(decoded["raw_sequences"][name]),
-                             "raw_version": _json_value(_raw_version_get(
+                             "raw_version": _json_value(_version_get(
                                  decoded["raw_sequence_objects"][name], version))})
 
 
@@ -1016,7 +1012,7 @@ def inspect_import(text, *, decoded=None):
         raw_sequence = decoded["raw_sequences"][name]
         versions = [dict(version=version,
                          source_path=f"Sequences[{name}].Versions[{version}]",
-                         raw_version=_json_value(_raw_version_get(
+                         raw_version=_json_value(_version_get(
                              decoded["raw_sequence_objects"][name], version)),
                          parsed_version=_json_value(record))
                     for version, record in version_items]
@@ -1326,9 +1322,11 @@ def _condition(expression, path, *, pet_ready=True, enemy_target_ready=True):
     outcomes = []
     for token in expression.split(","):
         token = token.strip().lower()
-        if token in {"combat", "nomod", "@player"}:
+        if token in {"nomod", "@player"}:
             outcomes.append(True)
-        elif token in {"nocombat", "dead"} or token.startswith("mod:"):
+        elif token in {"combat", "nocombat"}:
+            outcomes.append(None)
+        elif token == "dead" or token.startswith("mod:"):
             outcomes.append(False)
         elif token in {"harm", "nodead", "exists", "@target"}:
             outcomes.append(enemy_target_ready)
