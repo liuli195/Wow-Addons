@@ -60,7 +60,7 @@ CBOR 对象允许保留锁定编译器当前不使用的字段，因此字段表
 
 09 票本次修改后逐文件通过本地临时服务调用公开 `POST /api/gse/inspect`：16/16 文件返回 `decoded`，21/21 文件级成员与版本均保留原始结构并完成版本解析；检查到 5 个文件级兼容性阻断（`MOB_Guardian_Elunes` 原始 Sequences 数组 pair 1 个；同一摘要对应的两个真实文件各含 `Variables[VB_IsDamage]` 和 `Variables[VB_IsHeals]` 两个上游不可导入原始 table，共 4 个）。模拟预检为 19 个 `unsupported`、2 个 `requires_character_validation`；六类块计数 Action 268、Repeat 30、Loop 20、If 4、Pause 2、Embed 2。两份含变量 table 的真实原串再各提交公开任务入口 `POST /api/tasks`，均 HTTP 400 拒绝且没有创建任务。16 个文件含 15 个不同 SHA-256；以下按文件逐条记录 21 个成员/版本，因此重复文件仍分别列出。原串仅从本机语料文件读取并提交到本地检查接口，未另行复制或保存；没有保存逐文件响应，也不代表游戏内验收。
 
-本表对应第09票提交 `3e95f32` 与随后本次审查修复；审查修复 SHA 将在提交后写入 issue09 Comments。
+本表对应第09票提交 `3e95f32` 与审查修复提交 `823d48371f6a2414ae2e4f75434543baa265c3db`。
 
 | 文件名 / SHA-256 | 成员 / 版本路径 | 结构状态 | 模拟预检与原因 |
 |---|---|---|---|
