@@ -910,6 +910,15 @@ def decode_import(text):
                 add_sequence(name, original_value, path, depth,
                              already_counted=True, raw_table_origin=True)
                 return
+            if isinstance(value, dict) and not value.get("GSEDeltaFork"):
+                reason = (
+                    f"锁定 GSE 3.3.32 的集合 {category} 原始 table 缺少 "
+                    "objectType=VARIABLE/MACRO，且不是带 MetaData/Versions 的序列或数组 pair；"
+                    f"上游 ImportSerialisedSequence 无法识别该对象（位置：{public_path(path)}）")
+                collection_blockers.append(dict(
+                    category=category, name=name, source_path=public_path(path),
+                    reason=reason, raw_value=original_value, blocks_import=True))
+                return
             body = {category: {name: original_value}}
             local_blockers = []
             local_warnings = {}
@@ -978,6 +987,18 @@ def decode_import(text):
                                               source_root)
 
         visit_collection(body, "payload", 0)
+        blocking_object_members = [
+            blocker for blocker in collection_blockers
+            if blocker.get("blocks_import") and blocker.get("category") in {"Variables", "Macros"}
+        ]
+        if blocking_object_members:
+            blocked_paths = [blocker["source_path"] for blocker in blocking_object_members]
+            reason = ("GSE 集合包含上游无法导入的变量/宏原始 table "
+                      f"（来源：{'、'.join(blocked_paths)}）")
+            for sequence_name in sequences:
+                existing_reason = unimportable_sequences.get(sequence_name)
+                unimportable_sequences[sequence_name] = (
+                    f"{existing_reason}；{reason}" if existing_reason else reason)
         envelope = "collection"
     elif (isinstance(payload, dict) and isinstance(payload.get("MetaData"), dict)
           and "Versions" in payload):

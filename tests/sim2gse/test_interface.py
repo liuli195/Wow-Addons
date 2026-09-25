@@ -439,14 +439,14 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(member["versions"][0]["source_path"], "Sequences[MATRIX].Versions[1]")
         self.assertEqual(member["versions"][0]["raw_version"]["Actions"], actions)
         self.assertEqual(member["raw_sequence"]["Versions"][0]["Actions"], actions)
-        self.assertEqual(result["variables"]["CustomFlag"], {
-            "name": "CustomFlag", "funct": "return true",
-            "Dependencies": {"Variables": ["Other"]}, "ExplicitNull": None,
+        self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
+        self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
+        self.assertEqual(result["variables"], {})
+        self.assertEqual(result["macros"], {})
+        self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
+            "Variables[CustomFlag]", "Macros[Burst]",
         })
-        self.assertEqual(result["macros"]["Burst"], {
-            "name": "Burst", "macro": "/cast 77575\n/use 13",
-            "UnknownMacroField": [1, "two"],
-        })
+        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
         locations = {(row["type"], row["path"]) for row in result["syntax_locations"]}
         self.assertEqual(locations, {
             ("Action", "Sequences[MATRIX].Versions[1].Actions[1]"),
@@ -488,7 +488,7 @@ class InterfaceTests(unittest.TestCase):
             for index in range(1, len(actions) + 1)
         ])
 
-    def test_import_inspection_accepts_collection_of_variables_and_macros_without_sequences(self) -> None:
+    def test_import_inspection_blocks_untyped_variable_and_macro_tables_without_sequences(self) -> None:
         payload = {"type": "COLLECTION", "payload": {
             "Variables": {"V": {"name": "V", "funct": "return 7", "Custom": None}},
             "Macros": {"M": {"name": "M", "macro": "/cast 77575"}},
@@ -502,12 +502,19 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(result["sequences"], [])
         self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
         self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
-        self.assertEqual(result["variables"], {
-            "V": {"name": "V", "funct": "return 7", "Custom": None},
+        self.assertEqual(result["variables"], {})
+        self.assertEqual(result["macros"], {})
+        self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
+            "Variables[V]", "Macros[M]",
         })
-        self.assertEqual(result["macros"], {
-            "M": {"name": "M", "macro": "/cast 77575"},
-        })
+        blocks_by_path = {
+            block["source_path"]: block
+            for block in result["collection_compatibility_blocks"]
+        }
+        self.assertEqual(blocks_by_path["Variables[V]"]["raw_value"],
+                         payload["payload"]["Variables"]["V"])
+        self.assertEqual(blocks_by_path["Macros[M]"]["raw_value"],
+                         payload["payload"]["Macros"]["M"])
 
     def test_import_inspection_parses_collection_variable_and_macro_encodings(self) -> None:
         import cbor2
@@ -601,11 +608,11 @@ class InterfaceTests(unittest.TestCase):
 
         self.assertEqual(result["raw_variables"], variables)
         self.assertEqual(result["raw_macros"], {"1": macros[1]})
-        self.assertEqual(result["variables"]["1"]["name"], "V_ARRAY")
-        self.assertEqual(result["macros"]["1"]["name"], "M_NUMERIC")
-        self.assertEqual(result["collection_object_locations"], {
-            "Variables": {"1": "payload.Variables[1]"},
-            "Macros": {"1": "payload.Macros[1]"},
+        self.assertEqual(result["variables"], {})
+        self.assertEqual(result["macros"], {})
+        self.assertEqual(result["collection_object_locations"], {"Variables": {}, "Macros": {}})
+        self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
+            "Variables[1]", "Macros[1]",
         })
 
     def test_import_inspection_parses_numeric_version_blocks_without_actions(self) -> None:
@@ -828,6 +835,52 @@ class InterfaceTests(unittest.TestCase):
             },
         })
 
+    def test_import_inspection_blocks_raw_variable_macro_tables_without_upstream_shape(self) -> None:
+        sequence = {
+            "MetaData": {"Name": "BLOCKED_COLLECTION", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 1}]}],
+        }
+        raw_variable = {"funct": "return 7", "CustomField": {"preserved": True}}
+        raw_macro = {"macro": "/cast 101", "CustomField": [1, 2]}
+        payload = {"type": "COLLECTION", "payload": {
+            "Sequences": {"BLOCKED_COLLECTION": sequence},
+            "Variables": {"RAW_VARIABLE": raw_variable},
+            "Macros": {"RAW_MACRO": raw_macro},
+        }}
+        imported = gse_fixture(payload)
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(result["status"], "decoded")
+        self.assertFalse(result["simulation_started"])
+        self.assertEqual(result["raw_payload"], payload)
+        self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
+        self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
+        self.assertNotIn("RAW_VARIABLE", result["variables"])
+        self.assertNotIn("RAW_MACRO", result["macros"])
+        member = result["sequences"][0]
+        self.assertEqual(member["name"], "BLOCKED_COLLECTION")
+        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
+        self.assertEqual(member["version_support"][0]["support_status"], "unsupported")
+        self.assertIn("Variables[RAW_VARIABLE]", member["support_reason"])
+        self.assertIn("Macros[RAW_MACRO]", member["support_reason"])
+        blockers = {block["source_path"]: block
+                    for block in result["collection_compatibility_blocks"]}
+        self.assertEqual(set(blockers), {"Variables[RAW_VARIABLE]", "Macros[RAW_MACRO]"})
+        self.assertTrue(all(block["blocks_import"] for block in blockers.values()))
+        self.assertEqual(blockers["Variables[RAW_VARIABLE]"]["raw_value"], raw_variable)
+        self.assertEqual(blockers["Macros[RAW_MACRO]"]["raw_value"], raw_macro)
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "BLOCKED_COLLECTION", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("Variables[RAW_VARIABLE]", json.loads(raised.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
+
     def test_import_inspection_dispatches_raw_sequence_tables_from_variables_and_macros(self) -> None:
         def sequence(name: str, click: int) -> dict:
             return {
@@ -904,10 +957,13 @@ class InterfaceTests(unittest.TestCase):
                          {"Type": "Pause", "Clicks": 2})
         self.assertIn(("Action", "Sequences[WRAPPER].payload.Sequences[INNER_A].Versions[1].Actions[1]"),
                       {(row["type"], row["path"]) for row in result["syntax_locations"]})
-        self.assertEqual(result["variables"]["INNER_V"]["funct"], "return 9")
-        self.assertEqual(result["macros"]["INNER_M"]["macro"], "/cast 77575")
-        self.assertEqual(result["collection_object_locations"]["Variables"]["INNER_V"],
-                         "payload.Sequences[WRAPPER].payload.Variables[INNER_V]")
+        self.assertEqual(result["variables"], {})
+        self.assertEqual(result["macros"], {})
+        self.assertFalse(members["INNER_A"]["version_support"][0]["simulation_preflight_passed"])
+        self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
+            "Sequences[WRAPPER].payload.Variables[INNER_V]",
+            "Sequences[WRAPPER].payload.Macros[INNER_M]",
+        })
         self.assertEqual(result["raw_payload"], outer_payload)
 
     def test_import_inspection_rejects_bad_encoded_member_in_nested_collection_with_path(self) -> None:
