@@ -2,7 +2,7 @@
 
 Label（标签）: change:task
 Triage（分拣）: ready-for-agent
-Status（状态）: ready
+Status（状态）: done
 
 ## What to build
 
@@ -14,10 +14,10 @@ Status（状态）: ready
 
 ## Acceptance criteria
 
-- [ ] 对照锁定上游逐项列出普通与受保护外壳、集合成员形式、独立变量/宏对象、六类块及字段；说明语法识别、GSE 控制展开、宏解释与 DPS 的不同结果。
-- [ ] 公开 `POST /api/gse/inspect` 接受集合内普通编码序列及普通编码的独立 `VARIABLE/MACRO` 对象，保持原始载荷、路径、成员身份和失败诊断；上游不接受的结构明确拒绝。
-- [ ] 固定上游合成向量经公开入口核对上述新增形式；已收集 16 个原串的全部成员和版本在最终代码上复跑，真实语料与合成向量分开统计。
-- [ ] 仓库文档记录外部宏解析器的具体可参考部分、适用版本、授权限制及后续边界；不复制第三方代码。
+- [x] 对照锁定上游逐项列出普通与受保护外壳、集合成员形式、独立变量/宏对象、六类块及字段；说明语法识别、GSE 控制展开、宏解释与 DPS 的不同结果。
+- [x] 公开 `POST /api/gse/inspect` 接受集合内普通编码序列及普通编码的独立 `VARIABLE/MACRO` 对象，保持原始载荷、路径、成员身份和失败诊断；上游不接受的结构明确拒绝。
+- [x] 固定上游合成向量经公开入口核对上述新增形式；已收集 16 个原串的全部成员和版本在最终代码上复跑，真实语料与合成向量分开统计。
+- [x] 仓库文档记录外部宏解析器的具体可参考部分、适用版本、授权限制及后续边界；不复制第三方代码。
 
 ## Highest public seam and failure path
 
@@ -42,3 +42,5 @@ Status（状态）: ready
 2026-09-25 独立审查修复，提交 `823d48371f6a2414ae2e4f75434543baa265c3db`：1) 对照锁定 `f225d4c` 的 `Utils.lua:484-485,509-510,531-550`，`Variables` / `Macros` 中没有 `objectType=VARIABLE/MACRO`、也不是可识别序列形状的原始 table 不再当有效变量/宏；公开 inspect 保留 `raw_payload`、原始字段和成员路径，给出兼容性阻断，并将同集合序列的模拟预检标为 `unsupported`。真实语料中 `violent-benediction-if-01.txt` 与 `wow-wide-64007-1.txt`（相同 SHA-256）各含两个此类变量；两者 inspect 均 `decoded`，模拟任务入口均 HTTP 400 拒绝，未创建任务。红灯 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py -q -k blocks_raw_variable_macro_tables_without_upstream_shape` 为 1 failed、82 deselected；修复后同命令为 1 passed、82 deselected。2) 研究文档新增不含原串的 21 行成员/版本证据表，并区分真实语料与合成向量。最终公开接口复跑为 16/16 文件 decoded、21/21 文件级成员/版本完成结构解析，15 个不同 SHA-256，5 个文件级兼容性阻断（原始 Sequences 数组 pair 1 个、重复摘要下原始变量 table 4 个）；模拟预检 19 unsupported、2 requires_character_validation。聚焦套件 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py tests/sim2gse/test_program.py -q`：118 passed、52 个子检查通过（76.56s）。当前仍无实机导入或 DPS 证据。
 
 2026-09-25 导入顺序审查复修：锁定 `f225d4c` 的 `Utils.lua:478-510` 每层 COLLECTION 均按 Variables→Sequences→Macros。公开 `/api/gse/inspect` 红灯命令 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py -q -k "does_not_let_bad_nested_macro_block_preceding_sequence or uses_member_keys_not_display_paths_for_order"` 为 2 failed、84 deselected：旧代码把嵌套集合在 Sequences 之后的坏 Macro 误用于阻断已存序列；另一个带 `.payload.` 键名的向量将显示字符串前缀误认成子树边界，且未给同层不同键的 pairs 顺序不确定诊断。修复改为在递归导入时保存结构化 `(category,key)` 轨迹，按首个不同节点的分类顺序判定先后；首个不同节点若同类别但 key 不同，则明确以 Lua `pairs` 顺序未知为由保守阻断。显示 `source_path` 只用于诊断，不参与判断。绿灯命令 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py -q -k "does_not_let_bad_nested_macro_block_preceding_sequence or uses_member_keys_not_display_paths_for_order or does_not_let_bad_macro_block_preceding_sequence or blocks_raw_variable_macro_tables_without_upstream_shape or recursively_expands_plain_nested_collection_members"` 为 5 passed、81 deselected。用例覆盖嵌套 Sequences 先于其同集合 Macros（该序列继续可模拟并被 `/api/tasks` 接受）、坏 Variables 仍阻断后续 Sequences、不同 Macros 成员键的未知顺序会阻断相关序列、且独立外层 Sequences 可通过任务入口。真实原串仍通过公开 `POST /api/gse/inspect` 逐文件复跑，未保存原串或逐条响应：16/16 decoded、21 成员/版本、15 SHA-256、5 compatibility blocks、19 unsupported、2 requires_character_validation；六类块计数 Action 268、Repeat 30、Loop 20、If 4、Pause 2、Embed 2，统计未变。聚焦套件 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py tests/sim2gse/test_program.py -q` 为 121 passed、52 个子检查通过（80.05s）。仍未在 WoW 实机导入或验收 DPS。
+
+最终复审：范围 `8ffc230...48e0e80`；Standards 与 Spec 两个方向均无阻塞项。两位 Reviewer 只读检查，未独立重跑测试；测试结果见上述实施记录。
