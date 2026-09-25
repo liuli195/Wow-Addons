@@ -97,12 +97,22 @@ class InterfaceTests(unittest.TestCase):
         self.assertNotIn('id="gseClick"', page)
         self.assertIn('gse_click_ms:Number(interval.value)', page)
 
-    def _json_request(self, method: str, path: str, value: dict | None = None) -> dict:
+    def _json_request(self, method: str, path: str, value: dict | None = None,
+                      timeout: float = 3) -> dict:
         body = None if value is None else json.dumps(value, ensure_ascii=False).encode("utf-8")
         request = Request(self.url + path, data=body, method=method,
                           headers={"Content-Type": "application/json"} if body else {})
-        with urlopen(request, timeout=3) as response:
+        with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def _task_state_request(self, task_id: str, deadline: float) -> dict:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Task polling reached its overall test deadline")
+        state = self._json_request("GET", f"/api/tasks/{task_id}", timeout=remaining)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Task polling reached its overall test deadline")
+        return state
 
     def test_empty_submission_is_rejected_without_creating_a_task(self) -> None:
         with self.assertRaises(HTTPError) as raised:
@@ -1457,7 +1467,7 @@ class InterfaceTests(unittest.TestCase):
         deadline = time.monotonic() + 30
         state = {}
         while time.monotonic() < deadline:
-            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            state = self._task_state_request(created["task_id"], deadline)
             if state["status"] in {"completed", "failed", "cancelled"}:
                 break
             time.sleep(0.1)
@@ -1563,7 +1573,7 @@ class InterfaceTests(unittest.TestCase):
         deadline = time.monotonic() + 30
         state = {}
         while time.monotonic() < deadline:
-            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            state = self._task_state_request(created["task_id"], deadline)
             if state["status"] in {"completed", "failed", "cancelled"}:
                 break
             time.sleep(0.1)
@@ -1686,7 +1696,7 @@ class InterfaceTests(unittest.TestCase):
         deadline = time.monotonic() + 30
         state = {}
         while time.monotonic() < deadline:
-            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            state = self._task_state_request(created["task_id"], deadline)
             if state["status"] in {"completed", "failed", "cancelled"}:
                 break
             time.sleep(0.1)
@@ -1708,7 +1718,7 @@ class InterfaceTests(unittest.TestCase):
         deadline = time.monotonic() + 30
         state = {}
         while time.monotonic() < deadline:
-            state = self._json_request("GET", f"/api/tasks/{created['task_id']}")
+            state = self._task_state_request(created["task_id"], deadline)
             if state["status"] in {"completed", "failed", "cancelled"}:
                 break
             time.sleep(0.1)
@@ -1739,7 +1749,7 @@ class InterfaceTests(unittest.TestCase):
             deadline = time.monotonic() + 30
             state = {}
             while time.monotonic() < deadline:
-                state = self._json_request("GET", f"/api/tasks/{task_id}")
+                state = self._task_state_request(task_id, deadline)
                 if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
                     break
                 time.sleep(0.1)
