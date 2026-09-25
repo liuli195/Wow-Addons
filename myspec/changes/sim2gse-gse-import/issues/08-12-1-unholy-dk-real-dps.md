@@ -41,3 +41,4 @@ Status（状态）: blocked
 **DPS 影响：**没有可信导入 DPS；如果忽略或替换该命令，宠物目标与启攻时点造成的伤害差异无法从当前模型计算。历史值 `37842.240154123254` 和 `41627.01167663097` 均无效，未沿用。要解除阻断，需要增加能忠实表示宠物目标与启攻时点的原生模拟能力，或由用户明确调整该场景，使宠物已在攻击当前目标并批准相应等价语义。本机结果不代表游戏内验收；游戏内验收未运行。
 
 逐请求、逐成员检查及失败产物摘要保存在 `.local/sim2gse/gse-dps-acceptance/sol-unholy-12-1-import-check.json`；原始 GSE 串仍位于 `.local/sim2gse/gse-corpus/`。
+受测代码提交 `3104c2492dd0604fc9dc5de1acb9811c6607847a` 下，Søl AOE/ST 的真实 `POST /api/tasks` 均 HTTP 400（`/petattack` `macro[行 2]`），未建任务；证据 `.local/sim2gse/post-commit-smoke-3104c24-sol-both.json`；解析完整响应在 `.local/sim2gse/gse-corpus-inspection/final-post-review-2026-09-25.json`。

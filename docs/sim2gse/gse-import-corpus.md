@@ -69,7 +69,7 @@ CBOR（压缩数据格式）实际解码确认，两条 Jafoweb 串都在 `Seque
 
 2026-09-25 的 08 票复核再次对两条原串分别发送真实本机 `POST /api/gse/inspect`，均为 HTTP 200、`status=decoded`，SHA 与原文件一致，语法为 Action、Loop；`simulation_started=false`。`POST /api/tasks` 在建任务前均以 HTTP 400 返回同一 `/petattack` 来源位置。底层 `run_task(..., mode="import")` 做了自由选择参考模拟和原生动作查询，随后在导入宏编译阶段拒绝；没有进入 `sequence.evaluate()` 受控 GSE 模拟，没有生成 `controlled/` 或候选文件，因此没有可信导入 DPS。自由选择参考值不算导入 DPS。
 
-锁定 SimC 的玩家动作列表也不接受 `petattack`、`pet_attack` 或 `pet.attack`。SimC 会给 DK 宠物安排自动攻击，且宠物初始目标跟随角色目标；但这不是可按原串时间和目标下达 `/petattack` 的接口。已确认场景未确认宠物已经在攻击同一目标，所以不能将命令静默当作无效果。宠物目标/启攻造成的 DPS 差异当前无法量化；需要原生宠物控制模型或用户明确批准更窄的场景等价假设。本机证据 `.local/sim2gse/gse-dps-acceptance/sol-unholy-12-1-import-check.json` 保存逐成员响应、角色摘要、任务结果和三种 SimC 动作名拒绝日志；其中 `POST /api/tasks` 的 HTTP 400 记录来自历史代码 HEAD `296fe2d09f06a41cee275da941da22cb88949ce2`；最终 HEAD `3104c2492dd0604fc9dc5de1acb9811c6607847a` 已重新实测，两条 Søl 成员均 HTTP 400、错误位置为 `/petattack` `macro[行 2]`，且未创建任务。最新证据为 `.local/sim2gse/post-commit-smoke-3104c24-sol-both.json`。
+锁定 SimC 的玩家动作列表也不接受 `petattack`、`pet_attack` 或 `pet.attack`。SimC 会给 DK 宠物安排自动攻击，且宠物初始目标跟随角色目标；但这不是可按原串时间和目标下达 `/petattack` 的接口。已确认场景未确认宠物已经在攻击同一目标，所以不能将命令静默当作无效果。宠物目标/启攻造成的 DPS 差异当前无法量化；需要原生宠物控制模型或用户明确批准更窄的场景等价假设。本机证据 `.local/sim2gse/gse-dps-acceptance/sol-unholy-12-1-import-check.json` 保存逐成员响应、角色摘要、任务结果和三种 SimC 动作名拒绝日志；其中 `POST /api/tasks` 的 HTTP 400 记录来自历史代码 HEAD `296fe2d09f06a41cee275da941da22cb88949ce2`；受测代码提交 `3104c2492dd0604fc9dc5de1acb9811c6607847a` 已重新实测，两条 Søl 成员均 HTTP 400、错误位置为 `/petattack` `macro[行 2]`，且未创建任务。最新证据为 `.local/sim2gse/post-commit-smoke-3104c24-sol-both.json`。
 
 ### Karen ST：当前唯一完成的真实原生 DPS 导入样本
 
@@ -92,7 +92,7 @@ CBOR（压缩数据格式）实际解码确认，两条 Jafoweb 串都在 `Seque
 | 同角色自由选择参考 DPS | 77044.71054312987 |
 | 输入时点 | 600（每 300 ms 一次，共 180 秒） |
 
-本次完整复跑在代码 HEAD `ce7465d6d3877383cee61c7b8c6c218b8b31f871` 执行，状态为 `completed`，有 22 个已映射点击且 `game_validation=not_run`。后续最终 HEAD `3104c2492dd0604fc9dc5de1acb9811c6607847a` 的 `POST /api/tasks` smoke 再次返回 `completed`，DPS 为 `50873.80836033131`；同一 smoke 中 `MOB_UDK_ST` 因 `[combat]` 条件不确定而 HTTP 400、未创建任务。证据见 `.local/sim2gse/post-commit-smoke-3104c24.json`。同一角色不使用导入计划的自由选择参考 DPS 不是导入 DPS 的预期值或比较门槛。角色资料 SHA-256 为 `27181b0a92bb198a4266762d5f6fb4b6123c06d07786de58e5eae65a8cf5ee59`；最终任务完整报告位于忽略目录 `.local/sim2gse/import-review-karen-st-20260925-final-ce7465d/`。Søl 两条 12.1 原串仍因宠物命令被拒绝。其余样本成员仍按具体映射或语义原因处理，没有用未识别动作替换其他技能。
+本次完整复跑在代码 HEAD `ce7465d6d3877383cee61c7b8c6c218b8b31f871` 执行，状态为 `completed`，有 22 个已映射点击且 `game_validation=not_run`。后续在受测代码提交 `3104c2492dd0604fc9dc5de1acb9811c6607847a` 上的 `POST /api/tasks` smoke 再次返回 `completed`，DPS 为 `50873.80836033131`；同一 smoke 中 `MOB_UDK_ST` 因 `[combat]` 条件不确定而 HTTP 400、未创建任务。证据见 `.local/sim2gse/post-commit-smoke-3104c24.json`。同一角色不使用导入计划的自由选择参考 DPS 不是导入 DPS 的预期值或比较门槛。角色资料 SHA-256 为 `27181b0a92bb198a4266762d5f6fb4b6123c06d07786de58e5eae65a8cf5ee59`；最终任务完整报告位于忽略目录 `.local/sim2gse/import-review-karen-st-20260925-final-ce7465d/`。Søl 两条 12.1 原串仍因宠物命令被拒绝。其余样本成员仍按具体映射或语义原因处理，没有用未识别动作替换其他技能。
 
 ## 复审修复证据
 
