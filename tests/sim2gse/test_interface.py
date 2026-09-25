@@ -1604,11 +1604,21 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(self.server.tasks, {})
         self.assertEqual(list(self.server.task_root.iterdir()), [])
 
-    def test_import_inspection_rejects_broken_payload(self) -> None:
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/gse/inspect", {"gse": "!GSE3!bad"})
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("导入", json.loads(raised.exception.read())["error"])
+    def test_import_inspection_preserves_empty_and_corrupt_encoding_diagnostics(self) -> None:
+        cases = [
+            ("", "GSE 导入编码无效"),
+            ("bad!", "GSE 导入编码无效"),
+            ("badé", "GSE 导入编码无效"),
+            ("ba=d", "GSE 导入编码无效"),
+            ("bad===", "GSE 导入编码无效"),
+            ("bad", "GSE 导入编码或内容损坏"),
+        ]
+        for encoded, expected_error in cases:
+            with self.subTest(encoded=encoded):
+                with self.assertRaises(HTTPError) as raised:
+                    self._json_request("POST", "/api/gse/inspect", {"gse": "!GSE3!" + encoded})
+                self.assertEqual(raised.exception.code, 400)
+                self.assertIn(expected_error, json.loads(raised.exception.read())["error"])
 
     def test_import_inspection_rejects_duplicate_cbor_map_keys_without_silent_loss(self) -> None:
         import cbor2

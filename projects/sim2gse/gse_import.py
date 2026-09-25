@@ -325,10 +325,20 @@ def _decode_gse_message(text):
     protected = text.startswith("!GSE3!+")
     key_id = text[7:8] if protected else None
     encoded = text[8:] if protected else text[6:]
-    if not encoded or re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", encoded) is None:
+    if not encoded:
         raise ValueError("GSE 导入编码无效")
     try:
         compressed = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        # Base64 handles validation; this error-only scan preserves the prior public diagnostic.
+        padding = len(encoded) - len(encoded.rstrip("="))
+        body = encoded[:-padding] if padding else encoded
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        invalid_alphabet = any(character not in alphabet for character in body)
+        if padding > 2 or "=" in body or invalid_alphabet:
+            raise ValueError("GSE 导入编码无效") from error
+        raise ValueError("GSE 导入编码或内容损坏") from error
+    try:
         if protected:
             compressed = _decrypt_protected(key_id, compressed)
         raw, payload = _decompress_cbor(compressed)
