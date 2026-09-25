@@ -16,7 +16,7 @@ Status（状态）: ready
 
 - [ ] 已有宏条件、命令、预检及角色动作映射移出 GSE 导入/控制模块；模块交接只包含宏原文、来源位置、场景和角色动作目录，不让 GSE 控制代码理解宏条件。
 - [ ] 不新增宏语法或游戏状态模拟；既有可模拟输入的逐次动作、来源路径与 DPS 保持一致，不支持输入仍按原位置和原因拒绝。
-- [ ] 用公开检查与任务入口验证真实样本中代表性的成功、宏拒绝、If 外部变量拒绝与缺失 Embed 引用；完成仓库统一验证和独立审查。
+- [ ] 真实第三方原串验证代表性成功、宏拒绝及 If/Embed 的无损解析；可达的外部 If 变量拒绝与缺失 Embed 引用拒绝可使用明确标注的构造 GSE 导入串，经同一公开 inspect/tasks 接口验证；完成统一验证与独立审查。
 
 ## Highest public seam and failure path
 
@@ -38,3 +38,7 @@ Status（状态）: ready
 - 真实 Jafoweb（`.local/sim2gse/gse-corpus-additional/jafoweb-embed-01.txt`）：检查接口 HTTP 200 / `decoded`，先在 `Sequences[Disc_Oracle].Versions[1].Actions[1].macro[行 2]` 因 `[nochanneling]` 条件无法确定而拒绝；任务接口 HTTP 400 同因。原串可见后续 Embed 引用 `MPB`，但本次不能越过先发宏阻断证明其可达性或缺失；未找到独立的真实缺失 Embed 样本。
 - 缺失 Embed 用例是明确标注的合成向量 `SYNTHETIC_MISSING_EMBED`（非第三方原串）：引用 `ABSENT` 在 `Sequences[SYNTHETIC_MISSING_EMBED].Versions[1].Actions[1]` 拒绝；检查接口 HTTP 200 / `decoded`（已解码），任务接口 HTTP 400。
 - 成功导入任务使用合成宏 `/targetenemy [noharm][dead]\n/cast 77575`、序列 `MACRO_MAPPING_EVIDENCE`、同一固定测试角色输入，点击/输入间隔 300 ms、GCD（公共冷却）1500 ms；前后 `POST /api/tasks` 均 HTTP 202 并完成。输入 SHA-256 为 `2f27854080ed6dca7c666b6d1811fe7e1ee3d8d507d361581aa2cae5303183b0`。DPS 均为 `1911.0397445569276`；来源路径均为 `1`，动作均为 `outbreak`，编译动作来源均为 `gse_import / MACRO_MAPPING_EVIDENCE / v1 / path 1`。比较文件记录 DPS、来源路径、动作块与点击来源完全相同。基线只替换为 `a157441` 的 `gse_import.py`，复用本次未改的 HTTP/任务/程序及 Lua 导入器代码和同一测试输入；这不是两份完整检出的端到端版本比较。游戏验证状态为 `not_run`。
+
+2026-09-25 范围澄清：用户允许用明确标注的构造 GSE 导入串验证真实第三方语料中不可达的外部 If 变量拒绝与缺失 Embed 引用拒绝；构造串需经同一公开 inspect/tasks 接口验证，不记作真实第三方原串。
+
+2026-09-25 公共任务接口补证（HEAD `68599a924e3b7bcd6c7fe95160d55d2d91235f14`；本地模拟，游戏验证未运行）：Karen ST 原串经 `POST /api/tasks` HTTP 202 后任务完成，DPS（每秒伤害）为 `13095.923336688085`。Kim Burst 原串也被 HTTP 202 接受，但在 `initialize` 阶段失败、没有 DPS；SimC 日志显示 `prototype supports at most one GCD action per block`，来源是 `Sequences[Burst_Cooldowns_UDK].Versions[1].Actions[1]["5"]`（导入动作路径 `1.5`）中的双施法宏。这是模拟引擎初始化限制，不是 GSE 语法解析失败。请求、来源动作与日志详见 `.local/sim2gse/ticket10-public-api-380bad2/current-68599a9/karen-kim-task-api-summary.md`。
