@@ -31,7 +31,7 @@ CBOR 对象允许保留锁定编译器当前不使用的字段，因此字段表
 
 锁定的 `Utils.lua` 会对普通编码成员再次调用 `ImportSerialisedSequence`。非保护串按解码后的 `objectType` 或序列内部身份分派；因此外层集合键仅是来源位置，不能覆盖合法内部名称。`Sequences` 中的原始 table 在调用前仅补入缺失的 `MetaData.Name`，显式名称保持不变；普通编码串不会走这段补名逻辑。`Variables` / `Macros` 的受保护串直接按外层分类和键存储，普通串与原始 table 则递归分派。若解出 `type="COLLECTION"`，继续按 `Variables`、`Sequences`、`Macros` 三类递归导入。三类的处理顺序有源码依据，但每类内部用 Lua `pairs` 遍历，顺序不确定；若递归结果在同一类中出现重名，后写覆盖哪个对象无法静态确定。本地检查器因此保留最外层完整 `raw_payload`、报告全部冲突来源并把该名称从可选成员列表移除，不猜测游戏内最终胜者。递归最多 32 层、累计最多 10,000 个集合成员、所有层合计最多解码 4 MiB；坏编码和越界会带来源路径拒绝。
 
-对照锁定 `Utils.lua:484-485`、`:509-510` 和 `:531-550`，`Variables` / `Macros` 中受保护串直接按外层类别存储；普通原始 table 会先补外层 `name`，再递归进入通用导入器。若该 table 没有 `objectType="VARIABLE"` / `"MACRO"`，也没有通用导入器可识别的序列 pair 或带 `MetaData.Name` 的有效 `Versions` 序列，上游不会把它当变量或宏保存。本地检查器仍无损保留此 table 与来源路径，但报告兼容性阻断，并阻止同一集合内序列进入模拟预检。真实语料 `violent-benediction-if-01.txt` 与 `wow-wide-64007-1.txt` 含相同两个此类变量 table；两条原串均保持 `decoded`，其序列预检为 `unsupported`。
+对照锁定 `Utils.lua:478-510`、`:531-550`，`Variables` / `Macros` 中受保护串直接按外层类别存储；普通原始 table 会先补外层 `name`，再递归进入通用导入器。若该 table 没有 `objectType="VARIABLE"` / `"MACRO"`，也没有通用导入器可识别的序列 pair 或带 `MetaData.Name` 的有效 `Versions` 序列，上游不会把它当变量或宏保存。本地检查器保留原始 table 与来源路径，并报告兼容性阻断；模拟预检按锁定上游的导入顺序处理：最外层 `Variables` 在 `Sequences` 前遍历，因此其子树中的这类对象会阻断该集合所有序列；最外层 `Macros` 在 `Sequences` 后遍历，单独存在时不阻断已经导入的独立序列，若坏对象在 `Macros` 子树中则只保守阻断该子树内序列。若坏对象嵌在 `Sequences` 的递归导入中，同层 Lua `pairs` 顺序无法确定哪些序列已经存储，本地明确给出顺序不确定的阻断诊断。真实语料 `violent-benediction-if-01.txt` 与 `wow-wide-64007-1.txt` 含相同两个此类变量 table；两条原串仍保持 `decoded`，该处模拟预检仍为 `unsupported`，因此本次宏顺序修正不改变真实统计：16/16 原串解码、21/21 成员版本解析、15 个不同摘要、5 个文件级兼容性阻断、19 个版本 `unsupported`、2 个 `requires_character_validation`。
 
 真实语料 `mob-guardian-01.txt` 的 `payload.Sequences[MOB_Guardian_Elunes]` 使用未编码数组 pair `[同名, 序列对象]`，数组第二项具有 `MetaData.Name`、`MetaData.GSEVersion` 和 `Versions`。锁定上游 `Utils.lua:496-500` 给**数组自身**加 `MetaData.Name`；`:544-550` 因此把整张数组交给 `processWAGOImport`；`:556-575` 检查的是数组自身的 `MetaData.GSEVersion`，该字段缺失，故该成员不会存入 GSE。当前 `inspect` 仍从第二项生成只读结构预览，以外层键展示，并在 `collection_compatibility_blocks` 逐项说明上游会拒绝；所有版本的模拟预检为 `unsupported`。原始数组仍在 `raw_payload` 与 `raw_sequence` 内完整保留。这恢复了语料 16/16 的无损检查结果，不把上游拒绝成员称为可导入或可模拟。
 
@@ -95,7 +95,7 @@ CBOR 对象允许保留锁定编译器当前不使用的字段，因此字段表
 
 新增子集合测试的红绿证据：普通多成员/变量/宏用例与坏编码定位用例先运行 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py -q -k "recursively_expands_plain_nested_collection_members or rejects_bad_encoded_member_in_nested_collection_with_path"`，结果为 2 failed、72 deselected；修复后同命令为 2 passed、72 deselected。总解码字节预算先运行 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py -q -k enforces_total_decoded_bytes_across_nested_members`，结果为 1 failed、76 deselected（超限输入未被拒绝）；加入总预算后，该用例与其他七项回归合并运行，结果为 8 passed、69 deselected。普通编码成员和独立变量/宏两项缺口也分别先在公开接口得到 HTTP 400，再经相同端点绿灯；测试名见上文。
 
-最终语法与公开接口回归命令 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py tests/sim2gse/test_program.py -q` 结果为 118 passed、52 个子检查通过（76.56s）。该组包含既有畸形编码、受保护密钥、压缩资源边界和控制块来源路径用例。
+当前语法与公开接口回归命令 `.venv/Scripts/python.exe -m pytest tests/sim2gse/test_interface.py tests/sim2gse/test_program.py -q` 结果为 120 passed、52 个子检查通过（88.86s）。该组包含既有畸形编码、受保护密钥、压缩资源边界和控制块来源路径用例。
 
 当前仅有离线源代码和公开检查接口证据。没有在 WoW 实机导入这些语料，也没有完成游戏内伤害验收。
 

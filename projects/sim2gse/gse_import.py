@@ -991,11 +991,31 @@ def decode_import(text):
             blocker for blocker in collection_blockers
             if blocker.get("blocks_import") and blocker.get("category") in {"Variables", "Macros"}
         ]
-        if blocking_object_members:
-            blocked_paths = [blocker["source_path"] for blocker in blocking_object_members]
-            reason = ("GSE 集合包含上游无法导入的变量/宏原始 table "
-                      f"（来源：{'、'.join(blocked_paths)}）")
-            for sequence_name in sequences:
+        for blocker in blocking_object_members:
+            source_path = blocker["source_path"]
+            if source_path.startswith("Variables["):
+                blocked_names = list(sequences)
+                reason = ("GSE 集合 Variables 阶段含上游无法导入的原始 table；"
+                          f"该阶段在 Sequences 前运行（来源：{source_path}）")
+            elif source_path.startswith("Sequences["):
+                blocked_names = list(sequences)
+                reason = ("GSE 集合中的坏变量/宏对象位于 Sequences 递归导入期间；"
+                          "同层 pairs 顺序不确定，不能判定哪些序列已经存储，保守阻断模拟预检 "
+                          f"（来源：{source_path}）")
+            elif source_path.startswith("Macros["):
+                macro_root = source_path.split(".payload.", 1)[0]
+                subtree_prefix = f"{macro_root}.payload."
+                blocked_names = [
+                    name for name, member_path in collection_sequence_locations.items()
+                    if member_path.startswith(subtree_prefix)
+                ]
+                reason = ("GSE 集合 Macros 子树含上游无法导入的原始 table；"
+                          f"仅保守阻断该子树序列（来源：{source_path}）")
+            else:
+                blocked_names = list(sequences)
+                reason = ("GSE 集合坏变量/宏对象的嵌套来源无法确定导入顺序，"
+                          f"保守阻断模拟预检（来源：{source_path}）")
+            for sequence_name in blocked_names:
                 existing_reason = unimportable_sequences.get(sequence_name)
                 unimportable_sequences[sequence_name] = (
                     f"{existing_reason}；{reason}" if existing_reason else reason)
