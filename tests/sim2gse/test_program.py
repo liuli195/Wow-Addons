@@ -18,11 +18,34 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 from codec import export, wire_value  # noqa: E402
 from gse_import import (_map_step, decode_import, import_action_spell_ids,
                         import_action_spell_names, inspect_import)  # noqa: E402
+from macro_interpreter import (macro_spell_ids, macro_spell_names, map_action, map_macro,
+                               preflight_macro)  # noqa: E402
 from program import compile_program, from_action_blocks, from_gse_import  # noqa: E402
 from sequence import compiled_program  # noqa: E402
 
 
 class ProgramTests(unittest.TestCase):
+    def test_macro_interpreter_maps_raw_text_with_explicit_scene_and_catalogue(self):
+        text = "/cast [pet] 77575\n/cast [nopet] 49998\n/cast Epidemic"
+        source = "REAL v1 Versions[1].Actions[1].macro"
+        actions = [
+            dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak"),
+            dict(kind="spell", spell_id=49998, name="Epidemic", simc_action="epidemic"),
+        ]
+
+        preflight_macro(text, source)
+        with self.assertRaisesRegex(ValueError, "宏条件不能确定.*nochanneling"):
+            preflight_macro("/cast [nochanneling] 49998", source)
+        self.assertEqual(map_macro(text, source,
+                                   dict(pet_ready=True, enemy_target_ready=True), actions),
+                         ["outbreak", "epidemic"])
+        self.assertEqual(map_action("item", "13", [
+            dict(kind="item", slot=13, item_id=250245,
+                 simc_action="use_item,slot=trinket1"),
+        ], source), ["use_item,slot=trinket1"])
+        self.assertEqual(macro_spell_ids(text), [49998, 77575])
+        self.assertEqual(macro_spell_names(text), ["Epidemic"])
+
     def test_pinned_cryptography_chacha20_matches_rfc8439_vector(self):
         plaintext = (b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip "
                      b"for the future, sunscreen would be it.")
