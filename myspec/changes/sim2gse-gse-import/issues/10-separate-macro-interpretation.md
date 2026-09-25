@@ -2,7 +2,7 @@
 
 Label（标签）: change:task
 Triage（分拣）: ready-for-agent
-Status（状态）: ready
+Status（状态）: done
 
 ## What to build
 
@@ -14,9 +14,9 @@ Status（状态）: ready
 
 ## Acceptance criteria
 
-- [ ] 已有宏条件、命令、预检及角色动作映射移出 GSE 导入/控制模块；模块交接只包含宏原文、来源位置、场景和角色动作目录，不让 GSE 控制代码理解宏条件。
-- [ ] 不新增宏语法或游戏状态模拟；既有可模拟输入的逐次动作、来源路径与 DPS 保持一致，不支持输入仍按原位置和原因拒绝。
-- [ ] 真实第三方原串验证代表性成功、宏拒绝及 If/Embed 的无损解析；可达的外部 If 变量拒绝与缺失 Embed 引用拒绝可使用明确标注的构造 GSE 导入串，经同一公开 inspect/tasks 接口验证；完成统一验证与独立审查。
+- [x] 已有宏条件、命令、预检及角色动作映射移出 GSE 导入/控制模块；模块交接只包含宏原文、来源位置、场景和角色动作目录，不让 GSE 控制代码理解宏条件。
+- [x] 不新增宏语法或游戏状态模拟；既有可模拟输入的逐次动作、来源路径与 DPS 保持一致，不支持输入仍按原位置和原因拒绝。
+- [x] 真实第三方原串验证代表性成功、宏拒绝及 If/Embed 的无损解析；可达的外部 If 变量拒绝与缺失 Embed 引用拒绝可使用明确标注的构造 GSE 导入串，经同一公开 inspect/tasks 接口验证；完成统一验证与独立审查。
 
 ## Highest public seam and failure path
 
@@ -42,3 +42,7 @@ Status（状态）: ready
 2026-09-25 范围澄清：用户允许用明确标注的构造 GSE 导入串验证真实第三方语料中不可达的外部 If 变量拒绝与缺失 Embed 引用拒绝；构造串需经同一公开 inspect/tasks 接口验证，不记作真实第三方原串。
 
 2026-09-25 公共任务接口补证（HEAD `68599a924e3b7bcd6c7fe95160d55d2d91235f14`；本地模拟，游戏验证未运行）：Karen ST 原串经 `POST /api/tasks` HTTP 202 后任务完成，DPS（每秒伤害）为 `13095.923336688085`。Kim Burst 原串也被 HTTP 202 接受，但在 `initialize` 阶段失败、没有 DPS；SimC 日志显示 `prototype supports at most one GCD action per block`，来源是 `Sequences[Burst_Cooldowns_UDK].Versions[1].Actions[1]["5"]`（导入动作路径 `1.5`）中的双施法宏。这是模拟引擎初始化限制，不是 GSE 语法解析失败。请求、来源动作与日志详见 `.local/sim2gse/ticket10-public-api-380bad2/current-68599a9/karen-kim-task-api-summary.md`。
+
+2026-09-25 最终门禁（HEAD `cc74d1278bff91940f45b84442ee0704bcc6a6f6`）：`build-and-verify build --project .` passed；`build-and-verify verify --project . --base fa2ea1360858942a8bc3d065fbad81c5a9cef417` passed，checked 9 项，225 passed / 80 subtests passed。Reviewer 双轴最终复审 blocker 0。
+
+最终公开冒烟命令：`.venv/Scripts/python.exe .local/sim2gse/ticket10-public-api-380bad2/capture_public_api.py after`，exit 0。结果位于 `.local/sim2gse/ticket10-public-api-380bad2/after/`：真实 Sol、Violent Benediction、Jafoweb 的拒绝路径，以及明确标注的构造 If 外部变量和缺失 Embed 用例均经公开 inspect/tasks 接口验证；真实 Jafoweb 先被 `[nochanneling]` 阻断，不能据此声称真实缺失 Embed 已验证。合成成功任务 HTTP 202 / completed，DPS `1911.0397445569276`，动作 `outbreak`、来源路径 `1`；`game_validation=not_run`，未做游戏内验收。
