@@ -233,6 +233,42 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(macro["macros"]["PMAC"]["macro"], "/cast 77575\n/use 13")
         self.assertEqual(macro["macros"]["PMAC"]["CustomField"], "kept")
 
+    def test_import_inspection_decodes_unprotected_standalone_variable_and_macro(self) -> None:
+        variable_payload = {"objectType": "VARIABLE", "name": "PLAIN_VARIABLE",
+                            "funct": "return 7", "Custom": None}
+        macro_payload = {"objectType": "MACRO", "name": "PLAIN_MACRO",
+                         "macro": "/cast 77575", "Custom": "kept"}
+        variable_import = gse_fixture(variable_payload)
+        macro_import = gse_fixture(macro_payload)
+
+        variable = self._json_request("POST", "/api/gse/inspect", {
+            "gse": variable_import,
+        })
+        macro = self._json_request("POST", "/api/gse/inspect", {
+            "gse": macro_import,
+        })
+
+        self.assertEqual(variable["status"], "decoded")
+        self.assertEqual(variable["format"], "direct")
+        self.assertEqual(variable["content_format"], "object")
+        self.assertIsNone(variable["protected_object_type"])
+        self.assertEqual(variable["object_type"], "VARIABLE")
+        self.assertEqual(variable["raw_import"], variable_import)
+        self.assertEqual(variable["raw_payload"], variable_payload)
+        self.assertEqual(variable["variables"]["PLAIN_VARIABLE"]["funct"], "return 7")
+        self.assertIsNone(variable["variables"]["PLAIN_VARIABLE"]["Custom"])
+        self.assertEqual(variable["sequences"], [])
+        self.assertEqual(macro["status"], "decoded")
+        self.assertEqual(macro["format"], "direct")
+        self.assertEqual(macro["content_format"], "object")
+        self.assertIsNone(macro["protected_object_type"])
+        self.assertEqual(macro["object_type"], "MACRO")
+        self.assertEqual(macro["raw_import"], macro_import)
+        self.assertEqual(macro["raw_payload"], macro_payload)
+        self.assertEqual(macro["macros"]["PLAIN_MACRO"]["macro"], "/cast 77575")
+        self.assertEqual(macro["macros"]["PLAIN_MACRO"]["Custom"], "kept")
+        self.assertEqual(macro["sequences"], [])
+
     def test_import_inspection_reports_missing_protected_decoder_dependency_as_bad_request(self) -> None:
         import builtins
         from unittest.mock import patch
@@ -653,6 +689,319 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(member["versions"][0]["parsed_version"]["Actions"][0]["spell"], 77575)
         self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["NESTED_PROTECTED"],
                          GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR)
+
+    def test_import_inspection_decodes_unprotected_sequence_string_inside_collection(self) -> None:
+        sequence = {
+            "MetaData": {"Name": "NESTED_PLAIN", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]}],
+        }
+        nested_import = gse_fixture(["NESTED_PLAIN", sequence])
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"NESTED_PLAIN": nested_import},
+        }})
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        member = result["sequences"][0]
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["NESTED_PLAIN"],
+                         nested_import)
+        self.assertEqual(member["name"], "NESTED_PLAIN")
+        self.assertEqual(member["raw_sequence"], nested_import)
+        self.assertEqual(member["versions"][0]["parsed_version"]["Actions"][0]["spell"], 77575)
+        self.assertEqual(member["versions"][0]["source_path"],
+                         "Sequences[NESTED_PLAIN].Versions[1]")
+
+    def test_import_inspection_uses_inner_sequence_identity_for_plain_members(self) -> None:
+        pair_sequence = {
+            "MetaData": {"Name": "INNER_PAIR", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "spell": 101}]}],
+        }
+        metadata_sequence = {
+            "MetaData": {"Name": "INNER_METADATA", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 2}]}],
+        }
+        encoded_metadata_sequence = {
+            "MetaData": {"Name": "INNER_ENCODED_METADATA", "SpecID": 252,
+                         "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 3}]}],
+        }
+        pair_wire = gse_fixture(["INNER_PAIR", pair_sequence])
+        encoded_metadata_wire = gse_fixture(encoded_metadata_sequence)
+        payload = {"type": "COLLECTION", "payload": {"Sequences": {
+            "OUTER_PAIR": pair_wire,
+            "OUTER_METADATA": metadata_sequence,
+            "OUTER_ENCODED_METADATA": encoded_metadata_wire,
+        }}}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        members = {member["name"]: member for member in result["sequences"]}
+        self.assertEqual(set(members), {
+            "INNER_PAIR", "INNER_METADATA", "INNER_ENCODED_METADATA",
+        })
+        self.assertEqual(members["INNER_PAIR"]["raw_sequence"], pair_wire)
+        self.assertEqual(members["INNER_PAIR"]["versions"][0]["source_path"],
+                         "Sequences[OUTER_PAIR].Versions[1]")
+        self.assertEqual(members["INNER_METADATA"]["raw_sequence"], metadata_sequence)
+        self.assertEqual(members["INNER_METADATA"]["versions"][0]["source_path"],
+                         "Sequences[OUTER_METADATA].Versions[1]")
+        self.assertEqual(members["INNER_ENCODED_METADATA"]["raw_sequence"],
+                         encoded_metadata_wire)
+        self.assertEqual(members["INNER_ENCODED_METADATA"]["versions"][0]["source_path"],
+                         "Sequences[OUTER_ENCODED_METADATA].Versions[1]")
+
+    def test_import_inspection_reports_gse_rejection_of_raw_collection_sequence_pair(self) -> None:
+        sequence = {
+            "MetaData": {"Name": "INNER_RAW_PAIR", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 1}]}],
+        }
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"RAW_PAIR": ["RAW_PAIR", sequence]},
+        }})
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(result["status"], "decoded")
+        self.assertFalse(result["simulation_started"])
+        member = result["sequences"][0]
+        self.assertEqual(member["name"], "RAW_PAIR")
+        self.assertEqual(member["raw_sequence"], ["RAW_PAIR", sequence])
+        self.assertEqual(member["versions"][0]["source_path"],
+                         "Sequences[RAW_PAIR].Versions[1]")
+        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
+        self.assertEqual(member["version_support"][0]["support_status"], "unsupported")
+        self.assertIn("上游会拒绝导入", member["version_support"][0]["support_reason"])
+        blockers = result["collection_compatibility_blocks"]
+        self.assertEqual(len(blockers), 1)
+        self.assertEqual(blockers[0]["source_path"], "Sequences[RAW_PAIR]")
+        self.assertIn("GSEVersion", blockers[0]["reason"])
+        self.assertEqual(blockers[0]["raw_value"], ["RAW_PAIR", sequence])
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "RAW_PAIR", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("上游会拒绝导入", json.loads(raised.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
+
+    def test_import_inspection_dispatches_plain_encoded_collection_members_by_object_type(self) -> None:
+        variable_from_sequence = {"objectType": "VARIABLE", "name": "INNER_SEQUENCE_VARIABLE",
+                                  "funct": "return 11"}
+        macro_from_variable = {"objectType": "MACRO", "name": "INNER_VARIABLE_MACRO",
+                               "macro": "/cast 101"}
+        variable_from_macro = {"objectType": "VARIABLE", "name": "INNER_MACRO_VARIABLE",
+                               "funct": "return 12"}
+        payload = {"type": "COLLECTION", "payload": {
+            "Sequences": {"OUTER_SEQUENCE_VARIABLE": gse_fixture(variable_from_sequence)},
+            "Variables": {"OUTER_VARIABLE_MACRO": gse_fixture(macro_from_variable)},
+            "Macros": {"OUTER_MACRO_VARIABLE": gse_fixture(variable_from_macro)},
+        }}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        self.assertEqual(result["sequences"], [])
+        self.assertEqual(set(result["variables"]), {
+            "INNER_SEQUENCE_VARIABLE", "INNER_MACRO_VARIABLE",
+        })
+        self.assertEqual(set(result["macros"]), {"INNER_VARIABLE_MACRO"})
+        self.assertEqual(result["variables"]["INNER_SEQUENCE_VARIABLE"]["funct"], "return 11")
+        self.assertEqual(result["macros"]["INNER_VARIABLE_MACRO"]["macro"], "/cast 101")
+        self.assertEqual(result["collection_object_locations"], {
+            "Variables": {
+                "INNER_SEQUENCE_VARIABLE": "payload.Sequences[OUTER_SEQUENCE_VARIABLE]",
+                "INNER_MACRO_VARIABLE": "payload.Macros[OUTER_MACRO_VARIABLE]",
+            },
+            "Macros": {
+                "INNER_VARIABLE_MACRO": "payload.Variables[OUTER_VARIABLE_MACRO]",
+            },
+        })
+
+    def test_import_inspection_dispatches_raw_sequence_tables_from_variables_and_macros(self) -> None:
+        def sequence(name: str, click: int) -> dict:
+            return {
+                "MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
+                "Default": 1,
+                "Versions": [{"Actions": [{"Type": "Pause", "Clicks": click}]}],
+            }
+
+        variable_pair = ["INNER_VARIABLE_PAIR", sequence("INNER_VARIABLE_PAIR", 1)]
+        macro_pair = ["INNER_MACRO_PAIR", sequence("INNER_MACRO_PAIR", 2)]
+        payload = {"type": "COLLECTION", "payload": {
+            "Variables": {
+                "OUTER_VARIABLE_SEQUENCE": sequence("INNER_VARIABLE_SEQUENCE", 3),
+                "OUTER_VARIABLE_PAIR": variable_pair,
+                "OUTER_PROTECTED_VARIABLE": GSE_PROTECTED_VARIABLE_VECTOR,
+            },
+            "Macros": {
+                "OUTER_MACRO_SEQUENCE": sequence("INNER_MACRO_SEQUENCE", 4),
+                "OUTER_MACRO_PAIR": macro_pair,
+                "OUTER_PROTECTED_MACRO": GSE_PROTECTED_MACRO_VECTOR,
+            },
+        }}
+        imported = gse_fixture(payload)
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        members = {member["name"]: member for member in result["sequences"]}
+        self.assertEqual(set(members), {
+            "INNER_VARIABLE_SEQUENCE", "INNER_VARIABLE_PAIR",
+            "INNER_MACRO_SEQUENCE", "INNER_MACRO_PAIR",
+        })
+        self.assertEqual(members["INNER_VARIABLE_SEQUENCE"]["versions"][0]["source_path"],
+                         "Variables[OUTER_VARIABLE_SEQUENCE].Versions[1]")
+        self.assertEqual(members["INNER_VARIABLE_PAIR"]["raw_sequence"], variable_pair)
+        self.assertEqual(members["INNER_VARIABLE_PAIR"]["versions"][0]["source_path"],
+                         "Variables[OUTER_VARIABLE_PAIR].Versions[1]")
+        self.assertEqual(members["INNER_MACRO_SEQUENCE"]["versions"][0]["source_path"],
+                         "Macros[OUTER_MACRO_SEQUENCE].Versions[1]")
+        self.assertEqual(members["INNER_MACRO_PAIR"]["raw_sequence"], macro_pair)
+        self.assertEqual(members["INNER_MACRO_PAIR"]["versions"][0]["source_path"],
+                         "Macros[OUTER_MACRO_PAIR].Versions[1]")
+        self.assertEqual(result["variables"]["OUTER_PROTECTED_VARIABLE"]["funct"],
+                         "return GSE.V.Other()")
+        self.assertEqual(result["macros"]["OUTER_PROTECTED_MACRO"]["macro"],
+                         "/cast 77575\n/use 13")
+        self.assertEqual(result["raw_payload"], payload)
+
+    def test_import_inspection_recursively_expands_plain_nested_collection_members(self) -> None:
+        nested = {"type": "COLLECTION", "payload": {
+            "Sequences": {
+                "INNER_A": {"MetaData": {"Name": "INNER_A", "SpecID": 252,
+                                           "GSEVersion": 3332}, "Default": 1,
+                             "Versions": [{"Actions": [{"Type": "Action", "spell": 101}]}]},
+                "INNER_B": {"MetaData": {"Name": "INNER_B", "SpecID": 252,
+                                           "GSEVersion": 3332}, "Default": 1,
+                             "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 2}]}]},
+            },
+            "Variables": {"INNER_V": {"name": "INNER_V", "funct": "return 9"}},
+            "Macros": {"INNER_M": {"name": "INNER_M", "macro": "/cast 77575"}},
+        }}
+        nested_wire = gse_fixture(nested)
+        outer_payload = {"type": "COLLECTION", "payload": {
+            "Sequences": {"WRAPPER": nested_wire},
+        }}
+        imported = gse_fixture(outer_payload)
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        members = {member["name"]: member for member in result["sequences"]}
+        self.assertEqual(set(members), {"INNER_A", "INNER_B"})
+        self.assertEqual(members["INNER_A"]["versions"][0]["source_path"],
+                         "Sequences[WRAPPER].payload.Sequences[INNER_A].Versions[1]")
+        self.assertEqual(members["INNER_B"]["versions"][0]["parsed_version"]["Actions"][0],
+                         {"Type": "Pause", "Clicks": 2})
+        self.assertIn(("Action", "Sequences[WRAPPER].payload.Sequences[INNER_A].Versions[1].Actions[1]"),
+                      {(row["type"], row["path"]) for row in result["syntax_locations"]})
+        self.assertEqual(result["variables"]["INNER_V"]["funct"], "return 9")
+        self.assertEqual(result["macros"]["INNER_M"]["macro"], "/cast 77575")
+        self.assertEqual(result["collection_object_locations"]["Variables"]["INNER_V"],
+                         "payload.Sequences[WRAPPER].payload.Variables[INNER_V]")
+        self.assertEqual(result["raw_payload"], outer_payload)
+
+    def test_import_inspection_rejects_bad_encoded_member_in_nested_collection_with_path(self) -> None:
+        nested_wire = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"BROKEN": "!GSE3!not-base64!"},
+        }})
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"WRAPPER": nested_wire},
+        }})
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("Sequences[WRAPPER].payload.Sequences[BROKEN]", error)
+        self.assertIn("编码无效", error)
+
+    def test_import_inspection_rejects_nested_collection_depth_over_limit(self) -> None:
+        nested = {"type": "COLLECTION", "payload": {"Sequences": {
+            "LEAF": {"MetaData": {"Name": "LEAF", "SpecID": 252,
+                                    "GSEVersion": 3332}, "Default": 1,
+                     "Versions": [{"Actions": []}]},
+        }}}
+        for index in range(40):
+            nested = {"type": "COLLECTION", "payload": {
+                "Sequences": {f"LEVEL_{index}": gse_fixture(nested)},
+            }}
+        imported = gse_fixture(nested)
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("递归过深", error)
+        self.assertIn("Sequences[LEVEL_", error)
+
+    def test_import_inspection_marks_nested_sequence_name_collision_ambiguous(self) -> None:
+        sequence = {"MetaData": {"Name": "DUP", "SpecID": 252, "GSEVersion": 3332},
+                    "Default": 1, "Versions": [{"Actions": []}]}
+        nested_wire = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"DUP": sequence},
+        }})
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"DUP": sequence, "WRAPPER": nested_wire},
+        }})
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(result["sequences"], [])
+        collision = next(block for block in result["collection_compatibility_blocks"]
+                         if block["category"] == "Sequences" and block["name"] == "DUP")
+        self.assertIn("歧义", collision["reason"])
+        self.assertIn("pairs", collision["reason"])
+        self.assertEqual({collision["source_path"], collision["conflicting_source_path"]}, {
+            "Sequences[WRAPPER].payload.Sequences[DUP]", "Sequences[DUP]",
+        })
+        self.assertIsNotNone(collision["conflicting_raw_value"])
+        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["DUP"], sequence)
+        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["WRAPPER"], nested_wire)
+
+    def test_import_inspection_enforces_total_decoded_bytes_across_nested_members(self) -> None:
+        padding = "x" * 2_200_000
+        nested_wires = {}
+        for suffix in ("A", "B"):
+            nested_wires[f"WRAPPER_{suffix}"] = gse_fixture({"type": "COLLECTION", "payload": {
+                "Variables": {f"V_{suffix}": {"name": f"V_{suffix}",
+                                               "funct": "return 1", "Padding": padding}},
+            }})
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": nested_wires,
+        }})
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("递归解码数据总量", error)
+        self.assertIn("Sequences[WRAPPER_", error)
+
+    def test_import_inspection_counts_plain_encoded_object_once_within_total_budget(self) -> None:
+        padding = "x" * 2_200_000
+        variable_wire = gse_fixture({"objectType": "VARIABLE", "name": "BIG_VARIABLE",
+                                     "funct": "return 1", "Padding": padding})
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Variables": {"BIG_VARIABLE": variable_wire},
+        }})
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(len(result["variables"]["BIG_VARIABLE"]["Padding"]), len(padding))
 
     def test_import_inspection_reconstructs_self_contained_collection_delta_fork(self) -> None:
         import cbor2

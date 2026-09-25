@@ -32,6 +32,10 @@ _PROTECTED_KEYS = {
 }
 
 
+class _GSEResourceLimit(ValueError):
+    """A hard import budget was exceeded and must not become a recoverable member warning."""
+
+
 class _RawCBORBytes(bytes):
     """CBOR 字节串无法按 UTF-8 解码时仍保留其原始内容。"""
 
@@ -138,9 +142,9 @@ def _version_items(value, path):
     return items
 
 
-def _sequence_versions(value, name):
+def _sequence_versions(value, name, source_path=None):
     """Validate version mappings without compacting or rejecting sparse upstream keys."""
-    path = f"Sequences[{name}].Versions" if name else "Versions"
+    path = f"{source_path or f'Sequences[{name}]'}.Versions" if name else "Versions"
     _version_items(value, path)
     return value
 
@@ -161,8 +165,8 @@ def _version_runtime_issue(sequence, version):
     return None
 
 
-def _sequence_warnings(sequence, name):
-    path = f"Sequences[{name}].Versions"
+def _sequence_warnings(sequence, name, source_path=None):
+    path = f"{source_path or f'Sequences[{name}]'}.Versions"
     items = _version_items(sequence["Versions"], path)
     indexes = [index for index, _ in items]
     warnings = []
@@ -260,14 +264,15 @@ def _parse_block(action, sequence_name, version, path, syntax):
                                  f"{child_path}[{child_index}]", syntax)
 
 
-def _parse_sequences(sequences):
+def _parse_sequences(sequences, source_paths=None):
     syntax = []
     for sequence_name, sequence in sequences.items():
+        sequence_path = (source_paths or {}).get(sequence_name, f"Sequences[{sequence_name}]")
         for version, record in _version_items(sequence["Versions"],
-                                               f"Sequences[{sequence_name}].Versions"):
-            actions_path = f"Sequences[{sequence_name}].Versions[{version}].Actions"
+                                               f"{sequence_path}.Versions"):
+            actions_path = f"{sequence_path}.Versions[{version}].Actions"
             if "Actions" not in record:
-                version_path = f"Sequences[{sequence_name}].Versions[{version}]"
+                version_path = f"{sequence_path}.Versions[{version}]"
                 for index, action in _indexed_items(record) or []:
                     if not isinstance(action, dict):
                         raise ValueError(
@@ -470,7 +475,8 @@ def _apply_delta(base, delta):
     return result
 
 
-def _collection_delta_fork(name, fork, path, warnings, *, expected_type="sequence"):
+def _collection_delta_fork(name, fork, path, warnings, *, expected_type="sequence",
+                           account_decoded_bytes=None):
     content_type = fork.get("contentType")
     if not content_type:
         content_type = "sequence"
@@ -483,9 +489,11 @@ def _collection_delta_fork(name, fork, path, warnings, *, expected_type="sequenc
     if not isinstance(base_text, str):
         raise ValueError(f"GSE Delta 缺少编码基础序列（位置：{path}.base）")
     try:
-        _, payload, _ = _decode_gse_message(base_text)
+        base_raw, payload, _ = _decode_gse_message(base_text)
     except ValueError as error:
         raise ValueError(f"GSE Delta 基础消息无法读取（位置：{path}.base）：{error}") from error
+    if account_decoded_bytes is not None:
+        account_decoded_bytes(base_raw, f"{path}.base")
     if expected_type == "sequence" and isinstance(payload, list) and len(payload) >= 2 and isinstance(payload[1], dict):
         base = payload[1]
     elif isinstance(payload, dict):
@@ -497,15 +505,19 @@ def _collection_delta_fork(name, fork, path, warnings, *, expected_type="sequenc
     if isinstance(delta_text, str) and delta_text:
         try:
             encoded = base64.b64decode(delta_text, validate=True)
-            if len(encoded) > MAX_DECODED:
-                raise ValueError("delta exceeds size limit")
-            stream = io.BytesIO(encoded)
-            decoded_delta = _plain(cbor2.CBORDecoder(
-                stream, allow_duplicate_keys=False).decode())
-            if not stream.read(1) and isinstance(decoded_delta, dict):
-                delta = decoded_delta
-        except (binascii.Error, cbor2.CBORDecodeError, ValueError):
-            delta = None
+        except binascii.Error:
+            encoded = None
+        if encoded is not None and len(encoded) <= MAX_DECODED:
+            if account_decoded_bytes is not None:
+                account_decoded_bytes(encoded, f"{path}.delta")
+            try:
+                stream = io.BytesIO(encoded)
+                decoded_delta = _plain(cbor2.CBORDecoder(
+                    stream, allow_duplicate_keys=False).decode())
+                if not stream.read(1) and isinstance(decoded_delta, dict):
+                    delta = decoded_delta
+            except (cbor2.CBORDecodeError, ValueError):
+                delta = None
     if delta is None:
         warnings.append(f"{path}.delta cannot be decoded; upstream keeps the base sequence")
         effective = deepcopy(base)
@@ -526,7 +538,8 @@ def _collection_delta_fork(name, fork, path, warnings, *, expected_type="sequenc
     return effective
 
 
-def _parse_collection_objects(body, category, blockers, warning_map, location_map):
+def _parse_collection_objects(body, category, blockers, warning_map, location_map,
+                              source_root="payload", account_decoded_bytes=None):
     raw_objects = body.get(category)
     if raw_objects is None or raw_objects is False:
         return None
@@ -540,7 +553,7 @@ def _parse_collection_objects(body, category, blockers, warning_map, location_ma
     warning_map[category] = {}
     location_map[category] = {}
     for name, raw_value in entries:
-        path = f"payload.{category}[{name}]"
+        path = f"{source_root}.{category}[{name}]" if source_root else f"{category}[{name}]"
         location_map[category][str(name)] = path
         valid_name = ((isinstance(name, str)) or
                       (type(name) is int) or
@@ -554,11 +567,14 @@ def _parse_collection_objects(body, category, blockers, warning_map, location_ma
         try:
             if isinstance(raw_value, dict) and raw_value.get("GSEDeltaFork"):
                 value = _collection_delta_fork(name, raw_value, path, warnings,
-                                                expected_type=category[:-1].lower())
+                                                expected_type=category[:-1].lower(),
+                                                account_decoded_bytes=account_decoded_bytes)
             elif isinstance(raw_value, str) and raw_value.startswith("!GSE3!"):
                 if raw_value.startswith("!GSE3!+") and not isinstance(name, str):
                     raise ValueError(f"受保护 {category} 的存储键必须是文本名称（位置：{path}）")
-                _, value, _ = _decode_gse_message(raw_value)
+                encoded_raw, value, _ = _decode_gse_message(raw_value)
+                if account_decoded_bytes is not None:
+                    account_decoded_bytes(encoded_raw, path)
                 if not isinstance(value, (dict, list)):
                     raise ValueError(f"GSE 编码对象不是 table（位置：{path}）")
             elif isinstance(raw_value, dict):
@@ -571,6 +587,8 @@ def _parse_collection_objects(body, category, blockers, warning_map, location_ma
             else:
                 raise ValueError(f"GSE 集合对象必须是表格或 GSE 编码字符串（位置：{path}）")
             value = _fix_container(value, path)
+        except _GSEResourceLimit:
+            raise
         except ValueError as error:
             blockers.append(dict(category=category, name=name, source_path=path,
                                  reason=str(error), raw_value=raw_value))
@@ -585,16 +603,19 @@ def decode_import(text):
     """返回原始 GSE 对象和序列映射；失败不会退化成空序列。"""
     raw, payload, protected = _decode_gse_message(text)
 
-    protected_object_type = payload.get("objectType") if protected and isinstance(payload, dict) else None
-    if protected and protected_object_type in {"VARIABLE", "MACRO"}:
+    object_type = payload.get("objectType") if isinstance(payload, dict) else None
+    protected_object_type = object_type if protected else None
+    if object_type in {"VARIABLE", "MACRO"}:
         object_name = payload.get("name")
         if not isinstance(object_name, str) or not object_name:
-            raise ValueError(f"GSE 受保护 {protected_object_type} 对象缺少 name 字段（位置：name）")
-        return dict(payload=payload, sequences={}, envelope="protected", content_envelope="object",
+            raise ValueError(f"GSE {object_type} 对象缺少 name 字段（位置：name）")
+        return dict(payload=payload, sequences={},
+                    envelope="protected" if protected else "direct", content_envelope="object",
                     raw_sequences={}, raw_sequence_objects={}, syntax_locations=[], parse_warnings={},
                     collection_objects={}, collection_object_warnings={},
                     collection_object_locations={}, collection_blockers=[],
                     protected_object_type=protected_object_type,
+                    object_type=object_type,
                     payload_cbor=raw, raw_import=text,
                     sha256=hashlib.sha256(text.encode("ascii")).hexdigest())
     collection_member_warnings = {}
@@ -603,6 +624,8 @@ def decode_import(text):
     collection_objects = {}
     collection_object_warnings = {}
     collection_object_locations = {}
+    collection_sequence_locations = {}
+    unimportable_sequences = {}
     if isinstance(payload, list) and len(payload) == 2 and isinstance(payload[0], str):
         sequences = {payload[0]: payload[1]}
         envelope = "single"
@@ -610,41 +633,351 @@ def decode_import(text):
         body = payload.get("payload") or {}
         if not isinstance(body, dict):
             raise ValueError("GSE 导入集合载荷必须为映射（位置：payload）")
-        collection_sequences = body.get("Sequences") or {}
-        if not isinstance(collection_sequences, dict):
-            raise ValueError("GSE 导入集合序列必须为映射（位置：payload.Sequences）")
         sequences = {}
-        for name, value in collection_sequences.items():
-            source_path = f"payload.Sequences[{name}]"
-            original_value = value
+        sequence_paths = {}
+        sequence_sources = {}
+        ambiguous_sequences = set()
+        ambiguous_objects = {"Variables": set(), "Macros": set()}
+        object_sources = {"Variables": {}, "Macros": {}}
+        seen_members = [0]
+        decoded_bytes = [len(raw)]
+
+        def public_path(path):
+            return path[len("payload."):] if path.startswith("payload.") else path
+
+        def visit_member(path, depth):
+            if depth > MAX_DEPTH:
+                raise ValueError(f"GSE 集合递归过深（位置：{public_path(path)}）")
+            seen_members[0] += 1
+            if seen_members[0] > MAX_NODES:
+                raise ValueError(f"GSE 集合成员过多（位置：{public_path(path)}）")
+
+        def account_decoded_bytes(decoded_raw, path):
+            decoded_bytes[0] += len(decoded_raw)
+            if decoded_bytes[0] > MAX_DECODED:
+                raise _GSEResourceLimit(
+                    f"GSE 集合递归解码数据总量超过限制（位置：{public_path(path)}）")
+
+        def collection_items(value, category, path):
+            if value is None or value is False:
+                return []
+            if category == "Sequences" and not isinstance(value, dict):
+                raise ValueError(f"GSE 导入集合序列必须为映射（位置：{public_path(path)}）")
+            if isinstance(value, list):
+                return list(enumerate(value, 1))
+            if isinstance(value, dict):
+                return list(value.items())
+            raise ValueError(f"GSE 集合 {category} 必须为表格（位置：{public_path(path)}）")
+
+        def mark_sequence_collision(name, path, raw_value):
+            sources = sequence_sources.setdefault(name, [])
+            current_path = public_path(path)
+            if not sources or sources[-1]["source_path"] != current_path:
+                sources.append({"source_path": current_path, "raw_value": raw_value})
+            source_paths = [source["source_path"] for source in sources]
+            previous_path = source_paths[0] if source_paths else current_path
+            previous_raw = sources[0]["raw_value"] if sources else raw_value
+            collection_blockers.append(dict(
+                category="Sequences", name=name, source_path=current_path,
+                reason=(f"GSE 集合序列名称有歧义；上游 pairs 遍历顺序不确定，不能选择覆盖结果 "
+                        f"（来源：{'、'.join(source_paths)}）"),
+                raw_value=raw_value, conflicting_source_path=public_path(previous_path or path),
+                conflicting_raw_value=previous_raw, source_paths=source_paths))
+            sequences.pop(name, None)
+            sequence_paths.pop(name, None)
+            collection_sequence_locations.pop(name, None)
+            collection_wire_values.pop(name, None)
+            collection_member_warnings.pop(name, None)
+            ambiguous_sequences.add(name)
+
+        def add_collection_object_value(category, name, value, original_value, path):
+            source_path = path
+            if not isinstance(name, str) or not name:
+                collection_blockers.append(dict(
+                    category=category, name=str(name), source_path=source_path,
+                    reason=f"GSE {category} 对象缺少有效 name 字段（位置：{source_path}.name）",
+                    raw_value=original_value))
+                return
+            try:
+                parsed_value = _fix_container(deepcopy(value), source_path)
+            except _GSEResourceLimit:
+                raise
+            except ValueError as error:
+                collection_blockers.append(dict(category=category, name=name,
+                                                source_path=public_path(path), reason=str(error),
+                                                raw_value=original_value))
+                return
+            target = collection_objects.setdefault(category, {})
+            locations = collection_object_locations.setdefault(category, {})
+            warnings = collection_object_warnings.setdefault(category, {})
+            source_key = str(name)
+            if name in target or name in ambiguous_objects[category]:
+                sources = object_sources[category].setdefault(name, [])
+                if not sources:
+                    sources.append({"source_path": locations.get(source_key, public_path(path)),
+                                    "raw_value": target.get(name)})
+                current_path = source_path
+                if sources[-1]["source_path"] != current_path:
+                    sources.append({"source_path": current_path, "raw_value": original_value})
+                source_paths = [source["source_path"] for source in sources]
+                previous_path = source_paths[0] if source_paths else current_path
+                previous_value = sources[0]["raw_value"] if sources else original_value
+                collection_blockers.append(dict(
+                    category=category, name=name, source_path=current_path,
+                    reason=(f"GSE 集合 {category} 对象名称有歧义；上游 pairs 遍历顺序不确定，"
+                            f"不能选择覆盖结果（来源：{'、'.join(source_paths)}）"),
+                    raw_value=original_value, conflicting_source_path=previous_path,
+                    conflicting_raw_value=previous_value, source_paths=source_paths))
+                target.pop(name, None)
+                locations.pop(source_key, None)
+                warnings.pop(source_key, None)
+                ambiguous_objects[category].add(name)
+                return
+            target[name] = parsed_value
+            object_sources[category][name] = [{"source_path": source_path,
+                                               "raw_value": original_value}]
+            locations[source_key] = source_path
+
+        def add_sequence(name, original_value, path, depth, *, decoded_message=None,
+                         already_counted=False, raw_table_origin=False):
+            if not already_counted:
+                visit_member(path, depth)
+            value = original_value
             member_warnings = []
-            if isinstance(value, list) and len(value) == 2 and value[0] == name:
-                value = value[1]
-            elif isinstance(value, str) and value.startswith("!GSE3!+"):
-                _, protected_payload, _ = _decode_gse_message(value)
-                if not (isinstance(protected_payload, list) and len(protected_payload) >= 2
-                        and isinstance(protected_payload[1], dict)):
-                    raise ValueError(f"GSE 集合受保护序列必须包含名称与序列对象（位置：{source_path}）")
-                value = protected_payload[1]
-                collection_wire_values[name] = original_value
+            encoded = isinstance(value, str) and value.startswith("!GSE3!")
+            is_delta_fork = isinstance(value, dict) and bool(value.get("GSEDeltaFork"))
+            unimportable_raw_pair = False
+            raw_pair_wrapper = False
+            sequence_name = name
+            if isinstance(value, dict) and value.get("type") == "COLLECTION":
+                nested_body = value.get("payload") or {}
+                if not isinstance(nested_body, dict):
+                    raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
+                visit_collection(nested_body, f"{path}.payload", depth + 1)
+                return
+            if encoded:
+                if decoded_message is None:
+                    try:
+                        encoded_raw, encoded_payload, protected_member = _decode_gse_message(value)
+                    except ValueError as error:
+                        raise ValueError(f"{error}（位置：{public_path(path)}）") from error
+                    account_decoded_bytes(encoded_raw, path)
+                else:
+                    encoded_raw, encoded_payload, protected_member = decoded_message
+                if (not protected_member and isinstance(encoded_payload, dict)
+                        and encoded_payload.get("type") == "COLLECTION"):
+                    nested_body = encoded_payload.get("payload") or {}
+                    if not isinstance(nested_body, dict):
+                        raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
+                    visit_collection(nested_body, f"{path}.payload", depth + 1)
+                    return
+                if (not protected_member and isinstance(encoded_payload, dict)
+                        and encoded_payload.get("objectType") in {"VARIABLE", "MACRO"}):
+                    category = "Variables" if encoded_payload["objectType"] == "VARIABLE" else "Macros"
+                    add_collection_object_value(category, encoded_payload.get("name"),
+                                                encoded_payload, original_value, path)
+                    return
+                if (isinstance(encoded_payload, list) and len(encoded_payload) == 2
+                        and isinstance(encoded_payload[0], str) and encoded_payload[0]
+                        and isinstance(encoded_payload[1], dict)):
+                    if not protected_member:
+                        sequence_name = encoded_payload[0]
+                    value = encoded_payload[1]
+                elif (isinstance(encoded_payload, dict)
+                      and isinstance(encoded_payload.get("MetaData"), dict)
+                      and "Versions" in encoded_payload):
+                    value = encoded_payload
+                    if not protected_member:
+                        sequence_name = encoded_payload["MetaData"].get("Name")
+                        if not isinstance(sequence_name, str) or not sequence_name:
+                            raise ValueError(
+                                f"GSE 集合序列编码对象缺少 MetaData.Name（位置：{public_path(path)}）")
+                else:
+                    raise ValueError(f"GSE 集合序列编码成员无效（位置：{public_path(path)}）")
+            elif isinstance(value, dict) and value.get("objectType") in {"VARIABLE", "MACRO"}:
+                category = "Variables" if value["objectType"] == "VARIABLE" else "Macros"
+                add_collection_object_value(category, value.get("name"), value,
+                                            original_value, path)
+                return
             elif isinstance(value, dict) and value.get("GSEDeltaFork"):
-                collection_wire_values[name] = original_value
                 try:
-                    value = _collection_delta_fork(name, value, source_path, member_warnings)
+                    value = _collection_delta_fork(
+                        name, value, public_path(path), member_warnings,
+                        account_decoded_bytes=account_decoded_bytes)
+                except _GSEResourceLimit:
+                    raise
                 except ValueError as error:
                     collection_blockers.append(dict(category="Sequences", name=name,
-                                                    source_path=source_path,
+                                                    source_path=public_path(path),
                                                     reason=str(error), raw_value=original_value))
-                    continue
-            sequences[name] = value
+                    return
+            elif isinstance(value, dict):
+                metadata = value.get("MetaData")
+                if isinstance(metadata, dict) and isinstance(metadata.get("Name"), str) \
+                        and metadata["Name"]:
+                    sequence_name = metadata["Name"]
+                elif raw_table_origin:
+                    raise ValueError(
+                        f"GSE 原始序列 table 缺少 MetaData.Name（位置：{public_path(path)}.MetaData.Name）")
+                if raw_table_origin:
+                    gse_version = metadata.get("GSEVersion") if isinstance(metadata, dict) else None
+                    if ("Versions" not in value or type(gse_version) not in (int, float)
+                            or not math.isfinite(gse_version) or gse_version <= 3200):
+                        raise ValueError(
+                            f"GSE 原始序列 table 缺少可导入的 Versions 或 GSEVersion "
+                            f"（位置：{public_path(path)}）")
+            elif isinstance(value, list):
+                if (len(value) != 2 or not isinstance(value[0], str) or not value[0]
+                        or not isinstance(value[1], dict)):
+                    raise ValueError(f"GSE 集合原始序列成员无效（位置：{public_path(path)}）")
+                if raw_table_origin:
+                    sequence_name = value[0]
+                    metadata = value[1].get("MetaData")
+                    gse_version = metadata.get("GSEVersion") if isinstance(metadata, dict) else None
+                    if ("Versions" not in value[1] or type(gse_version) not in (int, float)
+                            or not math.isfinite(gse_version) or gse_version <= 3200):
+                        raise ValueError(
+                            f"GSE 原始序列 pair 缺少可导入的 Versions 或 GSEVersion "
+                            f"（位置：{public_path(path)}）")
+                    value = value[1]
+                    raw_pair_wrapper = True
+                else:
+                    value = value[1]
+                    unimportable_raw_pair = True
+                    reason = ("锁定 GSE 3.3.32 会给原始数组成员注入外层 MetaData.Name，"
+                              "再把完整数组作为序列载荷；顶层 MetaData.GSEVersion 缺失，"
+                              f"上游会拒绝导入（位置：{public_path(path)}）")
+                    collection_blockers.append(dict(category="Sequences", name=sequence_name,
+                                                    source_path=public_path(path), reason=reason,
+                                                    raw_value=original_value, blocks_import=True))
+                    unimportable_sequences[sequence_name] = reason
+            if sequence_name in sequences or sequence_name in ambiguous_sequences:
+                mark_sequence_collision(sequence_name, path, original_value)
+                return
+            sequences[sequence_name] = value
+            sequence_paths[sequence_name] = public_path(path)
+            sequence_sources[sequence_name] = [{"source_path": public_path(path),
+                                                "raw_value": original_value}]
+            collection_sequence_locations[sequence_name] = public_path(path)
+            if encoded or is_delta_fork or unimportable_raw_pair or raw_pair_wrapper:
+                collection_wire_values[sequence_name] = original_value
             if member_warnings:
-                collection_member_warnings[name] = member_warnings
-        for category in ("Variables", "Macros"):
-            objects = _parse_collection_objects(body, category,
-                                                collection_blockers, collection_object_warnings,
-                                                collection_object_locations)
-            if objects is not None:
-                collection_objects[category] = objects
+                collection_member_warnings[sequence_name] = member_warnings
+
+        def add_collection_object(category, name, original_value, path, depth, source_root):
+            visit_member(path, depth)
+            value = original_value
+            if isinstance(value, dict) and value.get("type") == "COLLECTION":
+                nested_body = value.get("payload") or {}
+                if not isinstance(nested_body, dict):
+                    raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
+                visit_collection(nested_body, f"{path}.payload", depth + 1)
+                return
+            if isinstance(value, str) and value.startswith("!GSE3!"):
+                try:
+                    encoded_raw, encoded_payload, is_protected = _decode_gse_message(value)
+                except ValueError as error:
+                    collection_blockers.append(dict(category=category, name=name,
+                                                    source_path=public_path(path), reason=str(error),
+                                                    raw_value=original_value))
+                    return
+                if (not is_protected and isinstance(encoded_payload, dict)
+                        and encoded_payload.get("type") == "COLLECTION"):
+                    account_decoded_bytes(encoded_raw, path)
+                    nested_body = encoded_payload.get("payload") or {}
+                    if not isinstance(nested_body, dict):
+                        raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(path)}.payload）")
+                    visit_collection(nested_body, f"{path}.payload", depth + 1)
+                    return
+                if not is_protected:
+                    account_decoded_bytes(encoded_raw, path)
+                    add_sequence(name, original_value, path, depth,
+                                 decoded_message=(encoded_raw, encoded_payload, False),
+                                 already_counted=True)
+                    return
+            if isinstance(value, dict) and value.get("objectType") in {"VARIABLE", "MACRO"}:
+                object_name = value.get("name")
+                if object_name is None or object_name is False:
+                    object_name = name
+                actual_category = "Variables" if value["objectType"] == "VARIABLE" else "Macros"
+                add_collection_object_value(actual_category, object_name, value,
+                                            original_value, path)
+                return
+            if not (isinstance(value, dict) and value.get("GSEDeltaFork")) \
+                    and (isinstance(value, list)
+                         or (isinstance(value, dict)
+                             and ("MetaData" in value or "Versions" in value))):
+                add_sequence(name, original_value, path, depth,
+                             already_counted=True, raw_table_origin=True)
+                return
+            body = {category: {name: original_value}}
+            local_blockers = []
+            local_warnings = {}
+            local_locations = {}
+            parsed = _parse_collection_objects(
+                body, category, local_blockers, local_warnings,
+                local_locations, source_root=source_root,
+                account_decoded_bytes=account_decoded_bytes)
+            collection_blockers.extend(local_blockers)
+            if not parsed:
+                return
+            target = collection_objects.setdefault(category, {})
+            locations = collection_object_locations.setdefault(category, {})
+            warnings = collection_object_warnings.setdefault(category, {})
+            for parsed_name, parsed_value in parsed.items():
+                source_key = str(parsed_name)
+                if parsed_name in target or parsed_name in ambiguous_objects[category]:
+                    sources = object_sources[category].setdefault(parsed_name, [])
+                    if not sources:
+                        sources.append({"source_path": locations.get(source_key, public_path(path)),
+                                        "raw_value": target.get(parsed_name)})
+                    current_path = public_path(path)
+                    if sources[-1]["source_path"] != current_path:
+                        sources.append({"source_path": current_path, "raw_value": original_value})
+                    source_paths = [source["source_path"] for source in sources]
+                    previous_path = source_paths[0] if source_paths else current_path
+                    previous_value = sources[0]["raw_value"] if sources else original_value
+                    collection_blockers.append(dict(
+                        category=category, name=parsed_name, source_path=current_path,
+                        reason=(f"GSE 集合 {category} 对象名称有歧义；上游 pairs 遍历顺序不确定，"
+                                f"不能选择覆盖结果（来源：{'、'.join(source_paths)}）"),
+                        raw_value=original_value, conflicting_source_path=previous_path,
+                        conflicting_raw_value=previous_value, source_paths=source_paths))
+                    target.pop(parsed_name, None)
+                    locations.pop(source_key, None)
+                    warnings.pop(source_key, None)
+                    ambiguous_objects[category].add(parsed_name)
+                    continue
+                target[parsed_name] = parsed_value
+                object_sources[category][parsed_name] = [{"source_path": public_path(path),
+                                                           "raw_value": original_value}]
+                locations[source_key] = local_locations.get(category, {}).get(source_key, path)
+                parsed_warnings = local_warnings.get(category, {}).get(parsed_name)
+                if parsed_warnings:
+                    warnings[source_key] = parsed_warnings
+
+        def visit_collection(collection_body, source_root, depth):
+            if depth > MAX_DEPTH:
+                raise ValueError(f"GSE 集合递归过深（位置：{public_path(source_root)}）")
+            if not isinstance(collection_body, dict):
+                raise ValueError(f"GSE 导入集合载荷必须为映射（位置：{public_path(source_root)}）")
+            for category in ("Variables", "Sequences", "Macros"):
+                category_path = f"{source_root}.{category}"
+                raw_members = collection_body.get(category)
+                if category in {"Variables", "Macros"} and raw_members is not None \
+                        and raw_members is not False:
+                    collection_objects.setdefault(category, {})
+                    collection_object_warnings.setdefault(category, {})
+                    collection_object_locations.setdefault(category, {})
+                for name, value in collection_items(raw_members, category, category_path):
+                    member_path = f"{category_path}[{name}]"
+                    if category == "Sequences":
+                        add_sequence(name, value, member_path, depth)
+                    else:
+                        add_collection_object(category, name, value, member_path, depth,
+                                              source_root)
+
+        visit_collection(body, "payload", 0)
         envelope = "collection"
     elif (isinstance(payload, dict) and isinstance(payload.get("MetaData"), dict)
           and "Versions" in payload):
@@ -663,6 +996,7 @@ def decode_import(text):
     for name, sequence in sequences.items():
         if not isinstance(name, str) or not name or not isinstance(sequence, dict):
             raise ValueError(f"GSE 导入序列结构无效（位置：Sequences[{name}]）")
+        sequence_path = collection_sequence_locations.get(name, f"Sequences[{name}]")
         raw_sequence = collection_wire_values.get(name, sequence)
         source_sequence = sequence
         source_metadata = sequence.get("MetaData")
@@ -678,15 +1012,17 @@ def decode_import(text):
                                            or isinstance(sequence.get("MetaData"), dict)):
             sequence["MetaData"] = source_metadata
         if not isinstance(sequence.get("MetaData"), dict):
-            raise ValueError(f"GSE 导入序列缺少元数据（位置：Sequences[{name}].MetaData）")
-        normalized = _fix_container(sequence, f"Sequences[{name}]")
-        versions = _sequence_versions(normalized.get("Versions"), name)
+            raise ValueError(f"GSE 导入序列缺少元数据（位置：{sequence_path}.MetaData）")
+        normalized = _fix_container(sequence, sequence_path)
+        versions = _sequence_versions(normalized.get("Versions"), name, sequence_path)
         raw_sequences[name] = raw_sequence
         raw_sequence_objects[name] = source_sequence
         normalized["Versions"] = versions
         normalized_sequences[name] = normalized
-    syntax_locations = _parse_sequences(normalized_sequences)
-    warnings = {name: _sequence_warnings(sequence, name) + collection_member_warnings.get(name, [])
+    syntax_locations = _parse_sequences(normalized_sequences, collection_sequence_locations)
+    warnings = {name: _sequence_warnings(sequence, name,
+                                         collection_sequence_locations.get(name))
+                + collection_member_warnings.get(name, [])
                 for name, sequence in normalized_sequences.items()}
     content_envelope = envelope
     if protected:
@@ -694,7 +1030,10 @@ def decode_import(text):
     return dict(payload=payload, sequences=normalized_sequences, envelope=envelope,
                 content_envelope=content_envelope,
                 protected_object_type=protected_object_type,
+                object_type=object_type,
                 raw_sequences=raw_sequences, raw_sequence_objects=raw_sequence_objects,
+                sequence_source_paths=collection_sequence_locations,
+                unimportable_sequences=unimportable_sequences,
                 collection_blockers=collection_blockers,
                 collection_objects=collection_objects,
                 collection_object_warnings=collection_object_warnings,
@@ -1004,14 +1343,23 @@ def inspect_import(text, *, decoded=None):
             _version_preflight(decoded["sequences"], name, seq, version, locked_version)
             for version in indexes
         ]
+        import_block_reason = decoded.get("unimportable_sequences", {}).get(name)
+        if import_block_reason:
+            version_support = [dict(item, simulation_supported=False,
+                                    simulation_preflight_passed=False,
+                                    support_status="unsupported",
+                                    support_reason=import_block_reason)
+                               for item in version_support]
         raw_default_version = seq.get("Default", 1)
         default_version = (raw_default_version if type(raw_default_version) is int and
                            raw_default_version in indexes else indexes[0])
         default_support = next(item for item in version_support
                                if item["version"] == default_version)
         raw_sequence = decoded["raw_sequences"][name]
+        sequence_source_path = decoded.get("sequence_source_paths", {}).get(
+            name, f"Sequences[{name}]")
         versions = [dict(version=version,
-                         source_path=f"Sequences[{name}].Versions[{version}]",
+                         source_path=f"{sequence_source_path}.Versions[{version}]",
                          raw_version=_json_value(_version_get(
                              decoded["raw_sequence_objects"][name], version)),
                          parsed_version=_json_value(record))
@@ -1030,7 +1378,10 @@ def inspect_import(text, *, decoded=None):
     content_envelope = decoded.get("content_envelope", decoded["envelope"])
     collection_body = (decoded["payload"].get("payload") or {}
                        if content_envelope == "collection" else {})
-    protected_object = (_json_value(decoded["payload"])
+    object_type = decoded.get("object_type", decoded.get("protected_object_type"))
+    standalone_object = (_json_value(decoded["payload"])
+                         if object_type in {"VARIABLE", "MACRO"} else None)
+    protected_object = (standalone_object
                         if decoded.get("protected_object_type") in {"VARIABLE", "MACRO"} else None)
     raw_variables = (_json_value(collection_body.get("Variables"))
                      if content_envelope == "collection" else None)
@@ -1040,23 +1391,27 @@ def inspect_import(text, *, decoded=None):
                  if content_envelope == "collection" else None)
     macros = (_json_value(decoded.get("collection_objects", {}).get("Macros"))
               if content_envelope == "collection" else None)
-    if decoded.get("protected_object_type") == "VARIABLE":
-        variables = {decoded["payload"]["name"]: protected_object}
-    elif decoded.get("protected_object_type") == "MACRO":
-        macros = {decoded["payload"]["name"]: protected_object}
+    if object_type == "VARIABLE":
+        variables = {decoded["payload"]["name"]: standalone_object}
+    elif object_type == "MACRO":
+        macros = {decoded["payload"]["name"]: standalone_object}
     return dict(status="decoded", format=decoded["envelope"], sha256=decoded["sha256"],
                 raw_import=decoded["raw_import"], raw_payload=_json_value(decoded["payload"]),
                 payload_cbor_base64=base64.b64encode(decoded["payload_cbor"]).decode("ascii"),
                 sequences=entries,
                 content_format=content_envelope,
                 protected_object_type=decoded.get("protected_object_type"),
+                object_type=object_type,
                 protected_object=protected_object,
                 raw_variables=raw_variables, raw_macros=raw_macros,
                 variables=variables, macros=macros,
                 collection_parse_warnings=decoded.get("collection_object_warnings", {}),
                 collection_object_locations=decoded.get("collection_object_locations", {}),
                 collection_compatibility_blocks=[
-                    dict(block, raw_value=_json_value(block["raw_value"]))
+                    dict(block,
+                         raw_value=_json_value(block["raw_value"]),
+                         **({"conflicting_raw_value": _json_value(block["conflicting_raw_value"])}
+                            if "conflicting_raw_value" in block else {}))
                     for block in decoded.get("collection_blockers", [])
                 ],
                 syntax=syntax, syntax_locations=syntax_locations, simulation_started=False,
