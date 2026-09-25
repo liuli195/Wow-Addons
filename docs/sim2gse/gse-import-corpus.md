@@ -1,6 +1,6 @@
 # GSE 导入验证样本
 
-原始导入串保存在 Git 忽略目录 `.local/sim2gse/gse-corpus/`；追加候选保存在 `.local/sim2gse/gse-corpus-additional/`。收集器 [`scripts/dev/collect_gse_samples.py`](../../scripts/dev/collect_gse_samples.py) 为每条原串记录来源、SHA-256（内容摘要）、GSE 版本、成员名和语法种类。原串不提交到 Git；文中记录的摘要用于复核本机文件。作者声称适用某个游戏版本，不代表已完成游戏内验收。
+原始导入串保存在 Git 忽略目录 `.local/sim2gse/gse-corpus/` 和 `.local/sim2gse/gse-corpus-additional/`。原串不提交到 Git；文中记录的 SHA-256（内容摘要）用于复核本机文件。作者声称适用某个游戏版本，不代表已完成游戏内验收。
 
 | 来源 | 用途 | 已观察语法 | GSE 版本 |
 | --- | --- | --- | --- |
@@ -13,20 +13,31 @@
 | [Violent Benediction](https://wowlazymacros.com/t/64007) | 条件块 | Action、If（条件） | 原帖未注明 |
 | [Karen 邪 DK](https://wowlazymacros.com/t/karens-unholy-dk-st-and-m-updated-m-macro/62253) | 一条集合原串、ST 与 M+ 两成员 | Action、Loop | 3.3.13 |
 | [Kim 邪 DK](https://wowlazymacros.com/t/kims-unholy-sequence/62086) | 两条原串：主循环、爆发 | Loop、Repeat | 3.3.08 |
+| [DrussRet 邪 DK](https://wowlazymacros.com/t/drussret-s2-updated-18-09-2026-m-raid-aoe-st-herald-templar-addons/60173?page=20) | 一条两成员集合：`DRUSS_ST_v6`、`DRUSS_AOE_v6`；原帖发布于 2026-05-06，未注明游戏版本 | Action、Loop、Pause、Repeat | GSE 3.3.15；原串 SHA-256 `d992c3e47f13ed9e70b594f7f02908224cb6031b5dc3f20f5a03da14e723b0dd` |
+| [Jafoweb 牧师 PVP](https://wowlazymacros.com/t/onlyonebutton-discipline-priest-pvp-oracle-based/62541) | 两条原串：单成员 `Jafo_Master`；两成员 `MPB`、`Jafo_Master`；原帖发布于 2026-05-01，未注明游戏版本 | Action、Embed、Loop、Repeat | GSE 3.3.15；SHA-256 分别为 `e9acce109a55bf6dfc56f3b98537a85624bddc9084543156a4d89bb36167fe94`、`8b83c1cb010ec334b1a3d023ee1b0637cd6abe52e689d68cab8a70c03237540d` |
 
-截至 2026-09-25，已收集 12 条不同的可解码原串，其中 9 条 DK（死亡骑士）串、2 条作者标注适用 12.1。原串共有 15 个序列成员；集合成员数与原串数分开统计。真实语料覆盖 Action、Loop、Repeat、If；公开真实 Pause（暂停）与 Embed（嵌入）原串仍缺。六类控制块完整矩阵由真实串和明确标注的固定上游合成向量共同验证；合成向量只证明固定上游语法处理能力，不算真实样本或游戏内验收。`!GSE3!+` 是上游加密外壳，不属于可解码原串。
+截至 2026-09-25，共收集 16 个本机文件、15 条不同 SHA-256 原串（1 个重复文件），其中 10 条为 DK（死亡骑士）原串；Søl 的两条由作者标注适用 12.1。逐文件提交公开 `POST /api/gse/inspect` 后，16/16 均为 HTTP 200 且 `decoded`。检查了 21 组文件级成员/版本，按 SHA 去重后为 20 组；无成员/版本解析失败或未列出的语法路径。
+
+真实原串共观察到六类语法：Action 268 处、Loop 20 处、Repeat 30 处、If 4 处、Pause 2 处、Embed 2 处。没有 `collection_compatibility_blocks`。DrussRet 的 `DRUSS_ST_v6` 第 1 版没有 `Actions` 数组，解析器保留该版本数值块并给出 warning（警告），路径为 `Sequences[DRUSS_ST_v6].Versions[1].Actions`；这属于解析成功但不能模拟。21 组版本中，19 组模拟门禁状态为 `unsupported`，2 组为 `requires_character_validation`；公开检查没有启动 DPS（每秒伤害）模拟。
+
+真实原串、固定上游合成向量和游戏内验收分开统计：以上六类是实际第三方原串覆盖；合成向量仅用于补充固定语法验证，不计入真实样本；本票没有游戏内验收证据。逐文件完整 HTTP 请求结果和每个成员/版本响应位于 Git 忽略目录 `.local/sim2gse/gse-corpus-inspection/final-2026-09-25.json`，原串清单位于 `.local/sim2gse/gse-corpus-inspection/corpus-manifest-2026-09-25.json`。本次真实语料未收集到受保护原串；受保护外壳已有独立合成固定向量验证，不计入真实数量。
 
 ## 追加原串摘要
 
-追加采样限于 Karen 与 Kim 两个公开邪 DK 主题，原文未改写：
+Karen 与 Kim 的三条邪 DK 原串，以及本次新增的 DrussRet Pause 和两条 Jafoweb Embed 原串均未改写：
 
 | 本机文件 | 序列成员 | GSE 版本 | SHA-256 |
 | --- | --- | --- | --- |
 | `karens-unholy-01.txt` | `unholydk_ST`, `unholydk_m+` | 3313 | `1550b78b2e625309e018fd8901443ec9fc28c7bfc8f7f47bb932e53605c96497` |
 | `kims-unholy-01.txt` | `Main_Spam_UDK` | 3308 | `b1f6e2cbebcc19c7c0adeb736cd07bbc1857c3363ff906810df0a175f06cafc2` |
 | `kims-unholy-02.txt` | `Burst_Cooldowns_UDK` | 3308 | `5a5430d305b7821ba682e74cd3c07d673aa80d3f988f044cfe05f821d60b7824` |
+| `drussret-pause-01.txt` | `DRUSS_ST_v6`, `DRUSS_AOE_v6` | 3315 | `d992c3e47f13ed9e70b594f7f02908224cb6031b5dc3f20f5a03da14e723b0dd` |
+| `jafoweb-embed-01.txt` | `Jafo_Master` | 3315 | `e9acce109a55bf6dfc56f3b98537a85624bddc9084543156a4d89bb36167fe94` |
+| `jafoweb-embed-02.txt` | `MPB`, `Jafo_Master` | 3315 | `8b83c1cb010ec334b1a3d023ee1b0637cd6abe52e689d68cab8a70c03237540d` |
 
-这三条原串的 `inspect`（检查）均成功，四个成员都经过公开导入任务试跑。首轮没有成员进入受控 DPS（每秒伤害）模拟：Karen ST 的 `spell 316239` 当时不在当前角色能力映射中；Karen M+ 的 `[nochanneling]` 条件无法确定；Kim 主循环的 `[channeling]` 条件无法确定；Kim 爆发序列的 `@player` 目标能力无法验证。2026-09-25 的 Karen ST 重试见下文。没有把未识别动作替换为其他技能。
+CBOR（压缩数据格式）实际解码确认，两条 Jafoweb 串都在 `Sequences[Jafo_Master].Versions[1].Actions[2][7]` 包含 `Type=Embed` 并引用 `MPB`。第一条输入没有 `MPB` 成员；第二条集合中包含 `MPB`。这项解析结果不证明外部 Embed 引用一定能加载或模拟。
+
+前三条 Karen/Kim 原串的公开 `inspect`（检查）均成功，四个成员都经过公开导入任务试跑。首轮没有成员进入受控 DPS（每秒伤害）模拟：Karen ST 的 `spell 316239` 当时不在当前角色能力映射中；Karen M+ 的 `[nochanneling]` 条件无法确定；Kim 主循环的 `[channeling]` 条件无法确定；Kim 爆发序列的 `@player` 目标能力无法验证。2026-09-25 的 Karen ST 重试见下文。没有把未识别动作替换为其他技能。
 
 ## 原样本严格映射结果
 
@@ -53,6 +64,10 @@
 此前两次任务都错误地把条件成立的 `/petattack [@target,harm,nodead]` 当成无效果行。当前场景明确有存活可攻击的敌方目标和已召唤宠物，因此该命令会执行；现有伤害引擎没有忠实表示宠物攻击命令的能力。`37842.240154123254` 与 `41627.01167663097` 只保留为历史审计数值，不是有效受控 DPS，也不满足验收。现在两个成员都会在模拟前拒绝，位置分别是 `SOL_UDK_AOE v1 Versions[1].Actions[1].macro[行 2]` 与 `SOL_UDK_ST v1 Versions[1].Actions[1].macro[行 2]`。
 
 旧任务目录 `.local/sim2gse/import-review-sol-aoe-20260925/` 和 `.local/sim2gse/import-review-sol-st-20260925-b/` 保存当时的报告；报告没有识别上述语义缺陷，不再作为忠实 DPS 证据。两条原串中的法术编号和其查询映射可作动作目录核对记录，但不改变这项拒绝结论。
+
+2026-09-25 的 08 票复核再次对两条原串分别发送真实本机 `POST /api/gse/inspect`，均为 HTTP 200、`status=decoded`，SHA 与原文件一致，语法为 Action、Loop；`simulation_started=false`。`POST /api/tasks` 在建任务前均以 HTTP 400 返回同一 `/petattack` 来源位置。底层 `run_task(..., mode="import")` 做了自由选择参考模拟和原生动作查询，随后在导入宏编译阶段拒绝；没有进入 `sequence.evaluate()` 受控 GSE 模拟，没有生成 `controlled/` 或候选文件，因此没有可信导入 DPS。自由选择参考值不算导入 DPS。
+
+锁定 SimC 的玩家动作列表也不接受 `petattack`、`pet_attack` 或 `pet.attack`。SimC 会给 DK 宠物安排自动攻击，且宠物初始目标跟随角色目标；但这不是可按原串时间和目标下达 `/petattack` 的接口。已确认场景未确认宠物已经在攻击同一目标，所以不能将命令静默当作无效果。宠物目标/启攻造成的 DPS 差异当前无法量化；需要原生宠物控制模型或用户明确批准更窄的场景等价假设。本机证据 `.local/sim2gse/gse-dps-acceptance/sol-unholy-12-1-import-check.json` 保存逐成员响应、角色摘要、任务结果和三种 SimC 动作名拒绝日志；游戏内验收未运行。
 
 ### Karen ST：当前唯一完成的真实原生 DPS 导入样本
 
@@ -85,4 +100,4 @@
 
 支持的精确宏场景依据：当目标存在、存活且可攻击时，`[noharm]` 和 `[dead]` 条件均不成立，`/targetenemy [noharm][dead]` 不执行；该行占用的输入仍保留为空点击。`enemy_target_ready` 是编译上下文，默认为 true；false 时拒绝。其他 `/targetenemy` 写法仍拒绝。该组合用于缺少可攻击目标或目标已死亡时重新选敌的公开示例见[暴雪论坛讨论](https://eu.forums.blizzard.com/en/wow/t/help-with-targeting-macro/547862)及[另一讨论](https://us.forums.blizzard.com/en/wow/t/help-targeting-next-target-macro/31865)。
 
-另有 `wow-wide-64007-1.txt` 与 Violent Benediction 原串 SHA-256 相同，按重复原串去重。维护者 Pause 讨论关联帖 18312、35227，以及后续候选 37781、36270、32673、31200、26914 均未发现可提取的 `!GSE3!` 原串。不得将合成向量称为真实覆盖。
+另有 `wow-wide-64007-1.txt` 与 Violent Benediction 原串 SHA-256 相同，按重复原串去重。最终语料已找到真实 Pause 和 Embed 原串；Jafoweb 第一个 Embed 引用 `MPB`，该集合成员不在这条导入串内；第二个导入串包含 `MPB`。不得将合成向量称为真实覆盖。

@@ -48,6 +48,7 @@ class PauseNode(TypedDict):
 class IfNode(TypedDict):
     kind: Literal["If"]
     condition: bool
+    expression: NotRequired[object]
     then: list["ProgramNode"]
     else_branch: list["ProgramNode"]
     source: SourcePosition

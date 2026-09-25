@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -25,6 +26,14 @@ MAX_DEPTH = 32
 MAX_NODES = 10000
 VALID_TYPES = {"Action", "Repeat", "Loop", "Pause", "If", "Embed"}
 LOCK_PATH = ROOT / "projects/sim2gse/compatibility/lock.json"
+_PROTECTED_KEYS = {
+    "1": bytes((62, 219, 34, 238, 241, 49, 89, 6, 129, 129, 249, 22, 151, 152, 36, 30,
+                 140, 98, 198, 223, 66, 41, 211, 84, 233, 92, 232, 202, 56, 248, 123, 37)),
+}
+
+
+class _RawCBORBytes(bytes):
+    """CBOR 字节串无法按 UTF-8 解码时仍保留其原始内容。"""
 
 
 def _locked_gse_version():
@@ -50,11 +59,13 @@ def _plain(value, depth=0, count=None):
     count[0] += 1
     if depth > MAX_DEPTH or count[0] > MAX_NODES:
         raise ValueError("GSE 导入结构过深或节点过多")
+    if isinstance(value, str):
+        return value
     if isinstance(value, bytes):
         try:
             return value.decode("utf-8")
         except UnicodeDecodeError as error:
-            raise ValueError("GSE 导入包含无效 UTF-8 字符") from error
+            return _RawCBORBytes(value)
     if isinstance(value, list):
         return [_plain(item, depth + 1, count) for item in value]
     if isinstance(value, dict):
@@ -65,45 +76,582 @@ def _plain(value, depth=0, count=None):
     raise ValueError("GSE 导入包含不支持的数据类型")
 
 
-def decode_import(text):
-    """返回原始 GSE 对象和序列映射；失败不会退化成空序列。"""
+_NUMBER_KEY = re.compile(r"^[\t ]*[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[\t ]*$")
+
+
+def _numeric_key(key):
+    if type(key) is int:
+        return key
+    if type(key) is float and math.isfinite(key):
+        return int(key) if key.is_integer() else key
+    if isinstance(key, str) and _NUMBER_KEY.fullmatch(key):
+        number = float(key)
+        if math.isfinite(number):
+            return int(number) if number.is_integer() else number
+    return None
+
+
+def _fix_container(value, path="GSE"):
+    """Mirror GSE fixContainer: numeric string keys holding tables become numbers."""
+    if isinstance(value, list):
+        return [_fix_container(item, f"{path}[{index}]") for index, item in enumerate(value, 1)]
+    if not isinstance(value, dict):
+        return value
+    fixed = {}
+    for key, item in value.items():
+        child_path = f"{path}[{key}]"
+        normalized_item = _fix_container(item, child_path)
+        numeric_key = _numeric_key(key) if isinstance(item, (dict, list)) else None
+        normalized_key = numeric_key if numeric_key is not None else key
+        if normalized_key in fixed:
+            raise ValueError(f"GSE 数值字段键归一后重复（位置：{child_path}）")
+        fixed[normalized_key] = normalized_item
+    return fixed
+
+
+def _indexed_items(value):
+    """Return numeric table entries in source-index order, keeping sparse indices."""
+    if isinstance(value, list):
+        return list(enumerate(value, 1))
+    if isinstance(value, dict):
+        items = []
+        seen = set()
+        for key, item in value.items():
+            index = _numeric_key(key)
+            if index is None:
+                continue
+            if index in seen:
+                raise ValueError(f"GSE 数值字段键归一后重复（位置：[{key}]）")
+            seen.add(index)
+            items.append((index, item))
+        return sorted(items, key=lambda pair: pair[0])
+    return None
+
+
+def _version_items(value, path):
+    items = _indexed_items(value)
+    if items is None or not items:
+        raise ValueError(f"GSE 导入版本结构无效（位置：{path}）")
+    for index, version in items:
+        if not isinstance(version, dict):
+            raise ValueError(f"GSE 导入版本必须为映射（位置：{path}[{index}]）")
+    return items
+
+
+def _sequence_versions(value, name):
+    """Validate version mappings without compacting or rejecting sparse upstream keys."""
+    path = f"Sequences[{name}].Versions" if name else "Versions"
+    _version_items(value, path)
+    return value
+
+
+def _version_get(sequence, version):
+    return dict(_version_items(sequence.get("Versions"), "Versions")).get(version)
+
+
+def _raw_version_get(sequence, version):
+    return dict(_version_items(sequence.get("Versions"), "Versions")).get(version)
+
+
+def _version_runtime_issue(sequence, version):
+    items = _version_items(sequence.get("Versions"), "Versions")
+    indexes = [index for index, _ in items]
+    if type(version) is not int or version < 1:
+        return "GSE 运行时只读取从 1 开始的整数版本索引"
+    if any(index <= 0 for index in indexes):
+        return "版本包含 0 或非正数索引，GSE 结构扫描会重排版本"
+    if not all(index in indexes for index in range(1, version + 1)):
+        return "版本索引有空洞，GSE 当前序列运行时无法按该索引读取"
+    return None
+
+
+def _sequence_warnings(sequence, name):
+    path = f"Sequences[{name}].Versions"
+    items = _version_items(sequence["Versions"], path)
+    indexes = [index for index, _ in items]
+    warnings = []
+    if 0 in indexes:
+        warnings.append(f"{path} contains index 0; GSE repairs it during structural scan")
+    positive = [index for index in indexes if type(index) is int and index > 0]
+    if positive and positive != list(range(1, max(positive) + 1)):
+        warnings.append(f"{path} has sparse indexes; GSE reports gaps and may require repair")
+
+    def visit_action(action, action_path):
+        if not isinstance(action, dict):
+            return
+        kind = action.get("Type")
+        if kind == "Loop":
+            visit_collection(action, action_path)
+        elif kind == "If":
+            for branch_index in (1, 2):
+                branch = action.get(branch_index, action.get(str(branch_index)))
+                if branch is not None:
+                    visit_collection(branch, f"{action_path}[{branch_index}]")
+
+    def visit_collection(value, collection_path):
+        entries = _indexed_items(value)
+        if entries is None:
+            return
+        indexes = [index for index, _ in entries]
+        expected = list(range(1, len(indexes) + 1))
+        if indexes != expected:
+            mismatch = next((actual for actual, wanted in zip(indexes, expected)
+                             if actual != wanted), None)
+            if mismatch is None:
+                mismatch = expected[len(indexes)] if len(indexes) < len(expected) else indexes[-1]
+            warnings.append(
+                f"GSE sparse action indexes; ipairs stops at the gap before {collection_path}[{mismatch}]")
+        for index, action in entries:
+            visit_action(action, f"{collection_path}[{index}]")
+
+    for version, record in items:
+        actions_path = f"{path}[{version}].Actions"
+        if "Actions" in record:
+            visit_collection(record["Actions"], actions_path)
+        else:
+            warnings.append(
+                f"GSE 版本缺少 Actions 数组；版本级数字块已保留，不能模拟（位置：{actions_path}）")
+    return warnings
+
+
+def _action_collection(value, path):
+    entries = _indexed_items(value)
+    if entries is None:
+        raise ValueError(f"GSE 动作列表必须是数组或数字键映射（位置：{path}）")
+    for index, action in entries:
+        if not isinstance(action, dict):
+            raise ValueError(f"GSE 控制块必须为映射（位置：{path}[{index}]）")
+    return entries
+
+
+def _check_runtime_action_indexes(value, path):
+    """Keep sparse tables parseable, but do not simulate past Lua ipairs gaps."""
+    entries = _indexed_items(value)
+    if entries is None:
+        return
+    indexes = [index for index, _ in entries]
+    expected = list(range(1, len(indexes) + 1))
+    if indexes != expected:
+        mismatch = next((actual for actual, wanted in zip(indexes, expected)
+                         if actual != wanted), None)
+        if mismatch is None:
+            mismatch = expected[len(indexes)] if len(indexes) < len(expected) else indexes[-1]
+        raise ValueError(f"GSE 动作索引有空洞或非连续索引（位置：{path}[{mismatch}]）")
+
+
+def _parse_block(action, sequence_name, version, path, syntax):
+    kind = action.get("Type")
+    if not isinstance(kind, str) or kind not in VALID_TYPES:
+        raise ValueError(f"GSE 控制块类型无法解析：{kind}（位置：{sequence_name} v{version} {path}.Type）")
+    syntax.append(dict(sequence=sequence_name, version=version, type=kind, path=path))
+
+    if kind in {"Loop", "If"}:
+        for key, child in action.items():
+            index = _numeric_key(key)
+            if index is None or (kind == "If" and index not in (1, 2)):
+                continue
+            child_path = f"{path}[{index}]"
+            if isinstance(child, list):
+                for child_index, nested in _action_collection(child, child_path):
+                    _parse_block(nested, sequence_name, version,
+                                 f"{child_path}[{child_index}]", syntax)
+            elif isinstance(child, dict) and "Type" in child:
+                _parse_block(child, sequence_name, version, child_path, syntax)
+            else:
+                _action_collection(child, child_path)
+                for child_index, nested in _action_collection(child, child_path):
+                    _parse_block(nested, sequence_name, version,
+                                 f"{child_path}[{child_index}]", syntax)
+
+
+def _parse_sequences(sequences):
+    syntax = []
+    for sequence_name, sequence in sequences.items():
+        for version, record in _version_items(sequence["Versions"],
+                                               f"Sequences[{sequence_name}].Versions"):
+            actions_path = f"Sequences[{sequence_name}].Versions[{version}].Actions"
+            if "Actions" not in record:
+                version_path = f"Sequences[{sequence_name}].Versions[{version}]"
+                for index, action in _indexed_items(record) or []:
+                    if not isinstance(action, dict):
+                        raise ValueError(
+                            f"GSE 版本级数字块必须为映射（位置：{version_path}[{index}]）")
+                    _parse_block(action, sequence_name, version,
+                                 f"{version_path}[{index}]", syntax)
+                continue
+            for index, action in _action_collection(record["Actions"], actions_path):
+                _parse_block(action, sequence_name, version, f"{actions_path}[{index}]", syntax)
+    return syntax
+
+
+def _decompress_cbor(compressed):
+    inflater = zlib.decompressobj(-15)
+    raw = inflater.decompress(compressed, MAX_DECODED + 1)
+    if len(raw) > MAX_DECODED or inflater.unconsumed_tail or not inflater.eof or inflater.unused_data:
+        raise ValueError("GSE 导入解压结果过大或不完整")
+    raw += inflater.flush(MAX_DECODED + 1 - len(raw))
+    if len(raw) > MAX_DECODED:
+        raise ValueError("GSE 导入解压结果过大")
+    stream = io.BytesIO(raw)
+    payload = _plain(cbor2.CBORDecoder(stream, allow_duplicate_keys=False).decode())
+    if stream.read(1):
+        raise ValueError("GSE 导入编码含有多余数据")
+    return raw, payload
+
+
+def _decrypt_protected(key_id, packed):
+    key = _PROTECTED_KEYS.get(key_id)
+    if key is None:
+        raise ValueError(f"GSE 受保护导入密钥编号不受锁定上游支持：{key_id!r}")
+    if len(packed) < 12:
+        raise ValueError("GSE 受保护导入缺少 12 字节随机数")
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+    except ImportError as error:
+        raise ValueError("GSE 受保护导入解码依赖缺失：cryptography==50.0.1") from error
+    nonce, ciphertext = packed[:12], packed[12:]
+    cipher = Cipher(algorithms.ChaCha20(key, bytes(4) + nonce), mode=None)
+    decryptor = cipher.decryptor()
+    return decryptor.update(ciphertext) + decryptor.finalize()
+
+
+def _decode_gse_message(text):
+    """读取一个普通或受保护的 GSE 消息，返回 CBOR 原字节、对象和外壳标志。"""
     if not isinstance(text, str) or len(text) > MAX_TEXT or not text.startswith("!GSE3!"):
         raise ValueError("GSE 导入字符串格式或长度无效")
-    if text.startswith("!GSE3!+"):
-        raise ValueError("GSE 受保护导入格式暂不能解析")
-    encoded = text[6:]
+    protected = text.startswith("!GSE3!+")
+    key_id = text[7:8] if protected else None
+    encoded = text[8:] if protected else text[6:]
     if not encoded or re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", encoded) is None:
         raise ValueError("GSE 导入编码无效")
     try:
         compressed = base64.b64decode(encoded, validate=True)
-        inflater = zlib.decompressobj(-15)
-        raw = inflater.decompress(compressed, MAX_DECODED + 1)
-        if len(raw) > MAX_DECODED or inflater.unconsumed_tail or not inflater.eof or inflater.unused_data:
-            raise ValueError("GSE 导入解压结果过大或不完整")
-        raw += inflater.flush(MAX_DECODED + 1 - len(raw))
-        if len(raw) > MAX_DECODED:
-            raise ValueError("GSE 导入解压结果过大")
-        stream = io.BytesIO(raw)
-        payload = _plain(cbor2.CBORDecoder(stream).decode())
-        if stream.read(1):
-            raise ValueError("GSE 导入编码含有多余数据")
-    except (binascii.Error, zlib.error, cbor2.CBORDecodeError, UnicodeDecodeError) as error:
-        raise ValueError("GSE 导入编码或内容损坏") from error
+        if protected:
+            compressed = _decrypt_protected(key_id, compressed)
+        raw, payload = _decompress_cbor(compressed)
+    except cbor2.CBORDecodeError as error:
+        duplicate = re.search(r"Duplicate map key: (.+)", str(error))
+        if duplicate:
+            raise ValueError(f"GSE 导入 CBOR 含重复字段键，无法无损解析：{duplicate.group(1)}") from error
+        reason = "受保护导入解密后内容损坏" if protected else "编码或内容损坏"
+        raise ValueError(f"GSE 导入{reason}") from error
+    except (binascii.Error, zlib.error, UnicodeDecodeError) as error:
+        reason = "受保护导入解密后内容损坏" if protected else "编码或内容损坏"
+        raise ValueError(f"GSE 导入{reason}") from error
+    return raw, payload, protected
+
+
+def _delta_indexed_items(value, path):
+    if isinstance(value, list):
+        return list(enumerate(value, 1))
+    if not isinstance(value, dict):
+        raise ValueError(f"GSE Delta 动作列表必须为数组或映射（位置：{path}）")
+    items = []
+    for key, item in value.items():
+        if type(key) is int and key >= 1:
+            items.append((key, item))
+        elif type(key) is float and math.isfinite(key) and key >= 1 and key.is_integer():
+            items.append((int(key), item))
+    return sorted(items)
+
+
+def _delta_list(value):
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, dict):
+        return []
+    return [item for _, item in _delta_indexed_items(value, "GSE Delta")]
+
+
+def _delta_action_list(base, overlay, path):
+    base_blocks = _delta_list(base)
+    result = []
+    for index, operation in _delta_indexed_items(overlay, path):
+        operation_path = f"{path}[{index}]"
+        if not isinstance(operation, dict):
+            raise ValueError(f"GSE Delta 动作操作必须为映射（位置：{operation_path}）")
+        if operation.get("new") is not None:
+            block = deepcopy(operation["new"])
+        else:
+            source_index = operation.get("from", 0)
+            if type(source_index) is not int or source_index < 0:
+                raise ValueError(f"GSE Delta from 索引无效（位置：{operation_path}.from）")
+            block = deepcopy(base_blocks[source_index]) if source_index < len(base_blocks) else {}
+            if not isinstance(block, dict):
+                raise ValueError(f"GSE Delta 基础动作必须为映射（位置：{operation_path}.from）")
+            fields = operation.get("set")
+            if fields is not None:
+                if not isinstance(fields, dict):
+                    raise ValueError(f"GSE Delta set 必须为映射（位置：{operation_path}.set）")
+                block.update(deepcopy(fields))
+            removed = operation.get("unset")
+            if removed is not None:
+                if not isinstance(removed, list) or not all(isinstance(field, str) for field in removed):
+                    raise ValueError(f"GSE Delta unset 必须为字段名数组（位置：{operation_path}.unset）")
+                for field in removed:
+                    block.pop(field, None)
+            children = operation.get("children")
+            if children is not None:
+                rows = _delta_action_list(block, children, f"{operation_path}.children")
+                for key in tuple(block):
+                    if type(key) is int and key >= 1:
+                        del block[key]
+                block.update({child_index: child for child_index, child in enumerate(rows, 1)})
+            for branch_name, branch_index in (("branch1", 1), ("branch2", 2)):
+                branch = operation.get(branch_name)
+                if branch is not None:
+                    existing = block.get(branch_index, block.get(str(branch_index), []))
+                    block[branch_index] = _delta_action_list(
+                        existing, branch, f"{operation_path}.{branch_name}")
+                    block.pop(str(branch_index), None)
+        if not isinstance(block, dict):
+            raise ValueError(f"GSE Delta new 动作必须为映射（位置：{operation_path}.new）")
+        result.append(block)
+    return result
+
+
+def _apply_delta(base, delta):
+    """按锁定 GSE 版本的 Delta 结构合并基础序列与改动。"""
+    if not isinstance(base, dict) or not isinstance(delta, dict):
+        raise ValueError("GSE Delta 基础序列或覆盖项必须为映射")
+    result = deepcopy(base)
+    version_changes = delta.get("versions")
+    if version_changes is not None:
+        if not isinstance(version_changes, dict):
+            raise ValueError("GSE Delta versions 必须为映射（位置：delta.versions）")
+        current_versions = result.get("Versions")
+        if current_versions is None:
+            current_versions = {}
+        elif isinstance(current_versions, list):
+            current_versions = dict(enumerate(current_versions, 1))
+        elif not isinstance(current_versions, dict):
+            raise ValueError("GSE Delta 基础 Versions 必须为映射或数组")
+        result["Versions"] = current_versions
+        for key, change in version_changes.items():
+            version_key = _numeric_key(key)
+            if version_key is None:
+                version_key = key
+            change_path = f"delta.versions[{key}]"
+            if not isinstance(change, dict):
+                raise ValueError(f"GSE Delta 版本操作必须为映射（位置：{change_path}）")
+            if change.get("op") == "remove":
+                current_versions.pop(version_key, None)
+                continue
+            if change.get("op") == "add":
+                current_versions[version_key] = deepcopy(change.get("value"))
+                continue
+            version = deepcopy(current_versions.get(version_key) or {"Actions": []})
+            if not isinstance(version, dict):
+                raise ValueError(f"GSE Delta 版本必须为映射（位置：{change_path}）")
+            if change.get("actions") is not None:
+                version["Actions"] = _delta_action_list(
+                    version.get("Actions", []), change["actions"], f"{change_path}.actions")
+            if change.get("inbuiltVariables") is not None:
+                version["InbuiltVariables"] = deepcopy(change["inbuiltVariables"])
+            fields = change.get("set")
+            if fields is not None:
+                if not isinstance(fields, dict):
+                    raise ValueError(f"GSE Delta set 必须为映射（位置：{change_path}.set）")
+                version.update(deepcopy(fields))
+            removed = change.get("unset")
+            if removed is not None:
+                if not isinstance(removed, list) or not all(isinstance(field, str) for field in removed):
+                    raise ValueError(f"GSE Delta unset 必须为字段名数组（位置：{change_path}.unset）")
+                for field in removed:
+                    version.pop(field, None)
+            current_versions[version_key] = version
+    top = delta.get("top")
+    if top is not None:
+        if not isinstance(top, dict):
+            raise ValueError("GSE Delta top 必须为映射（位置：delta.top）")
+        result.update(deepcopy(top))
+    top_unset = delta.get("topUnset")
+    if top_unset is not None:
+        if not isinstance(top_unset, list) or not all(isinstance(field, str) for field in top_unset):
+            raise ValueError("GSE Delta topUnset 必须为字段名数组（位置：delta.topUnset）")
+        for field in top_unset:
+            result.pop(field, None)
+    return result
+
+
+def _collection_delta_fork(name, fork, path, warnings, *, expected_type="sequence"):
+    content_type = fork.get("contentType")
+    if not content_type:
+        content_type = "sequence"
+    if content_type != expected_type:
+        raise ValueError(f"GSE Delta 内容类型 {content_type!r} 与 {expected_type} 分类不符（位置：{path}.contentType）")
+    platform_id = fork.get("platformId")
+    if not isinstance(platform_id, str) or not platform_id:
+        raise ValueError(f"GSE Delta 缺少 platformId，GSE 不会载入该对象（位置：{path}.platformId）")
+    base_text = fork.get("base")
+    if not isinstance(base_text, str):
+        raise ValueError(f"GSE Delta 缺少编码基础序列（位置：{path}.base）")
+    try:
+        _, payload, _ = _decode_gse_message(base_text)
+    except ValueError as error:
+        raise ValueError(f"GSE Delta 基础消息无法读取（位置：{path}.base）：{error}") from error
+    if expected_type == "sequence" and isinstance(payload, list) and len(payload) >= 2 and isinstance(payload[1], dict):
+        base = payload[1]
+    elif isinstance(payload, dict):
+        base = payload
+    else:
+        raise ValueError(f"GSE Delta 基础消息不是可解析的 {expected_type} 对象（位置：{path}.base）")
+    delta_text = fork.get("delta")
+    delta = None
+    if isinstance(delta_text, str) and delta_text:
+        try:
+            encoded = base64.b64decode(delta_text, validate=True)
+            if len(encoded) > MAX_DECODED:
+                raise ValueError("delta exceeds size limit")
+            stream = io.BytesIO(encoded)
+            decoded_delta = _plain(cbor2.CBORDecoder(
+                stream, allow_duplicate_keys=False).decode())
+            if not stream.read(1) and isinstance(decoded_delta, dict):
+                delta = decoded_delta
+        except (binascii.Error, cbor2.CBORDecodeError, ValueError):
+            delta = None
+    if delta is None:
+        warnings.append(f"{path}.delta cannot be decoded; upstream keeps the base sequence")
+        effective = deepcopy(base)
+    else:
+        effective = _apply_delta(base, delta)
+    metadata = effective.get("MetaData")
+    if metadata is None or metadata is False:
+        metadata = {}
+        effective["MetaData"] = metadata
+    if not isinstance(metadata, dict):
+        raise ValueError(f"GSE Delta 基础对象元数据必须为映射（位置：{path}.base.MetaData）")
+    metadata["PlatformID"] = platform_id
+    stored_name = effective.get("name") or metadata.get("Name")
+    if not isinstance(stored_name, str) or not stored_name:
+        raise ValueError(f"GSE Delta 基础对象缺少可载入名称（位置：{path}.base.name）")
+    if isinstance(name, str) and stored_name != name:
+        raise ValueError(f"GSE Delta 对象名与集合键不一致（位置：{path}: {stored_name}）")
+    return effective
+
+
+def _parse_collection_objects(body, category, blockers, warning_map, location_map):
+    raw_objects = body.get(category)
+    if raw_objects is None or raw_objects is False:
+        return None
+    if isinstance(raw_objects, list):
+        entries = list(enumerate(raw_objects, 1))
+    elif isinstance(raw_objects, dict):
+        entries = list(raw_objects.items())
+    else:
+        raise ValueError(f"GSE 集合 {category} 必须为表格（位置：payload.{category}）")
+    parsed = {}
+    warning_map[category] = {}
+    location_map[category] = {}
+    for name, raw_value in entries:
+        path = f"payload.{category}[{name}]"
+        location_map[category][str(name)] = path
+        valid_name = ((isinstance(name, str)) or
+                      (type(name) is int) or
+                      (type(name) is float and math.isfinite(name)))
+        if not valid_name:
+            blockers.append(dict(category=category, name=str(name), source_path=path,
+                                 reason=f"GSE 集合对象名称无效（位置：{path}）",
+                                 raw_value=raw_value))
+            continue
+        warnings = []
+        try:
+            if isinstance(raw_value, dict) and raw_value.get("GSEDeltaFork"):
+                value = _collection_delta_fork(name, raw_value, path, warnings,
+                                                expected_type=category[:-1].lower())
+            elif isinstance(raw_value, str) and raw_value.startswith("!GSE3!"):
+                if raw_value.startswith("!GSE3!+") and not isinstance(name, str):
+                    raise ValueError(f"受保护 {category} 的存储键必须是文本名称（位置：{path}）")
+                _, value, _ = _decode_gse_message(raw_value)
+                if not isinstance(value, (dict, list)):
+                    raise ValueError(f"GSE 编码对象不是 table（位置：{path}）")
+            elif isinstance(raw_value, dict):
+                value = deepcopy(raw_value)
+                if value.get("name") is None or value.get("name") is False:
+                    value["name"] = name
+            elif isinstance(raw_value, list):
+                value = {index: deepcopy(item) for index, item in enumerate(raw_value, 1)}
+                value["name"] = name
+            else:
+                raise ValueError(f"GSE 集合对象必须是表格或 GSE 编码字符串（位置：{path}）")
+            value = _fix_container(value, path)
+        except ValueError as error:
+            blockers.append(dict(category=category, name=name, source_path=path,
+                                 reason=str(error), raw_value=raw_value))
+            continue
+        parsed[name] = value
+        if warnings:
+            warning_map[category][name] = warnings
+    return parsed
+
+
+def decode_import(text):
+    """返回原始 GSE 对象和序列映射；失败不会退化成空序列。"""
+    raw, payload, protected = _decode_gse_message(text)
+
+    protected_object_type = payload.get("objectType") if protected and isinstance(payload, dict) else None
+    if protected and protected_object_type in {"VARIABLE", "MACRO"}:
+        object_name = payload.get("name")
+        if not isinstance(object_name, str) or not object_name:
+            raise ValueError(f"GSE 受保护 {protected_object_type} 对象缺少 name 字段（位置：name）")
+        return dict(payload=payload, sequences={}, envelope="protected", content_envelope="object",
+                    raw_sequences={}, raw_sequence_objects={}, syntax_locations=[], parse_warnings={},
+                    collection_objects={}, collection_object_warnings={},
+                    collection_object_locations={}, collection_blockers=[],
+                    protected_object_type=protected_object_type,
+                    payload_cbor=raw, raw_import=text,
+                    sha256=hashlib.sha256(text.encode("ascii")).hexdigest())
+    collection_member_warnings = {}
+    collection_wire_values = {}
+    collection_blockers = []
+    collection_objects = {}
+    collection_object_warnings = {}
+    collection_object_locations = {}
     if isinstance(payload, list) and len(payload) == 2 and isinstance(payload[0], str):
         sequences = {payload[0]: payload[1]}
         envelope = "single"
     elif isinstance(payload, dict) and payload.get("type") == "COLLECTION":
-        body = payload.get("payload")
-        if not isinstance(body, dict) or not isinstance(body.get("Sequences"), dict):
-            raise ValueError("GSE 导入集合缺少序列")
+        body = payload.get("payload") or {}
+        if not isinstance(body, dict):
+            raise ValueError("GSE 导入集合载荷必须为映射（位置：payload）")
+        collection_sequences = body.get("Sequences") or {}
+        if not isinstance(collection_sequences, dict):
+            raise ValueError("GSE 导入集合序列必须为映射（位置：payload.Sequences）")
         sequences = {}
-        for name, value in body["Sequences"].items():
+        for name, value in collection_sequences.items():
+            source_path = f"payload.Sequences[{name}]"
+            original_value = value
+            member_warnings = []
             if isinstance(value, list) and len(value) == 2 and value[0] == name:
                 value = value[1]
+            elif isinstance(value, str) and value.startswith("!GSE3!+"):
+                _, protected_payload, _ = _decode_gse_message(value)
+                if not (isinstance(protected_payload, list) and len(protected_payload) >= 2
+                        and isinstance(protected_payload[1], dict)):
+                    raise ValueError(f"GSE 集合受保护序列必须包含名称与序列对象（位置：{source_path}）")
+                value = protected_payload[1]
+                collection_wire_values[name] = original_value
+            elif isinstance(value, dict) and value.get("GSEDeltaFork"):
+                collection_wire_values[name] = original_value
+                try:
+                    value = _collection_delta_fork(name, value, source_path, member_warnings)
+                except ValueError as error:
+                    collection_blockers.append(dict(category="Sequences", name=name,
+                                                    source_path=source_path,
+                                                    reason=str(error), raw_value=original_value))
+                    continue
             sequences[name] = value
+            if member_warnings:
+                collection_member_warnings[name] = member_warnings
+        for category in ("Variables", "Macros"):
+            objects = _parse_collection_objects(body, category,
+                                                collection_blockers, collection_object_warnings,
+                                                collection_object_locations)
+            if objects is not None:
+                collection_objects[category] = objects
         envelope = "collection"
     elif (isinstance(payload, dict) and isinstance(payload.get("MetaData"), dict)
-          and isinstance(payload.get("Versions"), list)):
+          and "Versions" in payload):
         name = payload["MetaData"].get("Name")
         if not isinstance(name, str) or not name:
             raise ValueError("GSE 直接序列缺少 MetaData.Name")
@@ -111,33 +659,101 @@ def decode_import(text):
         envelope = "direct"
     else:
         raise ValueError("GSE 导入外壳不受支持")
-    if not sequences or any(not isinstance(name, str) or not name or not isinstance(seq, dict)
-                            or not isinstance(seq.get("Versions"), list) or not seq["Versions"]
-                            or not isinstance(seq.get("MetaData"), dict)
-                            for name, seq in sequences.items()):
-        raise ValueError("GSE 导入序列结构无效")
-    return dict(payload=payload, sequences=sequences, envelope=envelope,
+    if not sequences and envelope != "collection":
+        raise ValueError("GSE 导入序列结构无效（位置：Sequences）")
+    raw_sequences = {}
+    raw_sequence_objects = {}
+    normalized_sequences = {}
+    for name, sequence in sequences.items():
+        if not isinstance(name, str) or not name or not isinstance(sequence, dict):
+            raise ValueError(f"GSE 导入序列结构无效（位置：Sequences[{name}]）")
+        raw_sequence = collection_wire_values.get(name, sequence)
+        source_sequence = sequence
+        source_metadata = sequence.get("MetaData")
+        if envelope == "collection" and (source_metadata is None or source_metadata is False):
+            sequence = dict(sequence)
+            source_metadata = {}
+        if envelope == "collection" and isinstance(source_metadata, dict) and not source_metadata.get("Name"):
+            sequence = dict(sequence)
+            source_metadata = dict(source_metadata)
+            source_metadata["Name"] = name
+        if envelope == "collection" and ("MetaData" not in sequence or sequence.get("MetaData") is None
+                                           or sequence.get("MetaData") is False
+                                           or isinstance(sequence.get("MetaData"), dict)):
+            sequence["MetaData"] = source_metadata
+        if not isinstance(sequence.get("MetaData"), dict):
+            raise ValueError(f"GSE 导入序列缺少元数据（位置：Sequences[{name}].MetaData）")
+        normalized = _fix_container(sequence, f"Sequences[{name}]")
+        versions = _sequence_versions(normalized.get("Versions"), name)
+        raw_sequences[name] = raw_sequence
+        raw_sequence_objects[name] = source_sequence
+        normalized["Versions"] = versions
+        normalized_sequences[name] = normalized
+    syntax_locations = _parse_sequences(normalized_sequences)
+    warnings = {name: _sequence_warnings(sequence, name) + collection_member_warnings.get(name, [])
+                for name, sequence in normalized_sequences.items()}
+    content_envelope = envelope
+    if protected:
+        envelope = "protected"
+    return dict(payload=payload, sequences=normalized_sequences, envelope=envelope,
+                content_envelope=content_envelope,
+                protected_object_type=protected_object_type,
+                raw_sequences=raw_sequences, raw_sequence_objects=raw_sequence_objects,
+                collection_blockers=collection_blockers,
+                collection_objects=collection_objects,
+                collection_object_warnings=collection_object_warnings,
+                collection_object_locations=collection_object_locations,
+                syntax_locations=syntax_locations, parse_warnings=warnings,
+                payload_cbor=raw, raw_import=text,
                 sha256=hashlib.sha256(text.encode("ascii")).hexdigest())
+
+
+def _json_value(value):
+    """以 JSON 可传输形式展示已解码值；CBOR 原字节另由 payload_cbor 保存。"""
+    if isinstance(value, _RawCBORBytes):
+        return {"$cbor_bytes_base64": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(_json_value(key)): _json_value(item) for key, item in value.items()}
+    return value
 
 
 def _position(sequence, version, path):
     return SourcePosition(adapter="gse_import", sequence=sequence, version=version, path=str(path))
 
 
+def _gse_action_type(action):
+    kind = action.get("type")
+    if kind == "spell" and action.get("spell") in (None, ""):
+        return "macro"
+    if kind not in (None, ""):
+        return kind
+    for key, inferred in (("macro", "macro"), ("macrotext", "macro"), ("item", "item"),
+                          ("action", "pet"), ("toy", "toy"), ("spell", "spell")):
+        if action.get(key) not in (None, ""):
+            return inferred
+    return "macro"
+
+
 def _action_node(action, source):
     if not isinstance(action, dict):
         command = dict(type="raw", argument=str(action))
     else:
-        command_type = action.get("type")
+        command_type = _gse_action_type(action)
         if command_type == "spell":
             command = dict(type="spell", argument=action.get("spell"))
         elif command_type == "item":
             command = dict(type="item", argument=action.get("item"))
         elif command_type == "macro":
             command = dict(type="macro", text=action.get("macro", action.get("macrotext", "")))
+        elif command_type == "pet":
+            command = dict(type="pet", argument=action.get("action"))
+        elif command_type == "toy":
+            command = dict(type="toy", argument=action.get("toy"))
         else:
-            command = dict(type=command_type, argument=action.get("spell", action.get("item")))
-    return ActionNode(kind="Action", commands=[command], source=source)
+            command = dict(type=command_type, raw=_json_value(action))
+    return ActionNode(kind="Action", commands=[command], source=source, raw=_json_value(action))
 
 
 def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, seen, path_prefix="",
@@ -146,17 +762,15 @@ def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, se
         state = [0]
     if depth > MAX_DEPTH:
         raise ValueError("GSE 程序展开过深或节点过多")
-    if not isinstance(actions, list):
+    entries = _indexed_items(actions)
+    if entries is None:
         return []
     nodes = []
-    for index, action in enumerate(actions, 1):
+    for index, action in entries:
         state[0] += 1
         if state[0] > MAX_NODES:
             raise ValueError("GSE 程序展开过深或节点过多")
         path = f"{path_prefix}.{index}" if path_prefix else str(index)
-        if not isinstance(action, dict):
-            nodes.append(_action_node(action, _position(sequence_name, version, path)))
-            continue
         if action.get("Disabled") is True:
             continue
         kind = action.get("Type")
@@ -165,41 +779,51 @@ def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, se
             nodes.append(_action_node(action, source))
         elif kind == "Repeat":
             child_source = source
-            repeat = action.get("Interval", action.get("Repeat", 2))
+            repeat = action.get("Interval")
+            if repeat is None or repeat == "":
+                repeat = action.get("Repeat", 2)
+            if repeat is None or repeat == "":
+                repeat = 2
             try:
                 repeat = int(float(repeat))
             except (TypeError, ValueError):
                 repeat = 2
             nodes.append(RepeatNode(kind="Repeat", interval=repeat,
-                                    action=_action_node(action, child_source), source=source))
+                                    action=_action_node(action, child_source), source=source,
+                                    raw=_json_value(action)))
         elif kind == "Loop":
             try:
                 count = int(float(action.get("Repeat", 1)))
             except (TypeError, ValueError):
                 count = 1
-            children = [action[key] for key in sorted(k for k in action if type(k) is int and k > 0)]
-            body = _gse_nodes(children, sequences, sequence_name, version, selected_versions, seen,
+            body = _gse_nodes(action, sequences, sequence_name, version, selected_versions, seen,
                               path_prefix=path, state=state, depth=depth + 1)
             nodes.append(LoopNode(kind="Loop", count=count,
                                   step_function=action.get("StepFunction") or "Sequential",
-                                  body=body, source=source))
+                                  body=body, source=source, raw=_json_value(action)))
         elif kind == "Pause":
+            duration_ms = action.get("MS")
+            if duration_ms == "":
+                duration_ms = None
             nodes.append(PauseNode(kind="Pause", clicks=action.get("Clicks", 0),
-                                   duration_ms=action.get("MS"), source=source))
+                                   duration_ms=duration_ms, source=source,
+                                   raw=_json_value(action)))
         elif kind == "If":
             expression = action.get("Variable")
             condition = isinstance(expression, str) and expression.lstrip("=").strip().lower() == "true"
             yes_actions = action.get(1, action.get("1", []))
             no_actions = action.get(2, action.get("2", []))
-            yes_actions = yes_actions if isinstance(yes_actions, list) else [yes_actions]
-            no_actions = no_actions if isinstance(no_actions, list) else [no_actions]
             yes = _gse_nodes(yes_actions, sequences, sequence_name, version,
                              selected_versions, seen, path_prefix=path + ".1",
                              state=state, depth=depth + 1)
             no = _gse_nodes(no_actions, sequences, sequence_name, version,
                             selected_versions, seen, path_prefix=path + ".2",
                             state=state, depth=depth + 1)
-            nodes.append(IfNode(kind="If", condition=condition, then=yes, else_branch=no, source=source))
+            node = IfNode(kind="If", condition=condition, then=yes, else_branch=no,
+                          source=source, raw=_json_value(action))
+            if "Variable" in action:
+                node["expression"] = _json_value(expression)
+            nodes.append(node)
         elif kind == "Embed":
             embedded_name = action.get("Sequence")
             embedded = sequences.get(embedded_name)
@@ -210,16 +834,17 @@ def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, se
                 embedded_version = 1
             body = []
             if (isinstance(embedded_name, str) and isinstance(embedded, dict)
-                    and embedded_name not in seen and 1 <= embedded_version <= len(embedded.get("Versions", []))):
-                body = _gse_nodes(embedded["Versions"][embedded_version - 1].get("Actions", []),
+                    and embedded_name not in seen and
+                    isinstance(_version_get(embedded, embedded_version), dict)):
+                body = _gse_nodes(_version_get(embedded, embedded_version).get("Actions", []),
                                   sequences, embedded_name, embedded_version,
                                   selected_versions, seen | {embedded_name},
                                   state=state, depth=depth + 1)
             nodes.append(EmbedNode(kind="Embed", sequence=str(embedded_name or ""),
-                                   version=embedded_version, body=body, source=source))
+                                   version=embedded_version, body=body, source=source,
+                                   raw=_json_value(action)))
         else:
-            # Compilation performs the authoritative unsupported-node check.
-            nodes.append(_action_node(action, source))
+            raise ValueError(f"GSE 控制块类型无法展开：{kind}（位置：{sequence_name} v{version} {path}.Type）")
     return nodes
 
 
@@ -229,18 +854,22 @@ def program_from_import(text, name, version, *, context=None, decoded=None):
     if name not in decoded["sequences"] or type(version) is not int:
         raise ValueError("GSE 选定的序列或版本无效")
     sequence = decoded["sequences"][name]
-    if not 1 <= version <= len(sequence["Versions"]):
+    version_value = _version_get(sequence, version)
+    if not isinstance(version_value, dict):
         raise ValueError("GSE 选定的序列或版本无效")
     requested = (context or {}).get("versions", {})
     requested = requested if isinstance(requested, dict) else {}
     selected_versions = {key: value.get("Default", 1) for key, value in decoded["sequences"].items()}
     selected_versions.update(requested)
     selected_versions[name] = version
-    nodes = _gse_nodes(sequence["Versions"][version - 1].get("Actions", []),
+    nodes = _gse_nodes(version_value.get("Actions", []),
                        decoded["sequences"], name, version, selected_versions, {name})
     return Program(adapter="gse_import", nodes=nodes,
                    metadata={"input_text": text, "name": name, "version": version,
-                             "sha256": decoded["sha256"]})
+                             "sha256": decoded["sha256"],
+                             "raw_sequence": _json_value(decoded["raw_sequences"][name]),
+                             "raw_version": _json_value(_raw_version_get(
+                                 decoded["raw_sequence_objects"][name], version))})
 
 
 def import_action_spell_ids(program):
@@ -369,38 +998,72 @@ def _contains_random_loop(nodes):
 def inspect_import(text, *, decoded=None):
     decoded = decoded or decode_import(text)
     locked_version = _locked_gse_version()
-    syntax = set()
-    def visit(value):
-        if isinstance(value, dict):
-            kind = value.get("Type")
-            if isinstance(kind, str):
-                syntax.add(kind)
-            for item in value.values():
-                visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
+    syntax_locations = decoded["syntax_locations"]
+    syntax = sorted({location["type"] for location in syntax_locations})
     entries = []
     for name, seq in decoded["sequences"].items():
-        visit(seq["Versions"])
+        version_items = _version_items(seq["Versions"], f"Sequences[{name}].Versions")
+        indexes = [version for version, _ in version_items]
         version_support = [
             _version_preflight(decoded["sequences"], name, seq, version, locked_version)
-            for version in range(1, len(seq["Versions"]) + 1)
+            for version in indexes
         ]
-        default_version = seq.get("Default", 1)
-        if type(default_version) is not int or not 1 <= default_version <= len(version_support):
-            default_version = 1
-        default_support = version_support[default_version - 1]
+        raw_default_version = seq.get("Default", 1)
+        default_version = (raw_default_version if type(raw_default_version) is int and
+                           raw_default_version in indexes else indexes[0])
+        default_support = next(item for item in version_support
+                               if item["version"] == default_version)
+        raw_sequence = decoded["raw_sequences"][name]
+        versions = [dict(version=version,
+                         source_path=f"Sequences[{name}].Versions[{version}]",
+                         raw_version=_json_value(_raw_version_get(
+                             decoded["raw_sequence_objects"][name], version)),
+                         parsed_version=_json_value(record))
+                    for version, record in version_items]
         entries.append(dict(name=name, spec_id=seq["MetaData"].get("SpecID"),
                             gse_version=seq["MetaData"].get("GSEVersion"),
-                            version_count=len(seq["Versions"]), default_version=default_version,
+                            version_count=len(version_items), default_version=default_version,
+                            raw_default_version=_json_value(raw_default_version),
+                            raw_sequence=_json_value(raw_sequence), versions=versions,
+                            parse_warnings=decoded["parse_warnings"][name],
                             version_support=version_support,
                             simulation_supported=default_support["simulation_supported"],
                             simulation_preflight_passed=default_support["simulation_preflight_passed"],
                             support_status=default_support["support_status"],
                             support_reason=default_support["support_reason"]))
+    content_envelope = decoded.get("content_envelope", decoded["envelope"])
+    collection_body = (decoded["payload"].get("payload") or {}
+                       if content_envelope == "collection" else {})
+    protected_object = (_json_value(decoded["payload"])
+                        if decoded.get("protected_object_type") in {"VARIABLE", "MACRO"} else None)
+    raw_variables = (_json_value(collection_body.get("Variables"))
+                     if content_envelope == "collection" else None)
+    raw_macros = (_json_value(collection_body.get("Macros"))
+                  if content_envelope == "collection" else None)
+    variables = (_json_value(decoded.get("collection_objects", {}).get("Variables"))
+                 if content_envelope == "collection" else None)
+    macros = (_json_value(decoded.get("collection_objects", {}).get("Macros"))
+              if content_envelope == "collection" else None)
+    if decoded.get("protected_object_type") == "VARIABLE":
+        variables = {decoded["payload"]["name"]: protected_object}
+    elif decoded.get("protected_object_type") == "MACRO":
+        macros = {decoded["payload"]["name"]: protected_object}
     return dict(status="decoded", format=decoded["envelope"], sha256=decoded["sha256"],
-                sequences=entries, syntax=sorted(syntax), simulation_started=False,
+                raw_import=decoded["raw_import"], raw_payload=_json_value(decoded["payload"]),
+                payload_cbor_base64=base64.b64encode(decoded["payload_cbor"]).decode("ascii"),
+                sequences=entries,
+                content_format=content_envelope,
+                protected_object_type=decoded.get("protected_object_type"),
+                protected_object=protected_object,
+                raw_variables=raw_variables, raw_macros=raw_macros,
+                variables=variables, macros=macros,
+                collection_parse_warnings=decoded.get("collection_object_warnings", {}),
+                collection_object_locations=decoded.get("collection_object_locations", {}),
+                collection_compatibility_blocks=[
+                    dict(block, raw_value=_json_value(block["raw_value"]))
+                    for block in decoded.get("collection_blockers", [])
+                ],
+                syntax=syntax, syntax_locations=syntax_locations, simulation_started=False,
                 support="not_checked")
 
 
@@ -412,22 +1075,29 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
         if value.get("Disabled") is True:
             return
         kind = value.get("Type")
+        if path.endswith(".Actions"):
+            _check_runtime_action_indexes(value, path)
         if kind is not None:
             if not isinstance(kind, str) or kind not in VALID_TYPES:
                 fail(f"GSE 控制块类型不支持：{kind}")
             if kind in {"Action", "Repeat"}:
-                action_kind = value.get("type")
+                action_kind = _gse_action_type(value)
                 if action_kind not in {"spell", "item", "macro"}:
-                    fail(f"GSE 动作类型不支持：{action_kind}")
+                    fail(f"GSE 动作类型无法模拟：{action_kind}")
                 if action_kind == "macro":
                     _check_macro_preflight(value.get("macro", value.get("macrotext", "")),
                                            f"{path}.macro" if path else "macro")
             if kind == "If":
+                for branch_index in (1, 2):
+                    branch = value.get(branch_index, value.get(str(branch_index)))
+                    if branch is not None:
+                        _check_runtime_action_indexes(branch, f"{path}[{branch_index}]")
                 expression = value.get("Variable")
                 constant = expression[1:].strip() if isinstance(expression, str) and expression.startswith("=") else expression
                 if not isinstance(constant, str) or constant not in {"true", "false"}:
                     fail("GSE If 条件需要游戏内变量，不能确定分支")
             if kind == "Loop":
+                _check_runtime_action_indexes(value, path)
                 try:
                     repeats = float(value.get("Repeat", 1))
                 except (TypeError, ValueError) as error:
@@ -439,8 +1109,13 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
                         step_function not in {"Sequential", "Priority", "ReversePriority", "Random"}):
                     fail(f"GSE Loop 次序方式不支持：{step_function}")
             if kind == "Repeat":
+                interval_value = value.get("Interval")
+                if interval_value is None or interval_value == "":
+                    interval_value = value.get("Repeat", 2)
+                if interval_value is None or interval_value == "":
+                    interval_value = 2
                 try:
-                    interval = float(value.get("Interval", value.get("Repeat", 2)))
+                    interval = float(interval_value)
                 except (TypeError, ValueError) as error:
                     raise ValueError(f"GSE Repeat 间隔无效（位置：{path or 'Version'}）") from error
                 if not math.isfinite(interval) or not 1 <= interval <= 4096 or interval % 1:
@@ -451,7 +1126,7 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
                 if (type(clicks) not in (int, float) or not math.isfinite(clicks) or
                         clicks < 0 or clicks > 4096 or clicks % 1):
                     fail("GSE Pause 点击数无效")
-                if ms is not None and not (isinstance(ms, str) and ms in {"GCD", "~~GCD~~"}):
+                if ms not in (None, "") and not (isinstance(ms, str) and ms in {"GCD", "~~GCD~~"}):
                     try:
                         duration = float(ms)
                     except (TypeError, ValueError) as error:
@@ -466,14 +1141,17 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
                     fail(f"GSE Embed 循环引用：{dep}")
                 embedded = sequences[dep]
                 embedded_version = (selected_versions or {}).get(dep, embedded.get("Default", 1))
-                if (type(embedded_version) is not int or
-                        not 1 <= embedded_version <= len(embedded["Versions"])):
+                embedded_record = _version_get(embedded, embedded_version)
+                if not isinstance(embedded_record, dict):
                     fail(f"GSE Embed 选中版本无效：{dep} {embedded_version}")
+                runtime_issue = _version_runtime_issue(embedded, embedded_version)
+                if runtime_issue:
+                    fail(f"GSE Embed 子序列 {dep}：{runtime_issue}")
                 supported, reason = _simulation_compatibility(
                     embedded["MetaData"].get("GSEVersion"), _locked_gse_version())
                 if not supported:
                     fail(f"GSE Embed 子序列 {dep}：{reason}")
-                _check_nodes(embedded["Versions"][embedded_version - 1], sequences, seen | {dep},
+                _check_nodes(embedded_record, sequences, seen | {dep},
                              f"{path}.Embed[{dep}].Versions[{embedded_version}]" if path
                              else f"Embed[{dep}].Versions[{embedded_version}]", selected_versions)
         for key, item in value.items():
@@ -483,6 +1161,8 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
                     continue
                 fail("GSE 公式需要执行外部 Lua，不能安全模拟")
             child_path = f"{path}[{key}]" if type(key) is int else (f"{path}.{key}" if path else str(key))
+            if key == "Actions":
+                _check_runtime_action_indexes(item, child_path)
             _check_nodes(item, sequences, seen, child_path, selected_versions)
     elif isinstance(value, list):
         for index, item in enumerate(value, 1):
@@ -491,18 +1171,34 @@ def _check_nodes(value, sequences, seen, path="", selected_versions=None):
 
 def _version_preflight(sequences, sequence_name, sequence, version, locked_version):
     """只报告静态预检；角色技能/物品映射尚未核验时不宣称已受支持。"""
+    version_record = _version_get(sequence, version)
+    if not isinstance(version_record, dict):
+        return dict(version=version, simulation_supported=False,
+                    simulation_preflight_passed=False, support_status="unsupported",
+                    support_reason=f"所选版本不存在（位置：Sequences[{sequence_name}].Versions[{version}]）")
+    runtime_issue = _version_runtime_issue(sequence, version)
+    if runtime_issue:
+        return dict(version=version, simulation_supported=False,
+                    simulation_preflight_passed=False, support_status="unsupported",
+                    support_reason=f"GSE {runtime_issue}（位置：Sequences[{sequence_name}].Versions[{version}]）")
     gse_version = sequence["MetaData"].get("GSEVersion")
     supported, reason = _simulation_compatibility(gse_version, locked_version)
     if not supported:
         return dict(version=version, simulation_supported=False,
                     simulation_preflight_passed=False, support_status="unsupported",
                     support_reason=reason)
+    if "Actions" not in version_record:
+        actions_path = f"Sequences[{sequence_name}].Versions[{version}].Actions"
+        return dict(version=version, simulation_supported=False,
+                    simulation_preflight_passed=False, support_status="unsupported",
+                    support_reason=f"GSE 版本缺少 Actions 数组（位置：{actions_path}）")
 
     selected_versions = {name: value.get("Default", 1) for name, value in sequences.items()}
     selected_versions[sequence_name] = version
     try:
-        _check_nodes(sequence["Versions"][version - 1].get("Actions", []), sequences,
-                     {sequence_name}, path=f"{sequence_name} v{version} Versions[{version}].Actions",
+        _check_nodes(version_record.get("Actions", []), sequences,
+                     {sequence_name},
+                     path=f"Sequences[{sequence_name}].Versions[{version}].Actions",
                      selected_versions=selected_versions)
     except ValueError as error:
         return dict(version=version, simulation_supported=False,
@@ -786,7 +1482,8 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
     if name not in decoded["sequences"] or type(version) is not int:
         raise ValueError("GSE 选定的序列或版本无效")
     sequence = decoded["sequences"][name]
-    if not 1 <= version <= len(sequence["Versions"]):
+    version_record = _version_get(sequence, version)
+    if not isinstance(version_record, dict):
         raise ValueError("GSE 选定的序列或版本无效")
     expected_nodes = program_from_import(text, name, version, context=context, decoded=decoded)["nodes"]
     if program.get("adapter") != "gse_import" or program.get("nodes") != expected_nodes:
@@ -806,9 +1503,9 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
                          for key, value in decoded["sequences"].items()}
     selected_versions.update(requested_versions)
     selected_versions[name] = version
-    _check_nodes(sequence["Versions"][version - 1].get("Actions", []),
+    _check_nodes(version_record.get("Actions", []),
                  decoded["sequences"], {name},
-                 path=f"{name} v{version} Versions[{version}].Actions",
+                 path=f"Sequences[{name}].Versions[{version}].Actions",
                  selected_versions=selected_versions)
     if (type(context.get("click_ms")) is not int or not 50 <= context["click_ms"] <= 2000
             or type(context.get("gcd_ms")) is not int or not 500 <= context["gcd_ms"] <= 3000

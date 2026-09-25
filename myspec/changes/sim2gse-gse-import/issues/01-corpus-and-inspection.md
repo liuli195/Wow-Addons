@@ -26,3 +26,7 @@ Status（状态）: done
 红绿证据：`test_import_inspection_accepts_direct_sequence_object` 从 HTTP 400 转为 decoded；`test_upstream_compiles_direct_sequence_object_shell` 首次因上游适配器无法取序列而失败，修正后通过并得到 `outbreak` 一步；`test_import_rejects_gse_version_newer_than_locked_upstream_before_compiling` 先确认 GSEVersion 3333 会继续运行编译器，加入锁定版本守卫后通过且上游命令未运行。定向接口边界为 4 passed、2 个子检查通过；此前 Sim2GSE 定向全组为 127 passed、41 个子检查通过。
 
 语料覆盖限制：已检查维护者 Pause 讨论关联的帖子 18312、35227，以及后续候选 37781、36270、32673、31200、26914，均未发现可提取的 `!GSE3!` 原串；现有 12 条收集源共有 9 条可解码结果，真实原串没有 Pause/Embed。按需求中“最好覆盖全部语法”及本票“主要语法 + 六类矩阵”的范围，本票通过固定上游合成向量验证这两类处理能力，并明确保留真实来源缺口；不得将合成向量描述为真实覆盖。
+
+## 验收口径更正（2026-09-25）
+
+本票 `done` 和以上证据只代表原验收范围：主要语法样本、六类块的合成补充矩阵及解码边界检查。它们不代表锁定 GSE 3.3.32 支持的全部语法已无损解析，也不代表已收集原串已逐成员、逐版本在最终代码上全部通过。新的完整语法、全语料复跑及 12.1 邪 DK 真实 DPS 验收分别由 06、07、08 票据跟踪；合成向量仍不得计作真实语料。

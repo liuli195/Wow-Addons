@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import base64
+import struct
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ import zlib
 from unittest.mock import patch
 
 import cbor2
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
@@ -21,6 +23,22 @@ from sequence import compiled_program  # noqa: E402
 
 
 class ProgramTests(unittest.TestCase):
+    def test_pinned_cryptography_chacha20_matches_rfc8439_vector(self):
+        plaintext = (b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip "
+                     b"for the future, sunscreen would be it.")
+        key = bytes(range(32))
+        nonce = bytes.fromhex("000000000000004a00000000")
+        expected = bytes.fromhex(
+            "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0b"
+            "f91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d"
+            "807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab7793736"
+            "5af90bbf74a35be6b40b8eedf2785e42874d"
+        )
+        encryptor = Cipher(algorithms.ChaCha20(key, struct.pack("<I", 1) + nonce),
+                           mode=None).encryptor()
+
+        self.assertEqual(encryptor.update(plaintext) + encryptor.finalize(), expected)
+
     def test_inspection_does_not_claim_role_actions_are_already_verified(self):
         sequence = dict(MetaData=dict(Name="PREFLIGHT", SpecID=252, GSEVersion=3331), Default=1,
                         Versions=[dict(Actions=[{"Type": "Action", "type": "spell", "spell": 77575}])])
@@ -65,6 +83,47 @@ class ProgramTests(unittest.TestCase):
                                         identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
                                         context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
         self.assertEqual(compiled_program(candidate), [["outbreak"]])
+
+    def test_import_program_keeps_raw_action_and_version_fields(self):
+        action = {"Type": "Action", "action": "Attack", "macrotext": "literal\nmacro",
+                  "Disabled": False, "VendorExtension": {"ordered": ["a", "b"]}}
+        pet_action = {"Type": "Action", "action": "Assist", "VendorExtension": "pet"}
+        sequence = {"MetaData": {"Name": "RAW_FIELDS", "SpecID": 252, "GSEVersion": 3332},
+                    "Default": 1, "VersionExtension": None,
+                    "Versions": {"1": {"Actions": [action, pet_action],
+                                         "OtherVersionField": "kept"}}}
+        raw = cbor2.dumps(sequence)
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+
+        program = from_gse_import(text, "RAW_FIELDS", 1)
+
+        self.assertEqual(program["nodes"][0]["raw"], action)
+        self.assertEqual(program["nodes"][0]["commands"], [
+            {"type": "macro", "text": "literal\nmacro"},
+        ])
+        self.assertEqual(program["nodes"][1]["raw"], pet_action)
+        self.assertEqual(program["nodes"][1]["commands"], [{"type": "pet", "argument": "Assist"}])
+        self.assertEqual(program["metadata"]["raw_sequence"]["VersionExtension"], None)
+        self.assertEqual(program["metadata"]["raw_version"]["OtherVersionField"], "kept")
+        self.assertEqual(program["nodes"][0]["source"]["path"], "1")
+
+    def test_import_program_applies_upstream_repeat_and_empty_pause_defaults_losslessly(self):
+        actions = [
+            {"Type": "Repeat", "type": "spell", "spell": 77575,
+             "Interval": None, "Repeat": "3"},
+            {"Type": "Pause", "Clicks": 2, "MS": ""},
+        ]
+        sequence = {"MetaData": {"Name": "EMPTY_DEFAULTS", "SpecID": 252, "GSEVersion": 3332},
+                    "Default": 1, "Versions": [{"Actions": actions}]}
+        raw = cbor2.dumps(wire_value(["EMPTY_DEFAULTS", sequence]))
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+
+        program = from_gse_import(text, "EMPTY_DEFAULTS", 1)
+
+        self.assertEqual(program["nodes"][0]["interval"], 3)
+        self.assertIsNone(program["nodes"][0]["raw"]["Interval"])
+        self.assertIsNone(program["nodes"][1]["duration_ms"])
+        self.assertEqual(program["nodes"][1]["raw"]["MS"], "")
 
     def test_compile_rejects_click_rate_different_from_simulation_input_interval(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -119,6 +178,43 @@ class ProgramTests(unittest.TestCase):
                                         identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
                                         context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
         self.assertEqual(compiled_program(candidate), [["outbreak"]])
+
+    def test_if_numeric_key_maps_enter_program_branches_after_upstream_normalization(self):
+        sequence = dict(MetaData=dict(Name="IF_MAP", SpecID=252, GSEVersion=3332), Default=1,
+                        Versions={"1": {"Actions": [{"Type": "If", "Variable": "=true",
+                                                        "1": {"1": {"Type": "Action", "type": "spell",
+                                                                      "spell": 77575}},
+                                                        "2": {"1": {"Type": "Action", "type": "spell",
+                                                                      "spell": 999999}}}]}})
+        raw = cbor2.dumps(wire_value(["IF_MAP", sequence]))
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+
+        program = from_gse_import(text, "IF_MAP", 1)
+
+        branch_action = program["nodes"][0]["then"][0]
+        self.assertEqual(branch_action["commands"], [{"type": "spell", "argument": 77575}])
+        self.assertEqual(branch_action["source"]["path"], "1.1.1")
+        self.assertEqual(program["nodes"][0]["else_branch"][0]["commands"],
+                         [{"type": "spell", "argument": 999999}])
+
+    def test_if_program_node_exposes_original_expression_and_preserves_missing_vs_null(self):
+        sequence = dict(MetaData=dict(Name="IF_EXPRESSION", SpecID=252, GSEVersion=3332),
+                        Default=1, Versions=[dict(Actions=[
+                            {"Type": "If", "Variable": "return GSE.V.Custom()"},
+                            {"Type": "If", "Variable": None},
+                            {"Type": "If"},
+                        ])])
+        raw = cbor2.dumps(wire_value(["IF_EXPRESSION", sequence]))
+        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
+
+        program = from_gse_import(text, "IF_EXPRESSION", 1)
+
+        first, explicit_null, missing = program["nodes"]
+        self.assertEqual(first["expression"], "return GSE.V.Custom()")
+        self.assertIn("expression", explicit_null)
+        self.assertIsNone(explicit_null["expression"])
+        self.assertNotIn("expression", missing)
+        self.assertEqual(first["raw"]["Variable"], first["expression"])
 
     def test_if_false_literal_selects_only_the_false_branch(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -345,7 +441,7 @@ class ProgramTests(unittest.TestCase):
         capabilities = dict(actions=[dict(kind="spell", spell_id=43265, name="Death and Decay",
                                           simc_action="death_and_decay")])
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
-                ValueError, r"/petattack.*MACRO v1 Versions\[1\]\.Actions\[1\]"):
+                ValueError, r"/petattack.*Sequences\[MACRO\]\.Versions\[1\]\.Actions\[1\]"):
             compile_program(from_gse_import(text, "MACRO", 1), Path(directory),
                             identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
                             context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
@@ -478,7 +574,7 @@ class ProgramTests(unittest.TestCase):
                             context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
         run_upstream.assert_not_called()
 
-    def test_disabled_nodes_are_skipped_like_locked_upstream(self):
+    def test_unknown_disabled_nodes_are_rejected_before_program_conversion(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
                         Versions=[dict(Actions=[
                             {"Type": "UnknownFutureBlock", "Disabled": True,
@@ -487,16 +583,8 @@ class ProgramTests(unittest.TestCase):
                         ])])
         raw = cbor2.dumps(wire_value(["DISABLED", sequence]))
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        program = from_gse_import(text, "DISABLED", 1)
-        self.assertEqual([node["kind"] for node in program["nodes"]], ["Action"])
-        capabilities = dict(actions=[dict(kind="spell", spell_id=77575, name="Outbreak",
-                                          simc_action="outbreak")])
-        with tempfile.TemporaryDirectory() as directory:
-            candidate = compile_program(program, Path(directory), identity=dict(class_id=6, spec_id=252),
-                                        capabilities=capabilities,
-                                        context=dict(click_ms=300, input_interval_ms=300,
-                                                     gcd_ms=1500, seed=1))
-        self.assertEqual(compiled_program(candidate), [["outbreak"]])
+        with self.assertRaisesRegex(ValueError, r"UnknownFutureBlock.*DISABLED v1.*Versions\[1\]\.Actions\[1\]"):
+            from_gse_import(text, "DISABLED", 1)
 
     def test_macro_pet_and_harm_conditions_use_explicit_compile_context(self):
         cases = [

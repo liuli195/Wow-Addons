@@ -184,10 +184,13 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 inspected = inspect_import(gse, decoded=imported)
             except ValueError as error:
                 raise TaskError(str(error)) from error
-            if name not in imported["sequences"] or not 1 <= version <= len(imported["sequences"][name]["Versions"]):
+            if name not in imported["sequences"]:
                 raise TaskError("GSE 选定的序列或版本无效")
-            member = next(row for row in inspected["sequences"] if row["name"] == name)
-            support = next(row for row in member["version_support"] if row["version"] == version)
+            member = next((row for row in inspected["sequences"] if row["name"] == name), None)
+            support = (next((row for row in member["version_support"] if row["version"] == version), None)
+                       if member is not None else None)
+            if support is None:
+                raise TaskError("GSE 选定的序列或版本无效")
             if not support["simulation_preflight_passed"]:
                 raise TaskError(support["support_reason"])
             if type(click_ms) is not int or not 50 <= click_ms <= 2000:

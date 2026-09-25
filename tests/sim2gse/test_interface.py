@@ -34,6 +34,26 @@ def gse_fixture(payload):
     return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(wire_value(payload)), wbits=-15)).decode("ascii")
 
 
+def gse_cbor_text_fixture(payload):
+    import cbor2
+    return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(payload), wbits=-15)).decode("ascii")
+
+
+# 固定合成向量：用锁定的 GSE 密钥编号和 cryptography 50.0.1 封装 CBOR 序列。
+GSE_PROTECTED_SEQUENCE_VECTOR = (
+    "!GSE3!+1AAECAwQFBgcICQoLG3AsKkGhhV0N/HWzbc4GgaZF4hReCjduid5ThZ/TBlBgCNHrDpQx1J2iLtVdXEdO66EYA7hAvDDxuP9DAhKFhjMVEzQ3ozkJGC11ccmZccQGTFEh+sKMi6o+CLvZlhVYS8655pzOGq9yw4Jk7CRHgh4eA6vj8zZcJHh9bajv/WolLkgO+/daJ3D5eUT0ddHkPxlmWXvyew6e5yMXVgfHN0YDkPk6MN9zjy9FPxSkkV4WGxkSw2Y="
+)
+GSE_PROTECTED_VARIABLE_VECTOR = (
+    "!GSE3!+1DA0ODxAREhMUFRYXYE5icaKm4dh0FkGCZl9rS0Ot/9b2WpiWY2xSmznyd8/6PXCbMq4B3rKmQe6NCY4s4Ys/vuKwrEiljk2q6Ead1S1Jv/R/t5LeNA=="
+)
+GSE_PROTECTED_MACRO_VECTOR = (
+    "!GSE3!+1GBkaGxwdHh8gISIjITXl5rxvJIfGsh1W9faejI+hnlUimbME8ag7Z5QUpuBgQG4pwW6rzLr0Um/muYNGkQHukMPDGG9hvkrUbFL6wWMwRz+/XkNH"
+)
+GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR = (
+    "!GSE3!+1ICEiIyQlJicoKSorMoOFyqPhNN1YfERp5oUsrO/2zVKXHka7E/VPMT1L9LD845xEagPNMvtXVhv0CqeNYpewT5FQaKmK8Qru9EVVETd2suCP9MToI6W7BLmLzaZb4HoF4ewOXE5gNBupjzZhAZEpY6VrFHj6fA=="
+)
+
+
 class InterfaceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory(prefix="sim2gse-ui-")
@@ -99,7 +119,10 @@ class InterfaceTests(unittest.TestCase):
                 {"Actions": [{"Type": "Loop", "Repeat": "2", 1: {"Type": "Pause", "Clicks": 2}}]},
             ],
         }])
-        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        try:
+            result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        except HTTPError as error:
+            self.fail(error.read().decode("utf-8"))
         self.assertEqual(result["status"], "decoded")
         self.assertEqual(result["sequences"][0]["name"], "THIRD_PARTY")
         self.assertEqual(result["sequences"][0]["version_count"], 2)
@@ -117,6 +140,700 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(result["status"], "decoded")
         self.assertEqual(result["format"], "direct")
         self.assertEqual(result["sequences"][0]["name"], "DIRECT_SEQUENCE")
+
+    def test_import_inspection_returns_the_full_decoded_payload(self) -> None:
+        import cbor2
+        from codec import wire_value
+
+        payload = ["LOSSLESS", {
+            "MetaData": {"Name": "LOSSLESS", "SpecID": 252, "GSEVersion": 3332,
+                         "ExplicitNull": None},
+            "Default": 1,
+            "UnknownSequenceField": {"ordered": ["first", "second"], "enabled": False},
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                          "macro": "/cast 77575\n/use 13",
+                                          "UnknownBlockField": 17}]}],
+        }]
+        imported = gse_fixture(payload)
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(result["raw_import"], imported)
+        self.assertEqual(result["raw_payload"], payload)
+        self.assertEqual(result["payload_cbor_base64"], base64.b64encode(
+            cbor2.dumps(wire_value(payload))).decode("ascii"))
+        self.assertFalse(result["simulation_started"])
+
+    def test_import_inspection_accepts_upstream_cbor_text_strings(self) -> None:
+        payload = ["TEXT_CBOR", {
+            "MetaData": {"Name": "TEXT_CBOR", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
+                                          "macro": "/cast 77575"}]}],
+        }]
+
+        try:
+            result = self._json_request("POST", "/api/gse/inspect", {
+                "gse": gse_cbor_text_fixture(payload),
+            })
+        except HTTPError as error:
+            self.fail(error.read().decode("utf-8"))
+
+        self.assertEqual(result["raw_payload"], payload)
+        self.assertEqual(result["sequences"][0]["name"], "TEXT_CBOR")
+        self.assertEqual(result["status"], "decoded")
+
+    def test_import_inspection_decodes_fixed_protected_sequence_vector(self) -> None:
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": GSE_PROTECTED_SEQUENCE_VECTOR,
+        })
+
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(result["format"], "protected")
+        self.assertEqual(result["content_format"], "direct")
+        self.assertEqual(result["protected_object_type"], "SEQUENCE")
+        self.assertEqual(result["raw_import"], GSE_PROTECTED_SEQUENCE_VECTOR)
+        member = result["sequences"][0]
+        self.assertEqual(member["name"], "PROTECTED")
+        self.assertEqual(member["raw_sequence"]["UnknownSequenceField"], {
+            "ordered": ["a", "b"], "ExplicitNull": None,
+        })
+        action = member["versions"][0]["raw_version"]["Actions"][0]
+        self.assertEqual(action["macro"], "/cast 77575\n/use 13")
+        self.assertEqual(action["Vendor"], 17)
+        self.assertEqual(result["syntax_locations"][0]["path"],
+                         "Sequences[PROTECTED].Versions[1].Actions[1]")
+
+    def test_import_inspection_reports_unknown_protected_key_without_dropping_raw_input(self) -> None:
+        imported = GSE_PROTECTED_SEQUENCE_VECTOR.replace("!GSE3!+1", "!GSE3!+2", 1)
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("密钥编号", error)
+        self.assertIn("2", error)
+
+    def test_import_inspection_decodes_fixed_protected_variable_and_macro_vectors(self) -> None:
+        variable = self._json_request("POST", "/api/gse/inspect", {
+            "gse": GSE_PROTECTED_VARIABLE_VECTOR,
+        })
+        macro = self._json_request("POST", "/api/gse/inspect", {
+            "gse": GSE_PROTECTED_MACRO_VECTOR,
+        })
+
+        self.assertEqual(variable["format"], "protected")
+        self.assertEqual(variable["protected_object_type"], "VARIABLE")
+        self.assertEqual(variable["variables"]["PVAR"]["funct"], "return GSE.V.Other()")
+        self.assertEqual(variable["variables"]["PVAR"]["CustomField"], [1, None])
+        self.assertEqual(variable["sequences"], [])
+        self.assertEqual(macro["format"], "protected")
+        self.assertEqual(macro["protected_object_type"], "MACRO")
+        self.assertEqual(macro["macros"]["PMAC"]["macro"], "/cast 77575\n/use 13")
+        self.assertEqual(macro["macros"]["PMAC"]["CustomField"], "kept")
+
+    def test_import_inspection_reports_missing_protected_decoder_dependency_as_bad_request(self) -> None:
+        import builtins
+        from unittest.mock import patch
+
+        original_import = builtins.__import__
+        def without_cryptography(name, *args, **kwargs):
+            if name == "cryptography" or name.startswith("cryptography."):
+                raise ModuleNotFoundError("test simulated missing cryptography")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=without_cryptography):
+            with self.assertRaises(HTTPError) as raised:
+                self._json_request("POST", "/api/gse/inspect", {
+                    "gse": GSE_PROTECTED_SEQUENCE_VECTOR,
+                })
+
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("cryptography==50.0.1", json.loads(raised.exception.read())["error"])
+
+    def test_import_inspection_accepts_numeric_string_version_map(self) -> None:
+        sequence = {
+            "MetaData": {"Name": "DRUSS_ST", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": {"1": {"Actions": [{"Type": "Action", "type": "macro",
+                                                "macro": "/cast 77575"}]}},
+        }
+        payload = {"type": "COLLECTION", "payload": {
+            "Sequences": {"DRUSS_ST": sequence}, "Variables": {}, "Macros": {},
+        }}
+
+        try:
+            result = self._json_request("POST", "/api/gse/inspect", {
+                "gse": gse_cbor_text_fixture(payload),
+            })
+        except HTTPError as error:
+            self.fail(error.read().decode("utf-8"))
+
+        self.assertEqual(result["sequences"][0]["name"], "DRUSS_ST")
+        self.assertEqual(result["sequences"][0]["version_count"], 1)
+        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["DRUSS_ST"]["Versions"],
+                         {"1": {"Actions": [{"Type": "Action", "type": "macro",
+                                               "macro": "/cast 77575"}]}})
+
+    def test_import_inspection_preserves_sparse_version_map_indexes(self) -> None:
+        sequence = {
+            "MetaData": {"Name": "SPARSE", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": {
+                "1": {"Actions": [{"Type": "Action", "type": "macro", "macro": "/cast 77575"}]},
+                "3": {"Actions": [{"Type": "Pause", "Clicks": 2}]},
+            },
+        }
+        payload = {"type": "COLLECTION", "payload": {
+            "Sequences": {"SPARSE": sequence}, "Variables": {}, "Macros": {},
+        }}
+
+        try:
+            result = self._json_request("POST", "/api/gse/inspect", {
+                "gse": gse_cbor_text_fixture(payload),
+            })
+        except HTTPError as error:
+            self.fail(error.read().decode("utf-8"))
+
+        member = result["sequences"][0]
+        self.assertEqual(member["version_count"], 2)
+        self.assertEqual([version["version"] for version in member["versions"]], [1, 3])
+        self.assertEqual(member["versions"][1]["raw_version"]["Actions"][0]["Type"], "Pause")
+        self.assertTrue(any("gap" in reason.lower() for reason in member["parse_warnings"]))
+
+    def test_import_inspection_preserves_sparse_actions_but_blocks_simulation(self) -> None:
+        action = {"Type": "Action", "type": "spell", "spell": 77575}
+        cases = [
+            ("TOP_GAP", {"1": action, "3": action},
+             "Sequences[TOP_GAP].Versions[1].Actions[3]"),
+            ("LOOP_GAP", [{"Type": "Loop", "Repeat": 2,
+                           "1": action, "3": action}],
+             "Sequences[LOOP_GAP].Versions[1].Actions[1][3]"),
+            ("IF_GAP", [{"Type": "If", "Variable": "=true",
+                         "1": {"1": action, "3": action}}],
+             "Sequences[IF_GAP].Versions[1].Actions[1][1][3]"),
+        ]
+        for name, actions, expected_path in cases:
+            payload = [name, {"MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
+                              "Default": 1, "Versions": [{"Actions": actions}]}]
+            with self.subTest(name=name):
+                result = self._json_request("POST", "/api/gse/inspect", {
+                    "gse": gse_cbor_text_fixture(payload),
+                })
+                member = result["sequences"][0]
+                self.assertEqual(member["versions"][0]["raw_version"]["Actions"], actions)
+                support = member["version_support"][0]
+                self.assertFalse(support["simulation_preflight_passed"])
+                self.assertIn(expected_path, support["support_reason"])
+                self.assertTrue(any(expected_path in warning for warning in member["parse_warnings"]))
+
+    def test_import_start_rejects_sparse_actions_before_creating_a_task(self) -> None:
+        payload = ["TOP_GAP", {
+            "MetaData": {"Name": "TOP_GAP", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": [{"Actions": {"1": {"Type": "Action", "type": "spell", "spell": 77575},
+                                        "3": {"Type": "Action", "type": "spell", "spell": 49998}}}],
+        }]
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import",
+                "gse": gse_cbor_text_fixture(payload), "sequence_name": "TOP_GAP", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500,
+            })
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("动作索引有空洞", error)
+        self.assertIn("Sequences[TOP_GAP].Versions[1].Actions[3]", error)
+        self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
+
+    def test_import_start_uses_actual_sparse_version_ids_without_index_errors(self) -> None:
+        payload = {"type": "COLLECTION", "payload": {"Sequences": {"SPARSE": {
+            "MetaData": {"Name": "SPARSE", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": {
+                "1": {"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]},
+                "3": {"Actions": [{"Type": "Pause", "Clicks": 2}]},
+            },
+        }}}}
+        imported = gse_cbor_text_fixture(payload)
+        base = {"profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "SPARSE", "gse_click_ms": 300, "gcd_ms": 1500}
+
+        with self.assertRaises(HTTPError) as sparse:
+            self._json_request("POST", "/api/tasks", dict(base, version=3))
+        self.assertEqual(sparse.exception.code, 400)
+        self.assertIn("版本索引有空洞", json.loads(sparse.exception.read())["error"])
+
+        with self.assertRaises(HTTPError) as absent:
+            self._json_request("POST", "/api/tasks", dict(base, version=2))
+        self.assertEqual(absent.exception.code, 400)
+        self.assertIn("版本无效", json.loads(absent.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
+        self.assertEqual(list(self.server.task_root.iterdir()), [])
+
+    def test_import_inspection_reports_each_known_block_field_path(self) -> None:
+        actions = [
+            {"Type": "Action", "type": "pet", "action": "Assist", "macro": "raw pet macro"},
+            {"Type": "Repeat", "Interval": "4", "spell": 77575, "macro": "/cast 77575"},
+            {"Type": "Loop", "Repeat": "2", "StepFunction": "ReversePriority",
+             "1": {"Type": "Pause", "Clicks": 2, "MS": "GCD"}},
+            {"Type": "If", "Variable": "=GSE.V.CustomFlag()", "1": [
+                {"Type": "Action", "type": "toy", "toy": 123, "macro": "=GSE.V.Macro()"}],
+             "2": [{"Type": "Embed", "Sequence": "CHILD"}]},
+        ]
+        payload = {"type": "COLLECTION", "payload": {"Sequences": {
+            "MATRIX": {"MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
+                       "Versions": [{"Actions": actions}]},
+            "CHILD": {"MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
+                      "Versions": [{"Actions": [{"Type": "Action", "type": "spell",
+                                                   "spell": 77575}]}]},
+        }, "Variables": {"CustomFlag": {"name": "CustomFlag", "funct": "return true",
+                                             "Dependencies": {"Variables": ["Other"]},
+                                             "ExplicitNull": None}},
+            "Macros": {"Burst": {"name": "Burst", "macro": "/cast 77575\n/use 13",
+                                   "UnknownMacroField": [1, "two"]}}}}
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_cbor_text_fixture(payload),
+        })
+
+        member = next(row for row in result["sequences"] if row["name"] == "MATRIX")
+        self.assertEqual(member["versions"][0]["source_path"], "Sequences[MATRIX].Versions[1]")
+        self.assertEqual(member["versions"][0]["raw_version"]["Actions"], actions)
+        self.assertEqual(member["raw_sequence"]["Versions"][0]["Actions"], actions)
+        self.assertEqual(result["variables"]["CustomFlag"], {
+            "name": "CustomFlag", "funct": "return true",
+            "Dependencies": {"Variables": ["Other"]}, "ExplicitNull": None,
+        })
+        self.assertEqual(result["macros"]["Burst"], {
+            "name": "Burst", "macro": "/cast 77575\n/use 13",
+            "UnknownMacroField": [1, "two"],
+        })
+        locations = {(row["type"], row["path"]) for row in result["syntax_locations"]}
+        self.assertEqual(locations, {
+            ("Action", "Sequences[MATRIX].Versions[1].Actions[1]"),
+            ("Repeat", "Sequences[MATRIX].Versions[1].Actions[2]"),
+            ("Loop", "Sequences[MATRIX].Versions[1].Actions[3]"),
+            ("Pause", "Sequences[MATRIX].Versions[1].Actions[3][1]"),
+            ("If", "Sequences[MATRIX].Versions[1].Actions[4]"),
+            ("Action", "Sequences[MATRIX].Versions[1].Actions[4][1][1]"),
+            ("Embed", "Sequences[MATRIX].Versions[1].Actions[4][2][1]"),
+            ("Action", "Sequences[CHILD].Versions[1].Actions[1]"),
+        })
+        self.assertEqual(member["versions"][0]["raw_version"]["Actions"][3]["Variable"],
+                         "=GSE.V.CustomFlag()")
+
+    def test_import_inspection_preserves_every_action_subtype_and_raw_macro_text(self) -> None:
+        actions = [
+            {"Type": "Action", "type": "spell", "spell": 77575},
+            {"Type": "Action", "type": "item", "item": 13},
+            {"Type": "Action", "type": "pet", "action": "Assist"},
+            {"Type": "Action", "type": "toy", "toy": 12345},
+            {"Type": "Action", "type": "macro", "macro": "#showtooltip\n/cast [combat] 77575"},
+            {"Type": "Action", "macro": "inferred macro text"},
+            {"Type": "Action"},
+            {"Type": "Repeat", "type": "pet", "action": "Attack", "Interval": "3"},
+        ]
+        payload = ["ACTION_FIELDS", {
+            "MetaData": {"Name": "ACTION_FIELDS", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1, "Versions": [{"Actions": actions}],
+        }]
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(result["sequences"][0]["versions"][0]["raw_version"]["Actions"], actions)
+        self.assertEqual([row["path"] for row in result["syntax_locations"]], [
+            f"Sequences[ACTION_FIELDS].Versions[1].Actions[{index}]"
+            for index in range(1, len(actions) + 1)
+        ])
+
+    def test_import_inspection_accepts_collection_of_variables_and_macros_without_sequences(self) -> None:
+        payload = {"type": "COLLECTION", "payload": {
+            "Variables": {"V": {"name": "V", "funct": "return 7", "Custom": None}},
+            "Macros": {"M": {"name": "M", "macro": "/cast 77575"}},
+        }}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_cbor_text_fixture(payload),
+        })
+
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(result["sequences"], [])
+        self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
+        self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
+        self.assertEqual(result["variables"], {
+            "V": {"name": "V", "funct": "return 7", "Custom": None},
+        })
+        self.assertEqual(result["macros"], {
+            "M": {"name": "M", "macro": "/cast 77575"},
+        })
+
+    def test_import_inspection_parses_collection_variable_and_macro_encodings(self) -> None:
+        import cbor2
+
+        def delta_fork(name, kind, base, delta):
+            return {"GSEDeltaFork": True, "platformId": f"{name}-platform-id",
+                    "contentType": kind, "base": gse_fixture(base),
+                    "delta": base64.b64encode(cbor2.dumps(delta)).decode("ascii")}
+
+        variable_fork = delta_fork(
+            "V_DELTA", "variable", {"name": "V_DELTA", "funct": "return 1", "Drop": True},
+            {"top": {"funct": "return 2", "Added": "kept"}, "topUnset": ["Drop"]})
+        macro_fork = delta_fork(
+            "M_DELTA", "macro", {"name": "M_DELTA", "macro": "/cast old"},
+            {"top": {"macro": "/cast updated"}})
+        payload = {"type": "COLLECTION", "payload": {
+            "Variables": {"PVAR": GSE_PROTECTED_VARIABLE_VECTOR, "V_DELTA": variable_fork},
+            "Macros": {"PMAC": GSE_PROTECTED_MACRO_VECTOR, "M_DELTA": macro_fork},
+        }}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
+        self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
+        self.assertEqual(result["variables"]["PVAR"]["funct"], "return GSE.V.Other()")
+        self.assertEqual(result["variables"]["V_DELTA"]["funct"], "return 2")
+        self.assertEqual(result["variables"]["V_DELTA"]["Added"], "kept")
+        self.assertNotIn("Drop", result["variables"]["V_DELTA"])
+        self.assertEqual(result["macros"]["PMAC"]["macro"], "/cast 77575\n/use 13")
+        self.assertEqual(result["macros"]["M_DELTA"]["macro"], "/cast updated")
+        self.assertEqual(result["collection_compatibility_blocks"], [])
+
+    def test_import_inspection_reports_unloadable_variable_and_macro_forks_with_category(self) -> None:
+        variable = {"GSEDeltaFork": True, "platformId": "variable-id",
+                    "contentType": "variable"}
+        macro = {"GSEDeltaFork": True, "platformId": "macro-id",
+                 "contentType": "macro"}
+        payload = {"type": "COLLECTION", "payload": {
+            "Variables": {"V_BLOCKED": variable},
+            "Macros": {"M_BLOCKED": macro},
+        }}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        blocks = {(item["category"], item["name"]): item
+                  for item in result["collection_compatibility_blocks"]}
+        self.assertEqual(result["raw_variables"]["V_BLOCKED"], variable)
+        self.assertEqual(result["raw_macros"]["M_BLOCKED"], macro)
+        self.assertEqual(blocks[("Variables", "V_BLOCKED")]["raw_value"], variable)
+        self.assertEqual(blocks[("Macros", "M_BLOCKED")]["raw_value"], macro)
+        self.assertIn("payload.Variables[V_BLOCKED]", blocks[("Variables", "V_BLOCKED")]["source_path"])
+        self.assertIn("payload.Macros[M_BLOCKED]", blocks[("Macros", "M_BLOCKED")]["source_path"])
+        self.assertIn("base", blocks[("Variables", "V_BLOCKED")]["reason"])
+        self.assertIn("base", blocks[("Macros", "M_BLOCKED")]["reason"])
+
+    def test_import_inspection_accepts_synthetic_empty_array_collection_containers(self) -> None:
+        # Synthetic shape matching the real collection's decoded empty Variables/Macros arrays.
+        sequence = {"MetaData": {"Name": "SYNTH_ST", "SpecID": 252, "GSEVersion": 3332},
+                    "Default": 1, "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 1}]}]}
+        second = dict(sequence, MetaData=dict(sequence["MetaData"], Name="SYNTH_AOE"))
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"SYNTH_ST": sequence, "SYNTH_AOE": second},
+            "Variables": [], "Macros": [],
+        }})
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual([item["name"] for item in result["sequences"]],
+                         ["SYNTH_ST", "SYNTH_AOE"])
+        self.assertEqual(result["raw_variables"], [])
+        self.assertEqual(result["raw_macros"], [])
+        self.assertEqual(result["variables"], {})
+        self.assertEqual(result["macros"], {})
+        self.assertEqual(result["collection_compatibility_blocks"], [])
+
+    def test_import_inspection_preserves_numeric_collection_member_keys_and_paths(self) -> None:
+        variables = [{"name": "V_ARRAY", "funct": "return 4"}]
+        macros = {1: {"name": "M_NUMERIC", "macro": "/cast 77575"}}
+        payload = {"type": "COLLECTION", "payload": {
+            "Sequences": {}, "Variables": variables, "Macros": macros,
+        }}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        self.assertEqual(result["raw_variables"], variables)
+        self.assertEqual(result["raw_macros"], {"1": macros[1]})
+        self.assertEqual(result["variables"]["1"]["name"], "V_ARRAY")
+        self.assertEqual(result["macros"]["1"]["name"], "M_NUMERIC")
+        self.assertEqual(result["collection_object_locations"], {
+            "Variables": {"1": "payload.Variables[1]"},
+            "Macros": {"1": "payload.Macros[1]"},
+        })
+
+    def test_import_inspection_parses_numeric_version_blocks_without_actions(self) -> None:
+        # Synthetic malformed-but-importable shape: GSE retains version-level blocks,
+        # while its structure checker reports the missing Actions table.
+        sequence = {
+            "MetaData": {"Name": "SYNTH_NUMERIC_VERSION", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Versions": {"1": {
+                "1": {"Type": "Repeat", "Interval": 2, "spell": 77575},
+                "2": {"Type": "Action", "type": "spell", "spell": 77575},
+                "3": {"Type": "Pause", "Clicks": 0},
+            }},
+        }
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"SYNTH_NUMERIC_VERSION": sequence},
+            "Variables": [], "Macros": [],
+        }})
+
+        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        member = result["sequences"][0]
+        self.assertEqual(member["versions"][0]["raw_version"], sequence["Versions"]["1"])
+        self.assertEqual(member["versions"][0]["parsed_version"]["1"]["Type"], "Repeat")
+        self.assertEqual(result["syntax_locations"], [
+            {"sequence": "SYNTH_NUMERIC_VERSION", "version": 1, "type": "Repeat",
+             "path": "Sequences[SYNTH_NUMERIC_VERSION].Versions[1][1]"},
+            {"sequence": "SYNTH_NUMERIC_VERSION", "version": 1, "type": "Action",
+             "path": "Sequences[SYNTH_NUMERIC_VERSION].Versions[1][2]"},
+            {"sequence": "SYNTH_NUMERIC_VERSION", "version": 1, "type": "Pause",
+             "path": "Sequences[SYNTH_NUMERIC_VERSION].Versions[1][3]"},
+        ])
+        self.assertTrue(any("缺少 Actions" in warning for warning in member["parse_warnings"]))
+        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
+        self.assertIn("Versions[1].Actions", member["version_support"][0]["support_reason"])
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "mode": "import", "gse": imported,
+                "sequence_name": "SYNTH_NUMERIC_VERSION", "version": 1,
+                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("Versions[1].Actions", json.loads(raised.exception.read())["error"])
+        self.assertEqual(self.server.tasks, {})
+
+    def test_import_inspection_preserves_collection_sequences_with_missing_or_null_metadata(self) -> None:
+        sequence = {"Default": 1, "Versions": [{"Actions": [{"Type": "Pause"}]}],
+                    "Custom": None}
+        null_metadata_sequence = dict(sequence, MetaData=None)
+        payload = {"type": "COLLECTION", "payload": {"Sequences": {
+            "NO_META": sequence, "NULL_META": null_metadata_sequence,
+        }}}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_cbor_text_fixture(payload),
+        })
+
+        members = {member["name"]: member for member in result["sequences"]}
+        self.assertEqual(members["NO_META"]["raw_sequence"], sequence)
+        self.assertEqual(members["NULL_META"]["raw_sequence"], null_metadata_sequence)
+        self.assertNotIn("MetaData", members["NO_META"]["raw_sequence"])
+        self.assertIsNone(members["NULL_META"]["raw_sequence"]["MetaData"])
+        for member in members.values():
+            self.assertEqual(member["versions"][0]["parsed_version"]["Actions"],
+                             sequence["Versions"][0]["Actions"])
+            self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
+            self.assertIn("元数据版本缺失", member["support_reason"])
+
+    def test_import_inspection_decodes_protected_sequence_string_inside_collection(self) -> None:
+        payload = {"type": "COLLECTION", "payload": {
+            "Sequences": {"NESTED_PROTECTED": GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR},
+        }}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        member = result["sequences"][0]
+        self.assertEqual(member["name"], "NESTED_PROTECTED")
+        self.assertEqual(member["raw_sequence"], GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR)
+        self.assertEqual(member["versions"][0]["parsed_version"]["Actions"][0]["spell"], 77575)
+        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["NESTED_PROTECTED"],
+                         GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR)
+
+    def test_import_inspection_reconstructs_self_contained_collection_delta_fork(self) -> None:
+        import cbor2
+
+        base = {
+            "MetaData": {"Name": "DELTA_FORK", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1,
+            "Help": "old help", "OldTop": True,
+            "Versions": {
+                1: {"Label": "old label", "DropVersionField": True,
+                      "InbuiltVariables": {"old": True},
+                      "Actions": [
+                          {"Type": "Action", "type": "macro", "macro": "/cast old",
+                           "DropBlockField": True},
+                          {"Type": "Loop", "Repeat": 2,
+                           1: {"Type": "Action", "type": "spell", "spell": 100}},
+                          {"Type": "If", "Variable": "=true",
+                           1: [{"Type": "Action", "type": "spell", "spell": 101}],
+                           2: [{"Type": "Pause", "Clicks": 1}]},
+                      ]},
+                2: {"Actions": [{"Type": "Pause", "Clicks": 2}]},
+                3: {"Actions": [{"Type": "Pause", "Clicks": 3}]},
+            },
+        }
+        delta = {
+            "versions": {
+                "1": {
+                    "actions": [
+                        {"from": 0, "set": {"macro": "/cast updated"},
+                         "unset": ["DropBlockField"]},
+                        {"from": 1, "children": [
+                            {"from": 0, "set": {"spell": 104}},
+                            {"new": {"Type": "Pause", "Clicks": 4}},
+                        ]},
+                        {"from": 2,
+                         "branch1": [{"from": 0, "set": {"spell": 105}}],
+                         "branch2": [{"new": {"Type": "Action", "type": "spell",
+                                               "spell": 106}}]},
+                        {"new": {"Type": "Action", "type": "spell", "spell": 107}},
+                    ],
+                    "inbuiltVariables": {"new": "value"},
+                    "set": {"Label": "new label"},
+                    "unset": ["DropVersionField"],
+                },
+                "4": {"op": "add", "value": {
+                    "Actions": [{"Type": "Pause", "Clicks": 5}],
+                }},
+                "3": {"op": "remove"},
+            },
+            "top": {"Help": "updated help", "AddedTop": "kept"},
+            "topUnset": ["OldTop"],
+        }
+        fork = {"GSEDeltaFork": True, "platformId": "fork-platform-id",
+                "base": gse_fixture(["DELTA_FORK", base]),
+                "delta": base64.b64encode(cbor2.dumps(delta)).decode("ascii"),
+                "contentType": "sequence", "upstreamId": "source-platform-id"}
+        imported = gse_fixture({"type": "COLLECTION", "payload": {
+            "Sequences": {"DELTA_FORK": fork},
+        }})
+
+        try:
+            result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+        except HTTPError as error:
+            self.fail(error.read().decode("utf-8"))
+
+        member = result["sequences"][0]
+        self.assertEqual(member["raw_sequence"], fork)
+        self.assertEqual([row["version"] for row in member["versions"]], [1, 2, 4])
+        parsed = member["versions"][0]["parsed_version"]
+        self.assertEqual(parsed["Label"], "new label")
+        self.assertNotIn("DropVersionField", parsed)
+        self.assertEqual(parsed["InbuiltVariables"], {"new": "value"})
+        self.assertEqual(parsed["Actions"][0]["macro"], "/cast updated")
+        self.assertNotIn("DropBlockField", parsed["Actions"][0])
+        self.assertEqual(parsed["Actions"][1]["1"]["spell"], 104)
+        self.assertEqual(parsed["Actions"][1]["2"], {"Type": "Pause", "Clicks": 4})
+        self.assertEqual(parsed["Actions"][2]["1"][0]["spell"], 105)
+        self.assertEqual(parsed["Actions"][2]["2"][0]["spell"], 106)
+        self.assertEqual(parsed["Actions"][3]["spell"], 107)
+        self.assertEqual(member["versions"][2]["parsed_version"]["Actions"][0]["Clicks"], 5)
+        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["DELTA_FORK"], fork)
+        self.assertEqual(result["syntax_locations"][0]["sequence"], "DELTA_FORK")
+        from gse_import import decode_import
+        parsed_sequence = decode_import(imported)["sequences"]["DELTA_FORK"]
+        self.assertEqual(parsed_sequence["Help"], "updated help")
+        self.assertEqual(parsed_sequence["AddedTop"], "kept")
+        self.assertNotIn("OldTop", parsed_sequence)
+
+    def test_import_inspection_preserves_delta_forks_that_upstream_cannot_load(self) -> None:
+        base = {"MetaData": {"Name": "BASE", "SpecID": 252, "GSEVersion": 3332},
+                "Default": 1, "Versions": [{"Actions": []}]}
+        no_base = {"GSEDeltaFork": True, "platformId": "missing-base-id"}
+        no_platform_id = {"GSEDeltaFork": True, "base": gse_fixture(["NO_PLATFORM", base])}
+        payload = {"type": "COLLECTION", "payload": {"Sequences": {
+            "NO_BASE": no_base, "NO_PLATFORM": no_platform_id,
+        }}}
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        blockers = {item["name"]: item for item in result["collection_compatibility_blocks"]}
+        self.assertEqual(result["status"], "decoded")
+        self.assertEqual(result["sequences"], [])
+        self.assertEqual(blockers["NO_BASE"]["raw_value"], no_base)
+        self.assertEqual(blockers["NO_PLATFORM"]["raw_value"], no_platform_id)
+        self.assertIn("base", blockers["NO_BASE"]["reason"])
+        self.assertIn("platformId", blockers["NO_PLATFORM"]["reason"])
+        self.assertIn("NO_BASE", blockers["NO_BASE"]["source_path"])
+
+    def test_import_inspection_keeps_raw_nulls_while_applying_upstream_empty_defaults(self) -> None:
+        actions = [
+            {"Type": "Repeat", "type": "spell", "spell": 77575,
+             "Interval": None, "Repeat": "3"},
+            {"Type": "Pause", "Clicks": 2, "MS": ""},
+        ]
+        payload = ["EMPTY_DEFAULTS", {
+            "MetaData": {"Name": "EMPTY_DEFAULTS", "SpecID": 252, "GSEVersion": 3332},
+            "Default": 1, "Versions": [{"Actions": actions}],
+        }]
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_cbor_text_fixture(payload),
+        })
+
+        member = result["sequences"][0]
+        self.assertEqual(member["versions"][0]["raw_version"]["Actions"], actions)
+        self.assertTrue(member["version_support"][0]["simulation_preflight_passed"],
+                        member["version_support"][0]["support_reason"])
+
+    def test_import_inspection_rejects_unknown_block_with_member_version_and_path(self) -> None:
+        imported = gse_fixture(["UNKNOWN", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "FutureBlock", "Disabled": True}]}],
+        }])
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("FutureBlock", error)
+        self.assertIn("UNKNOWN", error)
+        self.assertIn("Versions[1].Actions[1]", error)
+
+    def test_import_inspection_rejects_scalar_nested_block_with_exact_path(self) -> None:
+        imported = gse_fixture(["BAD_CHILD", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
+            "Versions": [{"Actions": [{"Type": "Loop", "Repeat": 1, 1: "not a block"}]}],
+        }])
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("BAD_CHILD", error)
+        self.assertIn("Versions[1].Actions[1][1]", error)
+
+    def test_import_inspection_parses_known_blocks_with_upstream_optional_fields_missing(self) -> None:
+        payload = ["OPTIONAL_FIELDS", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
+            "Versions": [
+                {"Actions": [{"Type": "Pause"}]},
+                {"Actions": [{"Type": "If"}]},
+                {"Actions": [{"Type": "Embed"}]},
+            ],
+        }]
+
+        result = self._json_request("POST", "/api/gse/inspect", {
+            "gse": gse_fixture(payload),
+        })
+
+        self.assertEqual(result["status"], "decoded")
+        member = result["sequences"][0]
+        self.assertEqual([version["version"] for version in member["versions"]], [1, 2, 3])
+        self.assertEqual([row["type"] for row in result["syntax_locations"]], ["Pause", "If", "Embed"])
+        supports = {row["version"]: row for row in member["version_support"]}
+        self.assertTrue(supports[1]["simulation_preflight_passed"])
+        self.assertIn("If", supports[2]["support_reason"])
+        self.assertIn("Embed", supports[3]["support_reason"])
 
     def test_import_inspection_marks_newer_gse_members_as_not_simulatable(self) -> None:
         imported = gse_fixture({"type": "COLLECTION", "payload": {"Sequences": {
@@ -270,6 +987,24 @@ class InterfaceTests(unittest.TestCase):
             self._json_request("POST", "/api/gse/inspect", {"gse": "!GSE3!bad"})
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("导入", json.loads(raised.exception.read())["error"])
+
+    def test_import_inspection_rejects_duplicate_cbor_map_keys_without_silent_loss(self) -> None:
+        import cbor2
+
+        duplicate = b"\xa2" + cbor2.dumps("Name") + cbor2.dumps("first") \
+            + cbor2.dumps("Name") + cbor2.dumps("second")
+        variables = b"\xa1" + cbor2.dumps("V") + duplicate
+        collection = b"\xa2" + cbor2.dumps("type") + cbor2.dumps("COLLECTION") \
+            + cbor2.dumps("payload") + b"\xa1" + cbor2.dumps("Variables") + variables
+        imported = "!GSE3!" + base64.b64encode(zlib.compress(collection, wbits=-15)).decode("ascii")
+
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request("POST", "/api/gse/inspect", {"gse": imported})
+
+        self.assertEqual(raised.exception.code, 400)
+        error = json.loads(raised.exception.read())["error"]
+        self.assertIn("重复字段键", error)
+        self.assertIn("Name", error)
 
     def test_import_inspection_rejects_trailing_cbor_data(self) -> None:
         import cbor2
