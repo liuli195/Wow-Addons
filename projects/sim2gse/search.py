@@ -381,7 +381,6 @@ def _tuple(value):
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
-    from codec import export
     from engine import check_report, player_report, CandidateError
     from sequence import select, evaluate, compiled_program
     from simulation_config import config_for
@@ -412,7 +411,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if saved and digest(saved['candidate'])==saved['candidate_sha256']:
                 candidates[key]=saved['candidate']
             else:
-                candidates[key] = export(select(capabilities, program), destination / 'exports' / key, identity=reference['identity'], runtime=runtime)
+                from program import compile_program, from_action_blocks
+                candidates[key] = compile_program(from_action_blocks(select(capabilities, program)),
+                                                  destination / 'exports' / key,
+                                                  identity=reference['identity'], runtime=runtime)
         return candidates[key]
 
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False):

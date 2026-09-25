@@ -32,6 +32,36 @@ def select(capabilities, program=None):
 
 def compiled_program(candidate):
     """解释已通过上游编译检查的命令，核对实际消费顺序。"""
+    shared = candidate.get("compiled_program")
+    if shared is not None:
+        clicks = []
+        for node in shared.get("clicks", []):
+            if not isinstance(node, dict) or not isinstance(node.get("source"), dict):
+                raise ValueError("共享编译计划缺少来源位置")
+            if node.get("kind") == "EmptyClick":
+                clicks.append([])
+            elif (node.get("kind") == "Action" and isinstance(node.get("commands"), list)
+                  and node["commands"]
+                  and all(isinstance(command, str) and command for command in node["commands"])):
+                clicks.append(node["commands"])
+            else:
+                raise ValueError("共享编译计划包含无效点击")
+        if len(clicks) != len(candidate.get("compiled_steps", [])):
+            raise ValueError("共享编译计划与上游步骤数量不一致")
+        if "mapped_blocks" in candidate:
+            if clicks != candidate["mapped_blocks"]:
+                raise ValueError("共享编译计划与导入动作映射不一致")
+        else:
+            verified = _search_compiled_blocks(candidate)
+            if clicks != verified:
+                raise ValueError("共享编译计划与搜索编译步骤不一致")
+        if not any(clicks):
+            raise ValueError("序列没有可模拟动作")
+        return clicks
+    return _search_compiled_blocks(candidate)
+
+
+def _search_compiled_blocks(candidate):
     spells = {str(a['spell_id']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'}
     spells.update({a['name']: a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'})
     items = {str(a['slot']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'item'}

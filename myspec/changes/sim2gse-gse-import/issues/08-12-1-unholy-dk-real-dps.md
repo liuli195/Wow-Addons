@@ -1,0 +1,46 @@
+# 08：验证 12.1 邪 DK 真实原串 DPS 或交由用户判断
+
+Label（标签）: change:task
+Triage（分拣）: needs-info
+Status（状态）: blocked
+
+2026-09-25 范围修订：本票作为后续宏/游戏状态能力的历史阻断记录保留，不再属于 `codex/gse-import` 分支的 GSE 语法验收门禁；不得把现有阻断解释为本分支语法解析失败。
+
+## What to build
+
+使用真实来源的 12.1 邪恶死亡骑士 GSE 原串和匹配的角色资料，通过公开导入任务入口执行受控 DPS 模拟。至少一条真实原串须得到可追溯、可信的 DPS；若现有原串都无法忠实模拟，则保留阻断并把准确原因和影响交用户判断。
+
+## Blocked by
+
+07（已完成）：真实语料已收集并逐成员逐版本检查；当前阻断为本票所记的 `/petattack`（宠物攻击命令）语义无法忠实模拟。
+
+## Acceptance criteria
+
+- [x] 选择至少一条公开真实来源、作者标注适用 12.1 的邪 DK 原串；记录原文 SHA-256、来源、GSE 版本、成员及版本，并使用匹配的未修改角色资料记录其 SHA-256。
+- [ ] 原串先经公开检查，再通过 `run_task(..., mode="import")`（导入模式）或对应本机页面任务入口提交；成功时保留所选成员/版本、角色与场景摘要、完整逐次输入及来源路径、代码版本、任务结果和受控 DPS。游戏内验收状态单独记录，不把本机结果说成实机证明。
+- [ ] 至少一条 12.1 邪 DK 真实原串完成上述受控模拟后，本票才能按成功验收；不得用合成串、非邪 DK 样本、其他游戏版本样本或自由选择参考 DPS 替代。
+- [x] 若所有候选都被拒绝或无法取得合适样本，记录原帖和摘要、成员/版本、角色资料摘要、公开入口结果、拒绝的准确原文位置、原因、DPS 影响、缺少的角色/环境条件及受控导入模拟未启动的证据；单独说明失败前是否运行过参考模拟或能力探测；将本票标为阻断并交用户判断，不得沿用旧的无效 DPS。
+
+## 最高层公开入口与失败路径
+
+最高层验收入口是本机页面发起的导入任务（`POST /api/tasks`，请求模式为 `import`）；底层公开任务入口为 `run_task(..., mode="import")`。先调用 `POST /api/gse/inspect` 检查完整原串，再提交匹配的角色资料和明确选择的序列成员/版本。
+
+检查、编译、角色映射或受控模拟任一步失败，都必须在任务结果中保留阶段、原串摘要、成员、版本、来源位置和明确原因。若错误语义会影响按键或伤害，须在模拟启动前精确拒绝；不得跳过宏/条件、猜测技能映射、替换装备动作或把不完整计划输出为 DPS。当前已知 Søl 两条 12.1 原串的旧 DPS 因错误跳过 `/petattack` 而无效，不能作为成功证据。
+
+## 2026-09-25 执行结果：阻断
+
+当前已收集且作者标注适用 12.1 的候选只有[原帖](https://wowlazymacros.com/t/sols-12-1-unholy-dk-midnight-12-1-02-09-2026/64010)中的两条，作者 `Tippuhdisdek@Burning Blade`；GSE 版本 3331、专精 ID 252、TOC 120100。未改角色资料为 `.local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc`，SHA-256 `27181b0a92bb198a4266762d5f6fb4b6123c06d07786de58e5eae65a8cf5ee59`。
+
+| 成员 / 版本 | 未改原串 SHA-256 | 公开检查 | 精确阻断位置 |
+| --- | --- | --- | --- |
+| `SOL_UDK_AOE` v1 | `ae596b6966ac87e9776fe34a36dca6561d79616c0b9f0a1c8e17afc98991f7f9` | HTTP 200，`status=decoded`，语法为 Action、Loop，未启动模拟 | `Sequences[SOL_UDK_AOE].Versions[1].Actions[1].macro[行 2]` |
+| `SOL_UDK_ST` v1 | `033e5853eb3b4253b7764b57035fd907294568444cc503f11746accac070cf88` | HTTP 200，`status=decoded`，语法为 Action、Loop，未启动模拟 | `Sequences[SOL_UDK_ST].Versions[1].Actions[1].macro[行 2]` |
+
+两条宏在第 2 行均为 `/petattack [@target,harm,nodead]`。按已确认场景，此条件成立。`POST /api/tasks` 对两条输入都在建任务前返回 HTTP 400 和 `GSE /petattack 命令不能忠实模拟（位置：…）`。直接调用 `run_task(..., mode="import")` 则先完成常规自由选择参考模拟和 1 秒原生动作查询，再在导入宏编译阶段以同一准确位置失败；没有生成 `controlled/` 受控模拟目录、候选序列或导入 DPS。因此，报告中的自由选择参考值不是 GSE 导入 DPS。
+
+锁定 SimC 引擎的独立动作名探针也拒绝 `petattack`、`pet_attack` 和 `pet.attack`。其 DK 宠物有自动攻击和默认宠物动作列表，宠物初始目标跟随角色目标；但当前没有可由导入计划调用的宠物目标/启攻命令接口。已确认场景只说明宠物已召唤、存在存活敌方目标，没有说明宠物已经在攻击同一个目标。不能据自动宠物行为证明原串命令在游戏中多余。
+
+**DPS 影响：**没有可信导入 DPS；如果忽略或替换该命令，宠物目标与启攻时点造成的伤害差异无法从当前模型计算。历史值 `37842.240154123254` 和 `41627.01167663097` 均无效，未沿用。要解除阻断，需要增加能忠实表示宠物目标与启攻时点的原生模拟能力，或由用户明确调整该场景，使宠物已在攻击当前目标并批准相应等价语义。本机结果不代表游戏内验收；游戏内验收未运行。
+
+逐请求、逐成员检查及失败产物摘要保存在 `.local/sim2gse/gse-dps-acceptance/sol-unholy-12-1-import-check.json`；原始 GSE 串仍位于 `.local/sim2gse/gse-corpus/`。
+受测代码提交 `3104c2492dd0604fc9dc5de1acb9811c6607847a` 下，Søl AOE/ST 的真实 `POST /api/tasks` 均 HTTP 400（`/petattack` `macro[行 2]`），未建任务；证据 `.local/sim2gse/post-commit-smoke-3104c24-sol-both.json`；解析完整响应在 `.local/sim2gse/gse-corpus-inspection/final-post-review-2026-09-25.json`。

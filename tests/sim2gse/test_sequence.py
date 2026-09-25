@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import tempfile
+import base64
+import zlib
 from pathlib import Path
 import sys
 import unittest
@@ -22,7 +24,31 @@ from sequence import compiled_program, evaluate, select
 from test_character_export import sample_profile
 
 
+def imported_sequence(name, actions):
+    import cbor2
+    from codec import wire_value
+    value = [name, dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
+                        Versions=[dict(Actions=actions)])]
+    return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(wire_value(value)), wbits=-15)).decode("ascii")
+
+
 class SequenceSimulationTests(unittest.TestCase):
+    def test_public_entry_simulates_imported_loop_and_empty_clicks(self):
+        text = imported_sequence("THIRD_PARTY", [
+            {"Type": "Loop", "Repeat": "2", 1: {"Type": "Action", "type": "spell", "spell": 77575},
+             2: {"Type": "Pause", "Clicks": 2}},
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "character.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            result = run_task(source, Path(directory) / "task", mode="import", gse_text=text,
+                              sequence_name="THIRD_PARTY", version=1,
+                              gse_context=dict(click_ms=300, gcd_ms=1500, seed=1))
+        self.assertEqual(result["controlled_simulation"]["blocks"],
+                         [["outbreak"], [], [], ["outbreak"], [], []])
+        self.assertTrue(result["controlled_simulation"]["consistent"])
+        self.assertGreater(result["controlled_simulation"]["summary"]["dps"], 0)
+
     @classmethod
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory(prefix='sim2gse-sequence-shared-')

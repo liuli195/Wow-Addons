@@ -364,15 +364,27 @@ def _prepare_task(input_path, output_root, *, resume=False, simulation_config=No
 
 
 def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
-                simulation_config):
+                simulation_config, gse_program=None, gse_context=None):
     from engine import inspect, reference
-    from codec import export
     from sequence import select, evaluate
+    from program import compile_program, from_action_blocks
+    from gse_import import import_action_spell_ids, import_action_spell_names
 
     if type(phase_ms) is not int or not 0 <= phase_ms < interval_ms:
         raise ValueError(f"起始相位必须在 0 至 {interval_ms - 1} 毫秒之间")
+    if gse_program is not None:
+        gse_context = dict(gse_context or {})
+        if gse_context.get("click_ms") != interval_ms or gse_context.get("input_interval_ms", interval_ms) != interval_ms:
+            raise ValueError("GSE 点击间隔必须与模拟按键间隔一致")
+        gse_context["input_interval_ms"] = interval_ms
+        gse_context.setdefault("pet_ready", True)
+        gse_context.setdefault("enemy_target_ready", True)
     native = reference(destination / "input.simc", destination / "reference", character, runtime=runtime,
-                       simulation_config=simulation_config)
+                       simulation_config=simulation_config,
+                       import_spell_ids=(import_action_spell_ids(gse_program)
+                                         if gse_program is not None else ()),
+                       import_spell_names=(import_action_spell_names(gse_program)
+                                           if gse_program is not None else ()))
     character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
     _write_json(
         destination / 'profile.json',
@@ -381,13 +393,16 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
                  effective_bytes=(destination / 'input.simc').read_bytes()),
     )
     capabilities = inspect(native, destination / "capabilities")
-    candidate = export(select(capabilities, program), destination / "export", identity=native['identity'], runtime=runtime)
+    candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
+                                destination / "export", identity=native['identity'], runtime=runtime,
+                                capabilities=capabilities, context=gse_context)
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
                           input_times=list(range(phase_ms, 180000, interval_ms)), runtime=runtime,
                           simulation_config=simulation_config)
     candidate["simulation"] = "passed_native_model"
     result = {
-        "status": "offline_ready",
+        "status": "completed" if gse_program is not None else "offline_ready",
+        "phase": "done" if gse_program is not None else "single",
         "character": character,
         "output_root": destination,
         "profile": json.loads((destination / "profile.json").read_text(encoding="utf-8")),
@@ -517,7 +532,8 @@ def _task_lease(destination):
 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
-             resume=False, _runtime=None, _lease=False) -> dict:
+             resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
+             version=None, gse_context=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if resume and not _lease:
         if mode!='optimize':
@@ -536,8 +552,25 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                            _runtime=_runtime, cancel_event=cancel_event)
     if mode=='optimize' and (program is not None or phase_ms!=0):
         raise TaskError('优化入口自动选择动作，手工程序仅用于单次评估')
-    if mode not in ("optimize", "single"):
-        raise TaskError("任务模式必须是 optimize 或 single")
+    if mode not in ("optimize", "single", "import"):
+        raise TaskError("任务模式必须是 optimize、single 或 import")
+    if mode != "import" and any(value is not None for value in (gse_text, sequence_name, version, gse_context)):
+        raise TaskError("GSE 导入参数只能用于导入模式")
+    if mode == "import":
+        from gse_import import decode_import
+        from program import from_gse_import
+        if program is not None or not isinstance(sequence_name, str) or not sequence_name:
+            raise TaskError("GSE 导入模式需要明确选定序列")
+        try:
+            decoded = decode_import(gse_text)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        if sequence_name not in decoded["sequences"] or type(version) is not int:
+            raise TaskError("GSE 选定的序列或版本无效")
+        gse_program = from_gse_import(gse_text, sequence_name, version,
+                                      context=gse_context, decoded=decoded)
+    else:
+        gse_program = None
     from search import config_for
     config = config_for(search_config)
     simulation_config = simulation_config_for(simulation_config)
@@ -545,12 +578,15 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
     path, raw_text, character, destination = _prepare_task(
         input_path, output_root, resume=resume, simulation_config=simulation_config
     )
+    if gse_program is not None:
+        (destination / "input.gse").write_text(gse_text, encoding="ascii", newline="")
     with nullcontext() if _lease else _task_lease(destination):
-        if mode == "single":
+        if mode in ("single", "import"):
             try:
                 return _run_single(path, destination, character, program=program, phase_ms=phase_ms,
                                    runtime=runtime, interval_ms=config["input_interval_ms"],
-                                   simulation_config=simulation_config)
+                                   simulation_config=simulation_config, gse_program=gse_program,
+                                   gse_context=gse_context)
             except TaskCancelled:
                 _write_json(destination / "result.json", dict(status="cancelled", elapsed_seconds=runtime.elapsed_seconds), atomic=True)
                 return dict(status="cancelled", output_root=destination)
