@@ -32,6 +32,7 @@ Status（状态）: done
 - **公开解析**：16/16 文件分别 POST 到 `/api/gse/inspect`，HTTP 200 且 `decoded`；21/21 文件级成员/版本均返回。`collection_compatibility_blocks` 为 0，原始语法清点与返回的全部 `syntax_locations` 一致，没有未列出的路径或解析失败。
 - **真实语法覆盖**：Action 268、Loop 20、Repeat 30、If 4、Pause 2、Embed 2。真实 Pause 来自 Wowlazymacros 的 DrussRet 原串；两条 Jafoweb 原串经 CBOR 解码后均在 `Sequences[Jafo_Master].Versions[1].Actions[2][7]` 返回 `Type=Embed`。第一条引用集合外的 `MPB`，第二条导入集合内含 `MPB`。
 - **已知解析警告**：唯一 warning 是 DrussRet `DRUSS_ST_v6` v1 缺少 `Actions` 数组，路径 `Sequences[DRUSS_ST_v6].Versions[1].Actions`。数值块在解析的 raw/parsed 字段中保留；该版解析成功，但不能模拟。
-- **解析与模拟分开**：21 组版本的模拟门禁状态为 19 `unsupported`、2 `requires_character_validation`；inspect 响应全部 `simulation_started=false`。这不是解析失败，也不是 DPS 结果。本票没有执行 DPS 或游戏内验收；固定上游合成向量单独统计，不计入以上真实语法计数。
-- **完整证据**：逐文件完整公开响应（包括 raw/parsed 字段、警告、语法路径和 preflight）在 `.local/sim2gse/gse-corpus-inspection/final-2026-09-25.json`；可读报告在同目录 `report-final-2026-09-25.md`。完整原串仅保存在忽略目录。
+- **解析与模拟分开**：21 组版本的模拟门禁状态为 19 `unsupported`、2 `requires_character_validation`；全量 inspect 响应全部 `simulation_started=false`。这不是解析失败，也不是 DPS 结果；固定上游合成向量单独统计，不计入以上真实语法计数。无游戏内验收。最终 HEAD 的独立任务接口 smoke 结果见下项。
+- **完整证据**：逐文件完整公开响应（包括 raw/parsed 字段、警告、语法路径和 preflight）在 `.local/sim2gse/gse-corpus-inspection/final-post-review-2026-09-25.json`；可读报告在同目录 `report-final-post-review-2026-09-25.md`。完整原串仅保存在忽略目录。
+- **最终 HEAD 任务接口证据**：在 `3104c2492dd0604fc9dc5de1acb9811c6607847a` 上，Søl AOE/ST 两条 `POST /api/tasks` 均 HTTP 400（`/petattack`，`macro[行 2]`），未创建任务，见 `.local/sim2gse/post-commit-smoke-3104c24-sol-both.json`；另一次 smoke 中 Karen ST 为 HTTP 202、`completed`、DPS `50873.80836033131`，MOB ST 因 `[combat]` 于 `macro[行 1]` 不确定而 HTTP 400、未创建任务，见 `.local/sim2gse/post-commit-smoke-3104c24.json`。较早 `.local/sim2gse/gse-dps-acceptance/sol-unholy-12-1-import-check.json` 对应 HEAD `296fe2d09f06a41cee275da941da22cb88949ce2`，保留为历史证据；最终 HEAD 结果以上述新文件为准。
 - **门禁校验**：从本机文件复核 SHA-256、16 个保存响应的 `raw_import` 和状态、21 组成员版本、全部语法路径与门禁汇总；未发现校验差异。
