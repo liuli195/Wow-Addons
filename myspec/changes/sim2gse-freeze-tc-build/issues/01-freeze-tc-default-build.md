@@ -4,9 +4,14 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] 统一构建入口只构建基准和受控引擎，不创建、修改或删除既有 TC 本机产物。
+- [x] 统一构建入口只构建基准和受控引擎，不创建、修改或删除既有 TC 本机产物。
 - [ ] 干净 PR 环境无需 TC 引擎即可通过统一 Sim2GSE 验证；6 项 TC 专属测试不在 PR 默认选择中，其余测试均运行。
-- [ ] 本机具备现有 TC 引擎时，6 项 TC 专属测试仍可显式运行。
+- [x] 本机具备现有 TC 引擎时，6 项 TC 专属测试仍可显式运行。
 - [ ] TC 实现、补丁、兼容锁、正式规格与历史实验保持原样；验证结果分别报告本机和远端证据。
+
+## Comments
+
+- 2026-09-25：本机统一构建只输出 baseline、controlled 成功；默认 Sim2GSE 验证为 219 项通过、6 项 TC 测试未选中；本机显式 TC 测试为 6 项通过。TC 可执行文件和构建记录的 SHA256、大小及修改时间与实施前一致。
+- 固定基线 `abd07bf72033db3887dccd3f4ef0123a400e03d1` 的正式差异验证为 `status: passed`、37 项 `checked`。独立审查：Standards 无硬性问题、1 项低优先级判断性建议；Spec 无问题。干净远端 PR 验证尚未运行，待交付门禁后核对。

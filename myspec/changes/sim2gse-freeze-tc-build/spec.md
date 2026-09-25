@@ -1,6 +1,6 @@
 # Sim2GSE 停止日常构建 TC 对照引擎
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 ## Problem Statement
 
