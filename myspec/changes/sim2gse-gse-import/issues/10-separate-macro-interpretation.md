@@ -25,3 +25,16 @@ Status（状态）: ready
 ## Comments
 
 2026-09-25 范围修订：这是最小架构整理，不实施完整 WoW 宏解释器。
+
+2026-09-25 验收补证（HEAD `380bad23c3e07c165c46ff62ddb1517a4ff2498b`；本地 HTTP 接口模拟，未做游戏内实测）：
+
+- 复跑命令（仓库根目录 PowerShell）：
+  `& .venv/Scripts/python.exe .local/sim2gse/ticket10-public-api-380bad2/capture_public_api.py after`
+  `& .venv/Scripts/python.exe .local/sim2gse/ticket10-public-api-380bad2/capture_public_api.py before`
+  脚本向检查接口 `POST /api/gse/inspect` 和任务接口 `POST /api/tasks` 发请求；HTTP（网页协议）、GSE（宏序列格式）、DPS（每秒伤害）、GCD（公共冷却）、If（条件分支）、Embed（嵌入序列引用）。完整响应摘要、输入 SHA-256（摘要）、任务结果保存在 `.local/sim2gse/ticket10-public-api-380bad2/`。
+- 真实 Karen ST（`.local/sim2gse/gse-corpus-additional/karens-unholy-01.txt`，SHA-256 `1550b78b2e625309e018fd8901443ec9fc28c7bfc8f7f47bb932e53605c96497`）和 Kim Burst（`.local/sim2gse/gse-corpus-additional/kims-unholy-02.txt`，SHA-256 `5a5430d305b7821ba682e74cd3c07d673aa80d3f988f044cfe05f821d60b7824`）：检查接口均 HTTP（网页协议）200 / `decoded`（已解码）；`unholydk_ST`、`Burst_Cooldowns_UDK` 的 v1 预检通过，状态为 `requires_character_validation`（待角色核验）。这是静态预检通过，仍待角色法术/物品映射核验，没有据此声称取得 DPS（每秒伤害）。
+- 真实 Sol（`.local/sim2gse/gse-corpus/sol-unholy-12-1-01.txt`）：检查接口 HTTP 200 / `decoded`，序列 `SOL_UDK_AOE` 在 `Sequences[SOL_UDK_AOE].Versions[1].Actions[1].macro[行 2]` 因 `/petattack` 不可忠实模拟而拒绝；任务接口 POST HTTP 400，未创建任务。
+- 真实 Violent Benediction（`.local/sim2gse/gse-corpus/violent-benediction-if-01.txt`）：检查接口 HTTP 200 / `decoded`；实际首要拒绝是集合 `Variables[VB_IsDamage]`、`Variables[VB_IsHeals]` 不符合上游导入格式，任务接口 POST HTTP 400，原因相同。其原始 If 节点引用 `=GSE.V.VB_IsHeals()`、`=GSE.V.VB_IsDamage()`；去掉集合 Variables 后的派生合成投影仍在 `Sequences[Violent Benediction].Versions[1].Actions[1]` 因 If 需要游戏内变量而拒绝（检查接口 HTTP 200 / `decoded`；任务接口 HTTP 400）。因此不把原串的变量集合阻断误报为纯 If 阻断。
+- 真实 Jafoweb（`.local/sim2gse/gse-corpus-additional/jafoweb-embed-01.txt`）：检查接口 HTTP 200 / `decoded`，先在 `Sequences[Disc_Oracle].Versions[1].Actions[1].macro[行 2]` 因 `[nochanneling]` 条件无法确定而拒绝；任务接口 HTTP 400 同因。原串可见后续 Embed 引用 `MPB`，但本次不能越过先发宏阻断证明其可达性或缺失；未找到独立的真实缺失 Embed 样本。
+- 缺失 Embed 用例是明确标注的合成向量 `SYNTHETIC_MISSING_EMBED`（非第三方原串）：引用 `ABSENT` 在 `Sequences[SYNTHETIC_MISSING_EMBED].Versions[1].Actions[1]` 拒绝；检查接口 HTTP 200 / `decoded`（已解码），任务接口 HTTP 400。
+- 成功导入任务使用合成宏 `/targetenemy [noharm][dead]\n/cast 77575`、序列 `MACRO_MAPPING_EVIDENCE`、同一固定测试角色输入，点击/输入间隔 300 ms、GCD（公共冷却）1500 ms；前后 `POST /api/tasks` 均 HTTP 202 并完成。输入 SHA-256 为 `2f27854080ed6dca7c666b6d1811fe7e1ee3d8d507d361581aa2cae5303183b0`。DPS 均为 `1911.0397445569276`；来源路径均为 `1`，动作均为 `outbreak`，编译动作来源均为 `gse_import / MACRO_MAPPING_EVIDENCE / v1 / path 1`。比较文件记录 DPS、来源路径、动作块与点击来源完全相同。基线只替换为 `a157441` 的 `gse_import.py`，复用本次未改的 HTTP/任务/程序及 Lua 导入器代码和同一测试输入；这不是两份完整检出的端到端版本比较。游戏验证状态为 `not_run`。
