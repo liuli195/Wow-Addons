@@ -1676,7 +1676,7 @@ def _process_repeat_nodes(nodes):
     return actions
 
 
-def _compiled_source_plan(nodes):
+def _compiled_source_plan(nodes, context):
     """按固定 GSE 展开控制块，保留每次按键的来源身份并限制计划大小。"""
 
     def expand(items, depth=0):
@@ -1800,7 +1800,7 @@ def compile_import(program, folder, *, identity, runtime=None, capabilities=None
             or not 50 <= context["input_interval_ms"] <= 2000
             or context["click_ms"] != context["input_interval_ms"]):
         raise ValueError("GSE 点击间隔必须与模拟按键间隔一致")
-    source_plan = _compiled_source_plan(program["nodes"])
+    source_plan = _compiled_source_plan(program["nodes"], context)
     has_random_loop = _contains_random_loop(program["nodes"])
     pet_ready = context.get("pet_ready", True)
     if type(pet_ready) is not bool:
