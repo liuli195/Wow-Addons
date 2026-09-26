@@ -14,9 +14,39 @@
     ]
   },
   "verify": {
-    "maxParallel": 2,
+    "maxParallel": 3,
     "fullBudgetSeconds": 60,
     "checks": [
+      {
+        "id": "verify.sim2gse",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -k \"not test_tc_\" --dist=worksteal",
+        "checkParallel": true,
+        "pytestXdistWorkers": 8,
+        "paths": [
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          "tests/sim2gse/**",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".build-and-verify/config.json",
+          ".tools/sim2gse/product/baseline/engine/simc.exe",
+          ".tools/sim2gse/product/controlled/engine/simc.exe",
+          ".local/sim2gse/build/baseline/build.json",
+          ".local/sim2gse/build/controlled/build.json",
+          ".tools/sim2gse-research/gse-f225d4c/**",
+          "tests/sim2gse/**",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json"
+        ],
+        "timeoutSeconds": 600
+      },
       {
         "id": "verify.luals",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals",
@@ -519,36 +549,6 @@
           ".pr-flow/toolchain.json",
           "tests/dev/**"
         ]
-      },
-      {
-        "id": "verify.sim2gse",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -k \"not test_tc_\" --dist=worksteal",
-        "checkParallel": true,
-        "pytestXdistWorkers": 8,
-        "paths": [
-          "projects/sim2gse/**",
-          "scripts/dev/sim2gse/**",
-          ".build-and-verify/config.json",
-          "tests/sim2gse/**",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json"
-        ],
-        "inputs": [
-          "projects/sim2gse/**",
-          "scripts/dev/sim2gse/**",
-          ".build-and-verify/config.json",
-          ".tools/sim2gse/product/baseline/engine/simc.exe",
-          ".tools/sim2gse/product/controlled/engine/simc.exe",
-          ".local/sim2gse/build/baseline/build.json",
-          ".local/sim2gse/build/controlled/build.json",
-          ".tools/sim2gse-research/gse-f225d4c/**",
-          "tests/sim2gse/**",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json"
-        ],
-        "timeoutSeconds": 600
       },
       {
         "id": "verify.test-inventory",
