@@ -4,6 +4,7 @@
     "checks": [
       {
         "id": "build.sim2gse-product",
+        "pr": false,
         "command": ".venv\\Scripts\\python.exe scripts/dev/sim2gse/build.py",
         "timeoutSeconds": 1200
       },
@@ -19,6 +20,7 @@
     "checks": [
       {
         "id": "verify.sim2gse",
+        "pr": false,
         "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -k \"not test_tc_\" --dist=worksteal",
         "checkParallel": true,
         "pytestXdistWorkers": 8,

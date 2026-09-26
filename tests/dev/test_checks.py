@@ -25,10 +25,18 @@ def main():
     assert "https://github.com/simulationcraft/simc.git" in setup
     assert "simc-source.zip" not in setup
     assert "projects/sim2gse/requirements.txt" in setup
-    assert "mingw-w64-x86_64-make" in workflow
-    assert "actions/cache/save@v4" in workflow
+    assert "mingw-w64-x86_64-make" not in workflow
+    assert ".tools/sim2gse-upstream/simc" not in workflow
+    assert ".tools/sim2gse/product" not in workflow
+    assert "run: ./scripts/dev/setup.ps1 -Pr" in workflow
+    assert "build-and-verify build --project . --pr" in workflow
+    assert "build-and-verify verify --project . --pr --full" in workflow
+    assert "build-and-verify verify --project . --pr --base $env:BASE_SHA" in workflow
     sim2gse = next(check for check in config["verify"]["checks"] if check["id"] == "verify.sim2gse")
     assert sim2gse["timeoutSeconds"] >= 600
+    assert sim2gse["pr"] is False
+    sim2gse_build = next(check for check in config["build"]["checks"] if check["id"] == "build.sim2gse-product")
+    assert sim2gse_build["pr"] is False
     spec = importlib.util.spec_from_file_location(
         "sim2gse_build", ROOT / "scripts/dev/sim2gse/build.py"
     )
