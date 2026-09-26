@@ -71,6 +71,8 @@ def _search_compiled_blocks(candidate):
             block = [spells[str(step['spell'])]]
         elif step['type'] == 'item':
             block = [items[str(step['item'])]]
+        elif step['type'] == 'click':
+            block = []
         elif step['type'] == 'macro':
             block = []
             for line in step['macrotext'].splitlines():

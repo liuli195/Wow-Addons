@@ -111,10 +111,13 @@ def export(blocks, folder, *, identity, runtime=None, program=None):
             if not isinstance(source, dict):
                 raise ValueError('搜索导出节点缺少来源位置')
             if node.get('kind') == 'Action':
+                if expanded_count >= 4096:
+                    raise ValueError('搜索程序展开超过 4096 次按键')
                 action, step = encode_block(node.get('commands'))
                 actions.append(action)
                 steps.append(step)
                 upstream_steps.append(dict(step, blockPath=source.get('gse_path', str(index))))
+                expanded_count += 1
             elif node.get('kind') == 'Loop':
                 body = node.get('body')
                 count = node.get('count')
@@ -138,6 +141,19 @@ def export(blocks, folder, *, identity, runtime=None, program=None):
                         steps.append(step)
                         upstream_steps.append(dict(step, blockPath=gse_path))
                 expanded_count += count * len(body)
+            elif node.get('kind') == 'Pause':
+                clicks = node.get('clicks')
+                if type(clicks) is not int or clicks < 2:
+                    raise ValueError('搜索 WaitClicks 次数必须至少为 2')
+                if expanded_count + clicks > 4096:
+                    raise ValueError('搜索程序展开超过 4096 次按键')
+                actions.append(dict(Type='Pause', Clicks=clicks))
+                gse_path = source.get('gse_path', str(index))
+                for _ in range(clicks):
+                    step = dict(type='click', blockPath=gse_path)
+                    steps.append(step)
+                    upstream_steps.append(step)
+                expanded_count += clicks
             else:
                 raise ValueError('搜索导出包含不支持的节点')
         if len(steps) != len(blocks):
@@ -190,7 +206,8 @@ def export(blocks, folder, *, identity, runtime=None, program=None):
     if 'PASS\t' not in compile('compile'):
         raise ValueError('上游编译校验没有成功记录')
     return dict(text=text, blocks=blocks, compiled_steps=steps,
-                precombat_count=sum(all(c.get('condition') == 'nocombat' for c in block) for block in blocks),
+                precombat_count=sum(bool(block) and all(c.get('condition') == 'nocombat' for c in block)
+                                    for block in blocks),
                 simulation='not_run', game_validation='not_run',
                 targeting_build=targeting['client_build'], ground_location='player',
                 encoding='raw_deflate_cbor_bytes_client_vector', upstream_compilation='passed_with_client_boundary_stubs')

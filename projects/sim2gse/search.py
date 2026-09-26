@@ -145,13 +145,20 @@ def initial_programs(capabilities, reference, seed=20260912):
 
 
 def _copy_program(program):
-    return [dict(segment, blocks=[list(block) for block in segment["blocks"]])
-            if isinstance(segment, dict) and segment.get("kind") == "Loop"
-            else list(segment) for segment in program]
+    copied = []
+    for segment in program:
+        if isinstance(segment, dict):
+            item = dict(segment)
+            if segment.get("kind") == "Loop":
+                item["blocks"] = [list(block) for block in segment["blocks"]]
+            copied.append(item)
+        else:
+            copied.append(list(segment))
+    return copied
 
 
 def mutate(program, capabilities, rng, *, feedback=None):
-    """执行动作块变异，或把普通连续动作块包成顺序循环。"""
+    """执行动作块、顺序 Loop 或 WaitClicks 变异。"""
     source = _copy_program(program)
     available = [a["simc_action"] for a in capabilities["actions"]]
     if not source or not available:
@@ -159,8 +166,11 @@ def mutate(program, capabilities, rng, *, feedback=None):
     loop_indices = [index for index, segment in enumerate(source)
                     if isinstance(segment, dict) and segment.get("kind") == "Loop"]
     ordinary_indices = [index for index, segment in enumerate(source) if isinstance(segment, list)]
+    wait_indices = [index for index, segment in enumerate(source)
+                    if isinstance(segment, dict) and segment.get("kind") == "WaitClicks"]
     operations = ["swap", "replace", "insert", "delete", "move", "block"]
     operations.append("repeat_count" if loop_indices else "loop")
+    operations.append("wait_clicks")
     operation = rng.choice(operations)
     suggested = None
     if operation != "loop" and feedback and rng.random() < 0.5:
@@ -188,7 +198,10 @@ def mutate(program, capabilities, rng, *, feedback=None):
         block = rng.randrange(len(source))
         source.insert(block, [suggested or rng.choice(available)])
     elif operation == "delete" and len(source) > 1:
-        del source[rng.randrange(len(source))]
+        if wait_indices and len(ordinary_indices) <= 1:
+            del source[rng.choice(wait_indices)]
+        else:
+            del source[rng.randrange(len(source))]
     elif operation == "move" and len(source) > 2:
         start = rng.randrange(len(source) - 1)
         end = rng.randrange(start + 1, min(len(source), start + 4) + 1)
@@ -208,16 +221,32 @@ def mutate(program, capabilities, rng, *, feedback=None):
         elif len(block) < 16:
             block.insert(rng.randrange(len(block) + 1), rng.choice(available))
     elif operation == "loop":
-        if len(source) > 1:
+        if wait_indices:
+            if not ordinary_indices:
+                return source
+            start = rng.choice(ordinary_indices)
+            source[start:start + 1] = [dict(kind="Loop", count=rng.choice((2, 3)),
+                                            blocks=[source[start]])]
+        elif len(source) > 1:
             start = rng.randrange(len(source) - 1)
             end = rng.randrange(start + 2, min(len(source), start + 4) + 1)
-        else:
+            source[start:end] = [dict(kind="Loop", count=rng.choice((2, 3)),
+                                      blocks=source[start:end])]
+        elif ordinary_indices:
             start, end = 0, 1
-        source[start:end] = [dict(kind="Loop", count=rng.choice((2, 3)),
-                                  blocks=source[start:end])]
+            source[start:end] = [dict(kind="Loop", count=rng.choice((2, 3)),
+                                      blocks=source[start:end])]
     elif operation == "repeat_count":
         loop = source[rng.choice(loop_indices)]
         loop["count"] = 3 if loop["count"] == 2 else 2
+    elif operation == "wait_clicks":
+        if wait_indices:
+            wait = source[rng.choice(wait_indices)]
+            wait["clicks"] = rng.choice(tuple(value for value in (2, 3, 4)
+                                               if value != wait.get("clicks")))
+        elif len(source) < 128:
+            source.insert(rng.randrange(len(source) + 1),
+                          dict(kind="WaitClicks", clicks=rng.choice((2, 3, 4))))
     return source
 
 

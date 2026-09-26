@@ -1890,6 +1890,222 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual([exported_loop[index][b"spell"] for index in range(1, len(body) + 1)],
                          [node["commands"][0]["spell_id"] for node in body])
 
+    def test_public_search_generates_and_evaluates_wait_clicks(self) -> None:
+        import codec
+        import engine
+        import search
+        import sequence
+        from test_search import _fast_evaluate, _fast_initialization
+
+        real_evaluate = sequence.evaluate
+        real_mutate = search.mutate
+        mutation_count = 0
+        capabilities = {
+            "actions": [
+                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
+                     gcd_ms=1500, base_spell_id=77575),
+                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
+                     gcd_ms=1500, base_spell_id=47541),
+            ],
+            "precombat_actions": [], "sources": [], "protocol": 3,
+            "scope": "test", "coverage": "constructed-test-boundary",
+        }
+
+        def inspect(_reference, folder):
+            folder = Path(folder)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+            return capabilities
+
+        class WaitClicksFirst:
+            def __init__(self, source, clicks):
+                self.source = source
+                self.clicks = clicks
+
+            def choice(self, values):
+                if "wait_clicks" in values:
+                    return "wait_clicks"
+                if self.clicks in values and values and all(type(value) is int for value in values):
+                    return self.clicks
+                if values and all(type(value) is int for value in values):
+                    return max(values)
+                return self.source.choice(values)
+
+            def __getattr__(self, name):
+                return getattr(self.source, name)
+
+        wait_candidates = {300: {}, 600: {}}
+        native_evaluations = []
+
+        def mutate_wait_clicks(program, caps, rng, *, feedback=None):
+            nonlocal mutation_count
+            clicks = (2, 3, 4)[mutation_count % 3]
+            mutation_count += 1
+            return real_mutate(program, caps, WaitClicksFirst(rng, clicks), feedback=None)
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            blocks = [[action["simc_action"] for action in block]
+                      for block in candidate["blocks"]]
+            clicks = sequence.compiled_program(candidate)
+            self.assertEqual([click or [] for click in clicks], blocks)
+            waits = [node for node in candidate["program"]["nodes"] if node["kind"] == "Pause"]
+            if waits:
+                interval = kwargs["input_times"][1] - kwargs["input_times"][0]
+                self.assertEqual(kwargs["input_times"][:3], [0, interval, interval * 2])
+                counts = tuple(node["clicks"] for node in waits)
+                wait_candidates[interval].setdefault(counts, candidate)
+                if interval not in {row[0] for row in native_evaluations}:
+                    result = real_evaluate(profile, candidate, folder, **kwargs)
+                    native_evaluations.append((interval, candidate, result))
+                    self.assertEqual(result["blocks"], blocks)
+                    self.assertEqual(result["native_blocks"], blocks)
+                    return result
+                return _fast_evaluate(profile, candidate, folder, score_offset=1000, **kwargs)
+            return _fast_evaluate(profile, candidate, folder, **kwargs)
+
+        self.server.task_options = {
+            "search_config": {
+                "total_budget_seconds": 60,
+                "search_budget_seconds": 30,
+                "candidate_limit": 8,
+                "round_candidate_limit": 8,
+                "batch_targets": (2,),
+                "validation_batches": 1,
+                "final_batches": 1,
+                "iterations": 2,
+                "final_iterations": 2,
+                "scenarios": ("nominal",),
+                "max_processes": 1,
+                "random_seed": 20260926,
+            }
+        }
+        real_gse_runner = codec.run_command
+        with _fast_initialization(real_engine=True), \
+             patch.object(codec, "run_command", side_effect=real_gse_runner), \
+             patch.object(engine, "inspect", side_effect=inspect), \
+             patch.object(sequence, "check_report", new=engine.check_report), \
+             patch.object(search, "mutate", side_effect=mutate_wait_clicks), \
+             patch.object(sequence, "evaluate", side_effect=evaluate):
+            states = {}
+            for interval in (300, 600):
+                created = self._json_request("POST", "/api/tasks", {
+                    "profile": sample_profile(), "input_interval_ms": interval,
+                })
+                deadline = time.monotonic() + 45
+                state = {}
+                while time.monotonic() < deadline:
+                    state = self._task_state_request(created["task_id"], deadline)
+                    if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                        break
+                    time.sleep(0.05)
+                states[interval] = state
+
+        for interval, state in states.items():
+            self.assertEqual(state["status"], "validation_incomplete", state)
+            self.assertEqual(state["input_interval_ms"], interval)
+            self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
+            self.assertGreaterEqual(len(wait_candidates[interval]), 2,
+                                    "不同 WaitClicks 次数未作为不同候选评价")
+            self.assertEqual(len({candidate["text"] for candidate in wait_candidates[interval].values()}),
+                             len(wait_candidates[interval]))
+            self.assertTrue(all(all(count >= 2 for count in counts)
+                                for counts in wait_candidates[interval]))
+            self.assertTrue(next(iter(wait_candidates[interval].values()))["text"].startswith("!GSE3!"))
+
+        self.assertEqual({row[0] for row in native_evaluations}, {300, 600},
+                         "两个按键间隔都必须进入真实原生评价")
+        import cbor2
+        for interval, candidate, result in native_evaluations:
+            self.assertEqual(result["input_times"][:3], [0, interval, interval * 2])
+            self.assertEqual(candidate["precombat_count"], 0)
+            wait = next(node for node in candidate["program"]["nodes"] if node["kind"] == "Pause")
+            empty_clicks = [click for click in candidate["compiled_program"]["clicks"]
+                            if click["kind"] == "EmptyClick"
+                            and click["source"]["path"] == wait["source"]["path"]]
+            self.assertEqual(len(empty_clicks), wait["clicks"])
+            self.assertTrue(all(click["source"] == wait["source"] for click in empty_clicks))
+
+            payload = cbor2.loads(zlib.decompress(base64.b64decode(candidate["text"][6:]), -15))
+            actions = payload[1][b"Versions"][0][b"Actions"]
+            pause_index = int(wait["source"]["gse_path"]) - 1
+            self.assertEqual(actions[pause_index][b"Type"], b"Pause")
+            self.assertEqual(actions[pause_index][b"Clicks"], wait["clicks"])
+            compiled_empty = [step for step in candidate["compiled_steps"] if step["type"] == "click"]
+            self.assertEqual(len(compiled_empty), wait["clicks"])
+            self.assertEqual([step["blockPath"] for step in compiled_empty],
+                             [wait["source"]["gse_path"]] * wait["clicks"])
+
+    def test_public_search_rejects_wait_clicks_over_4096_before_evaluation(self) -> None:
+        import engine
+        import search
+        import sequence
+        from test_search import _fast_evaluate, _fast_initialization
+
+        capabilities = {
+            "actions": [
+                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
+                     gcd_ms=1500, base_spell_id=77575),
+                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
+                     gcd_ms=1500, base_spell_id=47541),
+            ],
+            "precombat_actions": [], "sources": [], "protocol": 3,
+            "scope": "test", "coverage": "constructed-test-boundary",
+        }
+
+        def inspect(_reference, folder):
+            folder = Path(folder)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+            return capabilities
+
+        overflow_attempts = []
+        evaluated_waits = []
+
+        def overflow(program, _caps, _rng, *, feedback=None):
+            action = next((list(segment) for segment in program if isinstance(segment, list)),
+                          ["outbreak"])
+            overflow_attempts.append(action)
+            return [action, {"kind": "WaitClicks", "clicks": 4096}]
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            waits = [node for node in candidate["program"]["nodes"] if node["kind"] == "Pause"]
+            evaluated_waits.extend(node["clicks"] for node in waits)
+            return _fast_evaluate(profile, candidate, folder, **kwargs)
+
+        self.server.task_options = {
+            "search_config": {
+                "total_budget_seconds": 60,
+                "search_budget_seconds": 30,
+                "candidate_limit": 8,
+                "round_candidate_limit": 1,
+                "no_improvement_rounds": 1,
+                "batch_targets": (2,),
+                "validation_batches": 1,
+                "final_batches": 1,
+                "iterations": 2,
+                "final_iterations": 2,
+                "scenarios": ("nominal",),
+                "max_processes": 1,
+                "random_seed": 20260926,
+            }
+        }
+        with _fast_initialization(), \
+             patch.object(engine, "inspect", side_effect=inspect), \
+             patch.object(search, "mutate", side_effect=overflow), \
+             patch.object(sequence, "evaluate", side_effect=evaluate):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 45
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
+        self.assertTrue(overflow_attempts, "公开搜索入口没有试图编译超限候选")
+        self.assertEqual(evaluated_waits, [], "超限 WaitClicks 候选到达了原生评价")
+
     def test_old_incomplete_result_still_reports_the_seed_it_selected(self) -> None:
         destination = Path(self.directory.name) / "旧任务"
         destination.mkdir()

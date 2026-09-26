@@ -114,7 +114,7 @@ def from_action_blocks(blocks):
 
 
 def from_search_program(program, capabilities):
-    """把普通搜索动作块及其顺序 Loop 转成共享的 Program。"""
+    """把搜索动作块、顺序 Loop 和 WaitClicks 转成共享的 Program。"""
     if not isinstance(program, list) or not program:
         raise ValueError("搜索程序必须包含动作块")
     if all(isinstance(segment, list) for segment in program):
@@ -139,6 +139,11 @@ def from_search_program(program, capabilities):
                 raise ValueError("搜索 Loop 的重复次数或动作块无效")
             segments.append(("Loop", len(body), count))
             flat_blocks.extend(body)
+        elif isinstance(segment, dict) and segment.get("kind") == "WaitClicks":
+            clicks = segment.get("clicks")
+            if type(clicks) is not int or not 2 <= clicks <= 4096:
+                raise ValueError("搜索 WaitClicks 次数必须为 2 至 4096")
+            segments.append(("WaitClicks", clicks))
         else:
             raise ValueError("搜索程序包含不支持的节点")
 
@@ -160,6 +165,12 @@ def from_search_program(program, capabilities):
                                     source=_position("search", f"blocks[{top_index}]",
                                                       gse_path=str(top_index + 1))))
             cursor += 1
+            top_index += 1
+            continue
+        if shape[0] == "WaitClicks":
+            nodes.append(PauseNode(kind="Pause", clicks=shape[1], duration_ms=None,
+                                   source=_position("search", f"blocks[{top_index}]",
+                                                    gse_path=str(top_index + 1))))
             top_index += 1
             continue
         _, body_count, repeat_count = shape
@@ -204,6 +215,12 @@ def _search_expanded_nodes(program):
             if len(expanded) + count * len(body) > 4096:
                 raise ValueError("搜索程序展开超过 4096 次按键")
             expanded.extend(body * count)
+        elif node["kind"] == "Pause":
+            clicks = node["clicks"]
+            if type(clicks) is not int or clicks < 2 or len(expanded) + clicks > 4096:
+                raise ValueError("搜索 WaitClicks 无效或展开超过 4096 次按键")
+            expanded.extend(EmptyClickNode(kind="EmptyClick", source=node["source"])
+                            for _ in range(clicks))
         else:
             raise ValueError("搜索程序包含不支持的节点")
     if not expanded:
@@ -212,7 +229,8 @@ def _search_expanded_nodes(program):
 
 
 def _search_blocks(program):
-    return [node["commands"] for node in _search_expanded_nodes(program)]
+    return [node["commands"] if node["kind"] == "Action" else []
+            for node in _search_expanded_nodes(program)]
 
 
 def _with_compiled_program(candidate, program, clicks):
@@ -231,9 +249,14 @@ def _search_clicks(candidate, program):
         raise ValueError("搜索程序与导出动作块数量不一致")
     clicks = []
     for node, block in zip(nodes, blocks):
-        clicks.append(CompiledActionNode(kind="Action",
-                                         commands=[action["simc_action"] for action in block],
-                                         source=node["source"]))
+        if node["kind"] == "EmptyClick":
+            if block:
+                raise ValueError("空点击不能包含动作")
+            clicks.append(CompiledEmptyClickNode(kind="EmptyClick", source=node["source"]))
+        else:
+            clicks.append(CompiledActionNode(kind="Action",
+                                             commands=[action["simc_action"] for action in block],
+                                             source=node["source"]))
     return clicks
 
 
@@ -249,7 +272,7 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
     if program.get("adapter") != "search":
         raise ValueError("未知的序列程序适配器")
     blocks = _search_blocks(program)
-    if any(node["kind"] == "Loop" for node in program["nodes"]):
+    if any(node["kind"] in {"Loop", "Pause"} for node in program["nodes"]):
         candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program)
     else:
         candidate = export(blocks, folder, identity=identity, runtime=runtime)
