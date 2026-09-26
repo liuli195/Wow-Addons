@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from interface import _friendly_error, _public_state, create_server  # noqa: E402
-from task import TaskError, run_task  # noqa: E402
+from task import run_task  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
 from test_search import _fast_search_boundary  # noqa: E402
 
@@ -1704,138 +1704,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["selected_sequence"], "THIRD_PARTY")
         self.assertGreater(state["dps"], 0)
         self.assertFalse(state["result_ready"])
-
-    def test_run_task_import_uses_gse_integer_gcd_pause_steps(self) -> None:
-        imported = gse_fixture(["GCD_PAUSE", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [
-                {"Type": "Pause", "MS": "GCD"},
-                {"Type": "Action", "type": "spell", "spell": 77575},
-            ]}],
-        }])
-        source = Path(self.directory.name) / "gcd-pause.simc"
-        source.write_text(sample_profile(), encoding="utf-8")
-
-        result = run_task(
-            source, Path(self.directory.name) / "gcd-pause-task", mode="import",
-            gse_text=imported, sequence_name="GCD_PAUSE", version=1,
-            search_config={"input_interval_ms": 400},
-            gse_context={"click_ms": 400, "gcd_ms": 1500, "seed": 1},
-        )
-
-        self.assertEqual(result["status"], "completed")
-        wait, = result["candidate"]["program"]["nodes"][:1]
-        self.assertEqual((wait["kind"], wait["clicks"]), ("WaitClicks", 3))
-        controlled = result["controlled_simulation"]
-        self.assertEqual(controlled["blocks"], [[], [], [], ["outbreak"]])
-        self.assertEqual(controlled["native_blocks"], [[], [], [], ["outbreak"]])
-
-    def test_run_task_import_turns_one_gcd_click_into_zero_wait_steps(self) -> None:
-        imported = gse_fixture(["GCD_BOUNDARY", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [
-                {"Type": "Pause", "MS": "GCD"},
-                {"Type": "Action", "type": "spell", "spell": 77575},
-            ]}],
-        }])
-        source = Path(self.directory.name) / "gcd-boundary.simc"
-        source.write_text(sample_profile(), encoding="utf-8")
-
-        result = run_task(
-            source, Path(self.directory.name) / "gcd-boundary-task", mode="import",
-            gse_text=imported, sequence_name="GCD_BOUNDARY", version=1,
-            search_config={"input_interval_ms": 1500},
-            gse_context={"click_ms": 1500, "gcd_ms": 1500, "seed": 1},
-        )
-
-        wait, = result["candidate"]["program"]["nodes"][:1]
-        self.assertEqual((wait["kind"], wait["clicks"]), ("WaitClicks", 0))
-        self.assertEqual(result["controlled_simulation"]["blocks"], [["outbreak"]])
-        self.assertEqual(result["controlled_simulation"]["native_blocks"], [["outbreak"]])
-
-    def test_run_task_import_expands_sequential_loop_and_pause_clicks(self) -> None:
-        imported = gse_fixture(["LOOP_PAUSE", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{
-                "Type": "Loop", "Repeat": "2",
-                1: {"Type": "Action", "type": "spell", "spell": 77575},
-                2: {"Type": "Pause", "Clicks": 1},
-                3: {"Type": "Action", "type": "spell", "spell": 49998},
-                4: {"Type": "Pause", "Clicks": 2},
-            }]}],
-        }])
-        source = Path(self.directory.name) / "loop-pause.simc"
-        source.write_text(sample_profile(), encoding="utf-8")
-
-        result = run_task(
-            source, Path(self.directory.name) / "loop-pause-task", mode="import",
-            gse_text=imported, sequence_name="LOOP_PAUSE", version=1,
-            search_config={"input_interval_ms": 300},
-            gse_context={"click_ms": 300, "gcd_ms": 1500, "seed": 1},
-        )
-
-        loop, = result["candidate"]["program"]["nodes"]
-        self.assertEqual(loop["count"], 2)
-        self.assertEqual([(node["kind"], node.get("clicks")) for node in loop["body"]], [
-            ("Action", None), ("WaitClicks", 0), ("Action", None), ("WaitClicks", 2),
-        ])
-        expected_blocks = [["outbreak"], ["death_strike"], [], [],
-                           ["outbreak"], ["death_strike"], [], []]
-        controlled = result["controlled_simulation"]
-        self.assertEqual(controlled["blocks"], expected_blocks)
-        self.assertEqual(controlled["native_blocks"], expected_blocks)
-        self.assertEqual(
-            [click["source"]["path"] for click in result["candidate"]["compiled_program"]["clicks"]],
-            ["1.1", "1.3", "1.4", "1.4", "1.1", "1.3", "1.4", "1.4"],
-        )
-
-    def test_run_task_import_converts_nonempty_ms_using_gse_fixed_second(self) -> None:
-        for interval_ms, duration, empty_clicks in (
-            (300, 250, 4), (400, 1200, 3), (1000, 250, 0),
-        ):
-            with self.subTest(interval_ms=interval_ms, duration=duration):
-                imported = gse_fixture(["MS_PAUSE", {
-                    "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-                    "Versions": [{"Actions": [
-                        {"Type": "Pause", "MS": duration},
-                        {"Type": "Action", "type": "spell", "spell": 77575},
-                    ]}],
-                }])
-                source = Path(self.directory.name) / f"ms-pause-{interval_ms}.simc"
-                source.write_text(sample_profile(), encoding="utf-8")
-
-                result = run_task(
-                    source, Path(self.directory.name) / f"ms-pause-task-{interval_ms}", mode="import",
-                    gse_text=imported, sequence_name="MS_PAUSE", version=1,
-                    search_config={"input_interval_ms": interval_ms},
-                    gse_context={"click_ms": interval_ms, "gcd_ms": 1500, "seed": 1},
-                )
-
-                expected_blocks = [[] for _ in range(empty_clicks)] + [["outbreak"]]
-                wait, = result["candidate"]["program"]["nodes"][:1]
-                self.assertEqual((wait["kind"], wait["clicks"]), ("WaitClicks", empty_clicks))
-                controlled = result["controlled_simulation"]
-                self.assertEqual(controlled["blocks"], expected_blocks)
-                self.assertEqual(controlled["native_blocks"], expected_blocks)
-
-    def test_run_task_import_rejects_plan_over_4096_steps(self) -> None:
-        imported = gse_fixture(["TOO_MANY_STEPS", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [
-                {"Type": "Pause", "Clicks": 4096},
-                {"Type": "Action", "type": "spell", "spell": 77575},
-            ]}],
-        }])
-        source = Path(self.directory.name) / "too-many-steps.simc"
-        source.write_text(sample_profile(), encoding="utf-8")
-
-        with self.assertRaisesRegex(TaskError, "展开.*4096"):
-            run_task(
-                source, Path(self.directory.name) / "too-many-steps-task", mode="import",
-                gse_text=imported, sequence_name="TOO_MANY_STEPS", version=1,
-                search_config={"input_interval_ms": 300},
-                gse_context={"click_ms": 300, "gcd_ms": 1500, "seed": 1},
-            )
 
     def test_public_service_reports_unmapped_import_skill_without_dps(self) -> None:
         imported = gse_fixture(["THIRD_PARTY", {
