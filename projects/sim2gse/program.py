@@ -38,10 +38,9 @@ class RepeatNode(TypedDict):
     source: SourcePosition
 
 
-class PauseNode(TypedDict):
-    kind: Literal["Pause"]
+class WaitClicksNode(TypedDict):
+    kind: Literal["WaitClicks"]
     clicks: int
-    duration_ms: int | float | str | None
     source: SourcePosition
 
 
@@ -62,7 +61,7 @@ class EmbedNode(TypedDict):
     source: SourcePosition
 
 
-ProgramNode = ActionNode | EmptyClickNode | LoopNode | RepeatNode | PauseNode | IfNode | EmbedNode
+ProgramNode = ActionNode | EmptyClickNode | LoopNode | RepeatNode | WaitClicksNode | IfNode | EmbedNode
 
 
 class Program(TypedDict):

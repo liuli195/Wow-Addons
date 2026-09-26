@@ -145,8 +145,9 @@ class ProgramTests(unittest.TestCase):
 
         self.assertEqual(program["nodes"][0]["interval"], 3)
         self.assertIsNone(program["nodes"][0]["raw"]["Interval"])
-        self.assertIsNone(program["nodes"][1]["duration_ms"])
-        self.assertEqual(program["nodes"][1]["raw"]["MS"], "")
+        self.assertEqual(program["nodes"][1]["kind"], "WaitClicks")
+        self.assertEqual(program["nodes"][1]["clicks"], 2)
+        self.assertEqual(program["metadata"]["raw_version"]["Actions"][1]["MS"], "")
 
     def test_compile_rejects_click_rate_different_from_simulation_input_interval(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -154,7 +155,8 @@ class ProgramTests(unittest.TestCase):
         raw = cbor2.dumps(wire_value(["MISMATCH", sequence]))
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "点击间隔.*一致"):
-            compile_program(from_gse_import(text, "MISMATCH", 1), Path(directory),
+            compile_program(from_gse_import(text, "MISMATCH", 1,
+                                            context=dict(click_ms=300, gcd_ms=1500)), Path(directory),
                             identity=dict(class_id=6, spec_id=252), capabilities=dict(actions=[]),
                             context=dict(click_ms=300, input_interval_ms=400,
                                          gcd_ms=1500, seed=1))
@@ -183,7 +185,8 @@ class ProgramTests(unittest.TestCase):
         raw = cbor2.dumps(wire_value(["INVALID_PAUSE", sequence]))
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "GSE Pause 时长无效"):
-            compile_program(from_gse_import(text, "INVALID_PAUSE", 1), Path(directory),
+            compile_program(from_gse_import(text, "INVALID_PAUSE", 1,
+                                            context=dict(click_ms=300, gcd_ms=1500)), Path(directory),
                             identity=dict(class_id=6, spec_id=252), capabilities=dict(actions=[]),
                             context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
 
@@ -442,7 +445,7 @@ class ProgramTests(unittest.TestCase):
                     found.extend(node_kinds([node["action"]]))
             return found
 
-        self.assertTrue({"Action", "Loop", "Repeat", "Pause", "If", "Embed"}
+        self.assertTrue({"Action", "Loop", "Repeat", "WaitClicks", "If", "Embed"}
                         <= set(node_kinds(candidate["program"]["nodes"])))
         self.assertEqual([node["commands"] if node["kind"] == "Action" else []
                           for node in candidate["compiled_program"]["clicks"]], compiled_program(candidate))

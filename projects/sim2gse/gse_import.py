@@ -15,7 +15,7 @@ import zlib
 import cbor2
 from codec import LUA, ROOT, SOURCE, lua_literal, wire_value
 from runtime import ProcessTimeout, TaskRuntime, run_command
-from program import (ActionNode, EmbedNode, IfNode, LoopNode, PauseNode, Program,
+from program import (ActionNode, EmbedNode, IfNode, LoopNode, WaitClicksNode, Program,
                      ProgramNode, RepeatNode, SourcePosition, CompiledActionNode,
                      CompiledEmptyClickNode, _with_compiled_program)
 from macro_interpreter import (macro_spell_ids, macro_spell_names, map_action, map_macro,
@@ -1170,7 +1170,7 @@ def _action_node(action, source):
 
 
 def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, seen, path_prefix="",
-               state=None, depth=0):
+               state=None, depth=0, context=None):
     if state is None:
         state = [0]
     if depth > MAX_DEPTH:
@@ -1210,17 +1210,30 @@ def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, se
             except (TypeError, ValueError):
                 count = 1
             body = _gse_nodes(action, sequences, sequence_name, version, selected_versions, seen,
-                              path_prefix=path, state=state, depth=depth + 1)
+                              path_prefix=path, state=state, depth=depth + 1, context=context)
             nodes.append(LoopNode(kind="Loop", count=count,
                                   step_function=action.get("StepFunction") or "Sequential",
                                   body=body, source=source, raw=_json_value(action)))
         elif kind == "Pause":
             duration_ms = action.get("MS")
-            if duration_ms == "":
-                duration_ms = None
-            nodes.append(PauseNode(kind="Pause", clicks=action.get("Clicks", 0),
-                                   duration_ms=duration_ms, source=source,
-                                   raw=_json_value(action)))
+            clicks = action.get("Clicks", 0)
+            if duration_ms in (None, ""):
+                wait_clicks = (int(clicks) if type(clicks) in (int, float)
+                               and math.isfinite(clicks) and clicks > 1 else 0)
+            elif isinstance(duration_ms, str) and duration_ms in {"GCD", "~~GCD~~"}:
+                click_ms = (context or {}).get("click_ms")
+                gcd_ms = (context or {}).get("gcd_ms")
+                if type(click_ms) is not int or click_ms <= 0 or type(gcd_ms) is not int:
+                    raise ValueError("GSE GCD 暂停转换缺少有效的点击间隔或公共冷却")
+                gcd_clicks = gcd_ms / click_ms
+                wait_clicks = math.floor(gcd_clicks) if gcd_clicks > 1 else 0
+            else:
+                click_ms = (context or {}).get("click_ms")
+                if type(click_ms) is not int or click_ms <= 0:
+                    raise ValueError("GSE 毫秒暂停转换缺少有效的点击间隔")
+                milliseconds_clicks = math.ceil(1000 / click_ms)
+                wait_clicks = milliseconds_clicks if milliseconds_clicks > 1 else 0
+            nodes.append(WaitClicksNode(kind="WaitClicks", clicks=wait_clicks, source=source))
         elif kind == "If":
             expression = action.get("Variable")
             condition = isinstance(expression, str) and expression.lstrip("=").strip().lower() == "true"
@@ -1228,10 +1241,10 @@ def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, se
             no_actions = action.get(2, action.get("2", []))
             yes = _gse_nodes(yes_actions, sequences, sequence_name, version,
                              selected_versions, seen, path_prefix=path + ".1",
-                             state=state, depth=depth + 1)
+                             state=state, depth=depth + 1, context=context)
             no = _gse_nodes(no_actions, sequences, sequence_name, version,
                             selected_versions, seen, path_prefix=path + ".2",
-                            state=state, depth=depth + 1)
+                            state=state, depth=depth + 1, context=context)
             node = IfNode(kind="If", condition=condition, then=yes, else_branch=no,
                           source=source, raw=_json_value(action))
             if "Variable" in action:
@@ -1252,7 +1265,7 @@ def _gse_nodes(actions, sequences, sequence_name, version, selected_versions, se
                 body = _gse_nodes(_version_get(embedded, embedded_version).get("Actions", []),
                                   sequences, embedded_name, embedded_version,
                                   selected_versions, seen | {embedded_name},
-                                  state=state, depth=depth + 1)
+                                  state=state, depth=depth + 1, context=context)
             nodes.append(EmbedNode(kind="Embed", sequence=str(embedded_name or ""),
                                    version=embedded_version, body=body, source=source,
                                    raw=_json_value(action)))
@@ -1276,7 +1289,8 @@ def program_from_import(text, name, version, *, context=None, decoded=None):
     selected_versions.update(requested)
     selected_versions[name] = version
     nodes = _gse_nodes(version_value.get("Actions", []),
-                       decoded["sequences"], name, version, selected_versions, {name})
+                       decoded["sequences"], name, version, selected_versions, {name},
+                       context=context)
     return Program(adapter="gse_import", nodes=nodes,
                    metadata={"input_text": text, "name": name, "version": version,
                              "sha256": decoded["sha256"],
@@ -1374,7 +1388,7 @@ def _compiled_source_map(nodes):
 
     def visit(items):
         for node in items:
-            if node["kind"] in {"Action", "Pause"}:
+            if node["kind"] in {"Action", "WaitClicks"}:
                 add(node["source"])
             elif node["kind"] == "Repeat":
                 # GSE emits the repeated action, whose source is the Repeat block's location.
@@ -1664,7 +1678,6 @@ def _process_repeat_nodes(nodes):
 
 def _compiled_source_plan(nodes, context):
     """按固定 GSE 展开控制块，保留每次按键的来源身份并限制计划大小。"""
-    click_ms, gcd_ms = context["click_ms"], context["gcd_ms"]
 
     def expand(items, depth=0):
         if depth > MAX_DEPTH:
@@ -1676,17 +1689,8 @@ def _compiled_source_plan(nodes, context):
                 _bounded_append(output, [node["source"]])
             elif kind == "Repeat":
                 _bounded_append(output, [("repeat", node["interval"], node["action"]["source"])])
-            elif kind == "Pause":
-                duration = node["duration_ms"]
-                if duration in {"GCD", "~~GCD~~"}:
-                    clicks = math.ceil(gcd_ms / click_ms)
-                elif duration is not None:
-                    # The pinned GSE source treats every numeric MS pause as one second.
-                    clicks = math.ceil(1000 / click_ms)
-                else:
-                    clicks = node["clicks"]
-                count = math.floor(clicks) if clicks > 1 else 0
-                _bounded_append(output, [node["source"]] * count)
+            elif kind == "WaitClicks":
+                _bounded_append(output, [node["source"]] * node["clicks"])
             elif kind == "Loop":
                 body = expand(node["body"], depth + 1)
                 step_function = node["step_function"]
