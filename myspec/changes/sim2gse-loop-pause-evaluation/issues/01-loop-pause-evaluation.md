@@ -9,7 +9,7 @@
 - [x] 顺序循环的展开顺序和重复次数与官方 GSE 编译输出一致，每次点击可追溯来源。
 - [x] Clicks/MS/GCD 在不同按键间隔下转换为正确空点击数，模拟与编译计划一致；不一致时拒绝评价。
 - [x] 确定性测试覆盖展开顺序、次数、暂停点击数、按键间隔、临界值及超限。
-- [ ] 现有简单搜索与导入行为无回归；完整验证结果可复核，游戏内验收状态如实报告。
+- [x] 现有简单搜索与导入行为无回归；完整验证结果可复核，游戏内验收状态如实报告。
 - [x] 不扩充其他循环模式、宏语义、`/castsequence`、预训练或搜索算法。
 
 ## 实施证据
@@ -18,4 +18,6 @@
 - TDD 红灯：`.venv\Scripts\python.exe -m pytest -q tests/sim2gse/test_interface.py::InterfaceTests::test_run_task_import_uses_gse_integer_gcd_pause_steps`，失败于本机计划 4 步、上游编译 3 步不一致。相同命令绿灯：`1 passed`，且 `run_task(mode="import")` 受控引擎收到 3 个空块及后续技能块。
 - 高层覆盖顺序循环重复、Clicks 1/2、MS 间隔 300/400/1000ms、GCD 非整除及等于 1 的临界值、4097 步拒绝；受控引擎动作块和来源路径均与计划一致。
 - 本机 Sim2GSE 可移植测试：`.venv\Scripts\python.exe -m pytest -q tests/sim2gse -k "not test_tc_"`，`224 passed, 6 deselected, 86 subtests passed`。
-- 实施已完成；正式固定基线验证待主代理提交后运行；真实游戏验收 `not_run`。
+- 主代理在固定基线 `472fb9ff` 上完成正式 `build-and-verify --base`：检查 `docs/sim2gse/test-inventory`，`224 passed, 86 subtests`；真实入口成功与 4097 步拒绝冒烟 `2 passed`。
+- 独立审查唯一可行动 P3 已修复：移除 `_compiled_source_plan` 未使用的 `context` 参数及其唯一调用实参。Repeat 为 0 或负数仍按固定基线行为拒绝，未扩展修改。
+- 真实游戏验收 `not_run`。
