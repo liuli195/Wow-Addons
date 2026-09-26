@@ -68,21 +68,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $tools = (Get-Content .pr-flow/toolchain.json -Raw | ConvertFrom-Json).tools
-          $development = @($tools.PSObject.Properties.Value | Where-Object mode -eq 'dev')
-          if ($development) {
-            $identity = $development[0]
-            if ($development | Where-Object { $_.sourceRepository -ne $identity.sourceRepository -or $_.sourceCommit -ne $identity.sourceCommit }) {
-              throw 'Development tools must share one recorded source revision'
-            }
-            $source = Join-Path $env:RUNNER_TEMP 'recorded-toolchain'
-            git clone --no-checkout $identity.sourceRepository $source
-            git -C $source checkout --detach $identity.sourceCommit
-          }
           foreach ($name in @('myspec', 'build-and-verify')) {
             $identity = $tools.PSObject.Properties[$name].Value
             if ($identity.mode -eq 'release') {
               npm install --global --ignore-scripts --no-audit --no-fund "$($identity.packageName)@$($identity.packageVersion)"
             } elseif ($identity.mode -eq 'dev') {
+              $source = Join-Path $env:RUNNER_TEMP "recorded-toolchain-$name"
+              git clone --no-checkout $identity.sourceRepository $source
+              git -C $source checkout --detach $identity.sourceCommit
               $package = python "$source/plugins/tool-lifecycle/pack.py" $name $env:RUNNER_TEMP
               npm install --global --ignore-scripts --no-audit --no-fund $package
             } else {
