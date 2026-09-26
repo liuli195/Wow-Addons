@@ -27,3 +27,17 @@
 
 - **WHEN** 远端 CI 执行仓库完整验证
 - **THEN** 所有已登记检查和自动发现的 Sim2GSE 测试仍被执行，远端结果按功能通过或失败报告，不因耗时超过 60 秒单独失败。
+### Requirement: Daily local build and full verification meet the sixty-second total budget
+
+系统 MUST 在本机已准备与固定来源、补丁及编译器身份一致的两份引擎产物时，使规范构建与完整验证连续运行的合计墙钟时间不超过 60 秒；不得通过减少已登记检查、自动发现的 Sim2GSE 测试、模拟次数或必要的构建身份校验来达标。
+
+#### Scenario: Prepared local build and full verification meet the total budget
+
+- **WHEN** 开发者在上述已准备好的本机依次运行规范构建和完整验证
+- **THEN** 两段均实际通过，全部已登记检查和自动发现的 Sim2GSE 测试均执行
+- **THEN** 两段连续计时的合计不超过 60 秒
+
+#### Scenario: Build identity is no longer valid
+
+- **WHEN** 固定来源、补丁、编译器或已有产物的身份不再匹配
+- **THEN** 构建 MUST 重新执行必要工作或明确失败，不得把未核验的已有产物当作有效构建结果
