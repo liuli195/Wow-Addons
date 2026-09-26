@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
-from search import initial_programs
+from search import initial_programs, mutate
 
 
 def _fast_capabilities():
@@ -240,6 +240,34 @@ class SearchAndValidationTests(TestCase):
         twice = [dict(kind="Loop", count=2, blocks=body)]
         three_times = [dict(kind="Loop", count=3, blocks=body)]
         self.assertNotEqual(program_key(twice), program_key(three_times))
+
+    def test_low_success_action_inside_loop_drops_its_top_level_candidate(self):
+        class FeedbackRng:
+            def __init__(self):
+                self.choice_count = 0
+
+            def choice(self, values):
+                self.choice_count += 1
+                return "swap" if self.choice_count == 1 else values[0]
+
+            def random(self):
+                return 0
+
+            def sample(self, population, count):
+                return [0, 2]
+
+        program = [
+            ["outbreak"],
+            dict(kind="Loop", count=2, blocks=[["death_coil"], ["wasted_action"]]),
+            ["scourge_strike"],
+        ]
+        capabilities = dict(actions=[dict(simc_action=name) for name in (
+            "outbreak", "death_coil", "wasted_action", "scourge_strike")])
+        feedback = dict(attempts={"wasted_action": 3}, successes={"wasted_action": 0})
+
+        result = mutate(program, capabilities, FeedbackRng(), feedback=feedback)
+
+        self.assertEqual(result, [["outbreak"], ["scourge_strike"]])
 
     def test_report_version_gate_accepts_historical_and_current_build(self):
         """历史报告在其对应版本上有效，升级不得把它们踢掉。"""

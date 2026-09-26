@@ -171,7 +171,10 @@ def mutate(program, capabilities, rng, *, feedback=None):
         else:
             wasted=[name for name,n in feedback.get('attempts',{}).items()
                     if n>2 and feedback.get('successes',{}).get(name,0)/n < 0.05]
-            positions=[i for i,b in enumerate(source) if any(name in wasted for name in b)]
+            positions=[i for i,b in enumerate(source)
+                       if any(name in wasted
+                              for block in (b.get("blocks", []) if isinstance(b, dict) else [b])
+                              for name in block)]
             if positions and len(source)>1:
                 del source[rng.choice(positions)]
                 return source
