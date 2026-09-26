@@ -52,7 +52,7 @@ def main():
     sim2gse_command = str(sim2gse['command']).replace('\\', '/')
     sim2gse_pytest = '-m pytest' in sim2gse_command and 'tests/sim2gse' in sim2gse_command
     assert sim2gse_pytest, 'Sim2GSE 必须由 pytest 自动发现'
-    assert '-k "not test_tc_"' in sim2gse_command, 'PR 默认验证不得运行 TC 专属测试'
+    assert '-k "not test_tc_"' in sim2gse_command, '本机默认验证不得运行 TC 专属测试'
     build_source = ast.parse((ROOT / 'scripts/dev/sim2gse/build.py').read_text())
     build_modes = [
         ast.literal_eval(node.iter)

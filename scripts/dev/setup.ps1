@@ -1,10 +1,13 @@
 # 本机和远端共用；仅写仓库内缓存，不修改系统环境或游戏文件。
+param([switch]$Pr)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location -LiteralPath $repoRoot
 $versions = Get-Content scripts/dev/versions.json -Raw | ConvertFrom-Json
-$simcLock = Get-Content projects/sim2gse/compatibility/lock.json -Raw | ConvertFrom-Json
+if (-not $Pr) {
+    $simcLock = Get-Content projects/sim2gse/compatibility/lock.json -Raw | ConvertFrom-Json
+}
 New-Item -ItemType Directory -Force .tools/downloads | Out-Null
 
 function Get-Artifact($spec, $path) {
@@ -35,11 +38,13 @@ function Sync-Repository($path, $spec) {
         git -C $path checkout --detach FETCH_HEAD
     }
 }
-$simc = [pscustomobject]@{
-    url = 'https://github.com/simulationcraft/simc.git'
-    commit = $simcLock.upstream_commit
+if (-not $Pr) {
+    $simc = [pscustomobject]@{
+        url = 'https://github.com/simulationcraft/simc.git'
+        commit = $simcLock.upstream_commit
+    }
+    Sync-Repository '.tools/sim2gse-upstream/simc' $simc
 }
-Sync-Repository '.tools/sim2gse-upstream/simc' $simc
 if (-not (Test-Path '.tools/luals/bin/lua-language-server.exe')) {
     Expand-Archive .tools/downloads/luals.zip .tools/luals -Force
 }
@@ -72,18 +77,22 @@ foreach ($entry in $versions.repositories.PSObject.Properties) {
     $path = ".tools/$($entry.Name)"
     Sync-Repository $path $entry.Value
 }
-$gse = [pscustomobject]@{
-    url = 'https://github.com/TimothyLuke/GSE-Advanced-Macro-Compiler.git'
-    commit = $simcLock.gse_commit
+if (-not $Pr) {
+    $gse = [pscustomobject]@{
+        url = 'https://github.com/TimothyLuke/GSE-Advanced-Macro-Compiler.git'
+        commit = $simcLock.gse_commit
+    }
+    Sync-Repository '.tools/sim2gse-research/gse-f225d4c' $gse
 }
-Sync-Repository '.tools/sim2gse-research/gse-f225d4c' $gse
 git -C .tools/wow-api submodule update --init --recursive --depth 1
 $expected = "$($versions.client.version).$($versions.client.build)"
 if ((Get-Content .tools/wow-ui-source/version.txt).Trim() -ne $expected) {
     throw '界面源码构建号不匹配。'
 }
 if (-not (Test-Path '.venv/Scripts/python.exe')) { python -m venv .venv }
-& .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r scripts/dev/requirements.txt -r projects/sim2gse/requirements.txt
+$requirements = @('-r', 'scripts/dev/requirements.txt')
+if (-not $Pr) { $requirements += @('-r', 'projects/sim2gse/requirements.txt') }
+& .venv/Scripts/python.exe -m pip install --disable-pip-version-check @requirements
 npm ci --ignore-scripts --no-audit --no-fund
 & .tools/lua-5.1.5/src/lua.exe -e 'assert(_VERSION == "Lua 5.1"); print(_VERSION)'
 & .tools/downloads/luacheck.exe --version

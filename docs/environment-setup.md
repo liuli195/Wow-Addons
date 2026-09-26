@@ -16,7 +16,7 @@
 - MSYS2（Windows 编译环境）：构建锁定官方源码和补丁的 SimC（模拟引擎）产品程序。
 - Build and Verify（构建与验证）与 PR Flow（拉取请求流程）：复用本机已安装工具，不改其用户级安装。
 
-初次使用需要 Git（版本管理）、Git LFS（大文件存储）、PowerShell 7（命令环境）、Python 3.12（解释器）、Node.js 24 以及 MSYS2 的 MinGW64 C++（编译环境）。远端采用 Windows 2025（运行环境）并准备相同依赖。
+本机初次使用需要 Git（版本管理）、Git LFS（大文件存储）、PowerShell 7（命令环境）、Python 3.12（解释器）、Node.js 24 以及 MSYS2 的 MinGW64 C++（编译环境）。远端采用 Windows 2025（运行环境），只准备 PR 检查所需依赖，不编译引擎。
 
 ~~~powershell
 pwsh -NoProfile -File scripts/dev/setup.ps1
@@ -27,9 +27,9 @@ build-and-verify verify --project .
 
 ## 验证入口
 
-`.build-and-verify/config.json`（构建与验证配置）包含两个产品构建和 16 个可移植检查。构建分别产生 Sim2GSE（模拟转 GSE）正式引擎与有源图的素材；验证覆盖插件、文档、素材、开发检查器、Sim2GSE 和无需本机数据的装备规划器 JavaScript（脚本语言）回归。
+`.build-and-verify/config.json`（构建与验证配置）包含两个构建目标和 37 项检查。引擎构建及 Sim2GSE（模拟转 GSE）测试组仅在本机运行；PR 场景运行素材构建及其余 36 项检查，覆盖插件、文档、素材、开发检查器和无需本机数据的装备规划器 JavaScript（脚本语言）回归。
 
-默认快速验证只选中相关改动；没有变更时可能跳过。正式提交后在干净工作树中使用固定基线验证。完整验证用于拉取请求的远端工作流及已授权的热修复直推。
+默认快速验证只选中相关改动；没有变更时可能跳过。正式提交后在干净工作树中使用固定基线验证。PR 工作流使用 `--pr` 选择可执行检查；本机不带该参数时仍运行全部登记检查。
 
 语言报告保存在 `.local/luals/run-*/check.json`，每次使用新目录。固定版本明确使用 `--check_format=json`（结构化报告格式）；空报告可以是空数组，缺报告或格式错误必须失败。检查器正反样例已覆盖正确代码、错误接口名、错误参数、语法错误和缺失加载文件。
 
@@ -55,9 +55,9 @@ build-and-verify verify --project .
 
 ## 远端交付
 
-业务工作流 `.github/workflows/verify.yml`（完整验证）准备工具及大文件对象，再运行统一入口的完整验证。工具链身份由 PR Flow 生成的 `.pr-flow/toolchain.json` 管理；本机目前使用开发版实现，远端按同一精确提交恢复，不能替换成版本号相同但实现不同的包。
+业务工作流 `.github/workflows/verify.yml`（完整验证）准备 PR 所需工具及大文件对象，再使用统一入口运行 PR 场景验证。工具链身份由 PR Flow 生成的 `.pr-flow/toolchain.json` 管理；本机目前使用开发版实现，远端按同一精确提交恢复，不能替换成版本号相同但实现不同的包。
 
-远端显式设置 `PYTHONUTF8=1`（统一字符编码），保证英文 Windows 环境下读取中文文件名和诊断输出正确。首次远端运行已暴露默认编码差异，因此将此设置纳入工作流；没有减少检查范围。
+远端显式设置 `PYTHONUTF8=1`（统一字符编码），保证英文 Windows 环境下读取中文文件名和诊断输出正确。首次远端运行已暴露默认编码差异，因此将此设置纳入工作流。
 
 PR Flow 当前受管工作流还会检查 MySpec（规格工具）的安装身份；这只是工具链依赖，没有为本插件初始化规格库。
 
