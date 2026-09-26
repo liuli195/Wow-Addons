@@ -1824,8 +1824,10 @@ class InterfaceTests(unittest.TestCase):
                 native_loop_evaluations.append(candidate)
                 self.assertEqual(result["blocks"], blocks)
                 self.assertEqual(result["native_blocks"], blocks)
-            return _fast_evaluate(profile, candidate, folder, score_offset=1000 if loop_nodes else 0,
-                                  **kwargs)
+            score_offset = 1000 if loop_nodes and any(
+                evaluated["text"] == candidate["text"] for evaluated in native_loop_evaluations
+            ) else 0
+            return _fast_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
 
         self.server.task_options = {
             "search_config": {
@@ -1865,6 +1867,8 @@ class InterfaceTests(unittest.TestCase):
         selected_loop = next((row for row in loop_evaluations
                               if row[0]["text"] == state["candidate_text"]), None)
         self.assertIsNotNone(selected_loop, "公开任务最终结果没有选择顺序 Loop 候选")
+        self.assertEqual(selected_loop[0]["text"], native_loop_evaluations[0]["text"],
+                         "最终顺序 Loop 候选没有经过真实原生评价")
         self.assertEqual(state["evidence_status"], "complete")
         candidate, loop, clicks = selected_loop
         self.assertEqual(loop["step_function"], "Sequential")
@@ -1964,7 +1968,11 @@ class InterfaceTests(unittest.TestCase):
                     native_evaluations.append((interval, candidate, result))
                     self.assertEqual(result["blocks"], blocks)
                     self.assertEqual(result["native_blocks"], blocks)
-                return _fast_evaluate(profile, candidate, folder, score_offset=1000, **kwargs)
+                score_offset = 1000 if any(
+                    native_interval == interval and native_candidate["text"] == candidate["text"]
+                    for native_interval, native_candidate, _ in native_evaluations
+                ) else 0
+                return _fast_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
             return _fast_evaluate(profile, candidate, folder, **kwargs)
 
         self.server.task_options = {
@@ -2018,6 +2026,12 @@ class InterfaceTests(unittest.TestCase):
                                   if candidate["text"] == state["candidate_text"]), None)
             self.assertIsNotNone(selected_wait,
                                  f"公开任务在 {interval} 毫秒间隔没有选择 WaitClicks 候选")
+            native_wait = next((candidate for native_interval, candidate, _ in native_evaluations
+                                if native_interval == interval), None)
+            self.assertIsNotNone(native_wait,
+                                 f"{interval} 毫秒间隔没有真实评价的 WaitClicks 候选")
+            self.assertEqual(selected_wait["text"], native_wait["text"],
+                             f"{interval} 毫秒间隔最终候选没有经过真实原生评价")
             payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
             actions = payload[1][b"Versions"][0][b"Actions"]
             exported_waits = [action for action in actions if action[b"Type"] == b"Pause"]
