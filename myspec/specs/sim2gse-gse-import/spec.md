@@ -95,9 +95,45 @@
 - **THEN** 系统显示待角色核验状态，不把静态预检通过当成本机模拟已完成，不显示 DPS。
 ### Requirement: Sim2GSE preserves the existing generated search behavior
 
-系统 MUST 保持既有自动搜索在相同角色和搜索条件下的候选集合、选择结果、导出的 GSE 字符串和编译后的按键动作块与固定基线一致；外部导入支持不得改变既有搜索入口、默认值、候选生成或选择行为，也不得令导入序列的高级结构自动进入搜索生成或变异。
+系统 MUST 保持普通动作候选的导出与模拟语义，以及既有自动搜索的评分、候选选择、预算和复测规则。外部 GSE 导入能力不得令其他高级结构自动进入搜索空间；本次仅允许搜索生成可忠实编译和模拟的顺序 `Loop`（循环）及 `Pause`（暂停空点击）候选。
 
-#### Scenario: A user runs the existing search with unchanged inputs
+#### Scenario: A user searches with ordinary actions
 
-- **WHEN** 用户使用与固定基线相同的角色资料和搜索条件运行原有优化入口
-- **THEN** 系统返回与基线一致的候选、所选结果、导出文本及逐次按键动作块；新提供的导入检查能力不会改变这些搜索结果。
+- **WHEN** 用户使用原有优化入口搜索普通动作候选
+- **THEN** 普通动作候选仍可生成、评价和导出，并沿用原有评分、选择、预算和复测规则。
+
+#### Scenario: Imported structures are outside the supported search subset
+
+- **WHEN** 用户导入包含其他 GSE 高级结构的序列，或运行自动搜索
+- **THEN** 导入检查和模拟仍按其原有能力工作；自动搜索仅新增本票支持的顺序循环与空点击候选，不因此生成其他高级结构。
+### Requirement: Sim2GSE searches and evaluates sequential loops
+
+系统 MUST 能在自动搜索中生成、评价、选择和导出包含 `Sequential Loop`（顺序循环）及整个循环 `Repeat Count`（重复次数）的候选。不同重复次数 MUST 是不同候选；导出的序列 MUST 与锁定 GSE 编译器逐次按键展开的动作顺序、次数和来源一致，同一展开计划 MUST 用于本机受控模拟。不能忠实编译或展开超过 4096 次按键的候选 MUST 在评价前拒绝。
+
+#### Scenario: Search generates a repeated sequential loop
+
+- **WHEN** 自动搜索尝试包含顺序循环及重复次数的候选
+- **THEN** 结果可追溯到该候选的评价与选取；其导出序列经锁定 GSE 编译后的每次按键动作和来源，与本机模拟使用的展开计划一致。
+
+#### Scenario: Loop expansion exceeds the limit
+
+- **WHEN** 候选的顺序循环展开后超过 4096 次按键，或不能按锁定 GSE 规则忠实编译
+- **THEN** 系统在本机伤害评价前拒绝该候选，不给出其模拟成绩。
+### Requirement: Sim2GSE searches and evaluates empty-click pauses
+
+系统 MUST 能在自动搜索中生成、评价、选择和导出占用多次按键的 `Pause`（暂停）候选；搜索候选以 `WaitClicks(n)`（等待 n 次空点击）区分等待次数，其中可导出的 n 至少为 2。导出边界 MUST 将其变为与锁定 GSE 编译器一致的暂停序列，逐次空点击数及来源 MUST 与本机受控模拟一致。不同按键间隔下，每次空点击 MUST 占用相应输入时刻。`Pause{Clicks=1}` 在锁定 GSE 编译器中不产生等待，系统 MUST 不得把它评价为一次空点击。展开超过 4096 次按键的候选 MUST 在评价前拒绝。
+
+#### Scenario: Search evaluates and selects a pause candidate
+
+- **WHEN** 自动搜索尝试包含等待多次空点击的候选，并在给定按键间隔下对其评价
+- **THEN** 候选可参与原有选优；被选中时导出序列的 GSE 编译空点击数、来源与本机模拟一致，各空点击占用对应输入时刻。
+
+#### Scenario: Click interval changes pause timing
+
+- **WHEN** 相同等待次数分别在不同按键间隔下评价
+- **THEN** 空点击次数保持一致，占用的输入时刻按各自间隔变化。
+
+#### Scenario: A pause cannot be faithfully represented
+
+- **WHEN** 候选要求一次空点击，或展开超过 4096 次按键
+- **THEN** 系统不会把 GSE 的 `Pause{Clicks=1}` 当作一次空点击，也不会对该超限候选给出本机伤害成绩。

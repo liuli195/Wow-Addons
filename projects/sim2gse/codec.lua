@@ -72,8 +72,10 @@ local compiled = GSE.CompileTemplate(imported.Versions[1])
 assert(#compiled == #expected.steps, "compiled step count mismatch")
 local function hex(s) return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
 for i, step in ipairs(compiled) do
-    local actual = {type = step.type, spell = step.spell, macrotext = step.macrotext, item = step.item}
-    print("STEP\t" .. i .. "\t" .. step.type .. "\t" .. tostring(step.spell or step.item or "") .. "\t" .. hex(step.macrotext or ""))
+    local actual = {type = step.type, spell = step.spell, macrotext = step.macrotext,
+                    item = step.item, blockPath = step.blockPath}
+    print("STEP\t" .. i .. "\t" .. step.type .. "\t" .. tostring(step.spell or step.item or "")
+        .. "\t" .. hex(step.macrotext or "") .. "\t" .. hex(step.blockPath or ""))
     assert(same(actual, expected.steps[i]), "compiled step mismatch at " .. i)
 end
 local altered = GSE.CloneSequence(imported)

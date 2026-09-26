@@ -145,18 +145,35 @@ def initial_programs(capabilities, reference, seed=20260912):
 
 
 def _copy_program(program):
-    return [list(block) for block in program]
+    copied = []
+    for segment in program:
+        if isinstance(segment, dict):
+            item = dict(segment)
+            if segment.get("kind") == "Loop":
+                item["blocks"] = [list(block) for block in segment["blocks"]]
+            copied.append(item)
+        else:
+            copied.append(list(segment))
+    return copied
 
 
 def mutate(program, capabilities, rng, *, feedback=None):
-    """执行交换、替换、插删、片段移动、块内调整或重启中的一个操作。"""
+    """执行动作块、顺序 Loop 或 WaitClicks 变异。"""
     source = _copy_program(program)
     available = [a["simc_action"] for a in capabilities["actions"]]
     if not source or not available:
         return source
-    operation = rng.choice(("swap", "replace", "insert", "delete", "move", "block"))
+    loop_indices = [index for index, segment in enumerate(source)
+                    if isinstance(segment, dict) and segment.get("kind") == "Loop"]
+    ordinary_indices = [index for index, segment in enumerate(source) if isinstance(segment, list)]
+    wait_indices = [index for index, segment in enumerate(source)
+                    if isinstance(segment, dict) and segment.get("kind") == "WaitClicks"]
+    operations = ["swap", "replace", "insert", "delete", "move", "block"]
+    operations.append("repeat_count" if loop_indices else "loop")
+    operations.append("wait_clicks")
+    operation = rng.choice(operations)
     suggested = None
-    if feedback and rng.random() < 0.5:
+    if operation != "loop" and feedback and rng.random() < 0.5:
         if feedback.get('untried'):
             operation,suggested='insert',rng.choice(feedback['untried'])
         elif feedback.get('resource_overflowed') and feedback.get('spenders'):
@@ -164,21 +181,27 @@ def mutate(program, capabilities, rng, *, feedback=None):
         else:
             wasted=[name for name,n in feedback.get('attempts',{}).items()
                     if n>2 and feedback.get('successes',{}).get(name,0)/n < 0.05]
-            positions=[i for i,b in enumerate(source) if any(name in wasted for name in b)]
+            positions=[i for i,b in enumerate(source)
+                       if any(name in wasted
+                              for block in (b.get("blocks", []) if isinstance(b, dict) else [b])
+                              for name in block)]
             if positions and len(source)>1:
                 del source[rng.choice(positions)]
                 return source
     if operation == "swap" and len(source) > 1:
         first, second = rng.sample(range(len(source)), 2)
         source[first], source[second] = source[second], source[first]
-    elif operation == "replace":
-        block = rng.randrange(len(source))
+    elif operation == "replace" and ordinary_indices:
+        block = rng.choice(ordinary_indices)
         source[block][rng.randrange(len(source[block]))] = rng.choice(available)
     elif operation == "insert" and len(source) < 128:
         block = rng.randrange(len(source))
         source.insert(block, [suggested or rng.choice(available)])
     elif operation == "delete" and len(source) > 1:
-        del source[rng.randrange(len(source))]
+        if wait_indices and len(ordinary_indices) <= 1:
+            del source[rng.choice(wait_indices)]
+        else:
+            del source[rng.randrange(len(source))]
     elif operation == "move" and len(source) > 2:
         start = rng.randrange(len(source) - 1)
         end = rng.randrange(start + 1, min(len(source), start + 4) + 1)
@@ -187,14 +210,43 @@ def mutate(program, capabilities, rng, *, feedback=None):
         target = rng.randrange(len(source) + 1)
         source[target:target] = fragment
     elif operation == "block":
-        block = source[rng.randrange(len(source))]
-        if len(block)>1 and rng.random()<0.5:
+        if not ordinary_indices:
+            return source
+        block = source[rng.choice(ordinary_indices)]
+        if len(block) > 1 and rng.random() < 0.5:
             index=rng.randrange(len(block))
             command=block.pop(index)
             if rng.random()<0.5:
                 block.insert(rng.randrange(len(block)+1),command)
         elif len(block) < 16:
             block.insert(rng.randrange(len(block) + 1), rng.choice(available))
+    elif operation == "loop":
+        if wait_indices:
+            if not ordinary_indices:
+                return source
+            start = rng.choice(ordinary_indices)
+            source[start:start + 1] = [dict(kind="Loop", count=rng.choice((2, 3)),
+                                            blocks=[source[start]])]
+        elif len(source) > 1:
+            start = rng.randrange(len(source) - 1)
+            end = rng.randrange(start + 2, min(len(source), start + 4) + 1)
+            source[start:end] = [dict(kind="Loop", count=rng.choice((2, 3)),
+                                      blocks=source[start:end])]
+        elif ordinary_indices:
+            start, end = 0, 1
+            source[start:end] = [dict(kind="Loop", count=rng.choice((2, 3)),
+                                      blocks=source[start:end])]
+    elif operation == "repeat_count":
+        loop = source[rng.choice(loop_indices)]
+        loop["count"] = 3 if loop["count"] == 2 else 2
+    elif operation == "wait_clicks":
+        if wait_indices:
+            wait = source[rng.choice(wait_indices)]
+            wait["clicks"] = rng.choice(tuple(value for value in (2, 3, 4)
+                                               if value != wait.get("clicks")))
+        elif len(source) < 128:
+            source.insert(rng.randrange(len(source) + 1),
+                          dict(kind="WaitClicks", clicks=rng.choice((2, 3, 4))))
     return source
 
 
@@ -382,7 +434,7 @@ def _tuple(value):
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
     from engine import check_report, player_report, CandidateError
-    from sequence import select, evaluate, compiled_program
+    from sequence import evaluate, compiled_program
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
@@ -411,8 +463,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if saved and digest(saved['candidate'])==saved['candidate_sha256']:
                 candidates[key]=saved['candidate']
             else:
-                from program import compile_program, from_action_blocks
-                candidates[key] = compile_program(from_action_blocks(select(capabilities, program)),
+                from program import compile_program, from_search_program
+                candidates[key] = compile_program(from_search_program(program, capabilities),
                                                   destination / 'exports' / key,
                                                   identity=reference['identity'], runtime=runtime)
         return candidates[key]
