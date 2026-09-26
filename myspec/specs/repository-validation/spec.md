@@ -21,12 +21,18 @@
 - **THEN** 系统如实标记超预算并保留各项功能检查结果，不用性能警告掩盖或改写功能失败状态。
 ### Requirement: Continuous integration retains complete verification
 
-系统 SHALL 在 CI（持续集成）中继续执行同一套完整检查和测试覆盖，但不以本机 60 秒预算作为远端通过条件。
+系统 SHALL 在 PR（拉取请求）的完整验证中执行全部标记为可在 PR 运行的已登记检查，并明确报告仅本机检查被排除；引擎构建和依赖产品引擎的 Sim2GSE 测试组仅由本机完整验证执行。远端结果按功能通过或失败报告，不以本机 60 秒预算作为远端通过条件。
 
-#### Scenario: Continuous integration runs full verification
+#### Scenario: Pull request runs its complete check set
 
-- **WHEN** 远端 CI 执行仓库完整验证
-- **THEN** 所有已登记检查和自动发现的 Sim2GSE 测试仍被执行，远端结果按功能通过或失败报告，不因耗时超过 60 秒单独失败。
+- **WHEN** 远端 CI（持续集成）执行 PR 完整验证
+- **THEN** 所有 PR 可执行检查均实际执行，且仅本机检查明确显示为排除
+- **THEN** 远端不准备或构建产品引擎，也不运行依赖产品引擎的 Sim2GSE 测试组
+
+#### Scenario: Local full verification retains engine coverage
+
+- **WHEN** 开发者在已准备好引擎的本机运行规范构建和完整验证
+- **THEN** 引擎构建及依赖产品引擎的 Sim2GSE 测试组仍实际执行，并纳入本机结果
 ### Requirement: Daily local build and full verification meet the sixty-second total budget
 
 系统 MUST 在本机已准备与固定来源、补丁及编译器身份一致的两份引擎产物时，使规范构建与完整验证连续运行的合计墙钟时间不超过 60 秒；不得通过减少已登记检查、自动发现的 Sim2GSE 测试、模拟次数或必要的构建身份校验来达标。
