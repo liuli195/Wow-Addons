@@ -1824,7 +1824,6 @@ class InterfaceTests(unittest.TestCase):
                 native_loop_evaluations.append(candidate)
                 self.assertEqual(result["blocks"], blocks)
                 self.assertEqual(result["native_blocks"], blocks)
-                return result
             return _fast_evaluate(profile, candidate, folder, score_offset=1000 if loop_nodes else 0,
                                   **kwargs)
 
@@ -1835,11 +1834,11 @@ class InterfaceTests(unittest.TestCase):
                 "candidate_limit": 8,
                 "round_candidate_limit": 8,
                 "batch_targets": (2,),
-                "validation_batches": 1,
-                "final_batches": 1,
+                "validation_batches": 2,
+                "final_batches": 20,
                 "iterations": 2,
-                "final_iterations": 2,
-                "scenarios": ("nominal",),
+                "final_iterations": 100,
+                "scenarios": ("nominal", "jitter", "slow", "pause", "phase"),
                 "max_processes": 1,
                 "random_seed": 20260926,
             }
@@ -1859,11 +1858,15 @@ class InterfaceTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
 
-        self.assertEqual(state["status"], "validation_incomplete", state)
+        self.assertEqual(state["status"], "completed", state)
         self.assertTrue(state["result_ready"])
         self.assertTrue(loop_evaluations, "自动搜索没有从普通种子生成并评价顺序 Loop 候选")
         self.assertTrue(native_loop_evaluations, "顺序 Loop 没有通过原生受控评价")
-        candidate, loop, clicks = loop_evaluations[0]
+        selected_loop = next((row for row in loop_evaluations
+                              if row[0]["text"] == state["candidate_text"]), None)
+        self.assertIsNotNone(selected_loop, "公开任务最终结果没有选择顺序 Loop 候选")
+        self.assertEqual(state["evidence_status"], "complete")
+        candidate, loop, clicks = selected_loop
         self.assertEqual(loop["step_function"], "Sequential")
         self.assertGreaterEqual(loop["count"], 2)
         body = loop["body"]
@@ -1891,6 +1894,7 @@ class InterfaceTests(unittest.TestCase):
                          [node["commands"][0]["spell_id"] for node in body])
 
     def test_public_search_generates_and_evaluates_wait_clicks(self) -> None:
+        import cbor2
         import codec
         import engine
         import search
@@ -1936,6 +1940,7 @@ class InterfaceTests(unittest.TestCase):
 
         wait_candidates = {300: {}, 600: {}}
         native_evaluations = []
+        active_interval = 300
 
         def mutate_wait_clicks(program, caps, rng, *, feedback=None):
             nonlocal mutation_count
@@ -1950,16 +1955,15 @@ class InterfaceTests(unittest.TestCase):
             self.assertEqual([click or [] for click in clicks], blocks)
             waits = [node for node in candidate["program"]["nodes"] if node["kind"] == "Pause"]
             if waits:
-                interval = kwargs["input_times"][1] - kwargs["input_times"][0]
-                self.assertEqual(kwargs["input_times"][:3], [0, interval, interval * 2])
+                interval = active_interval
                 counts = tuple(node["clicks"] for node in waits)
                 wait_candidates[interval].setdefault(counts, candidate)
                 if interval not in {row[0] for row in native_evaluations}:
+                    self.assertEqual(kwargs["input_times"][:3], [0, interval, interval * 2])
                     result = real_evaluate(profile, candidate, folder, **kwargs)
                     native_evaluations.append((interval, candidate, result))
                     self.assertEqual(result["blocks"], blocks)
                     self.assertEqual(result["native_blocks"], blocks)
-                    return result
                 return _fast_evaluate(profile, candidate, folder, score_offset=1000, **kwargs)
             return _fast_evaluate(profile, candidate, folder, **kwargs)
 
@@ -1970,11 +1974,11 @@ class InterfaceTests(unittest.TestCase):
                 "candidate_limit": 8,
                 "round_candidate_limit": 8,
                 "batch_targets": (2,),
-                "validation_batches": 1,
-                "final_batches": 1,
+                "validation_batches": 2,
+                "final_batches": 20,
                 "iterations": 2,
-                "final_iterations": 2,
-                "scenarios": ("nominal",),
+                "final_iterations": 100,
+                "scenarios": ("nominal", "jitter", "slow", "pause", "phase"),
                 "max_processes": 1,
                 "random_seed": 20260926,
             }
@@ -1988,6 +1992,7 @@ class InterfaceTests(unittest.TestCase):
              patch.object(sequence, "evaluate", side_effect=evaluate):
             states = {}
             for interval in (300, 600):
+                active_interval = interval
                 created = self._json_request("POST", "/api/tasks", {
                     "profile": sample_profile(), "input_interval_ms": interval,
                 })
@@ -2001,20 +2006,31 @@ class InterfaceTests(unittest.TestCase):
                 states[interval] = state
 
         for interval, state in states.items():
-            self.assertEqual(state["status"], "validation_incomplete", state)
+            self.assertEqual(state["status"], "completed", state)
+            self.assertEqual(state["evidence_status"], "complete")
             self.assertEqual(state["input_interval_ms"], interval)
             self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
             self.assertGreaterEqual(len(wait_candidates[interval]), 2,
                                     "不同 WaitClicks 次数未作为不同候选评价")
             self.assertEqual(len({candidate["text"] for candidate in wait_candidates[interval].values()}),
                              len(wait_candidates[interval]))
+            selected_wait = next((candidate for candidate in wait_candidates[interval].values()
+                                  if candidate["text"] == state["candidate_text"]), None)
+            self.assertIsNotNone(selected_wait,
+                                 f"公开任务在 {interval} 毫秒间隔没有选择 WaitClicks 候选")
+            payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
+            actions = payload[1][b"Versions"][0][b"Actions"]
+            exported_waits = [action for action in actions if action[b"Type"] == b"Pause"]
+            expected_clicks = [node["clicks"] for node in selected_wait["program"]["nodes"]
+                               if node["kind"] == "Pause"]
+            self.assertEqual([action[b"Clicks"] for action in exported_waits], expected_clicks)
+            self.assertTrue(exported_waits and all(action[b"Clicks"] >= 2 for action in exported_waits))
             self.assertTrue(all(all(count >= 2 for count in counts)
                                 for counts in wait_candidates[interval]))
             self.assertTrue(next(iter(wait_candidates[interval].values()))["text"].startswith("!GSE3!"))
 
         self.assertEqual({row[0] for row in native_evaluations}, {300, 600},
                          "两个按键间隔都必须进入真实原生评价")
-        import cbor2
         for interval, candidate, result in native_evaluations:
             self.assertEqual(result["input_times"][:3], [0, interval, interval * 2])
             self.assertEqual(candidate["precombat_count"], 0)
