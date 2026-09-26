@@ -13,5 +13,8 @@
 | 本机构建＋完整验证 | 先 `build-and-verify build --project .`，再 `build-and-verify verify --project . --full --performance-report` | 均通过；构建 13.55 秒、验证 39.74 秒、合计 53.29 秒；2 个构建目标、37 项验证，Sim2GSE 测试组仍执行。 |
 | 开发检查器回归 | `.venv/Scripts/python.exe tests/dev/test_checks.py` | 通过。 |
 | 测试入口清单 | `.venv/Scripts/python.exe tests/dev/test_inventory.py` | 通过。 |
+| PR 固定基线验证 | `build-and-verify verify --project . --pr --base adf7414baa175070b7e183b31b3eafb6fa204996` | `status: passed`，36 项，排除 `verify.sim2gse`。 |
+| 本机固定基线验证 | `build-and-verify verify --project . --base adf7414baa175070b7e183b31b3eafb6fa204996` | `status: passed`，37 项。 |
+| MySpec 更新预览 | `myspec validate-delta`、`apply-delta` 到预览目录、`validate-main`、`diff` | 均通过；只修改既有 CI 完整验证要求，主规格未动。 |
 
-原始输出保存在忽略目录 `.local/pr-local-engine-checks/`。PR 远端检查、固定基线差异验证和独立审查仍待完成；本文件不将它们标为已通过。
+原始输出保存在忽略目录 `.local/pr-local-engine-checks/`。PR 远端检查和独立审查仍待完成；本文件不将它们标为已通过。
