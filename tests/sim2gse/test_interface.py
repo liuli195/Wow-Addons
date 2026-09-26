@@ -15,6 +15,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 import sys
 
@@ -1783,6 +1784,111 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("锁定候选", state["result_note"])
         self.assertEqual(state["phase"], "done")
         self.assertGreater(state["elapsed_seconds"], 0)
+
+    def test_public_search_generates_and_evaluates_a_sequential_loop(self) -> None:
+        import codec
+        import engine
+        import sequence
+        from test_search import _fast_evaluate, _fast_initialization
+        real_evaluate = sequence.evaluate
+
+        capabilities = {
+            "actions": [
+                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
+                     gcd_ms=1500, base_spell_id=77575),
+                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
+                     gcd_ms=1500, base_spell_id=47541),
+            ],
+            "precombat_actions": [], "sources": [], "protocol": 3,
+            "scope": "test", "coverage": "constructed-test-boundary",
+        }
+
+        def inspect(_reference, folder):
+            folder = Path(folder)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+            return capabilities
+
+        loop_evaluations = []
+        native_loop_evaluations = []
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            clicks = sequence.compiled_program(candidate)
+            blocks = [[action["simc_action"] for action in block] for block in candidate["blocks"]]
+            self.assertEqual([click or [] for click in clicks], blocks)
+            loop_nodes = [node for node in candidate["program"]["nodes"] if node["kind"] == "Loop"]
+            if loop_nodes:
+                loop_evaluations.append((candidate, loop_nodes[0], clicks))
+            if loop_nodes and not native_loop_evaluations:
+                result = real_evaluate(profile, candidate, folder, **kwargs)
+                native_loop_evaluations.append(candidate)
+                self.assertEqual(result["blocks"], blocks)
+                self.assertEqual(result["native_blocks"], blocks)
+                return result
+            return _fast_evaluate(profile, candidate, folder, score_offset=1000 if loop_nodes else 0,
+                                  **kwargs)
+
+        self.server.task_options = {
+            "search_config": {
+                "total_budget_seconds": 60,
+                "search_budget_seconds": 30,
+                "candidate_limit": 8,
+                "round_candidate_limit": 8,
+                "batch_targets": (2,),
+                "validation_batches": 1,
+                "final_batches": 1,
+                "iterations": 2,
+                "final_iterations": 2,
+                "scenarios": ("nominal",),
+                "max_processes": 1,
+                "random_seed": 20260926,
+            }
+        }
+        real_gse_runner = codec.run_command
+        with _fast_initialization(real_engine=True), \
+             patch.object(codec, "run_command", side_effect=real_gse_runner), \
+             patch.object(engine, "inspect", side_effect=inspect), \
+             patch.object(sequence, "check_report", new=engine.check_report), \
+             patch.object(sequence, "evaluate", side_effect=evaluate):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 45
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(state["status"], "validation_incomplete", state)
+        self.assertTrue(state["result_ready"])
+        self.assertTrue(loop_evaluations, "自动搜索没有从普通种子生成并评价顺序 Loop 候选")
+        self.assertTrue(native_loop_evaluations, "顺序 Loop 没有通过原生受控评价")
+        candidate, loop, clicks = loop_evaluations[0]
+        self.assertEqual(loop["step_function"], "Sequential")
+        self.assertGreaterEqual(loop["count"], 2)
+        body = loop["body"]
+        source_prefix = loop["source"]["path"] + ".loop["
+        source_clicks = candidate["compiled_program"]["clicks"]
+        loop_clicks = [click for click in source_clicks
+                       if click["source"]["path"].startswith(source_prefix)]
+        self.assertEqual([click["commands"] for click in loop_clicks],
+                         [[command["simc_action"] for command in node["commands"]]
+                          for _ in range(loop["count"]) for node in body])
+        self.assertEqual([click["source"]["path"] for click in loop_clicks],
+                         [node["source"]["path"] for _ in range(loop["count"]) for node in body])
+        self.assertEqual([click["source"]["gse_path"] for click in loop_clicks],
+                         [node["source"]["gse_path"] for _ in range(loop["count"]) for node in body])
+
+        import cbor2
+        payload = cbor2.loads(zlib.decompress(base64.b64decode(candidate["text"][6:]), -15))
+        exported_actions = payload[1][b"Versions"][0][b"Actions"]
+        loop_index = int(loop["source"]["gse_path"]) - 1
+        exported_loop = exported_actions[loop_index]
+        self.assertEqual(exported_loop[b"Type"], b"Loop")
+        self.assertEqual(exported_loop[b"StepFunction"], b"Sequential")
+        self.assertEqual(int(exported_loop[b"Repeat"]), loop["count"])
+        self.assertEqual([exported_loop[index][b"spell"] for index in range(1, len(body) + 1)],
+                         [node["commands"][0]["spell_id"] for node in body])
 
     def test_old_incomplete_result_still_reports_the_seed_it_selected(self) -> None:
         destination = Path(self.directory.name) / "旧任务"

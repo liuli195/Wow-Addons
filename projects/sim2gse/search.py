@@ -145,18 +145,25 @@ def initial_programs(capabilities, reference, seed=20260912):
 
 
 def _copy_program(program):
-    return [list(block) for block in program]
+    return [dict(segment, blocks=[list(block) for block in segment["blocks"]])
+            if isinstance(segment, dict) and segment.get("kind") == "Loop"
+            else list(segment) for segment in program]
 
 
 def mutate(program, capabilities, rng, *, feedback=None):
-    """执行交换、替换、插删、片段移动、块内调整或重启中的一个操作。"""
+    """执行动作块变异，或把普通连续动作块包成顺序循环。"""
     source = _copy_program(program)
     available = [a["simc_action"] for a in capabilities["actions"]]
     if not source or not available:
         return source
-    operation = rng.choice(("swap", "replace", "insert", "delete", "move", "block"))
+    loop_indices = [index for index, segment in enumerate(source)
+                    if isinstance(segment, dict) and segment.get("kind") == "Loop"]
+    ordinary_indices = [index for index, segment in enumerate(source) if isinstance(segment, list)]
+    operations = ["swap", "replace", "insert", "delete", "move", "block"]
+    operations.append("repeat_count" if loop_indices else "loop")
+    operation = rng.choice(operations)
     suggested = None
-    if feedback and rng.random() < 0.5:
+    if operation != "loop" and feedback and rng.random() < 0.5:
         if feedback.get('untried'):
             operation,suggested='insert',rng.choice(feedback['untried'])
         elif feedback.get('resource_overflowed') and feedback.get('spenders'):
@@ -171,8 +178,8 @@ def mutate(program, capabilities, rng, *, feedback=None):
     if operation == "swap" and len(source) > 1:
         first, second = rng.sample(range(len(source)), 2)
         source[first], source[second] = source[second], source[first]
-    elif operation == "replace":
-        block = rng.randrange(len(source))
+    elif operation == "replace" and ordinary_indices:
+        block = rng.choice(ordinary_indices)
         source[block][rng.randrange(len(source[block]))] = rng.choice(available)
     elif operation == "insert" and len(source) < 128:
         block = rng.randrange(len(source))
@@ -187,14 +194,27 @@ def mutate(program, capabilities, rng, *, feedback=None):
         target = rng.randrange(len(source) + 1)
         source[target:target] = fragment
     elif operation == "block":
-        block = source[rng.randrange(len(source))]
-        if len(block)>1 and rng.random()<0.5:
+        if not ordinary_indices:
+            return source
+        block = source[rng.choice(ordinary_indices)]
+        if len(block) > 1 and rng.random() < 0.5:
             index=rng.randrange(len(block))
             command=block.pop(index)
             if rng.random()<0.5:
                 block.insert(rng.randrange(len(block)+1),command)
         elif len(block) < 16:
             block.insert(rng.randrange(len(block) + 1), rng.choice(available))
+    elif operation == "loop":
+        if len(source) > 1:
+            start = rng.randrange(len(source) - 1)
+            end = rng.randrange(start + 2, min(len(source), start + 4) + 1)
+        else:
+            start, end = 0, 1
+        source[start:end] = [dict(kind="Loop", count=rng.choice((2, 3)),
+                                  blocks=source[start:end])]
+    elif operation == "repeat_count":
+        loop = source[rng.choice(loop_indices)]
+        loop["count"] = 3 if loop["count"] == 2 else 2
     return source
 
 
@@ -382,7 +402,7 @@ def _tuple(value):
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
     from engine import check_report, player_report, CandidateError
-    from sequence import select, evaluate, compiled_program
+    from sequence import evaluate, compiled_program
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
@@ -411,8 +431,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if saved and digest(saved['candidate'])==saved['candidate_sha256']:
                 candidates[key]=saved['candidate']
             else:
-                from program import compile_program, from_action_blocks
-                candidates[key] = compile_program(from_action_blocks(select(capabilities, program)),
+                from program import compile_program, from_search_program
+                candidates[key] = compile_program(from_search_program(program, capabilities),
                                                   destination / 'exports' / key,
                                                   identity=reference['identity'], runtime=runtime)
         return candidates[key]

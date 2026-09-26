@@ -35,7 +35,7 @@ def lua_literal(value):
     return '{' + ','.join(f'[{lua_literal(k)}]={lua_literal(v)}' for k, v in items) + '}'
 
 
-def export(blocks, folder, *, identity, runtime=None):
+def export(blocks, folder, *, identity, runtime=None, program=None):
     """同一动作块产生编码对象和编译断言，不改变块顺序。"""
     runtime = runtime or TaskRuntime()
     runtime.check()
@@ -53,8 +53,7 @@ def export(blocks, folder, *, identity, runtime=None):
     def ground(command):
         spell = command.get('spell_id') if command['kind'] == 'spell' else command.get('driver_spell_id')
         return bool(targeting['target_masks'].get(str(spell), 0) & 64)
-    actions, steps = [], []
-    for block in blocks:
+    def encode_block(block):
         if not block:
             raise ValueError('动作块不能为空')
         if len(block) > 1 or any(ground(c) or c.get('condition') for c in block):
@@ -79,9 +78,8 @@ def export(blocks, folder, *, identity, runtime=None):
             macro = '\n'.join(lines)
             if max(len(macro.encode('utf-8')), len('\n'.join(translated).encode('utf-8'))) > 255:
                 raise ValueError('同块宏文本超过 255 字节')
-            actions.append(dict(Type='Action', type='macro', macro=macro))
-            steps.append(dict(type='macro', macrotext='\n'.join(translated)))
-            continue
+            return dict(Type='Action', type='macro', macro=macro), \
+                dict(type='macro', macrotext='\n'.join(translated))
         command = block[0]
         if command['kind'] == 'spell':
             action = dict(type='spell', spell=command['spell_id'])
@@ -94,16 +92,65 @@ def export(blocks, folder, *, identity, runtime=None):
             step = dict(type='macro', macrotext='/startattack')
         else:
             raise ValueError('无法导出的动作')
-        actions.append(dict(Type='Action', **action))
-        steps.append(step)
+        return dict(Type='Action', **action), step
+
+    actions, steps, upstream_steps = [], [], []
+    if program is None:
+        for index, block in enumerate(blocks, 1):
+            action, step = encode_block(block)
+            actions.append(action)
+            steps.append(step)
+            upstream_steps.append(dict(step, blockPath=str(index)))
+    else:
+        if program.get('adapter') != 'search' or not isinstance(program.get('nodes'), list):
+            raise ValueError('搜索导出程序结构无效')
+        expanded_count = 0
+        for index, node in enumerate(program['nodes'], 1):
+            runtime.check()
+            source = node.get('source')
+            if not isinstance(source, dict):
+                raise ValueError('搜索导出节点缺少来源位置')
+            if node.get('kind') == 'Action':
+                action, step = encode_block(node.get('commands'))
+                actions.append(action)
+                steps.append(step)
+                upstream_steps.append(dict(step, blockPath=source.get('gse_path', str(index))))
+            elif node.get('kind') == 'Loop':
+                body = node.get('body')
+                count = node.get('count')
+                if (node.get('step_function') != 'Sequential' or type(count) is not int
+                        or count < 1 or not isinstance(body, list) or not body):
+                    raise ValueError('搜索只支持有效的 Sequential Loop')
+                if expanded_count + count * len(body) > 4096:
+                    raise ValueError('搜索程序展开超过 4096 次按键')
+                loop = dict(Type='Loop', Repeat=str(count), StepFunction='Sequential')
+                body_steps = []
+                for child_index, child in enumerate(body, 1):
+                    if child.get('kind') != 'Action' or not isinstance(child.get('source'), dict):
+                        raise ValueError('搜索 Loop 只支持有来源位置的动作块')
+                    action, step = encode_block(child.get('commands'))
+                    loop[child_index] = action
+                    body_steps.append((step, child['source'].get(
+                        'gse_path', f"{source.get('gse_path', index)}.{child_index}")))
+                actions.append(loop)
+                for _ in range(count):
+                    for step, gse_path in body_steps:
+                        steps.append(step)
+                        upstream_steps.append(dict(step, blockPath=gse_path))
+                expanded_count += count * len(body)
+            else:
+                raise ValueError('搜索导出包含不支持的节点')
+        if len(steps) != len(blocks):
+            raise ValueError('搜索导出计划与动作块数量不一致')
     if not 1 <= len(actions) <= 128:
         raise ValueError('动作块数量必须在 1 至 128 之间')
-    name = 'S2G_' + hashlib.sha256(cbor2.dumps(blocks)).hexdigest()[:12].upper()
+    name_basis = blocks if program is None else actions
+    name = 'S2G_' + hashlib.sha256(cbor2.dumps(name_basis)).hexdigest()[:12].upper()
     sequence = dict(MetaData=dict(Name=name, SpecID=identity['spec_id'], GSEVersion=3332,
                                  Help='地面技能在角色脚下释放，目标须在范围内；目标数据 '+targeting['client_build']+'，模拟数据 12.1.0.69587。游戏效果尚待验证。'),
                     Default=1, Versions=[dict(Actions=actions, InbuiltVariables={})])
     payload = [name, sequence]
-    expected = dict(name=name, help=sequence['MetaData']['Help'], steps=steps, identity=identity,
+    expected = dict(name=name, help=sequence['MetaData']['Help'], steps=upstream_steps, identity=identity,
                     spells={c['spell_id']: c['name'] for b in blocks for c in b if c['kind'] == 'spell'})
     folder.mkdir(parents=True, exist_ok=True)
 

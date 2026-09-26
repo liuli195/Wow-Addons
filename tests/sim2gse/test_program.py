@@ -20,7 +20,7 @@ from gse_import import (_map_step, decode_import, import_action_spell_ids,
                         import_action_spell_names, inspect_import)  # noqa: E402
 from macro_interpreter import (macro_spell_ids, macro_spell_names, map_action, map_macro,
                                preflight_macro)  # noqa: E402
-from program import compile_program, from_action_blocks, from_gse_import  # noqa: E402
+from program import compile_program, from_action_blocks, from_gse_import, from_search_program  # noqa: E402
 from sequence import compiled_program  # noqa: E402
 
 
@@ -731,3 +731,19 @@ class ProgramTests(unittest.TestCase):
         self.assertEqual([node["commands"] if node["kind"] == "Action" else []
                           for node in new["compiled_program"]["clicks"]], compiled_program(new))
         self.assertEqual(new["compiled_program"]["clicks"][0]["source"]["path"], "blocks[0]")
+
+    def test_search_loop_over_4096_clicks_is_rejected_before_upstream_compile(self):
+        capabilities = dict(actions=[
+            dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak"),
+            dict(kind="spell", spell_id=47541, name="Death Coil", simc_action="death_coil"),
+        ], precombat_actions=[])
+        program = from_search_program([
+            dict(kind="Loop", count=2049, blocks=[["outbreak"], ["death_coil"]]),
+        ], capabilities)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("codec.run_command") as upstream, \
+             self.assertRaisesRegex(ValueError, "4096"):
+            compile_program(program, Path(directory), identity=dict(class_id=6, spec_id=252))
+
+        upstream.assert_not_called()

@@ -8,6 +8,7 @@ from codec import export
 class SourcePosition(TypedDict):
     adapter: str
     path: str
+    gse_path: NotRequired[str]
     sequence: NotRequired[str]
     version: NotRequired[int]
 
@@ -89,8 +90,10 @@ class CompiledProgram(TypedDict):
     clicks: list[CompiledClick]
 
 
-def _position(adapter, path, *, sequence=None, version=None):
+def _position(adapter, path, *, gse_path=None, sequence=None, version=None):
     position = SourcePosition(adapter=adapter, path=str(path))
+    if gse_path is not None:
+        position["gse_path"] = str(gse_path)
     if sequence is not None:
         position["sequence"] = sequence
     if version is not None:
@@ -110,6 +113,73 @@ def from_action_blocks(blocks):
     return Program(adapter="search", nodes=nodes, metadata={})
 
 
+def from_search_program(program, capabilities):
+    """把普通搜索动作块及其顺序 Loop 转成共享的 Program。"""
+    if not isinstance(program, list) or not program:
+        raise ValueError("搜索程序必须包含动作块")
+    if all(isinstance(segment, list) for segment in program):
+        from sequence import select
+
+        return from_action_blocks(select(capabilities, program))
+    if len(program) > 128:
+        raise ValueError("搜索程序超过 128 个顶层节点")
+
+    flat_blocks = []
+    segments = []
+    for segment in program:
+        if isinstance(segment, list):
+            segments.append(("Action", 1))
+            flat_blocks.append(segment)
+        elif isinstance(segment, dict) and segment.get("kind") == "Loop":
+            body = segment.get("blocks")
+            count = segment.get("count")
+            if (type(count) is not int or not 1 <= count <= 4096
+                    or not isinstance(body, list) or not body or len(body) > 128
+                    or any(not isinstance(block, list) for block in body)):
+                raise ValueError("搜索 Loop 的重复次数或动作块无效")
+            segments.append(("Loop", len(body), count))
+            flat_blocks.extend(body)
+        else:
+            raise ValueError("搜索程序包含不支持的节点")
+
+    from sequence import select
+
+    selected = select(capabilities, flat_blocks)
+    precombat_count = len(capabilities.get("precombat_actions", []))
+    nodes = []
+    for index, commands in enumerate(selected[:precombat_count]):
+        nodes.append(ActionNode(kind="Action", commands=commands,
+                                source=_position("search", f"blocks[{index}]",
+                                                  gse_path=str(index + 1))))
+
+    cursor = precombat_count
+    top_index = precombat_count
+    for segment, shape in zip(program, segments):
+        if shape[0] == "Action":
+            nodes.append(ActionNode(kind="Action", commands=selected[cursor],
+                                    source=_position("search", f"blocks[{top_index}]",
+                                                      gse_path=str(top_index + 1))))
+            cursor += 1
+            top_index += 1
+            continue
+        _, body_count, repeat_count = shape
+        body = []
+        loop_path = f"blocks[{top_index}]"
+        for index in range(body_count):
+            body.append(ActionNode(
+                kind="Action", commands=selected[cursor],
+                source=_position("search", f"{loop_path}.loop[{index}]",
+                                  gse_path=f"{top_index + 1}.{index + 1}")))
+            cursor += 1
+        nodes.append(LoopNode(kind="Loop", count=repeat_count, step_function="Sequential",
+                              body=body,
+                              source=_position("search", loop_path, gse_path=str(top_index + 1))))
+        top_index += 1
+    if cursor != len(selected):
+        raise ValueError("搜索程序与已选动作数量不一致")
+    return Program(adapter="search", nodes=nodes, metadata={})
+
+
 def from_gse_import(text, name, version, *, context=None, decoded=None):
     """解码 GSE 文本为共享 Program；原文只作为临时编译输入保留。"""
     from gse_import import program_from_import
@@ -117,18 +187,32 @@ def from_gse_import(text, name, version, *, context=None, decoded=None):
     return program_from_import(text, name, version, context=context, decoded=decoded)
 
 
-def _search_blocks(program):
-    blocks = []
+def _search_expanded_nodes(program):
+    expanded = []
     for node in program["nodes"]:
         if node["kind"] == "Action":
-            blocks.append(node["commands"])
-        elif node["kind"] == "EmptyClick":
-            blocks.append([])
+            if not node["commands"] or len(expanded) >= 4096:
+                raise ValueError("搜索程序包含无效动作或超过 4096 次按键")
+            expanded.append(node)
+        elif node["kind"] == "Loop":
+            body = node["body"]
+            count = node["count"]
+            if (node["step_function"] != "Sequential" or type(count) is not int
+                    or count < 1 or not body
+                    or any(child["kind"] != "Action" or not child["commands"] for child in body)):
+                raise ValueError("搜索只支持带有效动作的 Sequential Loop")
+            if len(expanded) + count * len(body) > 4096:
+                raise ValueError("搜索程序展开超过 4096 次按键")
+            expanded.extend(body * count)
         else:
-            raise ValueError("搜索程序当前只支持简单动作块")
-    if not blocks or any(not block for block in blocks):
-        raise ValueError("搜索导出暂不支持空点击")
-    return blocks
+            raise ValueError("搜索程序包含不支持的节点")
+    if not expanded:
+        raise ValueError("搜索程序没有可模拟动作")
+    return expanded
+
+
+def _search_blocks(program):
+    return [node["commands"] for node in _search_expanded_nodes(program)]
 
 
 def _with_compiled_program(candidate, program, clicks):
@@ -141,7 +225,7 @@ def _with_compiled_program(candidate, program, clicks):
 
 
 def _search_clicks(candidate, program):
-    nodes = [node for node in program["nodes"] if node["kind"] in {"Action", "EmptyClick"}]
+    nodes = _search_expanded_nodes(program)
     blocks = candidate["blocks"]
     if len(nodes) != len(blocks):
         raise ValueError("搜索程序与导出动作块数量不一致")
@@ -164,5 +248,9 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
                               capabilities=capabilities, context=context)
     if program.get("adapter") != "search":
         raise ValueError("未知的序列程序适配器")
-    candidate = export(_search_blocks(program), folder, identity=identity, runtime=runtime)
+    blocks = _search_blocks(program)
+    if any(node["kind"] == "Loop" for node in program["nodes"]):
+        candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program)
+    else:
+        candidate = export(blocks, folder, identity=identity, runtime=runtime)
     return _with_compiled_program(candidate, program, _search_clicks(candidate, program))

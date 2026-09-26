@@ -233,6 +233,14 @@ class SearchAndValidationTests(TestCase):
 
         self.assertEqual(initial_programs(capabilities, reference, seed=20260912), expected)
 
+    def test_loop_repeat_count_is_part_of_candidate_identity(self):
+        from search import program_key
+
+        body = [["outbreak"], ["death_coil"]]
+        twice = [dict(kind="Loop", count=2, blocks=body)]
+        three_times = [dict(kind="Loop", count=3, blocks=body)]
+        self.assertNotEqual(program_key(twice), program_key(three_times))
+
     def test_report_version_gate_accepts_historical_and_current_build(self):
         """历史报告在其对应版本上有效，升级不得把它们踢掉。"""
         import engine
