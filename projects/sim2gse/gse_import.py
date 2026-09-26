@@ -1679,7 +1679,7 @@ def _compiled_source_plan(nodes, context):
             elif kind == "Pause":
                 duration = node["duration_ms"]
                 if duration in {"GCD", "~~GCD~~"}:
-                    clicks = math.ceil(gcd_ms / click_ms)
+                    clicks = gcd_ms / click_ms
                 elif duration is not None:
                     # The pinned GSE source treats every numeric MS pause as one second.
                     clicks = math.ceil(1000 / click_ms)

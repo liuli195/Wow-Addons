@@ -1705,6 +1705,28 @@ class InterfaceTests(unittest.TestCase):
         self.assertGreater(state["dps"], 0)
         self.assertFalse(state["result_ready"])
 
+    def test_import_gcd_pause_uses_upstream_integer_click_count(self) -> None:
+        imported = gse_fixture(["GCD_PAUSE", {
+            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
+            "Versions": [{"Actions": [
+                {"Type": "Pause", "MS": "GCD"},
+                {"Type": "Action", "type": "spell", "spell": 77575},
+            ]}],
+        }])
+        source = Path(self.directory.name) / "gcd-pause.simc"
+        source.write_text(sample_profile(), encoding="utf-8")
+
+        result = run_task(
+            source, Path(self.directory.name) / "gcd-pause-task", mode="import",
+            gse_text=imported, sequence_name="GCD_PAUSE", version=1,
+            search_config={"input_interval_ms": 400},
+            gse_context={"click_ms": 400, "gcd_ms": 1500, "seed": 1},
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["controlled_simulation"]["blocks"],
+                         [[], [], [], ["outbreak"]])
+
     def test_public_service_reports_unmapped_import_skill_without_dps(self) -> None:
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
