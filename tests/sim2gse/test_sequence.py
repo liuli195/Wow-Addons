@@ -49,6 +49,9 @@ class SequenceSimulationTests(unittest.TestCase):
                                         capabilities=capabilities)
             result = evaluate(source, candidate, root / "controlled", character=character,
                               iterations=1, input_times=times, failed_actions=failures)
+            scored = evaluate(source, candidate, root / "scored", character=character,
+                              iterations=1, input_times=times, failed_actions=failures,
+                              trace=False)
         events = [event for event in result["trace"] if event["battle"] == 0]
         self.assertTrue(any(event["event"] == "observed_failed" and event["origin"] == 2
                             and event["sequence_member"] == 0 for event in events))
@@ -58,6 +61,8 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertEqual([event["action"] for event in executions[:3]],
                          ["festering_strike", "scourge_strike", "festering_strike"])
         self.assertEqual([event["sequence_member"] for event in executions[:3]], [0, 1, 0])
+        self.assertEqual(scored["trace"], [])
+        self.assertEqual(scored["summary"]["dps"], result["summary"]["dps"])
 
     def test_castsequence_repeated_clicks_do_not_replace_pending_member(self):
         from program import compile_program, from_search_program
