@@ -12,9 +12,9 @@ from engine import _profile_with_import_queries, identity, inspect, reference  #
 
 
 class ImportQueryProfileTests(unittest.TestCase):
-    def test_removed_engine_mode_is_rejected_before_filesystem_lookup(self):
+    def test_unknown_engine_mode_is_rejected_before_filesystem_lookup(self):
         with self.assertRaisesRegex(ValueError, "未知引擎模式"):
-            identity("tc")
+            identity("unknown")
 
     def test_queries_are_appended_to_a_copy_not_the_original_profile(self):
         with tempfile.TemporaryDirectory() as directory:

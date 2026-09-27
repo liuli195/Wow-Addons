@@ -4,7 +4,7 @@
 
 **Blocked by:** None；先于 02、03 实施，避免 TC 继续干扰 `/castsequence` 开发。
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 - [x] 删除 TC 补丁、兼容锁字段、`mode='tc'` 调用和构建分支；不重新构建 TC。
 - [x] 删除六项 TC 专属测试及其默认排除规则，统一验证完整运行剩余 Sim2GSE 测试。
@@ -19,3 +19,4 @@
 - Red：`identity('tc')` 在产物清理后仍尝试读取已删除的 `build.json`，抛出 `FileNotFoundError`；Green：入口先校验模式，聚焦测试 `1 passed`，引擎测试 `8 passed`。
 - 完整 Sim2GSE 回归：`227 passed, 83 subtests passed`；公开搜索任务验证真实原生评分并导出宏命令，聚焦测试 `1 passed`；测试入口清单检查通过。
 - 残留核对：产品、构建、验证路径没有 TC 入口；`.tools/sim2gse` 与 `.local/sim2gse` 不再有 TC 专属命名产物。正式规格旧条款的替换预览保存在 `.local/spec-work/castsequence-tc-removal/preview/sim2gse-sequence-evaluation/spec.md`，待门禁二应用。
+- 2026-09-28：引擎测试里最后一处 `identity('tc')` 示例改为普通未知模式，`test_engine.py` 8 项通过。现存 TC 字样限本票和门禁二待替换的旧正式规格；已删除引擎、构建路径和运行产物没有恢复。
