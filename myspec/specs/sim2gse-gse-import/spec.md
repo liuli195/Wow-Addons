@@ -95,7 +95,7 @@
 - **THEN** 系统显示待角色核验状态，不把静态预检通过当成本机模拟已完成，不显示 DPS。
 ### Requirement: Sim2GSE preserves the existing generated search behavior
 
-系统 MUST 保持普通动作候选的导出与模拟语义，以及既有自动搜索的评分、候选选择、预算和复测规则。外部 GSE 导入能力不得令其他高级结构自动进入搜索空间；本次仅允许搜索生成可忠实编译和模拟的顺序 `Loop`（循环）及 `Pause`（暂停空点击）候选。
+系统 MUST 保持普通动作候选的导出与模拟语义，以及既有自动搜索的评分、候选选择、预算和复测规则。外部 GSE 导入能力不得令其他高级结构自动进入搜索空间；自动搜索仅生成可忠实编译和模拟的顺序 `Loop`（循环）、`Pause`（暂停空点击）及本期支持的 `/castsequence` 候选。
 
 #### Scenario: A user searches with ordinary actions
 
@@ -105,7 +105,7 @@
 #### Scenario: Imported structures are outside the supported search subset
 
 - **WHEN** 用户导入包含其他 GSE 高级结构的序列，或运行自动搜索
-- **THEN** 导入检查和模拟仍按其原有能力工作；自动搜索仅新增本票支持的顺序循环与空点击候选，不因此生成其他高级结构。
+- **THEN** 导入检查和模拟仍按其原有能力工作；自动搜索只生成支持的普通动作、顺序循环、空点击与 `/castsequence` 候选，不因此生成其他高级结构。
 ### Requirement: Sim2GSE searches and evaluates sequential loops
 
 系统 MUST 能在自动搜索中生成、评价、选择和导出包含 `Sequential Loop`（顺序循环）及整个循环 `Repeat Count`（重复次数）的候选。不同重复次数 MUST 是不同候选；导出的序列 MUST 与锁定 GSE 编译器逐次按键展开的动作顺序、次数和来源一致，同一展开计划 MUST 用于本机受控模拟。不能忠实编译或展开超过 4096 次按键的候选 MUST 在评价前拒绝。
@@ -137,3 +137,16 @@
 
 - **WHEN** 候选要求一次空点击，或展开超过 4096 次按键
 - **THEN** 系统不会把 GSE 的 `Pause{Clicks=1}` 当作一次空点击，也不会对该超限候选给出本机伤害成绩。
+### Requirement: Sim2GSE interprets castsequence members and reset rules
+
+系统 MUST 识别可模拟的 `/castsequence` 成员序列与 `reset=N`、`target`、`combat`、`shift`、`ctrl`、`alt` 及其合法组合，保留宏原文与来源；未支持的宏条件或分支 MUST 在模拟前明确拒绝，不得去掉条件后模拟。
+
+#### Scenario: A supported castsequence is imported
+
+- **WHEN** 用户导入包含 `/castsequence reset=2/target A, B` 的有效 GSE 序列
+- **THEN** 系统保留两个成员的顺序与重置规则，使其可按同一规则进入受控模拟。
+
+#### Scenario: A castsequence uses an unsupported condition
+
+- **WHEN** 导入宏中的 `/castsequence` 含当前无法确定的条件或分支
+- **THEN** 系统指出对应宏行及拒绝原因，不启动该序列的伤害模拟，也不静默省略条件。

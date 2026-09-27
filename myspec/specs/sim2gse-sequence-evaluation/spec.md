@@ -107,14 +107,6 @@
 
 - **WHEN** 某次输入进入队列后被后续输入替换或在执行时被原生规则拒绝
 - **THEN** 轨迹保留该输入的排队处理记录，但成功执行序列不包含该技能。
-### Requirement: Sim2GSE keeps the TC queue comparison opt-in
-
-系统 MUST 保持现有受控控制策略为默认，并允许测试者显式选择 TC（社区服务端）队列对照策略；切换策略不得改变序列步进或原生战斗结算，且不得将对照策略标称为正式服完整复刻。
-
-#### Scenario: Comparison mode is selected
-
-- **WHEN** 同一序列、角色条件和按键时间分别使用默认策略与 TC 对照策略运行
-- **THEN** 两次结果标明所用控制策略，并各自输出可比较的原生执行轨迹；未显式选择时仍运行默认策略。
 ### Requirement: Sim2GSE labels offline validation accurately
 
 系统 MUST 把离线模拟与正式服游戏内验收区分开；输出独立模拟成绩时不得把未达到的时序差异目标或借助实测反馈取得的成绩标作已达成。
@@ -123,3 +115,42 @@
 
 - **WHEN** 只有自动测试和既有实测数据对照，而没有改后正式服游戏内验收
 - **THEN** 结果标明游戏内验收未运行，并如实保留频率与时序差异，不声称达到未证实的精度目标。
+### Requirement: Sim2GSE exposes supported engines only
+
+系统 MUST 仅提供 baseline（基准）与 controlled（受控）引擎；序列模拟使用受控引擎，并拒绝未知引擎模式。
+
+#### Scenario: Unsupported mode is selected
+
+- **WHEN** 测试者请求已移除或未知的引擎模式
+- **THEN** 系统拒绝该模式，不启动模拟或构建。
+### Requirement: Sim2GSE searches scores and exports castsequence candidates
+
+系统 MUST 能在现有自动搜索中生成并评价成员顺序和 Reset（重置）规则不同的 `/castsequence` 候选，按真实受控模拟成绩参与选择，并将选中候选导出为可导入 GSE 的 `/castsequence` 宏；不同规则或可观察重置场景不得混用成绩。
+
+#### Scenario: A castsequence candidate reaches selection
+
+- **WHEN** 搜索生成可模拟的 `/castsequence` 候选并完成评分
+- **THEN** 系统使用该候选的受控战斗成绩参与既有选择与复测，导出结果保留宏成员顺序和 Reset 规则。
+
+#### Scenario: Two reset scenarios differ
+
+- **WHEN** 相同成员序列分别在不同可观察 Reset 事件条件下评价
+- **THEN** 两次评价各自使用对应的重置行为与成绩，不复用另一场景的结果。
+### Requirement: Sim2GSE advances castsequence only after confirmed success
+
+系统 MUST 在逐次按键模拟中将 `/castsequence` 保持在当前成员，直到该成员确认成功才前进；失败、中断及等待结果期间的重复点击不得提前前进。最后一个成员成功后回到第一个成员。数字超时按客户端统一更新时钟及每次有效使用刷新，目标变化、脱战、修饰键和死亡按对应规则重置；重置前仍在途的旧施法结果不得推动重置后的新一轮序列。
+
+#### Scenario: A member fails or is still pending
+
+- **WHEN** 当前成员失败、中断，或施法结果未确认时再次点击
+- **THEN** 下一成员不会提前执行；后续有效输入仍按当前成员及原生按键队列处理。
+
+#### Scenario: Reset occurs while an older spell is pending
+
+- **WHEN** 重置事件发生时旧成员已有待确认施法
+- **THEN** 旧施法仍可按原生战斗规则完成，但其结果不推进重置后的序列；后续输入从第一个成员开始。
+
+#### Scenario: The final member succeeds
+
+- **WHEN** `/castsequence` 的最后一个成员确认成功
+- **THEN** 下一次有效使用从第一个成员开始。
