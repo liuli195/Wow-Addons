@@ -61,6 +61,21 @@ def compiled_program(candidate):
     return _search_compiled_blocks(candidate)
 
 
+def compiled_identity(candidate):
+    """批次缓存身份；有状态宏必须带完整定义，避免不同规则复用成绩。"""
+    blocks = compiled_program(candidate)
+    castsequences = candidate.get("compiled_program", {}).get("castsequences", [])
+    if not castsequences:
+        return blocks
+    return {
+        "blocks": blocks,
+        "castsequences": [
+            {"step": row["step"], "members": row["members"], "reset": row.get("reset")}
+            for row in castsequences
+        ],
+    }
+
+
 def _search_compiled_blocks(candidate):
     spells = {str(a['spell_id']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'}
     spells.update({a['name']: a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'})
@@ -82,6 +97,10 @@ def _search_compiled_blocks(candidate):
                     block.append(spells[re.sub(r'^\[[^]]+\] ', '', line[6:])])
                 elif re.fullmatch(r'/use (?:\[[^]]+\] )?(13|14)', line):
                     block.append(items[line.split()[-1]])
+                elif line.startswith('/castsequence '):
+                    from macro_interpreter import parse_castsequence
+                    actions = [action for candidate_block in candidate['blocks'] for action in candidate_block]
+                    block.extend(parse_castsequence(line, 'compiled_steps', actions)['members'])
                 else:
                     raise ValueError('上游编译产生了不支持的宏命令')
         else:
@@ -95,15 +114,13 @@ def _search_compiled_blocks(candidate):
 
 def evaluate(profile, candidate, folder, *, character, iterations=100, seed=20260912, trace=True,
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
-             failure_events=None,
+             failure_events=None, reset_events=None,
              runtime=None, simulation_config=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
-    if mode not in ('controlled', 'tc'):
+    if mode != 'controlled':
         raise ValueError('原版引擎不兼容受控序列')
-    if mode == 'tc' and any(value is not None for value in (gcd_states, failed_actions, failure_events)):
-        raise ValueError('TC 对照只接受按键时刻，不接受实测状态反馈')
     input_times = list(range(0, 180000, 300)) if input_times is None else input_times
     if (not isinstance(input_times, list) or not 1 <= len(input_times) <= 4096 or
             any(type(t) is not int or not 0 <= t < 180000 for t in input_times) or
@@ -129,6 +146,15 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 re.fullmatch(r'[a-z0-9_]+', event[2]) is None
                 for event in failure_events)):
         raise ValueError('失败事件必须使用真实时刻、输入序号和动作名，且不能与旧式反馈混用')
+    reset_kinds = {'target', 'combat', 'shift', 'ctrl', 'alt', 'death'}
+    if reset_events is not None and (
+            not isinstance(reset_events, list) or
+            any(not isinstance(event, tuple) or len(event) != 2 or
+                type(event[0]) is not int or not 0 <= event[0] < 180000 or
+                event[1] not in reset_kinds or
+                (event[1] in {'shift', 'ctrl', 'alt'} and event[0] not in input_times)
+                for event in reset_events)):
+        raise ValueError('/castsequence Reset 事件必须使用有效时刻和类型；修饰键须对应点击')
     blocks = compiled_program(candidate)
     precombat_count = candidate.get('precombat_count', 0)
     if not 0 <= precombat_count < len(blocks):
@@ -149,9 +175,44 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                  'sim2gse_timed_feedback=1\n'
                  + 'sim2gse_failure_events=' + '/'.join(f'{ms},{origin},{action}'
                                                      for ms, origin, action in failure_events) + '\n')
+    castsequences = candidate.get('compiled_program', {}).get('castsequences', [])
+    castsequence_option = ''
+    if castsequences:
+        rows = []
+        seen_steps = set()
+        for row in castsequences:
+            step = row.get('step')
+            members = row.get('members')
+            if (type(step) is not int or not 0 <= step < len(runtime_blocks) or step in seen_steps
+                    or not isinstance(members, list) or not 2 <= len(members) <= 32
+                    or any(member not in pool for member in members)
+                    or runtime_blocks[step] != members):
+                raise ValueError('/castsequence 编译定义与按键计划不一致')
+            seen_steps.add(step)
+            reset = row.get('reset') or {}
+            timeout = reset.get('timeout_seconds')
+            timeout_ms = ''
+            if timeout is not None:
+                if type(timeout) is not int or not 1 <= timeout <= 2147483647:
+                    raise ValueError('/castsequence reset 时间必须是正整数秒')
+                timeout_ms = f':{timeout * 1000}'
+            flags = reset.get('flags') or []
+            flag_bits = {'target': 1, 'combat': 2, 'shift': 4, 'ctrl': 8, 'alt': 16}
+            if (not isinstance(flags, list) or len(set(flags)) != len(flags) or
+                    any(flag not in flag_bits for flag in flags)):
+                raise ValueError('/castsequence reset 标志无效')
+            if flags:
+                timeout_ms = f':{timeout * 1000 if timeout is not None else 0}:' + str(
+                    sum(flag_bits[flag] for flag in flags))
+            rows.append(f"{step}:" + ','.join(str(pool.index(member) + 1) for member in members)
+                        + timeout_ms)
+        castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
     generated.write_text(Path(profile).read_text(encoding='utf-8') + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
                          + f'sim2gse_steps={indices}\nsim2gse_trace={int(trace)}\n'
+                         + castsequence_option
+                         + ('' if not reset_events else 'sim2gse_castsequence_events=' +
+                            '/'.join(f'{ms},{kind}' for ms, kind in reset_events) + '\n')
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n'
                          + feedback, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
@@ -190,10 +251,12 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         for line in (folder / 'native.txt').read_text(encoding='utf-8').splitlines():
             if 'S2GSE\t' not in line:
                 continue
-            ms, event, origin, step, action, gcd, rp, health, cooldown, battle, signature, cast_ms = line.split('S2GSE\t', 1)[1].split('\t')
+            (ms, event, origin, step, action, gcd, rp, health, cooldown, battle, signature,
+             cast_ms, sequence_step, sequence_member) = line.split('S2GSE\t', 1)[1].split('\t')
             events.append(dict(ms=float(ms), event=event, origin=int(origin), step=int(step), action=action,
                                gcd=float(gcd), rp=float(rp), health=float(health), cooldown_ms=float(cooldown),
-                               battle=int(battle), signature=signature, cast_ms=float(cast_ms)))
+                               battle=int(battle), signature=signature, cast_ms=float(cast_ms),
+                               sequence_step=int(sequence_step), sequence_member=int(sequence_member)))
     if trace:
         inputs = [e for e in events if e['event'] == 'input']
         executed = [e for e in events if e['event'] == 'native_execute']
@@ -212,6 +275,13 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                or e['signature'] not in runtime_blocks[e['step']]
                for e in dispatches + executed + interrupted):
             raise ValueError('原生动作不属于来源输入对应的编译块')
+        by_step = {row['step']: row['members'] for row in castsequences}
+        if any((e['sequence_step'] != e['step'] or
+                not 0 <= e['sequence_member'] < len(by_step[e['step']]) or
+                (e['event'] in {'dispatch', 'native_execute', 'native_interrupt'} and
+                 e['action'] != by_step[e['step']][e['sequence_member']]))
+               for e in events if e['step'] in by_step):
+            raise ValueError('/castsequence 原生成员轨迹与编译定义不一致')
         expected_precombat = [block[0] for block in blocks[:precombat_count]]
         if expected_precombat:
             battles = {e['battle'] for e in events if e['event'] == 'input'}
@@ -234,5 +304,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
                 gcd_states=gcd_states, failed_actions=failed_actions,
                 failure_events=failure_events, consistent=True,
+                reset_events=reset_events,
+                castsequences=castsequences,
                 summary=summary, report=report, trace=events,
-                game_validation='not_run', model='native_tc' if mode == 'tc' else 'native_controlled')
+                game_validation='not_run', model='native_controlled')

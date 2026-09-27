@@ -75,7 +75,7 @@ def _fast_report(character, score, samples):
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
-                   runtime=None, score_offset=0, simulation_config=None):
+                   runtime=None, score_offset=0, simulation_config=None, reset_events=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -148,6 +148,50 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_search_can_vary_castsequence_timeout_without_event_variants(self):
+        from search import program_key
+
+        class TimeoutChoice:
+            @staticmethod
+            def choice(values):
+                if 'castsequence_reset' in values:
+                    assert 'castsequence_reset_flag' not in values
+                    return 'castsequence_reset'
+                if 2 in values:
+                    return 2
+                return values[0]
+
+        original = [dict(kind='CastSequence', members=['outbreak', 'death_coil'], reset=None)]
+        changed = mutate(original, _fast_capabilities(), TimeoutChoice())
+        self.assertEqual(changed[0]['reset'], {'timeout_seconds': 2, 'flags': []})
+        self.assertIsNone(original[0]['reset'])
+        self.assertNotEqual(program_key(changed), program_key(original))
+
+    def test_search_can_vary_observable_castsequence_reset_flag(self):
+        class FlagChoice:
+            @staticmethod
+            def choice(values):
+                if 'castsequence_reset_flag' in values:
+                    return 'castsequence_reset_flag'
+                if 'target' in values:
+                    return 'target'
+                return values[0]
+
+        original = [dict(kind='CastSequence', members=['outbreak', 'death_coil'], reset=None)]
+        changed = mutate(original, _fast_capabilities(), FlagChoice(), reset_flags=('target',))
+        self.assertEqual(changed[0]['reset'], {'timeout_seconds': None, 'flags': ['target']})
+
+    def test_search_reset_events_require_observable_scenario(self):
+        from search import config_for
+
+        configured = config_for({'scenarios': ('nominal',),
+                                 'reset_events': ((3000, 'target'), (6000, 'shift'))})
+        self.assertEqual(configured['reset_events'], ((3000, 'target'), (6000, 'shift')))
+        with self.assertRaisesRegex(ValueError, '修饰键'):
+            config_for({'scenarios': ('nominal',), 'reset_events': ((6001, 'shift'),)})
+        with self.assertRaisesRegex(ValueError, '修饰键'):
+            config_for({'reset_events': ((6000, 'shift'),)})
+
     def test_real_deathknight_search_matches_fixed_baseline_golden(self):
         """固定基线 fa2ea136 的 DK 测试资料搜索结果和候选顺序不得改变。"""
         expected_key = "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc"
@@ -632,12 +676,16 @@ class SearchAndValidationTests(TestCase):
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             config=dict(total_budget_seconds=120,search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
                         validation_batches=2,final_batches=2,iterations=2,final_iterations=2,
-                        scenarios=('nominal',),max_processes=1)
+                        scenarios=('nominal',),max_processes=1,
+                        reset_events=((4500, 'target'),))
             with _fast_search_boundary():
                 first=run_task(source,Path(directory)/'first',search_config=config)
                 source.write_text(sample_profile()+'\n# display note\n',encoding='utf-8')
                 second=run_task(source,Path(directory)/'second',search_config=config)
+                changed_events=dict(config, reset_events=((6000, 'target'),))
+                third=run_task(source,Path(directory)/'third',search_config=changed_events)
             self.assertTrue(second['search']['records'][0]['batches'][0].get('cached'))
+            self.assertFalse(third['search']['records'][0]['batches'][0].get('cached'))
             one=first['final']['scenarios']['nominal']['candidate'][0]
             two=second['final']['scenarios']['nominal']['candidate'][0]
             self.assertNotEqual(one['request']['seed'],two['request']['seed'])

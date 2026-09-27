@@ -4,7 +4,7 @@
  
  void action_t::cancel()
  {
-+  if ( player->sim2gse_trace && player->executing == this && execute_event )
++  if ( !player->sim2gse_steps.empty() && player->executing == this && execute_event )
 +    player->sim2gse_record("native_interrupt", this,
 +      debug_cast<action_execute_event_t*>(execute_event)->sim2gse_origin);
 +
@@ -15,7 +15,7 @@
  
  void action_t::interrupt_action()
  {
-+  if ( player->sim2gse_trace && player->executing == this && execute_event )
++  if ( !player->sim2gse_steps.empty() && player->executing == this && execute_event )
 +    player->sim2gse_record("native_interrupt", this,
 +      debug_cast<action_execute_event_t*>(execute_event)->sim2gse_origin);
 +

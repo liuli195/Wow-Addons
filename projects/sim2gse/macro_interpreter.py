@@ -55,18 +55,90 @@ def _macro_commands(text, path, *, pet_ready=True, enemy_target_ready=True):
             yield "targetenemy", None, "", line_path, line
             continue
         match = re.fullmatch(
-            r"/(cast|use|startattack|petattack|petassist|stopmacro)\s*(?:\[([^]]+)\])?\s*(.*)",
+            r"/(castsequence|cast|use|startattack|petattack|petassist|stopmacro)\s*(?:\[([^]]+)\])?\s*(.*)",
             line, re.IGNORECASE)
         if not match:
             raise ValueError(f"GSE {line_path} 的宏命令不能忠实模拟：{line[:80]}")
         command, condition, argument = match.groups()
         command = command.lower()
-        if condition and not _condition(condition, line_path, pet_ready=pet_ready,
-                                        enemy_target_ready=enemy_target_ready):
+        if (condition and command != "castsequence"
+                and not _condition(condition, line_path, pet_ready=pet_ready,
+                                   enemy_target_ready=enemy_target_ready)):
             continue
         yield command, condition, argument, line_path, line
         if command == "stopmacro" and not argument:
             break
+
+
+def parse_castsequence(text, source_path, actions=None):
+    """解析单条无宏条件 /castsequence；只返回定义，不保存运行时状态。"""
+    commands = list(_macro_commands(text, source_path))
+    if len(commands) != 1 or commands[0][0] != "castsequence":
+        raise ValueError(f"GSE {source_path} 不是单条 /castsequence")
+    _, condition, argument, line_path, line = commands[0]
+    if condition:
+        raise ValueError(f"GSE {line_path} 的 /castsequence 暂不支持宏条件")
+    if ";" in argument:
+        raise ValueError(f"GSE {line_path} 的 /castsequence 暂不支持条件分支")
+
+    argument = argument.strip()
+    reset = None
+    if argument.casefold().startswith("reset="):
+        parts = argument.split(None, 1)
+        if len(parts) != 2:
+            raise ValueError(f"GSE {line_path} 的 /castsequence 缺少序列成员")
+        reset_text = parts[0][6:]
+        argument = parts[1].strip()
+        if not reset_text:
+            raise ValueError(f"GSE {line_path} 的 /castsequence reset 为空")
+        timeout = None
+        flags = []
+        allowed = {"target", "combat", "shift", "ctrl", "alt"}
+        for token in reset_text.split("/"):
+            token = token.strip().casefold()
+            if not token:
+                raise ValueError(f"GSE {line_path} 的 /castsequence reset 无效")
+            if re.fullmatch(r"\d+", token):
+                value = int(token)
+                if value <= 0 or timeout is not None:
+                    raise ValueError(f"GSE {line_path} 的 /castsequence reset 时间无效")
+                timeout = value
+            elif token in allowed and token not in flags:
+                flags.append(token)
+            else:
+                raise ValueError(f"GSE {line_path} 的 /castsequence reset 不支持：{token}")
+        reset = {"timeout_seconds": timeout, "flags": flags}
+
+    names = [name.strip() for name in argument.split(",")]
+    if not 1 <= len(names) <= 32 or any(not name for name in names):
+        raise ValueError(f"GSE {line_path} 的 /castsequence 序列成员无效")
+    members = []
+    spell_ids = []
+    display_names = []
+    member_actions = []
+    for name in names:
+        if actions is None:
+            continue
+        mapped = map_action("spell", name, actions, line_path)
+        if len(mapped) != 1:
+            raise ValueError(f"GSE {line_path} 的 /castsequence 成员不能唯一映射：{name}")
+        member = mapped[0]
+        action = next(action for action in actions
+                      if action.get("kind") == "spell" and action.get("simc_action") == member)
+        members.append(member)
+        spell_ids.append(int(action["spell_id"]))
+        display_names.append(str(action.get("name") or member))
+        member_actions.append(action)
+    return {
+        "kind": "castsequence",
+        "members": members if actions is not None else names,
+        "spell_ids": spell_ids,
+        "display_names": display_names,
+        "actions": member_actions if actions is not None else [],
+        "reset": reset,
+        "source_path": line_path,
+        "macro": line,
+    }
 
 
 def preflight_macro(text, source_path):
@@ -77,6 +149,9 @@ def preflight_macro(text, source_path):
         if command == "stopmacro" and not argument:
             continue
         if command == "cast" and argument:
+            continue
+        if command == "castsequence" and argument:
+            parse_castsequence(line, line_path)
             continue
         if command == "use" and argument in {"13", "14"}:
             continue
@@ -148,6 +223,8 @@ def map_macro(text, source_path, scenario, actions):
                     raise ValueError(f"GSE {line_path} 的 @player 目标不能按当前角色验证")
             block += map_action("spell", argument, actions, source_path)
             continue
+        if command == "castsequence" and argument:
+            raise ValueError(f"GSE {line_path} 的 /castsequence 需要有状态运行，不能展开为普通动作块")
         if command == "use" and argument in {"13", "14"}:
             block += map_action("item", argument, actions, source_path)
             continue

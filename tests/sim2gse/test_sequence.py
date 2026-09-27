@@ -33,6 +33,212 @@ def imported_sequence(name, actions):
 
 
 class SequenceSimulationTests(unittest.TestCase):
+    def test_castsequence_idle_timeout_restarts_first_member(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"],
+             "reset": {"timeout_seconds": 2, "flags": []}},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-timeout-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=[0, 3000, 6000, 9000, 12000])
+        executions = [event for event in result["trace"]
+                      if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike"}]
+        self.assertGreaterEqual(len(executions), 2, result["trace"])
+        self.assertEqual([event["action"] for event in executions[:2]],
+                         ["festering_strike", "festering_strike"])
+
+    def test_castsequence_timeout_refreshes_on_repeated_use(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike", "outbreak"],
+             "reset": {"timeout_seconds": 2, "flags": []}},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-refresh-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=list(range(0, 7000, 300)))
+        executions = [event["action"] for event in result["trace"]
+                      if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
+        self.assertGreaterEqual(len(executions), 3, result["trace"])
+        self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
+
+    def test_castsequence_timeout_waits_for_next_client_update(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike", "outbreak"],
+             "reset": {"timeout_seconds": 2, "flags": []}},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-update-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            for at, expected in ((6999, "outbreak"), (7001, "festering_strike")):
+                result = evaluate(source, candidate, root / str(at), character=character,
+                                  iterations=1, input_times=[0, 3000, 4000, 4500, 6000, at])
+                executions = [event["action"] for event in result["trace"]
+                              if event["event"] == "native_execute"
+                              and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
+                self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", expected])
+
+    def test_castsequence_reset_while_second_member_pending_keeps_old_identity(self):
+        from program import compile_program, from_search_program
+
+        text = (REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8')
+        with tempfile.TemporaryDirectory(prefix='castsequence-pending-reset-') as directory:
+            root = Path(directory)
+            source, character, native, capabilities = self.prepare(text, root / 'setup')
+            program = from_search_program([
+                {"kind": "CastSequence", "members": ["consume", "the_hunt"],
+                 "reset": {"timeout_seconds": None, "flags": ["target"]}},
+            ], capabilities)
+            candidate = compile_program(program, root / 'export', identity=native['identity'],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / 'controlled', character=character,
+                              iterations=1, input_times=list(range(0, 7000, 100)),
+                              reset_events=[(3600, 'target')])
+        executions = [event for event in result['trace']
+                      if event['event'] == 'native_execute'
+                      and event['action'] in {'consume', 'the_hunt'}]
+        self.assertEqual([(event['action'], event['sequence_member']) for event in executions[:3]],
+                         [('consume', 0), ('the_hunt', 1), ('consume', 0)])
+
+    def test_castsequence_reset_does_not_restore_old_queue_as_pending(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["putrefy", "soul_reaper"],
+             "reset": {"timeout_seconds": None, "flags": ["target"]}},
+            ["putrefy"],
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-stale-queue-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=[0, 1050, 1120, 1270, 1340, 1410, 1500, 3000],
+                              gcd_states=[(0, 1270)] * 3 + [(1270, 1200)] * 4 + [(0, 0)],
+                              reset_events=[(1280, "target")],
+                              failure_events=[(1300, 3, "putrefy")])
+        events = result["trace"]
+        sequence_step = result["castsequences"][0]["step"]
+        self.assertTrue(any(event["event"] == "queue_restore" and event["origin"] == 2
+                            and event["sequence_step"] == sequence_step
+                            for event in events), events)
+        self.assertFalse(any(event["event"] == "castsequence_pending" and event["ms"] == 1340
+                             for event in events), events)
+        self.assertTrue(any(event["event"] == "native_execute" and event["origin"] == 2
+                            and event["sequence_member"] == 0 and event["ms"] > 1280
+                            for event in events), events)
+        self.assertTrue(any(event["event"] == "queue" and event["origin"] == 8
+                            and event["sequence_step"] == sequence_step
+                            and event["sequence_member"] == 0 for event in events), events)
+
+    def test_castsequence_reset_events_restart_first_member(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        cases = [
+            ('target', ['target'], 4500), ('combat', ['combat'], 4500),
+            ('shift', ['shift'], 9000), ('ctrl', ['ctrl'], 9000),
+            ('alt', ['alt'], 9000), ('death', [], 4500),
+            ('combined', ['target', 'shift'], 4500),
+        ]
+        for event_kind, flags, at in cases:
+            with self.subTest(event=event_kind):
+                reset = ({"timeout_seconds": 30 if event_kind == 'combined' else None,
+                          "flags": flags} if flags else None)
+                program = from_search_program([
+                    {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"],
+                     "reset": reset},
+                ], capabilities)
+                with tempfile.TemporaryDirectory(prefix="castsequence-reset-") as directory:
+                    root = Path(directory)
+                    candidate = compile_program(program, root / "export", identity=native["identity"],
+                                                capabilities=capabilities)
+                    result = evaluate(source, candidate, root / "controlled", character=character,
+                                      iterations=1, input_times=[0, 3000, 6000, 9000, 12000],
+                                      reset_events=[(at, event_kind if event_kind != 'combined' else 'target')])
+                executions = [event for event in result["trace"]
+                              if event["event"] == "native_execute"
+                              and event["action"] in {"festering_strike", "scourge_strike"}]
+                self.assertGreaterEqual(len(executions), 2, result["trace"])
+                self.assertEqual([event["action"] for event in executions[:2]],
+                                 ["festering_strike", "festering_strike"])
+
+    def test_castsequence_failure_holds_member_and_success_wraps(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"], "reset": None},
+        ], capabilities)
+        times = list(range(0, 20000, 300))
+        failures = [None] * len(times)
+        failures[1] = "festering_strike"
+        with tempfile.TemporaryDirectory(prefix="castsequence-failure-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=times, failed_actions=failures)
+            scored = evaluate(source, candidate, root / "scored", character=character,
+                              iterations=1, input_times=times, failed_actions=failures,
+                              trace=False)
+        events = [event for event in result["trace"] if event["battle"] == 0]
+        self.assertTrue(any(event["event"] == "observed_failed" and event["origin"] == 2
+                            and event["sequence_member"] == 0 for event in events))
+        executions = [event for event in events if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike"}]
+        self.assertGreaterEqual(len(executions), 3, events)
+        self.assertEqual([event["action"] for event in executions[:3]],
+                         ["festering_strike", "scourge_strike", "festering_strike"])
+        self.assertEqual([event["sequence_member"] for event in executions[:3]], [0, 1, 0])
+        self.assertEqual(scored["trace"], [])
+        self.assertEqual(scored["summary"]["dps"], result["summary"]["dps"])
+
+    def test_castsequence_repeated_clicks_do_not_replace_pending_member(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"], "reset": None},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-pending-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=list(range(0, 2400, 100)))
+        events = [event for event in result["trace"] if event["battle"] == 0]
+        executions = [event for event in events if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike"}]
+        self.assertGreaterEqual(len(executions), 2, events)
+        self.assertEqual([event["action"] for event in executions[:2]],
+                         ["festering_strike", "scourge_strike"])
+        self.assertEqual([event["sequence_member"] for event in executions[:2]], [0, 1])
+        self.assertEqual({event["sequence_step"] for event in executions[:2]},
+                         {result["castsequences"][0]["step"]})
+        self.assertTrue(any(event["event"] == "castsequence_pending" for event in events))
+        before_second_success = [event for event in events if event["ms"] < executions[1]["ms"]]
+        self.assertFalse([event for event in before_second_success
+                          if event["event"] == "replace" and event["action"] == "scourge_strike"],
+                         "等待当前成员成功时，重复点击不应替换其待执行请求")
+
     def test_public_entry_simulates_imported_loop_and_empty_clicks(self):
         text = imported_sequence("THIRD_PARTY", [
             {"Type": "Loop", "Repeat": "2", 1: {"Type": "Action", "type": "spell", "spell": 77575},
@@ -173,89 +379,6 @@ class SequenceSimulationTests(unittest.TestCase):
                                 and e['origin'] == 3 for e in events), events)
             self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'putrefy'
                                 and e['origin'] == 4 for e in events), events)
-
-    def test_tc_queue_rejects_early_request_and_replaces_pending_request(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['outbreak'], ['scourge_strike'], ['putrefy'], ['outbreak']])
-            simulation = evaluate(source, candidate, Path(directory) / 'tc-queue',
-                                  character=character, iterations=1,
-                                  input_times=[0, 100, 500, 1050, 1100, 1200],
-                                  mode='tc')
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'tc_reject' and e['action'] == 'scourge_strike'
-                                and e['origin'] == 3 for e in events), events)
-            self.assertTrue(any(e['event'] == 'tc_replace' and e['action'] == 'putrefy'
-                                and e['origin'] == 4 for e in events), events)
-            self.assertTrue(any(e['event'] == 'tc_execute_attempt' and e['action'] == 'outbreak'
-                                and e['origin'] == 5 and e['ms'] == 1450 for e in events), events)
-            self.assertFalse(any(e['event'] == 'queue_commit' for e in events), events)
-
-    def test_tc_pending_drains_on_exact_server_update_boundary(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['outbreak'], ['scourge_strike']])
-            simulation = evaluate(source, candidate, Path(directory) / 'tc-exact-update',
-                                  character=character, iterations=1,
-                                  input_times=[0, 1508, 2600], mode='tc')
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'tc_queue' and e['origin'] == 3
-                                and e['gcd'] == 2950 for e in events), events)
-            self.assertTrue(any(e['event'] == 'tc_execute_attempt' and e['origin'] == 3
-                                and e['ms'] == 2950 for e in events), events)
-
-    def test_tc_pending_waits_for_default_server_update_check(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['outbreak'], ['scourge_strike'], ['putrefy'], ['outbreak']])
-            simulation = evaluate(source, candidate, Path(directory) / 'tc-update',
-                                  character=character, iterations=1,
-                                  input_times=[0, 100, 500, 1050, 1100, 1200, 1445],
-                                  mode='tc')
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'tc_replace' and e['origin'] == 5
-                                and e['ms'] == 1445 for e in events), events)
-            self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 5
-                                 for e in events), events)
-            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 7
-                                for e in events), events)
-
-    def test_tc_queue_checks_resource_at_execution_not_admission(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['death_coil'], ['outbreak']])
-            simulation = evaluate(source, candidate, Path(directory) / 'tc-resource',
-                                  character=character, iterations=1,
-                                  input_times=[0, 1500, 1600],
-                                  mode='tc')
-            events = [e for e in simulation['trace'] if e['action'] == 'death_coil' and e['origin'] == 2]
-            self.assertTrue(any(e['event'] == 'tc_queue' for e in events), events)
-            self.assertTrue(any(e['event'] == 'tc_execute_attempt' for e in events), events)
-            self.assertTrue(any(e['event'] == 'dispatch_failed' for e in events), events)
-
-    def test_tc_queue_checks_skill_cooldown_at_execution_not_admission(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(self.prepared, [['army_of_the_dead']])
-            simulation = evaluate(source, candidate, Path(directory) / 'tc-cooldown',
-                                  character=character, iterations=1,
-                                  input_times=[0, 1500, 2900, 3000], mode='tc')
-            events = [e for e in simulation['trace'] if e['action'] == 'army_of_the_dead']
-            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 2 for e in events), events)
-            final = [e for e in events if e['origin'] == 4]
-            self.assertTrue(any(e['event'] == 'tc_queue' and e['cooldown_ms'] > 0 for e in final), events)
-            self.assertTrue(any(e['event'] == 'tc_execute_attempt' for e in final), events)
-            self.assertTrue(any(e['event'] == 'dispatch_failed' for e in final), events)
-
-    def test_tc_mode_rejects_observed_combat_feedback(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(self.prepared, [['outbreak']])
-            for feedback in (dict(gcd_states=[(0, 1270)]),
-                             dict(failed_actions=[None]),
-                             dict(failure_events=[])):
-                with self.subTest(feedback=feedback), self.assertRaisesRegex(ValueError, '只接受按键时刻'):
-                    evaluate(source, candidate, Path(directory) / 'tc-feedback',
-                             character=character, iterations=1, input_times=[0],
-                             mode='tc', **feedback)
 
     def test_precombat_cast_blocks_early_combat_action(self):
         with tempfile.TemporaryDirectory() as directory:

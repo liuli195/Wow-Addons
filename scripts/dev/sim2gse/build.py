@@ -46,8 +46,7 @@ def main():
         source = ROOT / '.tools/sim2gse/product' / mode
         output = ROOT / '.local/sim2gse/build' / mode
         output.mkdir(parents=True, exist_ok=True)
-        patches = (lock['patches'] + [lock['tc_patch']] if mode == 'tc' else
-                   lock['patches'] if mode == 'controlled' else lock['baseline_patches'])
+        patches = lock['patches'] if mode == 'controlled' else lock['baseline_patches']
         identity = dict(upstream_commit=lock['upstream_commit'], upstream_tree=lock['upstream_tree'], patches=patches,
                         build_options=lock['build_options'])
         marker = source / 'source-identity.json'
@@ -84,7 +83,7 @@ def main():
                 key = relative.as_posix()
                 patched = (lock.get('baseline_patched_files', {}) if mode == 'baseline' else
                            lock.get('patched_files', {}))
-                expected = (lock.get('tc_patched_files', {}).get(key) if mode == 'tc' else None) or patched.get(key)
+                expected = patched.get(key)
                 expected = expected or hashlib.sha256(zipped.read(entry)).hexdigest()
                 if digest(source / relative) != expected:
                     raise ValueError(f'源码与固定归档/补丁不符: {key}')

@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
     "random_seed": 20260912,
     "trace_search": False,
     "input_interval_ms": 300,
+    "reset_events": (),
 }
 
 
@@ -72,6 +73,19 @@ def config_for(values=None):
     config['scenarios']=tuple(config['scenarios'])
     if not config['scenarios'] or len(set(config['scenarios']))!=len(config['scenarios']) or set(config['scenarios'])-set(DEFAULT_SCENARIOS):
         raise ValueError('最终复测情景无效')
+    events = config['reset_events']
+    if not isinstance(events, (list, tuple)) or any(
+            not isinstance(row, (list, tuple)) or len(row) != 2 or
+            type(row[0]) is not int or not 0 <= row[0] < 180000 or
+            row[1] not in {'target', 'combat', 'shift', 'ctrl', 'alt', 'death'}
+            for row in events):
+        raise ValueError('/castsequence Reset 事件配置无效')
+    config['reset_events'] = tuple(tuple(row) for row in events)
+    if any(kind in {'shift', 'ctrl', 'alt'} for _, kind in config['reset_events']):
+        if (config['scenarios'] != ('nominal',) or
+                any(ms % config['input_interval_ms'] for ms, kind in config['reset_events']
+                    if kind in {'shift', 'ctrl', 'alt'})):
+            raise ValueError('修饰键 Reset 事件只支持与 nominal 情景点击对齐')
     return config
 
 
@@ -151,13 +165,18 @@ def _copy_program(program):
             item = dict(segment)
             if segment.get("kind") == "Loop":
                 item["blocks"] = [list(block) for block in segment["blocks"]]
+            elif segment.get("kind") == "CastSequence":
+                item["members"] = list(segment.get("members", []))
+                reset = segment.get("reset")
+                if isinstance(reset, dict):
+                    item["reset"] = dict(reset, flags=list(reset.get("flags", [])))
             copied.append(item)
         else:
             copied.append(list(segment))
     return copied
 
 
-def mutate(program, capabilities, rng, *, feedback=None):
+def mutate(program, capabilities, rng, *, feedback=None, reset_flags=()):
     """执行动作块、顺序 Loop 或 WaitClicks 变异。"""
     source = _copy_program(program)
     available = [a["simc_action"] for a in capabilities["actions"]]
@@ -168,9 +187,16 @@ def mutate(program, capabilities, rng, *, feedback=None):
     ordinary_indices = [index for index, segment in enumerate(source) if isinstance(segment, list)]
     wait_indices = [index for index, segment in enumerate(source)
                     if isinstance(segment, dict) and segment.get("kind") == "WaitClicks"]
+    castsequence_indices = [index for index, segment in enumerate(source)
+                            if isinstance(segment, dict) and segment.get("kind") == "CastSequence"]
     operations = ["swap", "replace", "insert", "delete", "move", "block"]
     operations.append("repeat_count" if loop_indices else "loop")
     operations.append("wait_clicks")
+    operations.append("castsequence_member" if castsequence_indices else "castsequence")
+    if castsequence_indices:
+        operations.append("castsequence_reset")
+        if reset_flags:
+            operations.append("castsequence_reset_flag")
     operation = rng.choice(operations)
     suggested = None
     if operation != "loop" and feedback and rng.random() < 0.5:
@@ -247,6 +273,59 @@ def mutate(program, capabilities, rng, *, feedback=None):
         elif len(source) < 128:
             source.insert(rng.randrange(len(source) + 1),
                           dict(kind="WaitClicks", clicks=rng.choice((2, 3, 4))))
+    elif operation == "castsequence":
+        spells = {action["simc_action"] for action in capabilities["actions"]
+                  if action.get("kind") == "spell"}
+        eligible = [index for index, segment in enumerate(source)
+                    if isinstance(segment, list) and len(segment) == 1 and segment[0] in spells]
+        pairs = [(first, second) for first, second in zip(eligible, eligible[1:])
+                 if second == first + 1]
+        if pairs:
+            start, second = rng.choice(pairs)
+            end = second + 1
+            while end < len(source) and end - start < 4:
+                segment = source[end]
+                if not (isinstance(segment, list) and len(segment) == 1 and segment[0] in spells):
+                    break
+                if rng.random() < 0.5:
+                    break
+                end += 1
+            members = [source[index][0] for index in range(start, end)]
+            source[start:end] = [dict(kind="CastSequence", members=members, reset=None)]
+    elif operation == "castsequence_member":
+        sequence = source[rng.choice(castsequence_indices)]
+        members = list(sequence.get("members", []))
+        spells = [action["simc_action"] for action in capabilities["actions"]
+                  if action.get("kind") == "spell"]
+        if members and spells:
+            position = rng.randrange(len(members))
+            alternatives = [name for name in spells if name != members[position]]
+            if alternatives:
+                members[position] = rng.choice(alternatives)
+                sequence["members"] = members
+    elif operation == "castsequence_reset":
+        sequence = source[rng.choice(castsequence_indices)]
+        reset = sequence.get("reset") or {}
+        current = reset.get("timeout_seconds")
+        timeout = rng.choice(tuple(value for value in (None, 1, 2, 3, 5)
+                                   if value != current))
+        flags = list(reset.get("flags", []))
+        sequence["reset"] = ({"timeout_seconds": timeout, "flags": flags}
+                             if timeout is not None or flags else None)
+    elif operation == "castsequence_reset_flag":
+        sequence = source[rng.choice(castsequence_indices)]
+        reset = sequence.get("reset") or {}
+        flag = rng.choice(reset_flags)
+        flags = set(reset.get("flags", []))
+        if flag in flags:
+            flags.remove(flag)
+        else:
+            flags.add(flag)
+        timeout = reset.get("timeout_seconds")
+        sequence["reset"] = ({"timeout_seconds": timeout,
+                              "flags": [name for name in ("target", "combat", "shift", "ctrl", "alt")
+                                        if name in flags]}
+                             if timeout is not None or flags else None)
     return source
 
 
@@ -434,7 +513,7 @@ def _tuple(value):
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
     from engine import check_report, player_report, CandidateError
-    from sequence import evaluate, compiled_program
+    from sequence import evaluate, compiled_identity
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
@@ -450,6 +529,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('completed_batches', 0)
     state.setdefault('batch_estimate', 0.25)
     starts = initial_programs(capabilities, reference, config['random_seed'])
+    observable_flags = tuple(name for name in ('target', 'combat', 'shift', 'ctrl', 'alt')
+                             if any(kind == name for _, kind in config['reset_events']))
     state.setdefault('starts', starts)
     rng = random.Random(config['random_seed'])
     if state.get('rng'):
@@ -477,9 +558,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         input_seed = seed + 500000
         times = input_times(scenario, input_seed, config["input_interval_ms"])
         compiled = candidate(program)
-        request = dict(condition=condition_key, program=compiled_program(compiled), purpose=purpose,
-                       seed=seed, input_seed=input_seed, iterations=iterations, times=times,
-                       stats=STATS_VERSION, trace=trace)
+        request = dict(condition=condition_key, program=compiled_identity(compiled), purpose=purpose,
+                        seed=seed, input_seed=input_seed, iterations=iterations, times=times,
+                        stats=STATS_VERSION, trace=trace,
+                        reset_events=[list(row) for row in config['reset_events']])
         key = digest(request)
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
@@ -513,9 +595,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         folder = destination / 'batches' / key
         started = time.monotonic()
         try:
+            kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
-                              simulation_config=simulation_config)
+                              simulation_config=simulation_config, **kwargs)
             raw = (folder / 'native.json').read_bytes()
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], requested_iterations=iterations,
@@ -597,8 +680,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 for attempt in range(160):
                     if len(generated) >= min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys'])):
                         break
+                    kwargs = {'reset_flags': observable_flags} if observable_flags else {}
                     program = mutate(base['program'], capabilities, rng,
-                                     feedback=lane['feedback'])
+                                     feedback=lane['feedback'], **kwargs)
                     if rng.randrange(16)==0:
                         program = [[a['simc_action']] for a in capabilities['actions']]
                         rng.shuffle(program)
