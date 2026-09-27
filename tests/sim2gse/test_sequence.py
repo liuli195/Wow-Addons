@@ -130,15 +130,23 @@ class SequenceSimulationTests(unittest.TestCase):
             candidate = compile_program(program, root / "export", identity=native["identity"],
                                         capabilities=capabilities)
             result = evaluate(source, candidate, root / "controlled", character=character,
-                              iterations=1, input_times=[0, 1050, 1120, 1270, 1340, 1410, 1500],
-                              gcd_states=[(0, 1270)] * 3 + [(1270, 1200)] * 4,
+                              iterations=1, input_times=[0, 1050, 1120, 1270, 1340, 1410, 1500, 3000],
+                              gcd_states=[(0, 1270)] * 3 + [(1270, 1200)] * 4 + [(0, 0)],
                               reset_events=[(1280, "target")],
                               failure_events=[(1300, 3, "putrefy")])
         events = result["trace"]
+        sequence_step = result["castsequences"][0]["step"]
         self.assertTrue(any(event["event"] == "queue_restore" and event["origin"] == 2
+                            and event["sequence_step"] == sequence_step
                             for event in events), events)
         self.assertFalse(any(event["event"] == "castsequence_pending" and event["ms"] == 1340
                              for event in events), events)
+        self.assertTrue(any(event["event"] == "native_execute" and event["origin"] == 2
+                            and event["sequence_member"] == 0 and event["ms"] > 1280
+                            for event in events), events)
+        self.assertTrue(any(event["event"] == "queue" and event["origin"] == 8
+                            and event["sequence_step"] == sequence_step
+                            and event["sequence_member"] == 0 for event in events), events)
 
     def test_castsequence_reset_events_restart_first_member(self):
         from program import compile_program, from_search_program
