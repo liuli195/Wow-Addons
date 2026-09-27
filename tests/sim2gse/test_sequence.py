@@ -33,6 +33,60 @@ def imported_sequence(name, actions):
 
 
 class SequenceSimulationTests(unittest.TestCase):
+    def test_castsequence_failure_holds_member_and_success_wraps(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"], "reset": None},
+        ], capabilities)
+        times = list(range(0, 20000, 300))
+        failures = [None] * len(times)
+        failures[1] = "festering_strike"
+        with tempfile.TemporaryDirectory(prefix="castsequence-failure-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=times, failed_actions=failures)
+        events = [event for event in result["trace"] if event["battle"] == 0]
+        self.assertTrue(any(event["event"] == "observed_failed" and event["origin"] == 2
+                            and event["sequence_member"] == 0 for event in events))
+        executions = [event for event in events if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike"}]
+        self.assertGreaterEqual(len(executions), 3, events)
+        self.assertEqual([event["action"] for event in executions[:3]],
+                         ["festering_strike", "scourge_strike", "festering_strike"])
+        self.assertEqual([event["sequence_member"] for event in executions[:3]], [0, 1, 0])
+
+    def test_castsequence_repeated_clicks_do_not_replace_pending_member(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"], "reset": None},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-pending-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=list(range(0, 2400, 100)))
+        events = [event for event in result["trace"] if event["battle"] == 0]
+        executions = [event for event in events if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike"}]
+        self.assertGreaterEqual(len(executions), 2, events)
+        self.assertEqual([event["action"] for event in executions[:2]],
+                         ["festering_strike", "scourge_strike"])
+        self.assertEqual([event["sequence_member"] for event in executions[:2]], [0, 1])
+        self.assertEqual({event["sequence_step"] for event in executions[:2]},
+                         {result["castsequences"][0]["step"]})
+        self.assertTrue(any(event["event"] == "castsequence_pending" for event in events))
+        before_second_success = [event for event in events if event["ms"] < executions[1]["ms"]]
+        self.assertFalse([event for event in before_second_success
+                          if event["event"] == "replace" and event["action"] == "scourge_strike"],
+                         "等待当前成员成功时，重复点击不应替换其待执行请求")
+
     def test_public_entry_simulates_imported_loop_and_empty_clicks(self):
         text = imported_sequence("THIRD_PARTY", [
             {"Type": "Loop", "Repeat": "2", 1: {"Type": "Action", "type": "spell", "spell": 77575},

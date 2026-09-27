@@ -224,10 +224,12 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         for line in (folder / 'native.txt').read_text(encoding='utf-8').splitlines():
             if 'S2GSE\t' not in line:
                 continue
-            ms, event, origin, step, action, gcd, rp, health, cooldown, battle, signature, cast_ms = line.split('S2GSE\t', 1)[1].split('\t')
+            (ms, event, origin, step, action, gcd, rp, health, cooldown, battle, signature,
+             cast_ms, sequence_step, sequence_member) = line.split('S2GSE\t', 1)[1].split('\t')
             events.append(dict(ms=float(ms), event=event, origin=int(origin), step=int(step), action=action,
                                gcd=float(gcd), rp=float(rp), health=float(health), cooldown_ms=float(cooldown),
-                               battle=int(battle), signature=signature, cast_ms=float(cast_ms)))
+                               battle=int(battle), signature=signature, cast_ms=float(cast_ms),
+                               sequence_step=int(sequence_step), sequence_member=int(sequence_member)))
     if trace:
         inputs = [e for e in events if e['event'] == 'input']
         executed = [e for e in events if e['event'] == 'native_execute']
@@ -246,6 +248,13 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                or e['signature'] not in runtime_blocks[e['step']]
                for e in dispatches + executed + interrupted):
             raise ValueError('原生动作不属于来源输入对应的编译块')
+        by_step = {row['step']: row['members'] for row in castsequences}
+        if any((e['sequence_step'] != e['step'] or
+                not 0 <= e['sequence_member'] < len(by_step[e['step']]) or
+                (e['event'] in {'dispatch', 'native_execute', 'native_interrupt'} and
+                 e['action'] != by_step[e['step']][e['sequence_member']]))
+               for e in events if e['step'] in by_step):
+            raise ValueError('/castsequence 原生成员轨迹与编译定义不一致')
         expected_precombat = [block[0] for block in blocks[:precombat_count]]
         if expected_precombat:
             battles = {e['battle'] for e in events if e['event'] == 'input'}
