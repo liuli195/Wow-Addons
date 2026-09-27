@@ -105,7 +105,7 @@
     },
     {
       "path": "projects/sim2gse/native/patches/029-castsequence-runtime.patch",
-      "sha256": "be68078ca78f3e8749f82799bde3daea18608e82303cf3ae909bb7b20769ac2b"
+      "sha256": "ed0aedd1d8e96f8563c7bc686cd8cd1ed2970d2d75e17b4003f9a4fba206fb89"
     }
   ],
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
@@ -139,8 +139,8 @@
     "GSE/API/translator.lua": "14480c4647cf269fd3852998f6ed09311af75455209188bac2971cb23b8e429c"
   },
   "patched_files": {
-    "engine/player/player.cpp": "996ab4d72fc1a76e9e4b0b72c65e53745d7046b7eb0c669e6975592200f26749",
-    "engine/player/player.hpp": "b79f5d5a8cbad19468cf75905111d5c279bee76eb97473acf7a5859f9089c05f",
+    "engine/player/player.cpp": "102b8c812bd76093f3614c65b3184ebbc14bfdf987e3d3ac79d2ed0aa4f92414",
+    "engine/player/player.hpp": "9f06faf3c16a332870c8df73c97836c30d3966ed17acb2a747ba47df392903c0",
     "engine/action/action.cpp": "d1cc58f2fa8433d14cdb51044fc19a92e080b2a671daada159504caad362f4ce",
     "engine/action/action.hpp": "ac201ff2dfaf3aa57206568b86cc4a4c25f9bf80c1547ce2a8879760dff0bb76",
     "engine/class_modules/sc_death_knight.cpp": "812db808a9e68e0c4c28c744093d4bd55606c18b87e4688c0b92f606904dcdbd",

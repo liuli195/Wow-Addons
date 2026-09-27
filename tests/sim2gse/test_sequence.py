@@ -74,6 +74,47 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertGreaterEqual(len(executions), 3, result["trace"])
         self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
 
+    def test_castsequence_timeout_waits_for_next_client_update(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike", "outbreak"],
+             "reset": {"timeout_seconds": 2, "flags": []}},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-update-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=[0, 3000, 4000, 4500, 6000, 6800])
+        executions = [event["action"] for event in result["trace"]
+                      if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
+        self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
+
+    def test_castsequence_reset_while_second_member_pending_keeps_old_identity(self):
+        from program import compile_program, from_search_program
+
+        text = (REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8')
+        with tempfile.TemporaryDirectory(prefix='castsequence-pending-reset-') as directory:
+            root = Path(directory)
+            source, character, native, capabilities = self.prepare(text, root / 'setup')
+            program = from_search_program([
+                {"kind": "CastSequence", "members": ["consume", "the_hunt"],
+                 "reset": {"timeout_seconds": None, "flags": ["target"]}},
+            ], capabilities)
+            candidate = compile_program(program, root / 'export', identity=native['identity'],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / 'controlled', character=character,
+                              iterations=1, input_times=list(range(0, 7000, 100)),
+                              reset_events=[(3600, 'target')])
+        executions = [event for event in result['trace']
+                      if event['event'] == 'native_execute'
+                      and event['action'] in {'consume', 'the_hunt'}]
+        self.assertEqual([(event['action'], event['sequence_member']) for event in executions[:3]],
+                         [('consume', 0), ('the_hunt', 1), ('consume', 0)])
+
     def test_castsequence_reset_events_restart_first_member(self):
         from program import compile_program, from_search_program
 
