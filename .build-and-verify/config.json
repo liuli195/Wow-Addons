@@ -21,7 +21,7 @@
       {
         "id": "verify.sim2gse",
         "pr": false,
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -k \"not test_tc_\" --dist=worksteal",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse --dist=worksteal",
         "checkParallel": true,
         "pytestXdistWorkers": 8,
         "paths": [

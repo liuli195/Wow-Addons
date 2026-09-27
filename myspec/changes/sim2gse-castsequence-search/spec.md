@@ -62,6 +62,8 @@ Sim2GSE 当前自动搜索已经能生成普通动作、Sequential Loop（顺序
 
 ## Further Notes
 
+- 2026-09-27 用户追加决定：TC 对照引擎已放弃维护，按 `issues/04-remove-abandoned-tc-engine.md` 彻底移除。该决定替代此前“只退出日常构建、保留可选 TC”的旧范围。
+
 - 固定开发基线：`dd00b24a2f0eac590b82d105c55f023574f6caeb`。
 - 推荐功能分支：`codex/sim2gse-castsequence-search`。
 - 当前工作树：`D:\My Project\Wow Addons`。

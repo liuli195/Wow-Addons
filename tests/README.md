@@ -24,7 +24,7 @@ build-and-verify verify --project .
 
 构建先于验证执行，避免引擎与构建身份文件在测试期间变化。配置位于 `.build-and-verify/config.json`，只登记干净仓库可准备、可重复的构建和验证。`sim2gse/test_*.py` 自动发现；`dev/test_inventory.py` 会拦截未登记的可移植测试。
 
-Sim2GSE 引擎构建和默认 pytest（Python 测试工具）验证仅在本机运行；6 项 TC（社区服务端队列对照）专属测试保留供本机需要时单独运行，命令见下文。
+Sim2GSE 引擎构建和 pytest（Python 测试工具）验证仅在本机运行。
 
 PR（拉取请求）中的代码、配置和工作流变更运行素材构建及全部 PR 可执行验证；仅配置中登记的文档或 MySpec（自有规格）路径变更按目标分支固定提交运行匹配检查。PR 不准备或缓存 SimulationCraft（战斗模拟器）引擎。缺文件、缺工具、断言失败和超时均返失败，不将跳过记为通过。依赖私人角色、本机研究引擎或历史报告的检查作为本机验收，在对应项目改动后按下方入口单独执行并记录结果。
 
@@ -33,16 +33,10 @@ PR（拉取请求）中的代码、配置和工作流变更运行素材构建及
 在仓库根目录运行单组检查：
 
 ```powershell
-.venv/Scripts/python.exe -m pytest -q tests/sim2gse -k "not test_tc_"
+.venv/Scripts/python.exe -m pytest -q tests/sim2gse
 .venv/Scripts/python.exe tests/dev/test_checks.py
 .venv/Scripts/python.exe tests/gear-planner/check-extra-input.py
 node tests/gear-planner/check-async.js
-```
-
-单独运行保留的 6 项 TC 专属测试：
-
-```powershell
-.venv/Scripts/python.exe -m pytest -q tests/sim2gse -k test_tc_
 ```
 
 `check-browser.cjs` 和 `check-deathknight.cjs` 需要 Playwright（浏览器自动化工具）和 Edge（浏览器）；准备脚本使用锁文件安装 Playwright。本机验收入口启动并清理本次专用的本地装备规划器服务，8765 端口已被占用时失败；不能用语法检查替代实际浏览器验收。私人角色单序列检查直接运行 `tests/sim2gse/manual_native_task.py`；完整搜索检查直接运行 `tests/sim2gse/manual_search_task.py`，使用默认十分钟预算。
