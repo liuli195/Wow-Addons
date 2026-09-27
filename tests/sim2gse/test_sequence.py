@@ -86,12 +86,13 @@ class SequenceSimulationTests(unittest.TestCase):
             root = Path(directory)
             candidate = compile_program(program, root / "export", identity=native["identity"],
                                         capabilities=capabilities)
-            result = evaluate(source, candidate, root / "controlled", character=character,
-                              iterations=1, input_times=[0, 3000, 4000, 4500, 6000, 6800])
-        executions = [event["action"] for event in result["trace"]
-                      if event["event"] == "native_execute"
-                      and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
-        self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
+            for at, expected in ((6999, "outbreak"), (7001, "festering_strike")):
+                result = evaluate(source, candidate, root / str(at), character=character,
+                                  iterations=1, input_times=[0, 3000, 4000, 4500, 6000, at])
+                executions = [event["action"] for event in result["trace"]
+                              if event["event"] == "native_execute"
+                              and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
+                self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", expected])
 
     def test_castsequence_reset_while_second_member_pending_keeps_old_identity(self):
         from program import compile_program, from_search_program
@@ -114,6 +115,30 @@ class SequenceSimulationTests(unittest.TestCase):
                       and event['action'] in {'consume', 'the_hunt'}]
         self.assertEqual([(event['action'], event['sequence_member']) for event in executions[:3]],
                          [('consume', 0), ('the_hunt', 1), ('consume', 0)])
+
+    def test_castsequence_reset_does_not_restore_old_queue_as_pending(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["putrefy", "soul_reaper"],
+             "reset": {"timeout_seconds": None, "flags": ["target"]}},
+            ["putrefy"],
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-stale-queue-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=[0, 1050, 1120, 1270, 1340, 1410, 1500],
+                              gcd_states=[(0, 1270)] * 3 + [(1270, 1200)] * 4,
+                              reset_events=[(1280, "target")],
+                              failure_events=[(1300, 3, "putrefy")])
+        events = result["trace"]
+        self.assertTrue(any(event["event"] == "queue_restore" and event["origin"] == 2
+                            for event in events), events)
+        self.assertFalse(any(event["event"] == "castsequence_pending" and event["ms"] == 1340
+                             for event in events), events)
 
     def test_castsequence_reset_events_restart_first_member(self):
         from program import compile_program, from_search_program
