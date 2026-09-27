@@ -33,6 +33,79 @@ def imported_sequence(name, actions):
 
 
 class SequenceSimulationTests(unittest.TestCase):
+    def test_castsequence_idle_timeout_restarts_first_member(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"],
+             "reset": {"timeout_seconds": 2, "flags": []}},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-timeout-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=[0, 3000, 6000, 9000, 12000])
+        executions = [event for event in result["trace"]
+                      if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike"}]
+        self.assertGreaterEqual(len(executions), 2, result["trace"])
+        self.assertEqual([event["action"] for event in executions[:2]],
+                         ["festering_strike", "festering_strike"])
+
+    def test_castsequence_timeout_refreshes_on_repeated_use(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        program = from_search_program([
+            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike", "outbreak"],
+             "reset": {"timeout_seconds": 2, "flags": []}},
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix="castsequence-refresh-") as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / "export", identity=native["identity"],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / "controlled", character=character,
+                              iterations=1, input_times=list(range(0, 7000, 300)))
+        executions = [event["action"] for event in result["trace"]
+                      if event["event"] == "native_execute"
+                      and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
+        self.assertGreaterEqual(len(executions), 3, result["trace"])
+        self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
+
+    def test_castsequence_reset_events_restart_first_member(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        cases = [
+            ('target', ['target'], 4500), ('combat', ['combat'], 4500),
+            ('shift', ['shift'], 9000), ('ctrl', ['ctrl'], 9000),
+            ('alt', ['alt'], 9000), ('death', [], 4500),
+            ('combined', ['target', 'shift'], 4500),
+        ]
+        for event_kind, flags, at in cases:
+            with self.subTest(event=event_kind):
+                reset = ({"timeout_seconds": 30 if event_kind == 'combined' else None,
+                          "flags": flags} if flags else None)
+                program = from_search_program([
+                    {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"],
+                     "reset": reset},
+                ], capabilities)
+                with tempfile.TemporaryDirectory(prefix="castsequence-reset-") as directory:
+                    root = Path(directory)
+                    candidate = compile_program(program, root / "export", identity=native["identity"],
+                                                capabilities=capabilities)
+                    result = evaluate(source, candidate, root / "controlled", character=character,
+                                      iterations=1, input_times=[0, 3000, 6000, 9000, 12000],
+                                      reset_events=[(at, event_kind if event_kind != 'combined' else 'target')])
+                executions = [event for event in result["trace"]
+                              if event["event"] == "native_execute"
+                              and event["action"] in {"festering_strike", "scourge_strike"}]
+                self.assertGreaterEqual(len(executions), 2, result["trace"])
+                self.assertEqual([event["action"] for event in executions[:2]],
+                                 ["festering_strike", "festering_strike"])
+
     def test_castsequence_failure_holds_member_and_success_wraps(self):
         from program import compile_program, from_search_program
 

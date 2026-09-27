@@ -19,12 +19,27 @@ from codec import export, wire_value  # noqa: E402
 from gse_import import (_map_step, decode_import, import_action_spell_ids,
                         import_action_spell_names, inspect_import)  # noqa: E402
 from macro_interpreter import (macro_spell_ids, macro_spell_names, map_action, map_macro,
-                               preflight_macro)  # noqa: E402
+                               parse_castsequence, preflight_macro)  # noqa: E402
 from program import compile_program, from_action_blocks, from_gse_import, from_search_program  # noqa: E402
 from sequence import compiled_program  # noqa: E402
 
 
 class ProgramTests(unittest.TestCase):
+    def test_castsequence_parser_keeps_reset_rules_and_rejects_conditions(self):
+        source = 'blocks[2]'
+        parsed = parse_castsequence(
+            '/castsequence reset=12/target/combat/shift/ctrl/alt 77575,47541', source)
+        self.assertEqual(parsed['reset'],
+                         {'timeout_seconds': 12,
+                          'flags': ['target', 'combat', 'shift', 'ctrl', 'alt']})
+        self.assertEqual(parsed['members'], ['77575', '47541'])
+        with self.assertRaisesRegex(ValueError, '暂不支持宏条件'):
+            parse_castsequence('/castsequence [harm] reset=2 77575,47541', source)
+        with self.assertRaisesRegex(ValueError, '暂不支持条件分支'):
+            parse_castsequence('/castsequence reset=2 77575;47541', source)
+        with self.assertRaisesRegex(ValueError, 'reset 不支持'):
+            parse_castsequence('/castsequence reset=2.5 77575,47541', source)
+
     def test_macro_interpreter_maps_raw_text_with_explicit_scene_and_catalogue(self):
         text = "/cast [pet] 77575\n/cast [nopet] 49998\n/cast Epidemic"
         source = "REAL v1 Versions[1].Actions[1].macro"

@@ -114,7 +114,7 @@ def _search_compiled_blocks(candidate):
 
 def evaluate(profile, candidate, folder, *, character, iterations=100, seed=20260912, trace=True,
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
-             failure_events=None,
+             failure_events=None, reset_events=None,
              runtime=None, simulation_config=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
@@ -146,6 +146,15 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 re.fullmatch(r'[a-z0-9_]+', event[2]) is None
                 for event in failure_events)):
         raise ValueError('失败事件必须使用真实时刻、输入序号和动作名，且不能与旧式反馈混用')
+    reset_kinds = {'target', 'combat', 'shift', 'ctrl', 'alt', 'death'}
+    if reset_events is not None and (
+            not isinstance(reset_events, list) or
+            any(not isinstance(event, tuple) or len(event) != 2 or
+                type(event[0]) is not int or not 0 <= event[0] < 180000 or
+                event[1] not in reset_kinds or
+                (event[1] in {'shift', 'ctrl', 'alt'} and event[0] not in input_times)
+                for event in reset_events)):
+        raise ValueError('/castsequence Reset 事件必须使用有效时刻和类型；修饰键须对应点击')
     blocks = compiled_program(candidate)
     precombat_count = candidate.get('precombat_count', 0)
     if not 0 <= precombat_count < len(blocks):
@@ -180,12 +189,30 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                     or runtime_blocks[step] != members):
                 raise ValueError('/castsequence 编译定义与按键计划不一致')
             seen_steps.add(step)
-            rows.append(f"{step}:" + ','.join(str(pool.index(member) + 1) for member in members))
+            reset = row.get('reset') or {}
+            timeout = reset.get('timeout_seconds')
+            timeout_ms = ''
+            if timeout is not None:
+                if type(timeout) is not int or not 1 <= timeout <= 2147483647:
+                    raise ValueError('/castsequence reset 时间必须是正整数秒')
+                timeout_ms = f':{timeout * 1000}'
+            flags = reset.get('flags') or []
+            flag_bits = {'target': 1, 'combat': 2, 'shift': 4, 'ctrl': 8, 'alt': 16}
+            if (not isinstance(flags, list) or len(set(flags)) != len(flags) or
+                    any(flag not in flag_bits for flag in flags)):
+                raise ValueError('/castsequence reset 标志无效')
+            if flags:
+                timeout_ms = f':{timeout * 1000 if timeout is not None else 0}:' + str(
+                    sum(flag_bits[flag] for flag in flags))
+            rows.append(f"{step}:" + ','.join(str(pool.index(member) + 1) for member in members)
+                        + timeout_ms)
         castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
     generated.write_text(Path(profile).read_text(encoding='utf-8') + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
                          + f'sim2gse_steps={indices}\nsim2gse_trace={int(trace)}\n'
                          + castsequence_option
+                         + ('' if not reset_events else 'sim2gse_castsequence_events=' +
+                            '/'.join(f'{ms},{kind}' for ms, kind in reset_events) + '\n')
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n'
                          + feedback, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
@@ -277,6 +304,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
                 gcd_states=gcd_states, failed_actions=failed_actions,
                 failure_events=failure_events, consistent=True,
+                reset_events=reset_events,
                 castsequences=castsequences,
                 summary=summary, report=report, trace=events,
                 game_validation='not_run', model='native_controlled')

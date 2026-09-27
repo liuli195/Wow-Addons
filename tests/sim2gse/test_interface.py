@@ -1897,7 +1897,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual([exported_loop[index][b"spell"] for index in range(1, len(body) + 1)],
                          [node["commands"][0]["spell_id"] for node in body])
 
-    def test_public_search_generates_exports_and_native_evaluates_castsequence(self) -> None:
+    def test_public_search_generates_exports_and_native_evaluates_castsequence_reset(self) -> None:
         import cbor2
         import codec
         import engine
@@ -1939,8 +1939,13 @@ class InterfaceTests(unittest.TestCase):
         castsequence_evaluations = []
         native_evaluations = []
 
-        def mutate_castsequence(program, caps, rng, *, feedback=None):
-            return real_mutate(program, caps, CastSequenceFirst(rng), feedback=None)
+        def mutate_castsequence(program, caps, rng, *, feedback=None, reset_flags=()):
+            changed = real_mutate(program, caps, CastSequenceFirst(rng), feedback=None,
+                                  reset_flags=reset_flags)
+            for segment in changed:
+                if isinstance(segment, dict) and segment.get("kind") == "CastSequence":
+                    segment["reset"] = {"timeout_seconds": 2, "flags": ["target"]}
+            return changed
 
         def evaluate(profile, candidate, folder, **kwargs):
             castsequence_nodes = [
@@ -1953,6 +1958,7 @@ class InterfaceTests(unittest.TestCase):
                 result = real_evaluate(profile, candidate, folder, **kwargs)
                 native_evaluations.append((candidate, result))
                 return result
+            kwargs.pop("reset_events", None)
             return _fast_evaluate(profile, candidate, folder, **kwargs)
 
         self.server.task_options = {
@@ -1969,6 +1975,7 @@ class InterfaceTests(unittest.TestCase):
                 "scenarios": ("nominal",),
                 "max_processes": 1,
                 "random_seed": 20260927,
+                "reset_events": ((4500, "target"),),
             }
         }
         real_gse_runner = codec.run_command
@@ -2003,12 +2010,12 @@ class InterfaceTests(unittest.TestCase):
         command = next(command for command in selected[1]["commands"]
                        if command.get("kind") == "castsequence")
         self.assertEqual(command["members"], ["outbreak", "death_coil"])
-        self.assertIsNone(command["reset"])
+        self.assertEqual(command["reset"], {"timeout_seconds": 2, "flags": ["target"]})
         payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
         actions = payload[1][b"Versions"][0][b"Actions"]
         macros = [action[b"macro"] for action in actions
                   if action[b"Type"] == b"Action" and action.get(b"type") == b"macro"]
-        self.assertIn(b"/castsequence 77575,47541", macros)
+        self.assertIn(b"/castsequence reset=2/target 77575,47541", macros)
 
         compiled = selected[0]["compiled_program"]
         self.assertEqual(compiled["castsequences"][0]["members"], ["outbreak", "death_coil"])

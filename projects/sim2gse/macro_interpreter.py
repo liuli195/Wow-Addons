@@ -98,8 +98,8 @@ def parse_castsequence(text, source_path, actions=None):
             token = token.strip().casefold()
             if not token:
                 raise ValueError(f"GSE {line_path} 的 /castsequence reset 无效")
-            if re.fullmatch(r"\d+(?:\.\d+)?", token):
-                value = float(token)
+            if re.fullmatch(r"\d+", token):
+                value = int(token)
                 if value <= 0 or timeout is not None:
                     raise ValueError(f"GSE {line_path} 的 /castsequence reset 时间无效")
                 timeout = value

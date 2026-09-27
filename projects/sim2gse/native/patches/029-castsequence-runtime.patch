@@ -1,27 +1,41 @@
 diff --git a/engine/player/player.hpp b/engine/player/player.hpp
-index 2b8cb5b..8bdc442 100644
+index 2b8cb5b..8b1d2a5 100644
 --- a/engine/player/player.hpp
 +++ b/engine/player/player.hpp
-@@ -211,6 +211,7 @@ struct player_t : public actor_t
+@@ -211,6 +211,8 @@ struct player_t : public actor_t
    // Spell Queue
    // Task-8 prototype only: isolated input state, disabled by default.
    std::string sim2gse_steps;
 +  std::string sim2gse_castsequences;
++  std::string sim2gse_castsequence_events;
    bool sim2gse_trace = false;
    bool sim2gse_timed_feedback = false;
    timespan_t sim2gse_window = 400_ms;
-@@ -243,6 +244,9 @@ struct player_t : public actor_t
+@@ -243,6 +245,14 @@ struct player_t : public actor_t
    unsigned sim2gse_confirmed_tentative_origin = 0;
    action_t* sim2gse_confirmed_tentative_action = nullptr;
    std::vector<std::vector<action_t*>> sim2gse_blocks;
 +  std::map<unsigned, std::vector<action_t*>> sim2gse_castsequence_members;
 +  std::map<unsigned, unsigned> sim2gse_castsequence_positions;
 +  std::map<unsigned, unsigned> sim2gse_castsequence_pending_origins;
++  std::map<unsigned, timespan_t> sim2gse_castsequence_timeouts;
++  std::map<unsigned, timespan_t> sim2gse_castsequence_last_use;
++  std::map<unsigned, unsigned> sim2gse_castsequence_reset_flags;
++  std::vector<std::pair<timespan_t, unsigned>> sim2gse_castsequence_reset_events;
++  std::map<timespan_t, unsigned> sim2gse_castsequence_modifiers;
    std::unordered_map<action_t*, unsigned> sim2gse_button_ids;
    unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0, sim2gse_committed_origin = 0, sim2gse_origin = 0;
    action_t* sim2gse_pending = nullptr;
+@@ -251,6 +261,7 @@ struct player_t : public actor_t
+   event_t* sim2gse_commit = nullptr;
+   event_t* sim2gse_queue = nullptr;
+   void sim2gse_init();
++  void sim2gse_reset_castsequence(unsigned step);
+   void sim2gse_tick();
+   void sim2gse_record(const char*, action_t*, unsigned);
+   void sim2gse_dispatch_action(action_t*, unsigned);
 diff --git a/engine/player/player.cpp b/engine/player/player.cpp
-index d5d7725..98fafb8 100644
+index d5d7725..83b491e 100644
 --- a/engine/player/player.cpp
 +++ b/engine/player/player.cpp
 @@ -1,4 +1,4 @@
@@ -30,7 +44,7 @@ index d5d7725..98fafb8 100644
  // Dedmonwakeen's Raid DPS/TPS Simulator.
  // Send questions to natehieter@gmail.com
  // ==========================================================================
-@@ -4647,8 +4647,39 @@ void player_t::sim2gse_init()
+@@ -4647,8 +4647,59 @@ void player_t::sim2gse_init()
      throw std::runtime_error("sim2gse prototype requires actions.sim2gse");
    if (list->foreground_action_list.size() != list->action_list.size())
      throw std::runtime_error("sim2gse action removed by native initialization");
@@ -39,11 +53,31 @@ index d5d7725..98fafb8 100644
 +    for (auto definition : util::string_split(sim2gse_castsequences, "/"))
 +    {
 +      auto fields = util::string_split(definition, ":");
-+      if (fields.size() != 2 || fields[0].empty() || fields[0].find_first_not_of("0123456789") != std::string::npos)
++      if ((fields.size() < 2 || fields.size() > 4) || fields[0].empty() ||
++          fields[0].find_first_not_of("0123456789") != std::string::npos)
 +        throw std::runtime_error("invalid sim2gse castsequence definition");
 +      const auto step = std::stoul(fields[0]);
 +      if (sim2gse_castsequence_members.count(step))
 +        throw std::runtime_error("duplicate sim2gse castsequence step");
++      if (fields.size() >= 3)
++      {
++        if (fields[2].empty() || fields[2].find_first_not_of("0123456789") != std::string::npos)
++          throw std::runtime_error("invalid sim2gse castsequence timeout");
++        const auto timeout = std::stoull(fields[2]);
++        if (timeout > 2147483647000ULL || (timeout == 0 && fields.size() == 3))
++          throw std::runtime_error("sim2gse castsequence timeout out of range");
++        if (timeout > 0)
++          sim2gse_castsequence_timeouts.emplace(step, timespan_t::from_millis(timeout));
++      }
++      if (fields.size() == 4)
++      {
++        if (fields[3].empty() || fields[3].find_first_not_of("0123456789") != std::string::npos)
++          throw std::runtime_error("invalid sim2gse castsequence reset flags");
++        const auto flags = std::stoul(fields[3]);
++        if (flags == 0 || flags > 31)
++          throw std::runtime_error("sim2gse castsequence reset flags out of range");
++        sim2gse_castsequence_reset_flags.emplace(step, flags);
++      }
 +      std::vector<action_t*> members;
 +      for (auto index : util::string_split(fields[1], ","))
 +      {
@@ -70,7 +104,7 @@ index d5d7725..98fafb8 100644
      if (block == "0")
      {
        fmt::print("S2GBLOCK\t{}\t-1\t-\n", sim2gse_blocks.size());
-@@ -4672,35 +4703,74 @@ void player_t::sim2gse_init()
+@@ -4672,35 +4723,102 @@ void player_t::sim2gse_init()
        const auto button = sim2gse_base_spell_id(a->data().id());
        sim2gse_button_ids[a] = button;
        if (a->gcd() > 0_ms) gcd_buttons.insert(button);
@@ -92,12 +126,38 @@ index d5d7725..98fafb8 100644
 +  for (const auto& [step, members] : sim2gse_castsequence_members)
 +    if (step >= sim2gse_blocks.size())
 +      throw std::runtime_error("sim2gse castsequence step out of range");
++  for (auto value : util::string_split(sim2gse_castsequence_events, "/"))
++  {
++    if (value.empty()) continue;
++    const auto fields = util::string_split(value, ",");
++    if (fields.size() != 2 || fields[0].empty() ||
++        fields[0].find_first_not_of("0123456789") != std::string::npos)
++      throw std::runtime_error("invalid sim2gse castsequence event");
++    const auto at = timespan_t::from_millis(std::stoul(fields[0]));
++    if (at >= sim->max_time)
++      throw std::runtime_error("sim2gse castsequence event exceeds combat");
++    const unsigned flag = fields[1] == "target" ? 1 : fields[1] == "combat" ? 2 :
++                          fields[1] == "shift" ? 4 : fields[1] == "ctrl" ? 8 :
++                          fields[1] == "alt" ? 16 : fields[1] == "death" ? 32 : 0;
++    if (!flag)
++      throw std::runtime_error("unknown sim2gse castsequence event");
++    sim2gse_castsequence_reset_events.emplace_back(at, flag);
++    if (flag & (4 | 8 | 16)) sim2gse_castsequence_modifiers[at] |= flag;
++  }
++}
++
++void player_t::sim2gse_reset_castsequence(unsigned step)
++{
++  sim2gse_castsequence_positions[step] = 0;
++  sim2gse_castsequence_pending_origins.erase(step);
++  sim2gse_castsequence_last_use.erase(step);
  }
 
  void player_t::sim2gse_record(const char* event, action_t* a, unsigned origin)
  {
    const bool native_execute = std::string(event) == "native_execute";
    const bool native_interrupt = std::string(event) == "native_interrupt";
++  bool sequence_pending_success = false;
 +  int sequence_step = -1;
 +  int sequence_member = -1;
 +  if (origin)
@@ -109,6 +169,8 @@ index d5d7725..98fafb8 100644
 +      sequence_step = static_cast<int>(step);
 +      sequence_member = static_cast<int>(sim2gse_castsequence_positions[step]);
 +      auto pending = sim2gse_castsequence_pending_origins.find(step);
++      sequence_pending_success = native_execute && pending != sim2gse_castsequence_pending_origins.end() &&
++                                 pending->second == origin;
 +      if (pending != sim2gse_castsequence_pending_origins.end() && pending->second == origin &&
 +          (native_execute || native_interrupt || std::string(event) == "dispatch_failed" ||
 +           std::string(event) == "observed_failed" || std::string(event) == "queue_rollback" ||
@@ -128,7 +190,7 @@ index d5d7725..98fafb8 100644
 +    sim2gse_executed_actions.emplace(origin, a);
 +    const auto step = static_cast<unsigned>((origin - 1) % sim2gse_blocks.size());
 +    const auto sequence = sim2gse_castsequence_members.find(step);
-+    if (sequence != sim2gse_castsequence_members.end())
++    if (sequence != sim2gse_castsequence_members.end() && sequence_pending_success)
 +    {
 +      auto& position = sim2gse_castsequence_positions[step];
 +      if (position >= sequence->second.size() || sequence->second[position] != a)
@@ -149,17 +211,46 @@ index d5d7725..98fafb8 100644
  }
 
  void player_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
-@@ -4805,8 +4875,20 @@ void player_t::sim2gse_tick()
+@@ -4805,8 +4923,49 @@ void player_t::sim2gse_tick()
      }
    }
    std::set<unsigned> selected_buttons;
 +  const auto castsequence = sim2gse_castsequence_members.find(sim2gse_step);
 +  action_t* castsequence_member = nullptr;
 +  bool castsequence_attempted = false;
++  if (castsequence != sim2gse_castsequence_members.end())
++  {
++    const auto timeout = sim2gse_castsequence_timeouts.find(sim2gse_step);
++    const auto last_use = sim2gse_castsequence_last_use.find(sim2gse_step);
++    if (timeout != sim2gse_castsequence_timeouts.end() &&
++        last_use != sim2gse_castsequence_last_use.end() &&
++        sim->current_time() - last_use->second >= timeout->second)
++    {
++      sim2gse_reset_castsequence(sim2gse_step);
++    }
++  }
 +  const bool castsequence_waiting = castsequence != sim2gse_castsequence_members.end() &&
 +                                    sim2gse_castsequence_pending_origins.count(sim2gse_step);
++  if (castsequence != sim2gse_castsequence_members.end() && !castsequence_waiting &&
++      (sim2gse_castsequence_reset_flags[sim2gse_step] &
++       sim2gse_castsequence_modifiers[sim->current_time()]))
++    sim2gse_reset_castsequence(sim2gse_step);
 +  if (castsequence != sim2gse_castsequence_members.end())
 +    castsequence_member = castsequence->second[sim2gse_castsequence_positions[sim2gse_step]];
++  if (castsequence != sim2gse_castsequence_members.end() && !castsequence_waiting &&
++      sim2gse_castsequence_timeouts.count(sim2gse_step))
++  {
++    const auto used_at = sim->current_time();
++    const auto step = sim2gse_step;
++    const auto timeout = sim2gse_castsequence_timeouts[step];
++    sim2gse_castsequence_last_use[step] = used_at;
++    if (used_at + timeout < sim->max_time)
++      make_event(*sim, timeout, [this, step, used_at] {
++        const auto last_use = sim2gse_castsequence_last_use.find(step);
++        if (last_use != sim2gse_castsequence_last_use.end() && last_use->second == used_at)
++          sim2gse_reset_castsequence(step);
++      });
++  }
 +  if (castsequence_waiting)
 +    sim2gse_record("castsequence_pending", castsequence_member, origin);
    for ( auto* a : sim2gse_blocks[sim2gse_step] )
@@ -170,7 +261,7 @@ index d5d7725..98fafb8 100644
      const auto button = sim2gse_button_ids[a];
      if (button && selected_buttons.count(button)) continue;
      if (!sim2gse_observed_failed_actions.empty() &&
-@@ -4847,6 +4929,7 @@ void player_t::sim2gse_tick()
+@@ -4847,6 +5006,7 @@ void player_t::sim2gse_tick()
        event_t::cancel(sim2gse_queue);
        sim2gse_pending = a;
        sim2gse_pending_origin = origin;
@@ -178,7 +269,7 @@ index d5d7725..98fafb8 100644
        if (a->gcd() > 0_ms && sim2gse_timed_feedback)
          sim2gse_candidates.emplace_back(a, origin);
        else
-@@ -4856,6 +4939,7 @@ void player_t::sim2gse_tick()
+@@ -4856,6 +5016,7 @@ void player_t::sim2gse_tick()
      }
      else
      {
@@ -186,25 +277,43 @@ index d5d7725..98fafb8 100644
        if ( a->gcd() > 0_ms )
        {
          event_t::cancel(sim2gse_commit);
-@@ -7126,6 +7210,8 @@ void player_t::merge( player_t& other )
+@@ -6616,6 +6777,15 @@ void player_t::combat_begin()
+
+   if (!sim2gse_steps.empty())
+   {
++    for (const auto& [at, flag] : sim2gse_castsequence_reset_events)
++    {
++      if (flag & (4 | 8 | 16)) continue;  // Modifiers reset on the matching click.
++      make_event(*sim, at, [this, flag] {
++        for (const auto& [step, members] : sim2gse_castsequence_members)
++          if (flag == 32 || (sim2gse_castsequence_reset_flags[step] & flag))
++            sim2gse_reset_castsequence(step);
++      });
++    }
+     make_event(*sim, sim2gse_input_times.empty() ? 0_ms : sim2gse_input_times.front(), [this] { sim2gse_tick(); });
+     for (const auto& [at, from, name] : sim2gse_observed_failure_events)
+     {
+@@ -7126,6 +7296,9 @@ void player_t::merge( player_t& other )
  void player_t::reset()
  {
    sim2gse_step = sim2gse_input = sim2gse_pending_origin = sim2gse_committed_origin = sim2gse_origin = 0;
 +  for (auto& [step, position] : sim2gse_castsequence_positions) position = 0;
 +  sim2gse_castsequence_pending_origins.clear();
++  sim2gse_castsequence_last_use.clear();
    sim2gse_precombat_gcd = sim2gse_precombat_cast = sim2gse_precombat_cast_ready = 0_ms;
    sim2gse_client_gcd_ready = 0_ms;
    sim2gse_last_observed_gcd_start = sim2gse_last_observed_gcd_duration = 0_ms;
-@@ -13785,6 +13871,7 @@ void player_t::create_options()
+@@ -13785,6 +13958,8 @@ void player_t::create_options()
    add_option( opt_func( "brain_lag_stddev", parse_brain_lag_stddev ) );
    add_option( opt_timespan( "cooldown_tolerance", cooldown_tolerance_ ) );
    add_option( opt_string("sim2gse_steps", sim2gse_steps) );
 +  add_option( opt_string("sim2gse_castsequences", sim2gse_castsequences) );
++  add_option( opt_string("sim2gse_castsequence_events", sim2gse_castsequence_events) );
    add_option( opt_string("sim2gse_times", sim2gse_times) );
    add_option( opt_string("sim2gse_gcd_states", sim2gse_gcd_states) );
    add_option( opt_string("sim2gse_failed_actions", sim2gse_failed_actions) );
 diff --git a/engine/action/action.cpp b/engine/action/action.cpp
-index bef0fe2..e32e19c 100644
+index b4aea11..7be20e0 100644
 --- a/engine/action/action.cpp
 +++ b/engine/action/action.cpp
 @@ -62,6 +62,8 @@ void do_execute( action_t* action, execute_type type, unsigned sim2gse_origin )
