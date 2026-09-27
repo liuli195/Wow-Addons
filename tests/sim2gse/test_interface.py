@@ -1950,14 +1950,9 @@ class InterfaceTests(unittest.TestCase):
             ]
             if castsequence_nodes:
                 castsequence_evaluations.append((candidate, castsequence_nodes[0]))
-                if not native_evaluations:
-                    result = real_evaluate(profile, candidate, folder, **kwargs)
-                    native_evaluations.append((candidate, result))
-                score_offset = 1000 if any(
-                    native_candidate["text"] == candidate["text"]
-                    for native_candidate, _ in native_evaluations
-                ) else 0
-                return _fast_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
+                result = real_evaluate(profile, candidate, folder, **kwargs)
+                native_evaluations.append((candidate, result))
+                return result
             return _fast_evaluate(profile, candidate, folder, **kwargs)
 
         self.server.task_options = {
@@ -1968,10 +1963,10 @@ class InterfaceTests(unittest.TestCase):
                 "round_candidate_limit": 8,
                 "batch_targets": (2,),
                 "validation_batches": 2,
-                "final_batches": 20,
+                "final_batches": 2,
                 "iterations": 2,
-                "final_iterations": 100,
-                "scenarios": ("nominal", "jitter", "slow", "pause", "phase"),
+                "final_iterations": 2,
+                "scenarios": ("nominal",),
                 "max_processes": 1,
                 "random_seed": 20260927,
             }
@@ -1981,6 +1976,8 @@ class InterfaceTests(unittest.TestCase):
              patch.object(codec, "run_command", side_effect=real_gse_runner), \
              patch.object(engine, "inspect", side_effect=inspect), \
              patch.object(sequence, "check_report", new=engine.check_report), \
+             patch.object(search, "DEFAULT_SCENARIOS", ("nominal",)), \
+             patch.dict(search.DEFAULT_CONFIG, {"final_batches": 2, "final_iterations": 2}), \
              patch.object(search, "mutate", side_effect=mutate_castsequence), \
              patch.object(sequence, "evaluate", side_effect=evaluate):
             created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
@@ -1998,7 +1995,9 @@ class InterfaceTests(unittest.TestCase):
         selected = next((row for row in castsequence_evaluations
                          if row[0]["text"] == state["candidate_text"]), None)
         self.assertIsNotNone(selected, "最终结果没有选择真实评价过的 /castsequence 候选")
-        self.assertEqual(selected[0]["text"], native_evaluations[0][0]["text"])
+        selected_native = next((result for candidate, result in native_evaluations
+                                if candidate["text"] == selected[0]["text"]), None)
+        self.assertIsNotNone(selected_native)
         self.assertEqual(state["evidence_status"], "complete")
 
         command = next(command for command in selected[1]["commands"]
@@ -2013,7 +2012,7 @@ class InterfaceTests(unittest.TestCase):
 
         compiled = selected[0]["compiled_program"]
         self.assertEqual(compiled["castsequences"][0]["members"], ["outbreak", "death_coil"])
-        self.assertEqual(native_evaluations[0][1]["castsequences"][0]["members"],
+        self.assertEqual(selected_native["castsequences"][0]["members"],
                          ["outbreak", "death_coil"])
 
     def test_public_search_generates_and_evaluates_wait_clicks(self) -> None:

@@ -20,3 +20,4 @@
 - Native build（原生构建）：baseline 与 controlled 均 `exit=0`，兼容锁包含 `029-castsequence-runtime.patch`。
 - Regression（回归）：`castsequence or sequential_loop or wait_clicks or macro_interpreter` 聚焦检查 `5 passed`。
 - WoW 正式服实机验收：`not_run`，不作为本票本地技术验收的一部分。
+- 独立审查后修正：公开任务的最终候选直接采用真实 Native SimC 返回的 DPS 参与评分与选择；修复 `029` 补丁行拼接并重新构建 baseline、controlled，均 `exit=0`。聚焦公开测试 `1 passed`。
