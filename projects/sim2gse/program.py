@@ -88,6 +88,7 @@ CompiledClick = CompiledActionNode | CompiledEmptyClickNode
 
 class CompiledProgram(TypedDict):
     clicks: list[CompiledClick]
+    castsequences: NotRequired[list[dict[str, object]]]
 
 
 def _position(adapter, path, *, gse_path=None, sequence=None, version=None):
@@ -144,12 +145,21 @@ def from_search_program(program, capabilities):
             if type(clicks) is not int or not 2 <= clicks <= 4096:
                 raise ValueError("搜索 WaitClicks 次数必须为 2 至 4096")
             segments.append(("WaitClicks", clicks))
+        elif isinstance(segment, dict) and segment.get("kind") == "CastSequence":
+            members = segment.get("members")
+            reset = segment.get("reset")
+            if (not isinstance(members, list) or not 2 <= len(members) <= 4
+                    or any(not isinstance(member, str) or not member for member in members)):
+                raise ValueError("搜索 /castsequence 必须包含 2 至 4 个技能成员")
+            segments.append(("CastSequence", list(members), reset))
         else:
             raise ValueError("搜索程序包含不支持的节点")
 
     from sequence import select
 
-    selected = select(capabilities, flat_blocks)
+    selected = (select(capabilities, flat_blocks) if flat_blocks else
+                [[dict(action, condition="nocombat")]
+                 for action in capabilities.get("precombat_actions", [])])
     precombat_count = len(capabilities.get("precombat_actions", []))
     nodes = []
     for index, commands in enumerate(selected[:precombat_count]):
@@ -171,6 +181,35 @@ def from_search_program(program, capabilities):
             nodes.append(PauseNode(kind="Pause", clicks=shape[1], duration_ms=None,
                                    source=_position("search", f"blocks[{top_index}]",
                                                     gse_path=str(top_index + 1))))
+            top_index += 1
+            continue
+        if shape[0] == "CastSequence":
+            from macro_interpreter import parse_castsequence
+
+            _, members, reset = shape
+            by_name = {action["simc_action"]: action for action in capabilities["actions"]
+                       if action.get("kind") == "spell"}
+            if any(member not in by_name for member in members):
+                raise ValueError("搜索 /castsequence 包含当前角色不支持的技能")
+            reset_text = ""
+            if reset:
+                if not isinstance(reset, dict):
+                    raise ValueError("搜索 /castsequence reset 定义无效")
+                parts = []
+                timeout = reset.get("timeout_seconds")
+                if timeout is not None:
+                    parts.append(str(timeout).rstrip("0").rstrip(".") if isinstance(timeout, float) else str(timeout))
+                parts.extend(reset.get("flags") or [])
+                if parts:
+                    reset_text = " reset=" + "/".join(parts)
+            macro = "/castsequence" + reset_text + " " + ",".join(
+                str(by_name[member]["spell_id"]) for member in members)
+            parsed = parse_castsequence(macro, f"blocks[{top_index}]", capabilities["actions"])
+            parsed["macro"] = macro
+            parsed["macrotext"] = "/castsequence" + reset_text + " " + ", ".join(parsed["display_names"])
+            nodes.append(ActionNode(kind="Action", commands=[parsed],
+                                    source=_position("search", f"blocks[{top_index}]",
+                                                     gse_path=str(top_index + 1))))
             top_index += 1
             continue
         _, body_count, repeat_count = shape
@@ -229,8 +268,23 @@ def _search_expanded_nodes(program):
 
 
 def _search_blocks(program):
-    return [node["commands"] if node["kind"] == "Action" else []
-            for node in _search_expanded_nodes(program)]
+    blocks = []
+    for node in _search_expanded_nodes(program):
+        if node["kind"] != "Action":
+            blocks.append([])
+            continue
+        commands = node["commands"]
+        if len(commands) == 1 and commands[0].get("kind") == "castsequence":
+            members = set(commands[0]["members"])
+            actions = [action for action in commands[0].get("actions", [])
+                       if action.get("simc_action") in members]
+            if not actions:
+                raise ValueError("搜索 /castsequence 缺少已映射动作")
+            by_name = {action["simc_action"]: action for action in actions}
+            blocks.append([by_name[name] for name in commands[0]["members"]])
+        else:
+            blocks.append(commands)
+    return blocks
 
 
 def _with_compiled_program(candidate, program, clicks):
@@ -238,7 +292,20 @@ def _with_compiled_program(candidate, program, clicks):
                             metadata={key: value for key, value in program["metadata"].items()
                                       if key not in {"input_text"}})
     candidate["program"] = clean_program
-    candidate["compiled_program"] = CompiledProgram(clicks=clicks)
+    castsequences = []
+    for step, node in enumerate(_search_expanded_nodes(program)) if program["adapter"] == "search" else []:
+        if (node["kind"] == "Action" and len(node["commands"]) == 1
+                and node["commands"][0].get("kind") == "castsequence"):
+            command = node["commands"][0]
+            castsequences.append({
+                "step": step,
+                "members": list(command["members"]),
+                "reset": command.get("reset"),
+                "source": node["source"],
+            })
+    candidate["compiled_program"] = CompiledProgram(clicks=clicks,
+                                                      **({"castsequences": castsequences}
+                                                         if castsequences else {}))
     return candidate
 
 
@@ -254,8 +321,11 @@ def _search_clicks(candidate, program):
                 raise ValueError("空点击不能包含动作")
             clicks.append(CompiledEmptyClickNode(kind="EmptyClick", source=node["source"]))
         else:
-            clicks.append(CompiledActionNode(kind="Action",
-                                             commands=[action["simc_action"] for action in block],
+            commands = ([action["simc_action"] for action in block]
+                        if not (len(node["commands"]) == 1
+                                and node["commands"][0].get("kind") == "castsequence")
+                        else list(node["commands"][0]["members"]))
+            clicks.append(CompiledActionNode(kind="Action", commands=commands,
                                              source=node["source"]))
     return clicks
 
@@ -272,7 +342,10 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
     if program.get("adapter") != "search":
         raise ValueError("未知的序列程序适配器")
     blocks = _search_blocks(program)
-    if any(node["kind"] in {"Loop", "Pause"} for node in program["nodes"]):
+    if any(node["kind"] in {"Loop", "Pause"} or
+           (node["kind"] == "Action" and len(node["commands"]) == 1
+            and node["commands"][0].get("kind") == "castsequence")
+           for node in program["nodes"]):
         candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program)
     else:
         candidate = export(blocks, folder, identity=identity, runtime=runtime)

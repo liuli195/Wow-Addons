@@ -61,6 +61,21 @@ def compiled_program(candidate):
     return _search_compiled_blocks(candidate)
 
 
+def compiled_identity(candidate):
+    """批次缓存身份；有状态宏必须带完整定义，避免不同规则复用成绩。"""
+    blocks = compiled_program(candidate)
+    castsequences = candidate.get("compiled_program", {}).get("castsequences", [])
+    if not castsequences:
+        return blocks
+    return {
+        "blocks": blocks,
+        "castsequences": [
+            {"step": row["step"], "members": row["members"], "reset": row.get("reset")}
+            for row in castsequences
+        ],
+    }
+
+
 def _search_compiled_blocks(candidate):
     spells = {str(a['spell_id']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'}
     spells.update({a['name']: a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'})
@@ -82,6 +97,10 @@ def _search_compiled_blocks(candidate):
                     block.append(spells[re.sub(r'^\[[^]]+\] ', '', line[6:])])
                 elif re.fullmatch(r'/use (?:\[[^]]+\] )?(13|14)', line):
                     block.append(items[line.split()[-1]])
+                elif line.startswith('/castsequence '):
+                    from macro_interpreter import parse_castsequence
+                    actions = [action for candidate_block in candidate['blocks'] for action in candidate_block]
+                    block.extend(parse_castsequence(line, 'compiled_steps', actions)['members'])
                 else:
                     raise ValueError('上游编译产生了不支持的宏命令')
         else:
@@ -149,9 +168,26 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                  'sim2gse_timed_feedback=1\n'
                  + 'sim2gse_failure_events=' + '/'.join(f'{ms},{origin},{action}'
                                                      for ms, origin, action in failure_events) + '\n')
+    castsequences = candidate.get('compiled_program', {}).get('castsequences', [])
+    castsequence_option = ''
+    if castsequences:
+        rows = []
+        seen_steps = set()
+        for row in castsequences:
+            step = row.get('step')
+            members = row.get('members')
+            if (type(step) is not int or not 0 <= step < len(runtime_blocks) or step in seen_steps
+                    or not isinstance(members, list) or not 2 <= len(members) <= 32
+                    or any(member not in pool for member in members)
+                    or runtime_blocks[step] != members):
+                raise ValueError('/castsequence 编译定义与按键计划不一致')
+            seen_steps.add(step)
+            rows.append(f"{step}:" + ','.join(str(pool.index(member) + 1) for member in members))
+        castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
     generated.write_text(Path(profile).read_text(encoding='utf-8') + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
                          + f'sim2gse_steps={indices}\nsim2gse_trace={int(trace)}\n'
+                         + castsequence_option
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n'
                          + feedback, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
@@ -234,5 +270,6 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
                 gcd_states=gcd_states, failed_actions=failed_actions,
                 failure_events=failure_events, consistent=True,
+                castsequences=castsequences,
                 summary=summary, report=report, trace=events,
                 game_validation='not_run', model='native_tc' if mode == 'tc' else 'native_controlled')

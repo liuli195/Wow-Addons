@@ -94,6 +94,18 @@ def export(blocks, folder, *, identity, runtime=None, program=None):
             raise ValueError('无法导出的动作')
         return dict(Type='Action', **action), step
 
+    def encode_castsequence(command):
+        if (not isinstance(command, dict) or command.get('kind') != 'castsequence'
+                or not isinstance(command.get('macro'), str)
+                or not isinstance(command.get('macrotext'), str)):
+            raise ValueError('搜索 /castsequence 定义无效')
+        macro = command['macro']
+        macrotext = command['macrotext']
+        if max(len(macro.encode('utf-8')), len(macrotext.encode('utf-8'))) > 255:
+            raise ValueError('/castsequence 宏文本超过 255 字节')
+        return dict(Type='Action', type='macro', macro=macro), \
+            dict(type='macro', macrotext=macrotext)
+
     actions, steps, upstream_steps = [], [], []
     if program is None:
         for index, block in enumerate(blocks, 1):
@@ -113,7 +125,13 @@ def export(blocks, folder, *, identity, runtime=None, program=None):
             if node.get('kind') == 'Action':
                 if expanded_count >= 4096:
                     raise ValueError('搜索程序展开超过 4096 次按键')
-                action, step = encode_block(node.get('commands'))
+                commands = node.get('commands')
+                if (isinstance(commands, list) and len(commands) == 1
+                        and isinstance(commands[0], dict)
+                        and commands[0].get('kind') == 'castsequence'):
+                    action, step = encode_castsequence(commands[0])
+                else:
+                    action, step = encode_block(commands)
                 actions.append(action)
                 steps.append(step)
                 upstream_steps.append(dict(step, blockPath=source.get('gse_path', str(index))))

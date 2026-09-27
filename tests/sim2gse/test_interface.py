@@ -1897,6 +1897,125 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual([exported_loop[index][b"spell"] for index in range(1, len(body) + 1)],
                          [node["commands"][0]["spell_id"] for node in body])
 
+    def test_public_search_generates_exports_and_native_evaluates_castsequence(self) -> None:
+        import cbor2
+        import codec
+        import engine
+        import search
+        import sequence
+        from test_search import _fast_evaluate, _fast_initialization
+
+        real_evaluate = sequence.evaluate
+        real_mutate = search.mutate
+        capabilities = {
+            "actions": [
+                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
+                     gcd_ms=1500, base_spell_id=77575),
+                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
+                     gcd_ms=1500, base_spell_id=47541),
+            ],
+            "precombat_actions": [], "sources": [], "protocol": 3,
+            "scope": "test", "coverage": "constructed-test-boundary",
+        }
+
+        def inspect(_reference, folder):
+            folder = Path(folder)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+            return capabilities
+
+        class CastSequenceFirst:
+            def __init__(self, source):
+                self.source = source
+
+            def choice(self, values):
+                if "castsequence" in values:
+                    return "castsequence"
+                return self.source.choice(values)
+
+            def __getattr__(self, name):
+                return getattr(self.source, name)
+
+        castsequence_evaluations = []
+        native_evaluations = []
+
+        def mutate_castsequence(program, caps, rng, *, feedback=None):
+            return real_mutate(program, caps, CastSequenceFirst(rng), feedback=None)
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            castsequence_nodes = [
+                node for node in candidate["program"]["nodes"]
+                if node["kind"] == "Action"
+                and any(command.get("kind") == "castsequence" for command in node["commands"])
+            ]
+            if castsequence_nodes:
+                castsequence_evaluations.append((candidate, castsequence_nodes[0]))
+                if not native_evaluations:
+                    result = real_evaluate(profile, candidate, folder, **kwargs)
+                    native_evaluations.append((candidate, result))
+                score_offset = 1000 if any(
+                    native_candidate["text"] == candidate["text"]
+                    for native_candidate, _ in native_evaluations
+                ) else 0
+                return _fast_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
+            return _fast_evaluate(profile, candidate, folder, **kwargs)
+
+        self.server.task_options = {
+            "search_config": {
+                "total_budget_seconds": 60,
+                "search_budget_seconds": 30,
+                "candidate_limit": 8,
+                "round_candidate_limit": 8,
+                "batch_targets": (2,),
+                "validation_batches": 2,
+                "final_batches": 20,
+                "iterations": 2,
+                "final_iterations": 100,
+                "scenarios": ("nominal", "jitter", "slow", "pause", "phase"),
+                "max_processes": 1,
+                "random_seed": 20260927,
+            }
+        }
+        real_gse_runner = codec.run_command
+        with _fast_initialization(real_engine=True), \
+             patch.object(codec, "run_command", side_effect=real_gse_runner), \
+             patch.object(engine, "inspect", side_effect=inspect), \
+             patch.object(sequence, "check_report", new=engine.check_report), \
+             patch.object(search, "mutate", side_effect=mutate_castsequence), \
+             patch.object(sequence, "evaluate", side_effect=evaluate):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 45
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(state["status"], "completed", state)
+        self.assertTrue(castsequence_evaluations, "自动搜索没有生成并评价 /castsequence 候选")
+        self.assertTrue(native_evaluations, "/castsequence 没有通过真实原生受控评价")
+        selected = next((row for row in castsequence_evaluations
+                         if row[0]["text"] == state["candidate_text"]), None)
+        self.assertIsNotNone(selected, "最终结果没有选择真实评价过的 /castsequence 候选")
+        self.assertEqual(selected[0]["text"], native_evaluations[0][0]["text"])
+        self.assertEqual(state["evidence_status"], "complete")
+
+        command = next(command for command in selected[1]["commands"]
+                       if command.get("kind") == "castsequence")
+        self.assertEqual(command["members"], ["outbreak", "death_coil"])
+        self.assertIsNone(command["reset"])
+        payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
+        actions = payload[1][b"Versions"][0][b"Actions"]
+        macros = [action[b"macro"] for action in actions
+                  if action[b"Type"] == b"Action" and action.get(b"type") == b"macro"]
+        self.assertIn(b"/castsequence 77575,47541", macros)
+
+        compiled = selected[0]["compiled_program"]
+        self.assertEqual(compiled["castsequences"][0]["members"], ["outbreak", "death_coil"])
+        self.assertEqual(native_evaluations[0][1]["castsequences"][0]["members"],
+                         ["outbreak", "death_coil"])
+
     def test_public_search_generates_and_evaluates_wait_clicks(self) -> None:
         import cbor2
         import codec
