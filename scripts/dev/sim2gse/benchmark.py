@@ -1,10 +1,10 @@
 """运行和汇总 Sim2GSE 固定 A/B Benchmark（基准测试）。"""
 from __future__ import annotations
-import argparse,hashlib,json,os,re,shutil,statistics,subprocess,sys,time,uuid
+import argparse,hashlib,json,os,re,shutil,sqlite3,statistics,subprocess,sys,time,uuid
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[3];BASELINE="efd9b71a9bf934a5cb990f314651e17ace73e9d1";CONTRACT="search-v1"
 PROFILES={"current":ROOT/".local/sim2gse/ui-tasks/tasks/b2a776ffb0aa4c0d815e5beed1a2ede7/input.original.simc","talent-trinket":ROOT/".local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc","equipment":ROOT/".local/sim2gse/ui-tasks/tasks/9d0657821b9b48d2a339db860f709e5b/input.original.simc"}
-SEEDS=tuple(range(20260912,20260917));CONFIG={"total_budget_seconds":600,"search_budget_seconds":420,"candidate_limit":1000,"round_candidate_limit":16,"no_improvement_rounds":5,"batch_targets":[32,128,512],"validation_batches":4,"final_batches":20,"iterations":100,"final_iterations":100,"max_processes":2,"scenarios":["nominal","jitter","slow","pause","phase"],"input_interval_ms":200,"reset_events":[]}
+SEEDS=tuple(range(20260912,20260922));CONFIG={"total_budget_seconds":600,"search_budget_seconds":420,"candidate_limit":1000,"round_candidate_limit":16,"no_improvement_rounds":5,"batch_targets":[32,128,512],"validation_batches":4,"final_batches":20,"iterations":100,"final_iterations":100,"max_processes":2,"scenarios":["nominal","jitter","slow","pause","phase"],"input_interval_ms":200,"reset_events":[]}
 def _sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def _git(*a):return subprocess.run(["git",*a],cwd=ROOT,check=True,text=True,stdout=subprocess.PIPE).stdout.strip()
 def _json(v):return json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(",",":"))
@@ -37,21 +37,42 @@ def extract(result,out,wall):
  starts=s.get("native_batch_starts");starts=starts if starts is not None else len(list((out/"batches").glob("*/native.json")))
  return {"status":result.get("status","failed"),"evidence_complete":len(dps)==5,"wall_seconds":wall,"final_dps":statistics.median(dps) if dps else None,"candidate_scores":[r["score"] for r in records if isinstance(r.get("score"),(int,float))],"common_unique_candidates":len({behavior_id(r["candidate"]) for r in records if r.get("candidate")}),"native_batch_starts":starts,"batch_requests":s.get("batch_requests"),"batch_cache_hits":s.get("batch_cache_hits"),"canonicalized_duplicates":s.get("canonicalized_duplicates")}
 def run(source,profile,out,seed):
- cfg=dict(CONFIG,random_seed=seed);code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))";start=time.monotonic();p=subprocess.run([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);wall=time.monotonic()-start
- if not (out/"result.json").is_file():raise RuntimeError(p.stderr[-4000:] or "任务没有生成结果")
- row=extract(json.loads((out/"result.json").read_text()),out,wall);row.update(process_returncode=p.returncode,stderr_tail=p.stderr[-4000:]);return row
+ cfg=dict(CONFIG,random_seed=seed);code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))";start=time.monotonic();p=subprocess.Popen([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);timeline=[];seen=0
+ while p.poll() is None:
+  database=out/"task.sqlite3"
+  if database.is_file():
+   try:
+    with sqlite3.connect(database,timeout=.1) as db: row=db.execute("SELECT value FROM state WHERE id=1").fetchone()
+    archive=(json.loads(row[0]).get("archive") or []) if row else []
+    for record in archive[seen:]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":time.monotonic()-start,"score":record.get("score")})
+    seen=len(archive)
+   except (sqlite3.Error,ValueError,OSError):pass
+  time.sleep(.1)
+ stdout,stderr=p.communicate();wall=time.monotonic()-start
+ if not (out/"result.json").is_file():raise RuntimeError(stderr[-4000:] or "任务没有生成结果")
+ row=extract(json.loads((out/"result.json").read_text()),out,wall)
+ for score in row["candidate_scores"][len(timeline):]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":wall,"score":score})
+ row["candidate_timeline"]=timeline
+ try:
+  with sqlite3.connect(out/"task.sqlite3") as db: values=[json.loads(x[0]) for x in db.execute("SELECT value FROM batches")]
+  row["simc_total_iterations"]=sum(x.get("requested_iterations",0) for x in values if x.get("status")=="success")
+ except (sqlite3.Error,ValueError,OSError):row["simc_total_iterations"]=None
+ row.update(process_returncode=p.returncode,stderr_tail=stderr[-4000:]);return row
 def med(rows,key):
  v=[r[key] for r in rows if isinstance(r.get(key),(int,float))];return statistics.median(v) if v else None
+def distribution(rows,key):
+ v=sorted(r[key] for r in rows if isinstance(r.get(key),(int,float)))
+ return {"median":statistics.median(v),"iqr":[statistics.quantiles(v,n=4)[0],statistics.quantiles(v,n=4)[2]],"worst":min(v)} if len(v)>=2 else ({"median":v[0],"iqr":[v[0],v[0]],"worst":v[0]} if v else None)
 def summarize_profile(b,c):
  threshold=med(b,"final_dps");threshold=threshold*.95 if threshold is not None else None
  def side(rows):
-  reached=[next((i+1 for i,v in enumerate(r["candidate_scores"]) if threshold is not None and v>=threshold),None) for r in rows];return {"runs":len(rows),"complete_runs":sum(r["evidence_complete"] for r in rows),"final_dps_median":med(rows,"final_dps"),"native_batch_starts_median":med(rows,"native_batch_starts"),"new_candidates_per_minute_median":statistics.median([r["common_unique_candidates"]/r["wall_seconds"]*60 for r in rows]),"threshold_evaluations_median":statistics.median([x for x in reached if x is not None]) if any(x is not None for x in reached) else None,"threshold_success_rate":sum(x is not None for x in reached)/len(rows)}
+  reached=[next((i+1 for i,v in enumerate(r["candidate_scores"]) if threshold is not None and v>=threshold),None) for r in rows];times=[next((x["wall_seconds"] for x in r.get("candidate_timeline",[]) if threshold is not None and isinstance(x.get("score"),(int,float)) and x["score"]>=threshold),None) for r in rows];throughput=[r["common_unique_candidates"]/r["wall_seconds"]*60 for r in rows];return {"runs":len(rows),"complete_runs":sum(r["evidence_complete"] for r in rows),"final_dps":distribution(rows,"final_dps"),"final_dps_median":med(rows,"final_dps"),"native_batch_starts":distribution(rows,"native_batch_starts"),"native_batch_starts_median":med(rows,"native_batch_starts"),"simc_total_iterations":distribution(rows,"simc_total_iterations"),"new_candidates_per_minute":{"median":statistics.median(throughput),"iqr":[statistics.quantiles(throughput,n=4)[0],statistics.quantiles(throughput,n=4)[2]],"worst":min(throughput)},"new_candidates_per_minute_median":statistics.median(throughput),"threshold_evaluations_median":statistics.median([x for x in reached if x is not None]) if any(x is not None for x in reached) else None,"threshold_wall_seconds_median":statistics.median([x for x in times if x is not None]) if any(x is not None for x in times) else None,"threshold_success_rate":sum(x is not None for x in reached)/len(rows)}
  bs,cs=side(b),side(c)
  def gain(old,new,inverse=False):return None if old in (None,0) or new is None else ((old-new)/old if inverse else (new-old)/old)
- m={"dps_change":gain(bs["final_dps_median"],cs["final_dps_median"]),"simc_reduction":gain(bs["native_batch_starts_median"],cs["native_batch_starts_median"],True),"throughput_gain":gain(bs["new_candidates_per_minute_median"],cs["new_candidates_per_minute_median"]),"threshold_evaluation_gain":gain(bs["threshold_evaluations_median"],cs["threshold_evaluations_median"],True)};complete=bs["complete_runs"]==len(b) and cs["complete_runs"]==len(c);passed=complete and m["dps_change"] is not None and m["dps_change"]>=-.005 and m["simc_reduction"] is not None and m["simc_reduction"]>=.20 and m["throughput_gain"] is not None and m["throughput_gain"]>=.10
+ m={"dps_change":gain(bs["final_dps_median"],cs["final_dps_median"]),"simc_reduction":gain(bs["native_batch_starts_median"],cs["native_batch_starts_median"],True),"throughput_gain":gain(bs["new_candidates_per_minute_median"],cs["new_candidates_per_minute_median"]),"threshold_evaluation_gain":gain(bs["threshold_evaluations_median"],cs["threshold_evaluations_median"],True),"threshold_wall_time_gain":gain(bs["threshold_wall_seconds_median"],cs["threshold_wall_seconds_median"],True)};complete=bs["complete_runs"]==len(b) and cs["complete_runs"]==len(c);passed=complete and m["dps_change"] is not None and m["dps_change"]>=-.005 and m["simc_reduction"] is not None and m["simc_reduction"]>=.20 and m["throughput_gain"] is not None and m["throughput_gain"]>=.10
  return {"threshold":threshold,"baseline":bs,"current":cs,"metrics":m,"status":"passed" if passed else ("failed" if complete else "insufficient_evidence")}
 def summarize(root):
- profiles={p:summarize_profile(*[[json.loads((root/side/p/str(seed)/"summary.json").read_text()) for seed in SEEDS] for side in ("baseline","current")]) for p in PROFILES};status="passed" if all(v["status"]=="passed" for v in profiles.values()) else ("insufficient_evidence" if any(v["status"]=="insufficient_evidence" for v in profiles.values()) else "failed");result={"contract":CONTRACT,"profiles":profiles,"status":status};(root/"overview.json").write_text(json.dumps(result,ensure_ascii=False,indent=2));return result
+ seeds=SEEDS if all((root/side/p/str(seed)/"summary.json").is_file() for side in ("baseline","current") for p in PROFILES for seed in SEEDS) else SEEDS[:5];profiles={p:summarize_profile(*[[json.loads((root/side/p/str(seed)/"summary.json").read_text()) for seed in seeds] for side in ("baseline","current")]) for p in PROFILES};primary=sum(max(v["metrics"].get("threshold_evaluation_gain") or -1,v["metrics"].get("threshold_wall_time_gain") or -1)>=.15 for v in profiles.values());status="failed" if any(v["status"]=="failed" for v in profiles.values()) else ("insufficient_evidence" if any(v["status"]=="insufficient_evidence" for v in profiles.values()) or primary<2 else "passed");result={"contract":CONTRACT,"seeds":list(seeds),"profiles":profiles,"primary_gain_profiles":primary,"status":status};(root/"overview.json").write_text(json.dumps(result,ensure_ascii=False,indent=2));return result
 def main():
  p=argparse.ArgumentParser();p.add_argument("--run-id",required=True);p.add_argument("--summarize",action="store_true");p.add_argument("--side",choices=("baseline","current"));p.add_argument("--profile",choices=tuple(PROFILES));p.add_argument("--seed",type=int,choices=SEEDS);a=p.parse_args()
  if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}",a.run_id):p.error("run-id 必须是单个小写路径段")
