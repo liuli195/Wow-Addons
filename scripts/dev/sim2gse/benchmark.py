@@ -37,22 +37,23 @@ def extract(result,out,wall):
  starts=s.get("native_batch_starts");starts=starts if starts is not None else len(list((out/"batches").glob("*/native.json")))
  return {"status":result.get("status","failed"),"evidence_complete":len(dps)==5,"wall_seconds":wall,"final_dps":statistics.median(dps) if dps else None,"candidate_scores":[r["score"] for r in records if isinstance(r.get("score"),(int,float))],"common_unique_candidates":len({behavior_id(r["candidate"]) for r in records if r.get("candidate")}),"native_batch_starts":starts,"batch_requests":s.get("batch_requests"),"batch_cache_hits":s.get("batch_cache_hits"),"canonicalized_duplicates":s.get("canonicalized_duplicates")}
 def run(source,profile,out,seed):
- cfg=dict(CONFIG,random_seed=seed);code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))";start=time.monotonic();p=subprocess.Popen([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);timeline=[];seen=0;search_wall=None
+ cfg=dict(CONFIG,random_seed=seed);code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))";start=time.monotonic();p=subprocess.Popen([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);timeline=[];seen=0;search_wall=None;search_started=None
  while p.poll() is None:
   database=out/"task.sqlite3"
   if database.is_file():
    try:
     with sqlite3.connect(database,timeout=.1) as db: row=db.execute("SELECT value FROM state WHERE id=1").fetchone()
     state=json.loads(row[0]) if row else {};archive=state.get("archive") or []
-    if search_wall is None and state.get("phase") in ("final","done"):search_wall=time.monotonic()-start
-    for record in archive[seen:]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":time.monotonic()-start,"score":record.get("score")})
+    if search_started is None and state.get("phase")=="search":search_started=time.monotonic()
+    if search_wall is None and search_started is not None and state.get("phase") in ("final","done"):search_wall=time.monotonic()-search_started
+    for record in archive[seen:]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":time.monotonic()-(search_started or start),"score":record.get("score")})
     seen=len(archive)
    except (sqlite3.Error,ValueError,OSError):pass
   time.sleep(.1)
  stdout,stderr=p.communicate();wall=time.monotonic()-start;search_wall=search_wall if search_wall is not None else wall
  if not (out/"result.json").is_file():raise RuntimeError(stderr[-4000:] or "任务没有生成结果")
  row=extract(json.loads((out/"result.json").read_text()),out,wall)
- for score in row["candidate_scores"][len(timeline):]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":wall,"score":score})
+ for score in row["candidate_scores"][len(timeline):]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":search_wall,"score":score})
  row["candidate_timeline"]=timeline
  try:
   invocations=[json.loads(path.read_text()) for path in out.rglob("invocation.json")];commands=[x["command"] for x in invocations]
