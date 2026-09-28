@@ -1158,6 +1158,45 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(leaked,'创建中断泄漏线程句柄')
             self.assertFalse(list(destination.rglob('.stdout-*.tmp'))+list(destination.rglob('.stderr-*.tmp')))
 
+    def test_native_start_callback_failure_still_cleans_the_created_process(self):
+        import runtime
+
+        class Process:
+            def __init__(self, folder):
+                self.stdout_path = Path(folder) / "stdout.tmp"
+                self.stderr_path = Path(folder) / "stderr.tmp"
+                self.stdout_path.write_bytes(b"")
+                self.stderr_path.write_bytes(b"")
+                self.terminated = False
+                self.closed = False
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, _timeout):
+                return 0
+
+            def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-start-callback-") as directory:
+            process = Process(directory)
+            reservations = []
+            task_runtime = runtime.TaskRuntime(10)
+            task_runtime.reservation = lambda key, allowance: reservations.append((key, allowance))
+            with patch.object(runtime, "_create_process", return_value=process), \
+                    self.assertRaisesRegex(OSError, "counter write failed"):
+                runtime.run_command(["simc"], directory, timeout_seconds=5,
+                                    runtime=task_runtime,
+                                    on_start=lambda: (_ for _ in ()).throw(
+                                        OSError("counter write failed")))
+
+            self.assertTrue(process.terminated)
+            self.assertTrue(process.closed)
+            self.assertIsNone(reservations[-1][1])
+            self.assertFalse(process.stdout_path.exists())
+            self.assertFalse(process.stderr_path.exists())
+
     def test_search_deadline_terminates_a_hung_native_batch(self):
         import ctypes
         from ctypes import wintypes

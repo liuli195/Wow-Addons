@@ -395,9 +395,9 @@ def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | 
         if runtime.reservation:
             runtime.reservation(reservation, None)
         raise
-    if on_start is not None:
-        on_start()
     try:
+        if on_start is not None:
+            on_start()
         while True:
             if runtime.cancel_event.is_set():
                 process.terminate()
