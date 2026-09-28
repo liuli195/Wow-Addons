@@ -148,6 +148,188 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
+        import search
+        import sequence
+
+        action = "use_item,slot=trinket1"
+        equivalent_programs = [
+            [dict(kind="Loop", count=2, blocks=[[action]])],
+            [[action], [action]],
+        ]
+        evaluated = []
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            clicks = candidate["compiled_program"]["clicks"]
+            plan = [click.get("commands", []) for click in clicks]
+            evaluated.append((kwargs.get("seed"), plan))
+            return _fast_evaluate(profile, candidate, folder, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-task-") as directory:
+            source = Path(directory) / "角色.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37)
+            with _fast_search_boundary(), \
+                    patch.object(search, "initial_programs", return_value=equivalent_programs), \
+                    patch.object(sequence, "evaluate", side_effect=evaluate):
+                result = run_task(source, Path(directory) / "task", search_config=config)
+
+        expected_plan = [[action], [action]]
+        matching_records = [
+            record for record in result["search"]["records"]
+            if [click.get("commands", []) for click in record["candidate"]["compiled_program"]["clicks"]]
+            == expected_plan
+        ]
+        matching_evaluations = [row for row in evaluated if row == (37, expected_plan)]
+        self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
+
+    def test_canonical_identity_expands_repeat_once_and_preserves_source_tree(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        loop = canonicalize_search_program(
+            [dict(kind="Loop", count=1, blocks=[["outbreak"], ["use_item,slot=trinket1"]])],
+            capabilities,
+        )
+        expanded = canonicalize_search_program(
+            [["outbreak"], ["use_item,slot=trinket1"]], capabilities
+        )
+
+        self.assertEqual(loop["identity"], expanded["identity"])
+        self.assertEqual(loop["form"]["clicks"],
+                         [["outbreak"], ["use_item,slot=trinket1"]])
+        self.assertEqual(loop["form"]["version"], "sim2gse-search-behavior-v1")
+        self.assertEqual(loop["program"]["nodes"][0]["kind"], "Loop")
+        self.assertNotEqual(loop["program"]["nodes"][0]["source"],
+                            expanded["program"]["nodes"][0]["source"])
+
+    def test_canonical_identity_merges_adjacent_wait_clicks(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        adjacent = canonicalize_search_program(
+            [dict(kind="WaitClicks", clicks=2), dict(kind="WaitClicks", clicks=3), ["outbreak"]],
+            capabilities,
+        )
+        combined = canonicalize_search_program(
+            [dict(kind="WaitClicks", clicks=5), ["outbreak"]], capabilities
+        )
+
+        self.assertEqual(adjacent["identity"], combined["identity"])
+        self.assertEqual(adjacent["form"]["clicks"],
+                         [[], [], [], [], [], ["outbreak"]])
+
+    def test_canonical_identity_keeps_action_order_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        forward = canonicalize_search_program([["outbreak"], ["death_coil"]], capabilities)
+        reversed_actions = canonicalize_search_program([["death_coil"], ["outbreak"]], capabilities)
+
+        self.assertNotEqual(forward["identity"], reversed_actions["identity"])
+
+    def test_canonical_identity_keeps_action_count_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        twice = canonicalize_search_program([["outbreak"], ["outbreak"]], capabilities)
+        three_times = canonicalize_search_program(
+            [["outbreak"], ["outbreak"], ["outbreak"]], capabilities
+        )
+
+        self.assertNotEqual(twice["identity"], three_times["identity"])
+
+    def test_canonical_identity_keeps_action_block_boundaries_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        item = "use_item,slot=trinket1"
+        one_block = canonicalize_search_program([["outbreak", item]], capabilities)
+        two_blocks = canonicalize_search_program([["outbreak"], [item]], capabilities)
+
+        self.assertNotEqual(one_block["identity"], two_blocks["identity"])
+
+    def test_canonical_identity_keeps_castsequence_members_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        first = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"], reset=None)],
+            capabilities,
+        )
+        second = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "scourge_strike"], reset=None)],
+            capabilities,
+        )
+
+        self.assertNotEqual(first["identity"], second["identity"])
+
+    def test_canonical_identity_keeps_castsequence_reset_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        without_reset = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"], reset=None)],
+            capabilities,
+        )
+        with_reset = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
+                  reset={"timeout_seconds": 3, "flags": ["target"]})], capabilities
+        )
+
+        self.assertNotEqual(without_reset["identity"], with_reset["identity"])
+
+    def test_canonical_identity_accepts_an_active_trinket_as_its_only_action(self):
+        from program import canonicalize_search_program
+
+        result = canonicalize_search_program([["use_item,slot=trinket1"]], _fast_capabilities())
+
+        self.assertEqual(result["form"]["clicks"], [["use_item,slot=trinket1"]])
+        self.assertEqual(result["form"]["castsequences"], [])
+
+    def test_canonical_identity_rejects_only_empty_clicks_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"blocks\[0\].*空点击"):
+            canonicalize_search_program([dict(kind="WaitClicks", clicks=2)], _fast_capabilities())
+
+    def test_canonical_identity_rejects_invalid_wait_click_counts_with_location(self):
+        from program import canonicalize_search_program
+
+        for clicks in (1, 4097):
+            with self.subTest(clicks=clicks), self.assertRaisesRegex(
+                    ValueError, r"segments\[0\].*WaitClicks"):
+                canonicalize_search_program(
+                    [dict(kind="WaitClicks", clicks=clicks), ["outbreak"]], _fast_capabilities()
+                )
+
+    def test_canonical_identity_rejects_empty_loop_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"segments\[0\]\.blocks\[0\].*Loop"):
+            canonicalize_search_program(
+                [dict(kind="Loop", count=2, blocks=[[]])], _fast_capabilities()
+            )
+
+    def test_canonical_identity_rejects_unmapped_action_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"segments\[0\].*当前角色不支持"):
+            canonicalize_search_program([["not_a_character_action"]], _fast_capabilities())
+
+    def test_canonical_identity_rejects_expansion_over_4096_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"blocks\[0\].*4096"):
+            canonicalize_search_program(
+                [dict(kind="Loop", count=4096,
+                      blocks=[["outbreak"], ["use_item,slot=trinket1"]])],
+                _fast_capabilities(),
+            )
+
     def test_search_can_vary_castsequence_timeout_without_event_variants(self):
         from search import program_key
 
@@ -194,10 +376,10 @@ class SearchAndValidationTests(TestCase):
 
     def test_real_deathknight_search_matches_fixed_baseline_golden(self):
         """固定基线 fa2ea136 的 DK 测试资料搜索结果和候选顺序不得改变。"""
-        expected_key = "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc"
+        expected_key = "sim2gse-search-behavior-v1-e6812fd904e80b40f1dd055e971c270a37e46ea1765122ac29d4d013ce741056"
         expected_record_keys = [
-            "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc",
-            "61dc02485b5367ad0516fa11b3eef3e951b98898ff020269b40be3743a26ee7d",
+            "sim2gse-search-behavior-v1-e6812fd904e80b40f1dd055e971c270a37e46ea1765122ac29d4d013ce741056",
+            "sim2gse-search-behavior-v1-8ccd3229a73e1a54a37dbf79b4a9685c0ae39e9c021884443afbe2e98a6dd345",
         ]
         expected_text = (
             "!GSE3!awoINnKPd7E0NDYyd7V0NDJ1Wuzhm1qS6JJYkrjUxS8xNxVDgVtwQWqyp4vEHy/3YNew1KLizPw8SV4WF4/UnIKI/qdzNrycu+hZV8OL5r1P56x4sXzSi85NL1pmPdnR/bK969mUfe/39Dyfve7ZgvaXC3eDFPQ0P5295Wlb6/s9syHiz6ZueNa7TsHQSM9Qz0DPzNLC0ASo59mKhc+656PLmVqYP25oerZjx7OO/mdTO57Nm/N0w6yn+1pfrup5sb4RKOXhnJGanF1cmutdZmhlkGJgbGFpaeHukpqWWJpTwugBdX5x4yJ3x+QSEKtrsUtIZUGqG4TrUgJku+YmJhflQ8gw/eTE4hKF6Lz85PzcpMSSWAUTM1MLE/yafPSLSxKLShJLShKTs7EoLS5IzcmBkFIMjPrs+JVILptFyAyhSxoErfHfQ0iJMMckAi7ZuZWQGaw2/wiYcd0owDMvqTQzpyQssSgzMSkntXgBAA=="

@@ -65,15 +65,15 @@ def compiled_identity(candidate):
     """批次缓存身份；有状态宏必须带完整定义，避免不同规则复用成绩。"""
     blocks = compiled_program(candidate)
     castsequences = candidate.get("compiled_program", {}).get("castsequences", [])
-    if not castsequences:
-        return blocks
-    return {
-        "blocks": blocks,
-        "castsequences": [
-            {"step": row["step"], "members": row["members"], "reset": row.get("reset")}
-            for row in castsequences
-        ],
-    }
+    from program import canonical_behavior_form
+    return canonical_behavior_form(blocks, castsequences)
+
+
+def behavior_key(candidate):
+    """给已编译的行为计划生成版本化、忽略来源位置的身份。"""
+    identity = compiled_identity(candidate)
+    from program import canonical_behavior_key
+    return canonical_behavior_key(identity)
 
 
 def _search_compiled_blocks(candidate):

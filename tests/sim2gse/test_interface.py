@@ -1785,7 +1785,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["phase"], "done")
         self.assertGreater(state["elapsed_seconds"], 0)
 
-    def test_public_search_generates_and_evaluates_a_sequential_loop(self) -> None:
+    def test_public_search_deduplicates_an_equivalent_sequential_loop(self) -> None:
         import codec
         import engine
         import sequence
@@ -1862,40 +1862,13 @@ class InterfaceTests(unittest.TestCase):
 
         self.assertEqual(state["status"], "completed", state)
         self.assertTrue(state["result_ready"])
-        self.assertTrue(loop_evaluations, "自动搜索没有从普通种子生成并评价顺序 Loop 候选")
-        self.assertTrue(native_loop_evaluations, "顺序 Loop 没有通过原生受控评价")
-        selected_loop = next((row for row in loop_evaluations
-                              if row[0]["text"] == state["candidate_text"]), None)
-        self.assertIsNotNone(selected_loop, "公开任务最终结果没有选择顺序 Loop 候选")
-        self.assertEqual(selected_loop[0]["text"], native_loop_evaluations[0]["text"],
-                         "最终顺序 Loop 候选没有经过真实原生评价")
+        result = json.loads(
+            (self.server.task_root / created["task_id"] / "result.json").read_text(encoding="utf-8")
+        )
+        self.assertGreater(result["search"]["canonicalized_duplicates"], 0)
+        self.assertFalse(loop_evaluations, "等价顺序 Loop 被重复送入原生评价")
+        self.assertFalse(native_loop_evaluations, "等价顺序 Loop 被重复送入原生受控评价")
         self.assertEqual(state["evidence_status"], "complete")
-        candidate, loop, clicks = selected_loop
-        self.assertEqual(loop["step_function"], "Sequential")
-        self.assertGreaterEqual(loop["count"], 2)
-        body = loop["body"]
-        source_prefix = loop["source"]["path"] + ".loop["
-        source_clicks = candidate["compiled_program"]["clicks"]
-        loop_clicks = [click for click in source_clicks
-                       if click["source"]["path"].startswith(source_prefix)]
-        self.assertEqual([click["commands"] for click in loop_clicks],
-                         [[command["simc_action"] for command in node["commands"]]
-                          for _ in range(loop["count"]) for node in body])
-        self.assertEqual([click["source"]["path"] for click in loop_clicks],
-                         [node["source"]["path"] for _ in range(loop["count"]) for node in body])
-        self.assertEqual([click["source"]["gse_path"] for click in loop_clicks],
-                         [node["source"]["gse_path"] for _ in range(loop["count"]) for node in body])
-
-        import cbor2
-        payload = cbor2.loads(zlib.decompress(base64.b64decode(candidate["text"][6:]), -15))
-        exported_actions = payload[1][b"Versions"][0][b"Actions"]
-        loop_index = int(loop["source"]["gse_path"]) - 1
-        exported_loop = exported_actions[loop_index]
-        self.assertEqual(exported_loop[b"Type"], b"Loop")
-        self.assertEqual(exported_loop[b"StepFunction"], b"Sequential")
-        self.assertEqual(int(exported_loop[b"Repeat"]), loop["count"])
-        self.assertEqual([exported_loop[index][b"spell"] for index in range(1, len(body) + 1)],
-                         [node["commands"][0]["spell_id"] for node in body])
 
     def test_public_search_generates_exports_and_native_evaluates_castsequence_reset(self) -> None:
         import cbor2
