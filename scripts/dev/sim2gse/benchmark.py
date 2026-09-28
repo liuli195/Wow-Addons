@@ -79,13 +79,12 @@ def summarize(root):
  def load(path):return json.loads(path.read_text()) if path.is_file() else {"evidence_complete":False,"final_dps":None,"native_batch_starts":None,"common_unique_candidates":0,"wall_seconds":1,"search_wall_seconds":1,"candidate_scores":[],"candidate_timeline":[],"simc_total_iterations":None,"engine_identities":[]}
  def build(seeds):return {p:summarize_profile(*[[load(root/side/p/str(seed)/"summary.json") for seed in seeds] for side in ("baseline","current")]) for p in PROFILES}
  first=build(SEEDS[:5]);reasons=[]
- if not any(value["status"]=="failed" for value in first.values()):
-  for name,value in first.items():
-   if value["status"]!="passed":continue
-   m=value["metrics"];primary=max(m.get("threshold_evaluation_gain") if m.get("threshold_evaluation_gain") is not None else -1,m.get("threshold_wall_time_gain") if m.get("threshold_wall_time_gain") is not None else -1)
-   if abs(primary-.15)<=.02:reasons.append(name+": primary boundary")
-   if m.get("dps_change") is not None and abs(m["dps_change"]+.005)<=.002:reasons.append(name+": dps boundary")
-   if (m.get("threshold_evaluation_gain") or 0)*(m.get("threshold_wall_time_gain") or 0)<0:reasons.append(name+": metric direction")
+ for name,value in first.items():
+  if value["status"]=="insufficient_evidence":continue
+  m=value["metrics"];primary=max(m.get("threshold_evaluation_gain") if m.get("threshold_evaluation_gain") is not None else -1,m.get("threshold_wall_time_gain") if m.get("threshold_wall_time_gain") is not None else -1)
+  if abs(primary-.15)<=.02:reasons.append(name+": primary boundary")
+  if m.get("dps_change") is not None and abs(m["dps_change"]+.005)<=.002:reasons.append(name+": dps boundary")
+  if (m.get("threshold_evaluation_gain") or 0)*(m.get("threshold_wall_time_gain") or 0)<0:reasons.append(name+": metric direction")
  needs=bool(reasons);extra_ready=all((root/side/p/str(seed)/"summary.json").is_file() for side in ("baseline","current") for p in PROFILES for seed in SEEDS[5:]);seeds=SEEDS if needs and extra_ready else SEEDS[:5];profiles=build(seeds);primary=sum(max(v["metrics"].get("threshold_evaluation_gain") if v["metrics"].get("threshold_evaluation_gain") is not None else -1,v["metrics"].get("threshold_wall_time_gain") if v["metrics"].get("threshold_wall_time_gain") is not None else -1)>=.15 for v in profiles.values());status="failed" if any(v["status"]=="failed" for v in profiles.values()) else ("insufficient_evidence" if needs and not extra_ready else ("insufficient_evidence" if any(v["status"]=="insufficient_evidence" for v in profiles.values()) or primary<2 else "passed"));result={"contract":CONTRACT,"seeds":list(seeds),"needs_expansion":needs,"expansion_reasons":reasons,"extra_seeds_ready":extra_ready,"profiles":profiles,"primary_gain_profiles":primary,"status":status};(root/"overview.json").write_text(json.dumps(result,ensure_ascii=False,indent=2));return result
 def main():
  p=argparse.ArgumentParser();p.add_argument("--run-id",required=True);p.add_argument("--summarize",action="store_true");p.add_argument("--side",choices=("baseline","current"));p.add_argument("--profile",choices=tuple(PROFILES));p.add_argument("--seed",type=int,choices=SEEDS);a=p.parse_args()

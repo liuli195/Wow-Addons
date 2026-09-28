@@ -42,3 +42,12 @@ class BenchmarkTests(TestCase):
    result=summarize(root)
    self.assertEqual(result["primary_gain_profiles"],3)
    self.assertEqual(result["status"],"passed")
+ def test_failed_result_near_dps_boundary_triggers_expansion(self):
+  with TemporaryDirectory() as directory:
+   root=Path(directory)
+   baseline=[self.row(100,100) for _ in range(5)]
+   current=[self.row(99.4,75,12,(96,)) for _ in range(5)]
+   self.write_first_five(root,baseline,current)
+   result=summarize(root)
+   self.assertTrue(result["needs_expansion"])
+   self.assertIn("current: dps boundary",result["expansion_reasons"])
