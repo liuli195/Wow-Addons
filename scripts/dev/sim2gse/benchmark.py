@@ -50,7 +50,7 @@ def run(source,profile,out,seed):
     seen=len(archive)
    except (sqlite3.Error,ValueError,OSError):pass
   time.sleep(.1)
- stdout,stderr=p.communicate();wall=time.monotonic()-start;search_wall=search_wall if search_wall is not None else wall
+ stdout,stderr=p.communicate();wall=time.monotonic()-start;search_wall=search_wall if search_wall is not None else (time.monotonic()-search_started if search_started is not None else wall)
  if not (out/"result.json").is_file():raise RuntimeError(stderr[-4000:] or "任务没有生成结果")
  row=extract(json.loads((out/"result.json").read_text()),out,wall)
  for score in row["candidate_scores"][len(timeline):]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":search_wall,"score":score})
