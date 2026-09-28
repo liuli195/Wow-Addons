@@ -1,28 +1,11 @@
 from pathlib import Path
 import sys
 from unittest import TestCase
-
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts/dev/sim2gse"))
-from benchmark import summarize
-
-
+ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/"scripts/dev/sim2gse"))
+from benchmark import extract,summarize_profile
 class BenchmarkTests(TestCase):
-    def test_summary_reports_median_iqr_worst_cost_and_throughput(self):
-        rows = [
-            dict(final_dps=dps, native_batch_starts=starts, unique_candidates=unique,
-                 wall_seconds=60, status=status)
-            for dps, starts, unique, status in (
-                (100, 20, 10, "completed"), (110, 18, 12, "completed"),
-                (120, 16, 14, "validation_incomplete"), (130, 14, 16, "completed"),
-                (140, 12, 18, "completed"),
-            )
-        ]
-
-        result = summarize(rows)
-
-        self.assertEqual(result["final_dps_median"], 120)
-        self.assertEqual(result["final_dps_worst"], 100)
-        self.assertEqual(result["native_batch_starts_median"], 16)
-        self.assertEqual(result["new_candidates_per_minute_median"], 14)
-        self.assertEqual(result["success_rate"], 0.8)
+ def row(self,dps,starts,unique=10,scores=(80,100),complete=True):return {"final_dps":dps,"native_batch_starts":starts,"common_unique_candidates":unique,"wall_seconds":60,"candidate_scores":list(scores),"evidence_complete":complete}
+ def test_profile_summary_applies_frozen_gates(self):
+  result=summarize_profile([self.row(100,100) for _ in range(5)],[self.row(100,75,12,(96,)) for _ in range(5)]);self.assertEqual(result["threshold"],95);self.assertEqual(result["status"],"passed")
+ def test_incomplete_result_is_evidence_instead_of_an_exception(self):
+  row=extract({"status":"validation_incomplete"},Path("missing"),12);self.assertFalse(row["evidence_complete"]);self.assertIsNone(row["final_dps"]);self.assertEqual(summarize_profile([self.row(100,100) for _ in range(5)],[self.row(None,80,complete=False) for _ in range(5)])["status"],"insufficient_evidence")
