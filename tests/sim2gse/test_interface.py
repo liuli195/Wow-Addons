@@ -2270,6 +2270,28 @@ class InterfaceTests(unittest.TestCase):
 
         self.assertEqual(public["search_metrics"], state["search"])
 
+    def test_running_task_api_exposes_persisted_search_efficiency_counters(self) -> None:
+        task_id = "a" * 32
+        _, destination = self.server.task_paths(task_id)
+        destination.mkdir()
+        (destination / "progress.json").write_text(json.dumps({
+            "status": "running",
+            "phase": "search",
+            "batch_requests": 9,
+            "batch_cache_hits": 2,
+            "native_batch_starts": 7,
+            "canonicalized_duplicates": 4,
+        }), encoding="utf-8")
+
+        state = self._json_request("GET", f"/api/tasks/{task_id}")
+
+        self.assertEqual(state["search_metrics"], {
+            "batch_requests": 9,
+            "batch_cache_hits": 2,
+            "native_batch_starts": 7,
+            "canonicalized_duplicates": 4,
+        })
+
     def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300):
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),

@@ -75,10 +75,13 @@ def _fast_report(character, score, samples):
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
-                   runtime=None, score_offset=0, simulation_config=None, reset_events=None):
+                   runtime=None, score_offset=0, simulation_config=None, reset_events=None,
+                   on_native_start=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
+    if on_native_start is not None:
+        on_native_start()
     input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
     score = score_offset + 100.0 + sum(
         command.get("spell_id", command.get("item_id", 0))
@@ -244,10 +247,12 @@ class SearchAndValidationTests(TestCase):
                           scenarios=("nominal",), max_processes=1)
             with _fast_search_boundary():
                 run_task(source, destination, search_config=config)
+            result_before = json.loads((destination / "result.json").read_text(encoding="utf-8"))
             with sqlite3.connect(destination / "task.sqlite3") as database:
                 state = json.loads(database.execute(
                     "SELECT value FROM state WHERE id=1").fetchone()[0])
                 state["behavior_identity_version"] = "obsolete-version"
+                state["elapsed_seconds"] = config["total_budget_seconds"]
                 database.execute("UPDATE state SET value=? WHERE id=1",
                                  (json.dumps(state),))
                 database.commit()
@@ -255,6 +260,8 @@ class SearchAndValidationTests(TestCase):
             with _fast_search_boundary(), self.assertRaisesRegex(
                     TaskError, "候选行为身份版本已变化"):
                 resume_task(destination)
+            self.assertEqual(json.loads((destination / "result.json").read_text(encoding="utf-8")),
+                             result_before)
         finally:
             for attempt in range(20):
                 try:
@@ -855,6 +862,10 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(resumed["locked_candidate_key"], cancelled["locked_candidate_key"])
             self.assertGreater(resumed["elapsed_seconds"], cancelled["elapsed_seconds"])
             self.assertGreaterEqual(resumed["completed_batches"], cancelled["completed_batches"])
+            for name in ("batch_requests", "batch_cache_hits", "native_batch_starts",
+                         "canonicalized_duplicates"):
+                self.assertIn(name, cancelled["search"])
+                self.assertGreaterEqual(resumed["search"][name], cancelled["search"][name])
             self.assertFalse(resumed["independent_validation_complete"])
             self.assertEqual(set(resumed["final"]["scenarios"]), {"nominal", "jitter", "slow", "pause", "phase"})
 

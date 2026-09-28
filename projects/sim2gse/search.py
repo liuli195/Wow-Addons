@@ -43,6 +43,16 @@ DEFAULT_CONFIG = {
 }
 
 
+def verify_behavior_identity_state(state):
+    from program import BEHAVIOR_IDENTITY_VERSION
+    search_state_keys = ('archive', 'pending', 'seen', 'evaluated_keys',
+                         'locked_candidate_key')
+    saved = state.get('behavior_identity_version')
+    if saved != BEHAVIOR_IDENTITY_VERSION and (
+            saved is not None or any(key in state for key in search_state_keys)):
+        raise ValueError('候选行为身份版本已变化，请创建新任务')
+
+
 def config_for(values=None):
     config = dict(DEFAULT_CONFIG)
     if values:
@@ -441,7 +451,9 @@ class TaskStore:
     def publish(self):
         with self.lock:
             brief = {key: self.state.get(key) for key in
-                     ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches', 'error')}
+                     ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
+                      'batch_requests', 'batch_cache_hits', 'native_batch_starts',
+                      'canonicalized_duplicates', 'error')}
             temporary = self.destination / 'progress.pending.json'
             temporary.write_text(_json(brief), encoding='utf-8')
             replace_file(temporary, self.destination / 'progress.json')
@@ -464,13 +476,15 @@ class TaskStore:
             self.put_batch(key,dict(status='invalid',error='缓存行损坏'))
             return None
 
-    def put_batch(self, key, value):
+    def put_batch(self, key, value, *, counter=None):
         with self.lock, self.db:
             self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
             if value.get('status')=='success' and value['request']['purpose']!='final':
                 self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
+            if counter is not None:
+                self.state[counter] = self.state.get(counter, 0) + 1
             self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
 
     @contextmanager
@@ -518,12 +532,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
-    search_state_keys = ('archive', 'pending', 'seen', 'evaluated_keys',
-                         'locked_candidate_key')
-    saved_identity_version = state.get('behavior_identity_version')
-    if saved_identity_version != BEHAVIOR_IDENTITY_VERSION:
-        if saved_identity_version is not None or any(key in state for key in search_state_keys):
-            raise ValueError('候选行为身份版本已变化，请创建新任务')
+    verify_behavior_identity_state(state)
+    if 'behavior_identity_version' not in state:
         state['behavior_identity_version'] = BEHAVIOR_IDENTITY_VERSION
     state.setdefault('run_nonce', uuid.uuid4().hex)
     state.setdefault('phase', 'search')
@@ -611,10 +621,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                        simulation_config=simulation_config)
                 if summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']:
                     raise ValueError('缓存摘要不符')
-                store.put_batch(key,cached)
-                with store.lock:
-                    state['batch_cache_hits'] += 1
-                    store.save()
+                store.put_batch(key, cached, counter='batch_cache_hits')
                 return dict(cached, cached=True)
             except (ValueError, OSError, KeyError, TypeError):
                 store.put_batch(key, dict(status='invalid', request=request))
@@ -626,7 +633,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         allowance = min(30, runtime.remaining_seconds)
         with store.lock:
             state.setdefault('inflight', {})[key] = dict(start=runtime.elapsed_seconds, allowance=allowance)
-            state['native_batch_starts'] += 1
             if purpose=='search' and index!=99 and behavior_id not in state['evaluated_keys']:
                 state['evaluated_keys'].append(behavior_id)
             store.save()
@@ -634,9 +640,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         started = time.monotonic()
         try:
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
+            def native_started():
+                with store.lock:
+                    state['native_batch_starts'] += 1
+                    store.save()
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
-                              simulation_config=simulation_config, **kwargs)
+                              simulation_config=simulation_config, on_native_start=native_started, **kwargs)
             raw = (folder / 'native.json').read_bytes()
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], requested_iterations=iterations,

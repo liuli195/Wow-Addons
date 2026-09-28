@@ -55,7 +55,7 @@ def identity(mode, runtime=None):
 
 
 def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30,
-        simulation_config=None):
+        simulation_config=None, on_start=None):
     runtime = runtime or TaskRuntime(timeout_seconds)
     simulation_config = config_for(simulation_config)
     executable, manifest = identity(mode, runtime)
@@ -64,7 +64,8 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
                'iterations=100', 'max_time=180',
                'json2=native.json', 'output=native.txt', *options]
     try:
-        proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime)
+        proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
+                           on_start=on_start)
     except ProcessTimeout as error:
         (folder / 'process.log').write_text(str(error), encoding='utf-8')
         raise CandidateError('原生引擎运行超时，已停止本次进程') from error

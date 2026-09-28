@@ -115,7 +115,7 @@ def _search_compiled_blocks(candidate):
 def evaluate(profile, candidate, folder, *, character, iterations=100, seed=20260912, trace=True,
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
              failure_events=None, reset_events=None,
-             runtime=None, simulation_config=None):
+             runtime=None, simulation_config=None, on_native_start=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
@@ -216,9 +216,10 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n'
                          + feedback, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
+    start_callback = {'on_start': on_native_start} if on_native_start is not None else {}
     log = run(generated, folder, mode,
               [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'], runtime=runtime,
-              simulation_config=simulation_config)
+              simulation_config=simulation_config, **start_callback)
     native_blocks = []
     for line in log.splitlines():
         if not line.startswith('S2GBLOCK\t'):

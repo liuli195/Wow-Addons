@@ -498,7 +498,10 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
         state.update(status='cancelled' if isinstance(error,TaskCancelled) else 'validation_incomplete',
                      elapsed_seconds=runtime.elapsed_seconds, error=str(error), inflight={})
         store.save()
-        result = {k:state.get(k) for k in ('status','phase','elapsed_seconds','locked_candidate_key','completed_batches','error')}
+        result = {k:state.get(k) for k in (
+            'status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
+            'batch_requests', 'batch_cache_hits', 'native_batch_starts',
+            'canonicalized_duplicates', 'error')}
         _write_json(destination/'result.json', result, atomic=True)
         return result
     except Exception as error:
@@ -680,10 +683,14 @@ def resume_task(output_root, **kwargs):
         if not isinstance(profile, dict):
             raise TaskError("恢复任务的角色档案格式无效，请创建新任务")
         _verify_task_inputs(destination, profile)
-        from search import TaskStore, config_for
+        from search import TaskStore, config_for, verify_behavior_identity_state
         store = TaskStore(destination)
         try:
             state = store.state
+            try:
+                verify_behavior_identity_state(state)
+            except ValueError as error:
+                raise TaskError(str(error)) from error
             _verify_task_inputs(destination, state)
             if not state.get('config'):
                 raise TaskError('任务缺少恢复清单')
@@ -705,7 +712,10 @@ def resume_task(output_root, **kwargs):
                 if state.get('status')!='completed':
                     state.update(status='validation_incomplete',elapsed_seconds=used,error='计算预算已耗尽')
                     store.save()
-                    result={k:state.get(k) for k in ('status','phase','elapsed_seconds','locked_candidate_key','completed_batches','error')}
+                    result={k:state.get(k) for k in (
+                        'status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
+                        'batch_requests', 'batch_cache_hits', 'native_batch_starts',
+                        'canonicalized_duplicates', 'error')}
                     result['independent_validation_complete']=False
                     _write_json(destination/'result.json',result,atomic=True)
                 store.publish()
