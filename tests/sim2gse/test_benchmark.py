@@ -51,3 +51,4 @@ class BenchmarkTests(TestCase):
    result=summarize(root)
    self.assertTrue(result["needs_expansion"])
    self.assertIn("current: dps boundary",result["expansion_reasons"])
+   self.assertEqual(result["status"],"insufficient_evidence")
