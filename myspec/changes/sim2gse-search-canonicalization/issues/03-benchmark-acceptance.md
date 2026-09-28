@@ -1,8 +1,8 @@
 # 运行第一阶段固定 Benchmark 并冻结结果
 
 Triage（分拣）: ready-for-agent
-Status（状态）: open
-Assignee（领取者）: unassigned
+Status（状态）: in-progress
+Assignee（领取者）: Codex
 Parent（所属变更）: [Sim2GSE 搜索候选标准化与约束](../spec.md)
 Blocked by（前置事项）: [将候选行为身份接入搜索、缓存与恢复](02-search-cache-recovery.md)
 
