@@ -513,10 +513,18 @@ def _tuple(value):
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
     from engine import check_report, player_report, CandidateError
+    from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
+    search_state_keys = ('archive', 'pending', 'seen', 'evaluated_keys',
+                         'locked_candidate_key')
+    saved_identity_version = state.get('behavior_identity_version')
+    if saved_identity_version != BEHAVIOR_IDENTITY_VERSION:
+        if saved_identity_version is not None or any(key in state for key in search_state_keys):
+            raise ValueError('候选行为身份版本已变化，请创建新任务')
+        state['behavior_identity_version'] = BEHAVIOR_IDENTITY_VERSION
     state.setdefault('run_nonce', uuid.uuid4().hex)
     state.setdefault('phase', 'search')
     state.setdefault('archive', [])
@@ -527,6 +535,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('chains', [])
     state.setdefault('evaluated_keys', [])
     state.setdefault('canonicalized_duplicates', 0)
+    state.setdefault('batch_requests', 0)
+    state.setdefault('batch_cache_hits', 0)
+    state.setdefault('native_batch_starts', 0)
     state.setdefault('completed_batches', 0)
     state.setdefault('batch_estimate', 0.25)
     starts = initial_programs(capabilities, reference, config['random_seed'])
@@ -547,7 +558,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         try:
             canonical = canonicalize_search_program(program, capabilities)
             compiled = compile_program(canonical['program'],
-                                       destination / 'exports' / source_key,
+                                       destination / 'exports' / canonical['identity'],
                                        identity=reference['identity'], runtime=runtime)
             if canonical['form'] != compiled_identity(compiled):
                 raise CandidateError('候选标准形式与编译计划不一致')
@@ -578,10 +589,14 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         compiled = candidate(program)
         behavior_id = candidate_key(program)
         request = dict(condition=condition_key, program=compiled_identity(compiled), purpose=purpose,
+                        behavior_identity=behavior_id,
                         seed=seed, input_seed=input_seed, iterations=iterations, times=times,
                         stats=STATS_VERSION, trace=trace,
                         reset_events=[list(row) for row in config['reset_events']])
         key = digest(request)
+        with store.lock:
+            state['batch_requests'] += 1
+            store.save()
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
             try:
@@ -597,6 +612,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']:
                     raise ValueError('缓存摘要不符')
                 store.put_batch(key,cached)
+                with store.lock:
+                    state['batch_cache_hits'] += 1
+                    store.save()
                 return dict(cached, cached=True)
             except (ValueError, OSError, KeyError, TypeError):
                 store.put_batch(key, dict(status='invalid', request=request))
@@ -608,6 +626,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         allowance = min(30, runtime.remaining_seconds)
         with store.lock:
             state.setdefault('inflight', {})[key] = dict(start=runtime.elapsed_seconds, allowance=allowance)
+            state['native_batch_starts'] += 1
             if purpose=='search' and index!=99 and behavior_id not in state['evaluated_keys']:
                 state['evaluated_keys'].append(behavior_id)
             store.save()
@@ -811,6 +830,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                   search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
                               candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
                               canonicalized_duplicates=state['canonicalized_duplicates'], errors=state.get('errors', []),
+                              batch_requests=state['batch_requests'], batch_cache_hits=state['batch_cache_hits'],
+                              native_batch_starts=state['native_batch_starts'],
                               partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason')),
                   validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
                   candidate=candidate(chosen['program']), independent_validation_complete=complete,

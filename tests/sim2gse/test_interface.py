@@ -2249,6 +2249,27 @@ class InterfaceTests(unittest.TestCase):
 
         self.assertIn("初始序列", _public_state(state, destination)["result_note"])
 
+    def test_completed_task_api_exposes_search_efficiency_counters(self) -> None:
+        destination = Path(self.directory.name) / "计数任务"
+        destination.mkdir()
+        (destination / "candidate.txt").write_text("!GSE3!candidate", encoding="ascii")
+        state = {
+            "status": "completed",
+            "phase": "done",
+            "candidate": {"text": "!GSE3!candidate"},
+            "independent_validation_complete": True,
+            "search": {
+                "batch_requests": 12,
+                "batch_cache_hits": 5,
+                "native_batch_starts": 7,
+                "canonicalized_duplicates": 3,
+            },
+        }
+
+        public = _public_state(state, destination)
+
+        self.assertEqual(public["search_metrics"], state["search"])
+
     def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300):
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),

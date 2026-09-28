@@ -186,6 +186,85 @@ class SearchAndValidationTests(TestCase):
         matching_evaluations = [row for row in evaluated if row == (37, expected_plan)]
         self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
 
+    def test_search_artifacts_and_requests_use_the_canonical_behavior_identity(self):
+        import search
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-identity-trace-") as directory:
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1)
+            with _fast_search_boundary(), patch.object(
+                    search, "initial_programs",
+                    return_value=[[['outbreak']], [['death_coil']]]):
+                result = run_task(source, destination, search_config=config)
+
+            record_keys = {record["key"] for record in result["search"]["records"]}
+            export_keys = {path.name for path in (destination / "exports").iterdir()}
+            self.assertEqual(export_keys, record_keys)
+            self.assertIn(result["locked_candidate_key"], record_keys)
+            for record in result["search"]["records"]:
+                for row in record["batches"]:
+                    self.assertEqual(row["request"]["behavior_identity"], record["key"])
+
+    def test_search_reports_requests_cache_hits_and_native_batch_starts_separately(self):
+        with tempfile.TemporaryDirectory(prefix="sim2gse-cache-counters-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1)
+            with _fast_search_boundary():
+                first = run_task(source, Path(directory) / "first", search_config=config)
+                second = run_task(source, Path(directory) / "second", search_config=config)
+
+        self.assertEqual(first["search"]["batch_cache_hits"], 0)
+        self.assertEqual(first["search"]["batch_requests"],
+                         first["search"]["native_batch_starts"])
+        self.assertGreater(second["search"]["batch_cache_hits"], 0)
+        self.assertEqual(second["search"]["batch_requests"],
+                         second["search"]["batch_cache_hits"]
+                         + second["search"]["native_batch_starts"])
+
+    def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
+        import sqlite3
+
+        directory = tempfile.mkdtemp(prefix="sim2gse-old-identity-")
+        try:
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1)
+            with _fast_search_boundary():
+                run_task(source, destination, search_config=config)
+            with sqlite3.connect(destination / "task.sqlite3") as database:
+                state = json.loads(database.execute(
+                    "SELECT value FROM state WHERE id=1").fetchone()[0])
+                state["behavior_identity_version"] = "obsolete-version"
+                database.execute("UPDATE state SET value=? WHERE id=1",
+                                 (json.dumps(state),))
+                database.commit()
+            database.close()
+            with _fast_search_boundary(), self.assertRaisesRegex(
+                    TaskError, "候选行为身份版本已变化"):
+                resume_task(destination)
+        finally:
+            for attempt in range(20):
+                try:
+                    shutil.rmtree(directory)
+                    break
+                except PermissionError:
+                    if attempt == 19:
+                        raise
+                    time.sleep(0.05)
+
     def test_run_task_rejects_canonical_compiler_mismatch_before_native_evaluation(self):
         import program as program_module
         import search
