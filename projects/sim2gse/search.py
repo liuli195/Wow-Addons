@@ -513,7 +513,7 @@ def _tuple(value):
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
     from engine import check_report, player_report, CandidateError
-    from sequence import evaluate, compiled_identity, behavior_key
+    from sequence import evaluate, compiled_identity
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
@@ -543,16 +543,19 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         source_key = program_key(program)
         if source_key in prepared:
             return prepared[source_key][1]
-        from program import compile_program, from_search_program
+        from program import compile_program, canonicalize_search_program
         try:
-            compiled = compile_program(from_search_program(program, capabilities),
+            canonical = canonicalize_search_program(program, capabilities)
+            compiled = compile_program(canonical['program'],
                                        destination / 'exports' / source_key,
                                        identity=reference['identity'], runtime=runtime)
+            if canonical['form'] != compiled_identity(compiled):
+                raise CandidateError('候选标准形式与编译计划不一致')
         except CandidateError:
             raise
         except ValueError as error:
             raise CandidateError(str(error)) from error
-        key = behavior_key(compiled)
+        key = canonical['identity']
         saved = next((r for r in state['archive'] if r['key'] == key and r.get('candidate')), None)
         if saved and digest(saved['candidate']) == saved['candidate_sha256']:
             if compiled_identity(saved['candidate']) == compiled_identity(compiled):

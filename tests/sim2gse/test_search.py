@@ -186,6 +186,45 @@ class SearchAndValidationTests(TestCase):
         matching_evaluations = [row for row in evaluated if row == (37, expected_plan)]
         self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
 
+    def test_run_task_rejects_canonical_compiler_mismatch_before_native_evaluation(self):
+        import program as program_module
+        import search
+        import sequence
+
+        real_canonicalize = program_module.canonicalize_search_program
+        evaluated = []
+
+        def canonicalize(search_program, capabilities):
+            result = real_canonicalize(search_program, capabilities)
+            if search_program == [["outbreak"]]:
+                result["form"] = dict(result["form"], clicks=[["death_coil"]])
+            return result
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            plan = [click.get("commands", [])
+                    for click in candidate["compiled_program"]["clicks"]]
+            evaluated.append(plan)
+            return _fast_evaluate(profile, candidate, folder, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-mismatch-") as directory:
+            source = Path(directory) / "角色.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=41)
+            with _fast_search_boundary(), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['outbreak']], [['death_coil']]]), \
+                    patch.object(program_module, "canonicalize_search_program",
+                                 side_effect=canonicalize), \
+                    patch.object(sequence, "evaluate", side_effect=evaluate):
+                result = run_task(source, Path(directory) / "task", search_config=config)
+
+        self.assertNotIn([["outbreak"]], evaluated)
+        self.assertTrue(any("标准形式与编译计划不一致" in row["error"]
+                            for row in result["search"]["errors"]))
+
     def test_canonical_identity_expands_repeat_once_and_preserves_source_tree(self):
         from program import canonicalize_search_program
 
@@ -282,6 +321,34 @@ class SearchAndValidationTests(TestCase):
 
         self.assertNotEqual(without_reset["identity"], with_reset["identity"])
 
+    def test_canonical_form_declares_start_and_sequence_reset_rules(self):
+        from program import canonicalize_search_program
+
+        result = canonicalize_search_program([["outbreak"]], _fast_capabilities())
+
+        self.assertEqual(result["form"]["start_step"], 1)
+        self.assertEqual(result["form"]["sequence_reset"], "end")
+
+    def test_canonical_identity_treats_castsequence_reset_flags_as_a_set(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        target_combat = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
+                  reset={"timeout_seconds": 3, "flags": ["target", "combat"]})],
+            capabilities,
+        )
+        combat_target = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
+                  reset={"timeout_seconds": 3,
+                         "flags": ["combat", "target", "combat"]})],
+            capabilities,
+        )
+
+        self.assertEqual(target_combat["identity"], combat_target["identity"])
+        self.assertEqual(target_combat["form"]["castsequences"][0]["reset"]["flags"],
+                         ["combat", "target"])
+
     def test_canonical_identity_accepts_an_active_trinket_as_its_only_action(self):
         from program import canonicalize_search_program
 
@@ -376,10 +443,10 @@ class SearchAndValidationTests(TestCase):
 
     def test_real_deathknight_search_matches_fixed_baseline_golden(self):
         """固定基线 fa2ea136 的 DK 测试资料搜索结果和候选顺序不得改变。"""
-        expected_key = "sim2gse-search-behavior-v1-e6812fd904e80b40f1dd055e971c270a37e46ea1765122ac29d4d013ce741056"
+        expected_key = "sim2gse-search-behavior-v1-cc858eeb37af5fc01c88a9f8d3b4f063c50d3c90964ca9191f4b58ed95f8606d"
         expected_record_keys = [
-            "sim2gse-search-behavior-v1-e6812fd904e80b40f1dd055e971c270a37e46ea1765122ac29d4d013ce741056",
-            "sim2gse-search-behavior-v1-8ccd3229a73e1a54a37dbf79b4a9685c0ae39e9c021884443afbe2e98a6dd345",
+            "sim2gse-search-behavior-v1-cc858eeb37af5fc01c88a9f8d3b4f063c50d3c90964ca9191f4b58ed95f8606d",
+            "sim2gse-search-behavior-v1-59ab00a42f44d3893019964b9be136c3a16af5a7c490ed9fcd6c9873afb4e993",
         ]
         expected_text = (
             "!GSE3!awoINnKPd7E0NDYyd7V0NDJ1Wuzhm1qS6JJYkrjUxS8xNxVDgVtwQWqyp4vEHy/3YNew1KLizPw8SV4WF4/UnIKI/qdzNrycu+hZV8OL5r1P56x4sXzSi85NL1pmPdnR/bK969mUfe/39Dyfve7ZgvaXC3eDFPQ0P5295Wlb6/s9syHiz6ZueNa7TsHQSM9Qz0DPzNLC0ASo59mKhc+656PLmVqYP25oerZjx7OO/mdTO57Nm/N0w6yn+1pfrup5sb4RKOXhnJGanF1cmutdZmhlkGJgbGFpaeHukpqWWJpTwugBdX5x4yJ3x+QSEKtrsUtIZUGqG4TrUgJku+YmJhflQ8gw/eTE4hKF6Lz85PzcpMSSWAUTM1MLE/yafPSLSxKLShJLShKTs7EoLS5IzcmBkFIMjPrs+JVILptFyAyhSxoErfHfQ0iJMMckAi7ZuZWQGaw2/wiYcd0owDMvqTQzpyQssSgzMSkntXgBAA=="

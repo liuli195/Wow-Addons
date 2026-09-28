@@ -220,7 +220,7 @@ def from_search_program(program, capabilities):
                 timeout = reset.get("timeout_seconds")
                 if timeout is not None:
                     parts.append(str(timeout).rstrip("0").rstrip(".") if isinstance(timeout, float) else str(timeout))
-                parts.extend(reset.get("flags") or [])
+                parts.extend(sorted(set(reset.get("flags") or [])))
                 if parts:
                     reset_text = " reset=" + "/".join(parts)
             macro = "/castsequence" + reset_text + " " + ",".join(
@@ -299,9 +299,14 @@ def canonical_behavior_form(clicks, castsequences=()):
     """生成不包含来源位置和展示信息的版本化点击行为。"""
     return {
         "version": BEHAVIOR_IDENTITY_VERSION,
+        "start_step": 1,
+        "sequence_reset": "end",
         "clicks": clicks,
         "castsequences": [
-            {"step": row["step"], "members": list(row["members"]), "reset": row.get("reset")}
+            {"step": row["step"], "members": list(row["members"]),
+             "reset": ({**row["reset"],
+                        "flags": sorted(set(row["reset"].get("flags") or []))}
+                       if row.get("reset") else None)}
             for row in castsequences
         ],
     }
@@ -344,7 +349,8 @@ def canonicalize_search_program(search_program, capabilities):
         else:
             click_commands = []
             for index, command in enumerate(commands):
-                if (not isinstance(command, dict) or command.get("kind") not in {"spell", "item"}
+                if (not isinstance(command, dict)
+                        or command.get("kind") not in {"spell", "item", "start_attack"}
                         or not isinstance(command.get("simc_action"), str)
                         or not command["simc_action"]):
                     raise ValueError(f"clicks[{step}].actions[{index}] 无法映射或导出")

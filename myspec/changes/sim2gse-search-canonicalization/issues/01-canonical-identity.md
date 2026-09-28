@@ -37,3 +37,17 @@ Blocked by（前置事项）: 无
 - 命令：`.venv/Scripts/python.exe -m pytest -q tests/sim2gse`
 - 结果：通过（254 passed，92 subtests passed）。
 - 固定 DK（死亡骑士）基线仅更新为 `sim2gse-search-behavior-v1-*` 版本化键；候选顺序、导出文本散列 `322b8c36260b2402927d0a5db2b62ff788623193525a8c966f452ea96b404486`、编译步骤均由金样测试保持不变。本轮实测两个候选 DPS（每秒伤害）依次为 `10218.007233071205`、`12906.213074898955`。
+
+### 审查修复证据
+
+- 红灯：起始规则字段缺失、重复且乱序的 `/castsequence reset.flags` 被拒绝、标准形式与编译计划不一致的候选仍进入原生评估；对应定向测试分别失败。
+- 绿灯：生产搜索直接调用 `canonicalize_search_program`，使用其保留来源的程序编译，并要求 canonical form（标准形式）与 `compiled_identity`（编译身份）完全一致；不一致候选在 SimC 前作为 `CandidateError`（候选错误）拒绝。
+- 标准形式固定包含 `start_step=1` 和 `sequence_reset='end'`；`reset.flags` 按集合语义去重排序。
+- 命令：`.venv/Scripts/python.exe -m pytest -q tests/sim2gse/test_search.py`
+- 结果：通过（44 passed，5 subtests passed）。
+- 命令：`.venv/Scripts/python.exe -m pytest -q tests/sim2gse`
+- 结果：通过（257 passed，92 subtests passed）。
+
+### Deferred（延期）
+
+- SimC 请求数和缓存命中统计属于后续票二／票三，本票不实施。
