@@ -30,7 +30,7 @@ def materialize(root,commit,label):
 def behavior_id(c):
  cp=c.get("compiled_program",{});clicks=[[] if x.get("kind")=="EmptyClick" else list(x.get("commands",[])) for x in cp.get("clicks",[])];cast=[]
  for r in cp.get("castsequences",[]):
-  reset=r.get("reset") or {};cast.append({"step":r["step"],"members":list(r["members"]),"reset":{"timeout":reset.get("timeout"),"flags":sorted(set(reset.get("flags",[])))}})
+  reset=r.get("reset") or {};cast.append({"step":r["step"],"members":list(r["members"]),"reset":{"timeout_seconds":reset.get("timeout_seconds"),"flags":sorted(set(reset.get("flags",[])))}})
  return hashlib.sha256(_json({"start_step":1,"sequence_reset":"end","clicks":clicks,"castsequences":cast}).encode()).hexdigest()
 def extract(result,out,wall):
  s=result.get("search") or {};records=s.get("records") or [];final=(result.get("final") or {}).get("scenarios") or {};selected="candidate_mean_dps" if result.get("selected_candidate_key")==result.get("locked_candidate_key") else "control_mean_dps";dps=[v.get("comparison",{}).get(selected) for v in final.values()];dps=[v for v in dps if isinstance(v,(int,float))]

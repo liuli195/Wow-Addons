@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
     "scenarios": DEFAULT_SCENARIOS,
     "random_seed": 20260912,
     "trace_search": False,
+    "diagnostics": "off",
     "input_interval_ms": 300,
     "reset_events": (),
 }
@@ -72,6 +73,8 @@ def config_for(values=None):
             raise ValueError('搜索配置超出范围: '+key)
     if type(config['input_interval_ms']) is not int or not 50 <= config['input_interval_ms'] <= 2000:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
+    if config['diagnostics'] not in {'off', 'summary', 'full'}:
+        raise ValueError('诊断模式必须是 off、summary 或 full')
     config['batch_targets']=tuple(config['batch_targets'])
     previous=0
     for value in config['batch_targets']:
@@ -442,11 +445,13 @@ class TaskStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS batches (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.state = json.loads(row[0]) if row else {}
+        self.state_write_count = 0
         self.db.commit()
 
     def save(self):
         with self.lock, self.db:
             self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
+            self.state_write_count += 1
 
     def publish(self):
         with self.lock:
@@ -486,6 +491,7 @@ class TaskStore:
             if counter is not None:
                 self.state[counter] = self.state.get(counter, 0) + 1
             self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
+            self.state_write_count += 1
 
     @contextmanager
     def active(self, runtime):
@@ -559,29 +565,39 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         rng.setstate(_tuple(state['rng']))
     candidates = {}
     prepared = {}
+    candidate_compilations = 0
+    diagnostic_events = []
 
     def candidate(program):
+        nonlocal candidate_compilations
         source_key = program_key(program)
         if source_key in prepared:
             return prepared[source_key][1]
         from program import compile_program, canonicalize_search_program
         try:
             canonical = canonicalize_search_program(program, capabilities)
-            compiled = compile_program(canonical['program'],
-                                       destination / 'exports' / canonical['identity'],
-                                       identity=reference['identity'], runtime=runtime)
-            if canonical['form'] != compiled_identity(compiled):
-                raise CandidateError('候选标准形式与编译计划不一致')
+            key = canonical['identity']
+            compiled = candidates.get(key)
+            if compiled is None:
+                saved = next((r for r in state['archive'] if r['key'] == key and r.get('candidate')), None)
+                if (saved and digest(saved['candidate']) == saved['candidate_sha256']
+                        and canonical['form'] == compiled_identity(saved['candidate'])):
+                    compiled = saved['candidate']
+                else:
+                    compiled = compile_program(canonical['program'],
+                                               destination / 'exports' / key,
+                                               identity=reference['identity'], runtime=runtime)
+                    candidate_compilations += 1
+                    if canonical['form'] != compiled_identity(compiled):
+                        raise CandidateError('候选标准形式与编译计划不一致')
+                candidates[key] = compiled
+            if config['diagnostics'] == 'full':
+                diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
+                                              compiled=candidate_compilations))
         except CandidateError:
             raise
         except ValueError as error:
             raise CandidateError(str(error)) from error
-        key = canonical['identity']
-        saved = next((r for r in state['archive'] if r['key'] == key and r.get('candidate')), None)
-        if saved and digest(saved['candidate']) == saved['candidate_sha256']:
-            if compiled_identity(saved['candidate']) == compiled_identity(compiled):
-                compiled = saved['candidate']
-        candidates.setdefault(key, compiled)
         prepared[source_key] = (key, candidates[key])
         return candidates[key]
 
@@ -606,7 +622,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         key = digest(request)
         with store.lock:
             state['batch_requests'] += 1
-            store.save()
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
             try:
@@ -643,7 +658,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             def native_started():
                 with store.lock:
                     state['native_batch_starts'] += 1
-                    store.save()
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started, **kwargs)
@@ -848,6 +862,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                   improvement='improvement_confirmed' if improved else 'not_proven_better',
                   selected_candidate_key=chosen['key'], native_reference=reference,
                   elapsed_seconds=runtime.elapsed_seconds, completed_batches=state['completed_batches'])
+    if config['diagnostics'] != 'off':
+        result['search']['diagnostics'] = dict(
+            mode=config['diagnostics'], task_state_writes=store.state_write_count,
+            candidate_compilations=candidate_compilations,
+            successful_lua_compiler_starts=candidate_compilations * 2)
+        if config['diagnostics'] == 'full':
+            result['search']['diagnostics']['events'] = diagnostic_events
     result['candidate']['simulation'] = 'passed_native_model'
     if interrupted:
         result['status'] = 'cancelled' if isinstance(interrupted, TaskCancelled) else 'validation_incomplete'

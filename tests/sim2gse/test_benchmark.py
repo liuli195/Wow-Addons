@@ -4,12 +4,16 @@ import sys
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/"scripts/dev/sim2gse"))
-from benchmark import PROFILES,SEEDS,extract,summarize,summarize_profile
+from benchmark import PROFILES,SEEDS,behavior_id,extract,summarize,summarize_profile
 class BenchmarkTests(TestCase):
  def row(self,dps,starts,unique=10,scores=(80,100),complete=True,times=(10,20)):
   return {"final_dps":dps,"native_batch_starts":starts,"common_unique_candidates":unique,"wall_seconds":60,"search_wall_seconds":60,"candidate_scores":list(scores),"candidate_timeline":[{"score":score,"wall_seconds":wall} for score,wall in zip(scores,times)],"evidence_complete":complete,"simc_total_iterations":1000,"engine_identities":["engine"]}
  def test_profile_summary_applies_frozen_gates(self):
   result=summarize_profile([self.row(100,100) for _ in range(5)],[self.row(100,75,12,(96,)) for _ in range(5)]);self.assertEqual(result["threshold"],95);self.assertEqual(result["status"],"passed")
+ def test_behavior_identity_includes_castsequence_timeout_seconds(self):
+  def candidate(timeout):
+   return {"compiled_program":{"clicks":[],"castsequences":[{"step":1,"members":["a","b"],"reset":{"timeout_seconds":timeout,"flags":[]}}]}}
+  self.assertNotEqual(behavior_id(candidate(2)),behavior_id(candidate(3)))
  def test_incomplete_result_is_evidence_instead_of_an_exception(self):
   row=extract({"status":"validation_incomplete"},Path("missing"),12);self.assertFalse(row["evidence_complete"]);self.assertIsNone(row["final_dps"]);self.assertEqual(summarize_profile([self.row(100,100) for _ in range(5)],[self.row(None,80,complete=False) for _ in range(5)])["status"],"insufficient_evidence")
  def test_incomplete_final_dps_is_excluded_from_formal_statistics(self):

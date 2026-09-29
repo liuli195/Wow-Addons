@@ -152,6 +152,7 @@ def _fast_search_boundary():
 
 class SearchAndValidationTests(TestCase):
     def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
+        import codec
         import search
         import sequence
 
@@ -161,6 +162,12 @@ class SearchAndValidationTests(TestCase):
             [[action], [action]],
         ]
         evaluated = []
+        compiler_calls = []
+
+        def compiler(command, *args, **kwargs):
+            compiler_calls.append((command[-1], str(kwargs.get("output_dir"))))
+            output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+            return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
         def evaluate(profile, candidate, folder, **kwargs):
             clicks = candidate["compiled_program"]["clicks"]
@@ -177,6 +184,7 @@ class SearchAndValidationTests(TestCase):
                           scenarios=("nominal",), max_processes=1, random_seed=37)
             with _fast_search_boundary(), \
                     patch.object(search, "initial_programs", return_value=equivalent_programs), \
+                    patch.object(codec, "run_command", side_effect=compiler), \
                     patch.object(sequence, "evaluate", side_effect=evaluate):
                 result = run_task(source, Path(directory) / "task", search_config=config)
 
@@ -188,6 +196,62 @@ class SearchAndValidationTests(TestCase):
         ]
         matching_evaluations = [row for row in evaluated if row == (37, expected_plan)]
         self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
+        matching_compiles = [mode for mode, folder in compiler_calls
+                             if folder.endswith(matching_records[0]["key"])]
+        self.assertEqual(matching_compiles, ["checksum", "compile"])
+
+    def test_run_task_does_not_save_full_state_for_batch_counters(self):
+        import search
+
+        saves = []
+        original = search.TaskStore
+
+        class CountingTaskStore(original):
+            def save(self):
+                saves.append(self.state.get("batch_requests", 0))
+                return super().save()
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-save-count-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=1, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37)
+            with _fast_search_boundary(), \
+                    patch.object(search, "TaskStore", CountingTaskStore), \
+                    patch.object(search, "initial_programs", return_value=[[['outbreak']]]):
+                result = run_task(source, Path(directory) / "task", search_config=config)
+
+        self.assertLessEqual(len(saves), result["search"]["batch_requests"] * 2 + 9,
+                             (len(saves), result["search"]["batch_requests"]))
+        self.assertNotIn("diagnostics", result["search"])
+
+    def test_summary_diagnostics_report_cost_without_detailed_events(self):
+        with tempfile.TemporaryDirectory(prefix="sim2gse-summary-diagnostics-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=1, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          diagnostics="summary")
+            with _fast_search_boundary():
+                result = run_task(source, Path(directory) / "task", search_config=config)
+
+        diagnostics = result["search"]["diagnostics"]
+        self.assertEqual(diagnostics["mode"], "summary")
+        self.assertGreater(diagnostics["task_state_writes"], 0)
+        self.assertGreater(diagnostics["candidate_compilations"], 0)
+        self.assertNotIn("events", diagnostics)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-full-diagnostics-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            with _fast_search_boundary():
+                full = run_task(source, Path(directory) / "task",
+                                search_config=dict(config, diagnostics="full"))
+        self.assertTrue(full["search"]["diagnostics"]["events"])
 
     def test_search_artifacts_and_requests_use_the_canonical_behavior_identity(self):
         import search
@@ -526,6 +590,8 @@ class SearchAndValidationTests(TestCase):
             config_for({'scenarios': ('nominal',), 'reset_events': ((6001, 'shift'),)})
         with self.assertRaisesRegex(ValueError, '修饰键'):
             config_for({'reset_events': ((6000, 'shift'),)})
+        with self.assertRaisesRegex(ValueError, '诊断模式'):
+            config_for({'diagnostics': 'verbose'})
 
     def test_real_deathknight_search_matches_fixed_baseline_golden(self):
         """固定基线 fa2ea136 的 DK 测试资料搜索结果和候选顺序不得改变。"""
