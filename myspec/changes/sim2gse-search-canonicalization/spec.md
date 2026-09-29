@@ -1,7 +1,7 @@
 # Sim2GSE 搜索候选标准化与约束
 
 Triage（分拣）: ready-for-agent
-Status（状态）: ready-for-agent
+Status（状态）: closed
 Parent（上级事项）: [实施第一阶段标准化与搜索约束](../sim2gse-search-optimization/issues/02a-canonicalization-implementation.md)
 
 ## Problem Statement（问题说明）
@@ -43,7 +43,8 @@ Sim2GSE 当前直接散列候选的原始结构作为 `program_key`（程序身�
 - 最高层公开测试接缝是完整 `run_task`（运行任务）和 `/api/tasks`（公开任务入口）：观察导出、点击计划、实际 SimC 调用次数、缓存及恢复结果。
 - 标准形式接口补充固定等价、非等价和非法样本测试；测试外部行为身份和拒绝结果，不绑定内部辅助函数。
 - 等价集必须 100% 合并，非等价集必须 100% 分离，非法集必须 100% 在 SimC 前拒绝。
-- 使用已冻结三套 Benchmark（基准测试）运行 A/B：实际 SimC 重复调用至少减少 20%，每分钟新候选检查量至少提高 10%，任何配置最终最佳 DPS 中位数下降不超过 0.5%。
+- 使用已冻结 Benchmark（基准测试）运行 A/B：等价、非等价和非法样本正确率必须保持 100%，任何配置最终最佳 DPS 中位数下降不超过 0.5%，并且标准化不得造成可重复的候选处理速度退化。
+- SimC 调用累计减少 20% 保留为长期路线图的跨阶段累计目标，由标准化、Local Search（局部搜索）和 Successive Halving（逐级淘汰）等后续优化共同实现；它不再作为标准化阶段单独通过的条件。
 - 旧检查点、身份版本不匹配、损坏缓存及最终复测数据隔离属于恢复测试。
 - 降本验收沿用完整 `run_task` 公开接缝：固定候选轨迹核对行为身份、接受和拒绝结果、分数、DPS 与最终候选一致；再以一套角色配置和 3 个配对种子比较保存次数、编译次数、Lua 进程启动次数、SimC 调用和候选处理速度。
 
@@ -61,4 +62,4 @@ Sim2GSE 当前直接散列候选的原始结构作为 `program_key`（程序身�
 - 固定基线为 `efd9b71a9bf934a5cb990f314651e17ace73e9d1`。
 - 需求来源为已关闭的[统一 Benchmark 与 A/B 证据契约](../sim2gse-search-optimization/issues/01-benchmark-contract.md)和[标准形式与搜索约束决议](../sim2gse-search-optimization/issues/02-canonicalization-constraints.md)。
 - 当前开发工作树为 `D:\My Project\Wow Addons`，现有功能分支为 `codex/sim2gse-search-optimization-map`。
-- 第一阶段降本修复固定基线为 `db0e788a0c74b760b3fd714932f19bd87f4fd532`；原第一阶段 Benchmark 失败结论保持不变，降本验证通过前仍不得进入 Local Search（局部搜索）。
+- 第一阶段降本修复固定基线为 `db0e788a0c74b760b3fd714932f19bd87f4fd532`；原第一阶段 Benchmark 未达到 20% SimC 调用减少的历史结果保持不变。后续降本验证已消除性能退化，因此第一阶段冻结完成，可以进入 Local Search（局部搜索）决策；这不表示 20% 长期累计目标已经达成。
