@@ -1464,9 +1464,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             break
 
     if observability is not None and not isinstance(interrupted, TaskCancelled):
-        from runtime import TaskRuntime
-        observation_runtime = TaskRuntime(
-            config['total_budget_seconds'], cancel_event=runtime.cancel_event)
+        observation_runtime = runtime
+        with store.lock:
+            observability['summary'].pop('position_observation_incomplete', None)
         for job_index, job in enumerate(position_jobs):
             if job.get('status') == 'completed':
                 continue
@@ -1494,7 +1494,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 with store.lock:
                     job['status'] = 'completed'
                     store.save()
-            except (BudgetExceeded, TaskCancelled):
+            except TaskCancelled as error:
+                with store.lock:
+                    observability['summary']['position_observation_incomplete'] = True
+                interrupted = error
+                break
+            except BudgetExceeded:
                 with store.lock:
                     observability['summary']['position_observation_incomplete'] = True
                 break

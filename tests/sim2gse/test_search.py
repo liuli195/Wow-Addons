@@ -399,6 +399,42 @@ class SearchAndValidationTests(TestCase):
                                for row in record[side]]
         self.assertFalse(any(request["trace"] for request in validation_requests))
 
+    def test_position_observation_uses_main_budget_and_propagates_cancel(self):
+        import search
+        import sequence
+        from runtime import TaskCancelled, TaskRuntime
+
+        runtime = TaskRuntime(60)
+        observed_runtimes = []
+
+        def cancel_observation(*args, **kwargs):
+            observed_runtimes.append(kwargs["runtime"])
+            if "observability" in str(args[2]):
+                raise TaskCancelled("cancel during position observation")
+            return _fast_evaluate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-observation-budget-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          search_observability="full")
+            with _fast_initialization(), \
+                    patch.object(sequence, "evaluate", side_effect=cancel_observation), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['outbreak']], [['death_coil']]]):
+                result = run_task(source, root / "task", search_config=config,
+                                  _runtime=runtime)
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertTrue(result["search"]["observability"]["summary"]
+                        ["position_observation_incomplete"])
+        self.assertTrue(observed_runtimes)
+        self.assertTrue(all(item is runtime for item in observed_runtimes))
+
     def test_replacement_recording_preserves_the_existing_random_draw_order(self):
         import random
 
