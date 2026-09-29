@@ -213,9 +213,10 @@ class SearchAndValidationTests(TestCase):
             source = root / "role.simc"
             source.write_text(sample_profile(), encoding="utf-8")
             config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          candidate_limit=4, round_candidate_limit=1,
+                          no_improvement_rounds=5, batch_targets=(2,), iterations=2,
+                          validation_batches=2, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=11,
                           search_observability="full")
             with _fast_initialization(), \
                     patch.object(sequence, "evaluate", side_effect=stop_on_second_batch), \
@@ -434,6 +435,47 @@ class SearchAndValidationTests(TestCase):
                         ["position_observation_incomplete"])
         self.assertTrue(observed_runtimes)
         self.assertTrue(all(item is runtime for item in observed_runtimes))
+
+    def test_promotion_timeout_keeps_pending_position_observation_visible(self):
+        import search
+        import sequence
+        from runtime import BudgetExceeded, TaskRuntime
+
+        runtime = TaskRuntime(60)
+        scores = iter((1.0, 2.0, 3.0, 4.0))
+
+        def stop_during_promotion(*args, **kwargs):
+            if kwargs.get("trace") and runtime.remaining_seconds <= 0:
+                raise BudgetExceeded("no time left for position observation")
+            if 100000 <= kwargs["seed"] < 200000 and not kwargs.get("trace"):
+                runtime.used_seconds = runtime.budget_seconds
+                raise BudgetExceeded("test promotion timeout")
+            return _fast_evaluate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-promotion-timeout-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=4, round_candidate_limit=1,
+                          no_improvement_rounds=5, batch_targets=(2,), iterations=2,
+                          validation_batches=2, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=11,
+                          search_observability="full")
+            with _fast_search_boundary(), \
+                    patch.object(sequence, "evaluate", side_effect=stop_during_promotion), \
+                    patch.object(search, "_score", side_effect=lambda rows: next(scores)), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
+                result = run_task(source, root / "task", search_config=config,
+                                  _runtime=runtime)
+
+        observation = result["search"]["observability"]
+        checked = [row for row in observation["details"]
+                   if row["global_promotion"]["checked"]]
+        self.assertTrue(checked)
+        self.assertTrue(observation["summary"]["position_observation_incomplete"])
+        self.assertTrue(any("position_summary" not in row for row in checked))
 
     def test_replacement_recording_preserves_the_existing_random_draw_order(self):
         import random

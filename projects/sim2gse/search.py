@@ -738,7 +738,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     position_jobs = []
     observation_pause_seconds = 0.0
     observation_call_depth = 0
-    search_recording_active = True
+    search_recording_active = state.get('phase', 'search') == 'search'
     if observation_mode != 'off':
         with store.lock:
             observability = state.setdefault(
@@ -1382,12 +1382,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                     mark_promotion(work, 'global', checked=True)
                             promotion_started = time.perf_counter()
                         try:
+                            queue_position_observation(work, current['program'], 'route')
                             left,right=pair(current['program'],opponent['program'],'validation',config['validation_batches'])
                         finally:
                             if observability:
                                 add_stage_time(work, 'promotion_check',
                                               time.perf_counter() - promotion_started)
-                        queue_position_observation(work, current['program'], 'route')
                         ci=paired_ci([r['dps'] for r in left],[r['dps'] for r in right])
                         current['validation']=dict(comparison=summarize_pairs(left,right),candidate=left,control=right)
                         route_promoted = bool(ci and ci[0] > 0)
@@ -1410,12 +1410,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                     mark_promotion(work, 'global', checked=True)
                                     global_started = time.perf_counter()
                                 try:
+                                    queue_position_observation(work, current['program'], 'global')
                                     left,right=pair(current['program'],global_best['program'],'validation',config['validation_batches'])
                                 finally:
                                     if observability:
                                         add_stage_time(work, 'global_check',
                                                       time.perf_counter() - global_started)
-                                queue_position_observation(work, current['program'], 'global')
                                 ci=paired_ci([r['dps'] for r in left],[r['dps'] for r in right])
                                 current['global_validation']=dict(comparison=summarize_pairs(left,right),candidate=left,control=right)
                                 global_promoted = bool(ci and ci[0] > 0)
@@ -1458,6 +1458,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             runtime.started -= observation_pause_seconds
             runtime.phase_limit = runtime.budget_seconds
         if not state['archive']:
+            if isinstance(search_interrupted, TaskCancelled):
+                raise search_interrupted
             raise BudgetExceeded('搜索窗口内未完成有效初始序列')
         state['locked_candidate_key'] = state['best']
         state['phase'] = 'final'
@@ -1509,7 +1511,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         compiled, candidate_key(program), traced['trace']))
                 with store.lock:
                     job['status'] = 'completed'
-                    store.save()
             except TaskCancelled as error:
                 with store.lock:
                     observability['summary']['position_observation_incomplete'] = True
