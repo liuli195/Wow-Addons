@@ -14,11 +14,11 @@ class BenchmarkTests(TestCase):
   self.assertNotEqual(behavior_id(candidate(2)),behavior_id(candidate(3)))
  def test_incomplete_result_is_evidence_instead_of_an_exception(self):
   row=extract({"status":"validation_incomplete"},Path("missing"),12);self.assertFalse(row["evidence_complete"]);self.assertIsNone(row["final_dps"])
- def test_incomplete_final_dps_is_excluded_from_formal_statistics(self):
+ def test_incomplete_final_dps_does_not_freeze_threshold(self):
   with TemporaryDirectory() as directory:
    root=Path(directory);baseline=[self.row(100,100) for _ in range(2)]+[self.row(10000,100,complete=False) for _ in range(3)];current=[self.row(100,75,12,(96,)) for _ in range(2)]+[self.row(1,75,12,(96,),complete=False) for _ in range(3)]
    self.write_rows(root,baseline,current);result=summarize(root)["profiles"]["current"]
-   self.assertEqual(result["threshold"],95)
+   self.assertIsNone(result["threshold"])
    self.assertEqual(result["baseline"]["final_dps_median"],100)
    self.assertEqual(result["current"]["final_dps_median"],100)
    self.assertEqual(result["status"],"insufficient_evidence")
@@ -69,3 +69,10 @@ class BenchmarkTests(TestCase):
    self.assertEqual(len(expanded["seeds"]),10)
    self.assertEqual(first["profiles"]["current"]["threshold"],95)
    self.assertEqual(expanded["profiles"]["current"]["threshold"],142.5)
+ def test_incomplete_selected_baseline_does_not_freeze_threshold(self):
+  with TemporaryDirectory() as directory:
+   root=Path(directory);baseline=[self.row(100,100) for _ in SEEDS];baseline[-1]=self.row(100,100,complete=False);current=[self.row(100,100) for _ in SEEDS]
+   self.write_rows(root,baseline,current,SEEDS);result=summarize(root,10)["profiles"]["current"]
+   self.assertIsNone(result["threshold"])
+   self.assertIsNone(result["efficiency_result"]["threshold_wall_time_gain"])
+   self.assertEqual(result["status"],"insufficient_evidence")
