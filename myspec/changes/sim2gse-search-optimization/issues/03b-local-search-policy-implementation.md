@@ -6,7 +6,7 @@ Status（状态）: open
 Assignee（领取者）: unassigned
 Mode（方式）: HITL（按 dev-flow 开发门禁实施）
 Parent（所属地图）: [Sim2GSE 搜索器长期优化地图](../spec.md)
-Blocked by（前置事项）: [第二阶段：确定局部搜索与候选可执行性门禁](03-local-search-executability.md)
+Blocked by（前置事项）: [第二阶段：确定局部搜索与候选可执行性门禁](03-local-search-executability.md)、[修正第二阶段固定比较的验收判定](03b-benchmark-acceptance.md)
 
 ## Question（问题）
 
