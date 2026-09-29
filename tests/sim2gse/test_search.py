@@ -238,12 +238,16 @@ class SearchAndValidationTests(TestCase):
                           diagnostics="summary")
             with _fast_search_boundary():
                 result = run_task(source, Path(directory) / "task", search_config=config)
+            persisted = json.loads((Path(directory) / "task" / "diagnostics.json").read_text())
 
         diagnostics = result["search"]["diagnostics"]
         self.assertEqual(diagnostics["mode"], "summary")
         self.assertGreater(diagnostics["task_state_writes"], 0)
         self.assertGreater(diagnostics["candidate_compilations"], 0)
         self.assertNotIn("events", diagnostics)
+        self.assertGreaterEqual(persisted["task_state_writes"], diagnostics["task_state_writes"])
+        self.assertEqual(persisted["lua_compiler_starts"],
+                         persisted["candidate_compilations"] * 2)
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-full-diagnostics-") as directory:
             source = Path(directory) / "role.simc"

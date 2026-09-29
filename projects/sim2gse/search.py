@@ -519,6 +519,14 @@ class TaskStore:
             beat()
 
     def close(self):
+        if getattr(self, 'diagnostics_mode', 'off') != 'off':
+            diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
+                               task_state_writes=self.state_write_count)
+            diagnostics['lua_compiler_starts'] = sum(
+                1 for name in ('checksum.log', 'compile.log')
+                for _ in (self.destination / 'exports').glob('*/' + name))
+            (self.destination / 'diagnostics.json').write_text(
+                _json(diagnostics), encoding='utf-8')
         self.db.close()
 
 
@@ -593,7 +601,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 candidates[key] = compiled
             if config['diagnostics'] == 'full':
                 diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
-                                              compiled=candidate_compilations))
+                                              candidate_compilations_so_far=candidate_compilations))
         except CandidateError:
             raise
         except ValueError as error:
@@ -865,10 +873,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     if config['diagnostics'] != 'off':
         result['search']['diagnostics'] = dict(
             mode=config['diagnostics'], task_state_writes=store.state_write_count,
-            candidate_compilations=candidate_compilations,
-            successful_lua_compiler_starts=candidate_compilations * 2)
+            candidate_compilations=candidate_compilations)
         if config['diagnostics'] == 'full':
             result['search']['diagnostics']['events'] = diagnostic_events
+        store.diagnostics_mode = config['diagnostics']
+        store.diagnostic_summary = result['search']['diagnostics']
     result['candidate']['simulation'] = 'passed_native_model'
     if interrupted:
         result['status'] = 'cancelled' if isinstance(interrupted, TaskCancelled) else 'validation_incomplete'
