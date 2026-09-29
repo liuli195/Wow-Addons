@@ -35,7 +35,7 @@ def lua_literal(value):
     return '{' + ','.join(f'[{lua_literal(k)}]={lua_literal(v)}' for k, v in items) + '}'
 
 
-def export(blocks, folder, *, identity, runtime=None, program=None):
+def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start=None):
     """同一动作块产生编码对象和编译断言，不改变块顺序。"""
     runtime = runtime or TaskRuntime()
     runtime.check()
@@ -204,7 +204,8 @@ def export(blocks, folder, *, identity, runtime=None, program=None):
             try:
                 proc = run_command([str(LUA), relative(Path(__file__).with_suffix('.lua')), relative(SOURCE),
                                     relative(staging / 'input.cbor'), relative(staging / 'expected.lua'), mode],
-                                   ROOT, timeout_seconds=20, runtime=runtime, output_dir=folder)
+                                   ROOT, timeout_seconds=20, runtime=runtime, output_dir=folder,
+                                   on_start=on_lua_start)
             except ProcessTimeout as error:
                 raise ValueError('上游编译校验超时，任务已停止') from error
             except (TaskCancelled, BudgetExceeded):

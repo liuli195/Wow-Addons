@@ -375,7 +375,8 @@ def _create_process(command, cwd: Path, folder: Path):
     return _create_windows_process(command, cwd, folder)
 
 
-def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | None = None, output_dir=None):
+def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | None = None,
+                output_dir=None, on_start=None):
     """以 Job Object（作业对象）原子绑定方式运行一个外部命令。"""
 
     runtime = runtime or TaskRuntime(timeout_seconds)
@@ -395,6 +396,8 @@ def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | 
             runtime.reservation(reservation, None)
         raise
     try:
+        if on_start is not None:
+            on_start()
         while True:
             if runtime.cancel_event.is_set():
                 process.terminate()

@@ -154,3 +154,21 @@
 
 - **WHEN** `/castsequence` 的最后一个成员确认成功
 - **THEN** 下一次有效使用从第一个成员开始。
+### Requirement: Sim2GSE avoids repeated equivalent candidate work
+
+系统 MUST 在候选进入原生模拟前按实际逐次点击行为识别等价候选，使同一任务中的等价行为只执行一次候选编译和一次评分；非法或无有效动作的候选不得进入原生模拟。详细诊断 MUST 默认关闭；显式开启汇总或完整诊断时，可以记录状态写入、候选编译及 Lua 编译器启动次数，但不得改变候选身份、接受或拒绝结果、评分、DPS 或最终选择。
+
+#### Scenario: Two candidates have the same click behavior
+
+- **WHEN** 两个候选的来源结构不同，但映射后的动作、顺序、动作块边界、空点击和重置行为相同
+- **THEN** 系统将它们视为同一行为，复用已经成功编译的候选，不再次启动候选编译或原生评分。
+
+#### Scenario: Diagnostics are not requested
+
+- **WHEN** 用户按默认配置运行搜索
+- **THEN** 结果不包含详细诊断记录，也不为统计计数额外保存完整任务状态。
+
+#### Scenario: Diagnostics are enabled
+
+- **WHEN** 用户显式选择汇总或完整诊断
+- **THEN** 系统在任务结束时报告实际状态写入、候选编译和 Lua 编译器启动次数；完整诊断可附带候选准备事件，搜索结果与关闭诊断时保持一致。

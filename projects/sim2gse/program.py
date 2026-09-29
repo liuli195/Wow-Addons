@@ -1,5 +1,7 @@
 """来源无关的序列树与逐次按键计划。"""
 
+import hashlib
+import json
 from typing import Literal, NotRequired, TypedDict
 
 from codec import export
@@ -114,52 +116,69 @@ def from_action_blocks(blocks):
     return Program(adapter="search", nodes=nodes, metadata={})
 
 
+def _mapped_search_blocks(capabilities, blocks, sources):
+    from sequence import select
+
+    precombat = capabilities.get("precombat_actions", [])
+    if len(precombat) + len(blocks) > 128:
+        raise ValueError("搜索程序展开超过 128 个顶层动作块")
+    selected = [[dict(action, condition="nocombat")] for action in precombat]
+    for block, source in zip(blocks, sources):
+        try:
+            selected.append(select(capabilities, [block])[-1])
+        except ValueError as error:
+            raise ValueError(f"{source}: {error}") from error
+    return selected
+
+
 def from_search_program(program, capabilities):
     """把搜索动作块、顺序 Loop 和 WaitClicks 转成共享的 Program。"""
     if not isinstance(program, list) or not program:
         raise ValueError("搜索程序必须包含动作块")
     if all(isinstance(segment, list) for segment in program):
-        from sequence import select
-
-        return from_action_blocks(select(capabilities, program))
+        sources = [f"segments[{index}]" for index in range(len(program))]
+        return from_action_blocks(_mapped_search_blocks(capabilities, program, sources))
     if len(program) > 128:
         raise ValueError("搜索程序超过 128 个顶层节点")
 
     flat_blocks = []
+    flat_sources = []
     segments = []
-    for segment in program:
+    for segment_index, segment in enumerate(program):
         if isinstance(segment, list):
             segments.append(("Action", 1))
             flat_blocks.append(segment)
+            flat_sources.append(f"segments[{segment_index}]")
         elif isinstance(segment, dict) and segment.get("kind") == "Loop":
             body = segment.get("blocks")
             count = segment.get("count")
             if (type(count) is not int or not 1 <= count <= 4096
                     or not isinstance(body, list) or not body or len(body) > 128
                     or any(not isinstance(block, list) for block in body)):
-                raise ValueError("搜索 Loop 的重复次数或动作块无效")
+                raise ValueError(f"segments[{segment_index}]: 搜索 Loop 的重复次数或动作块无效")
+            for block_index, block in enumerate(body):
+                if not block:
+                    raise ValueError(f"segments[{segment_index}].blocks[{block_index}]: Loop 动作块为空")
             segments.append(("Loop", len(body), count))
             flat_blocks.extend(body)
+            flat_sources.extend(f"segments[{segment_index}].blocks[{index}]"
+                                for index in range(len(body)))
         elif isinstance(segment, dict) and segment.get("kind") == "WaitClicks":
             clicks = segment.get("clicks")
             if type(clicks) is not int or not 2 <= clicks <= 4096:
-                raise ValueError("搜索 WaitClicks 次数必须为 2 至 4096")
+                raise ValueError(f"segments[{segment_index}]: 搜索 WaitClicks 次数必须为 2 至 4096")
             segments.append(("WaitClicks", clicks))
         elif isinstance(segment, dict) and segment.get("kind") == "CastSequence":
             members = segment.get("members")
             reset = segment.get("reset")
             if (not isinstance(members, list) or not 2 <= len(members) <= 4
                     or any(not isinstance(member, str) or not member for member in members)):
-                raise ValueError("搜索 /castsequence 必须包含 2 至 4 个技能成员")
+                raise ValueError(f"segments[{segment_index}]: 搜索 /castsequence 必须包含 2 至 4 个技能成员")
             segments.append(("CastSequence", list(members), reset))
         else:
-            raise ValueError("搜索程序包含不支持的节点")
+            raise ValueError(f"segments[{segment_index}]: 搜索程序包含不支持的节点")
 
-    from sequence import select
-
-    selected = (select(capabilities, flat_blocks) if flat_blocks else
-                [[dict(action, condition="nocombat")]
-                 for action in capabilities.get("precombat_actions", [])])
+    selected = _mapped_search_blocks(capabilities, flat_blocks, flat_sources)
     precombat_count = len(capabilities.get("precombat_actions", []))
     nodes = []
     for index, commands in enumerate(selected[:precombat_count]):
@@ -169,7 +188,7 @@ def from_search_program(program, capabilities):
 
     cursor = precombat_count
     top_index = precombat_count
-    for segment, shape in zip(program, segments):
+    for segment_index, (segment, shape) in enumerate(zip(program, segments)):
         if shape[0] == "Action":
             nodes.append(ActionNode(kind="Action", commands=selected[cursor],
                                     source=_position("search", f"blocks[{top_index}]",
@@ -189,22 +208,27 @@ def from_search_program(program, capabilities):
             _, members, reset = shape
             by_name = {action["simc_action"]: action for action in capabilities["actions"]
                        if action.get("kind") == "spell"}
-            if any(member not in by_name for member in members):
-                raise ValueError("搜索 /castsequence 包含当前角色不支持的技能")
+            for member_index, member in enumerate(members):
+                if member not in by_name:
+                    raise ValueError(f"segments[{segment_index}].members[{member_index}]: "
+                                     "技能不受当前角色支持")
             reset_text = ""
             if reset:
                 if not isinstance(reset, dict):
-                    raise ValueError("搜索 /castsequence reset 定义无效")
+                    raise ValueError(f"segments[{segment_index}].reset: /castsequence reset 定义无效")
                 parts = []
                 timeout = reset.get("timeout_seconds")
                 if timeout is not None:
                     parts.append(str(timeout).rstrip("0").rstrip(".") if isinstance(timeout, float) else str(timeout))
-                parts.extend(reset.get("flags") or [])
+                parts.extend(sorted(set(reset.get("flags") or [])))
                 if parts:
                     reset_text = " reset=" + "/".join(parts)
             macro = "/castsequence" + reset_text + " " + ",".join(
                 str(by_name[member]["spell_id"]) for member in members)
-            parsed = parse_castsequence(macro, f"blocks[{top_index}]", capabilities["actions"])
+            try:
+                parsed = parse_castsequence(macro, f"blocks[{top_index}]", capabilities["actions"])
+            except ValueError as error:
+                raise ValueError(f"segments[{segment_index}]: {error}") from error
             parsed["macro"] = macro
             parsed["macrotext"] = "/castsequence" + reset_text + " " + ", ".join(parsed["display_names"])
             nodes.append(ActionNode(kind="Action", commands=[parsed],
@@ -240,9 +264,10 @@ def from_gse_import(text, name, version, *, context=None, decoded=None):
 def _search_expanded_nodes(program):
     expanded = []
     for node in program["nodes"]:
+        source = node.get("source", {}).get("path", "搜索程序")
         if node["kind"] == "Action":
             if not node["commands"] or len(expanded) >= 4096:
-                raise ValueError("搜索程序包含无效动作或超过 4096 次按键")
+                raise ValueError(f"{source}: 搜索程序包含无效动作或超过 4096 次按键")
             expanded.append(node)
         elif node["kind"] == "Loop":
             body = node["body"]
@@ -250,21 +275,95 @@ def _search_expanded_nodes(program):
             if (node["step_function"] != "Sequential" or type(count) is not int
                     or count < 1 or not body
                     or any(child["kind"] != "Action" or not child["commands"] for child in body)):
-                raise ValueError("搜索只支持带有效动作的 Sequential Loop")
+                raise ValueError(f"{source}: 搜索只支持带有效动作的 Sequential Loop")
             if len(expanded) + count * len(body) > 4096:
-                raise ValueError("搜索程序展开超过 4096 次按键")
+                raise ValueError(f"{source}: 搜索程序展开超过 4096 次按键")
             expanded.extend(body * count)
         elif node["kind"] == "Pause":
             clicks = node["clicks"]
             if type(clicks) is not int or clicks < 2 or len(expanded) + clicks > 4096:
-                raise ValueError("搜索 WaitClicks 无效或展开超过 4096 次按键")
+                raise ValueError(f"{source}: 搜索 WaitClicks 无效或展开超过 4096 次按键")
             expanded.extend(EmptyClickNode(kind="EmptyClick", source=node["source"])
                             for _ in range(clicks))
         else:
-            raise ValueError("搜索程序包含不支持的节点")
+            raise ValueError(f"{source}: 搜索程序包含不支持的节点")
     if not expanded:
         raise ValueError("搜索程序没有可模拟动作")
     return expanded
+
+
+BEHAVIOR_IDENTITY_VERSION = "sim2gse-search-behavior-v1"
+
+
+def canonical_behavior_form(clicks, castsequences=()):
+    """生成不包含来源位置和展示信息的版本化点击行为。"""
+    return {
+        "version": BEHAVIOR_IDENTITY_VERSION,
+        "start_step": 1,
+        "sequence_reset": "end",
+        "clicks": clicks,
+        "castsequences": [
+            {"step": row["step"], "members": list(row["members"]),
+             "reset": ({**row["reset"],
+                        "flags": sorted(set(row["reset"].get("flags") or []))}
+                       if row.get("reset") else None)}
+            for row in castsequences
+        ],
+    }
+
+
+def canonical_behavior_key(form):
+    payload = json.dumps(form, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"{BEHAVIOR_IDENTITY_VERSION}-{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def canonicalize_search_program(search_program, capabilities):
+    """映射角色动作后返回行为身份、标准点击计划及保留来源的程序树。"""
+    mapped = from_search_program(search_program, capabilities)
+    expanded = _search_expanded_nodes(mapped)
+    clicks = []
+    castsequences = []
+    has_action = False
+    for step, node in enumerate(expanded):
+        if node["kind"] == "EmptyClick":
+            clicks.append([])
+            continue
+        commands = node.get("commands")
+        if not isinstance(commands, list) or not commands:
+            raise ValueError(f"clicks[{step}] 没有已映射动作")
+        if (len(commands) == 1 and isinstance(commands[0], dict)
+                and commands[0].get("kind") == "castsequence"):
+            command = commands[0]
+            members = command.get("members")
+            actions = command.get("actions")
+            if (not isinstance(members, list) or not members
+                    or not isinstance(actions, list)):
+                raise ValueError(f"clicks[{step}] 的 /castsequence 映射无效")
+            available = {action.get("simc_action") for action in actions if isinstance(action, dict)}
+            for index, member in enumerate(members):
+                if not isinstance(member, str) or member not in available:
+                    raise ValueError(f"clicks[{step}].members[{index}] 无法映射")
+            click_commands = list(members)
+            castsequences.append({"step": step, "members": list(members),
+                                  "reset": command.get("reset")})
+        else:
+            click_commands = []
+            for index, command in enumerate(commands):
+                if (not isinstance(command, dict)
+                        or command.get("kind") not in {"spell", "item", "start_attack"}
+                        or not isinstance(command.get("simc_action"), str)
+                        or not command["simc_action"]):
+                    raise ValueError(f"clicks[{step}].actions[{index}] 无法映射或导出")
+                click_commands.append(command["simc_action"])
+        if not click_commands:
+            raise ValueError(f"clicks[{step}] 没有可执行动作")
+        clicks.append(click_commands)
+        has_action = True
+    if not has_action:
+        source = expanded[0].get("source", {}).get("path", "clicks[0]")
+        raise ValueError(f"{source}: 候选仅含空点击，没有可执行动作")
+    form = canonical_behavior_form(clicks, castsequences)
+    return {"identity": canonical_behavior_key(form), "form": form, "program": mapped}
 
 
 def _search_blocks(program):
@@ -330,7 +429,8 @@ def _search_clicks(candidate, program):
     return clicks
 
 
-def compile_program(program, folder, *, identity, runtime=None, capabilities=None, context=None):
+def compile_program(program, folder, *, identity, runtime=None, capabilities=None, context=None,
+                    on_lua_start=None):
     """经同一 Program 接口编译；适配器只负责各来源的编码和上游校验。"""
     if not isinstance(program, dict) or not isinstance(program.get("nodes"), list):
         raise ValueError("序列程序结构无效")
@@ -346,7 +446,9 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
            (node["kind"] == "Action" and len(node["commands"]) == 1
             and node["commands"][0].get("kind") == "castsequence")
            for node in program["nodes"]):
-        candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program)
+        candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program,
+                           on_lua_start=on_lua_start)
     else:
-        candidate = export(blocks, folder, identity=identity, runtime=runtime)
+        candidate = export(blocks, folder, identity=identity, runtime=runtime,
+                           on_lua_start=on_lua_start)
     return _with_compiled_program(candidate, program, _search_clicks(candidate, program))

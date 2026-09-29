@@ -75,10 +75,13 @@ def _fast_report(character, score, samples):
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
-                   runtime=None, score_offset=0, simulation_config=None, reset_events=None):
+                   runtime=None, score_offset=0, simulation_config=None, reset_events=None,
+                   on_native_start=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
+    if on_native_start is not None:
+        on_native_start()
     input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
     score = score_offset + 100.0 + sum(
         command.get("spell_id", command.get("item_id", 0))
@@ -116,6 +119,8 @@ def _fast_initialization(*, real_engine=False):
     import engine
 
     def compiler(command, *args, **kwargs):
+        if kwargs.get("on_start") is not None:
+            kwargs["on_start"]()
         output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
@@ -148,6 +153,408 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
+        import codec
+        import search
+        import sequence
+
+        action = "use_item,slot=trinket1"
+        equivalent_programs = [
+            [dict(kind="Loop", count=2, blocks=[[action]])],
+            [[action], [action]],
+        ]
+        evaluated = []
+        compiler_calls = []
+
+        def compiler(command, *args, **kwargs):
+            compiler_calls.append((command[-1], str(kwargs.get("output_dir"))))
+            if kwargs.get("on_start") is not None:
+                kwargs["on_start"]()
+            output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+            return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            clicks = candidate["compiled_program"]["clicks"]
+            plan = [click.get("commands", []) for click in clicks]
+            evaluated.append((kwargs.get("seed"), plan))
+            return _fast_evaluate(profile, candidate, folder, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-task-") as directory:
+            source = Path(directory) / "角色.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37)
+            with _fast_search_boundary(), \
+                    patch.object(search, "initial_programs", return_value=equivalent_programs), \
+                    patch.object(codec, "run_command", side_effect=compiler), \
+                    patch.object(sequence, "evaluate", side_effect=evaluate):
+                result = run_task(source, Path(directory) / "task", search_config=config)
+
+        expected_plan = [[action], [action]]
+        matching_records = [
+            record for record in result["search"]["records"]
+            if [click.get("commands", []) for click in record["candidate"]["compiled_program"]["clicks"]]
+            == expected_plan
+        ]
+        matching_evaluations = [row for row in evaluated if row == (37, expected_plan)]
+        self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
+        matching_compiles = [mode for mode, folder in compiler_calls
+                             if folder.endswith(matching_records[0]["key"])]
+        self.assertEqual(matching_compiles, ["checksum", "compile"])
+
+    def test_run_task_does_not_save_full_state_for_batch_counters(self):
+        import search
+
+        saves = []
+        original = search.TaskStore
+
+        class CountingTaskStore(original):
+            def save(self):
+                saves.append(self.state.get("batch_requests", 0))
+                return super().save()
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-save-count-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=1, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37)
+            with _fast_search_boundary(), \
+                    patch.object(search, "TaskStore", CountingTaskStore), \
+                    patch.object(search, "initial_programs", return_value=[[['outbreak']]]):
+                result = run_task(source, Path(directory) / "task", search_config=config)
+
+        self.assertLessEqual(len(saves), result["search"]["batch_requests"] * 2 + 9,
+                             (len(saves), result["search"]["batch_requests"]))
+        self.assertNotIn("diagnostics", result["search"])
+
+    def test_summary_diagnostics_report_cost_without_detailed_events(self):
+        with tempfile.TemporaryDirectory(prefix="sim2gse-summary-diagnostics-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=1, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          diagnostics="summary")
+            with _fast_search_boundary():
+                result = run_task(source, Path(directory) / "task", search_config=config)
+            persisted = json.loads((Path(directory) / "task" / "diagnostics.json").read_text())
+
+        diagnostics = result["search"]["diagnostics"]
+        self.assertEqual(diagnostics["mode"], "summary")
+        self.assertGreater(diagnostics["task_state_writes"], 0)
+        self.assertGreater(diagnostics["candidate_compilations"], 0)
+        self.assertNotIn("events", diagnostics)
+        self.assertGreaterEqual(persisted["task_state_writes"], diagnostics["task_state_writes"])
+        self.assertEqual(persisted["lua_compiler_starts"],
+                         persisted["candidate_compilations"] * 2)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-full-diagnostics-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            with _fast_search_boundary():
+                full = run_task(source, Path(directory) / "task",
+                                search_config=dict(config, diagnostics="full"))
+        self.assertTrue(full["search"]["diagnostics"]["events"])
+
+    def test_search_artifacts_and_requests_use_the_canonical_behavior_identity(self):
+        import search
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-identity-trace-") as directory:
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1)
+            with _fast_search_boundary(), patch.object(
+                    search, "initial_programs",
+                    return_value=[[['outbreak']], [['death_coil']]]):
+                result = run_task(source, destination, search_config=config)
+
+            record_keys = {record["key"] for record in result["search"]["records"]}
+            export_keys = {path.name for path in (destination / "exports").iterdir()}
+            self.assertEqual(export_keys, record_keys)
+            self.assertIn(result["locked_candidate_key"], record_keys)
+            for record in result["search"]["records"]:
+                for row in record["batches"]:
+                    self.assertEqual(row["request"]["behavior_identity"], record["key"])
+
+    def test_search_reports_requests_cache_hits_and_native_batch_starts_separately(self):
+        with tempfile.TemporaryDirectory(prefix="sim2gse-cache-counters-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1)
+            with _fast_search_boundary():
+                first = run_task(source, Path(directory) / "first", search_config=config)
+                second = run_task(source, Path(directory) / "second", search_config=config)
+
+        self.assertEqual(first["search"]["batch_cache_hits"], 0)
+        self.assertEqual(first["search"]["batch_requests"],
+                         first["search"]["native_batch_starts"])
+        self.assertGreater(second["search"]["batch_cache_hits"], 0)
+        self.assertEqual(second["search"]["batch_requests"],
+                         second["search"]["batch_cache_hits"]
+                         + second["search"]["native_batch_starts"])
+
+    def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
+        import sqlite3
+
+        directory = tempfile.mkdtemp(prefix="sim2gse-old-identity-")
+        try:
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1)
+            with _fast_search_boundary():
+                run_task(source, destination, search_config=config)
+            result_before = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+            with sqlite3.connect(destination / "task.sqlite3") as database:
+                state = json.loads(database.execute(
+                    "SELECT value FROM state WHERE id=1").fetchone()[0])
+                state["behavior_identity_version"] = "obsolete-version"
+                state["elapsed_seconds"] = config["total_budget_seconds"]
+                database.execute("UPDATE state SET value=? WHERE id=1",
+                                 (json.dumps(state),))
+                database.commit()
+            database.close()
+            with _fast_search_boundary(), self.assertRaisesRegex(
+                    TaskError, "候选行为身份版本已变化"):
+                resume_task(destination)
+            self.assertEqual(json.loads((destination / "result.json").read_text(encoding="utf-8")),
+                             result_before)
+        finally:
+            for attempt in range(20):
+                try:
+                    shutil.rmtree(directory)
+                    break
+                except PermissionError:
+                    if attempt == 19:
+                        raise
+                    time.sleep(0.05)
+
+    def test_run_task_rejects_canonical_compiler_mismatch_before_native_evaluation(self):
+        import program as program_module
+        import search
+        import sequence
+
+        real_canonicalize = program_module.canonicalize_search_program
+        evaluated = []
+
+        def canonicalize(search_program, capabilities):
+            result = real_canonicalize(search_program, capabilities)
+            if search_program == [["outbreak"]]:
+                result["form"] = dict(result["form"], clicks=[["death_coil"]])
+            return result
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            plan = [click.get("commands", [])
+                    for click in candidate["compiled_program"]["clicks"]]
+            evaluated.append(plan)
+            return _fast_evaluate(profile, candidate, folder, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-mismatch-") as directory:
+            source = Path(directory) / "角色.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=41)
+            with _fast_search_boundary(), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['outbreak']], [['death_coil']]]), \
+                    patch.object(program_module, "canonicalize_search_program",
+                                 side_effect=canonicalize), \
+                    patch.object(sequence, "evaluate", side_effect=evaluate):
+                result = run_task(source, Path(directory) / "task", search_config=config)
+
+        self.assertNotIn([["outbreak"]], evaluated)
+        self.assertTrue(any("标准形式与编译计划不一致" in row["error"]
+                            for row in result["search"]["errors"]))
+
+    def test_canonical_identity_expands_repeat_once_and_preserves_source_tree(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        loop = canonicalize_search_program(
+            [dict(kind="Loop", count=1, blocks=[["outbreak"], ["use_item,slot=trinket1"]])],
+            capabilities,
+        )
+        expanded = canonicalize_search_program(
+            [["outbreak"], ["use_item,slot=trinket1"]], capabilities
+        )
+
+        self.assertEqual(loop["identity"], expanded["identity"])
+        self.assertEqual(loop["form"]["clicks"],
+                         [["outbreak"], ["use_item,slot=trinket1"]])
+        self.assertEqual(loop["form"]["version"], "sim2gse-search-behavior-v1")
+        self.assertEqual(loop["program"]["nodes"][0]["kind"], "Loop")
+        self.assertNotEqual(loop["program"]["nodes"][0]["source"],
+                            expanded["program"]["nodes"][0]["source"])
+
+    def test_canonical_identity_merges_adjacent_wait_clicks(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        adjacent = canonicalize_search_program(
+            [dict(kind="WaitClicks", clicks=2), dict(kind="WaitClicks", clicks=3), ["outbreak"]],
+            capabilities,
+        )
+        combined = canonicalize_search_program(
+            [dict(kind="WaitClicks", clicks=5), ["outbreak"]], capabilities
+        )
+
+        self.assertEqual(adjacent["identity"], combined["identity"])
+        self.assertEqual(adjacent["form"]["clicks"],
+                         [[], [], [], [], [], ["outbreak"]])
+
+    def test_canonical_identity_keeps_action_order_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        forward = canonicalize_search_program([["outbreak"], ["death_coil"]], capabilities)
+        reversed_actions = canonicalize_search_program([["death_coil"], ["outbreak"]], capabilities)
+
+        self.assertNotEqual(forward["identity"], reversed_actions["identity"])
+
+    def test_canonical_identity_keeps_action_count_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        twice = canonicalize_search_program([["outbreak"], ["outbreak"]], capabilities)
+        three_times = canonicalize_search_program(
+            [["outbreak"], ["outbreak"], ["outbreak"]], capabilities
+        )
+
+        self.assertNotEqual(twice["identity"], three_times["identity"])
+
+    def test_canonical_identity_keeps_action_block_boundaries_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        item = "use_item,slot=trinket1"
+        one_block = canonicalize_search_program([["outbreak", item]], capabilities)
+        two_blocks = canonicalize_search_program([["outbreak"], [item]], capabilities)
+
+        self.assertNotEqual(one_block["identity"], two_blocks["identity"])
+
+    def test_canonical_identity_keeps_castsequence_members_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        first = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"], reset=None)],
+            capabilities,
+        )
+        second = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "scourge_strike"], reset=None)],
+            capabilities,
+        )
+
+        self.assertNotEqual(first["identity"], second["identity"])
+
+    def test_canonical_identity_keeps_castsequence_reset_distinct(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        without_reset = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"], reset=None)],
+            capabilities,
+        )
+        with_reset = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
+                  reset={"timeout_seconds": 3, "flags": ["target"]})], capabilities
+        )
+
+        self.assertNotEqual(without_reset["identity"], with_reset["identity"])
+
+    def test_canonical_form_declares_start_and_sequence_reset_rules(self):
+        from program import canonicalize_search_program
+
+        result = canonicalize_search_program([["outbreak"]], _fast_capabilities())
+
+        self.assertEqual(result["form"]["start_step"], 1)
+        self.assertEqual(result["form"]["sequence_reset"], "end")
+
+    def test_canonical_identity_treats_castsequence_reset_flags_as_a_set(self):
+        from program import canonicalize_search_program
+
+        capabilities = _fast_capabilities()
+        target_combat = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
+                  reset={"timeout_seconds": 3, "flags": ["target", "combat"]})],
+            capabilities,
+        )
+        combat_target = canonicalize_search_program(
+            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
+                  reset={"timeout_seconds": 3,
+                         "flags": ["combat", "target", "combat"]})],
+            capabilities,
+        )
+
+        self.assertEqual(target_combat["identity"], combat_target["identity"])
+        self.assertEqual(target_combat["form"]["castsequences"][0]["reset"]["flags"],
+                         ["combat", "target"])
+
+    def test_canonical_identity_accepts_an_active_trinket_as_its_only_action(self):
+        from program import canonicalize_search_program
+
+        result = canonicalize_search_program([["use_item,slot=trinket1"]], _fast_capabilities())
+
+        self.assertEqual(result["form"]["clicks"], [["use_item,slot=trinket1"]])
+        self.assertEqual(result["form"]["castsequences"], [])
+
+    def test_canonical_identity_rejects_only_empty_clicks_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"blocks\[0\].*空点击"):
+            canonicalize_search_program([dict(kind="WaitClicks", clicks=2)], _fast_capabilities())
+
+    def test_canonical_identity_rejects_invalid_wait_click_counts_with_location(self):
+        from program import canonicalize_search_program
+
+        for clicks in (1, 4097):
+            with self.subTest(clicks=clicks), self.assertRaisesRegex(
+                    ValueError, r"segments\[0\].*WaitClicks"):
+                canonicalize_search_program(
+                    [dict(kind="WaitClicks", clicks=clicks), ["outbreak"]], _fast_capabilities()
+                )
+
+    def test_canonical_identity_rejects_empty_loop_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"segments\[0\]\.blocks\[0\].*Loop"):
+            canonicalize_search_program(
+                [dict(kind="Loop", count=2, blocks=[[]])], _fast_capabilities()
+            )
+
+    def test_canonical_identity_rejects_unmapped_action_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"segments\[0\].*当前角色不支持"):
+            canonicalize_search_program([["not_a_character_action"]], _fast_capabilities())
+
+    def test_canonical_identity_rejects_expansion_over_4096_with_location(self):
+        from program import canonicalize_search_program
+
+        with self.assertRaisesRegex(ValueError, r"blocks\[0\].*4096"):
+            canonicalize_search_program(
+                [dict(kind="Loop", count=4096,
+                      blocks=[["outbreak"], ["use_item,slot=trinket1"]])],
+                _fast_capabilities(),
+            )
+
     def test_search_can_vary_castsequence_timeout_without_event_variants(self):
         from search import program_key
 
@@ -191,13 +598,15 @@ class SearchAndValidationTests(TestCase):
             config_for({'scenarios': ('nominal',), 'reset_events': ((6001, 'shift'),)})
         with self.assertRaisesRegex(ValueError, '修饰键'):
             config_for({'reset_events': ((6000, 'shift'),)})
+        with self.assertRaisesRegex(ValueError, '诊断模式'):
+            config_for({'diagnostics': 'verbose'})
 
     def test_real_deathknight_search_matches_fixed_baseline_golden(self):
         """固定基线 fa2ea136 的 DK 测试资料搜索结果和候选顺序不得改变。"""
-        expected_key = "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc"
+        expected_key = "sim2gse-search-behavior-v1-cc858eeb37af5fc01c88a9f8d3b4f063c50d3c90964ca9191f4b58ed95f8606d"
         expected_record_keys = [
-            "818298543af0831284080248c1ce448f252857a96aae0c890e785e5247bd7fdc",
-            "61dc02485b5367ad0516fa11b3eef3e951b98898ff020269b40be3743a26ee7d",
+            "sim2gse-search-behavior-v1-cc858eeb37af5fc01c88a9f8d3b4f063c50d3c90964ca9191f4b58ed95f8606d",
+            "sim2gse-search-behavior-v1-59ab00a42f44d3893019964b9be136c3a16af5a7c490ed9fcd6c9873afb4e993",
         ]
         expected_text = (
             "!GSE3!awoINnKPd7E0NDYyd7V0NDJ1Wuzhm1qS6JJYkrjUxS8xNxVDgVtwQWqyp4vEHy/3YNew1KLizPw8SV4WF4/UnIKI/qdzNrycu+hZV8OL5r1P56x4sXzSi85NL1pmPdnR/bK969mUfe/39Dyfve7ZgvaXC3eDFPQ0P5295Wlb6/s9syHiz6ZueNa7TsHQSM9Qz0DPzNLC0ASo59mKhc+656PLmVqYP25oerZjx7OO/mdTO57Nm/N0w6yn+1pfrup5sb4RKOXhnJGanF1cmutdZmhlkGJgbGFpaeHukpqWWJpTwugBdX5x4yJ3x+QSEKtrsUtIZUGqG4TrUgJku+YmJhflQ8gw/eTE4hKF6Lz85PzcpMSSWAUTM1MLE/yafPSLSxKLShJLShKTs7EoLS5IzcmBkFIMjPrs+JVILptFyAyhSxoErfHfQ0iJMMckAi7ZuZWQGaw2/wiYcd0owDMvqTQzpyQssSgzMSkntXgBAA=="
@@ -527,6 +936,10 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(resumed["locked_candidate_key"], cancelled["locked_candidate_key"])
             self.assertGreater(resumed["elapsed_seconds"], cancelled["elapsed_seconds"])
             self.assertGreaterEqual(resumed["completed_batches"], cancelled["completed_batches"])
+            for name in ("batch_requests", "batch_cache_hits", "native_batch_starts",
+                         "canonicalized_duplicates"):
+                self.assertIn(name, cancelled["search"])
+                self.assertGreaterEqual(resumed["search"][name], cancelled["search"][name])
             self.assertFalse(resumed["independent_validation_complete"])
             self.assertEqual(set(resumed["final"]["scenarios"]), {"nominal", "jitter", "slow", "pause", "phase"})
 
@@ -818,6 +1231,45 @@ class SearchAndValidationTests(TestCase):
                     leaked.append(handle);runtime._kernel32.CloseHandle(handle)
             self.assertFalse(leaked,'创建中断泄漏线程句柄')
             self.assertFalse(list(destination.rglob('.stdout-*.tmp'))+list(destination.rglob('.stderr-*.tmp')))
+
+    def test_native_start_callback_failure_still_cleans_the_created_process(self):
+        import runtime
+
+        class Process:
+            def __init__(self, folder):
+                self.stdout_path = Path(folder) / "stdout.tmp"
+                self.stderr_path = Path(folder) / "stderr.tmp"
+                self.stdout_path.write_bytes(b"")
+                self.stderr_path.write_bytes(b"")
+                self.terminated = False
+                self.closed = False
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, _timeout):
+                return 0
+
+            def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-start-callback-") as directory:
+            process = Process(directory)
+            reservations = []
+            task_runtime = runtime.TaskRuntime(10)
+            task_runtime.reservation = lambda key, allowance: reservations.append((key, allowance))
+            with patch.object(runtime, "_create_process", return_value=process), \
+                    self.assertRaisesRegex(OSError, "counter write failed"):
+                runtime.run_command(["simc"], directory, timeout_seconds=5,
+                                    runtime=task_runtime,
+                                    on_start=lambda: (_ for _ in ()).throw(
+                                        OSError("counter write failed")))
+
+            self.assertTrue(process.terminated)
+            self.assertTrue(process.closed)
+            self.assertIsNone(reservations[-1][1])
+            self.assertFalse(process.stdout_path.exists())
+            self.assertFalse(process.stderr_path.exists())
 
     def test_search_deadline_terminates_a_hung_native_batch(self):
         import ctypes

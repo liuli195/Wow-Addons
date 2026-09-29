@@ -65,15 +65,15 @@ def compiled_identity(candidate):
     """批次缓存身份；有状态宏必须带完整定义，避免不同规则复用成绩。"""
     blocks = compiled_program(candidate)
     castsequences = candidate.get("compiled_program", {}).get("castsequences", [])
-    if not castsequences:
-        return blocks
-    return {
-        "blocks": blocks,
-        "castsequences": [
-            {"step": row["step"], "members": row["members"], "reset": row.get("reset")}
-            for row in castsequences
-        ],
-    }
+    from program import canonical_behavior_form
+    return canonical_behavior_form(blocks, castsequences)
+
+
+def behavior_key(candidate):
+    """给已编译的行为计划生成版本化、忽略来源位置的身份。"""
+    identity = compiled_identity(candidate)
+    from program import canonical_behavior_key
+    return canonical_behavior_key(identity)
 
 
 def _search_compiled_blocks(candidate):
@@ -115,7 +115,7 @@ def _search_compiled_blocks(candidate):
 def evaluate(profile, candidate, folder, *, character, iterations=100, seed=20260912, trace=True,
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
              failure_events=None, reset_events=None,
-             runtime=None, simulation_config=None):
+             runtime=None, simulation_config=None, on_native_start=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
@@ -216,9 +216,10 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n'
                          + feedback, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
+    start_callback = {'on_start': on_native_start} if on_native_start is not None else {}
     log = run(generated, folder, mode,
               [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'], runtime=runtime,
-              simulation_config=simulation_config)
+              simulation_config=simulation_config, **start_callback)
     native_blocks = []
     for line in log.splitlines():
         if not line.startswith('S2GBLOCK\t'):

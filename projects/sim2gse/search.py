@@ -38,9 +38,20 @@ DEFAULT_CONFIG = {
     "scenarios": DEFAULT_SCENARIOS,
     "random_seed": 20260912,
     "trace_search": False,
+    "diagnostics": "off",
     "input_interval_ms": 300,
     "reset_events": (),
 }
+
+
+def verify_behavior_identity_state(state):
+    from program import BEHAVIOR_IDENTITY_VERSION
+    search_state_keys = ('archive', 'pending', 'seen', 'evaluated_keys',
+                         'locked_candidate_key')
+    saved = state.get('behavior_identity_version')
+    if saved != BEHAVIOR_IDENTITY_VERSION and (
+            saved is not None or any(key in state for key in search_state_keys)):
+        raise ValueError('候选行为身份版本已变化，请创建新任务')
 
 
 def config_for(values=None):
@@ -62,6 +73,8 @@ def config_for(values=None):
             raise ValueError('搜索配置超出范围: '+key)
     if type(config['input_interval_ms']) is not int or not 50 <= config['input_interval_ms'] <= 2000:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
+    if config['diagnostics'] not in {'off', 'summary', 'full'}:
+        raise ValueError('诊断模式必须是 off、summary 或 full')
     config['batch_targets']=tuple(config['batch_targets'])
     previous=0
     for value in config['batch_targets']:
@@ -432,19 +445,28 @@ class TaskStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS batches (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.state = json.loads(row[0]) if row else {}
+        self.state_write_count = 0
+        self.lua_compiler_starts = 0
         self.db.commit()
 
     def save(self):
         with self.lock, self.db:
             self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
+            self.state_write_count += 1
 
     def publish(self):
         with self.lock:
             brief = {key: self.state.get(key) for key in
-                     ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches', 'error')}
+                     ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
+                      'batch_requests', 'batch_cache_hits', 'native_batch_starts',
+                      'canonicalized_duplicates', 'error')}
             temporary = self.destination / 'progress.pending.json'
             temporary.write_text(_json(brief), encoding='utf-8')
             replace_file(temporary, self.destination / 'progress.json')
+
+    def note_lua_start(self):
+        with self.lock:
+            self.lua_compiler_starts += 1
 
     def batch(self, key):
         with self.lock:
@@ -464,14 +486,17 @@ class TaskStore:
             self.put_batch(key,dict(status='invalid',error='缓存行损坏'))
             return None
 
-    def put_batch(self, key, value):
+    def put_batch(self, key, value, *, counter=None):
         with self.lock, self.db:
             self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
             if value.get('status')=='success' and value['request']['purpose']!='final':
                 self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
+            if counter is not None:
+                self.state[counter] = self.state.get(counter, 0) + 1
             self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
+            self.state_write_count += 1
 
     @contextmanager
     def active(self, runtime):
@@ -499,6 +524,12 @@ class TaskStore:
             beat()
 
     def close(self):
+        if getattr(self, 'diagnostics_mode', 'off') != 'off':
+            diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
+                               task_state_writes=self.state_write_count,
+                               lua_compiler_starts=self.lua_compiler_starts)
+            (self.destination / 'diagnostics.json').write_text(
+                _json(diagnostics), encoding='utf-8')
         self.db.close()
 
 
@@ -513,10 +544,14 @@ def _tuple(value):
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
     from engine import check_report, player_report, CandidateError
+    from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
+    verify_behavior_identity_state(state)
+    if 'behavior_identity_version' not in state:
+        state['behavior_identity_version'] = BEHAVIOR_IDENTITY_VERSION
     state.setdefault('run_nonce', uuid.uuid4().hex)
     state.setdefault('phase', 'search')
     state.setdefault('archive', [])
@@ -526,6 +561,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('seen', [])
     state.setdefault('chains', [])
     state.setdefault('evaluated_keys', [])
+    state.setdefault('canonicalized_duplicates', 0)
+    state.setdefault('batch_requests', 0)
+    state.setdefault('batch_cache_hits', 0)
+    state.setdefault('native_batch_starts', 0)
     state.setdefault('completed_batches', 0)
     state.setdefault('batch_estimate', 0.25)
     starts = initial_programs(capabilities, reference, config['random_seed'])
@@ -536,19 +575,47 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     if state.get('rng'):
         rng.setstate(_tuple(state['rng']))
     candidates = {}
+    prepared = {}
+    candidate_compilations = 0
+    diagnostic_events = []
 
     def candidate(program):
-        key = program_key(program)
-        if key not in candidates:
-            saved=next((r for r in state['archive'] if r['key']==key and r.get('candidate')),None)
-            if saved and digest(saved['candidate'])==saved['candidate_sha256']:
-                candidates[key]=saved['candidate']
-            else:
-                from program import compile_program, from_search_program
-                candidates[key] = compile_program(from_search_program(program, capabilities),
-                                                  destination / 'exports' / key,
-                                                  identity=reference['identity'], runtime=runtime)
+        nonlocal candidate_compilations
+        source_key = program_key(program)
+        if source_key in prepared:
+            return prepared[source_key][1]
+        from program import compile_program, canonicalize_search_program
+        try:
+            canonical = canonicalize_search_program(program, capabilities)
+            key = canonical['identity']
+            compiled = candidates.get(key)
+            if compiled is None:
+                saved = next((r for r in state['archive'] if r['key'] == key and r.get('candidate')), None)
+                if (saved and digest(saved['candidate']) == saved['candidate_sha256']
+                        and canonical['form'] == compiled_identity(saved['candidate'])):
+                    compiled = saved['candidate']
+                else:
+                    compiled = compile_program(canonical['program'],
+                                               destination / 'exports' / key,
+                                               identity=reference['identity'], runtime=runtime,
+                                               on_lua_start=store.note_lua_start)
+                    candidate_compilations += 1
+                    if canonical['form'] != compiled_identity(compiled):
+                        raise CandidateError('候选标准形式与编译计划不一致')
+                candidates[key] = compiled
+            if config['diagnostics'] == 'full':
+                diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
+                                              candidate_compilations_so_far=candidate_compilations))
+        except CandidateError:
+            raise
+        except ValueError as error:
+            raise CandidateError(str(error)) from error
+        prepared[source_key] = (key, candidates[key])
         return candidates[key]
+
+    def candidate_key(program):
+        candidate(program)
+        return prepared[program_key(program)][0]
 
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False):
         seed_offset = {'search': 0, 'validation': 100000, 'final': 200000}[purpose]
@@ -558,11 +625,15 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         input_seed = seed + 500000
         times = input_times(scenario, input_seed, config["input_interval_ms"])
         compiled = candidate(program)
+        behavior_id = candidate_key(program)
         request = dict(condition=condition_key, program=compiled_identity(compiled), purpose=purpose,
+                        behavior_identity=behavior_id,
                         seed=seed, input_seed=input_seed, iterations=iterations, times=times,
                         stats=STATS_VERSION, trace=trace,
                         reset_events=[list(row) for row in config['reset_events']])
         key = digest(request)
+        with store.lock:
+            state['batch_requests'] += 1
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
             try:
@@ -577,7 +648,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                        simulation_config=simulation_config)
                 if summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']:
                     raise ValueError('缓存摘要不符')
-                store.put_batch(key,cached)
+                store.put_batch(key, cached, counter='batch_cache_hits')
                 return dict(cached, cached=True)
             except (ValueError, OSError, KeyError, TypeError):
                 store.put_batch(key, dict(status='invalid', request=request))
@@ -589,16 +660,19 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         allowance = min(30, runtime.remaining_seconds)
         with store.lock:
             state.setdefault('inflight', {})[key] = dict(start=runtime.elapsed_seconds, allowance=allowance)
-            if purpose=='search' and index!=99 and program_key(program) not in state['evaluated_keys']:
-                state['evaluated_keys'].append(program_key(program))
+            if purpose=='search' and index!=99 and behavior_id not in state['evaluated_keys']:
+                state['evaluated_keys'].append(behavior_id)
             store.save()
         folder = destination / 'batches' / key
         started = time.monotonic()
         try:
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
+            def native_started():
+                with store.lock:
+                    state['native_batch_starts'] += 1
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
-                              simulation_config=simulation_config, **kwargs)
+                              simulation_config=simulation_config, on_native_start=native_started, **kwargs)
             raw = (folder / 'native.json').read_bytes()
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], requested_iterations=iterations,
@@ -627,7 +701,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         for index in range(count):
             candidate(first)
             candidate(second)
-            if program_key(first) == program_key(second):
+            if candidate_key(first) == candidate_key(second):
                 row = batch(first,purpose,index,config['final_iterations'] if purpose=='final' else config['iterations'],scenario)
                 rows[0].append(row)
                 rows[1].append(row)
@@ -641,7 +715,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return rows
 
     def record(program):
-        candidate(program)  # 编译合法性必须先于任何原生计算。
+        compiled = candidate(program)  # 编译合法性必须先于任何原生计算。
+        key = candidate_key(program)
         rows, previous = [], 0
         incumbent = next((r for r in state['archive'] if r['key'] == state.get('best')), None)
         for index, target in enumerate(config['batch_targets']):
@@ -656,8 +731,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 ci = paired_ci([r['dps'] for r in rows], [r['dps'] for r in reference_rows])
                 if ci and ci[1] < 0:
                     break
-        return dict(key=program_key(program), program=program, batches=rows, score=_score(rows),
-                    candidate=candidate(program),candidate_sha256=digest(candidate(program)))
+        return dict(key=key, program=program, batches=rows, score=_score(rows),
+                    candidate=compiled,candidate_sha256=digest(compiled))
 
     def search():
         runtime.phase_limit = min(config['search_budget_seconds'], config['total_budget_seconds'])
@@ -686,12 +761,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     if rng.randrange(16)==0:
                         program = [[a['simc_action']] for a in capabilities['actions']]
                         rng.shuffle(program)
-                    key = program_key(program)
-                    if key in existing:
-                        continue
                     try:
-                        candidate(program)
-                    except ValueError:
+                        key = candidate_key(program)
+                    except CandidateError:
+                        continue
+                    if key in existing:
+                        state['canonicalized_duplicates'] += 1
                         continue
                     existing.add(key)
                     generated.append(dict(program=program,start=False,lane=lane_index))
@@ -706,9 +781,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             work = state['pending'][0]
             key = program_key(work['program'])
             try:
+                key = candidate_key(work['program'])
+                if key in state['seen']:
+                    state['canonicalized_duplicates'] += 1
+                    state['pending'].pop(0)
+                    store.save()
+                    continue
                 current = record(work['program'])
             except CandidateError as error:
-                state.setdefault('errors', []).append(dict(program=key, error=str(error)))
+                state.setdefault('errors', []).append(
+                    dict(program=program_key(work['program']), error=str(error)))
                 current = None
             if current:
                 if not state['archive']:
@@ -782,12 +864,25 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     chosen = best if improved or not complete else seed
     result = dict(status='completed' if complete else 'validation_incomplete', phase='done',
                   search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
-                              candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason')),
+                              candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
+                              canonicalized_duplicates=state['canonicalized_duplicates'], errors=state.get('errors', []),
+                              batch_requests=state['batch_requests'], batch_cache_hits=state['batch_cache_hits'],
+                              native_batch_starts=state['native_batch_starts'],
+                              partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason')),
                   validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
                   candidate=candidate(chosen['program']), independent_validation_complete=complete,
                   improvement='improvement_confirmed' if improved else 'not_proven_better',
                   selected_candidate_key=chosen['key'], native_reference=reference,
                   elapsed_seconds=runtime.elapsed_seconds, completed_batches=state['completed_batches'])
+    if config['diagnostics'] != 'off':
+        result['search']['diagnostics'] = dict(
+            mode=config['diagnostics'], task_state_writes=store.state_write_count,
+            candidate_compilations=candidate_compilations,
+            lua_compiler_starts=store.lua_compiler_starts)
+        if config['diagnostics'] == 'full':
+            result['search']['diagnostics']['events'] = diagnostic_events
+        store.diagnostics_mode = config['diagnostics']
+        store.diagnostic_summary = result['search']['diagnostics']
     result['candidate']['simulation'] = 'passed_native_model'
     if interrupted:
         result['status'] = 'cancelled' if isinstance(interrupted, TaskCancelled) else 'validation_incomplete'

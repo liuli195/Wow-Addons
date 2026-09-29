@@ -295,6 +295,11 @@ def _public_state(state: dict, destination: Path) -> dict:
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
+    search = state.get("search") or state
+    metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
+                    "canonicalized_duplicates")
+    if all(search.get(name) is not None for name in metric_names):
+        response["search_metrics"] = {name: int(search[name]) for name in metric_names}
     if state.get("error"):
         response["error"] = _friendly_error(TaskError(str(state["error"])))
     if status == "completed" and (state.get("candidate") or {}).get("source") == "gse":
