@@ -119,6 +119,8 @@ def _fast_initialization(*, real_engine=False):
     import engine
 
     def compiler(command, *args, **kwargs):
+        if kwargs.get("on_start") is not None:
+            kwargs["on_start"]()
         output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
@@ -166,6 +168,8 @@ class SearchAndValidationTests(TestCase):
 
         def compiler(command, *args, **kwargs):
             compiler_calls.append((command[-1], str(kwargs.get("output_dir"))))
+            if kwargs.get("on_start") is not None:
+                kwargs["on_start"]()
             output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
             return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 

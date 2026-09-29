@@ -202,11 +202,10 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
             (staging / 'expected.lua').write_text(expected_text, encoding='utf-8')
             relative = lambda path: path.relative_to(ROOT).as_posix()
             try:
-                if on_lua_start is not None:
-                    on_lua_start()
                 proc = run_command([str(LUA), relative(Path(__file__).with_suffix('.lua')), relative(SOURCE),
                                     relative(staging / 'input.cbor'), relative(staging / 'expected.lua'), mode],
-                                   ROOT, timeout_seconds=20, runtime=runtime, output_dir=folder)
+                                   ROOT, timeout_seconds=20, runtime=runtime, output_dir=folder,
+                                   on_start=on_lua_start)
             except ProcessTimeout as error:
                 raise ValueError('上游编译校验超时，任务已停止') from error
             except (TaskCancelled, BudgetExceeded):

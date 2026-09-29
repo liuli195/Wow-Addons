@@ -57,14 +57,28 @@ class CharacterExportTests(unittest.TestCase):
 
         starts = []
         failed = SimpleNamespace(returncode=1, stdout=b"", stderr=b"failed")
+        def failed_process(*args, **kwargs):
+            kwargs["on_start"]()
+            return failed
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(codec, "run_command", return_value=failed), \
+                patch.object(codec, "run_command", side_effect=failed_process), \
                 self.assertRaisesRegex(ValueError, "上游编译校验失败"):
             codec.export([[dict(kind="spell", spell_id=206930, name="heart_strike",
                                       simc_action="heart_strike")]], Path(directory) / "export",
                          identity=dict(spec_id=250, class_id=6),
                          on_lua_start=lambda: starts.append("started"))
         self.assertEqual(starts, ["started"])
+
+    def test_process_creation_failure_does_not_call_start_callback(self):
+        import runtime
+
+        starts = []
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(runtime, "_create_process", side_effect=OSError("create failed")), \
+                self.assertRaisesRegex(OSError, "create failed"):
+            runtime.run_command(["missing.exe"], Path(directory), timeout_seconds=1,
+                                on_start=lambda: starts.append("started"))
+        self.assertEqual(starts, [])
 
     def test_native_precombat_button_is_a_nocombat_gse_step(self):
         from codec import export
