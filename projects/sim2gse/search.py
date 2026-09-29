@@ -736,6 +736,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     observability = None
     observation_events = {}
     position_jobs = []
+    observation_pause_seconds = 0.0
+    observation_call_depth = 0
+    search_recording_active = True
     if observation_mode != 'off':
         with store.lock:
             observability = state.setdefault(
@@ -747,10 +750,21 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
 
     def serialize_observability(function):
         def call(*args, **kwargs):
+            nonlocal observation_pause_seconds, observation_call_depth
             if observability is None:
                 return function(*args, **kwargs)
-            with store.lock:
-                return function(*args, **kwargs)
+            outermost = observation_call_depth == 0
+            started = time.perf_counter() if outermost and search_recording_active else None
+            observation_call_depth += 1
+            try:
+                with store.lock:
+                    return function(*args, **kwargs)
+            finally:
+                observation_call_depth -= 1
+                if started is not None:
+                    seconds = time.perf_counter() - started
+                    observation_pause_seconds += seconds
+                    runtime.started += seconds
         return call
 
     def event_for(work):
@@ -1440,6 +1454,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 search_interrupted = error
             store.save()
         finally:
+            search_recording_active = False
+            runtime.started -= observation_pause_seconds
             runtime.phase_limit = runtime.budget_seconds
         if not state['archive']:
             raise BudgetExceeded('搜索窗口内未完成有效初始序列')

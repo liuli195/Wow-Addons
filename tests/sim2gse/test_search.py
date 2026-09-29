@@ -626,6 +626,30 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(score_snapshot(baseline), score_snapshot(observed))
         self.assertEqual(score_snapshot(baseline), score_snapshot(summarized))
 
+    def test_observability_time_is_returned_to_total_budget_after_search(self):
+        import search
+        from runtime import TaskRuntime
+
+        runtime = TaskRuntime(60)
+        with tempfile.TemporaryDirectory(prefix="sim2gse-observation-time-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          search_observability="full")
+            with _fast_search_boundary(), patch.object(
+                    search, "initial_programs", return_value=[[['outbreak']]]):
+                result = run_task(source, root / "task", search_config=config,
+                                  _runtime=runtime)
+
+        recorded = sum(result["search"]["observability"]["summary"]
+                       ["phase_seconds"].values())
+        self.assertGreater(recorded, 0)
+        self.assertLessEqual(runtime.remaining_seconds, runtime.budget_seconds)
+
     def test_search_artifacts_and_requests_use_the_canonical_behavior_identity(self):
         import search
 
