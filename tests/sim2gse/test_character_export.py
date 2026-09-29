@@ -52,6 +52,20 @@ class CharacterExportTests(unittest.TestCase):
         self.assertTrue(commands)
         self.assertTrue(all(str(value).isascii() for command in commands for value in command[1:]))
 
+    def test_lua_start_callback_counts_failed_process_start(self):
+        import codec
+
+        starts = []
+        failed = SimpleNamespace(returncode=1, stdout=b"", stderr=b"failed")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(codec, "run_command", return_value=failed), \
+                self.assertRaisesRegex(ValueError, "上游编译校验失败"):
+            codec.export([[dict(kind="spell", spell_id=206930, name="heart_strike",
+                                      simc_action="heart_strike")]], Path(directory) / "export",
+                         identity=dict(spec_id=250, class_id=6),
+                         on_lua_start=lambda: starts.append("started"))
+        self.assertEqual(starts, ["started"])
+
     def test_native_precombat_button_is_a_nocombat_gse_step(self):
         from codec import export
         from engine import inspect

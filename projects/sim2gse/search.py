@@ -446,6 +446,7 @@ class TaskStore:
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.state = json.loads(row[0]) if row else {}
         self.state_write_count = 0
+        self.lua_compiler_starts = 0
         self.db.commit()
 
     def save(self):
@@ -462,6 +463,10 @@ class TaskStore:
             temporary = self.destination / 'progress.pending.json'
             temporary.write_text(_json(brief), encoding='utf-8')
             replace_file(temporary, self.destination / 'progress.json')
+
+    def note_lua_start(self):
+        with self.lock:
+            self.lua_compiler_starts += 1
 
     def batch(self, key):
         with self.lock:
@@ -521,10 +526,8 @@ class TaskStore:
     def close(self):
         if getattr(self, 'diagnostics_mode', 'off') != 'off':
             diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
-                               task_state_writes=self.state_write_count)
-            diagnostics['lua_compiler_starts'] = sum(
-                1 for name in ('checksum.log', 'compile.log')
-                for _ in (self.destination / 'exports').glob('*/' + name))
+                               task_state_writes=self.state_write_count,
+                               lua_compiler_starts=self.lua_compiler_starts)
             (self.destination / 'diagnostics.json').write_text(
                 _json(diagnostics), encoding='utf-8')
         self.db.close()
@@ -594,7 +597,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 else:
                     compiled = compile_program(canonical['program'],
                                                destination / 'exports' / key,
-                                               identity=reference['identity'], runtime=runtime)
+                                               identity=reference['identity'], runtime=runtime,
+                                               on_lua_start=store.note_lua_start)
                     candidate_compilations += 1
                     if canonical['form'] != compiled_identity(compiled):
                         raise CandidateError('候选标准形式与编译计划不一致')
@@ -873,7 +877,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     if config['diagnostics'] != 'off':
         result['search']['diagnostics'] = dict(
             mode=config['diagnostics'], task_state_writes=store.state_write_count,
-            candidate_compilations=candidate_compilations)
+            candidate_compilations=candidate_compilations,
+            lua_compiler_starts=store.lua_compiler_starts)
         if config['diagnostics'] == 'full':
             result['search']['diagnostics']['events'] = diagnostic_events
         store.diagnostics_mode = config['diagnostics']

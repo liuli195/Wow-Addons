@@ -429,7 +429,8 @@ def _search_clicks(candidate, program):
     return clicks
 
 
-def compile_program(program, folder, *, identity, runtime=None, capabilities=None, context=None):
+def compile_program(program, folder, *, identity, runtime=None, capabilities=None, context=None,
+                    on_lua_start=None):
     """经同一 Program 接口编译；适配器只负责各来源的编码和上游校验。"""
     if not isinstance(program, dict) or not isinstance(program.get("nodes"), list):
         raise ValueError("序列程序结构无效")
@@ -445,7 +446,9 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
            (node["kind"] == "Action" and len(node["commands"]) == 1
             and node["commands"][0].get("kind") == "castsequence")
            for node in program["nodes"]):
-        candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program)
+        candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program,
+                           on_lua_start=on_lua_start)
     else:
-        candidate = export(blocks, folder, identity=identity, runtime=runtime)
+        candidate = export(blocks, folder, identity=identity, runtime=runtime,
+                           on_lua_start=on_lua_start)
     return _with_compiled_program(candidate, program, _search_clicks(candidate, program))
