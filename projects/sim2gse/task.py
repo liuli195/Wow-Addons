@@ -420,7 +420,7 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
 def _run_optimize(destination, character, *, config, runtime, simulation_config):
     from engine import identity, inspect, reference, COMMON
     from codec import SOURCE, LUA
-    from search import TaskStore, digest, optimize
+    from search import TaskStore, _export_search_observability, digest, optimize
     store = TaskStore(destination)
     state = store.state
     def reservation(key, allowance):
@@ -452,10 +452,12 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                        *sorted(SOURCE.rglob('*.lua'))]
             import cbor2
             from importlib.metadata import version
+            condition_config = {key: value for key, value in config.items()
+                                if key != 'search_observability'}
             condition = digest(dict(fields=character.fields, class_name=character.class_name,
                                     engine=identities,
                                     options=[*COMMON, *engine_options(simulation_config)],
-                                    config=config, simulation_config=simulation_config,
+                                    config=condition_config, simulation_config=simulation_config,
                                     cbor2=version('cbor2'),
                                     rules={str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}))
             if state.get('condition') and state['condition'] != condition:
@@ -502,6 +504,11 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
             'status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
             'batch_requests', 'batch_cache_hits', 'native_batch_starts',
             'canonicalized_duplicates', 'error')}
+        observation = state.get('search_observability')
+        if observation and observation.get('mode') != 'off':
+            with store.lock:
+                result['search_observability'] = _export_search_observability(
+                    observation, include_details=observation.get('mode') == 'full')
         _write_json(destination/'result.json', result, atomic=True)
         return result
     except Exception as error:
@@ -683,7 +690,8 @@ def resume_task(output_root, **kwargs):
         if not isinstance(profile, dict):
             raise TaskError("恢复任务的角色档案格式无效，请创建新任务")
         _verify_task_inputs(destination, profile)
-        from search import TaskStore, config_for, verify_behavior_identity_state
+        from search import (TaskStore, _export_search_observability, config_for,
+                            verify_behavior_identity_state)
         store = TaskStore(destination)
         try:
             state = store.state
@@ -717,6 +725,10 @@ def resume_task(output_root, **kwargs):
                         'batch_requests', 'batch_cache_hits', 'native_batch_starts',
                         'canonicalized_duplicates', 'error')}
                     result['independent_validation_complete']=False
+                    observation = state.get('search_observability')
+                    if observation and observation.get('mode') != 'off':
+                        result['search_observability'] = _export_search_observability(
+                            observation, include_details=observation.get('mode') == 'full')
                     _write_json(destination/'result.json',result,atomic=True)
                 store.publish()
                 return read_task(destination)

@@ -153,6 +153,351 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_repeated_actions_without_trace_position_are_reported_as_ambiguous(self):
+        from search import _position_observations
+
+        action = dict(kind="spell", spell_id=1001, simc_action="outbreak", name="outbreak")
+        candidate = {
+            "blocks": [[action, action]],
+            "compiled_steps": [dict(type="macro",
+                                     macrotext="/cast outbreak\n/cast outbreak")],
+        }
+        rows = _position_observations(candidate, "candidate", [
+            dict(event="input", step=0),
+            dict(event="native_execute", step=0, action="outbreak", signature="outbreak"),
+            dict(event="native_execute", step=0, action="outbreak", signature="outbreak"),
+        ])
+
+        ambiguous = [row for row in rows if row.get("ambiguous")]
+        self.assertEqual(len(ambiguous), 1)
+        self.assertIsNone(ambiguous[0]["action_position"])
+        self.assertEqual(ambiguous[0]["ambiguity_reason"], "trace_missing_action_position")
+        self.assertEqual(ambiguous[0]["successes"], 2)
+        self.assertEqual(ambiguous[0]["turns"], 0)
+        self.assertTrue(all(row["successes"] == 0 for row in rows
+                            if row["action_position"] in (0, 1)))
+
+    def test_processing_counts_a_dispatch_once_when_native_execution_follows(self):
+        from search import _position_observations
+
+        candidate = {
+            "blocks": [[dict(kind="spell", spell_id=1001, simc_action="outbreak",
+                              name="outbreak")]],
+            "compiled_steps": [dict(type="spell", spell=1001)],
+        }
+        rows = _position_observations(candidate, "candidate", [
+            dict(event="input", step=0),
+            dict(event="dispatch", step=0, action="outbreak", signature="outbreak"),
+            dict(event="native_execute", step=0, action="outbreak", signature="outbreak"),
+        ])
+
+        self.assertEqual(rows[0]["processing"], 1)
+        self.assertEqual(rows[0]["successes"], 1)
+
+    def test_search_cutoff_assigns_outcomes_to_every_unscored_candidate(self):
+        import search
+        import sequence
+        from runtime import BudgetExceeded
+
+        calls = 0
+
+        def stop_on_second_batch(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise BudgetExceeded("test search cutoff")
+            return _fast_evaluate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-pending-outcomes-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=4, round_candidate_limit=1,
+                          no_improvement_rounds=5, batch_targets=(2,), iterations=2,
+                          validation_batches=2, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=11,
+                          search_observability="full")
+            with _fast_initialization(), \
+                    patch.object(sequence, "evaluate", side_effect=stop_on_second_batch), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['outbreak']], [['death_coil']]]):
+                result = run_task(source, root / "task", search_config=config)
+
+        observation = result["search"]["observability"]
+        outcomes = [row.get("outcome") for row in observation["details"]]
+        self.assertCountEqual(outcomes, ["scored", "budget_not_scored"])
+        self.assertEqual(sum(observation["summary"]["outcomes"].values()),
+                         observation["summary"]["initial_candidates"] +
+                         observation["summary"]["mutation_attempts"])
+
+    def test_full_observability_is_locked_during_heartbeat_and_survives_resume(self):
+        import threading
+        import search
+        import sequence
+        from runtime import TaskRuntime
+
+        stores = []
+
+        def guard(value, lock):
+            if isinstance(value, dict):
+                return LockedDict(value, lock)
+            if isinstance(value, list):
+                return LockedList(value, lock)
+            return value
+
+        class LockedDict(dict):
+            def __init__(self, value, lock):
+                self.lock = lock
+                dict.__init__(self, ((key, guard(item, lock)) for key, item in value.items()))
+
+            def __setitem__(self, key, value):
+                if not self.lock._is_owned():
+                    raise AssertionError("search observability write did not hold TaskStore.lock")
+                dict.__setitem__(self, key, guard(value, self.lock))
+
+            def setdefault(self, key, default=None):
+                if key in self:
+                    return self[key]
+                self[key] = default
+                return self[key]
+
+        class LockedList(list):
+            def __init__(self, value, lock):
+                self.lock = lock
+                list.__init__(self, (guard(item, lock) for item in value))
+
+            def append(self, value):
+                if not self.lock._is_owned():
+                    raise AssertionError("search observability append did not hold TaskStore.lock")
+                list.append(self, value)
+
+        class LockedStore(search.TaskStore):
+            def __init__(self, destination):
+                super().__init__(destination)
+                self.heartbeat_publishes = 0
+                if "search_observability" in self.state:
+                    self.state["search_observability"] = guard(
+                        self.state["search_observability"], self.lock)
+                stores.append(self)
+
+            def publish(self):
+                if threading.current_thread() is not threading.main_thread():
+                    self.heartbeat_publishes += 1
+                return super().publish()
+
+        original_observability = search._new_search_observability
+
+        def locked_observability(mode):
+            return guard(original_observability(mode), stores[-1].lock)
+
+        runtime = TaskRuntime(60)
+        calls = 0
+
+        def cancel_after_first(*args, **kwargs):
+            nonlocal calls
+            result = _fast_evaluate(*args, **kwargs)
+            calls += 1
+            if calls == 1:
+                threading.Event().wait(0.6)
+                runtime.cancel()
+            return result
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-observability-resume-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            destination = root / "task"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          search_observability="full")
+            with _fast_initialization(), \
+                    patch.object(search, "TaskStore", LockedStore), \
+                    patch.object(search, "_new_search_observability",
+                                 side_effect=locked_observability), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['outbreak']], [['death_coil']]]), \
+                    patch.object(sequence, "evaluate", side_effect=cancel_after_first):
+                stopped = run_task(source, destination, search_config=config, _runtime=runtime)
+                resumed = run_task(source, destination, search_config=config, resume=True,
+                                   _runtime=TaskRuntime(60))
+
+        self.assertEqual(stopped["status"], "cancelled")
+        self.assertTrue(any(store.heartbeat_publishes for store in stores))
+        stopped_details = stopped["search"]["observability"]["details"]
+        resumed_details = resumed["search"]["observability"]["details"]
+        self.assertEqual([row["event_id"] for row in stopped_details],
+                         [row["event_id"] for row in resumed_details])
+        self.assertCountEqual([row["outcome"] for row in resumed_details],
+                              ["scored", "cancelled_not_scored"])
+
+    def test_budget_exhausted_resume_keeps_previously_collected_observability(self):
+        import sqlite3
+        import search
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-observability-budget-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            destination = root / "task"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=1, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          search_observability="full")
+            with _fast_search_boundary(), patch.object(
+                    search, "initial_programs", return_value=[[['outbreak']]]):
+                completed = run_task(source, destination, search_config=config)
+
+            database = sqlite3.connect(destination / "task.sqlite3")
+            try:
+                state = json.loads(database.execute(
+                    "SELECT value FROM state WHERE id=1").fetchone()[0])
+                state["elapsed_seconds"] = config["total_budget_seconds"]
+                state["status"] = "interrupted"
+                database.execute("UPDATE state SET value=? WHERE id=1",
+                                 (json.dumps(state, ensure_ascii=False),))
+                database.commit()
+            finally:
+                database.close()
+
+            resumed = resume_task(destination, search_config=config)
+
+        self.assertEqual(resumed["status"], "validation_incomplete")
+        self.assertEqual(resumed["search_observability"]["details"],
+                         completed["search"]["observability"]["details"])
+
+    def test_local_and_second_global_comparisons_both_record_positions(self):
+        import search
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-global-position-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=4, round_candidate_limit=1,
+                          no_improvement_rounds=5, batch_targets=(2,), iterations=2,
+                          validation_batches=2, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=11,
+                          search_observability="full")
+            with _fast_search_boundary(), patch.object(
+                    search, "initial_programs",
+                    return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
+                result = run_task(source, root / "task", search_config=config)
+
+        candidate = next(row for row in result["search"]["records"]
+                         if "global_validation" in row)
+        event = next(row for row in result["search"]["observability"]["details"]
+                     if row["candidate_identity"] == candidate["key"])
+        self.assertTrue(event["route_promotion"]["checked"])
+        self.assertTrue(event["global_promotion"]["checked"])
+        self.assertEqual(event["position_comparison_count"], 2)
+        validation_requests = [row["request"] for side in ("candidate", "control")
+                               for record in (candidate["validation"],
+                                              candidate["global_validation"])
+                               for row in record[side]]
+        self.assertFalse(any(request["trace"] for request in validation_requests))
+
+    def test_position_observation_uses_main_budget_and_propagates_cancel(self):
+        import search
+        import sequence
+        from runtime import TaskCancelled, TaskRuntime
+
+        runtime = TaskRuntime(60)
+        observed_runtimes = []
+
+        def cancel_observation(*args, **kwargs):
+            observed_runtimes.append(kwargs["runtime"])
+            if "observability" in str(args[2]):
+                raise TaskCancelled("cancel during position observation")
+            return _fast_evaluate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-observation-budget-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          search_observability="full")
+            with _fast_initialization(), \
+                    patch.object(sequence, "evaluate", side_effect=cancel_observation), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['outbreak']], [['death_coil']]]):
+                result = run_task(source, root / "task", search_config=config,
+                                  _runtime=runtime)
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertTrue(result["search"]["observability"]["summary"]
+                        ["position_observation_incomplete"])
+        self.assertTrue(observed_runtimes)
+        self.assertTrue(all(item is runtime for item in observed_runtimes))
+
+    def test_promotion_timeout_keeps_pending_position_observation_visible(self):
+        import search
+        import sequence
+        from runtime import BudgetExceeded, TaskRuntime
+
+        runtime = TaskRuntime(60)
+        scores = iter((1.0, 2.0, 3.0, 4.0))
+
+        def stop_during_promotion(*args, **kwargs):
+            if kwargs.get("trace") and runtime.remaining_seconds <= 0:
+                raise BudgetExceeded("no time left for position observation")
+            if 100000 <= kwargs["seed"] < 200000 and not kwargs.get("trace"):
+                runtime.used_seconds = runtime.budget_seconds
+                raise BudgetExceeded("test promotion timeout")
+            return _fast_evaluate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-promotion-timeout-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=4, round_candidate_limit=1,
+                          no_improvement_rounds=5, batch_targets=(2,), iterations=2,
+                          validation_batches=2, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=11,
+                          search_observability="full")
+            with _fast_search_boundary(), \
+                    patch.object(sequence, "evaluate", side_effect=stop_during_promotion), \
+                    patch.object(search, "_score", side_effect=lambda rows: next(scores)), \
+                    patch.object(search, "initial_programs",
+                                 return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
+                result = run_task(source, root / "task", search_config=config,
+                                  _runtime=runtime)
+
+        observation = result["search"]["observability"]
+        checked = [row for row in observation["details"]
+                   if row["global_promotion"]["checked"]]
+        self.assertTrue(checked)
+        self.assertTrue(observation["summary"]["position_observation_incomplete"])
+        self.assertTrue(any("position_summary" not in row for row in checked))
+
+    def test_replacement_recording_preserves_the_existing_random_draw_order(self):
+        import random
+
+        from search import mutate
+
+        capabilities = _fast_capabilities()
+        observed_rng = random.Random(6)
+        observation = {}
+        observed = mutate([["outbreak"]], capabilities, observed_rng,
+                          observation=observation)
+
+        plain_rng = random.Random(6)
+        plain = mutate([["outbreak"]], capabilities, plain_rng)
+
+        self.assertEqual(observed, [["outbreak"]])
+        self.assertEqual(observed, plain)
+        self.assertEqual(observed_rng.getstate(), plain_rng.getstate())
+        self.assertEqual(observation["sampled_mutation"], "replace")
+        self.assertEqual(observation["actual_mutation"], "no_change")
+        self.assertIsNone(observation["modification_position"])
+
     def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
         import codec
         import search
@@ -260,6 +605,92 @@ class SearchAndValidationTests(TestCase):
                 full = run_task(source, Path(directory) / "task",
                                 search_config=dict(config, diagnostics="full"))
         self.assertTrue(full["search"]["diagnostics"]["events"])
+
+    def test_search_observability_is_off_by_default_and_preserves_selection(self):
+        import sqlite3
+        import search
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-search-observability-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, round_candidate_limit=1, batch_targets=(2,),
+                          iterations=2, validation_batches=1, final_batches=1,
+                          final_iterations=2, scenarios=("nominal",), max_processes=1,
+                          random_seed=37)
+
+            def run(name, mode=None):
+                destination = root / name / "task"
+                options = dict(config)
+                if mode is not None:
+                    options["search_observability"] = mode
+                with _fast_search_boundary(), patch.object(
+                        search, "initial_programs", return_value=[[['outbreak']]]):
+                    result = run_task(source, destination, search_config=options)
+                database = sqlite3.connect(destination / "task.sqlite3")
+                try:
+                    state = json.loads(database.execute(
+                        "SELECT value FROM state WHERE id=1").fetchone()[0])
+                finally:
+                    database.close()
+                return result, state.get("rng"), state.get("condition")
+
+            baseline, baseline_rng, baseline_condition = run("off")
+            summarized, summary_rng, summary_condition = run("summary", "summary")
+            observed, observed_rng, observed_condition = run("full", "full")
+
+        self.assertNotIn("observability", baseline["search"])
+        self.assertEqual(summarized["search"]["observability"]["mode"], "summary")
+        self.assertNotIn("details", summarized["search"]["observability"])
+        self.assertEqual(baseline["selected_candidate_key"], observed["selected_candidate_key"])
+        self.assertEqual(baseline_rng, observed_rng)
+        self.assertEqual(baseline_rng, summary_rng)
+        self.assertEqual(baseline_condition, observed_condition)
+        self.assertEqual(baseline_condition, summary_condition)
+
+        def score_snapshot(result):
+            records = []
+            for record in result["search"]["records"]:
+                validations = {}
+                for name in ("validation", "global_validation"):
+                    comparison = record.get(name)
+                    if comparison:
+                        validations[name] = tuple(
+                            tuple((row["dps"], row["samples"], row["request"]["seed"])
+                                  for row in comparison[side])
+                            for side in ("candidate", "control"))
+                records.append((record["key"], record["program"], record["score"],
+                                tuple((row["dps"], row["samples"], row["request"]["seed"])
+                                      for row in record["batches"]), validations))
+            return records
+
+        self.assertEqual(score_snapshot(baseline), score_snapshot(observed))
+        self.assertEqual(score_snapshot(baseline), score_snapshot(summarized))
+
+    def test_observability_time_is_returned_to_total_budget_after_search(self):
+        import search
+        from runtime import TaskRuntime
+
+        runtime = TaskRuntime(60)
+        with tempfile.TemporaryDirectory(prefix="sim2gse-observation-time-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, batch_targets=(2,), iterations=2,
+                          validation_batches=1, final_batches=1, final_iterations=2,
+                          scenarios=("nominal",), max_processes=1, random_seed=37,
+                          search_observability="full")
+            with _fast_search_boundary(), patch.object(
+                    search, "initial_programs", return_value=[[['outbreak']]]):
+                result = run_task(source, root / "task", search_config=config,
+                                  _runtime=runtime)
+
+        recorded = sum(result["search"]["observability"]["summary"]
+                       ["phase_seconds"].values())
+        self.assertGreater(recorded, 0)
+        self.assertLessEqual(runtime.remaining_seconds, runtime.budget_seconds)
 
     def test_search_artifacts_and_requests_use_the_canonical_behavior_identity(self):
         import search

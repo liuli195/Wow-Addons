@@ -26,7 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from interface import _friendly_error, _public_state, create_server  # noqa: E402
 from task import run_task  # noqa: E402
 from test_character_export import sample_profile  # noqa: E402
-from test_search import _fast_search_boundary  # noqa: E402
+from test_search import _fast_evaluate, _fast_search_boundary  # noqa: E402
 
 
 def gse_fixture(payload):
@@ -2269,6 +2269,112 @@ class InterfaceTests(unittest.TestCase):
         public = _public_state(state, destination)
 
         self.assertEqual(public["search_metrics"], state["search"])
+
+    def test_public_task_can_return_opted_in_search_observability(self) -> None:
+        import search
+        import sequence
+
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=3,
+            round_candidate_limit=1, batch_targets=(2,), iterations=2,
+            validation_batches=1, final_batches=1, final_iterations=2,
+            scenarios=("nominal",), max_processes=1, random_seed=37,
+        )}
+
+        def evaluate_with_positions(*args, **kwargs):
+            result = _fast_evaluate(*args, **kwargs)
+            if kwargs.get("trace"):
+                events = []
+                for step, block in enumerate(result["blocks"]):
+                    events.append(dict(ms=0, event="input", origin=1, step=step,
+                                       action="-", signature="-", battle=1))
+                    for action in block:
+                        common = dict(ms=0, origin=1, step=step, action=action,
+                                      signature=action, battle=1, rp=0)
+                        events.extend(dict(common, event=kind) for kind in
+                                      ("queue_locked", "dispatch", "native_execute", "observed_failed"))
+                result["trace"] = events
+            return result
+
+        with _fast_search_boundary(), \
+                patch.object(sequence, "evaluate", side_effect=evaluate_with_positions), \
+                patch.object(search, "initial_programs",
+                             return_value=[[['outbreak']], [['outbreak'], ['outbreak']]]):
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "search_observability": "full",
+            })
+            deadline = time.monotonic() + 45
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
+        observation = state["search_observability"]
+        self.assertEqual(observation["mode"], "full")
+        self.assertGreater(observation["summary"]["mutation_attempts"], 0)
+        self.assertGreater(observation["summary"]["score_completed"], 0)
+        self.assertTrue(observation["summary"]["positions"])
+        self.assertTrue(observation["details"])
+        scored = next(row for row in observation["details"]
+                      if row["score_completed"] and row["parent_identity"])
+        self.assertTrue(scored["parent_identity"])
+        self.assertTrue(scored["sampled_mutation"])
+        self.assertTrue(scored["actual_mutation"])
+        self.assertIn("legal", scored)
+        self.assertIn("illegal_reason", scored)
+        self.assertIn("duplicate_reason", scored)
+        self.assertIsInstance(scored["parent_score"], (int, float))
+        self.assertIsInstance(scored["candidate_score"], (int, float))
+        self.assertAlmostEqual(scored["score_change"],
+                               scored["candidate_score"] - scored["parent_score"])
+        method = observation["summary"]["methods"][scored["actual_mutation"]]
+        self.assertGreater(method["score_changes"]["count"], 0)
+        self.assertLessEqual(method["score_changes"]["minimum"], scored["score_change"])
+        self.assertGreaterEqual(method["score_changes"]["maximum"], scored["score_change"])
+        self.assertIn("route_promotion", scored)
+        self.assertIn("global_promotion", scored)
+        self.assertIn("stage_seconds", scored)
+        position = observation["summary"]["positions"][0]
+        self.assertTrue(position["candidate_identity"])
+        self.assertIn("action_position", position)
+        self.assertIn("turns", position)
+        self.assertIn("queue_blocked", position)
+        self.assertIn("processing", position)
+        self.assertIn("successes", position)
+        self.assertIn("failures", position)
+        repeated_positions = [row for row in observation["summary"]["positions"]
+                              if row["action"] == "outbreak"]
+        self.assertTrue(any(row["click_position"] == 0 and row["queue_blocked"] > 0
+                            and row["processing"] > 0 and row["successes"] > 0
+                            and row["failures"].get("observed_failed", 0) > 0
+                            for row in repeated_positions))
+        self.assertTrue(any(row["click_position"] == 1 and row["queue_blocked"] > 0
+                            for row in repeated_positions))
+
+    def test_public_task_search_observability_is_off_by_default(self) -> None:
+        import search
+
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
+            final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=37,
+        )}
+        with _fast_search_boundary(), patch.object(
+                search, "initial_programs", return_value=[[['outbreak']]]):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 45
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
+        self.assertNotIn("search_observability", state)
 
     def test_running_task_api_exposes_persisted_search_efficiency_counters(self) -> None:
         task_id = "a" * 32

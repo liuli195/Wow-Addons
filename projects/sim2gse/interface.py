@@ -168,8 +168,13 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         interval = value.get("input_interval_ms", 300)
         if type(interval) is not int or not 50 <= interval <= 2000:
             raise TaskError("按键间隔必须为 50 至 2000 毫秒的整数")
+        observation_mode = value.get("search_observability", "off")
+        if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
+            raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
-        options['search_config'] = dict(options.get('search_config') or {}, input_interval_ms=interval)
+        options['search_config'] = dict(
+            options.get('search_config') or {}, input_interval_ms=interval,
+            search_observability=observation_mode)
         if mode == "import":
             from gse_import import decode_import, inspect_import
             gse = value.get("gse")
@@ -300,6 +305,9 @@ def _public_state(state: dict, destination: Path) -> dict:
                     "canonicalized_duplicates")
     if all(search.get(name) is not None for name in metric_names):
         response["search_metrics"] = {name: int(search[name]) for name in metric_names}
+    observation = state.get("search_observability") or (state.get("search") or {}).get("observability")
+    if observation and observation.get("mode") != "off":
+        response["search_observability"] = observation
     if state.get("error"):
         response["error"] = _friendly_error(TaskError(str(state["error"])))
     if status == "completed" and (state.get("candidate") or {}).get("source") == "gse":
