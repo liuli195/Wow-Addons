@@ -153,6 +153,26 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_replacement_recording_preserves_the_existing_random_draw_order(self):
+        import random
+
+        from search import mutate
+
+        capabilities = _fast_capabilities()
+        observed_rng = random.Random(6)
+        observation = {}
+        observed = mutate([["outbreak"]], capabilities, observed_rng,
+                          observation=observation)
+
+        plain_rng = random.Random(6)
+        plain = mutate([["outbreak"]], capabilities, plain_rng)
+
+        self.assertEqual(observed, [["scourge_strike"]])
+        self.assertEqual(observed, plain)
+        self.assertEqual(observed_rng.getstate(), plain_rng.getstate())
+        self.assertEqual(observation["sampled_mutation"], "replace")
+        self.assertEqual(observation["modification_position"], {"segment": 0, "action": 0})
+
     def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
         import codec
         import search
@@ -260,6 +280,66 @@ class SearchAndValidationTests(TestCase):
                 full = run_task(source, Path(directory) / "task",
                                 search_config=dict(config, diagnostics="full"))
         self.assertTrue(full["search"]["diagnostics"]["events"])
+
+    def test_search_observability_is_off_by_default_and_preserves_selection(self):
+        import sqlite3
+        import search
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-search-observability-") as directory:
+            root = Path(directory)
+            source = root / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, round_candidate_limit=1, batch_targets=(2,),
+                          iterations=2, validation_batches=1, final_batches=1,
+                          final_iterations=2, scenarios=("nominal",), max_processes=1,
+                          random_seed=37)
+
+            def run(name, mode=None):
+                destination = root / name
+                options = dict(config)
+                if mode is not None:
+                    options["search_observability"] = mode
+                with _fast_search_boundary(), patch.object(
+                        search, "initial_programs", return_value=[[['outbreak']]]):
+                    result = run_task(source, destination, search_config=options)
+                database = sqlite3.connect(destination / "task.sqlite3")
+                try:
+                    state = json.loads(database.execute(
+                        "SELECT value FROM state WHERE id=1").fetchone()[0])
+                finally:
+                    database.close()
+                return result, state.get("rng")
+
+            baseline, baseline_rng = run("off")
+            summarized, summary_rng = run("summary", "summary")
+            observed, observed_rng = run("full", "full")
+
+        self.assertNotIn("observability", baseline["search"])
+        self.assertEqual(summarized["search"]["observability"]["mode"], "summary")
+        self.assertNotIn("details", summarized["search"]["observability"])
+        self.assertEqual(baseline["selected_candidate_key"], observed["selected_candidate_key"])
+        self.assertEqual(baseline_rng, observed_rng)
+        self.assertEqual(baseline_rng, summary_rng)
+
+        def score_snapshot(result):
+            records = []
+            for record in result["search"]["records"]:
+                validations = {}
+                for name in ("validation", "global_validation"):
+                    comparison = record.get(name)
+                    if comparison:
+                        validations[name] = tuple(
+                            tuple((row["dps"], row["samples"], row["request"]["seed"])
+                                  for row in comparison[side])
+                            for side in ("candidate", "control"))
+                records.append((record["key"], record["program"], record["score"],
+                                tuple((row["dps"], row["samples"], row["request"]["seed"])
+                                      for row in record["batches"]), validations))
+            return records
+
+        self.assertEqual(score_snapshot(baseline), score_snapshot(observed))
+        self.assertEqual(score_snapshot(baseline), score_snapshot(summarized))
 
     def test_search_artifacts_and_requests_use_the_canonical_behavior_identity(self):
         import search
