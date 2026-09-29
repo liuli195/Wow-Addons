@@ -1,7 +1,7 @@
 # 降低标准化运行成本并保留正确性
 
 Triage（分拣）: ready-for-agent
-Status（状态）: in-progress
+Status（状态）: closed
 Parent（所属变更）: [Sim2GSE 搜索候选标准化与约束](../spec.md)
 Blocked by（前置事项）: [运行第一阶段固定 Benchmark 并冻结结果](03-benchmark-acceptance.md)
 
@@ -27,3 +27,5 @@ Blocked by（前置事项）: [运行第一阶段固定 Benchmark 并冻结结�
 固定轨迹 A/B/C/D 结果保存在 `.local/sim2gse/benchmarks/cost-control-v1/fixed-trace-overview.json`。四组的状态、行为身份、接受／拒绝、候选数、分数、DPS、锁定候选和最终候选逐字段相同。原实现／仅移除计数保存／仅复用编译／合并方案的完整状态写入分别为 72／59／67／55 次，候选编译分别为 3／3／2／2 次，实际 Lua 启动分别为 6／6／4／4 次。
 
 真实角色证据保存在 `.local/sim2gse/benchmarks/cost-control-v1/r1/overview.json`。当前配置、候选上限 10、单进程、3 个配对种子全部完整结束；候选分数、SimC 启动数和总迭代数逐对相同。配对中位数：最终 DPS -0.058%，搜索时间 -1.51%，总时间 -1.91%；满足 0.5% DPS 非退步线并消除候选处理速度回退。3 个种子的成本计数保存在同一总览和 `r2-cost-counts/overview.json`：完整状态写入为 1,616／1,596／1,574 次（中位数 1,596），候选编译均为 10 次，实际 Lua 启动均为 20 次。SimC 启动中位数保持 240、迭代中位数保持 24,134，因此 20% SimC 减少目标仍未达到，第一阶段不得据此进入 Local Search（局部搜索）。
+
+实现提交：`fc4da08`；证据修复：`1fef062`；真实 Lua 启动计数修复：`801f77e`、`6bd27e3`。最终 Build and Verify（构建与验证）为 `passed`，9 项检查非空，274 passed、92 subtests passed。通用 GPT-5.6 Sol Web 高强度规范与规格审查最终均为“无发现”，审查提示词明确禁止继续派子代理。
