@@ -743,6 +743,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if observability.get('mode') != observation_mode:
                 raise ValueError('任务恢复时搜索记录模式不能改变')
             observation_events = {row['event_id']: row for row in observability['details']}
+            position_jobs = observability.setdefault('position_jobs', [])
 
     def serialize_observability(function):
         def call(*args, **kwargs):
@@ -772,6 +773,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             'global_checks': 0,
             'global_promotions': 0,
             'outcomes': {},
+            'score_changes': dict(count=0, total=0.0, minimum=None, maximum=None),
             'phase_seconds': {},
         })
 
@@ -867,6 +869,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             row['stage_seconds'][stage] = seconds
 
     @serialize_observability
+    def add_score_change(work, change):
+        changes = method_summary(work).setdefault(
+            'score_changes', dict(count=0, total=0.0, minimum=None, maximum=None))
+        changes['count'] += 1
+        changes['total'] += change
+        changes['minimum'] = change if changes['minimum'] is None else min(changes['minimum'], change)
+        changes['maximum'] = change if changes['maximum'] is None else max(changes['maximum'], change)
+        changes['mean'] = changes['total'] / changes['count']
+
+    @serialize_observability
     def mark_outcome(work, outcome):
         if not observability or work.get('observation_outcome') is not None:
             return
@@ -914,7 +926,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
 
     def queue_position_observation(work, program, comparison):
         if observability is not None:
-            position_jobs.append((work, _copy_program(program), comparison))
+            with store.lock:
+                position_jobs.append(dict(
+                    event_id=work['observation_id'], program=_copy_program(program),
+                    comparison=comparison, status='pending'))
 
     def _merge_position_counts(current, row):
         for field in ('turns', 'queued', 'queue_blocked', 'processing', 'successes'):
@@ -1308,7 +1323,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     continue
                 if observability:
                     mark_work(work, 'score_started', 'score_started')
-                    store.save()
                     scoring_started = time.perf_counter()
                 current = record(work['program'])
                 if observability:
@@ -1320,6 +1334,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                             if parent_score is not None:
                                 row['parent_score'] = parent_score
                                 row['score_change'] = current['score'] - parent_score
+                                add_score_change(work, row['score_change'])
                     add_stage_time(work, 'scoring', time.perf_counter() - scoring_started)
                     mark_work(work, 'score_completed', 'score_completed')
                     mark_outcome(work, 'scored')
@@ -1351,7 +1366,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                 mark_promotion(work, 'route', checked=True)
                                 if opponent_key == state['best']:
                                     mark_promotion(work, 'global', checked=True)
-                            store.save()
                             promotion_started = time.perf_counter()
                         try:
                             left,right=pair(current['program'],opponent['program'],'validation',config['validation_batches'])
@@ -1380,7 +1394,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                             elif current['score']>global_best['score']:
                                 if observability:
                                     mark_promotion(work, 'global', checked=True)
-                                    store.save()
                                     global_started = time.perf_counter()
                                 try:
                                     left,right=pair(current['program'],global_best['program'],'validation',config['validation_batches'])
@@ -1454,7 +1467,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         from runtime import TaskRuntime
         observation_runtime = TaskRuntime(
             config['total_budget_seconds'], cancel_event=runtime.cancel_event)
-        for job_index, (work, program, comparison) in enumerate(position_jobs):
+        for job_index, job in enumerate(position_jobs):
+            if job.get('status') == 'completed':
+                continue
+            work = {'observation_id': job['event_id']}
+            program = job['program']
+            comparison = job['comparison']
             try:
                 compiled = candidate(program)
                 seed = config['random_seed'] + 100000
@@ -1473,6 +1491,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 add_position_summary(
                     work, _position_observations(
                         compiled, candidate_key(program), traced['trace']))
+                with store.lock:
+                    job['status'] = 'completed'
+                    store.save()
             except (BudgetExceeded, TaskCancelled):
                 with store.lock:
                     observability['summary']['position_observation_incomplete'] = True

@@ -2330,6 +2330,10 @@ class InterfaceTests(unittest.TestCase):
         self.assertIsInstance(scored["candidate_score"], (int, float))
         self.assertAlmostEqual(scored["score_change"],
                                scored["candidate_score"] - scored["parent_score"])
+        method = observation["summary"]["methods"][scored["actual_mutation"]]
+        self.assertGreater(method["score_changes"]["count"], 0)
+        self.assertLessEqual(method["score_changes"]["minimum"], scored["score_change"])
+        self.assertGreaterEqual(method["score_changes"]["maximum"], scored["score_change"])
         self.assertIn("route_promotion", scored)
         self.assertIn("global_promotion", scored)
         self.assertIn("stage_seconds", scored)
