@@ -7,6 +7,15 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/"scripts/dev/sim2gse"))
 from benchmark import PROFILES,SEEDS,PHASE2_BASELINE,behavior_id,extract,summarize,materialize
 class BenchmarkTests(TestCase):
+ def test_phase2_reports_locked_candidate_even_when_export_falls_back(self):
+  result={"status":"completed","locked_candidate_key":"locked","selected_candidate_key":"initial",
+          "final":{"scenarios":{name:{"comparison":{"candidate_mean_dps":90,"control_mean_dps":100}} for name in ("nominal","jitter","slow","pause","phase")}}}
+  historical=extract(result,Path("missing"),600)
+  phase2=extract(result,Path("missing"),600,phase2=True)
+  self.assertEqual(historical["final_dps"],100)
+  self.assertEqual(phase2["final_dps"],90)
+  self.assertEqual(phase2["reported_candidate_key"],"locked")
+  self.assertEqual(result["selected_candidate_key"],"initial")
  def test_worktree_snapshot_contains_uncommitted_source_and_rejects_later_changes(self):
   import benchmark
   with TemporaryDirectory() as directory:

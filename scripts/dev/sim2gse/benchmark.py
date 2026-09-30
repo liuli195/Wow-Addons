@@ -36,11 +36,11 @@ def behavior_id(c):
  for r in cp.get("castsequences",[]):
   reset=r.get("reset") or {};cast.append({"step":r["step"],"members":list(r["members"]),"reset":{"timeout_seconds":reset.get("timeout_seconds"),"flags":sorted(set(reset.get("flags",[])))}})
  return hashlib.sha256(_json({"start_step":1,"sequence_reset":"end","clicks":clicks,"castsequences":cast}).encode()).hexdigest()
-def extract(result,out,wall):
- s=result.get("search") or {};records=s.get("records") or [];final=(result.get("final") or {}).get("scenarios") or {};selected="candidate_mean_dps" if result.get("selected_candidate_key")==result.get("locked_candidate_key") else "control_mean_dps";dps=[v.get("comparison",{}).get(selected) for v in final.values()];dps=[v for v in dps if isinstance(v,(int,float))]
+def extract(result,out,wall,*,phase2=False):
+ s=result.get("search") or {};records=s.get("records") or [];final=(result.get("final") or {}).get("scenarios") or {};selected="candidate_mean_dps" if phase2 or result.get("selected_candidate_key")==result.get("locked_candidate_key") else "control_mean_dps";dps=[v.get("comparison",{}).get(selected) for v in final.values()];dps=[v for v in dps if isinstance(v,(int,float))]
  starts=s.get("native_batch_starts");starts=starts if starts is not None else len(list((out/"batches").glob("*/native.json")))
- return {"status":result.get("status","failed"),"evidence_complete":len(dps)==5,"wall_seconds":wall,"final_dps":statistics.median(dps) if dps else None,"candidate_scores":[r["score"] for r in records if isinstance(r.get("score"),(int,float))],"common_unique_candidates":len({behavior_id(r["candidate"]) for r in records if r.get("candidate")}),"native_batch_starts":starts,"batch_requests":s.get("batch_requests"),"batch_cache_hits":s.get("batch_cache_hits"),"canonicalized_duplicates":s.get("canonicalized_duplicates")}
-def run(source,profile,out,seed):
+ return {"status":result.get("status","failed"),"evidence_complete":len(dps)==5,"wall_seconds":wall,"final_dps":statistics.median(dps) if dps else None,"measurement":"locked_candidate" if phase2 else "exported_sequence","reported_candidate_key":result.get("locked_candidate_key") if phase2 else result.get("selected_candidate_key"),"candidate_scores":[r["score"] for r in records if isinstance(r.get("score"),(int,float))],"common_unique_candidates":len({behavior_id(r["candidate"]) for r in records if r.get("candidate")}),"native_batch_starts":starts,"batch_requests":s.get("batch_requests"),"batch_cache_hits":s.get("batch_cache_hits"),"canonicalized_duplicates":s.get("canonicalized_duplicates")}
+def run(source,profile,out,seed,*,phase2=False):
  cfg=dict(CONFIG,random_seed=seed);code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))";start=time.monotonic();p=subprocess.Popen([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);timeline=[];seen=0;search_wall=None;search_started=None
  while p.poll() is None:
   database=out/"task.sqlite3"
@@ -56,7 +56,7 @@ def run(source,profile,out,seed):
   time.sleep(.1)
  stdout,stderr=p.communicate();wall=time.monotonic()-start;search_wall=search_wall if search_wall is not None else (time.monotonic()-search_started if search_started is not None else wall)
  if not (out/"result.json").is_file():raise RuntimeError(stderr[-4000:] or "任务没有生成结果")
- row=extract(json.loads((out/"result.json").read_text()),out,wall)
+ row=extract(json.loads((out/"result.json").read_text()),out,wall,phase2=phase2)
  for score in row["candidate_scores"][len(timeline):]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":search_wall,"score":score})
  row["candidate_timeline"]=timeline
  try:
@@ -101,5 +101,5 @@ def main():
  if e.exists():raise SystemExit(f"证据目录已存在: {e}")
  e.mkdir(parents=True);copy=root/"inputs"/f"{a.profile}.simc";copy.parent.mkdir(parents=True,exist_ok=True)
  if not copy.exists():shutil.copy2(PROFILES[a.profile],copy)
- manifest={"contract":CONTRACT,"side":a.side,"profile":a.profile,"profile_sha256":_sha(copy),"seed":a.seed,"source_commit":commit,"source_manifest_sha256":_sha(source.parents[1]/"source-manifest.json"),"config":dict(CONFIG,random_seed=a.seed)};(e/"manifest.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2));row=run(source,copy,e/"task",a.seed);(e/"summary.json").write_text(json.dumps(row,ensure_ascii=False,indent=2));print(json.dumps(row,ensure_ascii=False));return 0
+ manifest={"contract":CONTRACT,"side":a.side,"profile":a.profile,"profile_sha256":_sha(copy),"seed":a.seed,"source_commit":commit,"source_manifest_sha256":_sha(source.parents[1]/"source-manifest.json"),"config":dict(CONFIG,random_seed=a.seed)};(e/"manifest.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2));row=run(source,copy,e/"task",a.seed,phase2=a.phase2);(e/"summary.json").write_text(json.dumps(row,ensure_ascii=False,indent=2));print(json.dumps(row,ensure_ascii=False));return 0
 if __name__=="__main__":raise SystemExit(main())
