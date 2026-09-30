@@ -7,6 +7,61 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/"scripts/dev/sim2gse"))
 from benchmark import PROFILES,SEEDS,PHASE2_BASELINE,behavior_id,extract,summarize,materialize
 class BenchmarkTests(TestCase):
+ def test_product_rejects_missing_candidate_identity_and_incomplete_nominal(self):
+  import benchmark
+  new={'status':'completed','candidate':{'simulation':'passed_native_model','text':'!GSE3!test'},
+       'search_result':{'dps':120,'samples':99},'native_reference':{'dps':150}}
+  self.assertFalse(benchmark.extract_product(new)['evidence_complete'])
+  old=dict(new,selected_candidate_key='winner',locked_candidate_key='winner')
+  old.pop('search_result')
+  old['final']={'scenarios':{'nominal':{'complete':False,'candidate':[{'samples':99}],
+                  'comparison':{'candidate_mean_dps':120}}}}
+  self.assertFalse(benchmark.extract_product(old)['evidence_complete'])
+ def test_product_command_summarizes_without_requiring_five_final_scenarios(self):
+  import benchmark
+  with TemporaryDirectory() as directory:
+   root=Path(directory)
+   with patch.object(benchmark,'ROOT',root),patch('sys.argv',['benchmark.py','--run-id','product-smoke','--product','--summarize']):
+    self.assertEqual(benchmark.main(),0)
+   report=json.loads((root/'.local/sim2gse/benchmarks/search-v1/product-smoke/product-overview.json').read_text())
+   self.assertEqual(report['status'],'insufficient_evidence')
+   self.assertEqual(len(report['pairs']),3)
+ def test_product_summary_uses_exported_nominal_and_side_budgets(self):
+  import benchmark
+  old={'status':'completed','selected_candidate_key':'initial','locked_candidate_key':'locked',
+       'candidate':{'simulation':'passed_native_model','text':'!GSE3!test'},'native_reference':{'dps':200},
+       'final':{'scenarios':{'nominal':{'complete':True,'candidate':[{'samples':99}],
+          'seed':[{'samples':99}], 'comparison':{'candidate_mean_dps':180,'control_mean_dps':100}},
+          'slow':{'comparison':{'candidate_mean_dps':20,'control_mean_dps':10}}}}}
+  baseline=benchmark.extract_product(old)
+  self.assertEqual(baseline['final_dps'],100)
+  current=dict(baseline,final_dps=120,reference_ratio=.6,measurement='search_score')
+  for row,budget in ((baseline,420),(current,600)):
+   row.update(search_budget_seconds=budget,engine_identities=['same'],profile_sha256='profile',
+              random_seed=1,candidate_timeline=[{'score':80,'lower_seconds':8,'upper_seconds':10}])
+  with TemporaryDirectory() as directory:
+   root=Path(directory)
+   for side,row in (('baseline',baseline),('current',current)):
+    for seed in SEEDS[:3]:
+     row=dict(row,random_seed=seed)
+     path=root/side/'current'/str(seed)/'summary.json';path.parent.mkdir(parents=True)
+     path.write_text(json.dumps(row))
+   report=benchmark.summarize_product(root)
+   self.assertEqual(report['status'],'ready_for_human')
+   self.assertEqual(report['pairs'][0]['dps_change'],.2)
+   self.assertEqual(report['pairs'][0]['baseline']['threshold_time']['limit_seconds'],420)
+   self.assertEqual(report['pairs'][0]['current']['threshold_time']['limit_seconds'],600)
+   self.assertFalse(report['pairs'][0]['current']['threshold_time']['reached'])
+ def test_product_comparison_reads_search_result_without_final_retest(self):
+  import benchmark
+  result={'status':'completed','candidate':{'simulation':'passed_native_model','text':'!GSE3!test'},
+          'selected_candidate_key':'winner','search_result':{'dps':120,'samples':99},
+          'native_reference':{'dps':150},'final':{'status':'not_requested','scenarios':{}}}
+  row=benchmark.extract_product(result)
+  self.assertTrue(row['evidence_complete'])
+  self.assertEqual(row['final_dps'],120)
+  self.assertEqual(row['reference_ratio'],.8)
+  self.assertEqual(row['measurement'],'search_score')
  def test_phase2_reports_locked_candidate_even_when_export_falls_back(self):
   result={"status":"completed","locked_candidate_key":"locked","selected_candidate_key":"initial",
           "final":{"scenarios":{name:{"comparison":{"candidate_mean_dps":90,"control_mean_dps":100}} for name in ("nominal","jitter","slow","pause","phase")}}}

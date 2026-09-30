@@ -2,7 +2,7 @@
 
 Label（标签）: wayfinder:task
 Triage（分拣）: ready-for-agent
-Status（状态）: open
+Status（状态）: closed
 Parent（所属地图）: [搜索优化地图](../spec.md)
 Blocked by（前置事项）: [验收判定修正](03b-benchmark-acceptance.md)
 
@@ -18,6 +18,8 @@ Blocked by（前置事项）: [验收判定修正](03b-benchmark-acceptance.md)
 - 针对性测试与统一验证完成；门禁一已确认，主代理在已确认分支串行实施。
 
 ## 实施记录（2026-09-30）
+
+- 2026-10-01收尾核对：比较基线修正代码、测试和独立审查已经完成，并随拉取请求39交付，本代码票关闭。历史六次复测残缺仍保留原结论；新产品收益对照另见sim2gse-phase2-closeout，不用本票关闭代表收益通过。
 
 - 已新增第二阶段运行与汇总入口：一套当前配置、前三组条件、固定第一阶段完成版本；保留历史比较入口。
 - 汇总逐对保留伤害、达线时间及证据完整性；不自动判定业务通过。
