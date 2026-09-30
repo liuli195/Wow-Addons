@@ -25,7 +25,7 @@ STATS_VERSION = "paired-bootstrap-v1"
 DEFAULT_SCENARIOS = ("nominal", "jitter", "slow", "pause", "phase")
 DEFAULT_CONFIG = {
     "total_budget_seconds": 600.0,
-    "search_budget_seconds": 420.0,
+    "search_budget_seconds": 600.0,
     "candidate_limit": 1000,
     "round_candidate_limit": 16,
     "no_improvement_rounds": 5,
@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
     "scenarios": DEFAULT_SCENARIOS,
     "random_seed": 20260912,
     "trace_search": False,
+    "diagnostic_logging": False,
     "diagnostics": "off",
     "search_observability": "off",
     "input_interval_ms": 300,
@@ -61,12 +62,14 @@ def config_for(values=None):
         if set(values)-set(config):
             raise ValueError('未知搜索配置')
         config.update(values)
-    for key, maximum in (('total_budget_seconds',600),('search_budget_seconds',420)):
+        if 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
+            config['search_budget_seconds'] = config['total_budget_seconds']
+    for key, maximum in (('total_budget_seconds',600),('search_budget_seconds',600)):
         value=config[key]
         if type(value) not in (int,float) or not math.isfinite(value) or not 0 < value <= maximum:
             raise ValueError('计算预算必须在已确认上限内')
-    if config['search_budget_seconds'] >= config['total_budget_seconds']:
-        raise ValueError('必须为最终复测保留时间')
+    if config['search_budget_seconds'] > config['total_budget_seconds']:
+        raise ValueError('搜索预算不能超过总预算')
     for key, maximum in (('candidate_limit',1000),('round_candidate_limit',16),('no_improvement_rounds',5),
                          ('max_processes',2),('validation_batches',20),('final_batches',20),
                          ('iterations',512),('final_iterations',100),('random_seed',1000000000)):
@@ -79,6 +82,11 @@ def config_for(values=None):
     if (not isinstance(config['search_observability'], str) or
             config['search_observability'] not in ('off', 'summary', 'full')):
         raise ValueError('搜索记录模式必须是 off、summary 或 full')
+    if type(config['diagnostic_logging']) is not bool:
+        raise ValueError('诊断日志总开关必须为布尔值')
+    if not config['diagnostic_logging']:
+        config['diagnostics'] = 'off'
+        config['search_observability'] = 'off'
     config['batch_targets']=tuple(config['batch_targets'])
     previous=0
     for value in config['batch_targets']:
@@ -744,8 +752,12 @@ class TaskStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS shared.reusable (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS batches (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL)')
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.state = json.loads(row[0]) if row else {}
+        progress = self.db.execute('SELECT elapsed,status,inflight FROM runtime_progress WHERE id=1').fetchone()
+        if progress and progress[0] >= self.state.get('elapsed_seconds', 0):
+            self.state.update(elapsed_seconds=progress[0], status=progress[1], inflight=json.loads(progress[2]))
         self.state_write_count = 0
         self.lua_compiler_starts = 0
         self.db.commit()
@@ -753,7 +765,18 @@ class TaskStore:
     def save(self):
         with self.lock, self.db:
             self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
-            self.state_write_count += 1
+            if self.state.get('config', {}).get('diagnostic_logging', False):
+                self.state_write_count += 1
+            self._save_progress()
+
+    def _save_progress(self):
+        self.db.execute('INSERT OR REPLACE INTO runtime_progress VALUES (1,?,?,?)',
+                        (self.state.get('elapsed_seconds', 0), self.state.get('status', 'running'),
+                         _json(self.state.get('inflight', {}))))
+
+    def save_runtime(self):
+        with self.lock, self.db:
+            self._save_progress()
 
     def publish(self):
         with self.lock:
@@ -761,6 +784,9 @@ class TaskStore:
                      ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
                       'batch_requests', 'batch_cache_hits', 'native_batch_starts',
                       'canonicalized_duplicates', 'error')}
+            if not self.state.get('config', {}).get('diagnostic_logging', False):
+                for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):
+                    brief.pop(key, None)
             observation = self.state.get("search_observability")
             if observation and observation.get("mode") != "off":
                 brief["search_observability"] = _export_search_observability(
@@ -771,7 +797,8 @@ class TaskStore:
 
     def note_lua_start(self):
         with self.lock:
-            self.lua_compiler_starts += 1
+            if self.state.get('config', {}).get('diagnostic_logging', False):
+                self.lua_compiler_starts += 1
 
     def batch(self, key):
         with self.lock:
@@ -798,10 +825,12 @@ class TaskStore:
                 self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
-            if counter is not None:
+            if counter is not None and self.state.get('config', {}).get('diagnostic_logging', False):
                 self.state[counter] = self.state.get(counter, 0) + 1
             self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
-            self.state_write_count += 1
+            if self.state.get('config', {}).get('diagnostic_logging', False):
+                self.state_write_count += 1
+            self._save_progress()
 
     @contextmanager
     def active(self, runtime):
@@ -812,12 +841,13 @@ class TaskStore:
                 self.state['elapsed_seconds'] = runtime.elapsed_seconds
                 if self.state.get('status') in ('running','stopping') and (runtime.cancel_event.is_set() or runtime.elapsed_seconds>=runtime.budget_seconds):
                     self.state['status']='stopping'
-                self.save()
+                self.save_runtime()
                 self.publish()
         def heartbeat():
             while not stop.wait(0.5):
                 beat()
         self.state['status'] = 'running'
+        self.save()
         beat()
         thread = threading.Thread(target=heartbeat, daemon=True)
         thread.start()
@@ -1164,10 +1194,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('seen', [])
     state.setdefault('chains', [])
     state.setdefault('evaluated_keys', [])
-    state.setdefault('canonicalized_duplicates', 0)
-    state.setdefault('batch_requests', 0)
-    state.setdefault('batch_cache_hits', 0)
-    state.setdefault('native_batch_starts', 0)
+    if config['diagnostic_logging']:
+        for name in ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts'):
+            state.setdefault(name, 0)
     state.setdefault('completed_batches', 0)
     state.setdefault('batch_estimate', 0.25)
     starts = initial_programs(capabilities, reference, config['random_seed'])
@@ -1212,7 +1241,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                                destination / 'exports' / key,
                                                identity=reference['identity'], runtime=runtime,
                                                on_lua_start=store.note_lua_start)
-                    candidate_compilations += 1
+                    if config['diagnostic_logging']:
+                        candidate_compilations += 1
                     if canonical['form'] != compiled_identity(compiled):
                         raise CandidateError('候选标准形式与编译计划不一致')
                 candidates[key] = compiled
@@ -1244,7 +1274,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         reset_events=[list(row) for row in config['reset_events']])
         key = digest(request)
         with store.lock:
-            state['batch_requests'] += 1
+            if config['diagnostic_logging']:
+                state['batch_requests'] += 1
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
             try:
@@ -1280,7 +1311,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
             def native_started():
                 with store.lock:
-                    state['native_batch_starts'] += 1
+                    if config['diagnostic_logging']:
+                        state['native_batch_starts'] += 1
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started, **kwargs)
@@ -1305,9 +1337,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             store.put_batch(key, dict(status='failed', request=request, error=str(error)))
             raise
         finally:
+            if not config['diagnostic_logging']:
+                from engine import discard_diagnostic_files
+                discard_diagnostic_files(folder)
             with store.lock:
-                state.setdefault('inflight', {}).pop(key, None)
-                store.save()
+                if state.setdefault('inflight', {}).pop(key, None) is not None:
+                    store.save()
 
     def pair(first, second, purpose, count, scenario='nominal'):
         rows = [[], []]
@@ -1338,7 +1373,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         incumbent = next((r for r in state['archive'] if r['key'] == state.get('best')), None)
         for index, target in enumerate(config['batch_targets']):
             row = batch(program, 'search', index, target-previous,
-                        trace=(not state['archive'] and index == 0))
+                        trace=(config['diagnostic_logging'] and not state['archive'] and index == 0))
             row = dict(row, target=target)
             rows.append(row)
             previous = target
@@ -1437,7 +1472,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         event['duplicate_reason'] = duplicate_reason
                         generation_observations.append(event)
                     if duplicate_reason is not None:
-                        state['canonicalized_duplicates'] += 1
+                        if config['diagnostic_logging']:
+                            state['canonicalized_duplicates'] += 1
                         continue
                     existing.add(key)
                     existing_sources.add(program_key(program))
@@ -1465,7 +1501,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 key = candidate_key(work['program'])
                 mark_candidate(work, key=key)
                 if key in state['seen']:
-                    state['canonicalized_duplicates'] += 1
+                    if config['diagnostic_logging']:
+                        state['canonicalized_duplicates'] += 1
                     mark_duplicate(work, 'already_scored')
                     mark_outcome(work, 'duplicate')
                     state['pending'].pop(0)
@@ -1598,24 +1635,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 raise search_interrupted
             raise BudgetExceeded('搜索窗口内未完成有效初始序列')
         state['locked_candidate_key'] = state['best']
-        state['phase'] = 'final'
+        state['phase'] = 'search' if search_interrupted else 'done'
         store.save()
         store.publish()
-    seed = state['archive'][0]
     best = next(r for r in state['archive'] if r['key'] == state['locked_candidate_key'])
-    final = dict(dataset='final', scenarios={})
+    final = dict(dataset='final', status='not_requested', scenarios={})
     interrupted = search_interrupted
-    for scenario in config['scenarios']:
-        if isinstance(interrupted, TaskCancelled):
-            break
-        try:
-            left, right = pair(best['program'], seed['program'], 'final', config['final_batches'], scenario)
-            comparison = summarize_pairs(left, right)
-            final['scenarios'][scenario] = dict(candidate=left, seed=right, comparison=comparison,
-                                                 complete=True, effective_samples=[sum(r['samples'] for r in side) for side in (left,right)])
-        except (BudgetExceeded, TaskCancelled) as error:
-            interrupted = error
-            break
 
     if observability is not None and not isinstance(interrupted, TaskCancelled):
         observation_runtime = runtime
@@ -1656,23 +1681,24 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 with store.lock:
                     observability['summary']['position_observation_incomplete'] = True
                 break
-    complete = (set(final['scenarios']) == set(DEFAULT_SCENARIOS)
-                and config['final_batches'] >= DEFAULT_CONFIG['final_batches']
-                and config['final_iterations'] == DEFAULT_CONFIG['final_iterations'])
-    improved = complete and all(v['comparison']['status'] == 'improvement_confirmed' for v in final['scenarios'].values())
-    chosen = best if improved or not complete else seed
-    result = dict(status='completed' if complete else 'validation_incomplete', phase='done',
+    chosen = best
+    result = dict(status='completed', phase='done',
                   search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
                               candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
-                              canonicalized_duplicates=state['canonicalized_duplicates'], errors=state.get('errors', []),
-                              batch_requests=state['batch_requests'], batch_cache_hits=state['batch_cache_hits'],
-                              native_batch_starts=state['native_batch_starts'],
+                              errors=state.get('errors', []),
                               partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason')),
                   validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
-                  candidate=candidate(chosen['program']), independent_validation_complete=complete,
-                  improvement='improvement_confirmed' if improved else 'not_proven_better',
+                  candidate=candidate(chosen['program']), independent_validation_complete=False,
+                  improvement='search_result',
+                  search_result=dict(dps=chosen['score'],
+                                     samples=sum(row['samples'] for row in chosen['batches']),
+                                     reference_dps=reference['dps'],
+                                     reference_ratio=chosen['score']/reference['dps'] if reference['dps'] else None),
                   selected_candidate_key=chosen['key'], native_reference=reference,
                   elapsed_seconds=runtime.elapsed_seconds, completed_batches=state['completed_batches'])
+    if config['diagnostic_logging']:
+        result['search'].update({name: state[name] for name in
+                                ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts')})
     if observability:
         with store.lock:
             result['search']['observability'] = _export_search_observability(observability)
@@ -1687,7 +1713,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         store.diagnostic_summary = result['search']['diagnostics']
     result['candidate']['simulation'] = 'passed_native_model'
     if interrupted:
-        result['status'] = 'cancelled' if isinstance(interrupted, TaskCancelled) else 'validation_incomplete'
-        result['phase'] = 'final'
+        result['status'] = 'cancelled' if isinstance(interrupted, TaskCancelled) else 'completed'
+        result['phase'] = 'search' if isinstance(interrupted, TaskCancelled) else 'done'
     store.save()
     return result

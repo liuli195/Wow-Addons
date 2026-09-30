@@ -218,7 +218,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     pending_report = folder / 'native.pending.json'
     start_callback = {'on_start': on_native_start} if on_native_start is not None else {}
     log = run(generated, folder, mode,
-              [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json'], runtime=runtime,
+              [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json',
+               'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', True) else os.devnull)], runtime=runtime,
               simulation_config=simulation_config, **start_callback)
     native_blocks = []
     for line in log.splitlines():

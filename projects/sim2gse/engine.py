@@ -54,6 +54,12 @@ def identity(mode, runtime=None):
     return executable, manifest
 
 
+def discard_diagnostic_files(folder):
+    """仅清理本次模拟目录内已知的临时诊断产物，不删除输入和成功报告。"""
+    for name in ('native.txt', 'process.log', 'invocation.json'):
+        (Path(folder) / name).unlink(missing_ok=True)
+
+
 def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30,
         simulation_config=None, on_start=None):
     runtime = runtime or TaskRuntime(timeout_seconds)
@@ -62,22 +68,26 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     folder.mkdir(parents=True, exist_ok=True)
     command = [str(executable), os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
                'iterations=100', 'max_time=180',
-               'json2=native.json', 'output=native.txt', *options]
+               'json2=native.json',
+               'output=' + ('native.txt' if getattr(runtime, 'diagnostic_logging', True) else os.devnull),
+               *options]
     try:
         proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
                            on_start=on_start)
     except ProcessTimeout as error:
-        (folder / 'process.log').write_text(str(error), encoding='utf-8')
+        if getattr(runtime, 'diagnostic_logging', True):
+            (folder / 'process.log').write_text(str(error), encoding='utf-8')
         raise CandidateError('原生引擎运行超时，已停止本次进程') from error
     except (TaskCancelled, BudgetExceeded):
         raise
     log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
-    (folder / 'process.log').write_text(log, encoding='utf-8')
-    (folder / 'invocation.json').write_text(json.dumps(dict(command=command, identity=manifest,
-                                                           exit_code=proc.returncode,
-                                                           elapsed_seconds=proc.elapsed_seconds), indent=2), encoding='utf-8')
+    if getattr(runtime, 'diagnostic_logging', True):
+        (folder / 'process.log').write_text(log, encoding='utf-8')
+        (folder / 'invocation.json').write_text(json.dumps(dict(command=command, identity=manifest,
+                                                               exit_code=proc.returncode,
+                                                               elapsed_seconds=proc.elapsed_seconds), indent=2), encoding='utf-8')
     if proc.returncode:
-        raise ValueError('原生引擎失败，参见 ' + str(folder / 'process.log'))
+        raise ValueError('原生引擎失败: ' + log[-2000:])
     return log
 
 

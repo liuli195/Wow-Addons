@@ -1,6 +1,6 @@
 # Sim2GSE（角色级按键序列优化器）
 
-本目录是项目入口，与同级的 `gear-planner/`（配装器）统一放在 `projects/`（项目目录）下。当前已建立角色读取、离线导出、同一序列原生模拟、自动搜索、独立复测及取消恢复；第四票已将同一程序接入三步界面。职业、专精和职责交给固定引擎判断，统一优化伤害。最新测试与审查记录见[第四票](../../myspec/changes/sim2gse-implementation/issues/04-three-step-interface.md)，运行方式和状态边界见[本地任务说明](../../docs/sim2gse/local-task.md)。
+本目录是项目入口，与同级的 `gear-planner/`（配装器）统一放在 `projects/`（项目目录）下。当前已建立角色读取、离线导出、同一序列原生模拟、自动搜索及取消恢复；第四票已将同一程序接入三步界面。搜索使用累计十分钟预算，不再执行最终五节奏复测或因复测回退。诊断日志总开关默认关闭，算法反馈、去重缓存和恢复数据仍保留。职业、专精和职责交给固定引擎判断，统一优化伤害。历史界面测试与审查记录见[第四票](../../myspec/changes/sim2gse-implementation/issues/04-three-step-interface.md)，运行方式和状态边界见[本地任务说明](../../docs/sim2gse/local-task.md)。
 
 - [实施地图](../../myspec/changes/sim2gse-wayfinder/spec.md)
 - [实施方案](../../docs/sim2gse/implementation-plan.md)
