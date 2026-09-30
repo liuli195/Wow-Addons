@@ -20,27 +20,26 @@ def main():
     raw=source.read_bytes()
     started=time.monotonic()
     result=run_task(source,destination)
-    assert result['status'] in ('completed','validation_incomplete'),result
+    assert result['status']=='completed',result
     assert result['candidate']['text'].startswith('!GSE3!')
     assert (destination/'input.original.simc').read_bytes()==raw
     assert result['candidate']['game_validation']=='not_run'
     assert result['candidate']['simulation']=='passed_native_model'
     assert result['search']['candidate_count']<=1000
     assert len(result['search']['starts'])>=2
-    final=result['final']['scenarios']
-    if result['independent_validation_complete']:
-        assert set(final)=={'nominal','jitter','slow','pause','phase'}
-        for scenario in final.values():
-            assert scenario['effective_samples']==[1980,1980]
-            assert len(scenario['candidate'])==len(scenario['seed'])==20
-            assert all(row['samples']==99 for row in scenario['candidate']+scenario['seed'])
-    else:
-        assert result['status']=='validation_incomplete'
+    assert result['final']['status']=='not_requested'
+    assert result['final']['scenarios']=={}
+    assert result['independent_validation_complete'] is False
+    assert result['improvement']=='search_result'
+    assert result['elapsed_seconds']<=600
+    score=result['search_result']
+    assert score['dps']>0 and score['reference_dps']>0
+    assert abs(score['reference_ratio']-score['dps']/score['reference_dps'])<1e-9
     evidence=dict(status=result['status'],elapsed_seconds=result['elapsed_seconds'],
                   wall_seconds=time.monotonic()-started,candidates=result['search']['candidate_count'],
                   completed_batches=result['completed_batches'],improvement=result['improvement'],
                   independently_tested=result['independent_validation_complete'],
-                  scenarios={name:row['comparison'] for name,row in final.items()},game_validation='not_run')
+                  search_result=score,scenarios={},game_validation='not_run')
     (destination/'acceptance.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
     print(json.dumps(evidence,ensure_ascii=False,indent=2))
 

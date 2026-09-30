@@ -417,12 +417,20 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     return result
 
 
+def _rule_hashes():
+    from codec import SOURCE, LUA
+    sources = [*Path(__file__).parent.glob('*.py'),
+               *Path(__file__).with_name('compatibility').glob('*.json'),
+               Path(__file__).with_name('codec.lua'), LUA, *sorted(SOURCE.rglob('*.lua'))]
+    return {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
+
+
 def _run_optimize(destination, character, *, config, runtime, simulation_config):
     from engine import identity, inspect, reference, COMMON
-    from codec import SOURCE, LUA
     from search import TaskStore, _export_search_observability, digest, optimize
     store = TaskStore(destination)
     state = store.state
+    runtime.diagnostic_logging = config['diagnostic_logging']
     def reservation(key, allowance):
         with store.lock:
             inflight = state.setdefault('inflight', {})
@@ -430,7 +438,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                 inflight.pop(key,None)
             else:
                 inflight[key] = dict(start=runtime.elapsed_seconds,allowance=allowance)
-            store.save()
+            state['elapsed_seconds'] = runtime.elapsed_seconds
+            store.save_runtime()
     runtime.reservation = reservation
     try:
         original_bytes, _ = _read_utf8(destination / "input.original.simc", description="原始输入副本")
@@ -446,32 +455,35 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
         with store.active(runtime):
             # 恢复核验先于任何模拟；程序及规则变化必须新建任务。
             identities = {mode: identity(mode, runtime)[1] for mode in ('baseline', 'controlled')}
-            sources = [*Path(__file__).parent.glob('*.py'),
-                       *Path(__file__).with_name('compatibility').glob('*.json'), Path(__file__).with_name('codec.lua'),
-                       LUA,
-                       *sorted(SOURCE.rglob('*.lua'))]
+            rules = _rule_hashes()
             import cbor2
             from importlib.metadata import version
             condition_config = {key: value for key, value in config.items()
-                                if key != 'search_observability'}
+                                if key not in ('search_observability', 'diagnostics', 'diagnostic_logging')}
             condition = digest(dict(fields=character.fields, class_name=character.class_name,
                                     engine=identities,
                                     options=[*COMMON, *engine_options(simulation_config)],
                                     config=condition_config, simulation_config=simulation_config,
                                     cbor2=version('cbor2'),
-                                    rules={str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}))
+                                    rules=rules))
             if state.get('condition') and state['condition'] != condition:
                 raise TaskError('恢复任务的版本、配置或角色身份已变化，请创建新任务')
-            state.update(condition=condition, config=config, simulation_config=simulation_config,
+            state.update(condition=condition, config=config, rules=rules, engines=identities,
+                         simulation_config=simulation_config,
                          simulation_options=engine_options(simulation_config))
             state.setdefault('phase', 'initialize')
             if state['phase'] == 'initialize':
                 # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
-                native = reference(destination/'input.simc', destination/'reference', character, runtime=runtime,
-                                   iterations=config['iterations'], seed=config['random_seed'],
-                                   simulation_config=simulation_config)
+                try:
+                    native = reference(destination/'input.simc', destination/'reference', character, runtime=runtime,
+                                       iterations=config['iterations'], seed=config['random_seed'],
+                                       simulation_config=simulation_config)
+                finally:
+                    if not config['diagnostic_logging']:
+                        from engine import discard_diagnostic_files
+                        discard_diagnostic_files(destination/'reference')
                 capabilities = inspect(native, destination/'capabilities')
                 state.update(capabilities=capabilities, native=native, phase='search', inflight={})
                 store.save()
@@ -709,6 +721,13 @@ def resume_task(output_root, **kwargs):
             config = config_for(kwargs.pop('search_config',None) or state['config'])
             if config != config_for(state['config']):
                 raise TaskError('恢复配置发生变化，请创建新任务')
+            from engine import identity
+            try:
+                if (state.get('rules') != _rule_hashes() or
+                        state.get('engines') != {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}):
+                    raise TaskError('恢复任务的版本或编译规则已变化，请创建新任务')
+            except (ValueError, OSError) as error:
+                raise TaskError(str(error)) from error
             used = float(state.get('elapsed_seconds',0))
             if state.get('status') == 'running':
                 penalty = max((max(0, r['allowance'] - max(0,used-r['start']))

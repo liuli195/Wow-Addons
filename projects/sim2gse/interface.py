@@ -169,12 +169,15 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if type(interval) is not int or not 50 <= interval <= 2000:
             raise TaskError("按键间隔必须为 50 至 2000 毫秒的整数")
         observation_mode = value.get("search_observability", "off")
+        diagnostic_logging = value.get("diagnostic_logging", False)
+        if type(diagnostic_logging) is not bool:
+            raise TaskError("诊断日志总开关必须为布尔值")
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
         options['search_config'] = dict(
             options.get('search_config') or {}, input_interval_ms=interval,
-            search_observability=observation_mode)
+            search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
         if mode == "import":
             from gse_import import decode_import, inspect_import
             gse = value.get("gse")
@@ -330,6 +333,11 @@ def _public_state(state: dict, destination: Path) -> dict:
                     evidence_status=("complete" if state.get("independent_validation_complete")
                                       else "insufficient_validation"),
                 )
+                if state.get('improvement') == 'search_result':
+                    response['evidence_status'] = 'search_result'
+                    response['search_result'] = state.get('search_result', {})
+                    response['result_note'] = '已输出搜索选中的序列；未进行最终独立复测，游戏效果尚待验证。'
+                    return response
                 if status == "validation_incomplete" and state.get("improvement") == "not_proven_better":
                     response["result_note"] = (
                         "复测未完成；已保留锁定候选，不能视为验证通过。"

@@ -32,6 +32,11 @@
 const profile=document.getElementById('profile'),start=document.getElementById('start'),copy=document.getElementById('copy'),result=document.getElementById('result');
 const error=document.getElementById('error'),progress=document.getElementById('progress'),progressText=document.getElementById('progressText'),progressNote=document.getElementById('progressNote'),resultNote=document.getElementById('resultNote'),resultSection=document.getElementById('resultSection');
 const interval=document.getElementById('interval');
+const diagnosticLogging=document.createElement('input');
+diagnosticLogging.type='checkbox';diagnosticLogging.id='diagnosticLogging';diagnosticLogging.style.width='auto';
+const diagnosticLabel=document.createElement('label');
+diagnosticLabel.append(diagnosticLogging,document.createTextNode(' 诊断日志总开关（默认关闭）'));
+interval.after(diagnosticLabel);
 const gseImport=document.getElementById('gseImport'),inspectImport=document.getElementById('inspectImport'),importSequence=document.getElementById('importSequence'),importVersion=document.getElementById('importVersion'),importStart=document.getElementById('importStart'),importResult=document.getElementById('importResult');
 const importInspection=document.getElementById('importInspection'),importSelection=document.getElementById('importSelection'),gcdMs=document.getElementById('gcdMs');
 interval.addEventListener('input',resetResult);
@@ -60,7 +65,7 @@ start.addEventListener('click',async()=>{
  if(!profile.value.trim()){showError('请先粘贴角色导出字符串。');profile.focus();return;}
  if(!interval.checkValidity()||!interval.value){showError('按键间隔必须为 50 至 2000 毫秒的整数。');interval.focus();return;}
  running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;start.textContent='运行中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动任务';progressNote.textContent='正在等待真实任务事件。';
- try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,input_interval_ms:Number(interval.value)})});const state=await response.json();if(!response.ok)throw new Error(state.error||'任务启动失败');taskId=state.task_id;poll();}
+ try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,input_interval_ms:Number(interval.value),diagnostic_logging:diagnosticLogging.checked,search_observability:diagnosticLogging.checked?'full':'off'})});const state=await response.json();if(!response.ok)throw new Error(state.error||'任务启动失败');taskId=state.task_id;poll();}
  catch(e){showError(e.message||'任务启动失败。');finish();}
 });
 function refreshImportSupport(){const entry=inspected?.sequences.find(item=>item.name===importSequence.value);const selected=entry?.version_support?.find(item=>item.version===Number(importVersion.value));const preflightPassed=selected?.simulation_preflight_passed===true;importStart.disabled=running||!preflightPassed;if(!inspected||!entry||!selected)return;const summary='已解析 '+inspected.sequences.length+' 条序列；语法：'+(inspected.syntax.join('、')||'无')+'。';const status=selected.support_status==='requires_character_validation'?'语法和版本预检通过；角色技能和物品映射尚未核对，启动时会验证，未匹配则不会返回 DPS。':'当前序列不能模拟：'+(selected.support_reason||'固定版本不支持。');importInspection.textContent=summary+status;}

@@ -3,9 +3,47 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/"scripts/dev/sim2gse"))
-from benchmark import PROFILES,SEEDS,behavior_id,extract,summarize
+from benchmark import PROFILES,SEEDS,PHASE2_BASELINE,behavior_id,extract,summarize,materialize
 class BenchmarkTests(TestCase):
+ def test_phase2_reports_locked_candidate_even_when_export_falls_back(self):
+  result={"status":"completed","locked_candidate_key":"locked","selected_candidate_key":"initial",
+          "final":{"scenarios":{name:{"comparison":{"candidate_mean_dps":90,"control_mean_dps":100}} for name in ("nominal","jitter","slow","pause","phase")}}}
+  historical=extract(result,Path("missing"),600)
+  phase2=extract(result,Path("missing"),600,phase2=True)
+  self.assertEqual(historical["final_dps"],100)
+  self.assertEqual(phase2["final_dps"],90)
+  self.assertEqual(phase2["reported_candidate_key"],"locked")
+  self.assertEqual(result["selected_candidate_key"],"initial")
+ def test_worktree_snapshot_contains_uncommitted_source_and_rejects_later_changes(self):
+  import benchmark
+  with TemporaryDirectory() as directory:
+   root=Path(directory);project=root/"projects/sim2gse";project.mkdir(parents=True)
+   for name in ("engine.py","codec.py","macro_interpreter.py","simulation_config.py"):
+    (project/name).write_text("ROOT = Path(__file__).resolve().parents[2]\n")
+   (project/"search.py").write_text("current_uncommitted_source\n")
+   with patch.object(benchmark,"ROOT",root),patch.object(benchmark,"_git",return_value="\n".join(p.relative_to(root).as_posix() for p in project.iterdir())):
+    source=materialize(root/"evidence","head","current",worktree=True)
+    self.assertEqual((source/"search.py").read_text(),"current_uncommitted_source\n")
+    (project/"search.py").write_text("changed_after_snapshot\n")
+    with self.assertRaisesRegex(RuntimeError,"源码"):
+     materialize(root/"evidence","head","current",worktree=True)
+ def test_phase2_uses_first_stage_baseline_and_only_three_pairs(self):
+  self.assertEqual(PHASE2_BASELINE,"cc94eb7253004ba1bff74e029fd6f3a8f23681d2")
+  with TemporaryDirectory() as directory:
+   root=Path(directory)
+   for side in ("baseline","current"):
+    for seed in SEEDS[:3]:
+     path=root/side/"current"/str(seed)/"summary.json";path.parent.mkdir(parents=True);path.write_text(json.dumps(self.row(100,100)))
+   result=summarize(root,3,profiles=("current",))
+   self.assertEqual(result["seeds"],list(SEEDS[:3]))
+   self.assertEqual(list(result["profiles"]),["current"])
+   self.assertEqual(result["status"],"ready_for_human")
+   self.assertEqual(result["decision"],"human_required")
+   pairs=result["profiles"]["current"]["pairs"]
+   self.assertEqual(len(pairs),3)
+   self.assertEqual([row["final_dps_change"] for row in pairs],[0,0,0])
  def row(self,dps,starts,unique=10,scores=(80,100),complete=True,times=(10,20)):
   return {"final_dps":dps,"native_batch_starts":starts,"common_unique_candidates":unique,"wall_seconds":60,"search_wall_seconds":420,"candidate_scores":list(scores),"candidate_timeline":[{"score":score,"wall_seconds":wall} for score,wall in zip(scores,times)],"evidence_complete":complete,"simc_total_iterations":1000,"engine_identities":["engine"]}
  def test_behavior_identity_includes_castsequence_timeout_seconds(self):

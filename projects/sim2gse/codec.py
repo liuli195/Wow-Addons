@@ -192,8 +192,9 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
         runtime.check()
         input_data = cbor2.dumps(wire_value(payload))
         expected_text = 'return ' + lua_literal(dict(expected, payload=payload))
-        (folder / 'input.cbor').write_bytes(input_data)
-        (folder / 'expected.lua').write_text(expected_text, encoding='utf-8')
+        if getattr(runtime, 'diagnostic_logging', True):
+            (folder / 'input.cbor').write_bytes(input_data)
+            (folder / 'expected.lua').write_text(expected_text, encoding='utf-8')
         staging_root = ROOT / '.local/sim2gse/codec'
         staging_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='gse-', dir=staging_root) as temporary:
@@ -211,9 +212,10 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
             except (TaskCancelled, BudgetExceeded):
                 raise
         log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
-        (folder / (mode + '.log')).write_text(log, encoding='utf-8')
+        if getattr(runtime, 'diagnostic_logging', True):
+            (folder / (mode + '.log')).write_text(log, encoding='utf-8')
         if proc.returncode:
-            raise ValueError('上游编译校验失败，参见 ' + str(folder / (mode + '.log')))
+            raise ValueError('上游编译校验失败: ' + log[-2000:])
         return log
 
     sequence['MetaData']['Checksum'] = next(row.split('\t')[1] for row in compile('checksum').splitlines()

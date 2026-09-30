@@ -1776,12 +1776,12 @@ class InterfaceTests(unittest.TestCase):
                 if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
                     break
                 time.sleep(0.1)
-        self.assertEqual(state["status"], "validation_incomplete")
+        self.assertEqual(state["status"], "completed")
         self.assertTrue(state["result_ready"])
-        self.assertEqual(state["evidence_status"], "insufficient_validation")
+        self.assertEqual(state["evidence_status"], "search_result")
         self.assertTrue(state["candidate_text"].startswith("!GSE3!"))
-        self.assertIn("复测未完成", state["result_note"])
-        self.assertIn("锁定候选", state["result_note"])
+        self.assertIn("未进行最终独立复测", state["result_note"])
+        self.assertIn("搜索选中", state["result_note"])
         self.assertEqual(state["phase"], "done")
         self.assertGreater(state["elapsed_seconds"], 0)
 
@@ -1865,10 +1865,10 @@ class InterfaceTests(unittest.TestCase):
         result = json.loads(
             (self.server.task_root / created["task_id"] / "result.json").read_text(encoding="utf-8")
         )
-        self.assertGreater(result["search"]["canonicalized_duplicates"], 0)
+        self.assertNotIn("canonicalized_duplicates", result["search"])
         self.assertFalse(loop_evaluations, "等价顺序 Loop 被重复送入原生评价")
         self.assertFalse(native_loop_evaluations, "等价顺序 Loop 被重复送入原生受控评价")
-        self.assertEqual(state["evidence_status"], "complete")
+        self.assertEqual(state["evidence_status"], "search_result")
 
     def test_public_search_generates_exports_and_native_evaluates_castsequence_reset(self) -> None:
         import cbor2
@@ -1912,7 +1912,7 @@ class InterfaceTests(unittest.TestCase):
         castsequence_evaluations = []
         native_evaluations = []
 
-        def mutate_castsequence(program, caps, rng, *, feedback=None, reset_flags=()):
+        def mutate_castsequence(program, caps, rng, *, feedback=None, reset_flags=(), excluded_programs=()):
             changed = real_mutate(program, caps, CastSequenceFirst(rng), feedback=None,
                                   reset_flags=reset_flags)
             for segment in changed:
@@ -1978,7 +1978,7 @@ class InterfaceTests(unittest.TestCase):
         selected_native = next((result for candidate, result in native_evaluations
                                 if candidate["text"] == selected[0]["text"]), None)
         self.assertIsNotNone(selected_native)
-        self.assertEqual(state["evidence_status"], "complete")
+        self.assertEqual(state["evidence_status"], "search_result")
 
         command = next(command for command in selected[1]["commands"]
                        if command.get("kind") == "castsequence")
@@ -2044,7 +2044,7 @@ class InterfaceTests(unittest.TestCase):
         native_evaluations = []
         active_interval = 300
 
-        def mutate_wait_clicks(program, caps, rng, *, feedback=None):
+        def mutate_wait_clicks(program, caps, rng, *, feedback=None, excluded_programs=()):
             nonlocal mutation_count
             clicks = (2, 3, 4)[mutation_count % 3]
             mutation_count += 1
@@ -2113,7 +2113,7 @@ class InterfaceTests(unittest.TestCase):
 
         for interval, state in states.items():
             self.assertEqual(state["status"], "completed", state)
-            self.assertEqual(state["evidence_status"], "complete")
+            self.assertEqual(state["evidence_status"], "search_result")
             self.assertEqual(state["input_interval_ms"], interval)
             self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
             self.assertGreaterEqual(len(wait_candidates[interval]), 2,
@@ -2189,7 +2189,7 @@ class InterfaceTests(unittest.TestCase):
         overflow_attempts = []
         evaluated_waits = []
 
-        def overflow(program, _caps, _rng, *, feedback=None):
+        def overflow(program, _caps, _rng, *, feedback=None, excluded_programs=()):
             action = next((list(segment) for segment in program if isinstance(segment, list)),
                           ["outbreak"])
             overflow_attempts.append(action)
@@ -2270,6 +2270,128 @@ class InterfaceTests(unittest.TestCase):
 
         self.assertEqual(public["search_metrics"], state["search"])
 
+    def test_diagnostic_master_switch_blocks_detail_settings(self) -> None:
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
+            final_iterations=2, scenarios=("nominal",), max_processes=1,
+            diagnostics="full",
+        )}
+        with _fast_search_boundary():
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "diagnostic_logging": False,
+                "search_observability": "full",
+            })
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed"}:
+                    break
+                time.sleep(0.05)
+        self.assertNotIn("search_observability", state)
+        _, destination = self.server.task_paths(created["task_id"])
+        result = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+        self.assertNotIn("diagnostics", result["search"])
+        self.assertFalse((destination / "diagnostics.json").exists())
+        self.assertFalse((destination / "observability").exists())
+
+    def test_closed_diagnostic_switch_discards_simulation_trace_files(self) -> None:
+        import sequence
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
+            final_iterations=2, scenarios=("nominal",), max_processes=1,
+        )}
+        def engine_output(*args, **kwargs):
+            result = _fast_evaluate(*args, **kwargs)
+            folder = Path(args[2])
+            for name in ("native.txt", "process.log", "invocation.json"):
+                (folder / name).write_text("temporary engine output", encoding="utf-8")
+            return result
+        with _fast_search_boundary(), patch.object(sequence, "evaluate", side_effect=engine_output):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed"}:
+                    break
+                time.sleep(0.05)
+        self.assertNotEqual(state["status"], "failed", state)
+        _, destination = self.server.task_paths(created["task_id"])
+        self.assertFalse(list(destination.rglob("native.txt")))
+        self.assertFalse(list(destination.rglob("process.log")))
+        self.assertFalse(list(destination.rglob("invocation.json")))
+        self.assertTrue(list(destination.rglob("native.json")))
+
+    def test_search_exports_its_winner_without_final_retest(self) -> None:
+        self.server.task_options = {"search_config": dict(
+            candidate_limit=2, batch_targets=(2,), iterations=2,
+            validation_batches=2, max_processes=1,
+        )}
+        with _fast_search_boundary():
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed"}:
+                    break
+                time.sleep(0.05)
+        _, destination = self.server.task_paths(created["task_id"])
+        result = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["status"], "completed", state)
+        self.assertEqual(result["config"]["search_budget_seconds"], 600)
+        self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
+        self.assertEqual(result["final"]["status"], "not_requested")
+        self.assertEqual(result["final"]["scenarios"], {})
+        self.assertEqual(state["evidence_status"], "search_result")
+        self.assertIn("未进行最终独立复测", state["result_note"])
+
+    def test_search_keeps_scoring_after_the_old_seven_minute_cutoff(self) -> None:
+        import sequence
+        self.server.task_options = {"search_config": dict(
+            candidate_limit=2, batch_targets=(2,), iterations=2,
+            validation_batches=2, max_processes=1,
+        )}
+        def after_seven_minutes(*args, **kwargs):
+            result = _fast_evaluate(*args, **kwargs)
+            kwargs['runtime'].used_seconds = 450
+            return result
+        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=after_seven_minutes):
+            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created['task_id'], deadline)
+                if state['status'] in {'completed', 'validation_incomplete', 'failed'}:
+                    break
+                time.sleep(.05)
+        _, destination = self.server.task_paths(created['task_id'])
+        result = json.loads((destination / 'result.json').read_text(encoding='utf-8'))
+        self.assertEqual(state['status'], 'completed', state)
+        self.assertEqual(result['search']['candidate_count'], 2)
+        self.assertGreater(state['elapsed_seconds'], 450)
+        self.assertLess(state['elapsed_seconds'], 600)
+
+    def test_closed_diagnostics_also_discard_failed_simulation_trace(self) -> None:
+        import sequence
+        self.server.task_options = {'search_config': dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2)}
+        def fail_with_trace(*args, **kwargs):
+            folder = Path(args[2])
+            folder.mkdir(parents=True)
+            (folder / 'native.txt').write_text('private action trace', encoding='utf-8')
+            raise ValueError('test engine failure')
+        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=fail_with_trace):
+            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created['task_id'], deadline)
+                if state['status'] == 'failed':
+                    break
+                time.sleep(.05)
+        self.assertEqual(state['status'], 'failed', state)
+        _, destination = self.server.task_paths(created['task_id'])
+        self.assertFalse(list(destination.rglob('native.txt')))
+
     def test_public_task_can_return_opted_in_search_observability(self) -> None:
         import search
         import sequence
@@ -2301,7 +2423,8 @@ class InterfaceTests(unittest.TestCase):
                 patch.object(search, "initial_programs",
                              return_value=[[['outbreak']], [['outbreak'], ['outbreak']]]):
             created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "search_observability": "full",
+                "profile": sample_profile(), "diagnostic_logging": True,
+                "search_observability": "full",
             })
             deadline = time.monotonic() + 45
             state = {}
@@ -2438,11 +2561,11 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
   const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
   assert.equal(state.input_interval_ms,input.interval_ms);
-  assert.equal(text,state.candidate_text);assert.equal(state.evidence_status,'insufficient_validation');
-  assert.match(await page.locator('#resultNote').innerText(),/复测未完成/);
+  assert.equal(text,state.candidate_text);assert.equal(state.evidence_status,'search_result');
+  assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
   await page.locator('#copy').click();
   assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
-  assert.match(await page.locator('#resultNote').innerText(),/复测未完成/);
+  assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
   await page.locator('#profile').fill(input.profile+'\n# changed');
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   assert.equal(await page.locator('#result').inputValue(),'');
@@ -2514,18 +2637,10 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
         result = read_task(destination)
-        for row in result['final']['scenarios']['nominal']['candidate']:
+        for row in result['search']['records'][0]['batches']:
             self.assertEqual(row['request']['times'], list(range(0, 180000, 180)))
         scenarios = result['final']['scenarios']
-        self.assertEqual(set(scenarios), {'nominal','jitter','slow','pause','phase'})
-        for name in ('slow','phase','pause','jitter'):
-            times = scenarios[name]['candidate'][0]['request']['times']
-            if name == 'slow': self.assertEqual(times, list(range(0,180000,240)))
-            elif name == 'phase': self.assertEqual(times, list(range(90,180000,180)))
-            elif name == 'pause':
-                self.assertTrue(all(t % 180 == 0 for t in times))
-                self.assertFalse(any(60000 <= t < 62000 or 120000 <= t < 122000 for t in times))
-            else: self.assertTrue(all(162 <= b-a <= 198 for a,b in zip(times,times[1:])))
+        self.assertEqual(scenarios, {})
 
     def test_game_export_with_death_pact_and_asphyxiate_reaches_result(self):
         import re
