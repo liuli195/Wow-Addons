@@ -39,47 +39,37 @@
 - **THEN** 系统报告不兼容，不能回退为自由选招模拟并称为序列结果。
 ### Requirement: Sim2GSE reports independently tested improvements
 
-系统 MUST 在候选锁定后使用未参与选优的样本进行最终比较，提供可追溯的有效样本数、对照和差异区间，并分别记录名义、扰动、慢按、暂停及起始相位情景；最终复测不完整时须保留锁定候选作为证据不足的临时结果，只有完整复测未证实改善时才保留有效初始序列。
+系统 MUST 直接输出搜索在用户指定场景和按键节奏下选中的可导出序列，报告搜索伤害、有效样本、自由选招参考伤害及二者比例；不再强制最终五节奏独立复测，也不因该复测回退到初始序列。搜索成绩 MUST 与独立复测及实际游戏验收明确区分，不承诺收益比例或全局最优。
 
-#### Scenario: Candidate reaches final evaluation
+#### Scenario: Search completes with a valid candidate
 
-- **WHEN** 已锁定候选进入最终复测
-- **THEN** 使用未参与搜索或验证选优的数据评估候选及相应对照，记录各情景结果，不将试验结果倒用于同轮候选选择。
-
-#### Scenario: Complete evaluation does not establish improvement
-
-- **WHEN** 全部规定的最终复测完整结束，但无法证实锁定候选优于有效初始序列
-- **THEN** 系统导出有效初始序列，报告尚未证实改善，不承诺收益比例或全局最优。
-
-#### Scenario: Final evaluation is incomplete
-
-- **WHEN** 最终复测缺少任一规定情景、批次或样本而未完整结束
-- **THEN** 系统导出锁定候选作为临时结果，明确显示复测未完成和证据不足，不把该结果标记为验证通过。
+- **WHEN** 搜索结束且存在完整评分并通过导出一致性检查的已选候选
+- **THEN** 系统导出该候选，显示搜索结果与参考比例，明确未进行最终独立复测、游戏效果尚待验证，不启动最终五节奏复测或其回退。
 ### Requirement: Sim2GSE respects the confirmed runtime budget
 
-系统 MUST 在一次优化中遵守累计 10 分钟计算上限，搜索最迟累计第 7 分钟结束以预留复测时间，最多同时运行两个单线程引擎进程；停止后的必要清理须如实显示。
+系统 MUST 在一次优化中遵守默认累计600秒计算上限，初始化、编译、搜索及搜索内候选比较均计入累计预算，不为最终复测预留三分钟；最多同时运行两个单线程引擎进程，停止后的必要清理须如实显示。
 
-#### Scenario: Budget expires before final validation completes
+#### Scenario: Budget expires during search
 
-- **WHEN** 累计计算预算耗尽而必需的最终复测尚未完成
-- **THEN** 系统停止计算并保存完整中间结果，显示验证未完成；清理未结束时不能显示任务已完全停止。
+- **WHEN** 累计计算预算耗尽
+- **THEN** 系统停止计算并保存完整已完成结果，有有效候选时输出搜索选中候选，否则如实报告没有有效结果；不将半份报告计为成功，清理未结束时不能显示任务已完全停止。
 ### Requirement: Sim2GSE resumes without mixing results
 
-系统 MUST 在取消后保留完整结果和已用预算，恢复时不重复计数或重置预算；不同角色、引擎、输入模型、编译顺序、重置或采样条件不得混用成绩。
+系统 MUST 在取消后保留完整结果和已用预算，恢复时不重复计数或重置预算；不同角色、引擎、搜索规则、输入模型、编译顺序、重置或采样条件不得混用成绩。
 
 #### Scenario: User cancels a running evaluation
 
 - **WHEN** 用户发出取消请求
 - **THEN** 系统停止派发并终止本次所属模拟，保留完整已完成结果，不终止其他任务或配装器的模拟。
 
-#### Scenario: Resume a locked candidate
+#### Scenario: Resume a cancelled search
 
-- **WHEN** 同条件的已锁定候选任务在取消后恢复
-- **THEN** 系统沿用已用预算和已完成批次，继续该候选复测，不重新选择候选或重复汇总样本。
+- **WHEN** 同条件搜索任务在取消后恢复
+- **THEN** 系统沿用已用预算、候选和已完成批次继续搜索，不启动最终复测，也不重复汇总样本。
 
 #### Scenario: Resume conditions change
 
-- **WHEN** 待恢复任务的引擎、角色或模拟条件与原记录不一致
+- **WHEN** 待恢复任务的引擎、搜索规则、角色或模拟条件与原记录不一致，或缺少核验规则所需的历史记录
 - **THEN** 系统拒绝原地续跑，保留旧结果并要求按新条件建立任务。
 
 #### Scenario: Simulation report is incomplete
@@ -130,7 +120,7 @@
 #### Scenario: A castsequence candidate reaches selection
 
 - **WHEN** 搜索生成可模拟的 `/castsequence` 候选并完成评分
-- **THEN** 系统使用该候选的受控战斗成绩参与既有选择与复测，导出结果保留宏成员顺序和 Reset 规则。
+- **THEN** 系统使用该候选的受控战斗成绩参与搜索内选择与比较，导出结果保留宏成员顺序和 Reset 规则。
 
 #### Scenario: Two reset scenarios differ
 
@@ -156,7 +146,7 @@
 - **THEN** 下一次有效使用从第一个成员开始。
 ### Requirement: Sim2GSE avoids repeated equivalent candidate work
 
-系统 MUST 在候选进入原生模拟前按实际逐次点击行为识别等价候选，使同一任务中的等价行为只执行一次候选编译和一次评分；非法或无有效动作的候选不得进入原生模拟。详细诊断 MUST 默认关闭；显式开启汇总或完整诊断时，可以记录状态写入、候选编译及 Lua 编译器启动次数，但不得改变候选身份、接受或拒绝结果、评分、DPS 或最终选择。
+系统 MUST 在候选进入原生模拟前按实际逐次点击行为识别等价候选，使同一任务中的等价行为只执行一次候选编译和一次评分；非法或无有效动作的候选不得进入原生模拟。诊断日志总开关 MUST 默认关闭并优先于细分开关；关闭时不保存详细过程、持久化动作轨迹、诊断报告和性能统计，不仅为收集记录额外运行模拟，只保留搜索、位置修复、避免重复模拟、取消后继续所必需的数据及最终结果。算法临时需要的详细轨迹计算结束后 MUST 清理，不作为诊断历史保留。
 
 #### Scenario: Two candidates have the same click behavior
 
@@ -165,10 +155,10 @@
 
 #### Scenario: Diagnostics are not requested
 
-- **WHEN** 用户按默认配置运行搜索
-- **THEN** 结果不包含详细诊断记录，也不为统计计数额外保存完整任务状态。
+- **WHEN** 用户按默认配置运行搜索，或关闭总开关但细分开关仍请求详细记录
+- **THEN** 系统不产生额外诊断记录或仅用于诊断的模拟；轻量进度仍更新，必要结果与累计预算可靠保存，不为统计或进度每半秒保存完整历史。
 
 #### Scenario: Diagnostics are enabled
 
-- **WHEN** 用户显式选择汇总或完整诊断
-- **THEN** 系统在任务结束时报告实际状态写入、候选编译和 Lua 编译器启动次数；完整诊断可附带候选准备事件，搜索结果与关闭诊断时保持一致。
+- **WHEN** 用户显式打开总开关并启用相应细分记录
+- **THEN** 系统允许相应诊断和统计；开关不改变候选身份、评分方式、合法性判断及位置修复，在同一候选、样本和随机条件下成绩与选择保持一致，不要求固定时间内两侧完成候选数相同。
