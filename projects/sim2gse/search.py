@@ -193,7 +193,8 @@ def _copy_program(program):
     return copied
 
 
-def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observation=None):
+def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observation=None,
+           excluded_programs=()):
     """执行动作块、顺序 Loop 或 WaitClicks 变异。"""
     source = _copy_program(program)
     available = [a["simc_action"] for a in capabilities["actions"]]
@@ -231,7 +232,66 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         return source
 
     suggested = None
+    def choose_value(container, key, values):
+        previous = container[key]
+        allowed = []
+        for value in values:
+            container[key] = value
+            if value != previous and program_key(source) not in excluded_programs:
+                allowed.append(value)
+        container[key] = rng.choice(allowed) if allowed else previous
+        return bool(allowed)
+
+    def legal_block(block):
+        from sequence import select
+        try:
+            select(capabilities, [block])
+            return True
+        except ValueError:
+            return False
+
     if operation != "loop" and feedback and rng.random() < 0.5:
+        targets = [row['source_position'] for row in feedback.get('positions', [])
+                   if row.get('unresolved_inputs', 0) > 0 and not row.get('ambiguous')
+                   and row.get('source_position') is not None]
+        if targets:
+            target = rng.choice(targets)
+            index = target['segment']
+            segment = source[index]
+            choices = ['move', 'swap', 'wait_clicks']
+            if isinstance(segment, dict) and segment.get('kind') == 'Loop':
+                choices.append('repeat_count')
+            operation = rng.choice(choices)
+            position = dict(target, repair=True)
+            if operation == 'repeat_count':
+                choose_value(segment, 'count', (2, 3))
+            elif operation == 'wait_clicks':
+                neighbors = [i for i in (index - 1, index + 1)
+                             if i in wait_indices]
+                if neighbors:
+                    wait = source[rng.choice(neighbors)]
+                    choose_value(wait, 'clicks', (2, 3, 4))
+                elif len(source) < 128:
+                    source.insert(index, dict(kind='WaitClicks', clicks=rng.choice((2, 3, 4))))
+            else:
+                container, start = source, index
+                if 'loop_block' in target:
+                    container, start = segment['blocks'], target['loop_block']
+                elif 'member' in target:
+                    container, start = segment['members'], target['member']
+                destinations = [i for i in range(len(container))
+                                if i != start and container[i] != container[start]]
+                if destinations:
+                    destination = rng.choice(destinations)
+                    position['target'] = destination
+                    if operation == 'swap':
+                        container[start], container[destination] = container[destination], container[start]
+                    else:
+                        container.insert(destination, container.pop(start))
+            if source != program:
+                return finish()
+            operation = sampled_operation
+            position = None
         if feedback.get('untried'):
             operation,suggested='insert',rng.choice(feedback['untried'])
         elif feedback.get('resource_overflowed') and feedback.get('spenders'):
@@ -255,9 +315,11 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
     elif operation == "replace" and ordinary_indices:
         block = rng.choice(ordinary_indices)
         action = rng.randrange(len(source[block]))
-        replacement = rng.choice(available)
-        source[block][action] = replacement
-        position = {"segment": block, "action": action}
+        alternatives = [name for name in available if name != source[block][action]
+                        and legal_block(source[block][:action] + [name] + source[block][action + 1:])]
+        if alternatives:
+            if choose_value(source[block], action, alternatives):
+                position = {"segment": block, "action": action}
     elif operation == "insert" and len(source) < 128:
         block = rng.randrange(len(source))
         source.insert(block, [suggested or rng.choice(available)])
@@ -274,7 +336,10 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         end = rng.randrange(start + 1, min(len(source), start + 4) + 1)
         fragment = source[start:end]
         del source[start:end]
-        target = rng.randrange(len(source) + 1)
+        targets = [target for target in range(len(source) + 1)
+                   if source[:target] + fragment + source[target:] != program
+                   and program_key(source[:target] + fragment + source[target:]) not in excluded_programs]
+        target = rng.choice(targets) if targets else start
         source[target:target] = fragment
         position = {"segments": [start, end], "target": target}
     elif operation == "block":
@@ -293,10 +358,14 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
                 position = {"segment": block_index, "action": index}
         elif len(block) < 16:
             index = rng.randrange(len(block) + 1)
-            block.insert(index, rng.choice(available))
-            position = {"segment": block_index, "action": index}
+            alternatives = [name for name in available
+                            if legal_block(block[:index] + [name] + block[index:])]
+            if alternatives:
+                if choose_value(source, block_index,
+                                [block[:index] + [name] + block[index:] for name in alternatives]):
+                    position = {"segment": block_index, "action": index}
     elif operation == "loop":
-        if wait_indices:
+        if wait_indices or castsequence_indices:
             if not ordinary_indices:
                 return finish()
             start = rng.choice(ordinary_indices)
@@ -317,14 +386,13 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
     elif operation == "repeat_count":
         index = rng.choice(loop_indices)
         loop = source[index]
-        loop["count"] = 3 if loop["count"] == 2 else 2
+        choose_value(loop, 'count', (2, 3))
         position = {"segment": index}
     elif operation == "wait_clicks":
         if wait_indices:
             index = rng.choice(wait_indices)
             wait = source[index]
-            wait["clicks"] = rng.choice(tuple(value for value in (2, 3, 4)
-                                               if value != wait.get("clicks")))
+            choose_value(wait, 'clicks', (2, 3, 4))
             position = {"segment": index}
         elif len(source) < 128:
             index = rng.randrange(len(source) + 1)
@@ -361,19 +429,18 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
             position = rng.randrange(len(members))
             alternatives = [name for name in spells if name != members[position]]
             if alternatives:
-                members[position] = rng.choice(alternatives)
-                sequence["members"] = members
+                choose_value(sequence['members'], position, alternatives)
                 position = {"segment": index, "member": position}
     elif operation == "castsequence_reset":
         index = rng.choice(castsequence_indices)
         sequence = source[index]
         reset = sequence.get("reset") or {}
         current = reset.get("timeout_seconds")
-        timeout = rng.choice(tuple(value for value in (None, 1, 2, 3, 5)
-                                   if value != current))
         flags = list(reset.get("flags", []))
-        sequence["reset"] = ({"timeout_seconds": timeout, "flags": flags}
-                             if timeout is not None or flags else None)
+        choose_value(sequence, 'reset',
+                     [{"timeout_seconds": timeout, "flags": flags}
+                      if timeout is not None or flags else None
+                      for timeout in (None, 1, 2, 3, 5) if timeout != current])
         position = {"segment": index}
     elif operation == "castsequence_reset_flag":
         index = rng.choice(castsequence_indices)
@@ -569,12 +636,23 @@ def _position_observations(candidate, candidate_identity, trace):
         "not_ready", "outside_window", "dispatch_failed", "observed_failed",
         "native_interrupt", "commit_failed", "queue_rollback", "late_negative_feedback",
     }
+    observed = set()
+    inputs = {(e.get('battle'), e.get('origin'), e.get('step')) for e in trace
+              if e.get('event') == 'input' and type(e.get('battle')) is int
+              and type(e.get('origin')) is int and e['origin'] > 0}
+    failed_inputs, successful_inputs = {}, {}
     for event in trace:
         click_position = event.get("step")
         if type(click_position) is not int:
             continue
         positions = [key for key in rows if key[0] == click_position]
+        input_key = (event.get('battle'), event.get('origin'), click_position)
+        identified = input_key in inputs
         if event.get("event") == "input":
+            token = ('input', input_key)
+            if identified and token in observed:
+                continue
+            observed.add(token)
             for key in positions:
                 if key[1] is not None:
                     rows[key]["turns"] += 1
@@ -585,7 +663,7 @@ def _position_observations(candidate, candidate_identity, trace):
         matches = [key for key in positions if key[2] == action]
         if not matches:
             continue
-        action_position = event.get("action_position")
+        action_position = event.get("sequence_member") if event.get("sequence_step") == click_position else event.get("action_position")
         exact = [key for key in matches if key[1] == action_position]
         if type(action_position) is int and exact:
             row = rows[exact[0]]
@@ -594,17 +672,62 @@ def _position_observations(candidate, candidate_identity, trace):
         else:
             row = rows[(click_position, None, action)]
         kind = event.get("event")
+        metric = ('queued' if kind in {"queue", "queue_commit", "queue_confirm", "queue_tentative"}
+                  else 'processing' if kind in {"native_execute", "native_interrupt"} else kind)
+        row_key = (row['click_position'], row['action_position'], row['action'])
+        token = (input_key, row_key, metric)
+        repeated = identified and token in observed
+        if identified:
+            observed.add(token)
+            if kind in failures:
+                failed_inputs.setdefault(row_key, set()).add(input_key)
+            if kind == 'native_execute':
+                successful_inputs.setdefault(row_key, set()).add(input_key)
+        if repeated and kind != 'native_execute':
+            continue
         if kind in {"queue", "queue_commit", "queue_confirm", "queue_tentative"}:
             row["queued"] += 1
         if kind in {"busy", "queue_locked"}:
             row["queue_blocked"] += 1
-        if kind in {"native_execute", "native_interrupt"}:
+        if kind in {"native_execute", "native_interrupt"} and not repeated:
             row["processing"] += 1
         if kind == "native_execute":
-            row["successes"] += 1
+            success_token = (input_key, row_key, 'success')
+            if not identified or success_token not in observed:
+                row["successes"] += 1
+            observed.add(success_token)
         if kind in failures:
             row["failures"][kind] = row["failures"].get(kind, 0) + 1
+    for key, row in rows.items():
+        row['unresolved_inputs'] = len(failed_inputs.get(key, set()) - successful_inputs.get(key, set()))
     return list(rows.values())
+
+
+def _parent_positions(program, capabilities, positions):
+    """只按本次父序列绑定位置，不借用共享编译缓存中的来源。"""
+    sources = [None] * len(capabilities.get('precombat_actions', []))
+    for index, segment in enumerate(program):
+        if isinstance(segment, list):
+            sources.append({'segment': index})
+        elif segment['kind'] == 'Loop':
+            sources.extend({'segment': index, 'loop_block': child}
+                           for _ in range(segment['count'])
+                           for child in range(len(segment['blocks'])))
+        elif segment['kind'] == 'WaitClicks':
+            sources.extend([{'segment': index}] * segment['clicks'])
+        else:
+            sources.append({'segment': index})
+    bound = []
+    for position in positions:
+        row = dict(position)
+        click = row['click_position']
+        source = sources[click] if 0 <= click < len(sources) else None
+        row['source_position'] = dict(source) if source is not None else None
+        if source is not None and isinstance(program[source['segment']], dict) and program[source['segment']]['kind'] == 'CastSequence':
+            if row['action_position'] is not None:
+                row['source_position']['member'] = row['action_position']
+        bound.append(row)
+    return bound
 
 
 class TaskStore:
@@ -1059,16 +1182,26 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     candidate_compilations = 0
     diagnostic_events = []
 
-    def candidate(program):
-        nonlocal candidate_compilations
+    def prepare(program):
         source_key = program_key(program)
         if source_key in prepared:
-            return prepared[source_key][1]
-        from program import compile_program, canonicalize_search_program
+            return prepared[source_key]
+        from program import canonicalize_search_program
         try:
-            canonical = canonicalize_search_program(program, capabilities)
+            prepared[source_key] = canonicalize_search_program(program, capabilities)
+        except ValueError as error:
+            raise CandidateError(str(error)) from error
+        return prepared[source_key]
+
+    def candidate(program):
+        nonlocal candidate_compilations
+        from program import compile_program
+        try:
+            canonical = prepare(program)
             key = canonical['identity']
             compiled = candidates.get(key)
+            if compiled is not None:
+                return compiled
             if compiled is None:
                 saved = next((r for r in state['archive'] if r['key'] == key and r.get('candidate')), None)
                 if (saved and digest(saved['candidate']) == saved['candidate_sha256']
@@ -1090,12 +1223,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             raise
         except ValueError as error:
             raise CandidateError(str(error)) from error
-        prepared[source_key] = (key, candidates[key])
         return candidates[key]
 
     def candidate_key(program):
-        candidate(program)
-        return prepared[program_key(program)][0]
+        return prepare(program)['identity']
 
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False):
         seed_offset = {'search': 0, 'validation': 100000, 'final': 200000}[purpose]
@@ -1160,7 +1291,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
                            player_report(result['report'], character)['collected_data'].get('resource_overflowed',{}).get(reference['identity']['resource'],{}).get('mean',0)>0,
                            {v['simc_action']: a['simc_action'] for a in capabilities['actions'] for v in a.get('variants',[a])}) if trace else None)
-            if trace and observability:
+            if trace:
                 row['position_summary'] = _position_observations(
                     compiled, behavior_id, result['trace'])
             with store.lock:
@@ -1242,17 +1373,21 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 lane=state['chains'][lane_index]
                 base = next(r for r in state['archive'] if r['key'] == lane['best'])
                 diagnostic=batch(base['program'],'search',99,2,trace=True)
-                lane.update(feedback=diagnostic['feedback'],feedback_source=base['key'])
+                feedback = dict(diagnostic['feedback'])
+                feedback['positions'] = _parent_positions(
+                    base['program'], capabilities, diagnostic.get('position_summary', []))
+                lane.update(feedback=feedback,feedback_source=base['key'])
                 generated = []
                 generation_observations = []
                 existing = set(state['seen'])
+                existing_sources = {program_key(record['program']) for record in state['archive']}
                 for attempt in range(160):
                     if len(generated) >= min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys'])):
                         break
                     kwargs = {'reset_flags': observable_flags} if observable_flags else {}
                     mutation_observation = {} if observability else None
                     mutation_started = time.perf_counter() if observability else None
-                    mutation_kwargs = dict(feedback=lane['feedback'], **kwargs)
+                    mutation_kwargs = dict(feedback=lane['feedback'], excluded_programs=existing_sources, **kwargs)
                     if mutation_observation is not None:
                         mutation_kwargs['observation'] = mutation_observation
                     program = mutate(base['program'], capabilities, rng, **mutation_kwargs)
@@ -1305,6 +1440,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         state['canonicalized_duplicates'] += 1
                         continue
                     existing.add(key)
+                    existing_sources.add(program_key(program))
                     work = dict(program=program, start=False, lane=lane_index)
                     if event is not None:
                         work.update(observation_id=event_id,

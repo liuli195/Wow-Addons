@@ -153,6 +153,177 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_parent_diagnostic_maps_loop_wait_and_repeated_castsequence_member(self):
+        import search
+        import sequence
+
+        cases = [
+            ([["outbreak"], dict(kind="Loop", count=2, blocks=[["death_coil"], ["scourge_strike"]])],
+             3, {}, {"segment": 1, "loop_block": 0}),
+            ([["outbreak"], dict(kind="WaitClicks", clicks=2), ["death_coil"]],
+             3, {}, {"segment": 2}),
+            ([["outbreak"], dict(kind="CastSequence", members=["death_coil", "death_coil"], reset=None)],
+             1, {"sequence_step": 1, "sequence_member": 1}, {"segment": 1, "member": 1}),
+        ]
+        for case_index, (parent, step, member, expected) in enumerate(cases):
+            with self.subTest(position=expected), tempfile.TemporaryDirectory() as directory:
+                def evaluate(profile, candidate, folder, **kwargs):
+                    result = _fast_evaluate(profile, candidate, folder, **kwargs)
+                    if kwargs.get("trace"):
+                        event = dict(ms=step * 300, battle=1, origin=step + 1, step=step,
+                                     action="death_coil", signature="death_coil", **member)
+                        result["trace"] = [dict(event, event="input", action="-", signature="-"),
+                                           dict(event, event="not_ready")]
+                    return result
+
+                source = Path(directory) / "role.simc"
+                source.write_text(sample_profile(), encoding="utf-8")
+                config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                              candidate_limit=2, round_candidate_limit=1, batch_targets=(2,),
+                              iterations=2, validation_batches=1, final_batches=1,
+                              final_iterations=2, scenarios=("nominal",), max_processes=1,
+                              random_seed=73 + case_index)
+                with _fast_search_boundary(), \
+                        patch.object(search, "initial_programs", return_value=[parent]), \
+                        patch.object(sequence, "evaluate", side_effect=evaluate):
+                    result = run_task(source, Path(directory) / "task", search_config=config)
+                failed = [row for row in result["search"]["chains"][0]["feedback"]["positions"]
+                          if row["unresolved_inputs"]]
+                self.assertEqual(len(failed), 1)
+                self.assertEqual(failed[0]["source_position"], expected)
+                self.assertFalse(failed[0].get("ambiguous", False))
+
+    def test_finite_replacement_options_are_not_repeated_for_the_same_parent(self):
+        import random
+        from search import program_key
+
+        excluded = set()
+        parent = [["outbreak"]]
+        for _ in range(4):
+            child = mutate(parent, _fast_capabilities(), random.Random(6), excluded_programs=excluded)
+            self.assertNotEqual(child, parent)
+            self.assertNotIn(program_key(child), excluded)
+            excluded.add(program_key(child))
+        self.assertEqual(mutate(parent, _fast_capabilities(), random.Random(6), excluded_programs=excluded), parent)
+
+    def test_position_feedback_proposes_changes_without_removing_failed_skill(self):
+        import random
+
+        parent = [["outbreak"], ["death_coil"], ["scourge_strike"]]
+        feedback = dict(positions=[dict(unresolved_inputs=1, source_position={"segment": 1},
+                                       ambiguous=False)])
+        repairs = []
+        for seed in range(100):
+            observation = {}
+            child = mutate(parent, _fast_capabilities(), random.Random(seed),
+                           feedback=feedback, observation=observation)
+            position = observation.get("modification_position") or {}
+            if position.get("repair"):
+                repairs.append(child)
+                self.assertNotEqual(child, parent)
+                self.assertIn(["death_coil"], child)
+                self.assertEqual(parent, [["outbreak"], ["death_coil"], ["scourge_strike"]])
+        self.assertGreater(len(repairs), 0)
+
+    def test_search_diagnostic_locates_failed_parent_position_once_per_input(self):
+        import search
+        import sequence
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            if kwargs.get("trace"):
+                first = dict(ms=0, event="input", battle=1, origin=1, step=0, action="-", signature="-")
+                second = dict(ms=300, event="input", battle=1, origin=2, step=1, action="-", signature="-")
+                failed = dict(ms=300, event="not_ready", battle=1, origin=2, step=1,
+                              action="death_coil", signature="death_coil")
+                result["trace"] = [first, second, dict(second), failed, dict(failed),
+                                   dict(failed, event="queue"), dict(failed, event="queue_confirm")]
+            return result
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-parent-position-") as directory:
+            source = Path(directory) / "role.simc"
+            source.write_text(sample_profile(), encoding="utf-8")
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=2, round_candidate_limit=1, batch_targets=(2,),
+                          iterations=2, validation_batches=1, final_batches=1,
+                          final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=67)
+            with _fast_search_boundary(), \
+                    patch.object(search, "initial_programs", return_value=[[["outbreak"], ["death_coil"]]]), \
+                    patch.object(sequence, "evaluate", side_effect=evaluate):
+                result = run_task(source, Path(directory) / "task", search_config=config)
+        positions = result["search"]["chains"][0]["feedback"]["positions"]
+        failed = next(row for row in positions if row["click_position"] == 1)
+        self.assertEqual(failed["source_position"], {"segment": 1})
+        self.assertEqual(failed["turns"], 1)
+        self.assertEqual(failed["queued"], 1)
+        self.assertEqual(failed["failures"], {"not_ready": 1})
+        self.assertEqual(failed["unresolved_inputs"], 1)
+
+    def test_replacement_mutation_changes_action_without_creating_two_gcd_actions(self):
+        import random
+        from program import canonicalize_search_program
+
+        parent = [["outbreak", "use_item,slot=trinket1"]]
+        checked = 0
+        for seed in range(200):
+            observation = {}
+            child = mutate(parent, _fast_capabilities(), random.Random(seed), observation=observation)
+            if observation["sampled_mutation"] != "replace":
+                continue
+            checked += 1
+            self.assertNotEqual(child, parent)
+            canonicalize_search_program(child, _fast_capabilities())
+        self.assertGreater(checked, 0)
+
+    def test_new_loop_never_wraps_existing_loop_or_castsequence(self):
+        import random
+        from program import canonicalize_search_program
+
+        parent = [["outbreak"], dict(kind="CastSequence", members=["death_coil", "scourge_strike"], reset=None),
+                  ["dark_transformation"]]
+        checked = 0
+        for seed in range(200):
+            observation = {}
+            child = mutate(parent, _fast_capabilities(), random.Random(seed), observation=observation)
+            if observation["sampled_mutation"] == "loop":
+                checked += 1
+                canonicalize_search_program(child, _fast_capabilities())
+        self.assertGreater(checked, 0)
+
+    def test_cancelled_task_does_not_compile_pending_unscored_candidates(self):
+        import search
+        import sequence
+        import threading
+
+        with tempfile.TemporaryDirectory(prefix="sim2gse-lazy-compile-") as directory:
+            cancellation = threading.Event()
+            source = Path(directory) / "role.simc"
+            destination = Path(directory) / "task"
+            source.write_text(sample_profile(), encoding="utf-8")
+            generated = iter([[["death_coil"]], [["scourge_strike"]],
+                              [["dark_transformation"]]] * 160)
+
+            def evaluate(profile, candidate, folder, **kwargs):
+                result = _fast_evaluate(profile, candidate, folder, **kwargs)
+                if len(candidate["blocks"]) == 1 and candidate["blocks"][0][0]["simc_action"] == "death_coil":
+                    cancellation.set()
+                return result
+
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          candidate_limit=4, round_candidate_limit=3, batch_targets=(2,),
+                          iterations=2, validation_batches=1, final_batches=1,
+                          final_iterations=2, scenarios=("nominal",), max_processes=1,
+                          diagnostics="full", random_seed=41)
+            with _fast_search_boundary(), \
+                    patch.object(search, "initial_programs", return_value=[[["outbreak"]]]), \
+                    patch.object(search, "mutate", side_effect=lambda *args, **kwargs: next(generated)), \
+                    patch.object(sequence, "evaluate", side_effect=evaluate):
+                result = run_task(source, destination, search_config=config, cancel_event=cancellation)
+            diagnostics = json.loads((destination / "diagnostics.json").read_text())
+            self.assertEqual(result["status"], "cancelled")
+            self.assertLessEqual(diagnostics["candidate_compilations"],
+                                 len(result["search"]["records"]) + 1)
+
     def test_repeated_actions_without_trace_position_are_reported_as_ambiguous(self):
         from search import _position_observations
 
@@ -491,12 +662,12 @@ class SearchAndValidationTests(TestCase):
         plain_rng = random.Random(6)
         plain = mutate([["outbreak"]], capabilities, plain_rng)
 
-        self.assertEqual(observed, [["outbreak"]])
+        self.assertEqual(observed, [["death_coil"]])
         self.assertEqual(observed, plain)
         self.assertEqual(observed_rng.getstate(), plain_rng.getstate())
         self.assertEqual(observation["sampled_mutation"], "replace")
-        self.assertEqual(observation["actual_mutation"], "no_change")
-        self.assertIsNone(observation["modification_position"])
+        self.assertEqual(observation["actual_mutation"], "replace")
+        self.assertEqual(observation["modification_position"], {"segment": 0, "action": 0})
 
     def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
         import codec
@@ -997,6 +1168,9 @@ class SearchAndValidationTests(TestCase):
                     return 'castsequence_reset'
                 if 2 in values:
                     return 2
+                for value in values:
+                    if isinstance(value, dict) and value.get('timeout_seconds') == 2:
+                        return value
                 return values[0]
 
         original = [dict(kind='CastSequence', members=['outbreak', 'death_coil'], reset=None)]

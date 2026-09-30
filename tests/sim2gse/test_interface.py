@@ -1912,7 +1912,7 @@ class InterfaceTests(unittest.TestCase):
         castsequence_evaluations = []
         native_evaluations = []
 
-        def mutate_castsequence(program, caps, rng, *, feedback=None, reset_flags=()):
+        def mutate_castsequence(program, caps, rng, *, feedback=None, reset_flags=(), excluded_programs=()):
             changed = real_mutate(program, caps, CastSequenceFirst(rng), feedback=None,
                                   reset_flags=reset_flags)
             for segment in changed:
@@ -2044,7 +2044,7 @@ class InterfaceTests(unittest.TestCase):
         native_evaluations = []
         active_interval = 300
 
-        def mutate_wait_clicks(program, caps, rng, *, feedback=None):
+        def mutate_wait_clicks(program, caps, rng, *, feedback=None, excluded_programs=()):
             nonlocal mutation_count
             clicks = (2, 3, 4)[mutation_count % 3]
             mutation_count += 1
@@ -2189,7 +2189,7 @@ class InterfaceTests(unittest.TestCase):
         overflow_attempts = []
         evaluated_waits = []
 
-        def overflow(program, _caps, _rng, *, feedback=None):
+        def overflow(program, _caps, _rng, *, feedback=None, excluded_programs=()):
             action = next((list(segment) for segment in program if isinstance(segment, list)),
                           ["outbreak"])
             overflow_attempts.append(action)
