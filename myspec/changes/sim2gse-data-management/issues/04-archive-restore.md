@@ -17,6 +17,8 @@
 
 ## Comments（讨论）
 
+云端最终双轴接受5146100e7d8dde42fad806a647fe3e71650fd432：Standards增长快照拒绝无映像、容量承诺3127429≤3400000及5项相关CLI通过；Spec增量与3项相关CLI通过，无两旧项冲突。父线程直接核对准确diff，本票验收完成，授权串行开始05。全局基线继续f554538993161cc045d19c4ed47d261f709f741b，不重设、不合并main。
+
 891c1281增量Standards另报集成P2：backup进度上限误用新增metadata总预留，原操作中断后WAL源增长可先写出超payload映像再拒绝。公开CLI先红后绿；固定读快照建立后、目标创建前比较page_count×page_size与product_bound，progress保持同一payload边界。正常WAL和五阶段四项专项通过；新增紧限额拒绝后无映像及总容量承诺断言，完整固定基线验证后推送并停审，不进入05。详细证据仍references/validation-04-review.md。
 
 云端首轮固定HEAD f9ad2cb4ed81731f2cfe90e685b51613e41a4fcf：Standards轴通过，Spec轴两项P2（大合法清单元数据峰值漏计、resolve只取首个恢复位置）。均先通过公开CLI复现失败，再实现逐阶段实际编码元数据峰值预留及有界位置选择，异常副本不回退。初次21项归档专项通过，最终扩展低容量自动清单/801KiB合法清单、足额大清单五阶段重试以及篡改/全部缺失。详见技能references/validation-04-review.md。仍票04，准确修复提交统一验证后推送并停待复审，不进入05。

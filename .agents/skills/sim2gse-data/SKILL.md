@@ -117,6 +117,36 @@ SQLite原件不能作为普通封口文件登记/压缩：`backup-sqlite`先登�
 
 `operation --action abandon-preview`（放弃预览）返回当前 `approval_hash`；核对后 `--action abandon --approve-hash <approval_hash>` 才释放未使用预留并保留全部文件。放弃不能删除数据或重新启用同一操作；后续永久删除仍由票05具体清单门槛处理。当前1000项目录盘点对大根明确拒绝增长，完整框架交付前由票06增量盘点解除该实现限制。
 
+## 第05票：登记、迁移、隔离和逐项删除
+
+```text
+python "<技能目录>/scripts/simdata.py" legacy-register --config "<机器配置>" --directory "<受管根内旧目录>" --role native
+python "<技能目录>/scripts/simdata.py" read-lease --config "<机器配置>" --action acquire --artifact-id "<ID>" --owner-pid <消费进程ID>
+python "<技能目录>/scripts/simdata.py" read-lease --config "<机器配置>" --action release --lease-id "<租约ID>" --token "<令牌>"
+python "<技能目录>/scripts/simdata.py" dependency --config "<机器配置>" --artifact-id "<依赖方ID>" --requires "<来源ID>" --kind durable
+python "<技能目录>/scripts/simdata.py" volume-register --config "<机器配置>" --path "<另一卷内新的空目录绝对路径>"
+python "<技能目录>/scripts/simdata.py" migration --config "<机器配置>" --artifact-id "<ID>" --volume-id "<卷ID，主卷省略>" --destination "<该卷内不存在的新目录绝对路径>"
+python "<技能目录>/scripts/simdata.py" quarantine --config "<机器配置>" --artifact-id "<ID>"
+python "<技能目录>/scripts/simdata.py" recover-quarantine --config "<机器配置>" --artifact-id "<ID>"
+python "<技能目录>/scripts/simdata.py" purge --config "<机器配置>" --artifact-id "<ID>" --valid-seconds <明确批准有效秒数>
+python "<技能目录>/scripts/simdata.py" purge --config "<机器配置>" --plan "<保存的完整预览JSON>" --approve-hash "<plan_hash>" --confirm-item "<ID:confirmation_hash>"
+python "<技能目录>/scripts/simdata.py" safety-operation --config "<机器配置>" --operation-id "<ID>"
+```
+
+登记、卷登记、迁移、隔离与恢复先预览，再重复完整参数并附 `--approve-hash <plan_hash>` 执行。无万能yes（全部同意）开关。迁移/隔离恢复重试还附原 `--operation-id`，不能换来源、动作或配置。`safety-operation --action abandon-preview/abandon`（放弃预览/放弃）仅允许非破坏性、未封口迁移；批准其 `approval_hash` 才核销预留，复制件和临时件均保留并继续计占用。隔离和删除中断必须恢复同一具体操作，不以放弃掩盖部分变更。
+
+旧目录登记保留UUID5稳定ID和原路径，保守建立unknown（未知消费者）兼容引用。可变SQLite主文件仅登记为未封口sqlite-source；物理主文件摘要不代表包含WAL的逻辑快照，压缩前仍须一致性备份。已识别SQLite侧文件不当成独立封口对象。未知路径、重解析点、活动运行和超界盘点拒绝登记。共享索引只有一份；新增受管卷只有身份标记，不能借卷登记接管非空未知目录。测试卷限系统临时目录或仓库 `.local/simdata-synthetic-<root_id>/` 内的专属合成目录，不影响历史树。
+
+消费端须在读取/训练/分析前取得读者租约，业务使用更新last_used（最近使用时间），结束释放令牌。心跳过期仍保护；死亡/PID复用由操作系统出生身份核实后，recover-preview/recover（恢复预览/批准恢复）才核销。新租约拒绝未完成位置操作。依赖有向图拒绝循环，持久依赖、角色、pin（保留标记）、未知消费者和活动祖先保护向来源传递；缓存关系不能截断持久依赖链。保护目录也包含验收目录、captures/live-evidence/archive（采集/现场证据/私人存档）。
+
+迁移总是流式copy/verify（复制/验证），在目标卷临时区核对原字节和文件身份，然后只在该卷发布并选择新位置；跨卷不移动原件。旧缓存absolute origin（绝对来源）仍可读，原文件稳定ID及last_used不改，持久引用不失效。解析先核验仍存在的原件，再核验首选位置；原件篡改、异常边界、首选位置缺失/损坏均拒绝。归档和事实提取也使用同一登记位置语义。受管卷的现有复制件、staging/quarantine（临时/隔离）、索引/WAL、保守未封口预留全部计逻辑容量；所在卷分别检查物理空间，主卷为跨卷操作保留元数据空间。全额未封口安全操作预留暂保守保留，不以同卷隔离声称释放空间。
+
+隔离只操作已登记原路径副本，持久/未知引用、保护角色/目录、租约、锁或未明确失效的缓存均拒绝。Windows使用排他文件句柄核验原始摘要并按同一句柄移动，拒绝覆盖；保留隔离路径和身份，恢复回原路径也拒绝覆盖。只改位置状态，不删除数据或稳定ID；隔离原件后已有迁移复制件仍可解析。
+
+永久删除仅接受隔离对象的具体保存清单，清单固定根/配置/当前身份、原始摘要、引用、隔离操作及有效期。执行要提供计划摘要及每个ID的confirmation_hash（逐项确认摘要），缺项、重复项、额外项、过期、引用或文件变化均拒绝。全部对象及排他句柄先验证，再逐项按同一已核验Windows句柄删除；逐项删除前后持久日志，中断后核对日志和隔离身份再重试，已删除路径重新出现则拒绝接管。只删除清单中的隔离副本，ID保留为墓碑，其他已登记复制位置不删除。有效时长须操作者显式给定，内部安全上限24小时；未配置任何生产默认时长、容量、保留或维护频率。实际历史永久删除仍必须先向用户展示具体清单并逐项确认，技能可发现不构成删除授权。
+
+票06尚负责维护入口、计划任务配置生成/预览，以及解除1000项目录预算准入限制；当前不能宣称大规模框架最终验收完成。05验证记录见 [validation-05.md](references/validation-05.md)。
+
 ## 验证
 
 ```text

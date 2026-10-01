@@ -25,6 +25,8 @@ from urllib.parse import quote
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 # 固定初始化DDL的保守峰值：主库、写事务/WAL、SHM和根标记；不是用户容量建议。
 INITIALIZATION_PEAK_BYTES = 256 * 1024
+PROTECTED_ROLES = {"input", "evidence", "model", "analysis", "unknown", "sqlite-source"}
+PROTECTED_DIRECTORIES = {"captures", "live-evidence", "archive", "phase2-product-20261001-02", "duration-curve-20261001-01", "start-origin-analysis-20261001"}
 
 
 class DataError(ValueError):
@@ -210,7 +212,7 @@ def index_status(root, policy):
             raise DataError("索引与数据根身份绑定不符")
         return dict(root_id=marker["root_id"], root_mode=marker["mode"],
                     registered_artifacts=db.execute("SELECT count(*) FROM artifacts").fetchone()[0],
-                    operation_reserved_bytes=job_remaining(root, db),
+                    operation_reserved_bytes=job_remaining(root, db) + safety_remaining(db),
                     reserved_bytes=db.execute("SELECT coalesce(sum(reserved_bytes),0) FROM runs WHERE state IN ('allocating','running')").fetchone()[0])
     finally:
         db.close()
@@ -279,7 +281,7 @@ def managed_file(root, path):
     if not source.is_relative_to(root) or not source.is_file():
         raise DataError("对象须为数据根内普通文件，不能越界")
     relative = source.relative_to(root).as_posix()
-    if relative in (".simdata-root.json", ".manager.lock") or relative.startswith(("index.sqlite3", ".staging/")) or source.name == ".runner.lock":
+    if relative in (".simdata-root.json", ".manager.lock") or relative.startswith(("index.sqlite3", ".staging/", ".quarantine/")) or source.name == ".runner.lock":
         raise DataError("管理索引、侧文件和锁文件不能登记为原始数据")
     return source
 
@@ -353,48 +355,56 @@ def artifact_row(db, artifact_id):
     return row
 
 
-def resolve_artifact(root, policy, args):
-    root_marker(root, policy)
-    db = open_index(root)
-    try:
-        row = dict(artifact_row(db, args.artifact_id))
-    finally:
-        db.close()
-    source_path = owned_path(root, row["path"])
-    expected_identity = row["identity"]
-    def present(path):
+def read_location(root, db, row):
+    """校验仍存在的原件，再选择已登记首选位置；异常位置不能被静默跳过。"""
+    def inspect(base, relative, identity):
+        path = owned_path(base, relative)
         try:
             path.lstat()
         except FileNotFoundError:
-            return False
-        return True
-    if not present(source_path):
-        with closing(open_index(root)) as locations_db:
-            if not has_table(locations_db, "locations"):
-                raise DataError("原件缺失且没有经验证的恢复位置")
-            locations = locations_db.execute("SELECT path,identity FROM locations WHERE artifact_id=? ORDER BY path LIMIT 1001", (row["id"],)).fetchall()
-            if len(locations) > 1000:
-                raise DataError("恢复位置超过1000项，须先核对位置清单")
-            if not locations:
-                raise DataError("原件缺失且没有经验证的恢复位置")
-            for location in locations:
-                candidate = owned_path(root, location["path"])
-                if present(candidate):
-                    source_path, expected_identity = candidate, location["identity"]
-                    break
-            else:
-                raise DataError("原件及已登记恢复位置全部缺失")
-    source = managed_file(root, str(source_path))
-    with runner_locks(root, source):
-        manifest = file_manifest(source, allow_sqlite=row["role"] == "sqlite-backup")
-    if manifest["sha256"] != row["sha256"] or json.dumps(manifest["identity"]) != expected_identity:
-        raise DataError("对象当前身份或摘要与登记不符")
+            return None
+        source = managed_file(base, str(path))
+        with runner_locks(base, source):
+            image = file_manifest(source, allow_sqlite=row["role"] == "sqlite-backup")
+        if image["sha256"] != row["sha256"] or image["size"] != row["size"] or json.dumps(image["identity"]) != identity:
+            raise DataError("登记位置当前身份或原始摘要不符")
+        return base, source, image
+    original = inspect(root, row["path"], row["identity"])
+    if has_table(db, "placements"):
+        positions = db.execute("SELECT * FROM placements WHERE artifact_id=? AND state IN ('preferred','available') ORDER BY CASE state WHEN 'preferred' THEN 0 ELSE 1 END,path LIMIT 1001", (row["id"],)).fetchall()
+        if len(positions) > 1000 or sum(item["state"] == "preferred" for item in positions) > 1:
+            raise DataError("迁移位置清单过大或首选位置不唯一")
+        for item in positions:
+            if item["state"] == "preferred" or original is None:
+                result = inspect(volume_root(root, db, item["volume_id"]), item["path"], item["identity"])
+                if result is None and item["state"] == "preferred":
+                    raise DataError("已登记首选位置缺失，须先核对位置状态")
+                if result:
+                    return result
+    if original:
+        return original
+    if has_table(db, "locations"):
+        positions = db.execute("SELECT * FROM locations WHERE artifact_id=? ORDER BY path LIMIT 1001", (row["id"],)).fetchall()
+        if len(positions) > 1000:
+            raise DataError("恢复位置清单超过有界范围")
+        for item in positions:
+            result = inspect(root, item["path"], item["identity"])
+            if result:
+                return result
+    raise DataError("原件及已登记可用位置全部缺失")
+
+
+def resolve_artifact(root, policy, args):
+    root_marker(root, policy)
+    with closing(open_index(root)) as db:
+        row = dict(artifact_row(db, args.artifact_id))
+        _, source, _ = read_location(root, db, row)
     if not args.inspect:
         with write_index(root, policy) as db:
             check_budget(root, db, policy)
-            current = artifact_row(db, args.artifact_id)
-            if current["identity"] != row["identity"] or current["path"] != row["path"]:
+            if dict(artifact_row(db, args.artifact_id)) != row:
                 raise DataError("对象在解析过程中已变化")
+            read_location(root, db, row)
             row["last_used"] = time.time()
             db.execute("UPDATE artifacts SET last_used=? WHERE id=?", (row["last_used"], args.artifact_id))
     return dict(artifact_id=row["id"], path=str(source), role=row["role"], sha256=row["sha256"],
@@ -474,18 +484,19 @@ def run_payload_bytes(root, run):
     return measured["logical_bytes"] - internal
 
 
-def check_budget(root, db, policy, growth=0):
+def check_budget(root, db, policy, growth=0, *, physical_growth=None):
     # ponytail: 每次变更有界核对至多1000目录项；大根需后续明确盘点策略，不能假称已完整核算。
-    measured = inventory(root, 1000)
+    measured = domain_inventory(root, db)
     if measured["truncated"]:
         raise DataError("容量盘点未完整，拒绝新增长；不能忽略未知文件")
     remaining = sum(max(0, run["reserved_bytes"] - run_payload_bytes(root, run))
                     for run in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"))
-    remaining += job_remaining(root, db)
+    root_remaining = remaining + job_remaining(root, db) + safety_remaining(db, primary_volume=True)
+    remaining += job_remaining(root, db) + safety_remaining(db)
     reserve = policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
     if measured["logical_bytes"] + remaining + growth + reserve > policy["capacity_bytes"]:
         raise DataError("容量不足：原件、索引/WAL、活动预留和维护空间必须共存")
-    if shutil.disk_usage(root).free < remaining + growth + reserve:
+    if shutil.disk_usage(root).free < root_remaining + (growth if physical_growth is None else physical_growth) + reserve:
         raise DataError("所在卷可用空间不足，拒绝增长且不自动清理")
     return dict(logical_bytes=measured["logical_bytes"], remaining_reserved_bytes=remaining,
                 maintenance_reserve_bytes=policy["maintenance_reserve_bytes"], metadata_reserve_bytes=policy["metadata_reserve_bytes"])
@@ -590,11 +601,14 @@ def finish_run(root, policy, args):
 def protection(root, db, artifact_id):
     artifact = artifact_row(db, artifact_id)
     reasons = []
-    if artifact["role"] in ("input", "evidence", "model", "analysis", "unknown"):
+    if artifact["role"] in PROTECTED_ROLES:
         reasons.append("protected-role:" + artifact["role"])
+    if {part.casefold() for part in Path(artifact["path"]).parts} & PROTECTED_DIRECTORIES:
+        reasons.append("protected-evidence-path")
     reasons.extend("pin:" + row[0] for row in db.execute("SELECT label FROM pins WHERE artifact_id=? ORDER BY label", (artifact_id,)))
     references = [dict(row) for row in db.execute("SELECT * FROM refs WHERE target=? ORDER BY owner", (artifact_id,))]
     reasons.extend(row["kind"] + ":" + row["owner"] for row in references if row["kind"] != "cache")
+    reasons.extend(dependency_protection(root, db, artifact_id))
     if db.execute("SELECT count(*) FROM unknown_refs").fetchone()[0]:
         reasons.append("unknown-legacy-references")
     if has_table(db, "jobs"):
@@ -602,7 +616,15 @@ def protection(root, db, artifact_id):
             plan = json.loads(job["plan"])
             if any(source["id"] == artifact_id for source in plan.get("sources", plan.get("manifest", {}).get("sources", []))):
                 reasons.append("operation:" + job["id"])
-    path = managed_file(root, str(root / artifact["path"]))
+    if has_table(db, "safety_jobs"):
+        for job in db.execute("SELECT * FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
+            safety_plan = json.loads(job["plan"])
+            if any(source["id"] == artifact_id for source in safety_plan.get("sources", safety_plan.get("items", []))):
+                reasons.append("operation:" + job["id"])
+    if has_table(db, "readers"):
+        reasons.extend("read-lease:" + row["id"] + ":" + lease_state(row)
+                       for row in db.execute("SELECT * FROM readers WHERE artifact_id=? AND state='active'", (artifact_id,)))
+    path = owned_path(root, artifact["path"])
     for run in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"):
         if path.is_relative_to(root / run["path"]):
             reasons.append("lease:" + run["id"] + ":" + lease_state(run))
@@ -642,6 +664,8 @@ def change_reference(root, policy, args):
     if not args.owner or len(args.owner) > 256 or "\x00" in args.owner:
         raise DataError("引用所有者须为1至256字符")
     if args.action == "add":
+        if args.owner.startswith("artifact:"):
+            raise DataError("对象依赖须使用dependency入口，不能绕过有向图循环检查")
         with write_index(root, policy) as db:
             check_budget(root, db, policy)
             artifact_row(db, args.artifact_id)
@@ -841,13 +865,13 @@ def document(root, db, artifact_id):
         raise DataError("事实来源须已封口，JSON输入上限16MiB；不能整文件读取更大报告")
     if any(reason.startswith(("lease:", "runner-lock")) for reason in protection(root, db, artifact_id)["reasons"]):
         raise DataError("事实来源仍被运行租约或字节锁保护，不能提取")
-    source = managed_file(root, str(root / row["path"]))
-    with runner_locks(root, source), source.open("rb") as handle:
+    source_root, source, source_image = read_location(root, db, row)
+    with runner_locks(source_root, source), source.open("rb") as handle:
         before = os.fstat(handle.fileno())
         raw = handle.read(DOCUMENT_BYTES + 1)
         after = os.fstat(handle.fileno())
         identity = lambda info: [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
-        if (len(raw) > DOCUMENT_BYTES or json.dumps(identity(before)) != row["identity"] or
+        if (len(raw) > DOCUMENT_BYTES or identity(before) != source_image["identity"] or
                 identity(before) != identity(after) or identity(after) != identity(source.stat()) or
                 hashlib.sha256(raw).hexdigest() != row["sha256"]):
             raise DataError("提取源身份或摘要已变化")
@@ -1317,15 +1341,15 @@ def manage_operation(root, policy, args):
 
 
 def artifact_image(root, row):
-    source = managed_file(root, str(root / row["path"]))
-    manifest = file_manifest(source, allow_sqlite=row["role"] == "sqlite-backup")
-    if not row["sealed"] or manifest["sha256"] != row["sha256"] or json.dumps(manifest["identity"]) != row["identity"]:
+    with closing(open_index(root)) as db:
+        _, source, manifest = read_location(root, db, row)
+    if not row["sealed"]:
         raise DataError("封口文件身份或摘要不匹配")
     return dict(id=row["id"], path=row["path"], role=row["role"], schema_version=row["schema_version"], **manifest)
 
 
 def idle_image(root, db, row):
-    if any(reason.startswith(("lease:", "runner-lock")) for reason in protection(root, db, row["id"])["reasons"]):
+    if any(reason.startswith(("lease:", "read-lease:", "runner-lock")) for reason in protection(root, db, row["id"])["reasons"]):
         raise DataError("活动租约或文件锁阻止读取生命周期输入")
     return artifact_image(root, row)
 
@@ -1337,7 +1361,7 @@ def archive_sources(root, db, ids):
     for artifact_id in sorted(ids):
         row = artifact_row(db, artifact_id)
         reasons = protection(root, db, artifact_id)["reasons"]
-        if any(reason.startswith(("lease:", "runner-lock")) for reason in reasons):
+        if any(reason.startswith(("lease:", "read-lease:", "runner-lock")) for reason in reasons):
             raise DataError("活动租约或文件锁阻止归档")
         sources.append(artifact_image(root, row))
     return sources
@@ -1409,8 +1433,11 @@ def create_archive(root, plan, data):
     part_size = plan["part_bytes"]
     number = 0
     for source in plan["sources"]:
-        path = managed_file(root, str(root / source["path"]))
-        with runner_locks(root, path), path.open("rb") as handle:
+        with closing(open_index(root)) as location_db:
+            source_root, path, current_image = read_location(root, location_db, artifact_row(location_db, source["id"]))
+        if current_image != {key: source[key] for key in ("sha256", "size", "identity")}:
+            raise DataError("归档读取位置或身份改变")
+        with runner_locks(source_root, path), path.open("rb") as handle:
             whole = hashlib.sha256()
             for offset in range(0, max(1, source["size"]), part_size):
                 length = min(part_size, source["size"] - offset)
@@ -1860,6 +1887,770 @@ def lifecycle_execute(root, policy, args):
         return operation_result(root, db, job_row(db, plan["operation_id"]))
 
 
+def dependency_protection(root, db, artifact_id):
+    pending, seen, reasons = [artifact_id], set(), []
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if len(seen) > 1000:
+            raise DataError("依赖闭包超过1000项，拒绝不完整保护计算")
+        row = db.execute("SELECT * FROM artifacts WHERE id=?", (current,)).fetchone()
+        if row is None:
+            reasons.append("unknown-dependency-owner:" + current)
+            continue
+        refs = db.execute("SELECT owner,kind FROM refs WHERE target=?", (current,)).fetchall()
+        if current != artifact_id:
+            if (row["role"] in PROTECTED_ROLES or {part.casefold() for part in Path(row["path"]).parts} & PROTECTED_DIRECTORIES or
+                    db.execute("SELECT 1 FROM pins WHERE artifact_id=?", (current,)).fetchone() or any(ref["kind"] != "cache" for ref in refs)):
+                reasons.append("persistent-dependency:" + current)
+            if has_table(db, "readers") and db.execute("SELECT 1 FROM readers WHERE artifact_id=? AND state='active'", (current,)).fetchone():
+                reasons.append("read-lease:dependency:" + current)
+            if any(row["path"].startswith(run["path"] + "/") for run in db.execute("SELECT path FROM runs WHERE state IN ('allocating','running')")):
+                reasons.append("lease:dependency:" + current)
+            try:
+                with runner_locks(root, owned_path(root, row["path"])):
+                    pass
+            except DataError:
+                reasons.append("runner-lock:dependency:" + current)
+            for table in ("jobs", "safety_jobs"):
+                if has_table(db, table):
+                    for job in db.execute("SELECT * FROM " + table + " WHERE phase NOT IN ('sealed','abandoned')"):
+                        plan = json.loads(job["plan"])
+                        sources = plan.get("sources", plan.get("items", plan.get("manifest", {}).get("sources", [])))
+                        if any(source["id"] == current for source in sources):
+                            reasons.append("operation:dependency:" + job["id"])
+        pending.extend(ref["owner"][9:] for ref in refs if ref["owner"].startswith("artifact:"))
+    return reasons
+
+
+def dependency_add(root, policy, args):
+    with write_index(root, policy) as db:
+        artifact_row(db, args.artifact_id)
+        artifact_row(db, args.requires)
+        pending, seen = [args.requires], set()
+        while pending:
+            current = pending.pop()
+            if current == args.artifact_id:
+                raise DataError("依赖成环，拒绝登记")
+            if current in seen:
+                continue
+            seen.add(current)
+            if len(seen) > 1000:
+                raise DataError("依赖闭包过大")
+            pending.extend(row[0] for row in db.execute("SELECT target FROM refs WHERE owner=?", ("artifact:" + current,)))
+        check_budget(root, db, policy, 65536)
+        owner = "artifact:" + args.artifact_id
+        previous = db.execute("SELECT kind FROM refs WHERE owner=? AND target=?", (owner, args.requires)).fetchone()
+        if previous and previous[0] != args.kind:
+            raise DataError("依赖不得降级或覆盖")
+        db.execute("INSERT OR IGNORE INTO refs VALUES (?,?,?)", (owner, args.requires, args.kind))
+        return dict(artifact_id=args.artifact_id, requires=args.requires, kind=args.kind, applied=True)
+
+
+def legacy_register(root, policy, args):
+    marker = root_marker(root, policy)
+    directory = checked_path(args.directory)
+    if not directory.is_dir() or not directory.is_relative_to(root) or directory == root:
+        raise DataError("旧目录须为受管根内明确子目录，不能扫描整根")
+    def plan(db):
+        measured = inventory(directory, args.limit)
+        if measured["truncated"]:
+            raise DataError("旧目录清单不完整，须明确分批")
+        rows, sidecars = [], []
+        for parent, dirs, files in os.walk(directory, followlinks=False):
+            for name in sorted(files):
+                path = checked_path(Path(parent) / name)
+                if name == ".runner.lock":
+                    continue
+                if any(name.endswith(suffix) for suffix in ("-wal", "-shm", "-journal")):
+                    base = Path(parent) / name.rsplit("-", 1)[0]
+                    if base.is_file():
+                        with checked_path(base).open("rb") as handle:
+                            if handle.read(16) == b"SQLite format 3\x00":
+                                sidecars.append(path.relative_to(root).as_posix())
+                                continue
+                path = managed_file(root, str(path))
+                if any(path.is_relative_to(root / run[0]) for run in db.execute("SELECT path FROM runs WHERE state IN ('allocating','running')")):
+                    raise DataError("活动运行阻止旧目录登记")
+                with runner_locks(root, path):
+                    with path.open("rb") as handle:
+                        sql = handle.read(16) == b"SQLite format 3\x00"
+                    image = file_manifest(path, allow_sqlite=sql)
+                relative = path.relative_to(root).as_posix()
+                rows.append(dict(artifact_id=str(uuid.uuid5(uuid.UUID(marker["root_id"]), "artifact:" + os.path.normcase(relative))),
+                                 path=relative, role="sqlite-source" if sql else args.role, schema_version=1, sealed=not sql,
+                                 logical_snapshot=False if sql else None, **image))
+        result = dict(action="legacy-register", root_id=marker["root_id"], directory=directory.relative_to(root).as_posix(),
+                      policy_hash=digest(policy), artifacts=sorted(rows, key=lambda row: row["path"]), protected_sqlite_sidecars=sorted(sidecars))
+        result["plan_hash"] = digest(result)
+        return result
+    if args.approve_hash is None:
+        with closing(open_index(root)) as db:
+            return dict(plan(db), applied=False)
+    with write_index(root, policy) as db:
+        preview = plan(db)
+        if args.approve_hash != preview["plan_hash"]:
+            raise DataError("旧目录身份/摘要/配置已变，须重新批准")
+        check_budget(root, db, policy, 131072 + len(compact_json(preview, QUERY_BYTES).encode()) * 8)
+        for row in preview["artifacts"]:
+            existing = db.execute("SELECT * FROM artifacts WHERE id=?", (row["artifact_id"],)).fetchone()
+            values = (row["sha256"], json.dumps(row["identity"]), row["role"])
+            if existing and (existing["sha256"], existing["identity"], existing["role"]) != values:
+                raise DataError("旧对象已登记不同版本或角色，不覆盖")
+            db.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?,?,?,?,?,?)", (row["artifact_id"], row["path"], row["role"], row["sha256"], row["size"], values[1], 1, int(row["sealed"]), time.time()))
+            db.execute("INSERT OR IGNORE INTO refs VALUES (?,?,?)", ("legacy-path:" + preview["directory"], row["artifact_id"], "unknown"))
+        return dict(preview, applied=True)
+
+
+def reader_lease(root, policy, args):
+    root_marker(root, policy)
+    if args.action in ("status", "recover-preview"):
+        with closing(open_index(root)) as db:
+            row = db.execute("SELECT * FROM readers WHERE id=?", (args.lease_id,)).fetchone() if has_table(db, "readers") else None
+            if row is None:
+                raise DataError("未知读取租约")
+            preview = dict(lease_id=row["id"], artifact_id=row["artifact_id"], state=row["state"],
+                           owner_state=lease_state(row), heartbeat_expired=time.time() > row["expires"], expires=row["expires"])
+            if args.action == "recover-preview":
+                preview.pop("heartbeat_expired")
+                preview["plan_hash"] = digest(preview)
+            return preview
+    with write_index(root, policy) as db:
+        if args.action == "acquire":
+            if not args.artifact_id or not args.owner_pid:
+                raise DataError("读取租约需要数据ID及调用者PID")
+            owner_start = process_start(args.owner_pid)
+            if owner_start in (None, "unknown"):
+                raise DataError("无法核实读取者出生身份")
+            if any(reason.startswith("operation:") for reason in protection(root, db, args.artifact_id)["reasons"]):
+                raise DataError("未完成的位置操作阻止新增读者租约")
+            resolved = resolve_artifact(root, policy, argparse.Namespace(artifact_id=args.artifact_id, inspect=True))
+            check_budget(root, db, policy, 131072)
+            db.execute("CREATE TABLE IF NOT EXISTS readers(id TEXT PRIMARY KEY,artifact_id TEXT REFERENCES artifacts(id),owner_pid INTEGER,owner_start TEXT,token_hash TEXT,expires REAL,state TEXT)")
+            identity, token = str(uuid.uuid4()), args.token or secrets.token_urlsafe(32)
+            db.execute("INSERT INTO readers VALUES (?,?,?,?,?,?,?)", (identity, args.artifact_id, args.owner_pid, owner_start,
+                       hashlib.sha256(token.encode()).hexdigest(), time.time() + policy["lease_seconds"], "active"))
+            db.execute("UPDATE artifacts SET last_used=? WHERE id=?", (time.time(), args.artifact_id))
+            return dict(lease_id=identity, token=token, path=resolved["path"], artifact_id=args.artifact_id)
+        row = db.execute("SELECT * FROM readers WHERE id=?", (args.lease_id,)).fetchone() if has_table(db, "readers") else None
+        if row is None:
+            raise DataError("未知读取租约")
+        preview = dict(lease_id=row["id"], artifact_id=row["artifact_id"], state=row["state"], owner_state=lease_state(row), expires=row["expires"])
+        preview["plan_hash"] = digest(preview)
+        if args.action == "recover":
+            if preview["owner_state"] not in ("dead", "pid-reused") or args.approve_hash != preview["plan_hash"]:
+                raise DataError("读取者未确定死亡/复用或当前恢复计划未批准；过期不能单独回收")
+        else:
+            authorize_run(row, args.token)
+        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"]:
+            raise DataError("读取租约维护缺少元数据空间")
+        if args.action == "heartbeat":
+            check_budget(root, db, policy, 65536)
+            db.execute("UPDATE readers SET expires=? WHERE id=?", (time.time() + policy["lease_seconds"], row["id"]))
+        else:
+            db.execute("UPDATE readers SET state='released' WHERE id=?", (row["id"],))
+        return dict(preview, applied=True)
+
+
+def safety_tables(db):
+    db.execute("CREATE TABLE IF NOT EXISTS volumes(id TEXT PRIMARY KEY,path TEXT UNIQUE,marker TEXT NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS placements(artifact_id TEXT REFERENCES artifacts(id),volume_id TEXT,path TEXT,identity TEXT,state TEXT,PRIMARY KEY(artifact_id,volume_id,path))")
+    db.execute("CREATE TABLE IF NOT EXISTS custody(artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),operation_id TEXT,path TEXT,identity TEXT,state TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS safety_jobs(id TEXT PRIMARY KEY,kind TEXT,phase TEXT,plan TEXT,reserved_bytes INTEGER,progress TEXT)")
+
+
+def bounded_text(path, limit=QUERY_BYTES):
+    path = checked_path(path)
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    with path.open("rb") as handle:
+        before = os.fstat(handle.fileno())
+        raw = handle.read(limit + 1)
+        if (len(raw) > limit or not stat.S_ISREG(before.st_mode) or
+                identity(before) != identity(os.fstat(handle.fileno())) or identity(before) != identity(checked_path(path).stat())):
+            raise DataError("管理清单/标记超过有界长度或读取身份变化")
+    return raw.decode("utf-8")
+
+
+def volume_root(root, db, volume_id):
+    if not volume_id:
+        return root
+    row = db.execute("SELECT * FROM volumes WHERE id=?", (volume_id,)).fetchone() if has_table(db, "volumes") else None
+    if row is None:
+        raise DataError("目标卷未登记")
+    path = checked_path(row["path"])
+    marker = checked_path(path / ".simdata-volume.json")
+    if bounded_text(marker) != row["marker"] or json.loads(row["marker"])["root_id"] != db.execute("SELECT value FROM metadata WHERE key='root_id'").fetchone()[0]:
+        raise DataError("受管卷身份或边界变化")
+    return path
+
+
+def domain_inventory(root, db):
+    measured = inventory(root, 1000)
+    if has_table(db, "volumes"):
+        for row in db.execute("SELECT id FROM volumes ORDER BY id"):
+            other = inventory(volume_root(root, db, row["id"]), 1000)
+            measured["logical_bytes"] += other["logical_bytes"]
+            measured["truncated"] = measured["truncated"] or other["truncated"]
+    return measured
+
+
+def safety_remaining(db, *, primary_volume=False):
+    if not has_table(db, "safety_jobs"):
+        return 0
+    # 保守保留整个未封口预留；原件、复制件和隔离件均由域盘点另外计入。
+    total = 0
+    for row in db.execute("SELECT plan,reserved_bytes FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
+        plan = json.loads(row["plan"])
+        total += plan.get("metadata_reserved_bytes", row["reserved_bytes"]) if primary_volume and plan.get("volume_id") else row["reserved_bytes"]
+    return total
+
+
+def safety_metadata_peak(db, payload):
+    encoded = len(compact_json(payload, QUERY_BYTES).encode("utf-8"))
+    page = db.execute("PRAGMA page_size").fetchone()[0]
+    checkpoint = db.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+    # 两代主库/WAL页面、计划/进度重写、六个索引DDL与逐项日志的保守余量。
+    return max(1048576, 2 * (max(1000, checkpoint) + 64) * page) + encoded * 16 + len(payload) * 32 * page
+
+
+def canonical_operation_id(identity):
+    try:
+        if str(uuid.UUID(identity)) != identity:
+            raise ValueError("noncanonical")
+    except (ValueError, AttributeError, TypeError) as error:
+        raise DataError("操作ID须为规范小写UUID，两个入口使用同一命名") from error
+    return identity
+
+
+def register_volume(root, policy, args):
+    root_id = root_marker(root, policy)["root_id"]
+    target = checked_path(args.path)
+    if not target.is_dir() or target.is_relative_to(root) or root.is_relative_to(target):
+        raise DataError("受管卷必须是与主根分离的既有空目录")
+    if policy["mode"] == "test":
+        temporary = Path(tempfile.gettempdir()).resolve()
+        synthetic = SKILL_ROOT.parents[2] / ".local" / ("simdata-synthetic-" + root_id)
+        if not target.is_relative_to(temporary) and not target.is_relative_to(synthetic):
+            raise DataError("测试卷必须位于临时目录或根ID限定的仓库合成目录")
+    volume_id = str(uuid.uuid5(uuid.UUID(root_id), "volume:" + os.path.normcase(str(target))))
+    marker = dict(root_id=root_id, volume_id=volume_id, mode=policy["mode"], path=str(target))
+    text = compact_json(marker, QUERY_BYTES)
+    plan = dict(action="volume-register", marker=marker, policy_hash=digest(policy))
+    plan["plan_hash"] = digest(plan)
+    with closing(open_index(root)) as db:
+        old = db.execute("SELECT * FROM volumes WHERE id=?", (volume_id,)).fetchone() if has_table(db, "volumes") else None
+        if old:
+            volume_root(root, db, volume_id)
+            return dict(plan, applied=True)
+    contents = list(target.iterdir())
+    marker_path = target / ".simdata-volume.json"
+    if contents and not (contents == [marker_path] and bounded_text(marker_path) == text):
+        raise DataError("不能接管非空未知卷")
+    if not args.approve_hash:
+        return dict(plan, applied=False)
+    if args.approve_hash != plan["plan_hash"]:
+        raise DataError("受管卷须批准当前预览")
+    with write_index(root, policy) as db:
+        check_budget(root, db, policy, 262144)
+        if shutil.disk_usage(target).free < 262144 + policy["maintenance_reserve_bytes"]:
+            raise DataError("目标卷无维护空间")
+        if not os.path.lexists(marker_path):
+            with marker_path.open("x", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+        safety_tables(db)
+        db.execute("INSERT INTO volumes VALUES (?,?,?)", (volume_id, str(target), text))
+    return dict(plan, applied=True)
+
+
+def safety_phase(db, identity, phase, progress):
+    db.execute("UPDATE safety_jobs SET phase=?,progress=?,reserved_bytes=CASE WHEN ?='sealed' THEN 0 ELSE reserved_bytes END WHERE id=?",
+               (phase, compact_json(progress, QUERY_BYTES), phase, identity))
+    db.execute("INSERT INTO operations VALUES (?,?,?,?)", (str(uuid.uuid4()), "safety", phase, compact_json(dict(operation_id=identity), QUERY_BYTES)))
+    db.commit()
+    db.execute("BEGIN IMMEDIATE")
+
+
+def safety_source(root, db, identity, *, destructive=False, own_job=None):
+    row = artifact_row(db, identity)
+    protected = protection(root, db, identity)
+    reasons = [value for value in protected["reasons"] if value != "operation:" + str(own_job)]
+    if destructive and (reasons or protected["cache_references"]):
+        raise DataError("持久/未知引用、活动租约、锁或尚未批准失效的加速缓存阻止隔离/删除")
+    if any(value.startswith(("lease:", "read-lease:", "runner-lock", "operation:")) for value in reasons):
+        raise DataError("活动操作、租约或锁阻止位置变更")
+    image = artifact_image(root, row)
+    if destructive:
+        original = managed_file(root, str(root / row["path"]))
+        image = dict(id=row["id"], path=row["path"], role=row["role"], schema_version=row["schema_version"],
+                     **file_manifest(original, allow_sqlite=row["role"] == "sqlite-backup"))
+        if not row["sealed"] or json.dumps(image["identity"]) != row["identity"] or image["sha256"] != row["sha256"]:
+            raise DataError("原路径隔离对象身份不符")
+    return dict(image, references=protected["references"], reasons=reasons)
+
+
+def safety_job_status(root, policy, args):
+    root_marker(root, policy)
+    with closing(open_index(root)) as db:
+        job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (args.operation_id,)).fetchone() if has_table(db, "safety_jobs") else None
+        if job is None:
+            raise DataError("未知安全生命周期操作")
+        result = dict(operation_id=job["id"], kind=job["kind"], phase=job["phase"], plan_hash=digest(json.loads(job["plan"])), progress=json.loads(job["progress"]))
+    if args.action == "status":
+        return result
+    preview = dict(action="abandon", operation_id=job["id"], kind=job["kind"], phase=job["phase"], plan_hash=result["plan_hash"], retained_bytes=True)
+    preview["approval_hash"] = digest(preview)
+    if args.action == "abandon-preview":
+        return preview
+    with write_index(root, policy) as db:
+        current = db.execute("SELECT * FROM safety_jobs WHERE id=?", (args.operation_id,)).fetchone()
+        if dict(current) != dict(job) or args.approve_hash != preview["approval_hash"]:
+            raise DataError("放弃操作须批准当前清单，全部复制件保留")
+        if job["kind"] != "migration" or job["phase"] in ("sealed", "abandoned"):
+            raise DataError("只允许放弃未封口非破坏性迁移；隔离/删除须恢复其具体操作")
+        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"] + 131072:
+            raise DataError("放弃操作缺少日志空间")
+        safety_phase(db, args.operation_id, "abandoned", result["progress"])
+    return dict(preview, applied=True)
+
+
+def migration(root, policy, args):
+    root_id = root_marker(root, policy)["root_id"]
+    def preview(db):
+        if args.operation_id and has_table(db, "safety_jobs"):
+            job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (args.operation_id,)).fetchone()
+            if job:
+                plan = json.loads(job["plan"])
+                if job["kind"] != "migration" or sorted(args.artifact_id) != [item["id"] for item in plan["sources"]]:
+                    raise DataError("重试输入与迁移清单不符")
+                return plan, job
+        if not args.artifact_id or len(set(args.artifact_id)) != len(args.artifact_id) or len(args.artifact_id) > 1000:
+            raise DataError("迁移须明确列出不同的已登记对象")
+        destination_root = volume_root(root, db, args.volume_id)
+        if not args.destination or not Path(args.destination).is_absolute():
+            raise DataError("迁移目标须为受管卷内绝对路径")
+        destination = Path(args.destination)
+        if not destination.is_relative_to(destination_root):
+            raise DataError("迁移目标越界")
+        relative = destination.relative_to(destination_root).as_posix()
+        target = owned_path(destination_root, relative)
+        if relative.split("/")[0].startswith(".") or relative.startswith("index.sqlite3") or os.path.lexists(target):
+            raise DataError("迁移目标须为新的非管理目录，拒绝覆盖")
+        sources = [safety_source(root, db, identity) for identity in sorted(args.artifact_id)]
+        identity = args.operation_id or str(uuid.uuid5(uuid.UUID(root_id), "migration:" + digest(dict(sources=sources, volume=args.volume_id, destination=relative))))
+        canonical_operation_id(identity)
+        payload_reserve = sum(item["size"] for item in sources) * 2
+        metadata_reserve = safety_metadata_peak(db, dict(sources=sources, destination=relative, root=str(root), target=str(destination_root)))
+        reserve = payload_reserve + metadata_reserve
+        return dict(action="migration", root_id=root_id, operation_id=identity, sources=sources, volume_id=args.volume_id,
+                    destination=relative, policy_hash=digest(policy), payload_reserved_bytes=payload_reserve,
+                    metadata_reserved_bytes=metadata_reserve, reserved_bytes=reserve), None
+    with closing(open_index(root)) as db:
+        plan, job = preview(db)
+    approval = digest(plan)
+    if not args.approve_hash:
+        return dict(plan, plan_hash=approval, applied=False)
+    if args.approve_hash != approval or plan["policy_hash"] != digest(policy):
+        raise DataError("迁移须批准当前清单和配置")
+    with write_index(root, policy) as db:
+        target_root = volume_root(root, db, plan["volume_id"])
+        target = owned_path(target_root, plan["destination"])
+        stage = owned_path(target_root, ".staging/" + plan["operation_id"] + "/data")
+        safety_tables(db)
+        job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (plan["operation_id"],)).fetchone()
+        if job is None:
+            current, _ = preview(db)
+            if digest(current) != approval:
+                raise DataError("迁移预览后来源变化")
+            check_budget(root, db, policy, plan["reserved_bytes"], physical_growth=plan["metadata_reserved_bytes"] if plan["volume_id"] else plan["reserved_bytes"])
+            if shutil.disk_usage(target_root).free < plan["reserved_bytes"] + policy["maintenance_reserve_bytes"]:
+                raise DataError("目标卷复制、临时和维护空间不足")
+            db.execute("INSERT INTO safety_jobs VALUES (?,?,?,?,?,?)", (plan["operation_id"], "migration", "reserved", compact_json(plan, QUERY_BYTES), plan["reserved_bytes"], "{}"))
+            safety_phase(db, plan["operation_id"], "reserved", {})
+            job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (plan["operation_id"],)).fetchone()
+        if job["plan"] != compact_json(plan, QUERY_BYTES):
+            raise DataError("迁移日志身份不符")
+        if job["phase"] == "abandoned":
+            raise DataError("已放弃迁移不能重新启用，保留所有文件")
+        progress = json.loads(job["progress"])
+        if job["phase"] == "sealed":
+            for item in plan["sources"]:
+                copied = file_manifest(checked_path(target / item["path"]), allow_sqlite=item["role"] == "sqlite-backup")
+                if copied != progress[item["id"]]:
+                    raise DataError("迁移封口产物已变化")
+        else:
+            for item in plan["sources"]:
+                if safety_source(root, db, item["id"], own_job=plan["operation_id"]) != item:
+                    raise DataError("迁移来源或保护状态已变化")
+            if job["phase"] in ("reserved", "writing"):
+                if os.path.lexists(target):
+                    raise DataError("迁移发布前目标已出现")
+                private_stage(target_root, plan)
+                stage.mkdir(exist_ok=True)
+                checked_path(stage)
+                safety_phase(db, plan["operation_id"], "writing", progress)
+                for item in plan["sources"]:
+                    source_root, source, _ = read_location(root, db, artifact_row(db, item["id"]))
+                    output = owned_path(stage, item["path"])
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    if item["id"] not in progress:
+                        check_budget(root, db, policy)
+                        if os.path.lexists(output):
+                            os.replace(checked_path(output), output.with_name(output.name + ".retained-" + str(uuid.uuid4())))
+                        if shutil.disk_usage(target_root).free < item["size"] + policy["metadata_reserve_bytes"]:
+                            raise DataError("复制期间目标卷空间不足")
+                        with runner_locks(source_root, source), source.open("rb") as incoming, output.open("xb") as outgoing:
+                            shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
+                            outgoing.flush()
+                            os.fsync(outgoing.fileno())
+                        copied = file_manifest(output, allow_sqlite=item["role"] == "sqlite-backup")
+                        if copied["sha256"] != item["sha256"] or copied["size"] != item["size"]:
+                            raise DataError("迁移复制摘要不符，保留现场")
+                        progress[item["id"]] = copied
+                        safety_phase(db, plan["operation_id"], "writing", progress)
+                    elif file_manifest(checked_path(output), allow_sqlite=item["role"] == "sqlite-backup") != progress[item["id"]]:
+                        raise DataError("已验证临时复制件变化")
+                safety_phase(db, plan["operation_id"], "verified", progress)
+            if not os.path.lexists(target):
+                for item in plan["sources"]:
+                    if file_manifest(checked_path(stage / item["path"]), allow_sqlite=item["role"] == "sqlite-backup") != progress[item["id"]]:
+                        raise DataError("发布前复制件变化")
+                    if safety_source(root, db, item["id"], own_job=plan["operation_id"]) != item:
+                        raise DataError("发布前来源变化")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                checked_path(target.parent)
+                os.replace(stage, target)  # stage 与 target 总在同一个目标卷；跨卷原件始终保留。
+            for item in plan["sources"]:
+                if file_manifest(checked_path(target / item["path"]), allow_sqlite=item["role"] == "sqlite-backup") != progress[item["id"]]:
+                    raise DataError("已发布复制件身份不符")
+            safety_phase(db, plan["operation_id"], "published", progress)
+            for item in plan["sources"]:
+                db.execute("UPDATE placements SET state='available' WHERE artifact_id=? AND state='preferred'", (item["id"],))
+                db.execute("INSERT OR REPLACE INTO placements VALUES (?,?,?,?,?)", (item["id"], plan["volume_id"], plan["destination"] + "/" + item["path"], json.dumps(progress[item["id"]]["identity"]), "preferred"))
+            safety_phase(db, plan["operation_id"], "sealed", progress)
+        return dict(operation_id=plan["operation_id"], phase="sealed", applied=True, plan_hash=approval,
+                    copies=[dict(artifact_id=item["id"], path=str(target / item["path"])) for item in plan["sources"]], originals_retained=True)
+
+
+def quarantine(root, policy, args):
+    root_id = root_marker(root, policy)["root_id"]
+    recovering = args.command == "recover-quarantine"
+    def preview(db):
+        if args.operation_id and has_table(db, "safety_jobs"):
+            old = db.execute("SELECT * FROM safety_jobs WHERE id=?", (args.operation_id,)).fetchone()
+            if old:
+                plan = json.loads(old["plan"])
+                if old["kind"] != args.command or sorted(args.artifact_id) != [item["id"] for item in plan["sources"]]:
+                    raise DataError("隔离重试与原清单不同")
+                return plan
+        if not args.artifact_id or len(set(args.artifact_id)) != len(args.artifact_id) or len(args.artifact_id) > 1000:
+            raise DataError("隔离或恢复须明确列出不同的登记ID")
+        sources = []
+        for identity in sorted(args.artifact_id):
+            if recovering:
+                row = artifact_row(db, identity)
+                custody = db.execute("SELECT * FROM custody WHERE artifact_id=? AND state='quarantined'", (identity,)).fetchone() if has_table(db, "custody") else None
+                if custody is None:
+                    raise DataError("对象不在可恢复隔离中")
+                protected = protection(root, db, identity)
+                if any(reason.startswith(("lease:", "read-lease:", "runner-lock", "operation:")) for reason in protected["reasons"]):
+                    raise DataError("活动消费阻止隔离恢复")
+                source = checked_path(owned_path(root, custody["path"]))
+                image = file_manifest(source, allow_sqlite=row["role"] == "sqlite-backup")
+                if image["sha256"] != row["sha256"] or json.dumps(image["identity"]) != custody["identity"]:
+                    raise DataError("隔离文件当前身份不符")
+                if os.path.lexists(owned_path(root, row["path"])):
+                    raise DataError("原路径已存在，恢复拒绝覆盖")
+                sources.append(dict(id=identity, path=row["path"], role=row["role"], custody_path=custody["path"], **image))
+            else:
+                sources.append(safety_source(root, db, identity, destructive=True))
+        generation = [dict(row) for row in db.execute("SELECT artifact_id,operation_id,state FROM custody WHERE artifact_id IN (" + ",".join("?" for _ in args.artifact_id) + ") ORDER BY artifact_id", args.artifact_id)] if has_table(db, "custody") else []
+        identity = args.operation_id or str(uuid.uuid5(uuid.UUID(root_id), args.command + ":" + digest(dict(sources=sources, generation=generation))))
+        canonical_operation_id(identity)
+        return dict(action=args.command, root_id=root_id, operation_id=identity, sources=sources,
+                    policy_hash=digest(policy), reserved_bytes=safety_metadata_peak(db, dict(sources=sources, root=str(root), action=args.command)))
+    with closing(open_index(root)) as db:
+        plan = preview(db)
+    approval = digest(plan)
+    if not args.approve_hash:
+        return dict(plan, plan_hash=approval, applied=False, space_released=False)
+    if args.approve_hash != approval or plan["policy_hash"] != digest(policy):
+        raise DataError("隔离或恢复须批准当前清单")
+    with write_index(root, policy) as db:
+        safety_tables(db)
+        job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (plan["operation_id"],)).fetchone()
+        if job is None:
+            if digest(preview(db)) != approval:
+                raise DataError("隔离预览后文件或引用变化")
+            check_budget(root, db, policy, plan["reserved_bytes"])
+            db.execute("INSERT INTO safety_jobs VALUES (?,?,?,?,?,?)", (plan["operation_id"], args.command, "reserved", compact_json(plan, QUERY_BYTES), plan["reserved_bytes"], "{}"))
+            safety_phase(db, plan["operation_id"], "reserved", {})
+            job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (plan["operation_id"],)).fetchone()
+        if job["plan"] != compact_json(plan, QUERY_BYTES):
+            raise DataError("隔离日志身份不符")
+        progress = json.loads(job["progress"])
+        for item in plan["sources"]:
+            original = owned_path(root, item["path"])
+            isolated = owned_path(root, item["custody_path"] if recovering else ".quarantine/" + plan["operation_id"] + "/" + item["path"])
+            incoming, outgoing = (isolated, original) if recovering else (original, isolated)
+            protected = protection(root, db, item["id"])
+            reasons = [value for value in protected["reasons"] if value != "operation:" + plan["operation_id"]]
+            if (not recovering and (reasons or protected["cache_references"])) or any(value.startswith(("lease:", "read-lease:", "runner-lock", "operation:")) for value in reasons):
+                raise DataError("隔离执行前发现保护或活动消费者")
+            if item["id"] not in progress:
+                incoming_exists, outgoing_exists = os.path.lexists(incoming), os.path.lexists(outgoing)
+                if incoming_exists and outgoing_exists:
+                    raise DataError("隔离原路径和目标同时存在，拒绝覆盖")
+                expected = dict(sha256=item["sha256"], size=item["size"], identity=item["identity"])
+                if incoming_exists:
+                    if file_manifest(checked_path(incoming), allow_sqlite=item["role"] == "sqlite-backup") != expected:
+                        raise DataError("隔离前来源身份改变")
+                    if recovering and any(os.path.lexists(path) for path in (original,)):
+                        raise DataError("恢复拒绝覆盖")
+                    outgoing.parent.mkdir(parents=True, exist_ok=True)
+                    checked_path(outgoing.parent)
+                    # 日志在移动前持久化；中断后只有身份完全匹配的目标才能被接管。
+                    safety_phase(db, plan["operation_id"], "writing", progress)
+                    with runner_locks(root, original), deletion_handle(incoming, expected, destination=outgoing, boundary=root) as relocate:
+                        relocate()
+                elif not outgoing_exists:
+                    raise DataError("隔离两端均缺失，保留日志等待调查")
+                observed = file_manifest(checked_path(outgoing), allow_sqlite=item["role"] == "sqlite-backup")
+                if observed != expected:
+                    raise DataError("隔离或恢复后的字节/身份不符")
+                progress[item["id"]] = observed
+                if recovering:
+                    db.execute("UPDATE custody SET state='restored' WHERE artifact_id=?", (item["id"],))
+                else:
+                    db.execute("INSERT OR REPLACE INTO custody VALUES (?,?,?,?,?)", (item["id"], plan["operation_id"], isolated.relative_to(root).as_posix(), json.dumps(observed["identity"]), "quarantined"))
+                safety_phase(db, plan["operation_id"], "published", progress)
+            elif file_manifest(checked_path(outgoing), allow_sqlite=item["role"] == "sqlite-backup") != progress[item["id"]]:
+                raise DataError("已隔离或恢复对象被改变")
+        if job["phase"] != "sealed":
+            safety_phase(db, plan["operation_id"], "sealed", progress)
+        return dict(operation_id=plan["operation_id"], phase="sealed", applied=True, plan_hash=approval, space_released=False,
+                    items=[dict(artifact_id=item["id"], path=str(owned_path(root, item["path"] if recovering else ".quarantine/" + plan["operation_id"] + "/" + item["path"]))) for item in plan["sources"]])
+
+
+@contextmanager
+def deletion_handle(path, expected, *, destination=None, boundary=None):
+    """Windows拒绝写入/删除共享，校验和删除使用同一个内核文件句柄。"""
+    checked_path(path)
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                      wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        directory_handles = ExitStack()
+        if boundary is not None:
+            if not path.is_relative_to(boundary) or (destination is not None and not destination.is_relative_to(boundary)):
+                raise DataError("句柄操作越过受管边界")
+            directories = {parent for leaf in (path, destination) if leaf is not None
+                           for parent in leaf.parents if parent.is_relative_to(boundary)}
+            class FileInformation(ctypes.Structure):
+                _fields_ = [("attributes", wintypes.DWORD), ("created", wintypes.FILETIME),
+                            ("accessed", wintypes.FILETIME), ("written", wintypes.FILETIME),
+                            ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD), ("size_low", wintypes.DWORD),
+                            ("links", wintypes.DWORD), ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
+            kernel.GetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.POINTER(FileInformation))
+            kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+            try:
+                for directory in sorted(directories, key=lambda item: len(item.parts)):
+                    checked_path(directory)
+                    name = "\\\\?\\" + str(directory) if not str(directory).startswith("\\\\") else "\\\\?\\UNC\\" + str(directory)[2:]
+                    opened_directory = kernel.CreateFileW(name, 0x80000000, 3, None, 3, 0x02000000 | 0x00200000, None)
+                    if opened_directory == wintypes.HANDLE(-1).value:
+                        raise DataError("无法锁定受管目录边界，拒绝移动/删除")
+                    directory_handles.callback(kernel.CloseHandle, opened_directory)
+                    information = FileInformation()
+                    if (not kernel.GetFileInformationByHandle(opened_directory, ctypes.byref(information)) or
+                            not information.attributes & 0x10 or information.attributes & 0x400):
+                        raise DataError("目录句柄不是普通受管目录")
+                    checked_path(directory)
+            except BaseException:
+                directory_handles.close()
+                raise
+        name = "\\\\?\\" + str(path) if not str(path).startswith("\\\\") else "\\\\?\\UNC\\" + str(path)[2:]
+        native = kernel.CreateFileW(name, 0x80000000 | 0x10000, 1, None, 3, 0x00200000, None)
+        if native == wintypes.HANDLE(-1).value:
+            directory_handles.close()
+            raise DataError("无法取得排他删除句柄；活动句柄或权限不足时拒绝删除")
+        try:
+            descriptor = msvcrt.open_osfhandle(native, os.O_RDONLY | os.O_BINARY)
+        except BaseException:
+            kernel.CloseHandle(native)
+            directory_handles.close()
+            raise
+        handle = os.fdopen(descriptor, "rb")
+        kernel.SetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+        kernel.SetFileInformationByHandle.restype = wintypes.BOOL
+        def remove():
+            if destination is not None:
+                checked_path(destination.parent)
+                if os.path.lexists(destination):
+                    raise DataError("隔离/恢复目标已出现，拒绝覆盖")
+                target_name = "\\\\?\\" + str(destination) if not str(destination).startswith("\\\\") else "\\\\?\\UNC\\" + str(destination)[2:]
+                name_bytes = target_name.encode("utf-16-le")
+                class RenameInformation(ctypes.Structure):
+                    _fields_ = [("replace", wintypes.BOOL), ("root", wintypes.HANDLE),
+                                ("length", wintypes.DWORD), ("name", wintypes.WCHAR * (len(name_bytes) // 2 + 1))]
+                information = RenameInformation(False, None, len(name_bytes), target_name)
+                if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(handle.fileno()), 3,
+                                                         ctypes.byref(information), RenameInformation.name.offset + len(name_bytes)):
+                    raise DataError("内核拒绝移动已验证句柄，错误=" + str(ctypes.get_last_error()) + "；保留原件及操作日志")
+                return
+            disposition = wintypes.BOOL(True)
+            if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(handle.fileno()), 4,
+                                                     ctypes.byref(disposition), ctypes.sizeof(disposition)):
+                raise DataError("内核拒绝删除已验证文件句柄，保留日志和现场")
+    else:
+        import fcntl
+        directory_handles = ExitStack()
+        handle = os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        def remove():
+            if (path.stat().st_dev, path.stat().st_ino) != (os.fstat(handle.fileno()).st_dev, os.fstat(handle.fileno()).st_ino):
+                raise DataError("删除前路径身份变化")
+            if destination is not None:
+                if os.path.lexists(destination):
+                    raise DataError("隔离/恢复目标已出现，拒绝覆盖")
+                os.link(path, destination, follow_symlinks=False)
+                path.unlink()
+            else:
+                path.unlink()
+    with directory_handles, handle:
+        opened = os.fstat(handle.fileno())
+        identity = lambda info: [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
+        checksum = hashlib.sha256()
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            checksum.update(block)
+        if (not stat.S_ISREG(opened.st_mode) or identity(opened) != expected["identity"] or
+                identity(os.fstat(handle.fileno())) != expected["identity"] or
+                identity(checked_path(path).stat()) != expected["identity"] or checksum.hexdigest() != expected["sha256"]):
+            raise DataError("删除句柄当前身份或原始字节摘要不符")
+        yield remove
+
+
+def purge_item(root, db, identity, own_job=None):
+    row = artifact_row(db, identity)
+    custody = db.execute("SELECT * FROM custody WHERE artifact_id=? AND state='quarantined'", (identity,)).fetchone() if has_table(db, "custody") else None
+    if custody is None:
+        raise DataError("永久删除仅接受明确隔离的对象副本")
+    protected = protection(root, db, identity)
+    reasons = [value for value in protected["reasons"] if value != "operation:" + str(own_job)]
+    if reasons or protected["cache_references"]:
+        raise DataError("保护引用、锁、租约或未失效加速缓存阻止永久删除")
+    path = checked_path(owned_path(root, custody["path"]))
+    image = file_manifest(path, allow_sqlite=row["role"] == "sqlite-backup")
+    if image["sha256"] != row["sha256"] or json.dumps(image["identity"]) != custody["identity"]:
+        raise DataError("隔离副本当前身份不符")
+    item = dict(id=identity, path=custody["path"], quarantine_id=custody["operation_id"], role=row["role"], references=protected["references"], **image)
+    item["confirmation_hash"] = digest(item)
+    return item
+
+
+def purge(root, policy, args):
+    root_id = root_marker(root, policy)["root_id"]
+    if not args.plan:
+        if args.approve_hash or args.confirm_item or not args.artifact_id or len(set(args.artifact_id)) != len(args.artifact_id) or len(args.artifact_id) > 1000:
+            raise DataError("删除先预览具体登记ID，再保存清单并逐项确认")
+        if args.valid_seconds is None or not 1 <= args.valid_seconds <= 86400:
+            raise DataError("删除清单有效时长必须明确给定1至86400秒，未设生产默认值")
+        with closing(open_index(root)) as db:
+            items = [purge_item(root, db, identity) for identity in sorted(args.artifact_id)]
+        now = time.time()
+        plan = dict(action="purge", root_id=root_id, policy_hash=digest(policy), operation_id=str(uuid.uuid4()),
+                    created=now, expires=now + args.valid_seconds, items=items, space_release_after_delete_only=True)
+        return dict(plan, plan_hash=digest(plan), applied=False)
+    if args.artifact_id or args.valid_seconds is not None:
+        raise DataError("执行删除必须仅使用保存的具体清单，不能同时换选对象")
+    saved_path = checked_path(args.plan)
+    if saved_path.stat().st_size > QUERY_BYTES:
+        raise DataError("删除授权清单超过1MiB")
+    plan = json.loads(bounded_text(saved_path))
+    if not isinstance(plan, dict):
+        raise DataError("删除授权清单必须是完整JSON对象")
+    approval = plan.pop("plan_hash", None)
+    plan.pop("applied", None)
+    if approval is None or approval != digest(plan) or args.approve_hash != approval:
+        raise DataError("删除清单完整摘要须明确批准")
+    if plan.get("action") != "purge" or plan.get("root_id") != root_id or plan.get("policy_hash") != digest(policy):
+        raise DataError("删除清单根身份、动作或配置不符")
+    canonical_operation_id(plan.get("operation_id"))
+    if (type(plan.get("created")) not in (float, int) or type(plan.get("expires")) not in (float, int) or
+            not math.isfinite(plan["created"]) or not math.isfinite(plan["expires"]) or
+            not plan["created"] <= time.time() < plan["expires"] or not 0 < plan["expires"] - plan["created"] <= 86400):
+        raise DataError("删除授权已过期或时钟/有效时长无效")
+    items = plan.get("items")
+    required = {"id", "path", "quarantine_id", "role", "references", "sha256", "size", "identity", "confirmation_hash"}
+    if (not isinstance(items, list) or not 1 <= len(items) <= 1000 or
+            any(not isinstance(item, dict) or set(item) != required or not all(isinstance(item[key], str) for key in ("id", "path", "quarantine_id", "role", "sha256", "confirmation_hash")) for item in items) or
+            len({item["id"] for item in items}) != len(items)):
+        raise DataError("删除对象清单无效")
+    confirmations = {item["id"] + ":" + item["confirmation_hash"] for item in items}
+    if len(args.confirm_item) != len(confirmations) or set(args.confirm_item) != confirmations:
+        raise DataError("永久删除必须逐项确认完整的对象ID与当前确认摘要")
+    with write_index(root, policy) as db, ExitStack() as handles:
+        safety_tables(db)
+        job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (plan["operation_id"],)).fetchone()
+        if job and job["plan"] != compact_json(plan, QUERY_BYTES):
+            raise DataError("删除操作日志与授权清单不符")
+        progress = json.loads(job["progress"]) if job else {}
+        # 全部对象和排他句柄先验证，任一对象失败不会删除前面的对象。
+        removers = {}
+        for item in items:
+            if progress.get(item["id"]) == "purged":
+                if os.path.lexists(owned_path(root, item["path"])):
+                    raise DataError("已删除路径重新出现，拒绝接管或删除")
+                custody = db.execute("SELECT * FROM custody WHERE artifact_id=?", (item["id"],)).fetchone()
+                if custody is None or custody["path"] != item["path"] or custody["state"] != "purged":
+                    raise DataError("已删除墓碑与原隔离清单不符")
+                continue
+            path = owned_path(root, item["path"])
+            if progress.get(item["id"]) == "deleting" and not os.path.lexists(path):
+                custody = db.execute("SELECT * FROM custody WHERE artifact_id=?", (item["id"],)).fetchone()
+                if custody is None or custody["path"] != item["path"] or custody["identity"] != json.dumps(item["identity"]):
+                    raise DataError("删除中断日志与隔离身份不符")
+                progress[item["id"]] = "purged"
+                continue
+            if purge_item(root, db, item["id"], plan["operation_id"]) != item:
+                raise DataError("预览后隔离清单或引用变化，旧确认无效")
+            item_handles = handles.enter_context(ExitStack())
+            removers[item["id"]] = (item_handles.enter_context(deletion_handle(path, item, boundary=root)), item_handles.close)
+        if job and job["phase"] == "sealed":
+            if any(progress.get(item["id"]) != "purged" for item in items):
+                raise DataError("删除封口日志缺少逐项完成证据")
+            return dict(operation_id=plan["operation_id"], applied=True, phase="sealed", purged=[item["id"] for item in items])
+        reserve = safety_metadata_peak(db, plan)
+        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"] + reserve:
+            raise DataError("删除仍须保留足够的日志空间")
+        if job is None:
+            check_budget(root, db, policy, reserve)
+            # sources仅用于活动操作保护；完整授权清单本身保持不可变。
+            db.execute("INSERT INTO safety_jobs VALUES (?,?,?,?,?,?)", (plan["operation_id"], "purge", "reserved", compact_json(plan, QUERY_BYTES), reserve, "{}"))
+            safety_phase(db, plan["operation_id"], "reserved", {})
+        for item in items:
+            if item["id"] in removers:
+                progress[item["id"]] = "deleting"
+                safety_phase(db, plan["operation_id"], "writing", progress)
+                remove, close_item = removers[item["id"]]
+                remove()
+                # Windows删除在句柄关闭时完成；逐项关闭后再持久化已删除状态。
+                close_item()
+                progress[item["id"]] = "purged"
+            db.execute("UPDATE custody SET state='purged' WHERE artifact_id=?", (item["id"],))
+            safety_phase(db, plan["operation_id"], "published", progress)
+        safety_phase(db, plan["operation_id"], "sealed", progress)
+        return dict(operation_id=plan["operation_id"], applied=True, phase="sealed", purged=[item["id"] for item in items])
+
+
 def install_junction(repository, apply):
     if sys.platform != "win32":
         raise DataError("目录联接安装仅支持Windows")
@@ -1892,11 +2683,49 @@ def main():
     installer = commands.add_parser("install-junction", help="预览或显式安装仓库内共用目录联接")
     installer.add_argument("--repository", required=True)
     installer.add_argument("--apply", action="store_true")
-    for name in ("inventory", "status", "check-config", "init-root", "register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references", "extract", "query", "export", "compare", "snapshot", "archive", "restore", "backup-sqlite", "operation"):
-        command = commands.add_parser(name, help="只读查看显式指定的数据根")
+    for name in ("inventory", "status", "check-config", "init-root", "register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references", "extract", "query", "export", "compare", "snapshot", "archive", "restore", "backup-sqlite", "operation", "read-lease", "legacy-register", "dependency", "volume-register", "migration", "safety-operation", "quarantine", "recover-quarantine", "purge"):
+        command = commands.add_parser(name, help="查看或按显式授权管理指定的数据根")
         command.add_argument("--root")
         command.add_argument("--config")
         command.add_argument("--limit", type=int, default=1000)
+        if name == "purge":
+            command.add_argument("--artifact-id", action="append", default=[])
+            command.add_argument("--valid-seconds", type=int)
+            command.add_argument("--plan")
+            command.add_argument("--approve-hash")
+            command.add_argument("--confirm-item", action="append", default=[])
+        if name in ("quarantine", "recover-quarantine"):
+            command.add_argument("--artifact-id", action="append", default=[])
+            command.add_argument("--operation-id")
+            command.add_argument("--approve-hash")
+        if name == "volume-register":
+            command.add_argument("--path", required=True)
+            command.add_argument("--approve-hash")
+        if name == "migration":
+            command.add_argument("--artifact-id", action="append", default=[])
+            command.add_argument("--destination")
+            command.add_argument("--volume-id", default="")
+            command.add_argument("--operation-id")
+            command.add_argument("--approve-hash")
+        if name == "safety-operation":
+            command.add_argument("--operation-id", required=True)
+            command.add_argument("--action", choices=("status", "abandon-preview", "abandon"), default="status")
+            command.add_argument("--approve-hash")
+        if name == "legacy-register":
+            command.add_argument("--directory", required=True)
+            command.add_argument("--role", choices=("raw", "input", "native", "evidence", "model", "analysis", "cache", "unknown"), default="unknown")
+            command.add_argument("--approve-hash")
+        if name == "dependency":
+            command.add_argument("--artifact-id", required=True)
+            command.add_argument("--requires", required=True)
+            command.add_argument("--kind", choices=("durable", "cache", "unknown"), default="durable")
+        if name == "read-lease":
+            command.add_argument("--action", choices=("acquire", "status", "heartbeat", "release", "recover-preview", "recover"), required=True)
+            command.add_argument("--artifact-id")
+            command.add_argument("--owner-pid", type=int)
+            command.add_argument("--lease-id")
+            command.add_argument("--token")
+            command.add_argument("--approve-hash")
         if name in ("archive", "restore", "backup-sqlite"):
             command.add_argument("--operation-id")
             command.add_argument("--approve-hash")
@@ -1990,8 +2819,12 @@ def main():
                        "compare": compare_facts, "snapshot": snapshot_facts}[args.command]
             print(compact_json(handler(root, policy, args), QUERY_BYTES))
             return 0
-        if args.command in ("archive", "restore", "backup-sqlite", "operation"):
-            handler = manage_operation if args.command == "operation" else lifecycle_execute
+        if args.command in ("archive", "restore", "backup-sqlite", "operation", "read-lease", "legacy-register", "dependency", "volume-register", "migration", "safety-operation", "quarantine", "recover-quarantine", "purge"):
+            handler = {"read-lease": reader_lease, "legacy-register": legacy_register, "dependency": dependency_add,
+                       "volume-register": register_volume, "migration": migration, "safety-operation": safety_job_status,
+                       "quarantine": quarantine, "recover-quarantine": quarantine,
+                       "purge": purge,
+                       "operation": manage_operation}.get(args.command, lifecycle_execute)
             print(compact_json(handler(root, policy, args), QUERY_BYTES))
             return 0
         if args.command in ("register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references"):

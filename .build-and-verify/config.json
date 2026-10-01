@@ -62,7 +62,7 @@
           ".agents/skills/sim2gse-data/**",
           ".build-and-verify/config.json"
         ],
-        "timeoutSeconds": 600
+        "timeoutSeconds": 900
       },
       {
         "id": "verify.luals",

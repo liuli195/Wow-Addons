@@ -74,6 +74,8 @@ Status: ready-for-agent
 
 ### 流程及来源证据
 
+票05实现细化：共享CLI增加旧目录登记、消费端读者租约、依赖图、受管卷登记、迁移、可恢复隔离和具体清单删除。旧目录原位登记保留稳定ID，未知消费者默认保护；SQLite可变源与逻辑一致性映像分开。跨卷流式复制/验证，在目标卷发布首选位置但始终保留旧原路径。持久、未知及保留保护沿依赖图传递，活动读者和运行租约阻止位置操作，过期心跳不能推定死亡。Windows隔离、恢复和永久删除按同一排他句柄验证身份/SHA后执行，不能用解锁后的路径再次指定对象。删除保存完整清单、有效期和每项确认摘要，全量预检后逐项持久化，中断重试及墓碑保留ID。主根/受管卷共存占用与保守未封口预留计入容量，跨卷载荷与主卷元数据分别核验物理空间；同卷隔离不释放空间。迁移可显式放弃未完成预留并保留复制件；破坏性阶段须恢复具体操作。所有生产参数仍未设置，1000项目录容量核验上限和维护/任务配置预览由票06完成后再做整个框架验收。
+
 - Full（完整）流程：数据迁移/清除/跨卷风险。基线f554538993161cc045d19c4ed47d261f709f741b；同一工作树 D:\My Project\Wow Addons，当前main。拟分支codex/sim2gse-data-management只读核查不存在，门禁一前不创建。
 - 已读本机dev-flow及需求规则、subagent-policy、codebase-design、grill-with-docs/grilling/domain-modeling、to-spec/to-tickets，及仓库任务/标签/领域约定和相关正式规格。
 - 父线程实际使用codebase-design完成只读架构：公开固定基线AGENTS、domain、issue-tracker、CONTEXT、user-workflow/sequence-evaluation、scripts/dev/sim2gse/benchmark.py前160行、现有技能和验证配置；本机提供search741–833/1270–1325、task310–321/537–552、engine57–60及测试原文。已收父线程架构意见。
