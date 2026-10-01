@@ -4,6 +4,7 @@ from contextlib import contextmanager, ExitStack
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -774,6 +775,308 @@ def cache_references(root, policy, args):
     return dict(plan_hash=plan_hash, applied=True, **plan)
 
 
+FACT_BYTES = 16 * 1024
+QUERY_BYTES = 1024 * 1024
+DOCUMENT_BYTES = 16 * 1024 * 1024
+
+
+def compact_json(value, maximum):
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (ValueError, RecursionError) as error:
+        raise DataError("事实JSON包含非有限数值或过深结构") from error
+    if len(text.encode("utf-8")) > maximum:
+        raise DataError("事实或查询超过固定字节边界，须缩小选取范围")
+    return text
+
+
+def fact_tables(db):
+    db.execute("CREATE TABLE IF NOT EXISTS facts (id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL REFERENCES artifacts(id), payload TEXT NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS snapshots (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+
+
+def has_table(db, name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def document(root, db, artifact_id):
+    row = artifact_row(db, artifact_id)
+    if not row["sealed"] or row["size"] > DOCUMENT_BYTES:
+        raise DataError("事实来源须已封口，JSON输入上限16MiB；不能整文件读取更大报告")
+    if any(reason.startswith(("lease:", "runner-lock")) for reason in protection(root, db, artifact_id)["reasons"]):
+        raise DataError("事实来源仍被运行租约或字节锁保护，不能提取")
+    source = managed_file(root, str(root / row["path"]))
+    with runner_locks(root, source), source.open("rb") as handle:
+        before = os.fstat(handle.fileno())
+        raw = handle.read(DOCUMENT_BYTES + 1)
+        after = os.fstat(handle.fileno())
+        identity = lambda info: [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
+        if (len(raw) > DOCUMENT_BYTES or json.dumps(identity(before)) != row["identity"] or
+                identity(before) != identity(after) or identity(after) != identity(source.stat()) or
+                hashlib.sha256(raw).hexdigest() != row["sha256"]):
+            raise DataError("提取源身份或摘要已变化")
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise DataError("源JSON含非有限数值")
+        return number
+    def object_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise DataError("源JSON包含重复键，不能确定事实")
+            result[key] = value
+        return result
+    def reject_constant(value):
+        raise DataError("源JSON含非有限数值:" + value)
+    try:
+        value = json.loads(raw, parse_float=finite_float, parse_constant=reject_constant, object_pairs_hook=object_pairs)
+    except (RecursionError, ValueError) as error:
+        raise DataError("源JSON语法、数值或嵌套无效") from error
+    if not isinstance(value, dict):
+        raise DataError("事实来源须为JSON对象")
+    return value, dict(artifact_id=artifact_id, sha256=row["sha256"], identity=json.loads(row["identity"]),
+                       path=row["path"], schema_version=row["schema_version"])
+
+
+def numeric(value, *, count=False):
+    if value is None:
+        return None
+    if ((type(value) is not int if count else type(value) not in (int, float)) or
+            value < 0 or value > (2**63 - 1 if count else 1e308) or not math.isfinite(value)):
+        raise DataError("已有数值类型或范围无效，不能编造替代值")
+    return value
+
+
+def extracted_fact(root, db, args):
+    value, source = document(root, db, args.artifact_id)
+    context_source = None
+    metadata = value
+    if args.context_artifact_id:
+        metadata, context_source = document(root, db, args.context_artifact_id)
+        if metadata.get("sha256") != source["sha256"]:
+            raise DataError("上下文须以实际缓存行sha256绑定原生报告")
+    request = metadata.get("request")
+    if request is not None and not isinstance(request, dict):
+        raise DataError("已记录request须为对象")
+    details = metadata.get("condition_details")
+    if details is not None:
+        keys = {"fields", "class_name", "engine", "options", "config", "simulation_config", "cbor2", "rules"}
+        if not isinstance(details, dict) or set(details) != keys or not request or digest(details) != request.get("condition"):
+            raise DataError("完整条件展开与TaskStore条件摘要不符")
+        if (any(not isinstance(details[key], dict) for key in ("fields", "engine", "config", "simulation_config", "rules")) or
+                not isinstance(details["options"], list) or not isinstance(details["class_name"], str) or not isinstance(details["cbor2"], str)):
+            raise DataError("记录条件字段结构无效，不能推定配置相同")
+    context = dict(condition=details, request={key: item for key, item in (request or {}).items() if key != "condition"},
+                   fidelity=metadata.get("fidelity"))
+    native = value.get("sim")
+    uncertainty, seconds, metric, action_sequence = None, None, None, None
+    if isinstance(native, dict):
+        players = native.get("players")
+        if not isinstance(players, list) or not players:
+            raise DataError("原生报告缺少玩家列表")
+        selected = [player for player in players if isinstance(player, dict) and
+                    (args.player_name is None or player.get("name") == args.player_name)]
+        if len(selected) != 1:
+            raise DataError("原生报告须唯一选择玩家，不能混合角色")
+        data = selected[0].get("collected_data", {})
+        if not isinstance(data, dict):
+            raise DataError("原生collected_data须为对象")
+        if "action_sequence" in data:
+            if not isinstance(data["action_sequence"], list):
+                raise DataError("原生动作序列须为列表，不能推定尝试概率")
+            action_sequence = dict(artifact_id=args.artifact_id, entries=len(data["action_sequence"]),
+                                   json_pointer=f"/sim/players/{players.index(selected[0])}/collected_data/action_sequence")
+        metric = "raid_dps" if len(players) > 1 else "dps"
+        statistics = native.get("statistics", {}) if len(players) > 1 else data
+        damage = statistics.get(metric, {}) if isinstance(statistics, dict) else {}
+        if not isinstance(damage, dict):
+            raise DataError("原生伤害汇总须为对象")
+        dps, samples = numeric(damage.get("mean")), numeric(damage.get("count"), count=True)
+        uncertainty = {key: damage[key] for key in ("std_dev", "mean_std_dev", "variance", "confidence", "confidence_estimator") if key in damage} or None
+        length = data.get("fight_length", {})
+        seconds = numeric(length.get("mean")) if isinstance(length, dict) else None
+        if context_source and (metadata.get("dps") != dps or metadata.get("samples") != samples):
+            raise DataError("实际缓存摘要与原生报告数值不符")
+        kind, status = "native_summary", metadata.get("status", "reported")
+    else:
+        summary = value.get("search_result", value)
+        if not isinstance(summary, dict):
+            raise DataError("已有结果摘要须为对象")
+        dps, samples = numeric(summary.get("dps")), numeric(summary.get("samples"), count=True)
+        kind = "search_summary" if "search_result" in value else "batch_summary"
+        metric = summary.get("metric", "dps" if dps is not None else None)
+        status = value.get("status")
+        uncertainty = summary.get("uncertainty")
+    if not isinstance(status, str):
+        raise DataError("事实源缺少状态，不能推定模拟成功")
+    flags = metadata if context_source else value
+    censored = flags.get("censored", True if status == "budget_exhausted" else None)
+    incomplete = flags.get("incomplete", True if status in ("failed", "incomplete", "cancelled", "budget_exhausted") else None)
+    for flag in (censored, incomplete):
+        if flag is not None and type(flag) is not bool:
+            raise DataError("删失/未完成标记须为布尔值或缺失")
+    fact_id = str(uuid.uuid5(uuid.UUID(args.artifact_id), "fact-v1:" + digest(dict(context_source=context_source, player=args.player_name))))
+    fact = dict(fact_id=fact_id, fact_schema=1, source=source, context_source=context_source,
+                source_kind=kind, status=status, censored=censored, incomplete=incomplete,
+                dps=dps, metric=metric, samples=samples, seconds=seconds, uncertainty=uncertainty,
+                requested_iterations=numeric(metadata.get("requested_iterations", (request or {}).get("iterations")), count=True),
+                context=context, condition_hash=(request or {}).get("condition"), error=flags.get("error"),
+                independent_validation_complete=value.get("independent_validation_complete"),
+                observations=dict(action_trace=value.get("action_trace"), action_sequence=action_sequence,
+                                  probabilities=value.get("probabilities"),
+                                  feedback=metadata.get("feedback"), position_summary=metadata.get("position_summary")))
+    compact_json(fact, FACT_BYTES)
+    return fact
+
+
+def extract_facts(root, policy, args):
+    with write_index(root, policy) as db:
+        fact = extracted_fact(root, db, args)
+        payload = compact_json(fact, FACT_BYTES)
+        existing = db.execute("SELECT payload FROM facts WHERE id=?", (fact["fact_id"],)).fetchone() if has_table(db, "facts") else None
+        if existing:
+            if existing[0] != payload:
+                raise DataError("同身份事实已存在且内容不符，不能覆盖")
+            return dict(fact_id=fact["fact_id"], changed=False)
+        check_budget(root, db, policy, 65536 + len(payload.encode("utf-8")) * 8)
+        fact_tables(db)
+        db.execute("INSERT INTO facts VALUES (?,?,?)", (fact["fact_id"], args.artifact_id, payload))
+        for source in (fact["source"], fact["context_source"]):
+            if source:
+                db.execute("INSERT OR IGNORE INTO refs VALUES (?,?,?)", ("fact:" + fact["fact_id"], source["artifact_id"], "durable"))
+        db.execute("INSERT INTO operations VALUES (?,?,?,?)", (str(uuid.uuid4()), "extract-fact", "committed", json.dumps(dict(fact_id=fact["fact_id"]))))
+    return dict(fact_id=fact["fact_id"], changed=True)
+
+
+def fact_row(db, fact_id):
+    row = db.execute("SELECT payload FROM facts WHERE id=?", (fact_id,)).fetchone() if has_table(db, "facts") else None
+    if not row:
+        raise DataError("未知事实ID")
+    return json.loads(row[0])
+
+
+@contextmanager
+def fact_reader(root, policy):
+    marker = root_marker(root, policy)
+    db = open_index(root)
+    try:
+        identity = db.execute("SELECT value FROM metadata WHERE key='root_id'").fetchone()
+        if not identity or identity[0] != marker["root_id"]:
+            raise DataError("事实索引根身份不符")
+        db.execute("BEGIN")
+        yield db
+    finally:
+        db.close()
+
+
+def query_facts(root, policy, args):
+    if not 1 <= args.limit <= 1000 or not 0 <= args.offset <= 1000000:
+        raise DataError("事实查询limit须1..1000，offset须0..1000000")
+    with fact_reader(root, policy) as db:
+        if args.snapshot_id:
+            stored = db.execute("SELECT payload FROM snapshots WHERE id=?", (args.snapshot_id,)).fetchone() if has_table(db, "snapshots") else None
+            if not stored:
+                raise DataError("未知快照ID")
+            snapshot = json.loads(stored[0])
+            rows = snapshot["rows"][args.offset:args.offset + args.limit + 1]
+        elif has_table(db, "facts"):
+            rows = [json.loads(row[0]) for row in db.execute("SELECT payload FROM facts ORDER BY id LIMIT ? OFFSET ?", (args.limit + 1, args.offset))]
+        else:
+            rows = []
+    result = dict(fact_schema=1, snapshot_id=args.snapshot_id, rows=rows[:args.limit], has_more=len(rows) > args.limit,
+                  next_offset=args.offset + min(len(rows), args.limit))
+    compact_json(result, QUERY_BYTES)
+    return result
+
+
+def context_leaves(value, prefix=""):
+    if isinstance(value, dict) and value:
+        result = {}
+        for key, item in value.items():
+            result.update(context_leaves(item, prefix + "." + key if prefix else key))
+        return result
+    return {prefix: value}
+
+
+def compare_facts(root, policy, args):
+    if not args.axis or len(args.axis) > 16 or len(args.stratify) > 16 or set(args.axis) & set(args.stratify):
+        raise DataError("比较须显式声明1..16个互不重叠的变化轴，分层上限16")
+    with fact_reader(root, policy) as db:
+        left, right = fact_row(db, args.left), fact_row(db, args.right)
+    for row in (left, right):
+        context = row["context"]
+        if not context["condition"] or context["fidelity"] is None:
+            raise DataError("缺少完整已核对条件或保真度，不能凭摘要相同推定可比")
+        required = {"seed", "input_seed", "iterations", "stats", "program", "purpose", "times", "trace", "reset_events"}
+        if not required <= context["request"].keys() or any(context["request"][key] is None for key in required):
+            raise DataError("比较缺少实际请求、种子、保真度或采样预算")
+        if context["condition"]["config"].get("total_budget_seconds") is None:
+            raise DataError("比较缺少记录的总预算")
+    a, b = context_leaves(left["context"]), context_leaves(right["context"])
+    for axis in (*args.axis, *args.stratify):
+        if axis not in a or axis not in b or a[axis] is None or b[axis] is None:
+            raise DataError("变化轴或分层字段缺失；须使用完整叶字段路径")
+    differences = {key for key in a.keys() | b.keys() if key not in a or key not in b or a[key] != b[key]}
+    if differences - set(args.axis) - set(args.stratify):
+        raise DataError("未声明条件变化:" + ",".join(sorted(differences - set(args.axis) - set(args.stratify))))
+    if left["source_kind"] != right["source_kind"] or left["metric"] != right["metric"]:
+        raise DataError("报告口径或指标不同，拒绝混合比较")
+    strata = {key: dict(left=a[key], right=b[key]) for key in args.stratify}
+    comparable = not (differences & set(args.stratify))
+    eligible = all(row["status"] in ("success", "completed", "reported") and row["dps"] is not None and
+                   row["samples"] is not None and row["samples"] > 0 and not row["censored"] and not row["incomplete"] for row in (left, right))
+    result = dict(left=args.left, right=args.right, axes={key: dict(left=a[key], right=b[key]) for key in args.axis},
+                  strata=strata, comparable=comparable and eligible, delta_dps=right["dps"] - left["dps"] if comparable and eligible else None,
+                  delta_confidence_interval=None, samples=dict(left=left["samples"], right=right["samples"]),
+                  uncertainty=dict(left=left["uncertainty"], right=right["uncertainty"]),
+                  outcomes=dict(left=left["status"], right=right["status"]))
+    compact_json(result, QUERY_BYTES)
+    return result
+
+
+def snapshot_facts(root, policy, args):
+    root_id = root_marker(root, policy)["root_id"]
+    ids = sorted(set(args.fact_id))
+    if not ids or len(ids) > 1000:
+        raise DataError("快照须显式选择1..1000个事实ID")
+    def plan(db):
+        payload = dict(root_id=root_id, fact_schema=1, rows=[fact_row(db, identity) for identity in ids])
+        compact_json(payload, QUERY_BYTES)
+        checked = set()
+        for fact in payload["rows"]:
+            for source in (fact["source"], fact["context_source"]):
+                if source and source["artifact_id"] not in checked:
+                    _, current = document(root, db, source["artifact_id"])
+                    if current["sha256"] != source["sha256"]:
+                        raise DataError("快照来源摘要已改变，不能发布")
+                    checked.add(source["artifact_id"])
+        snapshot_id = str(uuid.uuid5(uuid.UUID(root_id), "snapshot:" + digest(payload)))
+        return payload, dict(snapshot_id=snapshot_id, plan_hash=digest(dict(action="snapshot", payload=payload, policy=policy)), applied=False)
+    if args.approve_hash is None:
+        with fact_reader(root, policy) as db:
+            return plan(db)[1]
+    with write_index(root, policy) as db:
+        payload, preview = plan(db)
+        if args.approve_hash != preview["plan_hash"]:
+            raise DataError("快照须批准当前选择与源身份摘要")
+        text = compact_json(payload, QUERY_BYTES)
+        existing = db.execute("SELECT payload FROM snapshots WHERE id=?", (preview["snapshot_id"],)).fetchone() if has_table(db, "snapshots") else None
+        if existing and existing[0] != text:
+            raise DataError("快照身份冲突，不能覆盖")
+        if not existing:
+            check_budget(root, db, policy, 65536 + len(text.encode("utf-8")) * 8)
+            fact_tables(db)
+            db.execute("INSERT INTO snapshots VALUES (?,?)", (preview["snapshot_id"], text))
+            for fact in payload["rows"]:
+                for source in (fact["source"], fact["context_source"]):
+                    if source:
+                        db.execute("INSERT OR IGNORE INTO refs VALUES (?,?,?)", ("snapshot:" + preview["snapshot_id"], source["artifact_id"], "durable"))
+            db.execute("INSERT INTO operations VALUES (?,?,?,?)", (str(uuid.uuid4()), "snapshot", "committed", json.dumps(preview)))
+        preview["applied"] = True
+        return preview
+
+
 def install_junction(repository, apply):
     if sys.platform != "win32":
         raise DataError("目录联接安装仅支持Windows")
@@ -806,7 +1109,7 @@ def main():
     installer = commands.add_parser("install-junction", help="预览或显式安装仓库内共用目录联接")
     installer.add_argument("--repository", required=True)
     installer.add_argument("--apply", action="store_true")
-    for name in ("inventory", "status", "check-config", "init-root", "register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references"):
+    for name in ("inventory", "status", "check-config", "init-root", "register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references", "extract", "query", "export", "compare", "snapshot"):
         command = commands.add_parser(name, help="只读查看显式指定的数据根")
         command.add_argument("--root")
         command.add_argument("--config")
@@ -851,6 +1154,21 @@ def main():
         if name == "cache-references":
             command.add_argument("--database", required=True)
             command.add_argument("--approve-hash")
+        if name == "extract":
+            command.add_argument("--artifact-id", required=True)
+            command.add_argument("--context-artifact-id")
+            command.add_argument("--player-name")
+        if name in ("query", "export"):
+            command.add_argument("--offset", type=int, default=0)
+            command.add_argument("--snapshot-id")
+        if name == "compare":
+            command.add_argument("--left", required=True)
+            command.add_argument("--right", required=True)
+            command.add_argument("--axis", action="append", default=[])
+            command.add_argument("--stratify", action="append", default=[])
+        if name == "snapshot":
+            command.add_argument("--fact-id", action="append", required=True)
+            command.add_argument("--approve-hash")
     args = parser.parse_args()
     try:
         if args.command == "install-junction":
@@ -868,6 +1186,11 @@ def main():
             return 0
         if not root.is_dir() or not 1 <= args.limit <= 100000:
             raise DataError("数据根须为目录；盘点上限须在1至100000之间")
+        if args.command in ("extract", "query", "export", "compare", "snapshot"):
+            handler = {"extract": extract_facts, "query": query_facts, "export": query_facts,
+                       "compare": compare_facts, "snapshot": snapshot_facts}[args.command]
+            print(compact_json(handler(root, policy, args), QUERY_BYTES))
+            return 0
         if args.command in ("register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references"):
             handler = {"register": register_file, "resolve": resolve_artifact, "begin": begin_run, "finish": finish_run,
                        "protect": protect_artifact, "pin": pin_artifact, "reference": change_reference, "lease": manage_lease,

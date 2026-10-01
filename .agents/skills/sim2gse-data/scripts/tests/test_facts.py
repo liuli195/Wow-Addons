@@ -1,0 +1,215 @@
+"""事实、比较及快照的公开CLI回归；仅使用隔离合成数据。"""
+import hashlib
+import json
+import unittest
+
+import test_lifecycle as lifecycle
+
+
+class FactTests(unittest.TestCase):
+    setUp = lifecycle.LifecycleTests.setUp
+    save_config = lifecycle.LifecycleTests.save_config
+    call = lifecycle.LifecycleTests.call
+    initialize = lifecycle.LifecycleTests.initialize
+
+    def source(self, name, value):
+        path = self.root / name
+        path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        plan = self.call("register", "--path", str(path), "--role", "native")
+        return self.call("register", "--path", str(path), "--role", "native", "--approve-hash", plan["plan_hash"])["artifact_id"]
+
+    def batch(self, version="v1", seed=7, fidelity="native", budget=600, **values):
+        condition = dict(fields={"talents": "recorded"}, class_name="Death Knight",
+                         engine={"controlled": {"version": version}}, options=["max_time=180"],
+                         config={"total_budget_seconds": budget}, simulation_config={"target_count": 1},
+                         cbor2="recorded-version", rules={"score": "recorded-rule"})
+        condition_hash = hashlib.sha256(json.dumps(condition, ensure_ascii=False, sort_keys=True,
+                                                   separators=(",", ":")).encode()).hexdigest()
+        row = dict(status="success", dps=100, samples=9, requested_iterations=10,
+                   request=dict(condition=condition_hash, program="recorded-program", purpose="search", seed=seed,
+                                input_seed=500007, iterations=10, stats="recorded-stats", times=[0, 0.3],
+                                trace=False, reset_events=[]), condition_details=condition, fidelity=fidelity)
+        row.update(values)
+        return row
+
+    def extracted(self, name, document):
+        return self.call("extract", "--artifact-id", self.source(name, document))["fact_id"]
+
+    def test_extract_is_idempotent_retains_missing_and_does_not_touch_last_used(self):
+        self.initialize()
+        artifact = self.source("batch.json", self.batch())
+        before = self.call("protect", "--artifact-id", artifact)["last_used"]
+        first = self.call("extract", "--artifact-id", artifact)
+        self.assertTrue(first["changed"])
+        second = self.call("extract", "--artifact-id", artifact)
+        self.assertFalse(second["changed"])
+        self.assertEqual(first["fact_id"], second["fact_id"])
+        fact = self.call("query")["rows"][0]
+        self.assertEqual(fact["samples"], 9)
+        self.assertEqual(fact["requested_iterations"], 10)
+        self.assertIsNone(fact["observations"]["probabilities"])
+        self.assertIsNone(fact["observations"]["action_trace"])
+        self.assertIsNone(fact["uncertainty"])
+        self.assertEqual(self.call("protect", "--artifact-id", artifact)["last_used"], before)
+
+    def test_failed_incomplete_censored_and_native_uncertainty_are_preserved(self):
+        self.initialize()
+        for status in ("failed", "incomplete", "budget_exhausted"):
+            self.extracted(f"{status}.json", {"status": status, "error": "recorded failure"})
+        native = dict(sim={"players": [{"name": "A", "sim2gse_class": "death_knight",
+                        "collected_data": {"dps": {"mean": 25, "count": 9, "std_dev": 3},
+                                           "fight_length": {"mean": 180}}}]})
+        self.extracted("native.json", native)
+        rows = self.call("query")["rows"]
+        by_status = {row["status"]: row for row in rows}
+        for status in ("failed", "incomplete", "budget_exhausted"):
+            self.assertIsNone(by_status[status]["dps"])
+            self.assertIsNone(by_status[status]["samples"])
+        self.assertTrue(by_status["budget_exhausted"]["censored"])
+        self.assertEqual(by_status["reported"]["uncertainty"], {"std_dev": 3})
+        self.assertEqual(by_status["reported"]["seconds"], 180)
+
+    def test_query_export_are_bounded_and_preserve_rows(self):
+        self.initialize()
+        for number in range(3):
+            self.extracted(f"{number}.json", self.batch(dps=number))
+        result = self.call("query", "--limit", "2")
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(len(self.call("query", "--limit", "2", "--offset", "2")["rows"]), 1)
+        self.call("query", "--limit", "1001", expected=2)
+        self.call("query", "--offset", "-1", expected=2)
+        self.assertEqual(self.call("export", "--limit", "2")["rows"], result["rows"])
+
+    def test_compare_allows_version_axis_but_refuses_or_stratifies_other_changes(self):
+        self.initialize()
+        left = self.extracted("left.json", self.batch())
+        right = self.extracted("right.json", self.batch(version="v2", dps=110))
+        args = ("--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
+        comparison = self.call("compare", *args)
+        self.assertTrue(comparison["comparable"])
+        self.assertEqual(comparison["delta_dps"], 10)
+        self.assertIsNone(comparison["delta_confidence_interval"])
+        changed = self.extracted("changed.json", self.batch(version="v2", seed=8, dps=110))
+        args = ("--left", left, "--right", changed, "--axis", "condition.engine.controlled.version")
+        self.call("compare", *args, expected=2)
+        stratified = self.call("compare", *args, "--stratify", "request.seed")
+        self.assertFalse(stratified["comparable"])
+        self.assertIsNone(stratified["delta_dps"])
+        fidelity = self.extracted("fidelity.json", self.batch(version="v2", fidelity="replay"))
+        self.call("compare", "--left", left, "--right", fidelity, "--axis", "condition.engine.controlled.version", expected=2)
+        budget = self.extracted("budget.json", self.batch(version="v2", budget=300))
+        self.call("compare", "--left", left, "--right", budget, "--axis", "condition.engine.controlled.version", expected=2)
+        self.call("compare", "--left", left, "--right", right, expected=2)
+        self.call("compare", "--left", left, "--right", right, "--axis", "missing.version", expected=2)
+
+    def test_snapshot_freezes_selection_and_persistently_protects_sources(self):
+        self.initialize()
+        artifact = self.source("source.json", self.batch())
+        fact = self.call("extract", "--artifact-id", artifact)["fact_id"]
+        args = ("--fact-id", fact)
+        preview = self.call("snapshot", *args)
+        self.assertFalse(preview["applied"])
+        self.call("snapshot", *args, "--approve-hash", "wrong", expected=2)
+        applied = self.call("snapshot", *args, "--approve-hash", preview["plan_hash"])
+        self.assertEqual(self.call("snapshot", *args, "--approve-hash", preview["plan_hash"])["snapshot_id"], applied["snapshot_id"])
+        frozen = self.call("query", "--snapshot-id", applied["snapshot_id"])
+        self.extracted("new.json", self.batch(version="new"))
+        self.assertEqual(self.call("query", "--snapshot-id", applied["snapshot_id"]), frozen)
+        self.assertEqual(len(self.call("query")["rows"]), 2)
+        reasons = self.call("protect", "--artifact-id", artifact)["reasons"]
+        self.assertIn("durable:snapshot:" + applied["snapshot_id"], reasons)
+        self.assertEqual(frozen["rows"][0]["source"]["sha256"], self.call("resolve", "--artifact-id", artifact, "--inspect")["sha256"])
+
+    def test_native_context_is_hash_bound_and_opaque_conditions_cannot_be_compared(self):
+        self.initialize()
+        native = {"sim": {"players": [{"name": "A", "collected_data": {"dps": {"mean": 100, "count": 9}}}]}}
+        artifact = self.source("native.json", native)
+        row = self.batch()
+        row["sha256"] = "wrong"
+        context = self.source("context.json", row)
+        self.call("extract", "--artifact-id", artifact, "--context-artifact-id", context, expected=2)
+        row["sha256"] = self.call("resolve", "--artifact-id", artifact, "--inspect")["sha256"]
+        context = self.source("correct-context.json", row)
+        fact = self.call("extract", "--artifact-id", artifact, "--context-artifact-id", context)["fact_id"]
+        self.assertIn("durable:fact:" + fact, self.call("protect", "--artifact-id", context)["reasons"])
+        opaque = self.batch(version="v2")
+        opaque.pop("condition_details")
+        other = self.extracted("opaque.json", opaque)
+        self.call("compare", "--left", fact, "--right", other, "--axis", "condition.engine.controlled.version", expected=2)
+
+    def test_changed_sources_nonfinite_numbers_and_bad_condition_binding_are_rejected(self):
+        self.initialize()
+        artifact = self.source("changed.json", self.batch())
+        (self.root / "changed.json").write_text("{}", encoding="utf-8")
+        self.call("extract", "--artifact-id", artifact, expected=2)
+        bad = self.batch()
+        bad["condition_details"]["config"]["total_budget_seconds"] = 1
+        self.call("extract", "--artifact-id", self.source("bad-condition.json", bad), expected=2)
+        self.call("extract", "--artifact-id", self.source("nan.json", {"status": "success", "dps": float("nan")}), expected=2)
+
+    def test_snapshot_rechecks_source_before_publish_and_bad_context_shapes_are_rejected(self):
+        self.initialize()
+        artifact = self.source("source.json", self.batch())
+        fact = self.call("extract", "--artifact-id", artifact)["fact_id"]
+        plan = self.call("snapshot", "--fact-id", fact)
+        (self.root / "source.json").write_text("{}", encoding="utf-8")
+        self.call("snapshot", "--fact-id", fact, "--approve-hash", plan["plan_hash"], expected=2)
+        malformed = self.batch()
+        malformed["condition_details"]["config"] = "not-an-object"
+        malformed["request"]["condition"] = hashlib.sha256(json.dumps(malformed["condition_details"], ensure_ascii=False,
+                                                                     sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        self.call("extract", "--artifact-id", self.source("bad-shape.json", malformed), expected=2)
+
+    def test_native_context_flags_and_multi_player_metric_are_not_lost(self):
+        self.initialize()
+        native = {"sim": {"players": [{"name": "A", "collected_data": {"dps": {"mean": 10, "count": 9}}},
+                                      {"name": "B", "collected_data": {"dps": {"mean": 20, "count": 9}}}],
+                          "statistics": {"raid_dps": {"mean": 30, "count": 9, "mean_std_dev": 0.5}}}}
+        artifact = self.source("multi.json", native)
+        self.call("extract", "--artifact-id", artifact, expected=2)
+        context = self.batch(dps=30, censored=True, incomplete=True)
+        context["sha256"] = self.call("resolve", "--artifact-id", artifact, "--inspect")["sha256"]
+        metadata = self.source("context.json", context)
+        result = self.call("extract", "--artifact-id", artifact, "--context-artifact-id", metadata, "--player-name", "A")
+        row = self.call("query")["rows"][0]
+        self.assertEqual(row["fact_id"], result["fact_id"])
+        self.assertEqual(row["metric"], "raid_dps")
+        self.assertEqual(row["dps"], 30)
+        self.assertEqual(row["uncertainty"], {"mean_std_dev": 0.5})
+        self.assertTrue(row["censored"])
+        self.assertTrue(row["incomplete"])
+
+    def test_summary_result_and_unreported_actions_are_preserved_without_inference(self):
+        self.initialize()
+        fact = self.extracted("result.json", {"status": "completed", "search_result": {"dps": 5, "samples": 3},
+                                              "independent_validation_complete": False})
+        row = self.call("query")["rows"][0]
+        self.assertEqual(row["fact_id"], fact)
+        self.assertEqual(row["source_kind"], "search_summary")
+        self.assertFalse(row["independent_validation_complete"])
+        self.assertIsNone(row["observations"]["probabilities"])
+        self.assertIsNone(row["context"]["fidelity"])
+
+    def test_recorded_native_action_sequence_has_a_source_pointer_not_invented_probabilities(self):
+        self.initialize()
+        document = {"sim": {"players": [{"name": "A", "collected_data": {"dps": {"mean": 10, "count": 2},
+                                     "action_sequence": [{"time": 0, "name": "recorded-action"}]}}]}}
+        source = self.source("recorded.json", document)
+        self.call("extract", "--artifact-id", source)
+        observations = self.call("query")["rows"][0]["observations"]
+        self.assertEqual(observations["action_sequence"], {"artifact_id": source, "entries": 1,
+                                                          "json_pointer": "/sim/players/0/collected_data/action_sequence"})
+        self.assertIsNone(observations["probabilities"])
+
+    def test_output_byte_bound_refuses_large_query_and_snapshot(self):
+        self.initialize()
+        ids = [self.extracted(f"large-{number}.json", self.batch(feedback={"recorded": "x" * 14000})) for number in range(72)]
+        self.call("query", "--limit", "100", expected=2)
+        self.assertEqual(len(self.call("export", "--limit", "1")["rows"]), 1)
+        arguments = [argument for identity in ids for argument in ("--fact-id", identity)]
+        self.call("snapshot", *arguments, expected=2)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
