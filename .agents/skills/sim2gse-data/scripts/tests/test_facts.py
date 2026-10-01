@@ -210,6 +210,113 @@ class FactTests(unittest.TestCase):
         arguments = [argument for identity in ids for argument in ("--fact-id", identity)]
         self.call("snapshot", *arguments, expected=2)
 
+    def production_batch(self, program="death_strike", seed=7, dps=100):
+        # 按search.py1270—1325的实际记录结构，不加入condition_details或fidelity。
+        return dict(status="success", request=dict(condition="a" * 64,
+                    program=dict(version="sim2gse-search-behavior-v1", start_step=1, sequence_reset="end",
+                                 clicks=[[program]], castsequences=[]), purpose="search", behavior_identity=program,
+                    seed=seed, input_seed=seed + 500000, iterations=10, times=[0.0, 0.3],
+                    stats="paired-bootstrap-v1", trace=False, reset_events=[]), dps=dps, samples=9,
+                    requested_iterations=10, artifact="batches/recorded-key", origin="recorded-origin",
+                    sha256="b" * 64, feedback=None)
+
+    def test_actual_production_rows_can_compare_known_axes_under_same_opaque_condition(self):
+        self.initialize()
+        left = self.extracted("actual-left.json", self.production_batch())
+        right = self.extracted("actual-right.json", self.production_batch(seed=8, dps=110))
+        result = self.call("compare", "--left", left, "--right", right, "--axis", "request.seed", "--axis", "request.input_seed")
+        self.assertTrue(result["comparable"])
+        self.assertEqual(result["delta_dps"], 10)
+        self.assertEqual(result["comparison_scope"], "same_opaque_condition")
+        self.assertIn("fidelity_label", result["unknown_conditions"])
+        self.assertIsNone(result["validation_complete"])
+        changed = self.production_batch(seed=8)
+        changed["request"]["condition"] = "c" * 64
+        other = self.extracted("other-condition.json", changed)
+        self.call("compare", "--left", left, "--right", other, "--axis", "request.seed", expected=2)
+
+    def test_search_termination_validation_and_elapsed_survive_export_and_snapshot(self):
+        self.initialize()
+        document = dict(status="completed", phase="done", elapsed_seconds=599.75, completed_batches=12,
+                        search_result={"dps": 100, "samples": 9}, independent_validation_complete=False,
+                        search=dict(dataset="search", rounds=4, candidate_count=12, unique_candidates=15,
+                                    partial_round=True, stop_reason="search_deadline"))
+        fact = self.extracted("deadline-result.json", document)
+        row = self.call("query")["rows"][0]
+        self.assertTrue(row["censored"])
+        self.assertTrue(row["incomplete"])
+        self.assertEqual(row["censoring_scope"], "search")
+        self.assertIsNone(row["sample_censored"])
+        self.assertEqual(row["validation_status"], "incomplete")
+        self.assertEqual(row["elapsed_seconds"], 599.75)
+        self.assertIsNone(row["fight_length_seconds"])
+        self.assertEqual(row["search_summary"], document["search"])
+        self.assertEqual(self.call("export")["rows"], [row])
+        plan = self.call("snapshot", "--fact-id", fact)
+        snapshot = self.call("snapshot", "--fact-id", fact, "--approve-hash", plan["plan_hash"])
+        self.assertEqual(self.call("query", "--snapshot-id", snapshot["snapshot_id"])["rows"], [row])
+        unfinished = self.extracted("validation-result.json", {"status": "validation_incomplete", "phase": "validation", "elapsed_seconds": 23.5})
+        by_id = {item["fact_id"]: item for item in self.call("query")["rows"]}
+        self.assertTrue(by_id[unfinished]["incomplete"])
+        self.assertEqual(by_id[unfinished]["validation_status"], "incomplete")
+
+    def test_incomplete_search_comparison_does_not_claim_complete_validation(self):
+        self.initialize()
+        document = self.batch(status="completed", search_result={"dps": 100, "samples": 9},
+                              search={"partial_round": True, "stop_reason": "search_deadline"},
+                              independent_validation_complete=False)
+        left = self.extracted("left-result.json", document)
+        right_document = self.batch(version="v2", status="completed", search_result={"dps": 110, "samples": 9},
+                                    search={"partial_round": False, "stop_reason": "no_improvement"},
+                                    independent_validation_complete=False)
+        right = self.extracted("right-result.json", right_document)
+        comparison = self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
+        self.assertFalse(comparison["comparable"])
+        self.assertIsNone(comparison["delta_dps"])
+        self.assertFalse(comparison["validation_complete"])
+        self.assertEqual(comparison["validation_status"], {"left": "incomplete", "right": "incomplete"})
+
+    def test_ambiguous_dot_keys_cannot_hide_condition_changes(self):
+        self.initialize()
+        def row(version, number):
+            value = self.batch(version=version)
+            value["condition_details"]["config"].update(x={"y": number}, **{"x.y": 2})
+            value["request"]["condition"] = hashlib.sha256(json.dumps(value["condition_details"], ensure_ascii=False,
+                                                                     sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            return value
+        left, right = self.extracted("dot-left.json", row("v1", 1)), self.extracted("dot-right.json", row("v2", 999))
+        self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version", expected=2)
+
+    def test_request_types_and_nested_json_boolean_numeric_differences_are_preserved(self):
+        self.initialize()
+        malformed = self.production_batch()
+        malformed["request"]["trace"] = 0
+        self.call("extract", "--artifact-id", self.source("bad-trace.json", malformed), expected=2)
+        for number, (left_value, right_value) in enumerate(((False, 0), ([False], [0]), ({"flag": False}, {"flag": 0}))):
+            left_document, right_document = self.batch(), self.batch(version="v2")
+            left_document["request"]["program"] = {"nested": left_value}
+            right_document["request"]["program"] = {"nested": right_value}
+            left = self.extracted(f"type-left-{number}.json", left_document)
+            right = self.extracted(f"type-right-{number}.json", right_document)
+            self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version", expected=2)
+
+    def test_adaptive_request_counts_and_effective_samples_are_not_normalized_to512(self):
+        self.initialize()
+        for requested, effective, batches in ((32, 31, 1), (128, 124, 4), (512, 496, 16)):
+            row = self.production_batch()
+            row["request"]["iterations"] = requested
+            row.update(requested_iterations=requested, samples=effective, completed_batches=batches,
+                       elapsed_seconds=1.25 * batches)
+            self.extracted(f"adaptive-{requested}.json", row)
+        rows = self.call("query")["rows"]
+        self.assertEqual({(row["requested_iterations"], row["samples"], row["completed_batches"]) for row in rows},
+                         {(32, 31, 1), (128, 124, 4), (512, 496, 16)})
+        for row in rows:
+            self.assertTrue(row["sample_complete"])
+            self.assertIsNone(row["censored"])
+            self.assertIsNone(row["fight_length_seconds"])
+            self.assertEqual(row["elapsed_seconds"], 1.25 * row["completed_batches"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

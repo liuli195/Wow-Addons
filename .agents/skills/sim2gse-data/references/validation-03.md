@@ -26,3 +26,27 @@ OK
 共12项事实测试、11项第01票入口测试和18项生命周期测试。本票未改变产品或素材构建输入，沿用此前两个构建项目通过证据；提交后在干净工作树对固定全局基线运行统一快速验证，分别报告实际执行、有效缓存和full-not-run（未运行完整模式）。
 
 未运行/尚未实施：实际游戏验收、生产启用和真实数据登记迁移；第04票一致性备份与归档恢复、第05票迁移删除、第06票维护。1000项增长盘点限制仍须在本次全框架验收前解决，读取租约与依赖传递必须在破坏性操作前落实。不把未完成能力移出授权范围。
+
+## 首次云端审查返工
+
+固定修复起点fd3d2439092dc4ba7a032de211627004214fff20。云端结论REWORK_REQUIRED（须修改），两轴分别记录，不计为已验收。
+
+Spec（规格）轴3项：
+
+- P1：实际search.py1270—1325缓存格式无新增条件展开/保真度字段，初版全部拒绝比较。新增按该实际格式的合成记录，不加enriched（增强）字段；同实际条件hash下已记录请求变化轴可以比较，未知展开/标签/预算值仍显式列明，不同hash拒绝。不变更生产入口。
+- P2：读取task.py512—524/740—751的validation_incomplete，以及search.py1619—1625/1685—1698的预算终止和partial_round。保留原始搜索摘要，区分搜索删失、样本完整性及独立验证状态；比较不能宣称未完成或未知独立验证已经完整。
+- P2：实际elapsed_seconds独立保留，不与native fight_length混用；查询、导出及快照均保留墙钟耗时、阶段、完成批次数与已记录停止/收敛摘要。
+
+Standards（规范）轴2项：
+
+- P2：包含字面点号键或空键的条件明确拒绝扁平比较，防止config.x.y覆盖嵌套config.x/y。
+- P2：校验请求trace、种子、迭代数和时刻类型，JSON规范编码比较保留布尔/数字及嵌套列表/字典类型差别，false不等于0。
+
+五项对应公开CLI测试首次全部失败（5.244秒），修复后全部通过（9.503秒）。增加自适应32/128/512请求预算、31/124/496有效样本与1/4/16批次兼容回归，未拉取新主干、重设基线或接入PR41搜索实现。短暂执行服务断连后只读调用恢复，未更换推送工具或安全配置。
+
+```text
+Ran 47 tests in 86.837s
+OK
+```
+
+新事实使用schema2和版本化ID，已有schema1事实/快照不覆写；旧事实新增完整性字段缺失保持未知。对应新增测试为test_actual_production_rows_can_compare_known_axes_under_same_opaque_condition、test_search_termination_validation_and_elapsed_survive_export_and_snapshot、test_incomplete_search_comparison_does_not_claim_complete_validation、test_ambiguous_dot_keys_cannot_hide_condition_changes、test_request_types_and_nested_json_boolean_numeric_differences_are_preserved；另有自适应计数回归。固定提交后的统一验证、推送和增量审查结果在交付消息记录。

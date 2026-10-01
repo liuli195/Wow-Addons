@@ -776,6 +776,7 @@ def cache_references(root, policy, args):
 
 
 FACT_BYTES = 16 * 1024
+FACT_SCHEMA = 2
 QUERY_BYTES = 1024 * 1024
 DOCUMENT_BYTES = 16 * 1024 * 1024
 
@@ -848,6 +849,24 @@ def numeric(value, *, count=False):
     return value
 
 
+def check_request(request):
+    for key in ("seed", "input_seed", "iterations"):
+        if request.get(key) is not None:
+            numeric(request[key], count=True)
+            if key == "iterations" and request[key] == 0:
+                raise DataError("实际请求iterations须为正整数")
+    if request.get("trace") is not None and type(request["trace"]) is not bool:
+        raise DataError("实际请求trace须为JSON布尔值，不能用0/1替代")
+    for key in ("condition", "stats", "purpose", "behavior_identity"):
+        if request.get(key) is not None and (not isinstance(request[key], str) or not request[key]):
+            raise DataError("实际请求身份字段须为非空字符串")
+    for key in ("times", "reset_events"):
+        if request.get(key) is not None and not isinstance(request[key], list):
+            raise DataError("实际请求时刻及重置事件须为列表")
+    for value in request.get("times") or []:
+        numeric(value)
+
+
 def extracted_fact(root, db, args):
     value, source = document(root, db, args.artifact_id)
     context_source = None
@@ -859,6 +878,8 @@ def extracted_fact(root, db, args):
     request = metadata.get("request")
     if request is not None and not isinstance(request, dict):
         raise DataError("已记录request须为对象")
+    if request is not None:
+        check_request(request)
     details = metadata.get("condition_details")
     if details is not None:
         keys = {"fields", "class_name", "engine", "options", "config", "simulation_config", "cbor2", "rules"}
@@ -911,18 +932,42 @@ def extracted_fact(root, db, args):
     if not isinstance(status, str):
         raise DataError("事实源缺少状态，不能推定模拟成功")
     flags = metadata if context_source else value
-    censored = flags.get("censored", True if status == "budget_exhausted" else None)
-    incomplete = flags.get("incomplete", True if status in ("failed", "incomplete", "cancelled", "budget_exhausted") else None)
+    search = value.get("search", {})
+    if not isinstance(search, dict):
+        raise DataError("已记录search须为对象")
+    search_summary = {key: search[key] for key in ("dataset", "rounds", "candidate_count", "unique_candidates", "partial_round", "stop_reason", "no_improvement") if key in search}
+    if "stop_reason" not in search_summary and "stop_reason" in value:
+        search_summary["stop_reason"] = value["stop_reason"]
+    search_censored = search_summary.get("stop_reason") in ("search_deadline", "cancelled")
+    partial_round = search_summary.get("partial_round")
+    if partial_round is not None and type(partial_round) is not bool:
+        raise DataError("实际partial_round须为JSON布尔值")
+    censored = flags.get("censored", True if status == "budget_exhausted" or search_censored else None)
+    incomplete = flags.get("incomplete", True if status in ("failed", "incomplete", "cancelled", "budget_exhausted", "validation_incomplete") or partial_round is True or search_censored else None)
     for flag in (censored, incomplete):
         if flag is not None and type(flag) is not bool:
             raise DataError("删失/未完成标记须为布尔值或缺失")
-    fact_id = str(uuid.uuid5(uuid.UUID(args.artifact_id), "fact-v1:" + digest(dict(context_source=context_source, player=args.player_name))))
-    fact = dict(fact_id=fact_id, fact_schema=1, source=source, context_source=context_source,
+    validation = value.get("independent_validation_complete")
+    if validation is not None and type(validation) is not bool:
+        raise DataError("独立验证完成标记须为JSON布尔值或缺失")
+    validation_status = ("incomplete" if status == "validation_incomplete" or validation is False else
+                         "complete" if validation is True else "unknown")
+    sample_censored = flags.get("censored") if kind != "search_summary" else None
+    sample_incomplete = flags.get("incomplete") if kind != "search_summary" else None
+    sample_complete = (True if request and status == "success" and dps is not None and samples is not None and samples > 0 and
+                       sample_censored is not True and sample_incomplete is not True else None)
+    fact_id = str(uuid.uuid5(uuid.UUID(args.artifact_id), "fact-v2:" + digest(dict(context_source=context_source, player=args.player_name))))
+    fact = dict(fact_id=fact_id, fact_schema=FACT_SCHEMA, source=source, context_source=context_source,
                 source_kind=kind, status=status, censored=censored, incomplete=incomplete,
+                censoring_scope="search" if search_censored else "result" if censored is True else None,
+                sample_censored=sample_censored, sample_incomplete=sample_incomplete, sample_complete=sample_complete,
                 dps=dps, metric=metric, samples=samples, seconds=seconds, uncertainty=uncertainty,
+                fight_length_seconds=seconds, elapsed_seconds=numeric(value.get("elapsed_seconds")),
+                phase=value.get("phase"), completed_batches=numeric(value.get("completed_batches"), count=True),
+                search_summary=search_summary or None, validation_status=validation_status,
                 requested_iterations=numeric(metadata.get("requested_iterations", (request or {}).get("iterations")), count=True),
                 context=context, condition_hash=(request or {}).get("condition"), error=flags.get("error"),
-                independent_validation_complete=value.get("independent_validation_complete"),
+                independent_validation_complete=validation,
                 observations=dict(action_trace=value.get("action_trace"), action_sequence=action_sequence,
                                   probabilities=value.get("probabilities"),
                                   feedback=metadata.get("feedback"), position_summary=metadata.get("position_summary")))
@@ -984,7 +1029,7 @@ def query_facts(root, policy, args):
             rows = [json.loads(row[0]) for row in db.execute("SELECT payload FROM facts ORDER BY id LIMIT ? OFFSET ?", (args.limit + 1, args.offset))]
         else:
             rows = []
-    result = dict(fact_schema=1, snapshot_id=args.snapshot_id, rows=rows[:args.limit], has_more=len(rows) > args.limit,
+    result = dict(fact_schema=FACT_SCHEMA, snapshot_id=args.snapshot_id, rows=rows[:args.limit], has_more=len(rows) > args.limit,
                   next_offset=args.offset + min(len(rows), args.limit))
     compact_json(result, QUERY_BYTES)
     return result
@@ -994,6 +1039,8 @@ def context_leaves(value, prefix=""):
     if isinstance(value, dict) and value:
         result = {}
         for key, item in value.items():
+            if not key or "." in key:
+                raise DataError("比较条件含有歧义点号或空键，拒绝扁平化路径碰撞")
             result.update(context_leaves(item, prefix + "." + key if prefix else key))
         return result
     return {prefix: value}
@@ -1004,29 +1051,56 @@ def compare_facts(root, policy, args):
         raise DataError("比较须显式声明1..16个互不重叠的变化轴，分层上限16")
     with fact_reader(root, policy) as db:
         left, right = fact_row(db, args.left), fact_row(db, args.right)
+    complete_context = all(row["context"]["condition"] and row["context"]["fidelity"] is not None for row in (left, right))
     for row in (left, right):
         context = row["context"]
-        if not context["condition"] or context["fidelity"] is None:
-            raise DataError("缺少完整已核对条件或保真度，不能凭摘要相同推定可比")
+        check_request(context["request"])
         required = {"seed", "input_seed", "iterations", "stats", "program", "purpose", "times", "trace", "reset_events"}
         if not required <= context["request"].keys() or any(context["request"][key] is None for key in required):
             raise DataError("比较缺少实际请求、种子、保真度或采样预算")
-        if context["condition"]["config"].get("total_budget_seconds") is None:
+        if complete_context and context["condition"]["config"].get("total_budget_seconds") is None:
             raise DataError("比较缺少记录的总预算")
-    a, b = context_leaves(left["context"]), context_leaves(right["context"])
+    unknown_conditions = []
+    if complete_context:
+        scope = "expanded_conditions"
+        a, b = context_leaves(left["context"]), context_leaves(right["context"])
+    else:
+        condition = left.get("condition_hash")
+        if (not isinstance(condition, str) or len(condition) != 64 or any(character not in "0123456789abcdef" for character in condition) or
+                condition != right.get("condition_hash")):
+            raise DataError("无完整展开时只允许相同实际TaskStore条件摘要，不能跨未知条件比较")
+        if any(not axis.startswith("request.") for axis in (*args.axis, *args.stratify)):
+            raise DataError("相同不透明条件比较只能声明实际request字段变化或分层")
+        scope = "same_opaque_condition"
+        if any(not row["context"]["condition"] for row in (left, right)):
+            unknown_conditions.append("condition_details")
+        if any(row["context"]["fidelity"] is None for row in (left, right)):
+            unknown_conditions.append("fidelity_label")
+        if any(not row["context"]["condition"] or row["context"]["condition"]["config"].get("total_budget_seconds") is None for row in (left, right)):
+            unknown_conditions.append("total_budget_value")
+        a, b = (context_leaves(dict(request=row["context"]["request"], fidelity=row["context"]["fidelity"])) for row in (left, right))
     for axis in (*args.axis, *args.stratify):
         if axis not in a or axis not in b or a[axis] is None or b[axis] is None:
             raise DataError("变化轴或分层字段缺失；须使用完整叶字段路径")
-    differences = {key for key in a.keys() | b.keys() if key not in a or key not in b or a[key] != b[key]}
+    differences = {key for key in a.keys() | b.keys() if key not in a or key not in b or
+                   compact_json(a[key], FACT_BYTES) != compact_json(b[key], FACT_BYTES)}
     if differences - set(args.axis) - set(args.stratify):
         raise DataError("未声明条件变化:" + ",".join(sorted(differences - set(args.axis) - set(args.stratify))))
     if left["source_kind"] != right["source_kind"] or left["metric"] != right["metric"]:
         raise DataError("报告口径或指标不同，拒绝混合比较")
     strata = {key: dict(left=a[key], right=b[key]) for key in args.stratify}
     comparable = not (differences & set(args.stratify))
-    eligible = all(row["status"] in ("success", "completed", "reported") and row["dps"] is not None and
+    eligible = all(row.get("sample_complete") is True and row["dps"] is not None and
                    row["samples"] is not None and row["samples"] > 0 and not row["censored"] and not row["incomplete"] for row in (left, right))
     result = dict(left=args.left, right=args.right, axes={key: dict(left=a[key], right=b[key]) for key in args.axis},
+                  comparison_scope=scope, unknown_conditions=unknown_conditions,
+                  validation_status={side: row.get("validation_status", "unknown") for side, row in (("left", left), ("right", right))},
+                  validation_complete=False if any(row.get("validation_status") == "incomplete" for row in (left, right)) else
+                                      True if all(row.get("validation_status") == "complete" for row in (left, right)) else None,
+                  sample_complete=dict(left=left.get("sample_complete"), right=right.get("sample_complete")),
+                  termination={side: dict(censored=row["censored"], incomplete=row["incomplete"], search=row.get("search_summary"))
+                               for side, row in (("left", left), ("right", right))},
+                  elapsed_seconds=dict(left=left.get("elapsed_seconds"), right=right.get("elapsed_seconds")),
                   strata=strata, comparable=comparable and eligible, delta_dps=right["dps"] - left["dps"] if comparable and eligible else None,
                   delta_confidence_interval=None, samples=dict(left=left["samples"], right=right["samples"]),
                   uncertainty=dict(left=left["uncertainty"], right=right["uncertainty"]),
@@ -1041,7 +1115,7 @@ def snapshot_facts(root, policy, args):
     if not ids or len(ids) > 1000:
         raise DataError("快照须显式选择1..1000个事实ID")
     def plan(db):
-        payload = dict(root_id=root_id, fact_schema=1, rows=[fact_row(db, identity) for identity in ids])
+        payload = dict(root_id=root_id, fact_schema=FACT_SCHEMA, rows=[fact_row(db, identity) for identity in ids])
         compact_json(payload, QUERY_BYTES)
         checked = set()
         for fact in payload["rows"]:
