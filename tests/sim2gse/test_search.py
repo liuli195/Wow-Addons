@@ -153,6 +153,48 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_resume_after_route_promotion_during_global_challenge_keeps_valid_winners(self):
+        import threading
+        import collections
+        import search
+        import sequence
+        cancellation = threading.Event()
+        calls = []
+        children = iter(([["death_coil"], ["outbreak"]], [["outbreak"], ["death_coil"]]))
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
+            wanted = {('outbreak',): 100, ('death_coil',): 50,
+                      ('death_coil', 'outbreak'): 20, ('outbreak', 'death_coil'): 110}[actions]
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            result['summary']['dps'] = wanted
+            result['report']['sim']['statistics']['raid_dps']['mean'] = wanted
+            result['report']['sim']['players'][0]['collected_data']['dps'].update(
+                mean=wanted, variance=10000 if actions == ('outbreak', 'death_coil') else 1)
+            (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+            calls.append((actions, kwargs['iterations'], kwargs['seed']))
+            if actions == ('outbreak', 'death_coil') and kwargs['iterations'] == 96:
+                cancellation.set()
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+            config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=1,
+                          batch_targets=(32, 128, 512), iterations=2, validation_batches=2)
+            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]], [["death_coil"]]]), \
+                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)):
+                interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
+                self.assertEqual(interrupted['status'], 'cancelled')
+                resumed = resume_task(destination)
+            self.assertEqual(resumed['status'], 'completed')
+            self.assertEqual(resumed['search_result']['dps'], 110)
+            self.assertTrue(all(count == 1 for count in collections.Counter(calls).values()))
+            self.assertEqual([n for a, n, seed in calls if a == ('death_coil',)
+                              and seed < 20260912 + 100000], [32])
+
     def test_near_round_resumes_mid_layer_without_repeating_completed_batches(self):
         import threading
         import collections

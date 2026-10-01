@@ -1426,7 +1426,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         key = candidate_key(program)
         if rows is None:
             rows = []
-            for index in range(len(config['batch_targets'])):
+            targets = len(config['batch_targets']) if not state['archive'] else 1
+            for index in range(targets):
                 append_score(program, rows, index)
         return dict(key=key, program=program, batches=rows, score=_score(rows),
                     candidate=compiled,candidate_sha256=digest(compiled))
@@ -1606,6 +1607,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     dict(program=program_key(work['program']), error=str(error)))
                 current = None
             if current:
+                route_promoted = global_promoted = False
                 if not state['archive']:
                     state['best']=key
                 else:
@@ -1638,12 +1640,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                 if opponent_key == state['best']:
                                     mark_promotion(work, 'global', promoted=route_promoted)
                         if route_promoted:
-                            if not work['start']:
-                                state['chains'][work['lane']]['best']=key
                             global_best=next(r for r in state['archive'] if r['key']==state['best'])
                             if opponent_key==state['best']:
-                                state['best']=key
-                                state['round_improved']=True
+                                global_promoted = True
                             elif challenges(current, global_best):
                                 if observability:
                                     mark_promotion(work, 'global', checked=True)
@@ -1660,10 +1659,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                 global_promoted = bool(ci and ci[0] > 0)
                                 if observability:
                                     mark_promotion(work, 'global', promoted=global_promoted)
-                                if global_promoted:
-                                    state['best']=key
-                                    state['round_improved']=True
                 state['archive'].append(current)
+                # 后续加测可能取消；只有候选完整入档后才发布赢家指针。
+                if route_promoted and not work['start']:
+                    state['chains'][work['lane']]['best'] = key
+                if global_promoted:
+                    state['best'] = key
+                    state['round_improved'] = True
                 if work['start']:
                     state['chains'].append(dict(best=key,visited=[key],rounds=0))
                 else:
