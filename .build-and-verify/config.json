@@ -51,7 +51,7 @@
       },
       {
         "id": "verify.sim2gse-data",
-        "command": ".venv\\Scripts\\python.exe -B .agents/skills/sim2gse-data/scripts/tests/test_cli.py",
+          "command": ".venv\\Scripts\\python.exe -B -m unittest discover -s .agents/skills/sim2gse-data/scripts/tests -p test_*.py -v",
         "checkParallel": true,
         "paths": [
           ".agents/skills/sim2gse-data/**",
