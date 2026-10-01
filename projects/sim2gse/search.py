@@ -1104,6 +1104,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def queue_position_observation(work, program, comparison):
         if observability is not None:
             with store.lock:
+                if any(job['event_id'] == work['observation_id'] and job['comparison'] == comparison
+                       for job in position_jobs):
+                    return
                 position_jobs.append(dict(
                     event_id=work['observation_id'], program=_copy_program(program),
                     comparison=comparison, status='pending'))

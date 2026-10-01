@@ -162,6 +162,12 @@ class SearchAndValidationTests(TestCase):
         calls = []
         children = iter(([["death_coil"], ["outbreak"]], [["outbreak"], ["death_coil"]]))
 
+        def mutate(*args, observation=None, **kwargs):
+            if observation is not None:
+                observation.update(sampled_mutation='replace', actual_mutation='replace',
+                                   modification_position=None)
+            return next(children)
+
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
             wanted = {('outbreak',): 100, ('death_coil',): 50,
@@ -182,18 +188,23 @@ class SearchAndValidationTests(TestCase):
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
             config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=1,
-                          batch_targets=(32, 128, 512), iterations=2, validation_batches=2)
+                          batch_targets=(32, 128, 512), iterations=2, validation_batches=2,
+                          diagnostic_logging=True, search_observability='full')
             with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
                     patch.object(search, 'initial_programs', return_value=[[["outbreak"]], [["death_coil"]]]), \
-                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)):
+                    patch.object(search, 'mutate', side_effect=mutate):
                 interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
                 self.assertEqual(interrupted['status'], 'cancelled')
                 resumed = resume_task(destination)
             self.assertEqual(resumed['status'], 'completed')
             self.assertEqual(resumed['search_result']['dps'], 110)
-            self.assertTrue(all(count == 1 for count in collections.Counter(calls).values()))
+            self.assertTrue(all(count == 1 for count in collections.Counter(
+                call for call in calls if call[1] >= 32).values()))
             self.assertEqual([n for a, n, seed in calls if a == ('death_coil',)
                               and seed < 20260912 + 100000 and n >= 32], [32])
+            event = next(row for row in resumed['search']['observability']['details']
+                         if row.get('candidate_score') == 110)
+            self.assertEqual(event['position_comparison_count'], 2)
 
     def test_near_round_resumes_mid_layer_without_repeating_completed_batches(self):
         import threading
