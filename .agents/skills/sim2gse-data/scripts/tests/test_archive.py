@@ -368,6 +368,31 @@ class ArchiveTests(unittest.TestCase):
         copies[1].unlink()
         self.call("resolve", "--artifact-id", identity, "--inspect", expected=2)
 
+    def test_sqlite_retry_rejects_source_growth_before_creating_payload_image(self):
+        self.initialize()
+        self.policy["capacity_bytes"] = 3400000
+        self.save_config()
+        source = self.root / "growing-wal.sqlite3"
+        with closing(sqlite3.connect(source)) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("CREATE TABLE entries(payload BLOB)")
+            writer.commit()
+            arguments = ("--database", str(source), "--request-id", "fixed-payload")
+            plan = self.call("backup-sqlite", *arguments)
+            self.injected_call(self.crash_on_phase(plan["operation_id"], "reserved"), "backup-sqlite", *arguments,
+                               "--approve-hash", plan["plan_hash"], expected=77)
+            writer.execute("INSERT INTO entries VALUES (?)", (bytes(1000000),))
+            writer.commit()
+            self.call("backup-sqlite", "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"], expected=2)
+            stage = self.root / ".staging" / plan["operation_id"]
+            self.assertFalse(list(stage.rglob("image.sqlite3")))
+            self.assertFalse((self.root / plan["destination"]).exists())
+            self.assertEqual(writer.execute("SELECT length(payload) FROM entries").fetchone()[0], 1000000)
+            logical_bytes = self.call("inventory")["logical_bytes"]
+            pending_bytes = self.call("status")["operation_reserved_bytes"]
+            self.assertLessEqual(logical_bytes + pending_bytes + self.policy["maintenance_reserve_bytes"]
+                                 + self.policy["metadata_reserve_bytes"], self.policy["capacity_bytes"])
+
     def test_large_legal_restore_plan_is_admitted_before_any_metadata_write(self):
         self.initialize()
         self.policy["capacity_bytes"] = 1024 * 1024 * 1024

@@ -1,5 +1,11 @@
 # 票04：云端首轮两项P2修复
 
+## 后续Standards集成P2：SQLite映像不能借用元数据预留
+
+891c1281增量审查发现backup进度仍用总reserved_bytes，新增metadata预算被当作映像有效载荷。公开CLI先失败（0.782秒）：reserved提交后中断，WAL源新增提交1000000字节，再以原operation-id/hash重试，虽报错但已生成超payload映像。修复在BEGIN并读取sqlite_master建立固定读快照后，先读取该快照page_count×page_size与已批准product_bound比较；超过时不创建目标连接或映像。备份进度继续使用同一product_bound，单独metadata预算不能扩大输出。
+
+四项SQLite专项通过（5.808秒），覆盖正常提交WAL、未提交排除、索引备份及五阶段恢复。最终新增3400000字节测试限额，断言超界拒绝后无映像/发布且根逻辑占用+活动预留+必需维护/元数据余量仍在承诺内，源提交行保留；该项通过（1.003秒）。重试保留产品加待写产品的准入也改用payload_reserved_bytes，避免以总metadata预留扩充临时产品空间。所有参数只用于Temp合成根。固定修复提交统一验证结果见交付信息；原两项Spec回归全部保留，票05仍未开始。
+
 固定起点 `f9ad2cb4ed81731f2cfe90e685b51613e41a4fcf`；全局验证基线仍 `f554538993161cc045d19c4ed47d261f709f741b`。Standards（规范）轴通过；Spec（规格）轴要求修复大合法清单元数据峰值漏计及resolve只选首个恢复位置。本票继续，不进入05、不修改生产配置或真实历史数据；无本机审查子代理。
 
 ## 公开CLI先失败

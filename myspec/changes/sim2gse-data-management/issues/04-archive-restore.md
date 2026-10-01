@@ -17,6 +17,8 @@
 
 ## Comments（讨论）
 
+891c1281增量Standards另报集成P2：backup进度上限误用新增metadata总预留，原操作中断后WAL源增长可先写出超payload映像再拒绝。公开CLI先红后绿；固定读快照建立后、目标创建前比较page_count×page_size与product_bound，progress保持同一payload边界。正常WAL和五阶段四项专项通过；新增紧限额拒绝后无映像及总容量承诺断言，完整固定基线验证后推送并停审，不进入05。详细证据仍references/validation-04-review.md。
+
 云端首轮固定HEAD f9ad2cb4ed81731f2cfe90e685b51613e41a4fcf：Standards轴通过，Spec轴两项P2（大合法清单元数据峰值漏计、resolve只取首个恢复位置）。均先通过公开CLI复现失败，再实现逐阶段实际编码元数据峰值预留及有界位置选择，异常副本不回退。初次21项归档专项通过，最终扩展低容量自动清单/801KiB合法清单、足额大清单五阶段重试以及篡改/全部缺失。详见技能references/validation-04-review.md。仍票04，准确修复提交统一验证后推送并停待复审，不进入05。
 
 收尾固定提交b52ef84e8118fa3f1433cede6509458b6994703a的统一差异验证38项通过、技能67项通过、构建两项通过。继续核对租约要求发现外部登记分包进入restore的活动租约缺口；单项合成公开CLI先红后绿，修复所有恢复输入和SQLite重试租约检查，再固定修复提交、统一复验和推送。没有为进度报告重复长测试，此次复验因明确安全修复所需。

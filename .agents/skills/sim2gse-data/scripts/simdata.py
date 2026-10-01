@@ -1717,13 +1717,18 @@ def backup_image(root, plan, data):
             checked_path(side)
     with runner_locks(root, source):
         reader = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=1)
-        writer = sqlite3.connect(data / "image.sqlite3")
+        writer = None
         try:
             reader.execute("BEGIN")
             reader.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            page_size = reader.execute("PRAGMA page_size").fetchone()[0]
+            snapshot_bytes = reader.execute("PRAGMA page_count").fetchone()[0] * page_size
+            if snapshot_bytes > plan["product_bound"]:
+                raise DataError("SQLite固定快照超过已批准payload上界，拒绝创建映像")
+            writer = sqlite3.connect(data / "image.sqlite3")
             deadline = time.monotonic() + 30
             def progress(status, remaining, total):
-                if time.monotonic() > deadline or total * reader.execute("PRAGMA page_size").fetchone()[0] > plan["reserved_bytes"] - 262144:
+                if time.monotonic() > deadline or total * page_size > plan["product_bound"]:
                     raise DataError("SQLite备份超过时间或已批准预留")
             reader.backup(writer, pages=128, progress=progress, sleep=0.01)
             after = source.stat()
@@ -1733,7 +1738,8 @@ def backup_image(root, plan, data):
             if writer.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
                 raise DataError("SQLite备份完整性检查失败")
         finally:
-            writer.close()
+            if writer is not None:
+                writer.close()
             reader.close()
     return file_manifest(checked_path(data / "image.sqlite3"), allow_sqlite=True)
 
@@ -1817,7 +1823,7 @@ def lifecycle_execute(root, policy, args):
                 quarantine_retry(root, stage, db, plan["operation_id"])
                 check_budget(root, db, policy)
                 retained = inventory(stage, 1000)
-                if retained["truncated"] or retained["logical_bytes"] + plan["product_bound"] + 65536 > plan["reserved_bytes"]:
+                if retained["truncated"] or retained["logical_bytes"] + plan["product_bound"] + 65536 > plan["payload_reserved_bytes"]:
                     raise DataError("保留的中断产品已耗尽本操作预留；须预览放弃后重新配置，不能偷偷删除")
                 data.mkdir()
                 phase_commit(db, plan["operation_id"], "writing")
