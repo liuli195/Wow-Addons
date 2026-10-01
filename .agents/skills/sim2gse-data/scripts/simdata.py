@@ -1293,6 +1293,12 @@ def artifact_image(root, row):
     return dict(id=row["id"], path=row["path"], role=row["role"], schema_version=row["schema_version"], **manifest)
 
 
+def idle_image(root, db, row):
+    if any(reason.startswith(("lease:", "runner-lock")) for reason in protection(root, db, row["id"])["reasons"]):
+        raise DataError("活动租约或文件锁阻止读取生命周期输入")
+    return artifact_image(root, row)
+
+
 def archive_sources(root, db, ids):
     if not ids or len(ids) > 1000 or len(set(ids)) != len(ids):
         raise DataError("归档须列出1至1000个不同的登记ID")
@@ -1550,7 +1556,7 @@ def lifecycle_plan(root, policy, db, args):
         registered = db.execute("SELECT * FROM artifacts WHERE path=?", (manifest_path.relative_to(root).as_posix(),)).fetchone()
         if registered is None:
             raise DataError("恢复清单须先登记")
-        registered_manifest = artifact_image(root, registered)
+        registered_manifest = idle_image(root, db, registered)
         if manifest_path.stat().st_size > QUERY_BYTES:
             raise DataError("归档清单过大")
         with manifest_path.open("rb") as handle:
@@ -1561,7 +1567,7 @@ def lifecycle_plan(root, policy, db, args):
         verify_archive(root, plan["manifest"])
         for part in plan["manifest"]["parts"]:
             registered = db.execute("SELECT * FROM artifacts WHERE path=?", (part["path"],)).fetchone()
-            if registered is None or artifact_image(root, registered)["sha256"] != part["sha256"]:
+            if registered is None or idle_image(root, db, registered)["sha256"] != part["sha256"]:
                 raise DataError("归档包须先登记并核对当前身份")
         for source in plan["manifest"]["sources"]:
             row = artifact_row(db, source["id"])
@@ -1738,10 +1744,13 @@ def lifecycle_execute(root, policy, args):
                 elif plan["kind"] == "restore":
                     for part in plan["manifest"]["parts"]:
                         registered = db.execute("SELECT * FROM artifacts WHERE path=?", (part["path"],)).fetchone()
-                        if registered is None or artifact_image(root, registered)["sha256"] != part["sha256"]:
+                        if registered is None or idle_image(root, db, registered)["sha256"] != part["sha256"]:
                             raise DataError("恢复分包身份与登记不一致")
                     verify_archive(root, plan["manifest"], data)
                 else:
+                    source = owned_path(root, plan["source"])
+                    if any(source.is_relative_to(root / run["path"]) for run in db.execute("SELECT path FROM runs WHERE state IN ('allocating','running')")):
+                        raise DataError("活动运行租约阻止SQLite备份重试")
                     backup_image(root, plan, data)
                 product = product_manifest(data)
                 if sum(item["size"] for item in product) > plan["product_bound"]:

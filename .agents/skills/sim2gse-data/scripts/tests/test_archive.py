@@ -331,6 +331,20 @@ class ArchiveTests(unittest.TestCase):
         self.call("archive", "--operation-id", preview["operation_id"], "--approve-hash", preview["plan_hash"], expected=2)
         self.assertFalse((self.root / preview["destination"]).exists())
 
+    def test_restore_rejects_an_externally_registered_package_with_active_lease(self):
+        self.initialize()
+        identity, _ = self.source(contents=b"leased package")
+        archived = self.archive(identity)
+        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        run = self.call("begin", "--request-id", "external-packages", "--owner-pid", str(os.getpid()), "--reserve-bytes", "131072")
+        relative = (Path(run["path"]).relative_to(self.root) / "part.tar.gz").as_posix()
+        _, package = self.source(relative, (self.root / manifest["parts"][0]["path"]).read_bytes())
+        manifest["parts"][0]["path"] = relative
+        _, manifest_path = self.source("leased-manifest.json", json.dumps(manifest).encode())
+        target = self.root / "leased-restore"
+        self.call("restore", "--manifest", str(manifest_path), "--destination", str(target), expected=2)
+        self.assertFalse(target.exists())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
