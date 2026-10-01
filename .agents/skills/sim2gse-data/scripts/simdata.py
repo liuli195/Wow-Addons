@@ -360,16 +360,30 @@ def resolve_artifact(root, policy, args):
         row = dict(artifact_row(db, args.artifact_id))
     finally:
         db.close()
-    source_path = root / row["path"]
+    source_path = owned_path(root, row["path"])
     expected_identity = row["identity"]
-    if not os.path.lexists(source_path):
+    def present(path):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        return True
+    if not present(source_path):
         with closing(open_index(root)) as locations_db:
             if not has_table(locations_db, "locations"):
                 raise DataError("原件缺失且没有经验证的恢复位置")
-            location = locations_db.execute("SELECT path,identity FROM locations WHERE artifact_id=? ORDER BY path", (row["id"],)).fetchone()
-            if location is None:
+            locations = locations_db.execute("SELECT path,identity FROM locations WHERE artifact_id=? ORDER BY path LIMIT 1001", (row["id"],)).fetchall()
+            if len(locations) > 1000:
+                raise DataError("恢复位置超过1000项，须先核对位置清单")
+            if not locations:
                 raise DataError("原件缺失且没有经验证的恢复位置")
-            source_path, expected_identity = root / location["path"], location["identity"]
+            for location in locations:
+                candidate = owned_path(root, location["path"])
+                if present(candidate):
+                    source_path, expected_identity = candidate, location["identity"]
+                    break
+            else:
+                raise DataError("原件及已登记恢复位置全部缺失")
     source = managed_file(root, str(source_path))
     with runner_locks(root, source):
         manifest = file_manifest(source, allow_sqlite=row["role"] == "sqlite-backup")
@@ -1194,8 +1208,14 @@ def owned_path(root, relative):
         raise DataError("相对路径含Windows设备名")
     path = root.joinpath(*parts)
     for parent in (*reversed(path.parents), path):
-        if parent.is_relative_to(root) and os.path.lexists(parent):
+        if parent.is_relative_to(root):
+            try:
+                parent.lstat()
+            except FileNotFoundError:
+                continue
             checked_path(parent)
+            if parent != path and not parent.is_dir():
+                raise DataError("路径祖先不是目录，拒绝将异常边界当作缺失")
     return path
 
 
@@ -1213,7 +1233,16 @@ def job_remaining(root, db):
                 if measured["truncated"]:
                     raise DataError("操作工作区盘点不完整")
                 actual += measured["logical_bytes"]
-        remaining += max(0, job["reserved_bytes"] - actual)
+        if "metadata_phase_bytes" in plan:
+            phases = ("reserved", "writing", "verified", "published", "sealed")
+            if job["phase"] not in phases:
+                raise DataError("操作阶段无效，拒绝计算可用预留")
+            future = phases[phases.index(job["phase"]) + 1:]
+            remaining += (max(0, plan["payload_reserved_bytes"] - actual)
+                          + sum(plan["metadata_phase_bytes"][phase] for phase in future)
+                          + plan["retry_metadata_bytes"])
+        else:
+            remaining += max(0, job["reserved_bytes"] - actual)
     return remaining
 
 
@@ -1279,7 +1308,9 @@ def manage_operation(root, policy, args):
         preview["approval_hash"] = digest(preview)
         if args.approve_hash != preview["approval_hash"] or job["phase"] == "sealed":
             raise DataError("放弃操作须批准当前清单，已封口操作不能放弃")
-        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"]:
+        plan = json.loads(job["plan"])
+        write_peak = plan.get("metadata_phase_bytes", {}).get("writing", 4 * len(job["plan"].encode("utf-8")) + 131072)
+        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"] + write_peak:
             raise DataError("缺少操作日志写入空间")
         phase_commit(db, job["id"], "abandoned")
         return dict(preview, applied=True)
@@ -1620,7 +1651,59 @@ def lifecycle_plan(root, policy, db, args):
             if args.command == "backup-sqlite" and (saved["source"] != plan["source"] or saved["source_identity"] != plan["source_identity"]):
                 raise DataError("备份请求ID已绑定另一个源身份")
             return saved
-    return plan
+    return metadata_peak_plan(plan, db)
+
+
+def metadata_peak_plan(plan, db):
+    """按实际编码字节估计每次事务的主库/WAL复制、索引及页面峰值。"""
+    page_size = db.execute("PRAGMA page_size").fetchone()[0]
+    page_count = db.execute("PRAGMA page_count").fetchone()[0]
+    depth_bound = max(1, math.ceil(math.log2(page_count + 1)))
+    if plan["kind"] == "restore":
+        paths = [source["path"] for source in plan["manifest"]["sources"]]
+    elif plan["kind"] == "archive":
+        count = sum(max(1, (source["size"] + plan["part_bytes"] - 1) // plan["part_bytes"]) for source in plan["sources"])
+        paths = ["part-%06d.tar.gz" % number for number in range(count)] + ["manifest.json"]
+    else:
+        paths = ["image.sqlite3"]
+    # 字段与product_manifest一致，数值长度取超出系统stat最大值的保守上界。
+    products = [dict(path=path, sha256="f" * 64, size=(1 << 128) - 1,
+                     identity=[(1 << 128) - 1] * 4) for path in paths]
+    encode = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    product_bytes = len(encode(products))
+    catalogue = [dict(id="f" * 36, path=plan["destination"] + "/" + item["path"],
+                      role="sqlite-backup", identity=json.dumps(item["identity"]), sha256=item["sha256"],
+                      size=item["size"], schema_version=1, sealed=1, last_used=1e128) for item in products]
+    if plan["kind"] == "backup-sqlite":
+        catalogue.append(dict(catalogue[0], path=plan["source"], sealed=0))
+    catalogue_bytes = len(encode(catalogue))
+    root = Path(db.execute("PRAGMA database_list").fetchone()[2]).parent
+    stage = root / ".staging" / plan["operation_id"]
+    log_bytes = len(encode(dict(operation_id=plan["operation_id"], kind=plan["kind"], phase="published",
+                                source=str(stage / "data"), destination=str(stage / ("retained-" + "f" * 36)),
+                                logical_bytes=(1 << 128) - 1)))
+    source_catalogue_bytes = len(encode(catalogue[-1])) if plan["kind"] == "backup-sqlite" else 0
+    pages = lambda size: ((size + page_size - 1) // page_size) * page_size
+    payload = plan["reserved_bytes"]
+    plan.update(payload_reserved_bytes=payload, metadata_phase_bytes={}, retry_metadata_bytes=0,
+                metadata_peak_bytes=0, product_metadata_bound_bytes=product_bytes)
+    for _ in range(16):
+        previous = encode(plan)
+        plan_bytes = len(previous)
+        phases = dict(
+            reserved=pages(4 * (plan_bytes + 3 * source_catalogue_bytes + log_bytes)) + 131072,
+            writing=pages(4 * (plan_bytes + log_bytes)) + 65536,
+            verified=pages(4 * (plan_bytes + product_bytes + log_bytes)) + 65536,
+            published=pages(4 * (plan_bytes + product_bytes + log_bytes)) + 65536,
+            sealed=pages(4 * (plan_bytes + product_bytes + 3 * catalogue_bytes + log_bytes)) + 65536
+                   + len(catalogue) * (12 + 18 * depth_bound) * page_size)
+        retry = max(phases["writing"], phases["verified"]) + pages(log_bytes * 4) + 65536
+        peak = sum(phases.values()) + retry
+        plan.update(metadata_phase_bytes=phases, retry_metadata_bytes=retry,
+                    metadata_peak_bytes=peak, reserved_bytes=payload + peak)
+        if encode(plan) == previous:
+            return plan
+    raise DataError("元数据峰值计划未收敛，拒绝写入")
 
 
 def backup_image(root, plan, data):
@@ -1720,6 +1803,8 @@ def lifecycle_execute(root, policy, args):
                 if not existing_source:
                     db.execute("INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?,?)", (source_id, plan["source"], "sqlite-source", image["sha256"], image["size"], json.dumps(image["identity"]), 1, 0, time.time()))
             phase_commit(db, plan["operation_id"], "reserved")
+        elif "metadata_phase_bytes" not in plan:
+            raise DataError("旧未封口操作缺少元数据峰值预留，须显式放弃后重新预览")
         destination = owned_path(root, plan["destination"])
         stage = private_stage(root, plan)
         data = stage / "data"
@@ -1753,6 +1838,8 @@ def lifecycle_execute(root, policy, args):
                         raise DataError("活动运行租约阻止SQLite备份重试")
                     backup_image(root, plan, data)
                 product = product_manifest(data)
+                if len(compact_json(product, QUERY_BYTES).encode("utf-8")) > plan["product_metadata_bound_bytes"]:
+                    raise DataError("产品清单编码超过已批准元数据上界")
                 if sum(item["size"] for item in product) > plan["product_bound"]:
                     raise DataError("产品增长超过批准的字节上限")
                 db.execute("UPDATE jobs SET product=? WHERE id=?", (compact_json(product, QUERY_BYTES), plan["operation_id"]))

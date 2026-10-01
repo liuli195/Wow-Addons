@@ -8,6 +8,7 @@ import os
 import gzip
 import io
 import tarfile
+import shutil
 import unittest
 
 import test_lifecycle as lifecycle
@@ -292,12 +293,12 @@ class ArchiveTests(unittest.TestCase):
     def test_interrupted_operation_reservation_blocks_competing_growth(self):
         self.initialize()
         identity, _ = self.source()
-        self.policy["capacity_bytes"] = 1300000
+        self.policy["capacity_bytes"] = 4 * 1024 * 1024
         self.save_config()
         plan = self.call("archive", "--artifact-id", identity)
         self.injected_call(self.crash_on_phase(plan["operation_id"], "reserved"), "archive", "--artifact-id", identity,
                            "--approve-hash", plan["plan_hash"], expected=77)
-        self.call("begin", "--request-id", "competing-growth", "--owner-pid", str(os.getpid()), "--reserve-bytes", "500000", expected=2)
+        self.call("begin", "--request-id", "competing-growth", "--owner-pid", str(os.getpid()), "--reserve-bytes", "2000000", expected=2)
         self.assertEqual(self.call("operation", "--operation-id", plan["operation_id"])["phase"], "reserved")
 
     def test_registered_decompression_bomb_and_changed_verified_product_are_rejected(self):
@@ -344,6 +345,72 @@ class ArchiveTests(unittest.TestCase):
         target = self.root / "leased-restore"
         self.call("restore", "--manifest", str(manifest_path), "--destination", str(target), expected=2)
         self.assertFalse(target.exists())
+
+    def test_resolve_tries_missing_locations_but_never_skips_a_suspicious_copy(self):
+        self.initialize()
+        identity, original = self.source(contents=b"multiple copies")
+        archived = self.archive(identity)
+        copies = []
+        for directory in ("a", "b"):
+            arguments = ("--archive-id", archived["archive_id"], "--destination", str(self.root / directory))
+            plan = self.call("restore", *arguments)
+            result = self.call("restore", *arguments, "--approve-hash", plan["plan_hash"])
+            copies.append(Path(result["restored"][0]["path"]))
+        original.write_bytes(b"changed primary")
+        self.call("resolve", "--artifact-id", identity, "--inspect", expected=2)
+        original.unlink()
+        copies[0].write_bytes(b"changed first copy")
+        self.call("resolve", "--artifact-id", identity, "--inspect", expected=2)
+        copies[0].unlink()
+        self.assertEqual(self.call("resolve", "--artifact-id", identity, "--inspect")["path"], str(copies[1]))
+        copies[1].write_bytes(b"tampered")
+        self.call("resolve", "--artifact-id", identity, "--inspect", expected=2)
+        copies[1].unlink()
+        self.call("resolve", "--artifact-id", identity, "--inspect", expected=2)
+
+    def test_large_legal_restore_plan_is_admitted_before_any_metadata_write(self):
+        self.initialize()
+        self.policy["capacity_bytes"] = 1024 * 1024 * 1024
+        self.save_config()
+        prefix = "/".join(["nested " + "x" * 180] * 12)
+        identities = [self.source(prefix + "/native-%03d.json" % number, b"{}")[0] for number in range(220)]
+        archived = self.archive(*identities)
+        arguments = ("--archive-id", archived["archive_id"], "--destination", str(self.root / "large restore"))
+        extended = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        encoded = json.dumps(extended, ensure_ascii=False, separators=(",", ":")).encode()
+        extended["metadata_note"] = "x" * (801 * 1024 - len(encoded))
+        _, extended_path = self.source("extended-801KiB.json", json.dumps(extended, ensure_ascii=False, separators=(",", ":")).encode())
+        measured = self.call("inventory", "--limit", "1000")
+        self.assertFalse(measured["truncated"])
+        self.policy["capacity_bytes"] = measured["logical_bytes"] + self.policy["maintenance_reserve_bytes"] + self.policy["metadata_reserve_bytes"] + 600000
+        self.save_config()
+        for rejected in (arguments, ("--manifest", str(extended_path), "--destination", str(self.root / "extended restore"))):
+            plan = self.call("restore", *rejected)
+            self.assertGreater(plan["metadata_peak_bytes"], len(json.dumps(plan["manifest"]).encode()))
+            before = self.call("inventory", "--limit", "1000")["logical_bytes"]
+            database_before = hashlib.sha256((self.root / "index.sqlite3").read_bytes()).hexdigest()
+            self.call("restore", *rejected, "--approve-hash", plan["plan_hash"], expected=2)
+            self.assertLessEqual(self.call("inventory", "--limit", "1000")["logical_bytes"], before)
+            self.assertEqual(hashlib.sha256((self.root / "index.sqlite3").read_bytes()).hexdigest(), database_before)
+            self.call("operation", "--operation-id", plan["operation_id"], expected=2)
+            self.assertFalse((self.root / ".staging" / plan["operation_id"]).exists())
+        self.assertFalse((self.root / "large restore").exists())
+        self.policy["capacity_bytes"] = 1024 * 1024 * 1024
+        self.save_config()
+        for phase in ("reserved", "writing", "verified", "published", "sealed"):
+            with self.subTest(large_phase=phase):
+                target = self.root / ("large restore " + phase)
+                arguments = ("--archive-id", archived["archive_id"], "--destination", str(target))
+                plan = self.call("restore", *arguments)
+                self.injected_call(self.crash_on_phase(plan["operation_id"], phase), "restore", *arguments,
+                                   "--approve-hash", plan["plan_hash"], expected=77)
+                result = self.call("restore", "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+                self.assertEqual(result["phase"], "sealed")
+                self.assertEqual(len(result["restored"]), 220)
+                self.assertTrue(all(Path(item["path"]).read_bytes() == b"{}" for item in result["restored"]))
+                # 仅清理本测试新建的Temp恢复副本，让有界盘点逐阶段保持完整。
+                self.assertTrue(target.resolve().is_relative_to(self.root.resolve()))
+                shutil.rmtree(target)
 
 
 if __name__ == "__main__":
