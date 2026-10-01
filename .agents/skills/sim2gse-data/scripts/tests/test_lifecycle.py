@@ -1,5 +1,6 @@
 """仅经共用CLI演练生命周期；所有根与数据是临时合成样例。"""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -29,6 +30,134 @@ class LifecycleTests(unittest.TestCase):
 
     def save_config(self):
         self.config.write_text(json.dumps(self.policy), encoding="utf-8")
+
+    def injected_call(self, setup, command, *arguments, expected=0):
+        # 仅在子进程替换操作系统边界，仍调用公开CLI，不读写内部索引。
+        code = setup + "\nimport runpy, sys\nsys.argv=sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')"
+        result = subprocess.run([sys.executable, "-B", "-c", code, str(CLI), command,
+                                 "--config", str(self.config), *arguments], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(result.returncode, expected, result.stderr)
+        if expected == 77:
+            return
+        return json.loads(result.stdout if expected == 0 else result.stderr)
+
+    def test_initialization_rejects_insufficient_capacity_without_publishing_root(self):
+        self.policy.update(capacity_bytes=8192, maintenance_reserve_bytes=1, metadata_reserve_bytes=1)
+        self.save_config()
+        plan = self.call("init-root")
+        self.call("init-root", "--approve-hash", plan["plan_hash"], expected=2)
+        self.assertFalse(self.root.exists())
+
+    def test_initialization_rejects_insufficient_disk_without_publishing_root(self):
+        plan = self.call("init-root")
+        self.injected_call("import shutil\nshutil.disk_usage=lambda path: type('Usage',(),{'free':0})()",
+                           "init-root", "--approve-hash", plan["plan_hash"], expected=2)
+        self.assertFalse(self.root.exists())
+
+    def test_releasing_a_reservation_still_requires_physical_metadata_headroom(self):
+        self.initialize()
+        begun = self.call("begin", "--request-id", "physical-full", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1000")
+        source = Path(begun["path"]) / "unfinished.json"
+        source.write_bytes(b"keep")
+        self.injected_call("import shutil\nshutil.disk_usage=lambda path: type('Usage',(),{'free':0})()",
+                           "lease", "--run-id", begun["run_id"], "--token", begun["token"], "--action", "release", expected=2)
+        self.assertEqual(self.call("status")["reserved_bytes"], 1000)
+        self.assertEqual(source.read_bytes(), b"keep")
+        self.call("lease", "--run-id", begun["run_id"], "--token", begun["token"], "--action", "release")
+
+    def test_wal_cache_preview_never_creates_or_modifies_source_side_files(self):
+        self.initialize()
+        source = self.root / "legacy.sqlite3"
+        db = sqlite3.connect(source)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("CREATE TABLE reusable(key TEXT PRIMARY KEY,value TEXT)")
+        db.commit()
+        db.close()
+        def identities():
+            return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in self.root.glob("legacy.sqlite3*")}
+        before = identities()
+        self.call("cache-references", "--database", str(source), expected=2)
+        self.assertEqual(identities(), before)
+        db = sqlite3.connect(source)
+        try:
+            db.execute("INSERT INTO reusable VALUES ('active','{}')")
+            db.commit()
+            before = identities()
+            self.call("cache-references", "--database", str(source), expected=2)
+            self.assertEqual(identities(), before)
+        finally:
+            db.close()
+
+    def test_failed_allocation_with_missing_parents_is_recoverable(self):
+        self.initialize()
+        obstacle = self.root / "runs"
+        obstacle.write_bytes(b"synthetic obstacle")
+        owner = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+        try:
+            self.call("begin", "--request-id", "blocked", "--owner-pid", str(owner.pid), "--reserve-bytes", "1000", expected=2)
+        finally:
+            owner.communicate(timeout=10)
+        obstacle.unlink()
+        run_id = str(uuid.uuid5(uuid.UUID(self.policy["root_id"]), "run:blocked"))
+        self.assertEqual(self.call("lease", "--run-id", run_id, "--action", "status")["state"], "allocating")
+        plan = self.call("lease", "--run-id", run_id, "--action", "recover-preview")
+        self.call("lease", "--run-id", run_id, "--action", "recover", "--approve-hash", plan["plan_hash"])
+        self.assertEqual(self.call("status")["reserved_bytes"], 0)
+        self.call("begin", "--request-id", "after-recovery", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1000")
+
+    def test_process_interruption_after_reservation_is_recoverable(self):
+        self.initialize()
+        owner = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+        setup = "from pathlib import Path\nimport os\noriginal=Path.mkdir\ndef interrupted(path,*args,**kwargs):\n if path.name=='runs': os._exit(77)\n return original(path,*args,**kwargs)\nPath.mkdir=interrupted"
+        try:
+            self.injected_call(setup, "begin", "--request-id", "interrupted", "--owner-pid", str(owner.pid),
+                               "--reserve-bytes", "1000", "--token", "retained", expected=77)
+        finally:
+            owner.communicate(timeout=10)
+        run_id = str(uuid.uuid5(uuid.UUID(self.policy["root_id"]), "run:interrupted"))
+        plan = self.call("lease", "--run-id", run_id, "--action", "recover-preview")
+        self.call("lease", "--run-id", run_id, "--action", "recover", "--approve-hash", plan["plan_hash"])
+        self.assertEqual(self.call("status")["reserved_bytes"], 0)
+
+    def test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded(self):
+        self.initialize()
+        for number, oversized in enumerate((False, True)):
+            with self.subTest(oversized=oversized):
+                owner = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+                begun = self.call("begin", "--request-id", f"over-{number}", "--owner-pid", str(owner.pid), "--reserve-bytes", "1000")
+                folder = Path(begun["path"])
+                if oversized:
+                    payload = folder / "large.json"
+                    payload.write_bytes(b"x" * self.policy["capacity_bytes"])
+                else:
+                    for index in range(1001):
+                        (folder / f"{index}.json").touch()
+                try:
+                    self.call("lease", "--run-id", begun["run_id"], "--token", begun["token"], "--action", "release")
+                    self.assertEqual(self.call("status")["reserved_bytes"], 0)
+                finally:
+                    owner.communicate(timeout=10)
+                # 只移除测试自建payload，允许下一种根超额情形独立演练。
+                for path in folder.glob("*.json"):
+                    if path.name != ".run-id.json":
+                        path.unlink()
+                dead_owner = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+                second = self.call("begin", "--request-id", f"recover-over-{number}", "--owner-pid", str(dead_owner.pid), "--reserve-bytes", "1000")
+                second_folder = Path(second["path"])
+                if oversized:
+                    (second_folder / "large.json").write_bytes(b"x" * self.policy["capacity_bytes"])
+                else:
+                    for index in range(1001):
+                        (second_folder / f"{index}.json").touch()
+                dead_owner.communicate(timeout=10)
+                preview = self.call("lease", "--run-id", second["run_id"], "--action", "recover-preview")
+                self.call("lease", "--run-id", second["run_id"], "--action", "recover", "--approve-hash", preview["plan_hash"])
+                self.assertEqual(self.call("status")["reserved_bytes"], 0)
+                self.assertTrue((second_folder / ("large.json" if oversized else "1000.json")).exists())
+                for path in second_folder.glob("*.json"):
+                    if path.name != ".run-id.json":
+                        path.unlink()
 
     def call(self, command, *arguments, expected=0):
         result = subprocess.run([sys.executable, "-B", str(CLI), command, "--config", str(self.config), *arguments],

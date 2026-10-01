@@ -18,6 +18,8 @@ import uuid
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
+# 固定初始化DDL的保守峰值：主库、写事务/WAL、SHM和根标记；不是用户容量建议。
+INITIALIZATION_PEAK_BYTES = 256 * 1024
 
 
 class DataError(ValueError):
@@ -162,6 +164,14 @@ def init_root(root, policy, approval):
         return dict(plan_hash=plan_hash, root=str(root), root_id=policy["root_id"], applied=False)
     if approval != plan_hash:
         raise DataError("初始化计划摘要不符，须批准当前预览")
+    measured = inventory(root, 1000) if root.exists() else dict(logical_bytes=0, truncated=False)
+    if measured["truncated"]:
+        raise DataError("初始化容量盘点不完整，拒绝发布索引")
+    peak = INITIALIZATION_PEAK_BYTES + policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
+    if measured["logical_bytes"] + peak > policy["capacity_bytes"]:
+        raise DataError("初始化容量不足：须容纳索引/WAL峰值及维护、元数据余量")
+    if shutil.disk_usage(root if root.exists() else checked_path(root.parent)).free < peak:
+        raise DataError("初始化所在卷空间不足，不创建根标记或索引")
     if not root.exists():
         root.mkdir()
     if not os.path.lexists(marker_path):
@@ -405,9 +415,26 @@ def lease_state(run):
     return "alive" if current == run["owner_start"] else "pid-reused"
 
 
+def run_folder(root, run):
+    """持久分配可能尚未创建任意父层；只检查已存在层，不消除重解析点。"""
+    relative = Path(run["path"])
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "runs":
+        raise DataError("运行路径身份无效")
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if not os.path.lexists(current):
+            if run["state"] == "allocating":
+                return None
+            raise DataError("已启动运行目录缺失，拒绝推定为正常分配")
+        if not checked_path(current).is_dir():
+            raise DataError("运行目录层不是普通目录，须先处理明确障碍")
+    return current
+
+
 def run_payload_bytes(root, run):
-    folder = checked_path(root / run["path"], missing_leaf=run["state"] == "allocating")
-    if not folder.exists():
+    folder = run_folder(root, run)
+    if folder is None:
         return 0
     measured = inventory(folder, 1000)
     if measured["truncated"]:
@@ -633,7 +660,8 @@ def manage_lease(root, policy, args):
         if result["owner_state"] not in ("dead", "pid-reused"):
             raise DataError("所有者仍活动或身份未知；过期心跳不能单独证明死亡")
         run = run_row(db, args.run_id)
-        with runner_locks(root, checked_path(root / run["path"]) / ".lease-probe"):
+        run_folder(root, run)
+        with runner_locks(root, root / run["path"] / ".lease-probe"):
             pass
         return dict(plan_hash=digest(dict(action="recover-lease", run=dict(run), proof=result["owner_state"], policy_hash=digest(policy))), **result)
     if args.action in ("status", "recover-preview"):
@@ -643,7 +671,12 @@ def manage_lease(root, policy, args):
         finally:
             db.close()
     with write_index(root, policy) as db:
-        check_budget(root, db, policy)
+        if args.action in ("release", "recover"):
+            # 核销预留不增长payload；禁止用业务限额或全树扫描卡死必要维护。
+            if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"]:
+                raise DataError("租约维护所需元数据余量不足；保留状态并拒绝写入")
+        else:
+            check_budget(root, db, policy)
         run = run_row(db, args.run_id)
         if args.action == "recover":
             plan = recovery(db)
@@ -653,7 +686,8 @@ def manage_lease(root, policy, args):
             authorize_run(run, args.token)
         if run["state"] not in ("allocating", "running"):
             raise DataError("运行已封口或释放，不能改写租约")
-        with runner_locks(root, checked_path(root / run["path"]) / ".lease-probe"):
+        run_folder(root, run)
+        with runner_locks(root, root / run["path"] / ".lease-probe"):
             if args.action == "heartbeat":
                 db.execute("UPDATE runs SET expires=? WHERE id=?", (time.time() + policy["lease_seconds"], args.run_id))
             else:
@@ -670,8 +704,13 @@ def cache_references(root, policy, args):
         if os.path.lexists(side) and not checked_path(side).is_file():
             raise DataError("旧缓存SQLite侧文件须为普通文件")
     wal, shm = Path(str(database) + "-wal"), Path(str(database) + "-shm")
-    if wal.exists() and wal.stat().st_size and not shm.exists():
-        raise DataError("旧缓存WAL缺少共享索引；须先停写取得一致性备份，不能忽略WAL")
+    with database.open("rb") as handle:
+        header = handle.read(20)
+    if len(header) >= 20 and header[:16] == b"SQLite format 3\x00" and (header[18] == 2 or header[19] == 2):
+        raise DataError("旧缓存为WAL模式；普通只读连接仍可能写侧文件，须先提供停写一致性备份，拒绝源目录写入")
+    journal = Path(str(database) + "-journal")
+    if (wal.exists() and wal.stat().st_size) or (journal.exists() and journal.stat().st_size):
+        raise DataError("旧缓存存在未纳入一致性备份的日志；拒绝忽略日志或隐式恢复")
     relative = database.relative_to(root).as_posix()
     refs, truncated = [], False
     source = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
