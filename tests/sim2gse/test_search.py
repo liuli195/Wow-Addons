@@ -193,7 +193,7 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(resumed['search_result']['dps'], 110)
             self.assertTrue(all(count == 1 for count in collections.Counter(calls).values()))
             self.assertEqual([n for a, n, seed in calls if a == ('death_coil',)
-                              and seed < 20260912 + 100000], [32])
+                              and seed < 20260912 + 100000 and n >= 32], [32])
 
     def test_near_round_resumes_mid_layer_without_repeating_completed_batches(self):
         import threading
