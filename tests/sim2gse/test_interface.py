@@ -1785,6 +1785,63 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["phase"], "done")
         self.assertGreater(state["elapsed_seconds"], 0)
 
+    def test_public_search_stops_clear_round_without_scoring_everyone_to_512(self) -> None:
+        self._check_adaptive_round()
+
+    def test_public_search_uses_group_damage_variance_for_group_scores(self) -> None:
+        self._check_adaptive_round(grouped=True)
+
+    def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
+        self._check_adaptive_round(invalid_variance=True)
+
+    def _check_adaptive_round(self, *, grouped=False, invalid_variance=False):
+        import search
+        import sequence
+        from test_search import _fast_initialization
+
+        calls = []
+        children = iter(([["death_coil"]], [["outbreak"], ["death_coil"]]))
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            actions = tuple(action["simc_action"] for block in candidate["blocks"] for action in block)
+            wanted = {("outbreak",): 90, ("death_coil",): 120,
+                      ("outbreak", "death_coil"): 80}[actions]
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
+            damage.update(mean=wanted, variance=1)
+            result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
+            if grouped:
+                result["report"]["sim"]["players"].append({"name": "Companion"})
+                result["report"]["sim"]["statistics"]["raid_dps"]["variance"] = 1000000
+            if invalid_variance and actions == ("outbreak", "death_coil"):
+                damage.pop("variance")
+            result["summary"]["dps"] = wanted
+            (Path(folder) / "native.json").write_text(json.dumps(result["report"]), encoding="utf-8")
+            calls.append((actions, kwargs["iterations"], kwargs["seed"]))
+            return result
+
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+            no_improvement_rounds=1, batch_targets=(32, 128, 512),
+            iterations=2, validation_batches=2, max_processes=2)}
+        with _fast_initialization(), patch.object(sequence, "evaluate", side_effect=evaluate), \
+                patch.object(search, "initial_programs", return_value=[[["outbreak"]]]), \
+                patch.object(search, "mutate", side_effect=lambda *args, **kwargs: next(children)):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 30
+            while True:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(.02)
+        self.assertEqual(state["status"], "completed", state)
+        self.assertTrue(state["result_ready"])
+        search_calls = [(actions, count) for actions, count, seed in calls if seed < 20260912 + 100000]
+        expected = [32, 96, 384] if grouped else [32]
+        self.assertEqual([n for a, n in search_calls if a == ("outbreak", "death_coil")], expected)
+        self.assertEqual([n for a, n in search_calls if a == ("death_coil",)], expected)
+        self.assertEqual(state["search_result"]["dps"], 120)
+
     def test_public_search_deduplicates_an_equivalent_sequential_loop(self) -> None:
         import codec
         import engine

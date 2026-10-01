@@ -208,6 +208,14 @@ def player_report(report, character):
     return players[0]
 
 
+def damage_statistics(report, character):
+    """返回评分所用的伤害统计，均值与方差必须来自同一对象。"""
+    sim = report['sim']
+    if len(sim['players']) > 1:
+        return sim['statistics']['raid_dps']
+    return player_report(report, character)['collected_data']['dps']
+
+
 def check_report(report, character, iterations, *, simulation_config=None):
     simulation_config = config_for(simulation_config)
     sim = report['sim']
@@ -241,7 +249,7 @@ def check_report(report, character, iterations, *, simulation_config=None):
                 raise ValueError(f'原生报告装备不符: {slot}/{key}')
     data = player['collected_data']
     metric = 'raid_dps' if len(sim['players']) > 1 else 'dps'
-    damage = sim['statistics']['raid_dps'] if metric == 'raid_dps' else data['dps']
+    damage = damage_statistics(report, character)
     mean, count = damage['mean'], damage['count']
     if not math.isfinite(mean) or mean <= 0 or count != max(1, iterations - 1) or data['fight_length']['mean'] != 180:
         raise ValueError('原生参考数值或实际样本数无效')
