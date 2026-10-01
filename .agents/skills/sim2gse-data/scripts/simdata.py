@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import uuid
+from urllib.parse import quote
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -776,7 +777,7 @@ def cache_references(root, policy, args):
 
 
 FACT_BYTES = 16 * 1024
-FACT_SCHEMA = 2
+FACT_SCHEMA = 3
 QUERY_BYTES = 1024 * 1024
 DOCUMENT_BYTES = 16 * 1024 * 1024
 
@@ -954,9 +955,13 @@ def extracted_fact(root, db, args):
                          "complete" if validation is True else "unknown")
     sample_censored = flags.get("censored") if kind != "search_summary" else None
     sample_incomplete = flags.get("incomplete") if kind != "search_summary" else None
-    sample_complete = (True if request and status == "success" and dps is not None and samples is not None and samples > 0 and
-                       sample_censored is not True and sample_incomplete is not True else None)
-    fact_id = str(uuid.uuid5(uuid.UUID(args.artifact_id), "fact-v2:" + digest(dict(context_source=context_source, player=args.player_name))))
+    summary_complete = (kind == "search_summary" and status == "completed" and validation_status == "complete" and
+                        partial_round is False and search_summary.get("stop_reason") in ("no_improvement", "candidate_limit", "space_stalled") and
+                        censored is not True and incomplete is not True)
+    sample_complete = (True if dps is not None and samples is not None and samples > 0 and
+                       ((request and status == "success" and sample_censored is not True and sample_incomplete is not True) or
+                        summary_complete) else None)
+    fact_id = str(uuid.uuid5(uuid.UUID(args.artifact_id), "fact-v3:" + digest(dict(context_source=context_source, player=args.player_name))))
     fact = dict(fact_id=fact_id, fact_schema=FACT_SCHEMA, source=source, context_source=context_source,
                 source_kind=kind, status=status, censored=censored, incomplete=incomplete,
                 censoring_scope="search" if search_censored else "result" if censored is True else None,
@@ -1039,9 +1044,9 @@ def context_leaves(value, prefix=""):
     if isinstance(value, dict) and value:
         result = {}
         for key, item in value.items():
-            if not key or "." in key:
-                raise DataError("比较条件含有歧义点号或空键，拒绝扁平化路径碰撞")
-            result.update(context_leaves(item, prefix + "." + key if prefix else key))
+            # 每个键段分别编码；点只分隔层级，字面点号/百分号/路径字符不混淆。
+            segment = quote(key, safe="").replace(".", "%2E") if key else "%EMPTY"
+            result.update(context_leaves(item, prefix + "." + segment if prefix else segment))
         return result
     return {prefix: value}
 

@@ -317,6 +317,61 @@ class FactTests(unittest.TestCase):
             self.assertIsNone(row["fight_length_seconds"])
             self.assertEqual(row["elapsed_seconds"], 1.25 * row["completed_batches"])
 
+    def test_complete_search_summary_is_comparable_only_with_recorded_completion_evidence(self):
+        self.initialize()
+        def result(version, dps, **changes):
+            value = self.batch(version=version, status="completed", search_result={"dps": dps, "samples": 9},
+                               search={"partial_round": False, "stop_reason": "no_improvement"},
+                               independent_validation_complete=True)
+            value.update(changes)
+            return value
+        left = self.extracted("complete-left.json", result("v1", 100))
+        right = self.extracted("complete-right.json", result("v2", 110))
+        compared = self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
+        self.assertTrue(compared["validation_complete"])
+        self.assertEqual(compared["sample_complete"], {"left": True, "right": True})
+        self.assertTrue(compared["comparable"])
+        self.assertEqual(compared["delta_dps"], 10)
+        variants = [result("v2", 110, independent_validation_complete=False),
+                    result("v2", 110, independent_validation_complete=None),
+                    result("v2", 110, status="validation_incomplete"),
+                    result("v2", 110, search={"partial_round": False, "stop_reason": "search_deadline"}),
+                    result("v2", 110, search={"stop_reason": "no_improvement"}),
+                    result("v2", 110, search={"partial_round": True, "stop_reason": "no_improvement"})]
+        for index, document in enumerate(variants):
+            other = self.extracted(f"incomplete-{index}.json", document)
+            refused = self.call("compare", "--left", left, "--right", other, "--axis", "condition.engine.controlled.version")
+            self.assertFalse(refused["comparable"])
+            self.assertIsNone(refused["delta_dps"])
+
+    def test_real_rule_path_keys_compare_and_escaped_literal_dot_axes_are_distinct(self):
+        self.initialize()
+        rule_key = "D:\\My Project\\Wow Addons\\projects\\sim2gse\\task.py"
+        def document(version, rule_hash="a" * 64, nested=1, literal=2):
+            value = self.batch(version=version)
+            value["condition_details"]["rules"] = {rule_key: rule_hash, "D:\\My Project\\codec.lua": "b" * 64,
+                                                    "D:\\My Project\\compatibility.json": "c" * 64}
+            value["condition_details"]["config"].update(x={"y": nested}, **{"x.y": literal})
+            value["request"]["condition"] = hashlib.sha256(json.dumps(value["condition_details"], ensure_ascii=False,
+                                                                     sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            return value
+        left = self.extracted("rules-left.json", document("v1"))
+        right = self.extracted("rules-right.json", document("v2"))
+        self.assertTrue(self.call("compare", "--left", left, "--right", right,
+                                 "--axis", "condition.engine.controlled.version")["comparable"])
+        literal = self.extracted("literal-right.json", document("v2", literal=3))
+        self.call("compare", "--left", left, "--right", literal, "--axis", "condition.engine.controlled.version", expected=2)
+        self.assertTrue(self.call("compare", "--left", left, "--right", literal,
+                                 "--axis", "condition.engine.controlled.version", "--axis", "condition.config.x%2Ey")["comparable"])
+        nested = self.extracted("nested-right.json", document("v2", nested=999))
+        self.call("compare", "--left", left, "--right", nested, "--axis", "condition.engine.controlled.version",
+                  "--axis", "condition.config.x%2Ey", expected=2)
+        changed = self.extracted("changed-rule.json", document("v2", rule_hash="d" * 64))
+        self.call("compare", "--left", left, "--right", changed, "--axis", "condition.engine.controlled.version", expected=2)
+        escaped = "condition.rules.D%3A%5CMy%20Project%5CWow%20Addons%5Cprojects%5Csim2gse%5Ctask%2Epy"
+        self.assertTrue(self.call("compare", "--left", left, "--right", changed,
+                                 "--axis", "condition.engine.controlled.version", "--axis", escaped)["comparable"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

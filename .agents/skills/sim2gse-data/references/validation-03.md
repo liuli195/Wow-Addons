@@ -50,3 +50,16 @@ OK
 ```
 
 新事实使用schema2和版本化ID，已有schema1事实/快照不覆写；旧事实新增完整性字段缺失保持未知。对应新增测试为test_actual_production_rows_can_compare_known_axes_under_same_opaque_condition、test_search_termination_validation_and_elapsed_survive_export_and_snapshot、test_incomplete_search_comparison_does_not_claim_complete_validation、test_ambiguous_dot_keys_cannot_hide_condition_changes、test_request_types_and_nested_json_boolean_numeric_differences_are_preserved；另有自适应计数回归。固定提交后的统一验证、推送和增量审查结果在交付消息记录。
+
+## 第二次增量审查的窄返工
+
+固定起点36681d7897df8edf92c39d389b44f97fa976c38b。原五项云端已关闭，新增两项分别返工：Spec（规格）P2完整search_summary被永远判不完整；Standards（规范）P1全面拒绝点号使task.py420—425实际rules绝对文件路径不可用。先跑两项公开CLI，均失败（2.546秒），修复后连同原碰撞/未完成拒绝测试4项通过（10.677秒）。
+
+完整汇总正向须具备completed、独立验证true、完整轮次false及已知正常停止原因，保留有效DPS/样本数；六类负向覆盖验证false/未知、validation_incomplete、deadline、轮次未知和partial_round true。没有为了正向用例放宽所有unknown。新提取schema3及版本化ID保留此前不可变事实，不原地覆盖。
+
+实际规则结构测试含Windows空格绝对task.py/codec.lua/compatibility.json键，与task.py的_rule_hashes字段形状一致。键段采用无碰撞百分号转义，普通点分axis兼容；相同规则可以比较，规则摘要变化必须声明已编码axis或拒绝。原x.y字面键与嵌套x/y变化均测试，不能通过声明字面轴掩盖嵌套变化。全部技能及固定全局基线统一验证结果由修复交付消息记录。
+
+```text
+Ran 49 tests in 92.911s
+OK
+```

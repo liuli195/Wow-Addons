@@ -78,13 +78,15 @@ python "<技能目录>/scripts/simdata.py" query --config "<机器配置绝对�
 
 `extract`（提取）只处理已封口且身份/原始SHA256匹配的JSON对象，上限16MiB，不整读更大报告。支持原生 `sim.players[].collected_data.dps`、多人报告的 `sim.statistics.raid_dps`，实际TaskStore缓存行的 `status/request/dps/samples/requested_iterations`，以及 `result.json` 的 `search_result`。不会调用TaskStore构造器、模拟器或改变诊断开关。原生多人报告须唯一选玩家，不能把个人与团队指标混用。上下文JSON须是已登记对象，实际缓存行 `sha256` 与原生报告匹配，缓存DPS和样本数也须吻合。
 
-新提取事实schema（结构版本）为2，保留状态、失败原因、未完成/删失、请求迭代数、实际样本数及现有误差字段；样本标准差与均值误差保留原名，不互相冒充，不从摘要计算置信区间。版本2使用新的版本化事实ID，已有版本1事实与冻结快照不覆盖，缺少新字段视为未知。缺失为null，不补零、不编造概率或可按动作。已有原生 `action_sequence`（动作序列）记录条目数与指向原件的JSON指针，不将大轨迹复制到事实；输入尝试轨迹未记录时仍标缺失，不能把成功动作当成全部尝试。提取幂等，不更新源业务last_used；每个事实对原件和上下文建立持久引用。
+新提取事实schema（结构版本）为3，保留状态、失败原因、未完成/删失、请求迭代数、实际样本数及现有误差字段；样本标准差与均值误差保留原名，不互相冒充，不从摘要计算置信区间。版本3使用新的版本化事实ID，已有版本1/2事实与冻结快照不覆盖，缺少新字段视为未知。缺失为null，不补零、不编造概率或可按动作。已有原生 `action_sequence`（动作序列）记录条目数与指向原件的JSON指针，不将大轨迹复制到事实；输入尝试轨迹未记录时仍标缺失，不能把成功动作当成全部尝试。提取幂等，不更新源业务last_used；每个事实对原件和上下文建立持久引用。
 
 比较要求实际请求种子、输入种子、迭代数、统计版本、程序、用途、按键时刻、轨迹开关及重置事件可用。trace须为布尔值，种子和迭代数须为整数；布尔值不能冒充0/1，嵌套JSON也按类型比较。完整条件通过上下文中的 `condition_details` 展开，字段严格对应 `task.py` 的条件摘要输入：fields/class_name/engine/options/config/simulation_config/cbor2/rules（角色字段/职业/引擎/选项/配置/模拟配置/依赖版本/规则）。展开的规范JSON摘要须与实际 `request.condition` 相同；这不是旧报告必有字段，也不能凭DPS或当前机器状态补造。完整展开路径同时要求已记录保真度和总预算，可比较声明为变化轴的不同引擎版本，其余条件仍核对。
 
 实际生产缓存行没有condition_details/fidelity，仍有最小可用路径：只在双方实际 `request.condition` 的64位SHA256完全相同时，比较可核验的request字段。该摘要由现有task.py把角色、引擎、配置、模拟选项、依赖和规则共同纳入；摘要相同仅用于限制到同一冻结条件，不展开或猜测其内容。变化轴/分层仅允许request中的已记录叶字段，其余请求条件匹配。输出 `comparison_scope=same_opaque_condition`（同一不透明条件）及实际未知项，保真度标签/总预算值未记录就保持null，不声称这些数值已知；条件摘要不同拒绝跨未知条件比较。查询和快照仍保留原始缺失信息。示例：`compare ... --axis request.seed --axis request.input_seed`；模拟种子变化时须同时声明实际随之变化的输入种子，不能静默忽略。
 
-`--axis`（变化轴）可重复，须精确到完整叶字段；条件对象含字面点号键或空键时明确拒绝比较，防止路径碰撞。其余全部条件一致，或用重复 `--stratify`（分层）明确不同口径。不同分层返回双方条件及null差值，不跨层混算；失败、删失、未完成或缺样本不计算DPS差值。原生批次与搜索汇总、不同指标不能静默混合。比较给出双方独立验证状态及三态 `validation_complete`（true/false/null），不把成功缓存样本的数值比较冒充已完成独立验证；旧事实缺少样本完整性字段时也不推定完整。
+`--axis`（变化轴）可重复，须精确到完整叶字段。每个字典键段分别按UTF-8百分号编码，字面点号编码为%2E、百分号为%25、空键为%EMPTY；点号只分隔层级，普通 `condition.engine.controlled.version` 保持兼容。例如嵌套x/y是 `condition.config.x.y`，字面键x.y是 `condition.config.x%2Ey`，两者不碰撞。实际rules中的绝对.py/.lua/.json文件名作为一个键段保留，冒号/反斜杠/空格/点号分别转义，不因正常文件名拒绝比较。未声明条件变化的错误信息给出可直接用于axis的已编码路径。其余全部条件一致，或用重复 `--stratify`（分层）明确不同口径。不同分层返回双方条件及null差值，不跨层混算；失败、删失、未完成或缺样本不计算DPS差值。原生批次与搜索汇总、不同指标不能静默混合。比较给出双方独立验证状态及三态 `validation_complete`（true/false/null），不把成功缓存样本的数值比较冒充已完成独立验证；旧事实缺少样本完整性字段时也不推定完整。
+
+完整搜索汇总也有正向比较路径：status为completed、独立验证明确完成、partial_round明确false、停止原因为已知正常终点（no_improvement/candidate_limit/space_stalled），且没有删失/未完成反证、DPS及样本数可用时，样本汇总完整性可记录true；比较还须满足原有请求/条件/口径匹配。验证未知或未完成、轮次未知或不完整、search_deadline等预算终止不满足此证据链，继续保守返回不可比和null差值。该版本化完整性修正不重写以前冻结的事实。
 
 保留 `search.partial_round/stop_reason/rounds/candidate_count/unique_candidates`（未完整轮/停止原因/轮数/候选数/去重候选数），以及phase/completed_batches（阶段/完成批次数）。search_deadline（搜索阶段预算终止）标为搜索范围的删失，partial_round及validation_incomplete（验证未完成）如实记录；搜索没完成不意味着此前每个DPS样本损坏，`sample_censored/sample_incomplete/sample_complete`（样本删失/未完成/完整）单独记录。成功TaskStore记录可证明已完成的缓存样本，未记录独立验证完成标记仍为unknown（未知）。`elapsed_seconds` 是实际墙钟耗时，`fight_length_seconds` 是原生战斗时长，旧seconds字段仅作为战斗时长兼容别名，不能混算。自适应搜索按实际requested_iterations与samples保留，允许32、128、512等预算和不同有效样本数，不把合法提前筛除判为损坏或强制补齐512；缺失批次数、耗时或停止原因不补零。
 
