@@ -4,6 +4,7 @@ import argparse,hashlib,json,os,re,shutil,sqlite3,statistics,subprocess,sys,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[3];BASELINE="efd9b71a9bf934a5cb990f314651e17ace73e9d1";CONTRACT="search-v1"
 PHASE2_BASELINE="cc94eb7253004ba1bff74e029fd6f3a8f23681d2"
+PRODUCT_CURRENT="9e50f2c3191744462059c9c77b26983781de48dc"
 PROFILES={"current":ROOT/".local/sim2gse/ui-tasks/tasks/b2a776ffb0aa4c0d815e5beed1a2ede7/input.original.simc","talent-trinket":ROOT/".local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc","equipment":ROOT/".local/sim2gse/ui-tasks/tasks/9d0657821b9b48d2a339db860f709e5b/input.original.simc"}
 SEEDS=tuple(range(20260912,20260922));CONFIG={"total_budget_seconds":600,"search_budget_seconds":420,"candidate_limit":1000,"round_candidate_limit":16,"no_improvement_rounds":5,"batch_targets":[32,128,512],"validation_batches":4,"final_batches":20,"iterations":100,"final_iterations":100,"max_processes":2,"scenarios":["nominal","jitter","slow","pause","phase"],"input_interval_ms":200,"reset_events":[]}
 def _sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -40,6 +41,29 @@ def extract(result,out,wall,*,phase2=False):
  s=result.get("search") or {};records=s.get("records") or [];final=(result.get("final") or {}).get("scenarios") or {};selected="candidate_mean_dps" if phase2 or result.get("selected_candidate_key")==result.get("locked_candidate_key") else "control_mean_dps";dps=[v.get("comparison",{}).get(selected) for v in final.values()];dps=[v for v in dps if isinstance(v,(int,float))]
  starts=s.get("native_batch_starts");starts=starts if starts is not None else len(list((out/"batches").glob("*/native.json")))
  return {"status":result.get("status","failed"),"evidence_complete":len(dps)==5,"wall_seconds":wall,"final_dps":statistics.median(dps) if dps else None,"measurement":"locked_candidate" if phase2 else "exported_sequence","reported_candidate_key":result.get("locked_candidate_key") if phase2 else result.get("selected_candidate_key"),"candidate_scores":[r["score"] for r in records if isinstance(r.get("score"),(int,float))],"common_unique_candidates":len({behavior_id(r["candidate"]) for r in records if r.get("candidate")}),"native_batch_starts":starts,"batch_requests":s.get("batch_requests"),"batch_cache_hits":s.get("batch_cache_hits"),"canonicalized_duplicates":s.get("canonicalized_duplicates")}
+
+def extract_product(result):
+ score=result.get('search_result') or {}
+ dps=score.get('dps');samples=score.get('samples',0)
+ measurement='search_score'
+ if not score:
+  nominal=((result.get('final') or {}).get('scenarios') or {}).get('nominal') or {}
+  selected='candidate' if result.get('selected_candidate_key')==result.get('locked_candidate_key') else 'seed'
+  field='candidate_mean_dps' if selected=='candidate' else 'control_mean_dps'
+  dps=(nominal.get('comparison') or {}).get(field)
+  samples=sum(row.get('samples',0) for row in nominal.get(selected,[]))
+  if not nominal.get('complete'):dps=None
+  measurement='independent_nominal'
+ reference=(result.get('native_reference') or {}).get('dps')
+ candidate=result.get('candidate') or {}
+ complete=(bool(result.get('selected_candidate_key')) and result.get('status') in ('completed','validation_incomplete') and
+           candidate.get('simulation')=='passed_native_model' and candidate.get('text','').startswith('!GSE3!') and
+           isinstance(dps,(int,float)) and dps>0 and samples>0 and isinstance(reference,(int,float)) and reference>0)
+ return dict(status=result.get('status','failed'),evidence_complete=bool(complete),final_dps=dps,
+             samples=samples,reference_dps=reference,reference_ratio=dps/reference if complete else None,
+             measurement=measurement,reported_candidate_key=result.get('selected_candidate_key'),
+             independently_tested=result.get('independent_validation_complete',False),
+             final_scenarios=list(((result.get('final') or {}).get('scenarios') or {}).keys()))
 def run(source,profile,out,seed,*,phase2=False):
  cfg=dict(CONFIG,random_seed=seed);code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))";start=time.monotonic();p=subprocess.Popen([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);timeline=[];seen=0;search_wall=None;search_started=None
  while p.poll() is None:
@@ -90,10 +114,115 @@ def summarize_profile(b,c):
 def summarize(root,seed_count=5,profiles=None):
  def load(path):return json.loads(path.read_text()) if path.is_file() else {"evidence_complete":False,"final_dps":None,"native_batch_starts":None,"common_unique_candidates":0,"wall_seconds":1,"search_wall_seconds":1,"candidate_scores":[],"candidate_timeline":[],"simc_total_iterations":None,"engine_identities":[]}
  seeds=SEEDS[:seed_count];profiles={p:summarize_profile(*[[load(root/side/p/str(seed)/"summary.json") for seed in seeds] for side in ("baseline","current")]) for p in (PROFILES if profiles is None else profiles)};status="insufficient_evidence" if any(v["status"]=="insufficient_evidence" for v in profiles.values()) else "ready_for_human";result={"contract":CONTRACT,"decision":"human_required","seeds":list(seeds),"profiles":profiles,"status":status};(root/"overview.json").write_text(json.dumps(result,ensure_ascii=False,indent=2));return result
+
+def summarize_product(root):
+ root.mkdir(parents=True,exist_ok=True)
+ rows={side:[] for side in ('baseline','current')}
+ for side in rows:
+  for seed in SEEDS[:3]:
+   path=root/side/'current'/str(seed)/'summary.json'
+   rows[side].append(json.loads(path.read_text()) if path.is_file() else dict(evidence_complete=False))
+ baseline=rows['baseline']
+ threshold=med(baseline,'final_dps')*.95 if all(r.get('evidence_complete') for r in baseline) else None
+ def timing(row):
+  limit=row.get('search_budget_seconds')
+  if threshold is None or not row.get('evidence_complete'):
+   return dict(reached=None,limit_seconds=limit,lower_seconds=None,upper_seconds=None)
+  point=next((p for p in row.get('candidate_timeline',[]) if isinstance(p.get('score'),(int,float)) and p['score']>=threshold),None)
+  return dict(reached=bool(point),limit_seconds=limit,
+              lower_seconds=point['lower_seconds'] if point else None,
+              upper_seconds=point['upper_seconds'] if point else None,
+              method='observed_wall_time_interval_including_initialization')
+ pairs=[]
+ for seed,old,new in zip(SEEDS[:3],baseline,rows['current']):
+  compatible=(bool(old.get('engine_identities')) and old.get('engine_identities')==new.get('engine_identities') and
+              bool(old.get('profile_sha256')) and old.get('profile_sha256')==new.get('profile_sha256') and
+              old.get('random_seed')==new.get('random_seed')==seed)
+  complete=bool(old.get('evidence_complete') and new.get('evidence_complete') and compatible)
+  pairs.append(dict(seed=seed,complete=complete,conditions_match=compatible,
+                    baseline=dict(old,threshold_time=timing(old)),current=dict(new,threshold_time=timing(new)),
+                    dps_change=(new['final_dps']-old['final_dps'])/old['final_dps'] if complete else None))
+ complete=all(p['complete'] for p in pairs)
+ old_dps=med(baseline,'final_dps');new_dps=med(rows['current'],'final_dps')
+ result=dict(contract='phase2-product-v1',decision='human_required',seeds=list(SEEDS[:3]),threshold=threshold,
+             threshold_definition='95% of complete baseline exported nominal DPS median',pairs=pairs,
+             baseline_dps_median=old_dps,current_dps_median=new_dps,
+             dps_median_change=(new_dps-old_dps)/old_dps if complete else None,
+             status='ready_for_human' if complete else 'insufficient_evidence',
+             note='旧版正常节奏独立样本与新版搜索内成绩来源不同；不是独立同样本收益证明。')
+ (root/'product-overview.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+ return result
+
+def run_product(source,profile,out,seed,side):
+ config=dict(CONFIG,random_seed=seed)
+ if side=='current':config.update(search_budget_seconds=600,diagnostic_logging=False)
+ code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))"
+ started=time.monotonic()
+ process=subprocess.Popen([sys.executable,'-c',code,str(source),str(profile),str(out),_json(config)],cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ timeline=[];observed={};previous=0.0
+ def observe():
+  database=out/'task.sqlite3'
+  if not database.is_file():return
+  nonlocal previous
+  try:
+   with sqlite3.connect(f'{database.as_uri()}?mode=ro',uri=True,timeout=.1) as db:
+    scores=db.execute("SELECT json_extract(r.value,'$.key'),json_extract(r.value,'$.score') FROM state,json_each(state.value,'$.archive') AS r WHERE state.id=1").fetchall()
+   now=time.monotonic()-started
+   for key,score in scores:
+    if isinstance(score,(int,float)) and observed.get(key)!=score:
+     timeline.append(dict(key=key,score=score,lower_seconds=previous,upper_seconds=now))
+     observed[key]=score
+   previous=now
+  except (sqlite3.Error,OSError):pass
+ while process.poll() is None:
+  observe();time.sleep(1)
+ stdout,stderr=process.communicate();observe()
+ if not (out/'result.json').is_file():raise RuntimeError(stderr[-4000:] or '任务没有生成结果')
+ result=json.loads((out/'result.json').read_text(encoding='utf-8'))
+ row=extract_product(result)
+ with sqlite3.connect(f'{(out/"task.sqlite3").as_uri()}?mode=ro',uri=True) as db:
+  state=json.loads(db.execute('SELECT value FROM state WHERE id=1').fetchone()[0])
+ if state.get('engines'):
+  identities=sorted({_json(value) for value in state['engines'].values()})
+ else:
+  identities=sorted({_json(json.loads(path.read_text())['identity']) for path in out.rglob('invocation.json')})
+ row.update(engine_identities=identities,profile_sha256=_sha(profile),random_seed=seed,
+            search_budget_seconds=config['search_budget_seconds'],total_budget_seconds=config['total_budget_seconds'],
+            wall_seconds=time.monotonic()-started,elapsed_seconds=result.get('elapsed_seconds'),
+            candidate_timeline=timeline,candidate_count=(result.get('search') or {}).get('candidate_count'),
+            completed_batches=result.get('completed_batches'),process_returncode=process.returncode,stderr_tail=stderr[-4000:])
+ row['evidence_complete']=bool(row['evidence_complete'] and process.returncode==0 and identities and
+                               (out/'candidate.txt').is_file() and (out/'candidate.txt').read_text()==result['candidate']['text'])
+ return row
+
+def product_command(args,root):
+ if args.summarize:
+  print(json.dumps(summarize_product(root),ensure_ascii=False));return 0
+ if args.side is None or args.profile!='current' or args.seed not in SEEDS[:3]:
+  raise SystemExit('产品对照需要 side、current配置和前三组随机条件')
+ commit=PHASE2_BASELINE if args.side=='baseline' else PRODUCT_CURRENT
+ source=materialize(root,commit,args.side)
+ evidence=root/args.side/'current'/str(args.seed)
+ if evidence.exists():raise SystemExit(f'证据目录已存在: {evidence}')
+ evidence.mkdir(parents=True)
+ profile=root/'inputs/current.simc';profile.parent.mkdir(parents=True,exist_ok=True)
+ if not profile.exists():shutil.copy2(PROFILES['current'],profile)
+ config=dict(CONFIG,random_seed=args.seed)
+ if args.side=='current':config.update(search_budget_seconds=600,diagnostic_logging=False)
+ manifest=dict(contract='phase2-product-v1',side=args.side,profile='current',profile_sha256=_sha(profile),
+               seed=args.seed,source_commit=commit,source_manifest_sha256=_sha(source.parents[1]/'source-manifest.json'),config=config)
+ (evidence/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+ row=run_product(source,profile,evidence/'task',args.seed,args.side)
+ (evidence/'summary.json').write_text(json.dumps(row,ensure_ascii=False,indent=2),encoding='utf-8')
+ print(json.dumps({key:value for key,value in row.items() if key not in ('candidate_timeline','engine_identities')},ensure_ascii=False));return 0
+
 def main():
- p=argparse.ArgumentParser();p.add_argument("--run-id",required=True);p.add_argument("--summarize",action="store_true");p.add_argument("--phase2",action="store_true");p.add_argument("--seed-count",type=int,choices=(5,10),default=5);p.add_argument("--side",choices=("baseline","current"));p.add_argument("--profile",choices=tuple(PROFILES));p.add_argument("--seed",type=int,choices=SEEDS);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument("--run-id",required=True);p.add_argument("--summarize",action="store_true");p.add_argument("--phase2",action="store_true");p.add_argument("--product",action="store_true");p.add_argument("--seed-count",type=int,choices=(5,10),default=5);p.add_argument("--side",choices=("baseline","current"));p.add_argument("--profile",choices=tuple(PROFILES));p.add_argument("--seed",type=int,choices=SEEDS);a=p.parse_args()
  if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}",a.run_id):p.error("run-id 必须是单个小写路径段")
  root=ROOT/".local/sim2gse/benchmarks"/CONTRACT/a.run_id
+ if a.product:
+  if a.phase2:p.error('product与phase2历史入口不能混用')
+  return product_command(a,root)
  if a.summarize:print(json.dumps(summarize(root,3 if a.phase2 else a.seed_count,profiles=("current",) if a.phase2 else None),ensure_ascii=False));return 0
  if a.side is None or a.profile is None or a.seed is None:p.error("单次运行需要 side、profile 和 seed")
  if a.phase2 and (a.profile!="current" or a.seed not in SEEDS[:3]):p.error("第二阶段只运行当前真实配置和前三组配对条件")
