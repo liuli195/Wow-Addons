@@ -16,6 +16,40 @@ class SharedEntryTests(unittest.TestCase):
         return subprocess.run([sys.executable, "-B", str(CLI), *arguments],
                               cwd=cwd, capture_output=True, text=True, encoding="utf-8")
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows目录联接行为")
+    def test_parent_components_cannot_hide_a_junction(self):
+        with tempfile.TemporaryDirectory(prefix="simdata parent ") as directory:
+            repository = Path(directory) / "repo"
+            skill = repository / ".agents" / "skills" / "sim2gse-data"
+            shutil.copytree(CLI.parent.parent, skill)
+            entry = skill / "scripts" / "simdata.py"
+            installed = subprocess.run([sys.executable, "-B", str(entry), "install-junction",
+                                        "--repository", str(repository), "--apply"],
+                                       capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            link = repository / ".claude" / "skills" / "sim2gse-data"
+            for path in (str(link) + "\\..", str(link) + "/../"):
+                result = self.call("status", "--root", path)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("上级路径", json.loads(result.stderr)["error"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows目录联接行为")
+    def test_status_rejects_a_link_at_the_known_index_endpoint(self):
+        with tempfile.TemporaryDirectory(prefix="simdata index link ") as directory:
+            repository = Path(directory) / "repo"
+            skill = repository / ".agents" / "skills" / "sim2gse-data"
+            shutil.copytree(CLI.parent.parent, skill)
+            installed = subprocess.run([sys.executable, "-B", str(skill / "scripts" / "simdata.py"),
+                                        "install-junction", "--repository", str(repository), "--apply"],
+                                       capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            data = Path(directory) / "data"
+            data.mkdir()
+            (repository / ".claude" / "skills" / "sim2gse-data").rename(data / "index.sqlite3")
+            result = self.call("status", "--root", str(data))
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("重解析点", json.loads(result.stderr)["error"])
+
     def test_status_reports_disabled_unset_policy_without_creating_an_index(self):
         with tempfile.TemporaryDirectory(prefix="simdata status ") as directory:
             root = Path(directory)
@@ -49,6 +83,27 @@ class SharedEntryTests(unittest.TestCase):
             result = self.call("status", "--root", directory, "--config", str(config))
             self.assertEqual(result.returncode, 2)
             self.assertIn("data_root", json.loads(result.stderr)["error"])
+
+    def test_relative_config_is_rejected_from_each_working_directory(self):
+        with tempfile.TemporaryDirectory(prefix="simdata config cwd ") as directory:
+            for name in ("first", "second"):
+                working = Path(directory) / name
+                working.mkdir()
+                data = working / "data"
+                data.mkdir()
+                (working / "machine.json").write_text(json.dumps({"data_root": str(data)}), encoding="utf-8")
+                result = self.call("status", "--config", "machine.json", cwd=working)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("配置须使用绝对路径", json.loads(result.stderr)["error"])
+
+    def test_nul_in_configured_root_returns_a_structured_path_error(self):
+        with tempfile.TemporaryDirectory(prefix="simdata nul ") as directory:
+            config = Path(directory) / "machine.json"
+            config.write_text(json.dumps({"data_root": str(Path(directory) / "bad\x00name")}), encoding="utf-8")
+            result = self.call("status", "--config", str(config))
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("NUL", json.loads(result.stderr)["error"])
+            self.assertEqual(list(Path(directory).iterdir()), [config])
 
     def test_inventory_limit_relative_root_and_root_mismatch(self):
         with tempfile.TemporaryDirectory(prefix="simdata bounded ") as directory:

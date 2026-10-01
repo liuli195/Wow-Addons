@@ -18,6 +18,10 @@ class DataError(ValueError):
 
 def checked_path(path):
     """先检查原路径各层，再解析，避免把联接越界隐藏在 resolve 中。"""
+    if "\x00" in os.fspath(path):
+        raise DataError("路径含NUL字符，不能作为文件系统路径")
+    if ".." in os.fspath(path).replace("\\", "/").split("/"):
+        raise DataError("路径含上级路径组件，不能在规范化时隐藏链接")
     path = Path(os.path.abspath(path))
     for component in (*reversed(path.parents), path):
         info = component.lstat()
@@ -49,6 +53,8 @@ def inventory(root, limit):
 def load_policy(config):
     policy = json.loads((SKILL_ROOT / "assets/config.default.json").read_text(encoding="utf-8"))
     if config:
+        if not Path(config).is_absolute():
+            raise DataError("配置须使用绝对路径，不能依赖当前工作目录")
         supplied = json.loads(checked_path(config).read_text(encoding="utf-8"))
         if not isinstance(supplied, dict) or set(supplied) - set(policy):
             raise DataError("配置须为对象且不能含未知字段")
@@ -134,8 +140,12 @@ def main():
             raise DataError("数据根须为目录；盘点上限须在1至100000之间")
         if args.command == "check-config" and args.for_write:
             require_write_policy(policy)
+        index_present = False
+        if args.command != "inventory" and os.path.lexists(root / "index.sqlite3"):
+            checked_path(root / "index.sqlite3")
+            index_present = True
         report = inventory(root, args.limit) if args.command == "inventory" else {
-            "root": str(root), "index_present": (root / "index.sqlite3").exists(),
+            "root": str(root), "index_present": index_present,
             "disk_free_bytes": shutil.disk_usage(root).free,
         }
         report.update({key: value for key, value in policy.items() if key != "data_root"})
