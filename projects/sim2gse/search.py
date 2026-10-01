@@ -888,7 +888,7 @@ def _tuple(value):
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
-    from engine import check_report, player_report, CandidateError
+    from engine import check_report, player_report, damage_statistics, CandidateError
     from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity
     from simulation_config import config_for
@@ -1268,6 +1268,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def candidate_key(program):
         return prepare(program)['identity']
 
+    def score_variance(report):
+        variance = damage_statistics(report, character).get('variance')
+        if type(variance) not in (int, float) or not math.isfinite(variance) or variance < 0:
+            raise CandidateError('伤害方差无效')
+        return variance
+
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False):
         seed_offset = {'search': 0, 'validation': 100000, 'final': 200000}[purpose]
         # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
@@ -1298,9 +1304,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     raise ValueError('缓存报告散列或身份不符')
                 summary = check_report(json.loads(raw), character, iterations,
                                        simulation_config=simulation_config)
-                damage = player_report(json.loads(raw), character)['collected_data']['dps']
                 if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
-                        or damage['variance'] != cached['variance']):
+                        or score_variance(json.loads(raw)) != cached['variance']):
                     raise ValueError('缓存摘要不符')
                 store.put_batch(key, cached, counter='batch_cache_hits')
                 return dict(cached, cached=True)
@@ -1329,9 +1334,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started, **kwargs)
             raw = (folder / 'native.json').read_bytes()
-            variance = player_report(result['report'], character)['collected_data']['dps']['variance']
-            if type(variance) not in (int, float) or not math.isfinite(variance) or variance < 0:
-                raise CandidateError('伤害方差无效')
+            variance = score_variance(result['report'])
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], variance=variance, requested_iterations=iterations,
                        artifact=folder.relative_to(destination).as_posix(), origin=str(destination), sha256=hashlib.sha256(raw).hexdigest(),

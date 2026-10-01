@@ -1786,6 +1786,15 @@ class InterfaceTests(unittest.TestCase):
         self.assertGreater(state["elapsed_seconds"], 0)
 
     def test_public_search_stops_clear_round_without_scoring_everyone_to_512(self) -> None:
+        self._check_adaptive_round()
+
+    def test_public_search_uses_group_damage_variance_for_group_scores(self) -> None:
+        self._check_adaptive_round(grouped=True)
+
+    def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
+        self._check_adaptive_round(invalid_variance=True)
+
+    def _check_adaptive_round(self, *, grouped=False, invalid_variance=False):
         import search
         import sequence
         from test_search import _fast_initialization
@@ -1801,6 +1810,11 @@ class InterfaceTests(unittest.TestCase):
             damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
             damage.update(mean=wanted, variance=1)
             result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
+            if grouped:
+                result["report"]["sim"]["players"].append({"name": "Companion"})
+                result["report"]["sim"]["statistics"]["raid_dps"]["variance"] = 1000000
+            if invalid_variance and actions == ("outbreak", "death_coil"):
+                damage.pop("variance")
             result["summary"]["dps"] = wanted
             (Path(folder) / "native.json").write_text(json.dumps(result["report"]), encoding="utf-8")
             calls.append((actions, kwargs["iterations"], kwargs["seed"]))
@@ -1823,8 +1837,9 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["status"], "completed", state)
         self.assertTrue(state["result_ready"])
         search_calls = [(actions, count) for actions, count, seed in calls if seed < 20260912 + 100000]
-        self.assertEqual([n for a, n in search_calls if a == ("outbreak", "death_coil")], [32])
-        self.assertEqual([n for a, n in search_calls if a == ("death_coil",)], [32])
+        expected = [32, 96, 384] if grouped else [32]
+        self.assertEqual([n for a, n in search_calls if a == ("outbreak", "death_coil")], expected)
+        self.assertEqual([n for a, n in search_calls if a == ("death_coil",)], expected)
         self.assertEqual(state["search_result"]["dps"], 120)
 
     def test_public_search_deduplicates_an_equivalent_sequential_loop(self) -> None:
