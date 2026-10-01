@@ -65,7 +65,7 @@ def _fast_report(character, score, samples):
         "name": character.name, "sim2gse_class": character.class_name, "level": character.level,
         "sim2gse_spec_id": character.spec_id or 252, "race": character.race,
         "talents": character.fields["talents"], "sim2gse_resource": "runic_power",
-        "collected_data": {"dps": {"mean": score, "count": samples}, "fight_length": {"mean": 180},
+        "collected_data": {"dps": {"mean": score, "count": samples, "variance": 0}, "fight_length": {"mean": 180},
                            "resource_overflowed": {"runic_power": {"mean": 0}}},
     }
     return {"sim": {"players": [player], "targets": [{}],
@@ -153,6 +153,48 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_near_round_resumes_mid_layer_without_repeating_completed_batches(self):
+        import threading
+        import collections
+        import search
+        import sequence
+
+        cancellation = threading.Event()
+        calls = []
+        children = iter(([["death_coil"]], [["outbreak"], ["death_coil"]]))
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
+            wanted = 90 if actions == ('outbreak',) else 100
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            result['summary']['dps'] = wanted
+            result['report']['sim']['statistics']['raid_dps']['mean'] = wanted
+            result['report']['sim']['players'][0]['collected_data']['dps'].update(mean=wanted, variance=10000)
+            (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+            calls.append((actions, kwargs['iterations'], kwargs['seed']))
+            if actions == ('death_coil',) and kwargs['iterations'] == 96:
+                cancellation.set()
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+            config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+                          batch_targets=(32, 128, 512), iterations=2, validation_batches=2)
+            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
+                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)):
+                interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
+                self.assertEqual(interrupted['status'], 'cancelled')
+                resumed = resume_task(destination)
+            self.assertEqual(resumed['status'], 'completed')
+            self.assertEqual(resumed['search_result']['dps'], 100)
+            search_calls = [(a, n, s) for a, n, s in calls if s < 20260912 + 100000]
+            self.assertTrue(all(count == 1 for count in collections.Counter(search_calls).values()))
+            for actions in (('death_coil',), ('outbreak', 'death_coil')):
+                self.assertEqual([n for a, n, s in search_calls if a == actions], [32, 96, 384])
+
     def test_parent_diagnostic_maps_loop_wait_and_repeated_castsequence_member(self):
         import search
         import sequence
@@ -614,7 +656,6 @@ class SearchAndValidationTests(TestCase):
         from runtime import BudgetExceeded, TaskRuntime
 
         runtime = TaskRuntime(60)
-        scores = iter((1.0, 2.0, 3.0, 4.0))
 
         def stop_during_promotion(*args, **kwargs):
             if kwargs.get("trace") and runtime.remaining_seconds <= 0:
@@ -622,7 +663,9 @@ class SearchAndValidationTests(TestCase):
             if 100000 <= kwargs["seed"] < 200000 and not kwargs.get("trace"):
                 runtime.used_seconds = runtime.budget_seconds
                 raise BudgetExceeded("test promotion timeout")
-            return _fast_evaluate(*args, **kwargs)
+            offset = 1000 if any(a['simc_action'] == 'death_coil'
+                                for block in args[1]['blocks'] for a in block) else 0
+            return _fast_evaluate(*args, **kwargs, score_offset=offset)
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-promotion-timeout-") as directory:
             root = Path(directory)
@@ -636,7 +679,6 @@ class SearchAndValidationTests(TestCase):
                           diagnostic_logging=True, search_observability="full")
             with _fast_search_boundary(), \
                     patch.object(sequence, "evaluate", side_effect=stop_during_promotion), \
-                    patch.object(search, "_score", side_effect=lambda rows: next(scores)), \
                     patch.object(search, "initial_programs",
                                  return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
                 result = run_task(source, root / "task", search_config=config,
