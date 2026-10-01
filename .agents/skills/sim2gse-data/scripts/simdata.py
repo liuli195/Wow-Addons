@@ -491,7 +491,7 @@ def check_budget(root, db, policy, growth=0, *, physical_growth=None):
         raise DataError("容量盘点未完整，拒绝新增长；不能忽略未知文件")
     remaining = sum(max(0, run["reserved_bytes"] - run_payload_bytes(root, run))
                     for run in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"))
-    root_remaining = remaining + job_remaining(root, db) + safety_remaining(db, primary_volume=True)
+    root_remaining = physical_future(root, db, root.stat().st_dev)
     remaining += job_remaining(root, db) + safety_remaining(db)
     reserve = policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
     if measured["logical_bytes"] + remaining + growth + reserve > policy["capacity_bytes"]:
@@ -598,7 +598,7 @@ def finish_run(root, policy, args):
     return dict(run_id=args.run_id, sealed=True, outcome=args.outcome, artifact_ids=artifact_ids)
 
 
-def protection(root, db, artifact_id):
+def protection(root, db, artifact_id, *, own_job=None):
     artifact = artifact_row(db, artifact_id)
     reasons = []
     if artifact["role"] in PROTECTED_ROLES:
@@ -608,7 +608,7 @@ def protection(root, db, artifact_id):
     reasons.extend("pin:" + row[0] for row in db.execute("SELECT label FROM pins WHERE artifact_id=? ORDER BY label", (artifact_id,)))
     references = [dict(row) for row in db.execute("SELECT * FROM refs WHERE target=? ORDER BY owner", (artifact_id,))]
     reasons.extend(row["kind"] + ":" + row["owner"] for row in references if row["kind"] != "cache")
-    reasons.extend(dependency_protection(root, db, artifact_id))
+    reasons.extend(dependency_protection(root, db, artifact_id, own_job=own_job))
     if db.execute("SELECT count(*) FROM unknown_refs").fetchone()[0]:
         reasons.append("unknown-legacy-references")
     if has_table(db, "jobs"):
@@ -618,6 +618,8 @@ def protection(root, db, artifact_id):
                 reasons.append("operation:" + job["id"])
     if has_table(db, "safety_jobs"):
         for job in db.execute("SELECT * FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
+            if job["id"] == own_job:
+                continue
             safety_plan = json.loads(job["plan"])
             if any(source["id"] == artifact_id for source in safety_plan.get("sources", safety_plan.get("items", []))):
                 reasons.append("operation:" + job["id"])
@@ -1887,7 +1889,7 @@ def lifecycle_execute(root, policy, args):
         return operation_result(root, db, job_row(db, plan["operation_id"]))
 
 
-def dependency_protection(root, db, artifact_id):
+def dependency_protection(root, db, artifact_id, *, own_job=None):
     pending, seen, reasons = [artifact_id], set(), []
     while pending:
         current = pending.pop()
@@ -1917,6 +1919,8 @@ def dependency_protection(root, db, artifact_id):
             for table in ("jobs", "safety_jobs"):
                 if has_table(db, table):
                     for job in db.execute("SELECT * FROM " + table + " WHERE phase NOT IN ('sealed','abandoned')"):
+                        if table == "safety_jobs" and job["id"] == own_job:
+                            continue
                         plan = json.loads(job["plan"])
                         sources = plan.get("sources", plan.get("items", plan.get("manifest", {}).get("sources", [])))
                         if any(source["id"] == current for source in sources):
@@ -2096,15 +2100,76 @@ def domain_inventory(root, db):
     return measured
 
 
-def safety_remaining(db, *, primary_volume=False):
+def safety_remaining(db):
     if not has_table(db, "safety_jobs"):
         return 0
     # 保守保留整个未封口预留；原件、复制件和隔离件均由域盘点另外计入。
-    total = 0
-    for row in db.execute("SELECT plan,reserved_bytes FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
-        plan = json.loads(row["plan"])
-        total += plan.get("metadata_reserved_bytes", row["reserved_bytes"]) if primary_volume and plan.get("volume_id") else row["reserved_bytes"]
-    return total
+    return db.execute("SELECT coalesce(sum(reserved_bytes),0) FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')").fetchone()[0]
+
+
+def migration_materialized(root, db, job):
+    plan = json.loads(job["plan"])
+    target_root = volume_root(root, db, plan["volume_id"])
+    if "target_device" in plan and target_root.stat().st_dev != plan["target_device"]:
+        raise DataError("迁移目标实际卷身份变化")
+    actual = 0
+    work = owned_path(target_root, ".staging/" + job["id"])
+    data = owned_path(work, "data")
+    if os.path.lexists(data):
+        marker = dict(root_id=plan["root_id"], operation_id=job["id"], plan_hash=digest(plan))
+        if json.loads(bounded_text(work / ".job.json")) != marker:
+            raise DataError("未完成迁移工作区身份不符，不能抵扣预留")
+        measured = inventory(data, 1000)
+        if measured["truncated"]:
+            raise DataError("迁移工作区盘点不完整")
+        actual += measured["logical_bytes"]
+    destination = owned_path(target_root, plan["destination"])
+    if os.path.lexists(destination):
+        if job["phase"] not in ("verified", "published", "sealed"):
+            raise DataError("未发布迁移出现未知目标，不能抵扣预留")
+        measured = inventory(destination, 1000)
+        if measured["truncated"]:
+            raise DataError("迁移产品盘点不完整")
+        actual += measured["logical_bytes"]
+    if actual > plan["payload_reserved_bytes"]:
+        raise DataError("迁移保留产品超过已批准载荷预留，须保留现场并明确处理")
+    return actual
+
+
+def physical_future(root, db, device):
+    """按OS实际卷身份合并所有登记目录；已落盘字节已从disk_usage.free扣除。"""
+    primary = root.stat().st_dev == device
+    future = 0
+    if primary:
+        future = job_remaining(root, db) + sum(max(0, row["reserved_bytes"] - run_payload_bytes(root, row))
+                 for row in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"))
+    if has_table(db, "safety_jobs"):
+        for job in db.execute("SELECT * FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
+            plan = json.loads(job["plan"])
+            if job["kind"] != "migration":
+                if primary:
+                    future += job["reserved_bytes"]
+                continue
+            target = volume_root(root, db, plan["volume_id"])
+            if target.stat().st_dev == device:
+                materialized = migration_materialized(root, db, job)
+                progress = json.loads(job["progress"])
+                unwritten = sum(item["size"] for item in plan["sources"] if item["id"] not in progress)
+                # verified/published只验证及改名，绝不重新写载荷。writing重试须保留旧部分件，
+                # 因此未完成来源还至少需要一次完整复制，不能用部分/保留件抵扣这次复制。
+                if job["phase"] not in ("verified", "published"):
+                    future += max(unwritten, plan["payload_reserved_bytes"] - materialized)
+            if primary:
+                future += plan["metadata_reserved_bytes"]
+    return future
+
+
+def check_physical_volume(root, db, policy, target, growth=0):
+    future = physical_future(root, db, target.stat().st_dev)
+    headroom = policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
+    if shutil.disk_usage(target).free < future + growth + headroom:
+        raise DataError("实际目标卷未来载荷/元数据并发预留和维护余量不足，拒绝超卖")
+    return dict(future_reserved_bytes=future, headroom_bytes=headroom)
 
 
 def safety_metadata_peak(db, payload):
@@ -2176,8 +2241,8 @@ def safety_phase(db, identity, phase, progress):
 
 def safety_source(root, db, identity, *, destructive=False, own_job=None):
     row = artifact_row(db, identity)
-    protected = protection(root, db, identity)
-    reasons = [value for value in protected["reasons"] if value != "operation:" + str(own_job)]
+    protected = protection(root, db, identity, own_job=own_job)
+    reasons = protected["reasons"]
     if destructive and (reasons or protected["cache_references"]):
         raise DataError("持久/未知引用、活动租约、锁或尚未批准失效的加速缓存阻止隔离/删除")
     if any(value.startswith(("lease:", "read-lease:", "runner-lock", "operation:")) for value in reasons):
@@ -2246,6 +2311,7 @@ def migration(root, policy, args):
         metadata_reserve = safety_metadata_peak(db, dict(sources=sources, destination=relative, root=str(root), target=str(destination_root)))
         reserve = payload_reserve + metadata_reserve
         return dict(action="migration", root_id=root_id, operation_id=identity, sources=sources, volume_id=args.volume_id,
+                    target_device=destination_root.stat().st_dev,
                     destination=relative, policy_hash=digest(policy), payload_reserved_bytes=payload_reserve,
                     metadata_reserved_bytes=metadata_reserve, reserved_bytes=reserve), None
     with closing(open_index(root)) as db:
@@ -2266,8 +2332,8 @@ def migration(root, policy, args):
             if digest(current) != approval:
                 raise DataError("迁移预览后来源变化")
             check_budget(root, db, policy, plan["reserved_bytes"], physical_growth=plan["metadata_reserved_bytes"] if plan["volume_id"] else plan["reserved_bytes"])
-            if shutil.disk_usage(target_root).free < plan["reserved_bytes"] + policy["maintenance_reserve_bytes"]:
-                raise DataError("目标卷复制、临时和维护空间不足")
+            target_growth = plan["payload_reserved_bytes"] + (plan["metadata_reserved_bytes"] if target_root.stat().st_dev == root.stat().st_dev else 0)
+            check_physical_volume(root, db, policy, target_root, target_growth)
             db.execute("INSERT INTO safety_jobs VALUES (?,?,?,?,?,?)", (plan["operation_id"], "migration", "reserved", compact_json(plan, QUERY_BYTES), plan["reserved_bytes"], "{}"))
             safety_phase(db, plan["operation_id"], "reserved", {})
             job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (plan["operation_id"],)).fetchone()
@@ -2275,6 +2341,8 @@ def migration(root, policy, args):
             raise DataError("迁移日志身份不符")
         if job["phase"] == "abandoned":
             raise DataError("已放弃迁移不能重新启用，保留所有文件")
+        if "target_device" in plan and target_root.stat().st_dev != plan["target_device"]:
+            raise DataError("迁移批准后实际目标卷身份变化")
         progress = json.loads(job["progress"])
         if job["phase"] == "sealed":
             for item in plan["sources"]:
@@ -2298,6 +2366,9 @@ def migration(root, policy, args):
                     output.parent.mkdir(parents=True, exist_ok=True)
                     if item["id"] not in progress:
                         check_budget(root, db, policy)
+                        check_physical_volume(root, db, policy, target_root)
+                        if migration_materialized(root, db, job) + item["size"] > plan["payload_reserved_bytes"]:
+                            raise DataError("复制重试耗尽已批准载荷预留，保留部分产品")
                         if os.path.lexists(output):
                             os.replace(checked_path(output), output.with_name(output.name + ".retained-" + str(uuid.uuid4())))
                         if shutil.disk_usage(target_root).free < item["size"] + policy["metadata_reserve_bytes"]:
@@ -2396,8 +2467,8 @@ def quarantine(root, policy, args):
             original = owned_path(root, item["path"])
             isolated = owned_path(root, item["custody_path"] if recovering else ".quarantine/" + plan["operation_id"] + "/" + item["path"])
             incoming, outgoing = (isolated, original) if recovering else (original, isolated)
-            protected = protection(root, db, item["id"])
-            reasons = [value for value in protected["reasons"] if value != "operation:" + plan["operation_id"]]
+            protected = protection(root, db, item["id"], own_job=plan["operation_id"])
+            reasons = protected["reasons"]
             if (not recovering and (reasons or protected["cache_references"])) or any(value.startswith(("lease:", "read-lease:", "runner-lock", "operation:")) for value in reasons):
                 raise DataError("隔离执行前发现保护或活动消费者")
             if item["id"] not in progress:
@@ -2543,8 +2614,8 @@ def purge_item(root, db, identity, own_job=None):
     custody = db.execute("SELECT * FROM custody WHERE artifact_id=? AND state='quarantined'", (identity,)).fetchone() if has_table(db, "custody") else None
     if custody is None:
         raise DataError("永久删除仅接受明确隔离的对象副本")
-    protected = protection(root, db, identity)
-    reasons = [value for value in protected["reasons"] if value != "operation:" + str(own_job)]
+    protected = protection(root, db, identity, own_job=own_job)
+    reasons = protected["reasons"]
     if reasons or protected["cache_references"]:
         raise DataError("保护引用、锁、租约或未失效加速缓存阻止永久删除")
     path = checked_path(owned_path(root, custody["path"]))
@@ -2556,20 +2627,69 @@ def purge_item(root, db, identity, own_job=None):
     return item
 
 
+def purge_renewal_state(root, db, identity):
+    canonical_operation_id(identity)
+    job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (identity,)).fetchone() if has_table(db, "safety_jobs") else None
+    if job is None or job["kind"] != "purge" or job["phase"] not in ("reserved", "writing", "published"):
+        raise DataError("只能为已登记、未完成的具体删除操作重新取得批准")
+    previous = json.loads(job["plan"])
+    progress = json.loads(job["progress"])
+    items, completed = [], []
+    for old in previous["items"]:
+        path = owned_path(root, old["path"])
+        state = progress.get(old["id"])
+        if state in ("purged", "deleting") and not os.path.lexists(path):
+            custody = db.execute("SELECT * FROM custody WHERE artifact_id=?", (old["id"],)).fetchone()
+            row = artifact_row(db, old["id"])
+            if (custody is None or custody["operation_id"] != old["quarantine_id"] or custody["path"] != old["path"] or
+                    custody["identity"] != json.dumps(old["identity"]) or custody["state"] not in ("quarantined", "purged") or
+                    (row["sha256"], row["size"], row["role"], row["identity"]) !=
+                    (old["sha256"], old["size"], old["role"], json.dumps(old["identity"])) or
+                    (state == "purged" and custody["state"] != "purged")):
+                raise DataError("重新批准前已删墓碑/中断证据与原清单不符")
+            items.append(old)
+            completed.append(old["id"])
+        else:
+            if state == "purged":
+                raise DataError("原已删路径重新出现，不接管或删除新文件")
+            current = purge_item(root, db, old["id"], identity)
+            if any(current[key] != old[key] for key in ("id", "path", "quarantine_id", "sha256", "size", "identity", "role")):
+                raise DataError("重新批准不能更换原隔离对象身份")
+            items.append(current)
+    binding = dict(prior_plan_hash=digest(previous), phase=job["phase"], progress_hash=digest(progress))
+    return items, completed, binding
+
+
+def purge_current_confirmation(item, plan):
+    if "renewal" not in plan:
+        return item
+    current = {key: value for key, value in item.items() if key != "confirmation_hash"}
+    confirmation = digest(dict(item=current, renewal=plan["renewal"], created=plan["created"], expires=plan["expires"],
+                               completed=item["id"] in plan["completed_ids"]))
+    return dict(current, confirmation_hash=confirmation)
+
+
 def purge(root, policy, args):
     root_id = root_marker(root, policy)["root_id"]
     if not args.plan:
-        if args.approve_hash or args.confirm_item or not args.artifact_id or len(set(args.artifact_id)) != len(args.artifact_id) or len(args.artifact_id) > 1000:
+        if args.approve_hash or args.confirm_item or (args.renew_operation and args.artifact_id) or (not args.renew_operation and
+                (not args.artifact_id or len(set(args.artifact_id)) != len(args.artifact_id) or len(args.artifact_id) > 1000)):
             raise DataError("删除先预览具体登记ID，再保存清单并逐项确认")
         if args.valid_seconds is None or not 1 <= args.valid_seconds <= 86400:
             raise DataError("删除清单有效时长必须明确给定1至86400秒，未设生产默认值")
         with closing(open_index(root)) as db:
-            items = [purge_item(root, db, identity) for identity in sorted(args.artifact_id)]
+            if args.renew_operation:
+                items, completed, binding = purge_renewal_state(root, db, args.renew_operation)
+            else:
+                items = [purge_item(root, db, identity) for identity in sorted(args.artifact_id)]
         now = time.time()
-        plan = dict(action="purge", root_id=root_id, policy_hash=digest(policy), operation_id=str(uuid.uuid4()),
+        plan = dict(action="purge", root_id=root_id, policy_hash=digest(policy), operation_id=args.renew_operation or str(uuid.uuid4()),
                     created=now, expires=now + args.valid_seconds, items=items, space_release_after_delete_only=True)
+        if args.renew_operation:
+            plan.update(renewal=binding, completed_ids=completed)
+            plan["items"] = [purge_current_confirmation(item, plan) for item in items]
         return dict(plan, plan_hash=digest(plan), applied=False)
-    if args.artifact_id or args.valid_seconds is not None:
+    if args.artifact_id or args.valid_seconds is not None or args.renew_operation:
         raise DataError("执行删除必须仅使用保存的具体清单，不能同时换选对象")
     saved_path = checked_path(args.plan)
     if saved_path.stat().st_size > QUERY_BYTES:
@@ -2600,8 +2720,14 @@ def purge(root, policy, args):
     with write_index(root, policy) as db, ExitStack() as handles:
         safety_tables(db)
         job = db.execute("SELECT * FROM safety_jobs WHERE id=?", (plan["operation_id"],)).fetchone()
-        if job and job["plan"] != compact_json(plan, QUERY_BYTES):
-            raise DataError("删除操作日志与授权清单不符")
+        replacing_authority = job is not None and job["plan"] != compact_json(plan, QUERY_BYTES)
+        if replacing_authority:
+            current_items, current_completed, binding = purge_renewal_state(root, db, plan["operation_id"])
+            if (plan.get("renewal") != binding or plan.get("completed_ids") != current_completed or
+                    plan["items"] != [purge_current_confirmation(item, plan) for item in current_items]):
+                raise DataError("重新批准清单未绑定当前原操作、墓碑、剩余身份及引用")
+        elif job is None and "renewal" in plan:
+            raise DataError("重新批准清单的原删除操作不存在")
         progress = json.loads(job["progress"]) if job else {}
         # 全部对象和排他句柄先验证，任一对象失败不会删除前面的对象。
         removers = {}
@@ -2620,7 +2746,7 @@ def purge(root, policy, args):
                     raise DataError("删除中断日志与隔离身份不符")
                 progress[item["id"]] = "purged"
                 continue
-            if purge_item(root, db, item["id"], plan["operation_id"]) != item:
+            if purge_current_confirmation(purge_item(root, db, item["id"], plan["operation_id"]), plan) != item:
                 raise DataError("预览后隔离清单或引用变化，旧确认无效")
             item_handles = handles.enter_context(ExitStack())
             removers[item["id"]] = (item_handles.enter_context(deletion_handle(path, item, boundary=root)), item_handles.close)
@@ -2629,6 +2755,8 @@ def purge(root, policy, args):
                 raise DataError("删除封口日志缺少逐项完成证据")
             return dict(operation_id=plan["operation_id"], applied=True, phase="sealed", purged=[item["id"] for item in items])
         reserve = safety_metadata_peak(db, plan)
+        if not plan["created"] <= time.time() < plan["expires"]:
+            raise DataError("逐项预检期间批准已过期，须重新取得当前清单批准")
         if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"] + reserve:
             raise DataError("删除仍须保留足够的日志空间")
         if job is None:
@@ -2636,10 +2764,24 @@ def purge(root, policy, args):
             # sources仅用于活动操作保护；完整授权清单本身保持不可变。
             db.execute("INSERT INTO safety_jobs VALUES (?,?,?,?,?,?)", (plan["operation_id"], "purge", "reserved", compact_json(plan, QUERY_BYTES), reserve, "{}"))
             safety_phase(db, plan["operation_id"], "reserved", {})
+        elif replacing_authority:
+            growth = max(0, reserve - job["reserved_bytes"]) + len(compact_json(plan, QUERY_BYTES).encode("utf-8")) * 4 + 131072
+            check_budget(root, db, policy, growth)
+            db.execute("INSERT INTO operations VALUES (?,?,?,?)", (str(uuid.uuid4()), "purge-renew", "approved",
+                       compact_json(dict(operation_id=plan["operation_id"], old_plan_hash=digest(json.loads(job["plan"])),
+                                         new_plan_hash=digest(plan), old_expires=json.loads(job["plan"])["expires"], renewal=plan["renewal"]), QUERY_BYTES)))
+            db.execute("UPDATE safety_jobs SET plan=?,reserved_bytes=? WHERE id=?", (compact_json(plan, QUERY_BYTES), reserve, plan["operation_id"]))
+            for identity in plan["completed_ids"]:
+                db.execute("UPDATE custody SET state='purged' WHERE artifact_id=?", (identity,))
+            safety_phase(db, plan["operation_id"], job["phase"], progress)
         for item in items:
             if item["id"] in removers:
+                if not plan["created"] <= time.time() < plan["expires"]:
+                    raise DataError("当前删除批准已过期，剩余对象保留并须重新逐项批准")
                 progress[item["id"]] = "deleting"
                 safety_phase(db, plan["operation_id"], "writing", progress)
+                if not plan["created"] <= time.time() < plan["expires"]:
+                    raise DataError("删除日志提交期间批准过期，尚未删除的对象保留")
                 remove, close_item = removers[item["id"]]
                 remove()
                 # Windows删除在句柄关闭时完成；逐项关闭后再持久化已删除状态。
@@ -2691,6 +2833,7 @@ def main():
         if name == "purge":
             command.add_argument("--artifact-id", action="append", default=[])
             command.add_argument("--valid-seconds", type=int)
+            command.add_argument("--renew-operation")
             command.add_argument("--plan")
             command.add_argument("--approve-hash")
             command.add_argument("--confirm-item", action="append", default=[])

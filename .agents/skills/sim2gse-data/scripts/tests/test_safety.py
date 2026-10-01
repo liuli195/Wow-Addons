@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import subprocess
 import sys
+import time
 import unittest
 
 import test_lifecycle as lifecycle
@@ -413,6 +414,120 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(observed.read_text(), "blocked")
         self.assertFalse(outside.exists())
         self.assertEqual(Path(result["items"][0]["path"]).read_bytes(), b'{"test":"synthetic"}')
+
+    def test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval(self):
+        self.initialize()
+        for phase in ("reserved", "published"):
+            with self.subTest(phase=phase):
+                ids = [self.source(phase + str(number) + ".json")[0] for number in range(2)]
+                plan, isolated, execution = self.isolated_plan(ids, phase + " old approval.json")
+                saved = self.root.parent / (phase + " old approval.json")
+                # 通过公开预览取得2秒有效期计划，不伪写管理索引。
+                selection = tuple(value for identity in ids for value in ("--artifact-id", identity))
+                plan = self.call("purge", *selection, "--valid-seconds", "2")
+                saved.write_text(json.dumps(plan), encoding="utf-8")
+                confirmations = tuple(value for item in plan["items"] for value in ("--confirm-item", item["id"] + ":" + item["confirmation_hash"]))
+                execution = ("--plan", str(saved), "--approve-hash", plan["plan_hash"], *confirmations)
+                self.injected_call(self.crash_on_phase(plan["operation_id"], phase), "purge", *execution, expected=77)
+                time.sleep(2.1)
+                self.call("purge", *execution, expected=2)
+                renewed = self.call("purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300")
+                self.assertEqual(renewed["operation_id"], plan["operation_id"])
+                self.assertNotEqual(renewed["plan_hash"], plan["plan_hash"])
+                if phase == "published":
+                    self.assertEqual(len(renewed["completed_ids"]), 1)
+                new_saved = self.root.parent / (phase + " renewed approval.json")
+                new_saved.write_text(json.dumps(renewed), encoding="utf-8")
+                new_args = ("--plan", str(new_saved), "--approve-hash", renewed["plan_hash"])
+                self.call("purge", *new_args, expected=2)
+                self.call("purge", *new_args, *confirmations, expected=2)
+                new_confirmations = tuple(value for item in renewed["items"] for value in ("--confirm-item", item["id"] + ":" + item["confirmation_hash"]))
+                remaining = next(item["id"] for item in renewed["items"] if item["id"] not in renewed["completed_ids"])
+                self.call("pin", "--artifact-id", remaining, "--action", "add", "--label", "new persistent evidence")
+                self.call("purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300", expected=2)
+                self.call("purge", *new_args, *new_confirmations, expected=2)
+                self.call("pin", "--artifact-id", remaining, "--action", "remove", "--label", "new persistent evidence")
+                if renewed["completed_ids"]:
+                    deleted_path = Path(next(item["path"] for item in isolated["items"] if item["artifact_id"] in renewed["completed_ids"]))
+                    deleted_path.write_bytes(b"new file must never be deleted")
+                    self.call("purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300", expected=2)
+                    self.call("purge", *new_args, *new_confirmations, expected=2)
+                    self.assertEqual(deleted_path.read_bytes(), b"new file must never be deleted")
+                    deleted_path.unlink()  # 仅移除本测试刚创建的冲突合成文件。
+                result = self.call("purge", *new_args, *new_confirmations)
+                self.assertEqual(set(result["purged"]), set(ids))
+                self.call("purge", *execution, expected=2)
+
+    def test_batch_migration_internal_dependencies_do_not_block_own_job(self):
+        self.initialize()
+        for kind in ("cache", "durable"):
+            a, _ = self.source(kind + " a.json")
+            b, _ = self.source(kind + " b.json")
+            self.call("dependency", "--artifact-id", a, "--requires", b, "--kind", kind)
+            if kind == "cache":
+                ancestor, _ = self.source("other-job-ancestor.json")
+                self.call("dependency", "--artifact-id", ancestor, "--requires", a, "--kind", "cache")
+            args = ("--artifact-id", a, "--artifact-id", b, "--destination", str(self.root / (kind + " batch")))
+            plan = self.call("migration", *args)
+            if kind == "cache":
+                self.injected_call(self.crash_on_phase(plan["operation_id"], "reserved"), "migration", *args, "--approve-hash", plan["plan_hash"], expected=77)
+                archive_args = ("--artifact-id", ancestor)
+                archive = self.call("archive", *archive_args)
+                setup = self.crash_on_phase(archive["operation_id"], "reserved").replace("FROM safety_jobs", "FROM jobs")
+                self.injected_call(setup, "archive", *archive_args, "--approve-hash", archive["plan_hash"], expected=77)
+                self.call("migration", *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"], expected=2)
+                abandon = self.call("operation", "--operation-id", archive["operation_id"], "--action", "abandon-preview")
+                self.call("operation", "--operation-id", archive["operation_id"], "--action", "abandon", "--approve-hash", abandon["approval_hash"])
+                args += ("--operation-id", plan["operation_id"])
+            result = self.call("migration", *args, "--approve-hash", plan["plan_hash"])
+            self.assertEqual(len(result["copies"]), 2)
+
+    def test_pending_migrations_share_physical_volume_reservation(self):
+        self.initialize()
+        self.policy["capacity_bytes"] = 256 * 1024 * 1024
+        self.save_config()
+        volumes = []
+        for name in ("registered target one", "registered target two"):
+            target = self.root.parent / name
+            target.mkdir()
+            preview = self.call("volume-register", "--path", str(target))
+            registered = self.call("volume-register", "--path", str(target), "--approve-hash", preview["plan_hash"])
+            volumes.append((target, registered["marker"]["volume_id"]))
+        ids = [self.source("payload" + str(i) + ".bin", b"x" * (8 * 1024 * 1024))[0] for i in range(2)]
+        plans = []
+        arguments = []
+        for index in range(2):
+            target, volume_id = volumes[index]
+            args = ("--artifact-id", ids[index], "--volume-id", volume_id, "--destination", str(target / "published"))
+            arguments.append(args)
+            plans.append(self.call("migration", *args))
+        target_paths = [str(value[0]) for value in volumes]
+        setup = ("import shutil\nfrom pathlib import Path\nfrom collections import namedtuple\noriginal_usage=shutil.disk_usage\n"
+                 "def usage(path):\n p=Path(path)\n"
+                 " if any(p.is_relative_to(Path(value)) for value in " + repr(target_paths) + "):\n"
+                 "  materialized=sum(file.stat().st_size for value in " + repr(target_paths) + " for file in Path(value).rglob('*') if file.is_file())\n"
+                 "  return namedtuple('usage','total used free')(100000000,60000000+materialized,40000000-materialized)\n"
+                 " return original_usage(path)\nshutil.disk_usage=usage\n")
+        self.injected_call(setup + self.crash_on_phase(plans[0]["operation_id"], "reserved"), "migration", *arguments[0], "--approve-hash", plans[0]["plan_hash"], expected=77)
+        self.injected_call(setup + self.crash_on_phase(plans[1]["operation_id"], "reserved"), "migration", *arguments[1], "--approve-hash", plans[1]["plan_hash"], expected=2)
+        abandon = self.call("safety-operation", "--operation-id", plans[0]["operation_id"], "--action", "abandon-preview")
+        self.call("safety-operation", "--operation-id", plans[0]["operation_id"], "--action", "abandon", "--approve-hash", abandon["approval_hash"])
+        self.injected_call(setup, "migration", *arguments[1], "--approve-hash", plans[1]["plan_hash"])
+        first_target, first_volume = volumes[0]
+        verified_args = ("--artifact-id", ids[0], "--volume-id", first_volume, "--destination", str(first_target / "verified payload"))
+        verified = self.call("migration", *verified_args)
+        self.injected_call(setup + self.crash_on_phase(verified["operation_id"], "verified"), "migration", *verified_args, "--approve-hash", verified["plan_hash"], expected=77)
+        small, _ = self.source("small.bin", b"y" * (1024 * 1024))
+        target, volume_id = volumes[1]
+        small_args = ("--artifact-id", small, "--volume-id", volume_id, "--destination", str(target / "materialisation credit"))
+        small_plan = self.call("migration", *small_args)
+        self.injected_call(setup, "migration", *small_args, "--approve-hash", small_plan["plan_hash"])
+        self.injected_call(setup, "migration", *verified_args, "--operation-id", verified["operation_id"], "--approve-hash", verified["plan_hash"])
+        self.assertEqual(self.call("status")["operation_reserved_bytes"], 0)
+        medium, _ = self.source("medium.bin", b"z" * (3 * 1024 * 1024))
+        medium_args = ("--artifact-id", medium, "--volume-id", first_volume, "--destination", str(first_target / "after completion"))
+        medium_plan = self.call("migration", *medium_args)
+        self.injected_call(setup, "migration", *medium_args, "--approve-hash", medium_plan["plan_hash"])
 
 
 if __name__ == "__main__":
