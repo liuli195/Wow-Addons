@@ -83,3 +83,24 @@
 进程与taskkill核验：以前7036/33412/40592 PID在本轮查询时均不存在，但旧包装器没有保留当时poll/最终child.returncode及taskkill文本，不能追溯证明自然退出或树终止成功，`taskkill=128`必须视为未证实的终止结果。只在既有Temp包装器补poll/最终exit/捕获的taskkill stdout和stderr，不修改共享runner；本轮两次诊断均正常结束，不触发taskkill，完整诊断exit1、独立组exit0。系统有较早Python/Node进程，但八个旧Python累计CPU数十秒间隔完全不变；CIM父进程/命令行读取被拒，不提权、不终止其他进程，无法确认其他仓库是否正在测试或CPU竞争。
 
 最小后续配置对照候选：保持outer3/data8，仅原Sim2GSE inner8→4，避免两大组同时16worker；必须实测整仓wall与121完整通过才能采用，当前并无受控8/4对照证据，本轮不修改。独立数据组也65.15秒，降低别组worker不能保证数据低于60；不能硬堆worker或继续盲删。正式60仍未通过，需父端评估有边界的并行配置对照和生产主路径成本后继续。
+
+### 独立数据组最慢五项及worker证据原文
+
+以下直接来自既有 `simdata-diagnostic-7a78c61-data-alone-90s.log` 的原生durations，不新增运行：
+
+```text
+37.98s call tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write
+27.25s call tests/sim2gse-data/test_archive.py::ArchiveTests::test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them
+21.76s call tests/sim2gse-data/test_facts.py::FactTests::test_output_byte_bound_refuses_large_query_and_snapshot
+15.44s call tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+14.43s call tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval
+```
+
+日志节点启动原文只有：
+
+```text
+bringing up nodes...
+bringing up nodes...
+```
+
+该quiet日志没有 `created: 8/8 workers`、`gw0`–`gw7` 或case对应worker前缀，所以可列出的实际worker IDs为空；不能仅根据argv显式 `-n 8` 或启动提示断言八个worker全已创建/每例分配已确认。完整命令是 `.venv/Scripts/python.exe -B C:/Users/liuli/AppData/Local/Temp/simdata-bounded-check.py 90 .venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 8 --durations=15`。已有日志未出现retry/restart/crash/replacing，`u`是subtest进度，不是重试；正常exit0未调用taskkill，但没有后代进程树审计，不能证明全部无残留。本次仅补文档，不重新测量。
