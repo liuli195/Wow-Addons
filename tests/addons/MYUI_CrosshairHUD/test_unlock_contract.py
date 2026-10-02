@@ -37,6 +37,7 @@ local function NewTexture()
     function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
     function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
     function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
+    function t:SetRadialProgressBarFeather(v) self.radialFeather=v end
     function t:SetTexture() end
     function t:SetSize() end
     function t:SetPoint() end

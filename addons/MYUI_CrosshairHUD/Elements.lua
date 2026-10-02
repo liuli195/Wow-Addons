@@ -35,6 +35,7 @@ local Elements = NS.Elements
 -- 固定版暴雪文档的新增纹理接口；本机通用类型库尚未包含这些成员。
 ---@class CHHRadialTexture: Texture
 ---@field SetRadialProgressBarReverse fun(self: CHHRadialTexture, reverse: boolean)
+---@field SetRadialProgressBarFeather fun(self: CHHRadialTexture, feather: number)
 ---@field GetRadialProgressBarPercent fun(self: CHHRadialTexture): number
 
 local MEDIA = "Interface\\AddOns\\MYUI\\Media\\CrosshairHUD\\"
@@ -166,7 +167,7 @@ end
 
 local function NewMask()
     local mask = Elements.frame:CreateMaskTexture()
-    mask:SetTexture(MEDIA .. "mask_half.png", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    SmoothTexture(mask, "mask_half", "CLAMPTOBLACKADDITIVE")
     mask:SetAllPoints(Elements.frame)
     return mask
 end
@@ -206,6 +207,9 @@ function Elements.Create()
     bar:SetRenderMode(_G.Enum.StatusBarRenderMode.Radial)
     fill:SetAllPoints(bar)
     fill:SetRadialProgressBarReverse(false)
+    -- 参照现有遮罩1设计单位的过渡，先按整圆角度比例设置窄边候选。
+    -- 暴雪文档未定义羽化宽度的精确换算，实际观感仍需客户端校准。
+    fill:SetRadialProgressBarFeather(1 / (2 * math.pi * Logic.ARCS.coagulatedBlood.radius))
     bar:SetAllPoints(frame)
     bar:SetShown(false)
     parts.coagulatedBlood = {

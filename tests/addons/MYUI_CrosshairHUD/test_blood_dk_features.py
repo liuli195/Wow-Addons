@@ -69,6 +69,7 @@ local function Region()
     function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
     function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
     function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
+    function t:SetRadialProgressBarFeather(v) self.radialFeather=v end
     function t:SetTexCoord(...) self.coords={...} end
     function t:SetVertexColor(r,g,b,a) self.color={r,g,b,a} end
     function t:SetColorTexture(r,g,b,a) self.color={r,g,b,a} end
@@ -475,4 +476,26 @@ SlashCmdList.MYUICHH("bloodtest off")
 aura={applications=100};Tick()
 Near(90+360*(bar.value-bar.minimum)/(bar.maximum-bar.minimum),123.5)
 aura={applications=secret};Tick();assert(rawequal(bar.value,secret))
+''')
+
+
+def test_short_blood_fill_enables_narrow_dynamic_edge_smoothing_at_all_scales():
+    run_scenario(r'''
+local fill=assert(Layer("coagulated_blood_fill.png",1))
+local mask=assert(Layer("health_arc.png",1).mask)
+assert(mask.filter=="TRILINEAR" and mask.snap==false and mask.bias==0)
+assert(type(fill.radialFeather)=="number" and fill.radialFeather>0,
+    "native moving edge must explicitly enable smoothing")
+assert(fill.radialFeather<0.01,"edge smoothing must not blur the whole short arc")
+local feather=fill.radialFeather
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+for _,scale in ipairs({0.5,1,2}) do
+    rows["常规"]["HUD 缩放"].setValue(scale)
+    SlashCmdList.MYUICHH("bloodtest 10")
+    assert(bar.value==10,"short-edge calibration must render ten layers")
+    assert(fill.radialFeather==feather and fill.filter=="TRILINEAR" and fill.snap==false)
+    Near(90+360*(bar.value-bar.minimum)/(bar.maximum-bar.minimum),100.533333333333)
+end
+SlashCmdList.MYUICHH("bloodtest off")
 ''')

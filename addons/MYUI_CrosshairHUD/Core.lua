@@ -828,13 +828,13 @@ SlashCmdList["MYUICHH"] = function(msg)
     local probe = msg:match("^bloodtest(%d+)$")
     if probe then
         local value = tonumber(probe)
-        if value == 0 or value == 16 or value == 75 or value == 150 then
+        if value == 0 or value == 10 or value == 16 or value == 75 or value == 150 then
             Core.bloodProbeStacks = value
             Refresh()
             print("凝固之血显示测试：固定" .. value .. "层／150量程；不是实时增益。"
                 .. " 输入 /chh bloodtest off 退出，重载也会退出。")
         else
-            print("显示测试只接受0、16、75、150，不改变真实设置。")
+            print("显示测试只接受0、10、16、75、150，不改变真实设置。")
         end
         return
     end

@@ -83,6 +83,7 @@ return function(ctx)
         function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
         function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
         function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
+        function t:SetRadialProgressBarFeather(v) self.radialFeather=v end
         function t:SetTexture(...) self.texture = true end
         function t:SetSize(w, h) self.width, self.height = w, h end
         function t:SetPoint(...) self.anchor = { ... } end
