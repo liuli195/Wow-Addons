@@ -97,7 +97,7 @@ class ArchiveTests(unittest.TestCase):
         restored = self.restore_archive(archived, self.root / "boundary restored")
         self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in restored["restored"]}, values)
 
-    def test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them(self):
+    def test_bounded_archive_with_one_thousand_empty_members_and_restore_preview(self):
         self.initialize()
         self.policy["capacity_bytes"] = 2 * 1024 * 1024 * 1024
         self.save_config()

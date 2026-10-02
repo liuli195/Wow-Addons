@@ -166,6 +166,14 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
 # 完整入口继续优化：HTTP 测试收尾轮询
 
+## 数据组定向计时与提前长用例
+
+父端确认无其他本机重型测试，源码 `404152f3c250a0028dce4f82b902426766e0d716` 原生 `.venv/Scripts/python.exe -B -m pytest -v tests/sim2gse-data -n 12 --dist=worksteal --durations=15`，既有外层 100 秒仅诊断，实际 created 12/12；121 passed、79 subtests passed，pytest 64.71 / 外墙 65.133 秒，退出 0。慢项长路径恢复 48.06、1000 空文件 42.97、隔离恢复 18.93、旧格式兼容 16.54 秒。记录 `data-management-data-404152f.log`。日志确认旧格式与空文件同 worker gw2，旧格式先执行，空文件不在初始首轮。现有工具无逐事件时间戳，外墙减 pytest 的 0.423 秒是外层初始化与收尾合计，不能再拆分；测试本体单例耗时已列出。
+
+唯一测试变更将 1000 文件用例改名 `test_bounded_archive_with_one_thousand_empty_members_and_restore_preview`，测试体逐字不变，unittest 排序 index21→10，使既有 WorkStealing 初始分配把它放在另一 worker 首项。不引入调度插件、不改 worker 或配置、不减少真实文件和断言。相同条件对照 121 passed、79 subtests passed，pytest 55.22 / 外墙 55.601 秒，退出 0；总墙钟减少 9.532 秒（14.6%），两个最长用例反而为 49.02 和 48.12 秒，收益来自队列尾部缩短，不是测试本体加速。记录 `data-management-data-order-404152f.log`；两次已知 root11624、18452 只读检查 absent，外层未触发 taskkill。单组诊断不等于全仓冷启动或正式统一门禁通过。
+
+父端提供用户逐字推送授权后，仅同一原操作重试一次，仍被自动审批拒绝（代理转述不被认可为授权），未再重试。本地提交保留，远端独立审查阻塞。
+
 随后父端确认独占重型窗口，准确源码 `d98e7eaa5dc06be2b1acb7896d52c44a804a5cd6` 唯一一次运行既有统一 `verify --project . --full --performance-report`。诊断外层 180 秒仅用于取得完整报告，配置 `fullBudgetSeconds=60`、组内 data timeout 60、outer 3/product 8/data 12 均未改变。这不是正式 60 秒门禁通过。
 
 结果工具 86.62 秒、外墙 87.328 秒、退出 1，38 项中 37 passed、1 failed。产品组实际 created 8/8，311 passed / pytest 44.48 秒 / 检查 46.62 秒；数据组 `check_timeout` 60 秒，检查总耗时 80.53 秒，是本次明确关键路径；超时处理丢弃部分 stdout，组内完成数量和最慢用例仍未知。其他最长为 dk 20.72、skill 18.64、checker 9.26、annotation 8.14 秒。不能据此断言全部数据用例失败，也不能把旧报告用于推断本轮组内耗时。新 JSON 为 `data-management-diagnostic-d98e7ea-full-report.json`，完整 stdout 为 `data-management-diagnostic-d98e7ea-full.log`（仅去除行尾空格，Temp 原件保留）。外层没有触发 taskkill，已知 owned root 31788 只读检查 absent；没有声称独立核查所有后代。
