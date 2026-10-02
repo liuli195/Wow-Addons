@@ -69,3 +69,17 @@
 最后采用公开夹具批量登记优化，敌意tar七种输入（穿越、绝对、驱动器、设备名、软链、硬链、PAX）及七次恢复拒绝/目标不存在断言完整保留。先生成独立7包+7清单，清单包摘要/大小取实际包字节；公开legacy-register一次预览一次批准登记全部14文件，再逐项核对登记SHA/size。准备28→2次CLI，没有生产改动或新增helper。相同单测前1 passed/7 subtests passed，pytest6.71秒/外层7.042；后同样1+7通过，pytest2.77秒/外层3.128，约少3.94秒。正式整套另测，不将局部改善冒充30–40秒目标已达。
 
 本轮最终正式量测固定干净实现 `ec3dac6d27d71a17b52b444631a14c18d0cbb514`，统一入口、原固定基线、外层60秒上限；设置PYTHONUNBUFFERED仅用于输出证据，不改工具或配置。结果仍超时：`scene: local; selection-reason: config-changed; bounded-deadline=60.605; owned-pid=7036; taskkill=128`，墙钟含终止收尾。没有完整逐项汇总或新性能报告，旧报告仍不代表本轮fresh/cache和完成范围。完整日志位于系统Temp `simdata-formal-ec3dac6-final-60s.log`。正式未通过，30–40秒目标未达成，不能交付或关闭票据；不再盲删其他核心测试或扩大本轮优化范围。
+
+## 一次完整诊断和数据组独立测量
+
+按父端明确授权，只运行一次完整诊断：固定 `7a78c613d84ccc1f00fe902e085f97f276065337`，既有统一工具 `verify --project . --full --performance-report`，原Temp防挂包装器180秒，未修改全局工具/模式/仓库预算或worker配置。此为诊断，不是正式60秒验收。原生工具报告111.81秒、外层113.426秒、exit1：38项检查实际执行，37 passed、1 failed；full路径不读取通过缓存，本轮各项均fresh，原工具正常写入37个成功结果缓存，未把失败数据组写成通过。原生完整报告已保留为 `data-management-diagnostic-7a78c61-full-report.json`，其中含38项状态/耗时。系统Temp完整日志 `simdata-diagnostic-7a78c61-full-180s.log`。
+
+主要检查：原Sim2GSE 311 passed/95 subtests passed、pytest62.26秒/check66.76秒；数据组 `check_timeout: verify.sim2gse-data exceeded 60s`，check实际111.73秒；wowaddontest-dk19.14秒、wowaddontest-skill16.47秒、checker-tests11.89秒、annotation-build9.94秒。数据超时路径不保留其partial pytest stdout。111.73包含cache-key准备/命令/超时收尾，不能当纯测试体耗时或推断精确阶段。源码通过Windows shell=True调用subprocess.run，超时后的后代持有管道可能延长收尾，但当前证据没有父子进程和开始/结束精确轨迹，不能断言因果。
+
+并行核验：当前真实调用源码 `_run_scheduled_checks` 使用ThreadPoolExecutor，max=min(配置3,并行检查数)，提交所有checkParallel；两个pytest的命令构造在实际调用路径各注入 `-n 8`，--dist不被误判为已有-n。执行输出有xdist节点启动及测试进度，没有降级提示。38项原生耗时合计322.79秒，整仓wall111.81秒，比值2.89，构成外层实际重叠执行证据，不能把汇总迟到解读成全组串行。该工具在所有future结束后按配置顺序输出，不提供每check start/end/排队或worker分配轨迹；未新造runner补伪时间。原生源码+节点输出支持内层启用，但无法从quiet输出验证每个worker的具体分配。
+
+为了取得优化后数据121组独立耗时，再使用授权的原生单组诊断 `.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 8 --durations=15`，独立90秒上限，未修改生产配置。121 passed、79 subtests passed，pytest64.81秒、外层65.154秒、exit0；这是超60的诊断通过，不能变成正式通过。系统Temp日志 `simdata-diagnostic-7a78c61-data-alone-90s.log`。最慢：深路径37.98秒、1000空成员27.25秒、事实输出边界21.76秒、隔离恢复五阶段15.44秒、过期purge新计划14.43秒、旧归档五阶段12.88秒、迁移阶段11.03秒、purge阶段11.01秒。数据自身超60，原项目也62.26秒，因此并非仅靠某一大例再命名即可达到30–40。
+
+进程与taskkill核验：以前7036/33412/40592 PID在本轮查询时均不存在，但旧包装器没有保留当时poll/最终child.returncode及taskkill文本，不能追溯证明自然退出或树终止成功，`taskkill=128`必须视为未证实的终止结果。只在既有Temp包装器补poll/最终exit/捕获的taskkill stdout和stderr，不修改共享runner；本轮两次诊断均正常结束，不触发taskkill，完整诊断exit1、独立组exit0。系统有较早Python/Node进程，但八个旧Python累计CPU数十秒间隔完全不变；CIM父进程/命令行读取被拒，不提权、不终止其他进程，无法确认其他仓库是否正在测试或CPU竞争。
+
+最小后续配置对照候选：保持outer3/data8，仅原Sim2GSE inner8→4，避免两大组同时16worker；必须实测整仓wall与121完整通过才能采用，当前并无受控8/4对照证据，本轮不修改。独立数据组也65.15秒，降低别组worker不能保证数据低于60；不能硬堆worker或继续盲删。正式60仍未通过，需父端评估有边界的并行配置对照和生产主路径成本后继续。
