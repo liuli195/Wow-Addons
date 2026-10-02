@@ -427,6 +427,20 @@ def main():
         verify_canvas_padding(asset, scale)
         verify_drag_box(asset, scale)
     verify_mask()
+    verify_texture("death_strike_marker.png", (1024, 1024))
+    marker = load(MEDIA / "death_strike_marker.png")
+    if marker is not None:
+        alpha = marker[:, :, 3]
+        yy, xx = np.where(alpha >= 128)
+        if len(xx):
+            check((xx.min(), xx.max(), yy.min(), yy.max()) == (64, 959, 384, 639),
+                  "death_strike_marker.png: 主体比例与绘制补偿不一致")
+        check(np.all(alpha[[0, -1], :] == 0) and np.all(alpha[:, [0, -1]] == 0),
+              "death_strike_marker.png: 画布边缘必须透明")
+        check(np.count_nonzero((alpha[512] > 0) & (alpha[512] < 255)) >= 16,
+              "death_strike_marker.png: 平头端部缺少采样过渡")
+        check(np.count_nonzero((alpha[:, 512] > 0) & (alpha[:, 512] < 255)) >= 16,
+              "death_strike_marker.png: 长边缺少采样过渡")
 
     if failures:
         print("FAIL: 准星 HUD 纹理校验未通过")
@@ -435,7 +449,7 @@ def main():
         print(f"诊断目录：{MEDIA}")
         return 1
 
-    total = len(manifest["assets"]) + 1
+    total = len(manifest["assets"]) + 2
     print(f"PASS: {total} 个准星 HUD 纹理的尺寸、中性度、蒙版纯度与遮罩方向")
     return 0
 

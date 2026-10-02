@@ -140,3 +140,6 @@
 - `myspec/changes/crosshair-hud/issues/05-media-reexport-spec.md`（素材管线的建立；其中
   「9 张成品不需要重新导出」的结论已被下面这次推翻）
 - `myspec/changes/crosshair-hud-shadow-layer/`（从 Figma 重导 + 加粗 + 中心点 + 阴影图层）
+
+
+刻度缩放返工：death_strike_marker.png由build_crosshair_media.py直接生成，1024平方，RGB纯白不预乘透明度。平头矩形主体占长度7/8、厚度1/4；透明边距在绘制时补偿，颜色、透明度和粗细仍独立可调。使用TRILINEAR采样和四角坐标映射，避免原生Line阶梯及旋转裁切。现为20张设计素材、1张遮罩、1张刻度模板，共22张。

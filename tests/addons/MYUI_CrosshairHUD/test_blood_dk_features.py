@@ -58,13 +58,14 @@ end }
 UIParent = { GetEffectiveScale = function() return 1 end }
 local function Region()
     local t = { shown = true }
-    function t:SetTexture(path) self.path = path end
+    function t:SetTexture(path, _, _, filter) self.path = path; self.filter = filter end
     function t:SetSize(w,h) self.w,self.h=w,h end
     function t:SetPoint(_,_,_,x,y) self.x,self.y=x,y end
     function t:SetAllPoints() end
     function t:AddMaskTexture(mask) self.mask=mask end
     function t:SetShown(v) self.shown=v end
     function t:SetRotation(v) self.rotation=v end
+    function t:SetTexCoord(...) self.coords={...} end
     function t:SetVertexColor(r,g,b,a) self.color={r,g,b,a} end
     function t:SetColorTexture(r,g,b,a) self.color={r,g,b,a} end
     function t:SetStartPoint(_,_,x,y) self.start={x,y} end
@@ -119,6 +120,24 @@ local function Layer(file,sub)
         if t.path and t.path:sub(-#file)==file and (sub==nil or t.sub==sub) then return t end
     end
 end
+local function Marker()
+    return Layer("death_strike_marker.png")
+end
+local function Position(t,u,v)
+    local q=assert(t.coords)
+    local ux,uy=q[5]-q[1],q[6]-q[2]
+    local vx,vy=q[3]-q[1],q[4]-q[2]
+    local du,dv=u-q[1],v-q[2]
+    local det=ux*vy-uy*vx
+    local fx=(du*vy-dv*vx)/det
+    local fy=(ux*dv-uy*du)/det
+    return {t.x+(fx-0.5)*t.w,t.y+(0.5-fy)*t.h}
+end
+local function Ends(t) return Position(t,0.0625,0.5),Position(t,0.9375,0.5) end
+local function Thickness(t)
+    local a,b=Position(t,0.5,0.375),Position(t,0.5,0.625)
+    return math.sqrt((a[1]-b[1])^2+(a[2]-b[2])^2)
+end
 local function Near(a,b) assert(math.abs(a-b)<0.00001,tostring(a).." != "..tostring(b)) end
 Event("PLAYER_LOGIN")
 Page()
@@ -148,8 +167,9 @@ feeEntries = {
 }
 Tick()
 local angle = math.rad(441 - 102 * 0.35)
-Near(lines[1].start[1], 49.1 * math.cos(angle))
-Near(lines[1].start[2], -49.1 * math.sin(angle))
+local start=Ends(assert(Marker()))
+Near(start[1], 49.1 * math.cos(angle))
+Near(start[2], -49.1 * math.sin(angle))
 ''')
 
 
@@ -182,24 +202,26 @@ for _,control in pairs(rows["凝固之血"]) do assert(control.disabled()) end
 ''')
 
 
-def test_native_cost_line_changes_position_direction_scale_and_switch():
+def test_filtered_marker_changes_position_direction_scale_and_switch():
     run_scenario(r'''
 local controls=assert(rows["灵打消耗刻度"],"cost marker controls required")
-local line=assert(lines[1],"must draw a native line")
+local line=assert(Marker(),"must draw one filtered line texture")
 assert(line.shown)
-Near(line.thickness,1.5)
+Near(Thickness(line),1.5)
 fee=50;Tick()
 -- 满符能100、费用50，在从441度向339度填充的弧中点390度。
-Near(line.start[1],49.1*math.sqrt(3)/2);Near(line.start[2],-24.55)
-Near(line.finish[1],58.9*math.sqrt(3)/2);Near(line.finish[2],-29.45)
+local start,finish=Ends(line)
+Near(start[1],49.1*math.sqrt(3)/2);Near(start[2],-24.55)
+Near(finish[1],58.9*math.sqrt(3)/2);Near(finish[2],-29.45)
 controls["粗细"].setValue(2.25)
-Near(line.thickness,2.25)
+Near(Thickness(line),2.25)
 rows["常规"]["HUD 缩放"].setValue(2)
-Near(line.thickness,4.5);Near(line.finish[2],-58.9)
+Near(Thickness(line),4.5);start,finish=Ends(line);Near(finish[2],-58.9)
 maximum=200;Event("UNIT_MAXPOWER")
 -- 费用仍50，比例改为1/4，刻度位置和方向一起变。
-assert(math.abs(line.finish[2]+58.9)>1)
-Near(line.start[1]*line.finish[2]-line.start[2]*line.finish[1],0)
+start,finish=Ends(line)
+assert(math.abs(finish[2]+58.9)>1)
+Near(start[1]*finish[2]-start[2]*finish[1],0)
 controls["启用"].setValue(false)
 assert(not line.shown)
 SlashCmdList.MYUICHH("demo");assert(not line.shown)
@@ -211,7 +233,7 @@ def test_unreadable_values_hide_only_new_data_and_recover():
 local bg=Layer("coagulated_blood_arc.png",0)
 local fill=Layer("coagulated_blood_arc.png",1)
 local shadow=Layer("coagulated_blood_arc_shadow.png")
-local line=lines[1]
+local line=Marker()
 aura={applications=secret};fee=secret;Tick()
 assert(bg.shown and shadow.shown and not fill.shown and not line.shown)
 assert(Layer("health_arc.png",1).shown and Layer("power_arc.png",1).shown)
@@ -239,7 +261,7 @@ rows["凝固之血"]["条背景"].setValue(40)
 rows["凝固之血"]["填充颜色"].setValue(25)
 rows["灵打消耗刻度"]["刻度颜色"].setValue(60)
 rows["常规"]["阴影"].setValue(30)
-Near(bg.color[4],0.4);Near(fill.color[4],0.25);Near(lines[1].color[4],0.6)
+Near(bg.color[4],0.4);Near(fill.color[4],0.25);Near(Marker().color[4],0.6)
 Near(shadow.color[4],0.3);Near(Layer("health_arc_shadow.png").color[4],0.3)
 assert(fill.color[1]==1 and fill.color[2]==1 and fill.color[3]==1)
 MYUI_CrosshairHUDDB.elements.coagulatedBlood.fill={0.2,0.3,0.4}
@@ -274,8 +296,10 @@ Tick();assert(not fill.shown, "do not compare restricted spell identity")
 ''')
 
 
-def test_native_marker_does_not_snap_oblique_texture_to_pixels():
+def test_filtered_marker_uses_mipmaps_without_native_line():
     run_scenario(r'''
-assert(#lines==1)
-assert(lines[1].snap==false and lines[1].bias==0, "oblique line texture must not snap to pixel grid")
+local marker=assert(Marker())
+assert(#lines==0, "avoid native segmented line rasterization")
+assert(marker.filter=="TRILINEAR", "shrinking must sample mipmaps")
+assert(marker.snap==false and marker.bias==0)
 ''')

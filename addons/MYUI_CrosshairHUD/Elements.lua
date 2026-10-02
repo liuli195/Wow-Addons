@@ -95,11 +95,27 @@ local function ApplyMarker(st)
     line:SetShown(visible and true or false)
     if not visible then return end
     local p, s = st.points, Elements.scale
-    line:SetStartPoint("CENTER", Elements.frame, p[1] * s, p[2] * s)
-    line:SetEndPoint("CENTER", Elements.frame, p[3] * s, p[4] * s)
-    line:SetThickness((st.thickness or 1.5) * s)
-    local c = st.fillColor
-    line:SetColorTexture(c[1], c[2], c[3], st.fillAlpha or 1)
+    local dx, dy = p[3] - p[1], p[4] - p[2]
+    -- 素材白色主体占画布长度的7/8、宽度的1/4；透明边距不改变实际端点和粗细。
+    local length = math.sqrt(dx * dx + dy * dy)
+    local cw, ch = length * s / 0.875, (st.thickness or 1.5) * s / 0.25
+    local c, sn = dx / length, dy / length
+    local w, h = math.abs(c) * cw + math.abs(sn) * ch,
+        math.abs(sn) * cw + math.abs(c) * ch
+    line:SetSize(w, h)
+    line:SetPoint("CENTER", Elements.frame, "CENTER", (p[1] + p[3]) * s / 2,
+        (p[2] + p[4]) * s / 2)
+    -- 单个矩形内反向映射纹理，四角同时旋转，避免长条旋转后被自己的矩形裁掉。
+    local function UV(x, y)
+        return 0.5 + (c * x + sn * y) / cw, 0.5 - (-sn * x + c * y) / ch
+    end
+    local ulx, uly = UV(-w / 2, h / 2)
+    local llx, lly = UV(-w / 2, -h / 2)
+    local urx, ury = UV(w / 2, h / 2)
+    local lrx, lry = UV(w / 2, -h / 2)
+    line:SetTexCoord(ulx, uly, llx, lly, urx, ury, lrx, lry)
+    local color = st.fillColor
+    line:SetVertexColor(color[1], color[2], color[3], st.fillAlpha or 1)
 end
 
 --------------------------------------------------------------------------
@@ -169,7 +185,9 @@ function Elements.Create()
     BuildFillable("health", PLACEMENT.health)
     BuildFillable("power", PLACEMENT.power)
     BuildFillable("coagulatedBlood", PLACEMENT.coagulatedBlood)
-    parts.deathStrike = frame:CreateLine(nil, "ARTWORK", nil, SUB_CROSSHAIR)
+    parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker")
+    parts.deathStrike:SetTexture(MEDIA .. "death_strike_marker.png",
+        "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE", "TRILINEAR")
     if parts.deathStrike.SetSnapToPixelGrid then
         parts.deathStrike:SetSnapToPixelGrid(false)
         parts.deathStrike:SetTexelSnappingBias(0)

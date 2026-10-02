@@ -82,6 +82,18 @@ def build_mask(out_dir):
           f"过渡 {MASK_SOFTNESS_PX}px（{soft} 个中间采样点）")
 
 
+def build_marker(out_dir):
+    """平头直线模板：正方形2的幂画布，四周透明，保留缩小采样所需的软边。"""
+    yy, xx = np.mgrid[0:1024, 0:1024]
+    distance = np.minimum.reduce([xx - 64 + 0.5, 960 - xx - 0.5,
+                                  yy - 384 + 0.5, 640 - yy - 0.5])
+    alpha = np.clip(distance / 16 + 0.5, 0, 1)
+    data = np.full((1024, 1024, 4), 255, dtype=np.uint8)
+    data[:, :, 3] = np.rint(alpha * 255).astype(np.uint8)
+    Image.fromarray(data, mode="RGBA").save(out_dir / "death_strike_marker.png")
+    print("  marker death_strike_marker.png 1024x1024（白色软边直线）")
+
+
 def build(out_dir):
     """把准星 HUD 的全部成品纹理写进 out_dir，返回文件数。"""
     manifest = json.loads((SRC / "manifest.json").read_text(encoding="utf-8"))
@@ -93,8 +105,9 @@ def build(out_dir):
 
     count = copy_textures(manifest, out_dir)
     build_mask(out_dir)
-    print(f"Built {count + 1} CrosshairHUD PNG assets into {out_dir}.")
-    return count + 1
+    build_marker(out_dir)
+    print(f"Built {count + 2} CrosshairHUD PNG assets into {out_dir}.")
+    return count + 2
 
 
 if __name__ == "__main__":
