@@ -166,6 +166,18 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
 # 完整入口继续优化：HTTP 测试收尾轮询
 
+## 缓存键准备成本与等价目录输入
+
+`cf267fa8ff11abf59feda04fe045f3e0c4da36fe` 原配置，按父端独占窗口用标准库 cProfile 调用既有 Python 验证核心，100 秒诊断截断于 100.387 秒，35 cache-hit、data/docs/test-inventory 三组仍无汇总，profile 文件未落盘；这是失败诊断，不是实际总时长。原日志 `data-management-entry-profile-cf267fa.log`。taskkill128后日志53个已知PID逐个只读核查均absent。没有以60.357或100.387宣称“只差0.36/40.39秒”，也没有改工具链或预算。
+
+随后只读独立测量 `_cache_key`，没有启动测试或写缓存。原38项的 cProfile 输出为51.715367秒、44,493,566函数调用；226次 `_hash_input`、118,782次 stat（累计16.069秒）、109,006次 is_file、113,660次 relative_to，表明递归 glob 每次全仓 Git 可见文件枚举和路径筛选成本。性能分析器会增加开销，不能直接把51.715367当正式前置耗时。此原测量输出保存在会话工具结果，未伪造原始日志文件。
+
+最小配置变更仅把 verify 各项 inputs 的68个 `目录/**` 改为目录输入（27个不同目录）。按现有验证器 `_git_visible_files` 和 fnmatch 对每目录逐项核对当前文件集合完全相等，包括旧 `.tools` 忽略目录仍为0项；未减少依赖文件，保留 glob 选择 paths。配置现有 `_load_config` 成功，38个id/command/paths、worker8/12、outer3、全部超时和60预算逐项与提交前严格相同，build部分没有改变。目录分支通过 Git 路径限制枚举，避免对每个glob重复遍历不相关文件；不改全局工具、不引入框架。
+
+同样只读38键 cProfile 为15.457822秒、5,070,310调用（`data-management-cache-directory-cf267fa.log`），约减少70%。为排除profile开销，在同一进程顺序测原配置和新配置（原配置从git show读取内存，未写回），无profile测量原16.472720秒 / 新8.434634秒，减少8.038086秒（48.8%），两次均38键且退出0（`data-management-cache-unprofiled-cf267fa.log`）。这只是键准备比较，不含配置读取、改变文件判定、缓存读取、三组执行、落盘和Node探测，不能代替统一入口总计。当前三组全为parallel，outer3可同时提交，没有必须等待其他38组完成的队列；但源码准备与执行再次算键、结束统一汇总的机制仍在。
+
+文档与测试清单正确入口分别 `scripts/dev/check.py docs`（216份通过）、`tests/dev/test_inventory.py`（全部入口登记通过）。首次误用 check.py test-inventory 仅参数失败未执行测试，已经纠正，不计为测试失败或通过。新输入配置使整配置摘要与旧缓存键不同，旧35命中不能冒充新配置证据；新配置的完整统一验证及实际总时长尚未运行，正式60门禁仍待通过。本轮没有进一步削减边界、提高资源、启用生产或推送。
+
 ## 数据组定向计时与提前长用例
 
 准确提交 `fad1eac906a3912cbcf938510c973551cb4d286c` 随后唯一正式统一增量 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，既有外层 60 秒硬截止，原配置及 `PYTEST_ADDOPTS=-v --durations=5`。35 项成功缓存明确命中，三项未汇总（data/docs/test-inventory）；`bounded-deadline=60.357`、owned root39168 exit1、外层124，正式门禁仍失败。没有以原生55.601秒宣称统一入口通过，也没有再盲重跑。原日志 `data-management-formal-fad1eac.log`。taskkill返回128，不能视为成功；其日志明确列出的52个PID（包含root）逐个只读核查全部absent，未提权或杀其他进程。当前无由本轮启动的已知测试节点存活。初始化、哈希准备和组内并发的精确成本尚缺逐事件计时证据；这一正式日志不能推导三个新测的真实完成数量。
