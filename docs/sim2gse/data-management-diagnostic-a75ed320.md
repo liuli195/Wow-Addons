@@ -104,3 +104,9 @@ bringing up nodes...
 ```
 
 该quiet日志没有 `created: 8/8 workers`、`gw0`–`gw7` 或case对应worker前缀，所以可列出的实际worker IDs为空；不能仅根据argv显式 `-n 8` 或启动提示断言八个worker全已创建/每例分配已确认。完整命令是 `.venv/Scripts/python.exe -B C:/Users/liuli/AppData/Local/Temp/simdata-bounded-check.py 90 .venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 8 --durations=15`。已有日志未出现retry/restart/crash/replacing，`u`是subtest进度，不是重试；正常exit0未调用taskkill，但没有后代进程树审计，不能证明全部无残留。本次仅补文档，不重新测量。
+
+## 单点隔离/恢复夹具复用
+
+起点2f3b9a39。只改SafetyTests.test_quarantine_and_recovery_committed_phases_and_post_move_crash的准备：每个reserved/writing/published/sealed/rename阶段fresh一个来源，先完成quarantine故障/恢复/幂等，再复用同一已隔离对象进行同phase recover-quarantine故障/恢复/幂等。五阶段仍五个不同ID，补ID唯一、返回原operation ID/sealed/同artifact断言，无额外业务I/O。十个phase×command故障、rename后exit77、原字节及幂等断言保持。生产计划读取quarantined custody，operation ID包含generation，支持该接续状态；未修改生产。准备72→52 CLI、setup jobs15→10，明确改变每阶段第二来源及正常隔离准备结构，不删除故障组合。
+
+before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data/test_safety.py -k quarantine_and_recovery_committed --dist=worksteal -n 8 --durations=5`，既有Temp包装器各25秒上限。修改前1 passed/10 subtests passed，call13.29秒、pytest23.75秒、外层24.163秒；修改后同样1+10 passed，call9.40秒、pytest10.53秒、外层10.876秒。测试体约少3.89秒；前体外耗时约10.46秒明显大于后约1.13秒，因此不能将wall差13.29秒全归因夹具改动，也不能保证整仓同幅下降。没有运行完整数据组或整仓，本轮正式60仍未通过，等待父端准确远端review与后续放行。

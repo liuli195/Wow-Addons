@@ -39,3 +39,4 @@ eb8933e6之后仅做冗余I/O修复：当前索引连接供同一批次读取借
 六票门禁一已确认，05独立验收后按批准顺序实施本票。正式规格应用、真实数据、生产启用和计划任务安装不在本票范围。
 用户最新批准 Sentinel_1a4a1203b51c8191b11fcdff1bff695b：本轮采用覆盖矩阵取舍而非安全等价优化。大型220源/12层深路径/801KiB清单及两次紧容量拒绝不写DB/staging全部断言保留；大型仅verified中断恢复，普通同根同index同archive五阶段完整保留，增加原operation ID、sealed、返回数量断言且无额外I/O。减少四条大规模×中断点和1100→220位置累积历史交叉覆盖；目标30–40秒，正式整套仍硬限60秒，未经实际pass不交付。其他复杂测试先由父端完整远端审查，不批量删除；本票仍待正式验收与审查完成。
 同一用户批准范围内第二项明确取舍：56万规模仅保留完整complete计数与32MiB峰值检测，减少其与两次准入的交叉；2400实体未知文件的容量不足拒绝及足额准入保留，补精确reserved_bytes断言。逐条新对象、tracemalloc、增长/截断竞态不改，不批量删其他测试，不把取舍称为等价。
+本轮单点夹具复用：SafetyTests.test_quarantine_and_recovery_committed_phases_and_post_move_crash每阶段fresh一个来源，quarantine完成后同对象接recover-quarantine。五fresh IDs/十phase×command故障、rename77、原operation恢复、字节/幂等保持；公开CLI72→52、setup jobs15→10，改变第二来源及重复正常隔离的准备结构，不改生产、不减少故障点。只测该代表用例before/after，未自动整仓重测，本票正式60验收仍未完成。

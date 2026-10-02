@@ -60,14 +60,14 @@ class SafetyTests(unittest.TestCase):
 
     def test_quarantine_and_recovery_committed_phases_and_post_move_crash(self):
         self.initialize()
+        identities = set()
         for phase in ("reserved", "writing", "published", "sealed", "rename"):
+            identity, source = self.source("quarantine recovery " + phase + "/native.json")
+            self.assertNotIn(identity, identities)
+            identities.add(identity)
+            args = ("--artifact-id", identity)
             for command in ("quarantine", "recover-quarantine"):
                 with self.subTest(phase=phase, command=command):
-                    identity, source = self.source(command + " " + phase + "/native.json")
-                    args = ("--artifact-id", identity)
-                    if command == "recover-quarantine":
-                        isolation = self.call("quarantine", *args)
-                        self.call("quarantine", *args, "--approve-hash", isolation["plan_hash"])
                     plan = self.call(command, *args)
                     setup = self.crash_on_phase(plan["operation_id"], phase)
                     if phase == "rename":
@@ -79,8 +79,12 @@ class SafetyTests(unittest.TestCase):
                                  "def fdopen(*a,**k): return ClosingCrash(original(*a,**k))\nos.fdopen=fdopen\n")
                     self.injected_call(setup, command, *args, "--approve-hash", plan["plan_hash"], expected=77)
                     result = self.call(command, *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+                    self.assertEqual(result["operation_id"], plan["operation_id"])
+                    self.assertEqual(result["phase"], "sealed")
+                    self.assertEqual(result["items"][0]["artifact_id"], identity)
                     self.assertEqual(Path(result["items"][0]["path"]).read_bytes(), b'{"test":"synthetic"}')
                     self.assertEqual(self.call(command, *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"]), result)
+        self.assertEqual(len(identities), 5)
 
     def test_managed_volume_migration_copies_across_actual_volume_and_preserves_origin(self):
         self.initialize()
