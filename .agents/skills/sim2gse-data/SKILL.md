@@ -175,6 +175,8 @@ python "<技能目录>/scripts/simdata.py" schedule-preview --config "<机器配
 
 ## 验证
 
+06审查修复：逻辑预算只用同一次完整总量扫描已计入的业务载荷字节抵扣活动run预留，不用后来扫描的新字节抵扣旧总量。计量随≤128层目录栈保存，不物化全树或活动run列表。合法producer（生产者）可在管理锁外写/截断载荷，不能把共用元数据锁当成文件系统快照；物理空间准入因此保守保留活动run整个批准载荷直到finish/release（结束/释放），可能暂时减少并发可用量。同锁内迁移/归档的阶段抵扣及卷池语义保持。schedule-preview生成处拒绝超过744小时的Windows重复间隔（官方最大31天），不静默修改用户策略。依据、修前/修后及物理竞争证据见[validation-06-review.md](references/validation-06-review.md)。
+
 ```text
 python -B -m unittest discover -s "<技能目录>/scripts/tests" -p "test_*.py" -v
 ```

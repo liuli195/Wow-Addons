@@ -15,6 +15,74 @@ class MaintenanceTests(unittest.TestCase):
     initialize = lifecycle.LifecycleTests.initialize
     injected_call = lifecycle.LifecycleTests.injected_call
 
+    def test_producer_growth_between_inventory_and_reservation_credit_cannot_oversell(self):
+        self.initialize()
+        run = self.call("begin", "--request-id", "producer", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(3 * 1024 * 1024))
+        folder = self.root / "unknown between scans"
+        folder.mkdir()
+        for number in range(1100):
+            (folder / str(number)).write_bytes(b"x")
+        self.call("begin", "--request-id", "competing", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(2 * 1024 * 1024), expected=2)
+        setup = ("import os\nfrom pathlib import Path\noriginal=os.scandir\n"
+                 "class ProducerBoundary:\n"
+                 " def __init__(self,p): self.p=Path(p); self.inner=original(p)\n"
+                 " def __iter__(self): return iter(self.inner)\n"
+                 " def __next__(self): return next(self.inner)\n"
+                 " def __enter__(self): return self\n"
+                 " def __exit__(self,*a): self.close()\n"
+                 " def close(self):\n  self.inner.close()\n"
+                 "  if self.p==Path(" + repr(str(self.root)) + "):\n"
+                 "   Path(" + repr(str(Path(run["path"]) / "producer.bin")) + ").write_bytes(b'x'*(3*1024*1024))\n"
+                 "os.scandir=ProducerBoundary\n")
+        refused = self.injected_call(setup, "begin", "--request-id", "competing", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(2 * 1024 * 1024), expected=2)
+        self.assertIn("容量不足", refused["error"])
+        self.assertEqual((Path(run["path"]) / "producer.bin").stat().st_size, 3 * 1024 * 1024)
+        small = self.call("begin", "--request-id", "same-scan-credit", "--owner-pid", str(os.getpid()), "--reserve-bytes", "131072")
+        self.call("lease", "--run-id", small["run_id"], "--token", small["token"], "--action", "release")
+        self.call("lease", "--run-id", run["run_id"], "--token", run["token"], "--action", "release")
+
+    def test_physical_free_cannot_credit_a_producer_truncated_after_payload_scan(self):
+        self.policy["capacity_bytes"] = 32 * 1024 * 1024
+        self.save_config()
+        self.initialize()
+        run = self.call("begin", "--request-id", "physical-producer", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(3 * 1024 * 1024))
+        payload = Path(run["path"]) / "producer.bin"
+        payload.write_bytes(b"x" * (3 * 1024 * 1024))
+        setup = ("import os,shutil\nfrom pathlib import Path\nfrom types import SimpleNamespace\noriginal=os.scandir\nclosed=0\n"
+                 "class ResizeBoundary:\n"
+                 " def __init__(self,p): self.p=Path(p); self.inner=original(p)\n"
+                 " def __iter__(self): return iter(self.inner)\n"
+                 " def __next__(self): return next(self.inner)\n"
+                 " def __enter__(self): return self\n"
+                 " def __exit__(self,*a): self.close()\n"
+                 " def close(self):\n  global closed\n  self.inner.close()\n"
+                 "  if self.p==Path(" + repr(run["path"]) + "):\n"
+                 "   closed+=1\n"
+                 "   if closed==3: Path(" + repr(str(payload)) + ").unlink()\n"
+                 "os.scandir=ResizeBoundary\n"
+                 "def usage(path):\n p=Path(" + repr(str(payload)) + ")\n return SimpleNamespace(free=4*1024*1024-(p.stat().st_size if p.exists() else 0))\nshutil.disk_usage=usage\n")
+        refused = self.injected_call(setup, "begin", "--request-id", "physical-competitor", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(2 * 1024 * 1024), expected=2)
+        self.assertIn("可用空间不足", refused["error"])
+        self.call("lease", "--run-id", run["run_id"], "--token", run["token"], "--action", "release")
+
+    def test_schedule_interval_744_is_valid_and_745_is_refused_without_policy_change(self):
+        self.initialize()
+        self.policy["maintenance_interval_hours"] = 744
+        self.save_config()
+        valid = self.call("schedule-preview", "--python", sys.executable, "--start-at", "2026-10-03T08:00:00+08:00")
+        self.assertIn("PT744H", valid["xml"])
+        self.assertFalse(valid["installed"])
+        if os.name == "nt":
+            import subprocess
+            checked = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; $service=New-Object -ComObject Schedule.Service; $service.Connect(); $task=$service.NewTask(0); $task.XmlText=$env:SIMDATA_PREVIEW_XML"],
+                                     env=dict(os.environ, SIMDATA_PREVIEW_XML=valid["xml"]), capture_output=True, timeout=30)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.policy["maintenance_interval_hours"] = 745
+        self.save_config()
+        refused = self.call("schedule-preview", "--python", sys.executable, "--start-at", "2026-10-03T08:00:00+08:00", expected=2)
+        self.assertIn("744", refused["error"])
+        self.assertEqual(json.loads(self.config.read_text())["maintenance_interval_hours"], 745)
+
     def test_560000_streamed_unknown_files_are_counted_without_tree_materialization(self):
         self.initialize()
         folder = self.root / "virtual synthetic scale"

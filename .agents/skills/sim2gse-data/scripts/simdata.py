@@ -56,20 +56,23 @@ def checked_path(path, *, missing_leaf=False):
     return path.resolve(strict=True)
 
 
-def inventory(root, limit):
+def inventory(root, limit, *, run_db=None):
     files = logical_bytes = visited = 0
+    active_payload_credit = 0
     # 深度优先流式遍历；目录项和正文不整树物化。None只供完整预算核算。
     initial = root.stat()
-    pending = [(root, (initial.st_dev, initial.st_ino), os.scandir(root))]
+    pending = [(root, (initial.st_dev, initial.st_ino), os.scandir(root), None)]
     try:
         while pending:
-            folder, identity, entries = pending[-1]
+            folder, identity, entries, active_run = pending[-1]
             try:
                 entry = next(entries)
             except StopIteration:
                 current = checked_path(folder).stat()
                 if (current.st_dev, current.st_ino) != identity:
                     raise DataError("盘点目录身份变化，拒绝不完整核算")
+                if active_run is not None and folder == active_run[0]:
+                    active_payload_credit += min(active_run[1], active_run[2])
                 entries.close()
                 pending.pop()
                 continue
@@ -85,16 +88,29 @@ def inventory(root, limit):
                     if len(pending) >= 128:
                         raise DataError("目录深度超过128，拒绝不完整盘点")
                     current = folder.stat()
-                    pending.append((folder, (current.st_dev, current.st_ino), os.scandir(folder)))
+                    selected_run = active_run
+                    if run_db is not None and folder.is_relative_to(root / "runs"):
+                        run = run_db.execute("SELECT * FROM runs WHERE path=? AND state IN ('allocating','running')",
+                                             (folder.relative_to(root).as_posix(),)).fetchone()
+                        if run is not None:
+                            if run_folder(root, run) != folder:
+                                raise DataError("运行盘点路径身份不符")
+                            selected_run = [folder, run["reserved_bytes"], 0]  # 路径、批准载荷、本次已计量载荷
+                    pending.append((folder, (current.st_dev, current.st_ino), os.scandir(folder), selected_run))
                 elif stat.S_ISREG(info.st_mode):
                     files += 1
                     logical_bytes += info.st_size
+                    if active_run is not None and not (folder == active_run[0] and entry.name in (".run-id.json", ".runner.lock")):
+                        active_run[2] += info.st_size
                 else:
                     raise DataError("盘点发现非普通文件，拒绝忽略未知对象")
     finally:
-        for _, _, entries in pending:
+        for _, _, entries, _ in pending:
             entries.close()
-    return dict(files=files, logical_bytes=logical_bytes, truncated=False)
+    result = dict(files=files, logical_bytes=logical_bytes, truncated=False)
+    if run_db is not None:
+        result["active_payload_credit"] = active_payload_credit
+    return result
 
 
 def inventory_page(root, limit, cursor):
@@ -586,11 +602,14 @@ def run_payload_bytes(root, run):
 
 def check_budget(root, db, policy, growth=0, *, physical_growth=None):
     # 同一写锁内每次完整流式核算，不复用分页游标或陈旧缓存；未知字节也计入。
-    measured = domain_inventory(root, db)
+    for run in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"):
+        run_folder(root, run)
+    reserved = db.execute("SELECT coalesce(sum(reserved_bytes),0) FROM runs WHERE state IN ('allocating','running')").fetchone()[0]
+    measured = domain_inventory(root, db, observe_runs=True)
     if measured["truncated"]:
         raise DataError("容量盘点未完整，拒绝新增长；不能忽略未知文件")
-    remaining = sum(max(0, run["reserved_bytes"] - run_payload_bytes(root, run))
-                    for run in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"))
+    # 只抵扣本次总量已经计入的同一stat字节；producer不持管理锁，后续扫描会漏账。
+    remaining = reserved - measured["active_payload_credit"]
     root_remaining = physical_future(root, db, root.stat().st_dev)
     remaining += job_remaining(root, db) + safety_remaining(db)
     reserve = policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
@@ -2190,8 +2209,8 @@ def volume_root(root, db, volume_id):
     return path
 
 
-def domain_inventory(root, db):
-    measured = inventory(root, None)
+def domain_inventory(root, db, *, observe_runs=False):
+    measured = inventory(root, None, run_db=db if observe_runs else None)
     if has_table(db, "volumes"):
         for row in db.execute("SELECT id FROM volumes ORDER BY id"):
             other = inventory(volume_root(root, db, row["id"]), None)
@@ -2237,12 +2256,13 @@ def migration_materialized(root, db, job):
 
 
 def physical_future(root, db, device):
-    """按OS实际卷身份合并所有登记目录；已落盘字节已从disk_usage.free扣除。"""
+    """按OS卷合并承诺；锁内迁移可抵扣，锁外producer保守保留完整物理预留。"""
     primary = root.stat().st_dev == device
     future = 0
     if primary:
-        future = job_remaining(root, db) + sum(max(0, row["reserved_bytes"] - run_payload_bytes(root, row))
-                 for row in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"))
+        # 活动producer可不持管理锁写/截断载荷；disk_usage与目录stat不能组成同一快照。
+        # 物理准入保守保留其整个批准载荷直到finish/release，不用另一时点的文件抵扣。
+        future = job_remaining(root, db) + db.execute("SELECT coalesce(sum(reserved_bytes),0) FROM runs WHERE state IN ('allocating','running')").fetchone()[0]
     if has_table(db, "safety_jobs"):
         for job in db.execute("SELECT * FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
             plan = json.loads(job["plan"])
@@ -2944,6 +2964,8 @@ def schedule_preview(root, policy, args):
         unresolved.append("start_at")
     if unresolved:
         return dict(installed=False, enabled=False, xml=None, unresolved=unresolved, production_enabled=policy["production_enabled"])
+    if policy["maintenance_interval_hours"] > 744:
+        raise DataError("Windows重复间隔最多31天（744小时），拒绝生成无效任务；不会截断用户策略")
     try:
         start = datetime.fromisoformat(args.start_at)
     except ValueError as error:
