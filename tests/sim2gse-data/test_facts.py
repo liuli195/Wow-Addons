@@ -35,6 +35,18 @@ class FactTests(unittest.TestCase):
     def extracted(self, name, document):
         return self.call("extract", "--artifact-id", self.source(name, document))["fact_id"]
 
+    def batch_extracted(self, directory, documents):
+        folder = self.root / directory
+        folder.mkdir()
+        for name, document in documents.items():
+            (folder / name).write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        plan = self.call("legacy-register", "--directory", str(folder), "--role", "native")
+        registered = self.call("legacy-register", "--directory", str(folder), "--role", "native",
+                               "--approve-hash", plan["plan_hash"])
+        self.assertEqual(len(registered["artifacts"]), len(documents))
+        return {item["path"].rsplit("/", 1)[-1]: self.call("extract", "--artifact-id", item["artifact_id"])["fact_id"]
+                for item in registered["artifacts"]}
+
     def test_extract_is_idempotent_retains_missing_and_does_not_touch_last_used(self):
         self.initialize()
         artifact = self.source("batch.json", self.batch())
@@ -302,12 +314,17 @@ class FactTests(unittest.TestCase):
         malformed = self.production_batch()
         malformed["request"]["trace"] = 0
         self.call("extract", "--artifact-id", self.source("bad-trace.json", malformed), expected=2)
+        documents = {}
         for number, (left_value, right_value) in enumerate(((False, 0), ([False], [0]), ({"flag": False}, {"flag": 0}))):
             left_document, right_document = self.batch(), self.batch(version="v2")
             left_document["request"]["program"] = {"nested": left_value}
             right_document["request"]["program"] = {"nested": right_value}
-            left = self.extracted(f"type-left-{number}.json", left_document)
-            right = self.extracted(f"type-right-{number}.json", right_document)
+            documents[f"type-left-{number}.json"] = left_document
+            documents[f"type-right-{number}.json"] = right_document
+        facts = self.batch_extracted("type facts", documents)
+        for number in range(3):
+            left = facts[f"type-left-{number}.json"]
+            right = facts[f"type-right-{number}.json"]
             self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version", expected=2)
 
     def test_adaptive_request_counts_and_effective_samples_are_not_normalized_to512(self):
@@ -335,21 +352,23 @@ class FactTests(unittest.TestCase):
                                independent_validation_complete=True)
             value.update(changes)
             return value
-        left = self.extracted("complete-left.json", result("v1", 100))
-        right = self.extracted("complete-right.json", result("v2", 110))
-        compared = self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
-        self.assertTrue(compared["validation_complete"])
-        self.assertEqual(compared["sample_complete"], {"left": True, "right": True})
-        self.assertTrue(compared["comparable"])
-        self.assertEqual(compared["delta_dps"], 10)
         variants = [result("v2", 110, independent_validation_complete=False),
                     result("v2", 110, independent_validation_complete=None),
                     result("v2", 110, status="validation_incomplete"),
                     result("v2", 110, search={"partial_round": False, "stop_reason": "search_deadline"}),
                     result("v2", 110, search={"stop_reason": "no_improvement"}),
                     result("v2", 110, search={"partial_round": True, "stop_reason": "no_improvement"})]
+        documents = {"complete-left.json": result("v1", 100), "complete-right.json": result("v2", 110)}
+        documents.update({f"incomplete-{index}.json": document for index, document in enumerate(variants)})
+        facts = self.batch_extracted("completion facts", documents)
+        left, right = facts["complete-left.json"], facts["complete-right.json"]
+        compared = self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
+        self.assertTrue(compared["validation_complete"])
+        self.assertEqual(compared["sample_complete"], {"left": True, "right": True})
+        self.assertTrue(compared["comparable"])
+        self.assertEqual(compared["delta_dps"], 10)
         for index, document in enumerate(variants):
-            other = self.extracted(f"incomplete-{index}.json", document)
+            other = facts[f"incomplete-{index}.json"]
             refused = self.call("compare", "--left", left, "--right", other, "--axis", "condition.engine.controlled.version")
             self.assertFalse(refused["comparable"])
             self.assertIsNone(refused["delta_dps"])
@@ -365,18 +384,20 @@ class FactTests(unittest.TestCase):
             value["request"]["condition"] = hashlib.sha256(json.dumps(value["condition_details"], ensure_ascii=False,
                                                                      sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             return value
-        left = self.extracted("rules-left.json", document("v1"))
-        right = self.extracted("rules-right.json", document("v2"))
+        facts = self.batch_extracted("rule facts", {"rules-left.json": document("v1"), "rules-right.json": document("v2"),
+                                     "literal-right.json": document("v2", literal=3), "nested-right.json": document("v2", nested=999),
+                                     "changed-rule.json": document("v2", rule_hash="d" * 64)})
+        left, right = facts["rules-left.json"], facts["rules-right.json"]
         self.assertTrue(self.call("compare", "--left", left, "--right", right,
                                  "--axis", "condition.engine.controlled.version")["comparable"])
-        literal = self.extracted("literal-right.json", document("v2", literal=3))
+        literal = facts["literal-right.json"]
         self.call("compare", "--left", left, "--right", literal, "--axis", "condition.engine.controlled.version", expected=2)
         self.assertTrue(self.call("compare", "--left", left, "--right", literal,
                                  "--axis", "condition.engine.controlled.version", "--axis", "condition.config.x%2Ey")["comparable"])
-        nested = self.extracted("nested-right.json", document("v2", nested=999))
+        nested = facts["nested-right.json"]
         self.call("compare", "--left", left, "--right", nested, "--axis", "condition.engine.controlled.version",
                   "--axis", "condition.config.x%2Ey", expected=2)
-        changed = self.extracted("changed-rule.json", document("v2", rule_hash="d" * 64))
+        changed = facts["changed-rule.json"]
         self.call("compare", "--left", left, "--right", changed, "--axis", "condition.engine.controlled.version", expected=2)
         escaped = "condition.rules.D%3A%5CMy%20Project%5CWow%20Addons%5Cprojects%5Csim2gse%5Ctask%2Epy"
         self.assertTrue(self.call("compare", "--left", left, "--right", changed,

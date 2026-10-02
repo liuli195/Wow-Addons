@@ -425,17 +425,16 @@ class SafetyTests(unittest.TestCase):
             with self.subTest(phase=phase):
                 ids = [self.source(phase + str(number) + ".json")[0] for number in range(2)]
                 plan, isolated, execution = self.isolated_plan(ids, phase + " old approval.json")
-                saved = self.root.parent / (phase + " old approval.json")
-                # 通过公开预览取得2秒有效期计划，不伪写管理索引。
-                selection = tuple(value for identity in ids for value in ("--artifact-id", identity))
-                plan = self.call("purge", *selection, "--valid-seconds", "2")
-                saved.write_text(json.dumps(plan), encoding="utf-8")
                 confirmations = tuple(value for item in plan["items"] for value in ("--confirm-item", item["id"] + ":" + item["confirmation_hash"]))
-                execution = ("--plan", str(saved), "--approve-hash", plan["plan_hash"], *confirmations)
-                self.injected_call(self.crash_on_phase(plan["operation_id"], phase), "purge", *execution, expected=77)
-                time.sleep(2.1)
-                self.call("purge", *execution, expected=2)
-                renewed = self.call("purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300")
+                self.assertEqual(plan["expires"] - plan["created"], 300)
+                before_expiry = "import time\ntime.time=lambda:" + repr(plan["expires"] - 1) + "\n"
+                after_expiry = "import time\ntime.time=lambda:" + repr(plan["expires"] + 1) + "\n"
+                self.injected_call(before_expiry + self.crash_on_phase(plan["operation_id"], phase), "purge", *execution, expected=77)
+                expired = self.injected_call(after_expiry, "purge", *execution, expected=2)
+                self.assertIn("过期", expired["error"])
+                renewed = self.injected_call(after_expiry, "purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300")
+                self.assertEqual(renewed["created"], plan["expires"] + 1)
+                self.assertEqual(renewed["expires"] - renewed["created"], 300)
                 self.assertEqual(renewed["operation_id"], plan["operation_id"])
                 self.assertNotEqual(renewed["plan_hash"], plan["plan_hash"])
                 if phase == "published":
@@ -443,24 +442,25 @@ class SafetyTests(unittest.TestCase):
                 new_saved = self.root.parent / (phase + " renewed approval.json")
                 new_saved.write_text(json.dumps(renewed), encoding="utf-8")
                 new_args = ("--plan", str(new_saved), "--approve-hash", renewed["plan_hash"])
-                self.call("purge", *new_args, expected=2)
-                self.call("purge", *new_args, *confirmations, expected=2)
+                self.injected_call(after_expiry, "purge", *new_args, expected=2)
+                self.injected_call(after_expiry, "purge", *new_args, *confirmations, expected=2)
                 new_confirmations = tuple(value for item in renewed["items"] for value in ("--confirm-item", item["id"] + ":" + item["confirmation_hash"]))
                 remaining = next(item["id"] for item in renewed["items"] if item["id"] not in renewed["completed_ids"])
-                self.call("pin", "--artifact-id", remaining, "--action", "add", "--label", "new persistent evidence")
-                self.call("purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300", expected=2)
-                self.call("purge", *new_args, *new_confirmations, expected=2)
-                self.call("pin", "--artifact-id", remaining, "--action", "remove", "--label", "new persistent evidence")
+                self.injected_call(after_expiry, "pin", "--artifact-id", remaining, "--action", "add", "--label", "new persistent evidence")
+                self.injected_call(after_expiry, "purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300", expected=2)
+                self.injected_call(after_expiry, "purge", *new_args, *new_confirmations, expected=2)
+                self.injected_call(after_expiry, "pin", "--artifact-id", remaining, "--action", "remove", "--label", "new persistent evidence")
                 if renewed["completed_ids"]:
                     deleted_path = Path(next(item["path"] for item in isolated["items"] if item["artifact_id"] in renewed["completed_ids"]))
                     deleted_path.write_bytes(b"new file must never be deleted")
-                    self.call("purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300", expected=2)
-                    self.call("purge", *new_args, *new_confirmations, expected=2)
+                    self.injected_call(after_expiry, "purge", "--renew-operation", plan["operation_id"], "--valid-seconds", "300", expected=2)
+                    self.injected_call(after_expiry, "purge", *new_args, *new_confirmations, expected=2)
                     self.assertEqual(deleted_path.read_bytes(), b"new file must never be deleted")
                     deleted_path.unlink()  # 仅移除本测试刚创建的冲突合成文件。
-                result = self.call("purge", *new_args, *new_confirmations)
+                result = self.injected_call(after_expiry, "purge", *new_args, *new_confirmations)
                 self.assertEqual(set(result["purged"]), set(ids))
-                self.call("purge", *execution, expected=2)
+                expired = self.injected_call(after_expiry, "purge", *execution, expected=2)
+                self.assertIn("过期", expired["error"])
 
     def test_batch_migration_internal_dependencies_do_not_block_own_job(self):
         self.initialize()

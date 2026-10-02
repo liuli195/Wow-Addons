@@ -134,3 +134,11 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 满足12全组通过且明显更快的条件后，严格只执行一次正式统一整仓：干净a1f622b25ec7428c638cec4851185721c66b2a77，原固定base、outer3/product8/data12、正式60硬预算，原生PYTEST_ADDOPTS=`-v --durations=5`。仍超时：poll主32440=None，收尾wall60.750秒，owned最终exit1，包装器exit124，taskkill128（不作为成功判断）。日志scene local/config-changed，没有cache-hit或完整check汇总；配置变更全选38，不代表38均已执行或结束，fresh完成范围不可得。原performance-report仍是15:55:46的111.81秒诊断，未更新，不当新正式结果。
 
 终止后只读解析日志所有PID及主ID，共79个（含日志父子关联节点），逐个查询79均absent；本轮已知节点退出，机时已释放，不继续重测/优化/杀未知进程。完整正式日志存仓 `data-management-formal12-a1f622b.log`，包含原taskkill stdout/stderr字节证据。12单组wall改善已证实而正式60未通过，30–40目标未达，候选票据及交付门禁仍开放，下一步等待父端准确远端review。
+
+## 三事实组登记与过期时钟准备复用
+
+93e780bd起点，未改生产或worker配置。事实类型6、完成证据8、路径轴5个文档各先生成隔离子目录，以小型batch_extracted测试夹具复用公开legacy-register一次预览一次批准；19个extract仍分别执行，全部原compare/assert保持，少10+14+8=32个准备CLI。坏trace仍原独立注册提取拒绝。72事实字节边界本轮完全不改，不向Safety未知引用推广legacy-register。
+
+过期purge仅reserved/published原两组：复用isolated_plan已有公开300秒计划，取消每组重复preview及其覆盖计划；现有injected_call中替换标准库time.time，初次批准和原commit后exit77在plan.expires-1，后续purge/renew/pin全在expires+1。断言旧error含过期，renewed.created精确expires+1、期限300；原operation ID/新plan hash、published已完成数量、新逐项确认/保护变化/已删除文件重现拒绝/原文件保留及最终全部purged断言完整。去2×2.1秒等待和2次重复preview，没有新时钟框架/改索引/改生产。其他真实1.05秒心跳等待保留。
+
+仅代表小组before/after各一次，原生 `-v tests/sim2gse-data/test_facts.py tests/sim2gse-data/test_safety.py -k 'request_types_and_nested or complete_search_summary or real_rule_path or expired_interrupted_purge' --dist=worksteal -n 4 --durations=5`，既有包装器各30秒防挂；created4/4，4 tests/2 subtests均pass。before pytest12.56/wall12.910秒，after9.90/wall10.258秒。各call前→后：purge11.81→7.47、完成证据5.91→3.66、类型4.82→3.08、路径轴4.26→2.94秒。数据实际小组wall少2.652秒，不能把四个case差值相加当整仓收益，机器噪声仍存在。本轮无整仓或121完整组重测，正式60仍未通过，等待远端review与机时放行。
