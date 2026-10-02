@@ -790,7 +790,7 @@ class ArchiveTests(unittest.TestCase):
             self.assertLessEqual(logical_bytes + pending_bytes + self.policy["maintenance_reserve_bytes"]
                                  + self.policy["metadata_reserve_bytes"], self.policy["capacity_bytes"])
 
-    def test_large_legal_restore_plan_is_admitted_before_any_metadata_write(self):
+    def test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write(self):
         self.initialize()
         self.policy["capacity_bytes"] = 1024 * 1024 * 1024
         self.save_config()
