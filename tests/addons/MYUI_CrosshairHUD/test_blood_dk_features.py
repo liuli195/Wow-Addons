@@ -27,7 +27,7 @@ function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(0.7) end
 function InCombatLockdown() return false end
 function print() end
 SlashCmdList = {}
-Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 } }
+Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 }, StatusBarRenderMode = { Radial = 1 } }
 C_AddOns = { GetAddOnMetadata = function() return "test" end }
 C_UnitAuras = { GetPlayerAuraBySpellID = function(id)
     assert(id == 463730)
@@ -65,6 +65,9 @@ local function Region()
     function t:AddMaskTexture(mask) self.mask=mask end
     function t:SetShown(v) self.shown=v end
     function t:SetRotation(v) self.rotation=v end
+    function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
+    function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
+    function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
     function t:SetTexCoord(...) self.coords={...} end
     function t:SetVertexColor(r,g,b,a) self.color={r,g,b,a} end
     function t:SetColorTexture(r,g,b,a) self.color={r,g,b,a} end
@@ -75,8 +78,13 @@ local function Region()
     function t:SetTexelSnappingBias(v) self.bias=v end
     return t
 end
-function CreateFrame()
-    local f = { events={},scripts={} }
+function CreateFrame(kind)
+    local f = { events={},scripts={},kind=kind }
+    function f:SetStatusBarTexture(t) self.texture=t end
+    function f:GetStatusBarTexture() return self.texture end
+    function f:SetRenderMode(v) self.mode=v end
+    function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
+    function f:SetValue(v) self.value=v end
     function f:CreateTexture(_,_,_,sub)
         local t=Region();t.sub=sub;textures[#textures+1]=t;return t
     end
@@ -86,6 +94,7 @@ function CreateFrame()
     function f:RegisterUnitEvent(e,unit) assert(e:sub(1,5)=="UNIT_");assert(unit=="player");self.events[e]=true end
     function f:SetScript(e,fn) self.scripts[e]=fn end
     function f:UnregisterAllEvents() self.events={} end
+    function f:SetAllPoints() end
     function f:SetSize(w,h) self.w,self.h=w,h end
     function f:GetWidth() return self.w end
     function f:GetHeight() return self.h end
@@ -177,14 +186,14 @@ def test_aura_controls_and_visibility_through_login_events_and_settings():
     run_scenario(r'''
 local controls=assert(rows["凝固之血"],"existing settings page must include blood aura")
 local bg=assert(Layer("coagulated_blood_arc.png",0),"aura background required")
-local fill=assert(Layer("coagulated_blood_arc.png",1),"aura fill required")
+local fill=assert(Layer("coagulated_blood_fill.png",1),"aura fill required")
 local shadow=assert(Layer("coagulated_blood_arc_shadow.png"))
 assert(shadow.sub < Layer("health_arc_shadow.png").sub,"aura shadow below health shadow")
 assert(not shadow.mask,"shadow must not be fill-masked")
 assert(bg.shown and fill.shown and shadow.shown)
 Near(controls["满条层数"].getValue(),150)
 -- 75/150 的中间位置：起点99减2度余量，加53度的一半。
-Near(fill.mask.rotation,math.rad(-213.5))
+assert(not fill.mask);Near(fill.radialStart,7/360)
 controls["启用"].setValue(false)
 assert(not bg.shown and not fill.shown and not shadow.shown)
 SlashCmdList.MYUICHH("demo")
@@ -192,7 +201,10 @@ assert(not bg.shown and not fill.shown and not shadow.shown)
 SlashCmdList.MYUICHH("demo")
 controls["启用"].setValue(true)
 controls["满条层数"].setValue(75)
-Near(fill.mask.rotation,math.rad(-240))
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+Near(bar.maximum,75)
+assert(bar.value==75)
 aura=nil;Event("UNIT_AURA")
 assert(not bg.shown and not fill.shown and not shadow.shown)
 aura={applications=75};Event("UNIT_AURA")
@@ -231,17 +243,19 @@ SlashCmdList.MYUICHH("demo");assert(not line.shown)
 def test_unreadable_values_hide_only_new_data_and_recover():
     run_scenario(r'''
 local bg=Layer("coagulated_blood_arc.png",0)
-local fill=Layer("coagulated_blood_arc.png",1)
+local fill=Layer("coagulated_blood_fill.png",1)
 local shadow=Layer("coagulated_blood_arc_shadow.png")
 local line=Marker()
 aura={applications=secret};fee=secret;Tick()
-assert(bg.shown and shadow.shown and not fill.shown and not line.shown)
+assert(bg.shown and shadow.shown and fill.shown and not line.shown)
 assert(Layer("health_arc.png",1).shown and Layer("power_arc.png",1).shown)
 aura=secret;maximum=secret;Event("UNIT_AURA")
 assert(not bg.shown and not fill.shown and not shadow.shown and not line.shown)
 aura={applications=300};fee=0;maximum=100;Tick()
 assert(bg.shown and fill.shown and line.shown)
-Near(fill.mask.rotation,math.rad(-240))
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+Near(bar.maximum,150);assert(bar.value==300)
 auraThrows=true;feeThrows=true;Tick()
 assert(not bg.shown and not line.shown)
 auraThrows=false;feeThrows=false;Tick()
@@ -255,7 +269,7 @@ detectorThrows=false;Tick();assert(bg.shown and line.shown)
 def test_independent_alpha_shared_shadow_and_saved_settings():
     run_scenario(r'''
 local bg=Layer("coagulated_blood_arc.png",0)
-local fill=Layer("coagulated_blood_arc.png",1)
+local fill=Layer("coagulated_blood_fill.png",1)
 local shadow=Layer("coagulated_blood_arc_shadow.png")
 rows["凝固之血"]["条背景"].setValue(40)
 rows["凝固之血"]["填充颜色"].setValue(25)
@@ -267,7 +281,7 @@ assert(fill.color[1]==1 and fill.color[2]==1 and fill.color[3]==1)
 MYUI_CrosshairHUDDB.elements.coagulatedBlood.fill={0.2,0.3,0.4}
 NS.Config.Load();NS.Core.ApplyConfig()
 Near(fill.color[1],0.2);Near(fill.color[2],0.3);Near(fill.color[3],0.4)
-assert(not bg.mask and not shadow.mask and fill.mask)
+assert(not bg.mask and not shadow.mask and not fill.mask)
 ''')
 
 
@@ -279,11 +293,11 @@ function item:GetCooldownInfo() return {spellID=463730} end
 function item:IsActive() return true end
 BuffIconCooldownViewer={GetItemFrames=function() return {item} end}
 Tick()
-local fill=Layer("coagulated_blood_arc.png",1)
+local fill=Layer("coagulated_blood_fill.png",1)
 assert(fill.shown, "tracked buff must render when direct lookup misses")
-Near(fill.mask.rotation,math.rad(-213.5))
+assert(not fill.mask);Near(fill.radialStart,7/360)
 item.auraDataCached={applications=secret};Tick()
-assert(not fill.shown and Layer("coagulated_blood_arc_shadow.png").shown, "restricted stacks must not be calculated")
+assert(fill.shown and Layer("coagulated_blood_arc_shadow.png").shown, "restricted stacks must reach native drawing")
 item.auraDataCached=nil;Tick()
 assert(not fill.shown and not Layer("coagulated_blood_arc_shadow.png").shown)
 item.auraDataCached={applications=75}
@@ -302,4 +316,54 @@ local marker=assert(Marker())
 assert(#lines==0, "avoid native segmented line rasterization")
 assert(marker.filter=="TRILINEAR", "shrinking must sample mipmaps")
 assert(marker.snap==false and marker.bias==0)
+''')
+
+
+def test_linked_blood_aura_passes_restricted_stacks_to_native_radial_fill():
+    run_scenario(r'''
+aura=nil
+local item={auraDataCached={applications=secret},auraDataUnit="player"}
+function item:GetCooldownInfo() return {spellID=49998} end
+function item:GetCooldownID() return 42 end
+function item:IsActive() return true end
+C_CooldownViewer={GetCooldownViewerCooldownInfo=function(id)
+    assert(id==42);return {spellID=49998,linkedSpellIDs={463730}}
+end}
+BuffIconCooldownViewer={GetItemFrames=function() return {item} end}
+Tick()
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+assert(bar and bar.shown,"linked buff must have visible native radial fill")
+assert(rawequal(bar.value,secret),"original restricted stacks must reach the engine unchanged")
+Near(bar.minimum,0);Near(bar.maximum,150)
+assert(bar.mode==Enum.StatusBarRenderMode.Radial)
+Near(bar.texture.radialStart,7/360);Near(bar.texture.radialEnd,60/360)
+assert(bar.texture.radialReverse==false and not bar.texture.mask)
+rows["凝固之血"]["满条层数"].setValue(200)
+Near(bar.maximum,200);assert(rawequal(bar.value,secret))
+rows["凝固之血"]["启用"].setValue(false);assert(not bar.shown)
+rows["凝固之血"]["启用"].setValue(true);assert(bar.shown)
+item.auraDataCached=nil;Tick();assert(not bar.shown)
+''')
+
+
+def test_native_blood_fill_zero_full_range_scaling_and_missing_stacks():
+    run_scenario(r'''
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+assert(bar)
+for _,value in ipairs({0,75,150,300}) do
+    aura={applications=value};Tick()
+    assert(bar.shown and bar.value==value)
+    Near(bar.minimum,0);Near(bar.maximum,150)
+end
+rows["常规"]["HUD 缩放"].setValue(2)
+assert(NS.Elements.scale==2)
+Near(bar.texture.radialStart,7/360);Near(bar.texture.radialEnd,60/360)
+aura={};Tick()
+assert(not bar.shown and Layer("coagulated_blood_arc.png",0).shown)
+local original=bar.SetValue
+function bar:SetValue() error("engine rejected value") end
+aura={applications=secret};Tick();assert(not bar.shown)
+bar.SetValue=original;Tick();assert(bar.shown and rawequal(bar.value,secret))
 ''')

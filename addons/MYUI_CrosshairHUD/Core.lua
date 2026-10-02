@@ -185,24 +185,42 @@ local function UpdateRunes()
     end
 end
 
--- 新增显示不能保留旧读数：增益消失或读取失败立即收起，恢复后重新读取。
+-- 监控条目可能挂在灵界打击下，需同时匹配关联的增益编号。
+local function BloodInfoMatches(info)
+    if type(info) ~= "table" then return false end
+    for _, key in ipairs({ "spellID", "overrideSpellID", "overrideTooltipSpellID", "linkedSpellID" }) do
+        if MaybeNumber(info[key]) == 463730 then return true end
+    end
+    if type(info.linkedSpellIDs) == "table" then
+        for _, id in ipairs(info.linkedSpellIDs) do
+            if MaybeNumber(id) == 463730 then return true end
+        end
+    end
+    return false
+end
+
 local function TrackedBloodAura()
     for _, name in ipairs({ "BuffIconCooldownViewer", "BuffBarCooldownViewer" }) do
         local viewer = _G[name]
         if viewer and viewer.GetItemFrames then
-            local frames = viewer:GetItemFrames()
-            for _, item in ipairs(frames or {}) do
+            for _, item in ipairs(viewer:GetItemFrames() or {}) do
                 local info = item.GetCooldownInfo and item:GetCooldownInfo()
+                local matches = BloodInfoMatches(info)
+                local api = _G.C_CooldownViewer
+                if not matches and api and api.GetCooldownViewerCooldownInfo and item.GetCooldownID then
+                    local id = MaybeNumber(item:GetCooldownID())
+                    if type(id) == "number" then
+                        matches = BloodInfoMatches(api.GetCooldownViewerCooldownInfo(id))
+                    end
+                end
                 local cached = item.auraDataCached
-                local matches = info and (MaybeNumber(info.spellID) == 463730
-                    or MaybeNumber(info.overrideSpellID) == 463730)
                 if type(cached) == "table" then
                     matches = matches or MaybeNumber(cached.spellId) == 463730
                 end
                 if matches then
                     local unit = item.auraDataUnit
                     local active = item.IsActive and MaybeBoolean(item:IsActive())
-                    if not Unreadable(unit) and (unit == nil or unit == "player")
+                    if not Unreadable(unit) and unit == "player"
                         and active ~= false and type(cached) == "table" then
                         return cached
                     end
@@ -212,24 +230,30 @@ local function TrackedBloodAura()
     end
 end
 
+-- 只确认是否取得数值，受限层数原样交给原生进度条，绝不做算术或比较。
+local function HasStackValue(value)
+    local detector = rawget(_G, "issecretvalue")
+    if detector then
+        local ok, secret = pcall(detector, value)
+        if not ok then return false end
+        if secret then return true end
+    end
+    return type(value) == "number"
+end
+
 local function UpdateBloodAura()
-    last.bloodPresent, last.bloodStacks = false, nil
+    last.bloodPresent, last.bloodStacks, last.hasBloodStacks = false, nil, false
     if Config.Get().elements.coagulatedBlood.enabled == false then return end
-    local api = _G.C_UnitAuras
-    pcall(function()
-        local tracked = TrackedBloodAura()
-        if type(tracked) == "table" then
-            last.bloodPresent = true
-            last.bloodStacks = MaybeNumber(tracked.applications)
-            return
-        end
+    local ok, aura = pcall(TrackedBloodAura)
+    if not ok or type(aura) ~= "table" then
+        local api = _G.C_UnitAuras
         if not (api and api.GetPlayerAuraBySpellID) then return end
-        local aura = api.GetPlayerAuraBySpellID(463730)
-        if Unreadable(aura) or type(aura) ~= "table" then return end
-        last.bloodPresent = true
-        local stacks = MaybeNumber(aura.applications)
-        if type(stacks) == "number" then last.bloodStacks = stacks end
-    end)
+        ok, aura = pcall(api.GetPlayerAuraBySpellID, 463730)
+    end
+    if not ok or Unreadable(aura) or type(aura) ~= "table" then return end
+    last.bloodPresent = true
+    last.bloodStacks = aura.applications
+    last.hasBloodStacks = HasStackValue(aura.applications)
 end
 
 local function UpdateDeathStrike()
@@ -314,11 +338,11 @@ local function BuildState()
     state.health = ElementState(elements.health, last.healthRotation, last.hasHealthArc)
     state.power = ElementState(elements.power, last.powerRotation, last.hasPowerArc)
     local blood = elements.coagulatedBlood
-    local frac = Logic.DisplayFraction(last.bloodStacks, blood.maxStacks)
-    local arc = Logic.ARCS.coagulatedBlood
-    state.coagulatedBlood = ElementState(blood,
-        frac and Logic.MaskAngle(arc.start, arc.span, frac), frac ~= nil)
+    state.coagulatedBlood = ElementState(blood, nil, false)
     state.coagulatedBlood.visible = blood.enabled ~= false and last.bloodPresent == true
+    state.coagulatedBlood.stacks = last.bloodStacks
+    state.coagulatedBlood.hasStacks = last.hasBloodStacks == true
+    state.coagulatedBlood.maxStacks = blood.maxStacks
     local marker = elements.deathStrike
     state.deathStrike = { visible = marker.enabled ~= false and last.costMarker ~= nil,
         points = last.costMarker, thickness = marker.thickness,
@@ -772,7 +796,7 @@ SlashCmdList["MYUICHH"] = function(msg)
         local cfg = Config.Get().elements.coagulatedBlood
         print("凝固之血：开关" .. (cfg.enabled == false and "关闭" or "开启")
             .. "，增益" .. (last.bloodPresent and "已确认" or "未确认")
-            .. "，层数" .. (type(last.bloodStacks) == "number" and "可读取" or "不可读取"))
+            .. "，层数" .. (type(MaybeNumber(last.bloodStacks)) == "number" and "可读取" or "受限或缺失"))
         local ok, aura = pcall(TrackedBloodAura)
         if ok and type(aura) == "table" then
             print("暴雪增益监控：已找到；层数"

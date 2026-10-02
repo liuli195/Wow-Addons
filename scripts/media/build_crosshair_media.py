@@ -94,6 +94,18 @@ def build_marker(out_dir):
     print("  marker death_strike_marker.png 1024x1024（白色软边直线）")
 
 
+def build_blood_fill(manifest, out_dir):
+    """只平移原始像素，使径向填充画布的圆心与准星圆心重合。"""
+    asset = next(a for a in manifest["assets"] if a["file"] == "coagulated_blood_arc.png")
+    scale = manifest["exportScale"]
+    offset = tuple(round(v * scale) for v in asset["centerOffset"])
+    with Image.open(SRC / "Textures" / asset["file"]) as source:
+        canvas = Image.new("RGBA", source.size, (255, 255, 255, 0))
+        canvas.paste(source.convert("RGBA"), offset)
+        canvas.save(out_dir / "coagulated_blood_fill.png")
+    print("  fill   coagulated_blood_fill.png（保持原像素，仅校正填充圆心）")
+
+
 def build(out_dir):
     """把准星 HUD 的全部成品纹理写进 out_dir，返回文件数。"""
     manifest = json.loads((SRC / "manifest.json").read_text(encoding="utf-8"))
@@ -106,8 +118,9 @@ def build(out_dir):
     count = copy_textures(manifest, out_dir)
     build_mask(out_dir)
     build_marker(out_dir)
-    print(f"Built {count + 2} CrosshairHUD PNG assets into {out_dir}.")
-    return count + 2
+    build_blood_fill(manifest, out_dir)
+    print(f"Built {count + 3} CrosshairHUD PNG assets into {out_dir}.")
+    return count + 3
 
 
 if __name__ == "__main__":

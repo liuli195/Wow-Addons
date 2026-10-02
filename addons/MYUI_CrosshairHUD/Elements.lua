@@ -32,6 +32,12 @@ local Logic = NS.Logic
 NS.Elements = NS.Elements or {}
 local Elements = NS.Elements
 
+-- 固定版暴雪文档的新增纹理接口；本机通用类型库尚未包含这些成员。
+---@class CHHRadialTexture: Texture
+---@field SetRadialProgressBarStartOffset fun(self: CHHRadialTexture, offset: number)
+---@field SetRadialProgressBarEndOffset fun(self: CHHRadialTexture, offset: number)
+---@field SetRadialProgressBarReverse fun(self: CHHRadialTexture, reverse: boolean)
+
 local MEDIA = "Interface\\AddOns\\MYUI\\Media\\CrosshairHUD\\"
 
 local CreateFrame = _G.CreateFrame
@@ -184,7 +190,25 @@ function Elements.Create()
 
     BuildFillable("health", PLACEMENT.health)
     BuildFillable("power", PLACEMENT.power)
-    BuildFillable("coagulatedBlood", PLACEMENT.coagulatedBlood)
+    local bloodSpec = PLACEMENT.coagulatedBlood
+    local bar = CreateFrame("StatusBar", nil, frame)
+    local fill = bar:CreateTexture(nil, "ARTWORK", nil, SUB_FILL)
+    ---@cast fill CHHRadialTexture
+    fill:SetTexture(MEDIA .. "coagulated_blood_fill.png", nil, nil, "TRILINEAR")
+    bar:SetStatusBarTexture(fill)
+    bar:SetRenderMode(_G.Enum.StatusBarRenderMode.Radial)
+    fill:SetRadialProgressBarStartOffset(7 / 360)
+    fill:SetRadialProgressBarEndOffset(60 / 360)
+    fill:SetRadialProgressBarReverse(false)
+    bar:SetAllPoints(frame)
+    bar:SetShown(false)
+    parts.coagulatedBlood = {
+        shadow = NewTexture(bloodSpec.shadowSub, bloodSpec.file .. SHADOW_SUFFIX),
+        bg = NewTexture(SUB_BG, bloodSpec.file), fill = fill, bar = bar,
+    }
+    placements.coagulatedBlood = bloodSpec
+    Place(parts.coagulatedBlood.shadow, bloodSpec)
+    Place(parts.coagulatedBlood.bg, bloodSpec)
     parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker")
     parts.deathStrike:SetTexture(MEDIA .. "death_strike_marker.png",
         "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE", "TRILINEAR")
@@ -230,7 +254,8 @@ function Elements.SetScale(scale)
 
     PlaceLayers(parts.health, placements.health)
     PlaceLayers(parts.power, placements.power)
-    PlaceLayers(parts.coagulatedBlood, placements.coagulatedBlood)
+    Place(parts.coagulatedBlood.shadow, placements.coagulatedBlood)
+    Place(parts.coagulatedBlood.bg, placements.coagulatedBlood)
     for i = 1, Logic.PIPS.count do
         PlaceLayers(parts.runes[i], placements.runes[i])
     end
@@ -258,7 +283,9 @@ local function ApplyFillable(part, st)
     -- **"有没有角度"看 hasRotation 这个普通布尔，不许去比较 rotation 本身**：
     -- rotation 可能是秘密值，而秘密值不许参与比较——Core 的读数段里连"读到了吗"
     -- 都是用另一个布尔表示的，这里不能开这个口子。
-    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and st.hasRotation == true
+    local hasFill = part.bar and st.hasStacks == true or not part.bar and st.hasRotation == true
+    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and hasFill
+    if part.bar then part.bar:SetShown(showFill) end
     part.fill:SetShown(showFill)
     if not visible then
         return
@@ -283,7 +310,15 @@ local function ApplyFillable(part, st)
             part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
         end)
         -- rotation 可能是秘密值：只能原样交给 setter
-        part.mask:SetRotation(st.rotation)
+        if part.bar then
+            local ok = pcall(function()
+                part.bar:SetMinMaxValues(0, st.maxStacks)
+                part.bar:SetValue(st.stacks)
+            end)
+            if not ok then part.bar:SetShown(false); part.fill:SetShown(false) end
+        else
+            part.mask:SetRotation(st.rotation)
+        end
     end
 end
 

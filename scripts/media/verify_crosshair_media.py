@@ -427,6 +427,16 @@ def main():
         verify_canvas_padding(asset, scale)
         verify_drag_box(asset, scale)
     verify_mask()
+    verify_texture("coagulated_blood_fill.png", (1024, 1024))
+    source = load(MEDIA / "coagulated_blood_arc.png")
+    fill = load(MEDIA / "coagulated_blood_fill.png")
+    if source is not None and fill is not None:
+        expected = np.full_like(source, 255)
+        expected[:, :, 3] = 0
+        expected[128:, :768] = source[:896, 256:]
+        check(np.array_equal(fill, expected), "凝固之血填充必须保持原像素，只校正圆心")
+        check(np.count_nonzero(fill[:, :, 3]) == np.count_nonzero(source[:, :, 3]),
+              "凝固之血填充平移不得丢失可见像素")
     verify_texture("death_strike_marker.png", (1024, 1024))
     marker = load(MEDIA / "death_strike_marker.png")
     if marker is not None:
@@ -449,7 +459,7 @@ def main():
         print(f"诊断目录：{MEDIA}")
         return 1
 
-    total = len(manifest["assets"]) + 2
+    total = len(manifest["assets"]) + 3
     print(f"PASS: {total} 个准星 HUD 纹理的尺寸、中性度、蒙版纯度与遮罩方向")
     return 0
 

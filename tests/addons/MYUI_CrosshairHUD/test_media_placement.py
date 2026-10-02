@@ -32,7 +32,7 @@ MANIFEST = ROOT / "assets/CrosshairHUDMedia/manifest.json"
 HARNESS = r'''
 local dir = assert(arg[1])
 
-Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 } }
+Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 }, StatusBarRenderMode = { Radial = 1 } }
 UIParent = { GetEffectiveScale = function() return 1 end }
 
 ----------------------------------------------------------------------
@@ -42,6 +42,9 @@ local textures = {}
 local frame
 local function NewTexture(_, _, _, sub)
     local t = { sub = sub, path = nil, size = nil, point = nil, filter = nil }
+    function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
+    function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
+    function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
     function t:SetTexture(path, _, _, filter) t.path = path; t.filter = filter end
     function t:SetSize(w, h) t.size = { w, h } end
     function t:SetPoint(a, b, c, x, y) t.point = { x, y } end
@@ -56,6 +59,11 @@ end
 
 function CreateFrame()
     local f = {}
+    function f:SetStatusBarTexture(t) self.texture=t end
+    function f:SetRenderMode(v) self.renderMode=v end
+    function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
+    function f:SetValue(v) self.value=v end
+    function f:SetAllPoints() end
     function f:CreateTexture(a, b, c, sub) return NewTexture(a, b, c, sub) end
     function f:CreateMaskTexture() return NewTexture() end
     function f:CreateLine() return NewTexture() end

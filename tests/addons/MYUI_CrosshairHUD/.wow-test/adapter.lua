@@ -40,6 +40,7 @@ return function(ctx)
     end
 
     env.Enum = env.Enum or {}
+    env.Enum.StatusBarRenderMode = { Radial = 1 }
     env.Enum.LuaCurveType = env.Enum.LuaCurveType or { Linear = 0 }
     env.SlashCmdList = env.SlashCmdList or {}
     env.C_CurveUtil = {
@@ -79,6 +80,9 @@ return function(ctx)
     ---------------------------------------------------------------- 显示对象
     local function Texture()
         local t = {}
+        function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
+        function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
+        function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
         function t:SetTexture(...) self.texture = true end
         function t:SetSize(w, h) self.width, self.height = w, h end
         function t:SetPoint(...) self.anchor = { ... } end
@@ -98,6 +102,9 @@ return function(ctx)
     end
 
     local function extend(frame)
+        function frame:SetStatusBarTexture(t) self.texture=t end
+        function frame:SetRenderMode(v) self.renderMode=v end
+        function frame:SetAllPoints(...) self.allPoints=true end
         function frame:SetSize(w, h) self.width, self.height = w, h end
         function frame:SetPoint(...) self.anchor = { ... } end
         function frame:ClearAllPoints() self.anchor = nil end
