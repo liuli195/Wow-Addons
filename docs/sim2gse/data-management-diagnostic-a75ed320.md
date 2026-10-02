@@ -120,3 +120,11 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 超时边界观察：`bounded-timeout-poll=None; owned-pid=23384`表明该时主进程仍运行；`bounded-deadline=60.495; taskkill=128; bounded-child-exit=1`含终止收尾。taskkill stdout确认主及多个后代终止，但stderr有12个后代“操作不被支持”，故128不能当树终止成功。随后立即只读逐个检查主23384及报错后代6612/12572/27172/40908/30556/36516/23992/23872/36828/3548/41544/33400，13个全部absent；本轮已知节点结束，机器已释放，未盲杀其他进程/提权/重测。包装器实际exit124，统一主进程exit1，不能将PowerShell最后Get-Content的exit0当验证成功。
 
 30–40秒目标仍未达，正式60仍失败。没有自动优化或更多测量，下一步由父端依据现有存量证据安排；候选票据、正式规格和交付门禁未关闭。
+
+## 同源8与12 worker单方向对照
+
+放行后仅8/12各一次，源码固定049e50ff（实现bf04），两轮参数同为原生 `-B -m pytest -v tests/sim2gse-data --dist=worksteal -n N --durations=10`，既有包装器各90秒防挂，不改变正式60。完整日志随仓保留 `data-management-workers8-049e50f.log` 和 `data-management-workers12-049e50f.log`，包含全部121 case对应worker记录。
+
+8轮原文 `created: 8/8 workers; 8 workers [121 items]`，gw0–gw7均出现；121 passed/79 subtests passed，pytest73.52秒、wall73.960秒、exit0。12轮原文 `created: 12/12 workers; 12 workers [121 items]`，gw0–gw11均出现；同样121+79 passed，pytest60.49秒、wall60.819秒、exit0。两轮均WorkStealingScheduling，没有retry/worker crash/重建提示，正常退出未调用taskkill，已知owned28132/41928随后查询均不存在。旧65.154秒来自夹具复用前源码，不作本轮基线。
+
+12轮wall少13.141秒（17.77%），虽关键case均变慢：深路径36.60→44.21秒、1000空成员33.95→39.97秒、事实字节边界20.96→25.64秒；整体并行排队缩短仍改善wall，不能将单case下降或组耗时相加作为目标。设备20逻辑CPU、31.76GiB物理内存，计划时可用6.67GiB；12运行中一次只读快照可用7403372544字节（约6.90GiB）/load78%，非峰值或无争用证明。仅修改verify.sim2gse-data.pytestXdistWorkers为12，外3、原项目8、全部覆盖和timeout不改。配置变更会使相关成功缓存失效，下一次正式整仓必须如实区分fresh/hit，不保证该单组60.819能使正式端到端低于60。
