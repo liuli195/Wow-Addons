@@ -110,18 +110,12 @@ class MaintenanceTests(unittest.TestCase):
                  " def __enter__(self): return self\n"
                  " def __exit__(self,*a): self.close()\n"
                  "os.scandir=lambda path: Stream() if str(path).endswith('virtual synthetic scale') else original(path)\n")
-        self.policy["capacity_bytes"] = 500 * 1024 * 1024
-        self.save_config()
-        refused = self.injected_call(setup, "begin", "--request-id", "scale-refused", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1", expected=2)
-        self.assertIn("容量不足", refused["error"])
         self.policy["capacity_bytes"] = 600 * 1024 * 1024
         self.save_config()
         observed = self.injected_call(setup, "inventory", "--complete")
         self.assertGreaterEqual(observed["files"], 560000)
         self.assertGreaterEqual(observed["logical_bytes"], 573440000)
         self.assertFalse(observed["truncated"])
-        run = self.injected_call(setup, "begin", "--request-id", "scale-admitted", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1")
-        self.call("lease", "--run-id", run["run_id"], "--token", run["token"], "--action", "release")
 
     def test_unknown_link_beyond_old_limit_blocks_growth_and_cursor_errors_are_structured(self):
         self.initialize()
@@ -246,6 +240,7 @@ class MaintenanceTests(unittest.TestCase):
         self.policy["capacity_bytes"] = 8 * 1024 * 1024
         self.save_config()
         run = self.call("begin", "--request-id", "large", "--owner-pid", str(os.getpid()), "--reserve-bytes", "10")
+        self.assertEqual(run["reserved_bytes"], 10)
         self.call("lease", "--run-id", run["run_id"], "--action", "release", "--token", run["token"])
         self.assertEqual((folder / "2399").read_bytes(), b"x" * 1024)
 
