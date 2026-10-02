@@ -303,32 +303,7 @@ class FactTests(unittest.TestCase):
         self.assertTrue(by_id[unfinished]["incomplete"])
         self.assertEqual(by_id[unfinished]["validation_status"], "incomplete")
 
-    def test_incomplete_search_comparison_does_not_claim_complete_validation(self):
-        self.initialize()
-        document = self.batch(status="completed", search_result={"dps": 100, "samples": 9},
-                              search={"partial_round": True, "stop_reason": "search_deadline"},
-                              independent_validation_complete=False)
-        left = self.extracted("left-result.json", document)
-        right_document = self.batch(version="v2", status="completed", search_result={"dps": 110, "samples": 9},
-                                    search={"partial_round": False, "stop_reason": "no_improvement"},
-                                    independent_validation_complete=False)
-        right = self.extracted("right-result.json", right_document)
-        comparison = self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
-        self.assertFalse(comparison["comparable"])
-        self.assertIsNone(comparison["delta_dps"])
-        self.assertFalse(comparison["validation_complete"])
-        self.assertEqual(comparison["validation_status"], {"left": "incomplete", "right": "incomplete"})
 
-    def test_ambiguous_dot_keys_cannot_hide_condition_changes(self):
-        self.initialize()
-        def row(version, number):
-            value = self.batch(version=version)
-            value["condition_details"]["config"].update(x={"y": number}, **{"x.y": 2})
-            value["request"]["condition"] = hashlib.sha256(json.dumps(value["condition_details"], ensure_ascii=False,
-                                                                     sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-            return value
-        left, right = self.extracted("dot-left.json", row("v1", 1)), self.extracted("dot-right.json", row("v2", 999))
-        self.call("compare", "--left", left, "--right", right, "--axis", "condition.engine.controlled.version", expected=2)
 
     def test_request_types_and_nested_json_boolean_numeric_differences_are_preserved(self):
         self.initialize()
@@ -393,6 +368,9 @@ class FactTests(unittest.TestCase):
             refused = self.call("compare", "--left", left, "--right", other, "--axis", "condition.engine.controlled.version")
             self.assertFalse(refused["comparable"])
             self.assertIsNone(refused["delta_dps"])
+            if index == 0:
+                self.assertFalse(refused["validation_complete"])
+                self.assertEqual(refused["validation_status"], {"left": "complete", "right": "incomplete"})
 
     def test_real_rule_path_keys_compare_and_escaped_literal_dot_axes_are_distinct(self):
         self.initialize()

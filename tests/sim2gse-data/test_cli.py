@@ -51,39 +51,7 @@ class SharedEntryTests(unittest.TestCase):
         return subprocess.run([sys.executable, "-B", str(CLI), *arguments],
                               cwd=cwd, capture_output=True, text=True, encoding="utf-8")
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows目录联接行为")
-    def test_parent_components_cannot_hide_a_junction(self):
-        with tempfile.TemporaryDirectory(prefix="simdata parent ") as directory:
-            repository = Path(directory) / "repo"
-            skill = repository / ".agents" / "skills" / "sim2gse-data"
-            shutil.copytree(CLI.parent.parent, skill)
-            entry = skill / "scripts" / "simdata.py"
-            installed = subprocess.run([sys.executable, "-B", str(entry), "install-junction",
-                                        "--repository", str(repository), "--apply"],
-                                       capture_output=True, text=True, encoding="utf-8")
-            self.assertEqual(installed.returncode, 0, installed.stderr)
-            link = repository / ".claude" / "skills" / "sim2gse-data"
-            for path in (str(link) + "\\..", str(link) + "/../"):
-                result = self.call("status", "--root", path)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn("上级路径", json.loads(result.stderr)["error"])
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows目录联接行为")
-    def test_status_rejects_a_link_at_the_known_index_endpoint(self):
-        with tempfile.TemporaryDirectory(prefix="simdata index link ") as directory:
-            repository = Path(directory) / "repo"
-            skill = repository / ".agents" / "skills" / "sim2gse-data"
-            shutil.copytree(CLI.parent.parent, skill)
-            installed = subprocess.run([sys.executable, "-B", str(skill / "scripts" / "simdata.py"),
-                                        "install-junction", "--repository", str(repository), "--apply"],
-                                       capture_output=True, text=True, encoding="utf-8")
-            self.assertEqual(installed.returncode, 0, installed.stderr)
-            data = Path(directory) / "data"
-            data.mkdir()
-            (repository / ".claude" / "skills" / "sim2gse-data").rename(data / "index.sqlite3")
-            result = self.call("status", "--root", str(data))
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("重解析点", json.loads(result.stderr)["error"])
 
     def test_status_reports_disabled_unset_policy_without_creating_an_index(self):
         with tempfile.TemporaryDirectory(prefix="simdata status ") as directory:
@@ -197,6 +165,14 @@ class SharedEntryTests(unittest.TestCase):
             inner = invoke(direct, "inventory", "--root", str(repository))
             self.assertEqual(inner.returncode, 2)
             self.assertIn("重解析点", json.loads(inner.stderr)["error"])
+            for path in (str(link) + "\\..", str(link) + "/../"):
+                result = self.call("status", "--root", path)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("上级路径", json.loads(result.stderr)["error"])
+            link.rename(data / "index.sqlite3")
+            result = self.call("status", "--root", str(data))
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("重解析点", json.loads(result.stderr)["error"])
 
     @unittest.skipUnless(sys.platform == "win32", "Windows目录联接行为")
     def test_install_never_overwrites_an_existing_unrelated_directory(self):

@@ -166,6 +166,16 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
 # 完整入口继续优化：HTTP 测试收尾轮询
 
+## 2026-10-03 云端独立 ROI 审查精简
+
+用户明确授权删除无必要、重复测试，云端按公开完整源码审查给出确切方法名，本机在 `e722c62` 干净 codex 分支映射后删除9方法：archive四个内部调用次数断言及单文件4×70长路径例，facts的独立ambiguous-dot与双方同时未完成compare例，CLI两个重复复制/安装例。候选规格先记录取舍，正式规格未应用。
+
+覆盖对应：archive 的 lstat 增长、sqlite.connect 次数、私有调用者名及 json.loads 次数不再作为契约；深路径真实220来源12×180归档/恢复原字节、普通五阶段、共享分包、重解析点、锁后源变化及容量竞态保留。规则路径既有5文档已验证 literal/nested 点号及转义变化轴，接替独立两文档例。六种不完整变体仍逐个拒绝且delta缺失，首个追加 validation_complete=False / validation_status={left:complete,right:incomplete}；明确丢失双方同时未完成交叉，不将其他deadline/partial_round误认独立验证未完成。CLI全部原拒绝断言合并到同一安装例，先验证双Agent入口、上级路径两写法拒绝，最后同一合成junction改名index.sqlite3并拒绝；未增加共享fixture。
+
+精简前4个相关facts通过8.57秒；精简后两替代facts与合并CLI安装共3例通过7.98秒。范围不同，不以此计算整体性能收益，也不以58次CLI估算墙钟。实际collect112（原121），1000空成员、56万条目内存、72事实字节上限、损坏包/路径越界/租约/隔离删除恢复均保留。删方法后worksteal初始块长度约9，保留空成员例名称由bounded_archive...改为empty_archive_with_one_thousand_members_and_restore_preview，使排序index9继续在另一worker首轮启动（旧排序index7会与large例同组），测试体不变。
+
+缓存输入源码复核：本机 npm 元数据为 `@liuli195/build-and-verify` 2.1.0，上游 `https://github.com/liuli195/my-agent-skills` / `plugins/build-and-verify`；实际runner SHA256 `83b536638236ede339b03298f7e5cc73b0f414ca706e20bb467678513a601b08`。`_hash_input`525起glob分支全Git可见文件fnmatch，目录分支Git路径限定；两者最终同样 relative path、`_is_relative_to_project`越界核验和 `_hash_file`流式SHA。27种现存目录文件集已逐项相等，目录缺失时类型标记更保守、Git不可用时不同枚举路径需依实际fallback语义复核；不宣称任何状态下cache key相同。云端最终公开同版本源码复核仍待完成，不把最新不同runtime当本机。尚未执行本源码正式统一60秒结果，推送不重试，生产未启用。
+
 ## 缓存键准备成本与等价目录输入
 
 `cf267fa8ff11abf59feda04fe045f3e0c4da36fe` 原配置，按父端独占窗口用标准库 cProfile 调用既有 Python 验证核心，100 秒诊断截断于 100.387 秒，35 cache-hit、data/docs/test-inventory 三组仍无汇总，profile 文件未落盘；这是失败诊断，不是实际总时长。原日志 `data-management-entry-profile-cf267fa.log`。taskkill128后日志53个已知PID逐个只读核查均absent。没有以60.357或100.387宣称“只差0.36/40.39秒”，也没有改工具链或预算。

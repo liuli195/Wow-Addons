@@ -97,7 +97,7 @@ class ArchiveTests(unittest.TestCase):
         restored = self.restore_archive(archived, self.root / "boundary restored")
         self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in restored["restored"]}, values)
 
-    def test_bounded_archive_with_one_thousand_empty_members_and_restore_preview(self):
+    def test_empty_archive_with_one_thousand_members_and_restore_preview(self):
         self.initialize()
         self.policy["capacity_bytes"] = 2 * 1024 * 1024 * 1024
         self.save_config()
@@ -443,77 +443,9 @@ class ArchiveTests(unittest.TestCase):
                 self.call("restore", "--manifest", str(path), "--destination", str(target), expected=2)
                 self.assertFalse(target.exists())
 
-    def test_long_windows_paths_restore_without_materializing_absolute_tar_members(self):
-        self.initialize()
-        relative = "/".join(["long " + "x" * 70] * 4) + "/native.bin"
-        identity, source = self.source(relative, b"long path original")
-        archived = self.archive(identity)
-        target = self.root / "long restored"
-        plan = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(target))
-        result = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(target), "--approve-hash", plan["plan_hash"])
-        self.assertEqual(Path(result["restored"][0]["path"]).read_bytes(), source.read_bytes())
 
-    def test_deep_path_resolution_checks_ancestors_without_quadratic_rechecks(self):
-        self.initialize()
-        observed = []
-        for depth in (4, 12):
-            identity, source = self.source("/".join(["level " + "x" * 30] * depth) + "/native.bin", b"checked bytes")
-            counter = Path(self.temporary.name) / ("stat-count-%d.json" % depth)
-            setup = ("from pathlib import Path\nimport atexit,json\noriginal=Path.lstat\ncount=0\n"
-                     "def measured(path,*args,**kwargs):\n global count\n count+=1\n return original(path,*args,**kwargs)\n"
-                     "Path.lstat=measured\natexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(json.dumps(count)))")
-            result = self.injected_call(setup, "resolve", "--artifact-id", identity, "--inspect")
-            self.assertEqual(result["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
-            observed.append(json.loads(counter.read_text()))
-        self.assertLessEqual(observed[1] - observed[0], 8 * (12 - 4), observed)
 
-    def test_batch_archive_preview_reuses_its_index_connection(self):
-        self.initialize()
-        counts = []
-        for size in (4, 12):
-            directory = self.root / ("batch-%d" % size)
-            directory.mkdir()
-            for number in range(size):
-                (directory / ("native-%d.json" % number)).write_bytes(b"{}")
-            preview = self.call("legacy-register", "--directory", str(directory), "--role", "native")
-            registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
-                                   "--approve-hash", preview["plan_hash"])
-            arguments = [argument for item in registered["artifacts"]
-                         for argument in ("--artifact-id", item["artifact_id"])]
-            counter = Path(self.temporary.name) / ("connect-count-%d.json" % size)
-            setup = ("import sqlite3,atexit,json\nfrom pathlib import Path\noriginal=sqlite3.connect\ncount=0\n"
-                     "def measured(*args,**kwargs):\n global count\n count+=1\n return original(*args,**kwargs)\n"
-                     "sqlite3.connect=measured\natexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(json.dumps(count)))")
-            archived = self.injected_call(setup, "archive", *arguments)
-            self.assertEqual(len(archived["sources"]), size)
-            counts.append(json.loads(counter.read_text()))
-        self.assertLessEqual(counts[1], counts[0], counts)
 
-    def test_archive_package_and_restored_file_do_not_repeat_owned_path_scans(self):
-        self.initialize()
-        identity, source = self.source("nested/native.json", b"single fresh path check")
-        archived = self.archive(identity)
-        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
-        package = self.root / manifest["parts"][0]["path"]
-        destination = self.root / "restored path checks"
-        restored = destination / source.relative_to(self.root)
-        counter = Path(self.temporary.name) / "physical-path-count.json"
-        setup = ("from pathlib import Path\nimport sys,atexit,json\noriginal=Path.lstat\ncounts={'package':0,'sealed':0}\n"
-                 "def measured(path,*args,**kwargs):\n"
-                 " caller=sys._getframe(1).f_code.co_name\n parent=sys._getframe(2).f_code.co_name\n"
-                 " if caller=='owned_path':\n"
-                 "  if parent=='verify_archive' and str(path)==" + repr(str(package)) + ": counts['package']+=1\n"
-                 "  if parent=='seal_job' and str(path)==" + repr(str(restored)) + ": counts['sealed']+=1\n"
-                 " return original(path,*args,**kwargs)\nPath.lstat=measured\n"
-                 "atexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(json.dumps(counts)))")
-        arguments = ("--archive-id", archived["archive_id"], "--destination", str(destination))
-        preview = self.injected_call(setup, "restore", *arguments)
-        with self.subTest(stage="package"):
-            self.assertEqual(json.loads(counter.read_text())["package"], 1)
-        result = self.injected_call(setup, "restore", *arguments, "--approve-hash", preview["plan_hash"])
-        self.assertEqual(Path(result["restored"][0]["path"]).read_bytes(), source.read_bytes())
-        with self.subTest(stage="sealed"):
-            self.assertEqual(json.loads(counter.read_text())["sealed"], 0)
 
     def test_restore_package_names_reject_windows_aliases_escape_and_nonfiles(self):
         self.initialize()
@@ -628,22 +560,6 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(int(counter.read_text()), 0)
         self.assertEqual(self.call("operation", "--operation-id", preview["operation_id"])["phase"], "reserved")
 
-    def test_approved_restore_reads_its_plan_once_under_the_write_lock(self):
-        self.initialize()
-        identity, source = self.source("approved.json", b"checked original")
-        archived = self.archive(identity)
-        destination = self.root / "single plan restore"
-        arguments = ("--archive-id", archived["archive_id"], "--destination", str(destination))
-        preview = self.call("restore", *arguments)
-        counter = Path(self.temporary.name) / "restore-plan-count.json"
-        setup = ("import json,atexit\nfrom pathlib import Path\noriginal=json.loads\ncount=0\n"
-                 "def measured(*args,**kwargs):\n global count\n result=original(*args,**kwargs)\n"
-                 " if isinstance(result,dict) and result.get('format')==1 and 'archive_id' in result: count+=1\n"
-                 " return result\njson.loads=measured\natexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(str(count)))")
-        result = self.injected_call(setup, "restore", *arguments, "--approve-hash", preview["plan_hash"])
-        self.assertEqual(result["phase"], "sealed")
-        self.assertEqual(Path(result["restored"][0]["path"]).read_bytes(), source.read_bytes())
-        self.assertEqual(int(counter.read_text()), 1)
 
     def test_approved_archive_rechecks_source_after_acquiring_manager_lock(self):
         self.initialize()
