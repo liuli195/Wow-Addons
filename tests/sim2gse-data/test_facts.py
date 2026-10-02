@@ -225,12 +225,33 @@ class FactTests(unittest.TestCase):
         registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
                                "--approve-hash", preview["plan_hash"])
         self.assertEqual(len(registered["artifacts"]), 72)
-        ids = [self.call("extract", "--artifact-id", item["artifact_id"])["fact_id"]
-               for item in registered["artifacts"]]
-        self.call("query", "--limit", "100", expected=2)
+        first = self.call("extract", "--artifact-id", registered["artifacts"][0]["artifact_id"])
+        self.assertTrue(first["changed"])
+        ids = [first["fact_id"]]
+        import io
+        import runpy
+        import sys
+        from contextlib import redirect_stdout, redirect_stderr
+        main = runpy.run_path(str(lifecycle.CLI))["main"]
+        original_argv = sys.argv
+        try:
+            for item in registered["artifacts"][1:]:
+                sys.argv = [str(lifecycle.CLI), "extract", "--config", str(self.config), "--artifact-id", item["artifact_id"]]
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main()
+                self.assertEqual(exit_code, 0, stderr.getvalue())
+                self.assertEqual(stderr.getvalue(), "")
+                extracted = json.loads(stdout.getvalue())
+                self.assertTrue(extracted["changed"])
+                ids.append(extracted["fact_id"])
+        finally:
+            sys.argv = original_argv
+        self.assertEqual(len(set(ids)), 72)
+        self.assertIn("固定字节边界", self.call("query", "--limit", "100", expected=2)["error"])
         self.assertEqual(len(self.call("export", "--limit", "1")["rows"]), 1)
         arguments = [argument for identity in ids for argument in ("--fact-id", identity)]
-        self.call("snapshot", *arguments, expected=2)
+        self.assertIn("固定字节边界", self.call("snapshot", *arguments, expected=2)["error"])
 
     def production_batch(self, program="death_strike", seed=7, dps=100):
         # 按search.py1270—1325的实际记录结构，不加入condition_details或fidelity。

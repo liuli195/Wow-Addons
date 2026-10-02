@@ -150,3 +150,9 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 原生输出仅scene local/selection-reason config-changed，没有cache-hit、duration/checked或结束汇总。配置变更全选38，但实际started/finished数量及每组耗时不能从当前工具capture结果取得；不声称38fresh均运行或0项实际成功，仅无可确认的完成证据。原performance-report仍为15:55:46/4440字节的旧诊断，不当本轮正式报告。正式原日志存仓 `data-management-formal-029a802.log`（仅去行尾空格，Temp原始日志不变）。本轮真实瓶颈仍是全选路径在60内不能结束、完成时序证据受现有工具汇总限制；既有8/12完整组和最慢case证据保留，不据此断言本轮某一case具体慢了多少。
 
 终止后只读解析日志PID+主，共83关联节点，逐个查询83全部absent，机时明确释放；128不单独当终止成功。没有重复重测、删边界、调整worker、正式规格应用、合并/上线或历史数据操作。30–40目标未达，正式60及交付门禁仍未通过，下一步由父端review存量证据后安排。
+
+## 最后单点72事实提取准备复用
+
+准确起点515e2b07，唯一修改test_output_byte_bound_refuses_large_query_and_snapshot。72真实文件、14KB feedback、公开批登记全部保留；首个extract仍真子进程并changedTrue，局部标准库runpy加载公开main一次，余71次逐次设置argv、重定向stdout/stderr、调用同一公开parser/main。各次返回0、stderr为空、changedTrue；finally恢复argv，最后72fact IDs唯一。每次main仍走真实配置/SHA/锁/容量/独立SQLite事务，不调用私有handler或mock预算/数据。query/export/snapshot仍原真子进程，query和snapshot拒绝明确error含固定字节边界，不让其他错误冒充边界通过。真实CLI79→8，明确减少71重复启动/PID/进程退出cleanup交叉，不声称等价；不增加生产batch接口或共享fake框架，1000成员用例不改。
+
+仅该用例before/after各一次，原生 `-B -m pytest -v tests/sim2gse-data/test_facts.py -k output_byte_bound --durations=5`，既有包装器各30秒上限。before 1 passed（19 deselected）、call14.48/pytest14.50/wall14.861秒，after同样pass、call4.68/pytest4.72/wall5.084秒；wall少9.777秒，不能直接视为整仓同幅收益。两个代表owned23652/37916随后只读查询均不存在，机时释放。本轮生产及并发配置零改动，无whole/121组重测，正式60仍未通过，完成该项后不继续拆覆盖，等待远端review与最后正式机时放行。

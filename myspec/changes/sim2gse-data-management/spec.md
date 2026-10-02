@@ -55,7 +55,9 @@ Status: ready-for-agent
 
 ## Testing Decisions
 
-事实准备复用仅限6类型/8完成证据/5路径轴组：各组公开legacy-register一次预览一次批准，19次extract及全部原compare断言逐项保留，减少32次准备CLI；72事实字节边界及Safety未知引用不改。过期purge复用isolated_plan原计划，现有injected_call只替换time.time：首次批准及77故障在expires-1，此后全部相关CLI在expires+1，显式断言过期错误、续批created和300秒期限；reserved/published、保护变更、文件重现、最终结果保持，去两次2.1秒等待及重复preview，不引入新fakeclock框架，真实心跳1.05秒仍保留。
+最新单点72事实提取准备：72真实文件及公开batch register保留，首个extract真子进程，余71用局部标准库runpy加载公开main一次并逐次sys.argv/stdout/stderr调用同一parser/main；每次真实配置/SHA/锁/容量/独立SQLite事务不改，断言exit0/changedTrue及72唯一fact IDs。query/export/snapshot仍真子进程，两处拒绝明确固定字节边界。真实CLI79→8，明确减少71重复启动/PID退出cleanup交叉，不声称与进程隔离覆盖等价；无生产batch接口/共享框架，1000成员边界不改。
+
+事实准备复用仅限6类型/8完成证据/5路径轴组：各组公开legacy-register一次预览一次批准，19次extract及全部原compare断言逐项保留，减少32次准备CLI；72事实真实字节边界及Safety未知引用不改，72提取准备仅依前述最新单点授权。过期purge复用isolated_plan原计划，现有injected_call只替换time.time：首次批准及77故障在expires-1，此后全部相关CLI在expires+1，显式断言过期错误、续批created和300秒期限；reserved/published、保护变更、文件重现、最终结果保持，去两次2.1秒等待及重复preview，不引入新fakeclock框架，真实心跳1.05秒仍保留。
 
 隔离/恢复阶段夹具复用：每个reserved/writing/published/sealed/rename阶段分别fresh登记一个来源，先做quarantine注错/恢复/幂等，再对该已隔离对象做recover-quarantine同阶段注错/恢复/幂等；五阶段共五个不同ID，十个阶段×命令故障组合、rename后77和原字节全部保留。准备CLI72→52、setup jobs15→10，减少每阶段第二来源及重复正常隔离准备；这是准备结构变化，非删除故障覆盖，生产custody/预算逻辑不改。
 
