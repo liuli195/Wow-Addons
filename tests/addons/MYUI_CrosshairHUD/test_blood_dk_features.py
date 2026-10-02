@@ -433,3 +433,26 @@ result=table.concat(messages,"\n")
 assert(result:find("实际读取层数：受限或缺失",1,true))
 assert(result:find("圆形进度：受限或缺失",1,true))
 ''')
+
+
+def test_fixed_blood_probe_uses_real_render_path_and_restores_live_buff():
+    run_scenario(r'''
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+aura={applications=secret};Tick()
+SlashCmdList.MYUICHH("bloodtest 16")
+assert(bar.shown and bar.value==16,"fixed probe must bypass restricted live stacks")
+Near(bar.minimum,0);Near(bar.maximum,150)
+Tick();assert(bar.value==16,"polling must retain the calibration value")
+SlashCmdList.MYUICHH("bloodtest 75");assert(bar.value==75)
+SlashCmdList.MYUICHH("bloodtest 0");assert(bar.value==0)
+SlashCmdList.MYUICHH("bloodtest 150");assert(bar.value==150)
+SlashCmdList.MYUICHH("bloodtest 999");assert(bar.value==150,"invalid probe must not affect rendering")
+rows["凝固之血"]["启用"].setValue(false);assert(not bar.shown)
+rows["凝固之血"]["启用"].setValue(true)
+SlashCmdList.MYUICHH("bloodtest off");assert(rawequal(bar.value,secret))
+aura=nil;Tick();assert(not bar.shown)
+SlashCmdList.MYUICHH("bloodtest 16");assert(bar.shown and bar.value==16)
+SlashCmdList.MYUICHH("bloodtest off");assert(not bar.shown)
+Near(rows["凝固之血"]["满条层数"].getValue(),150)
+''')

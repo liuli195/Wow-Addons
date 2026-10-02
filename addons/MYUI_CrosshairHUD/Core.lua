@@ -374,6 +374,13 @@ local function BuildState()
     state.coagulatedBlood.stacks = last.bloodStacks
     state.coagulatedBlood.hasStacks = last.hasBloodStacks == true
     state.coagulatedBlood.maxStacks = blood.maxStacks
+    -- 临时校准走同一绘制入口，不改存档，也不尝试读取受限层数。
+    if type(Core.bloodProbeStacks) == "number" then
+        state.coagulatedBlood.visible = blood.enabled ~= false
+        state.coagulatedBlood.stacks = Core.bloodProbeStacks
+        state.coagulatedBlood.hasStacks = true
+        state.coagulatedBlood.maxStacks = 150
+    end
     local marker = elements.deathStrike
     state.deathStrike = { visible = marker.enabled ~= false and last.costMarker ~= nil,
         points = last.costMarker, thickness = marker.thickness,
@@ -812,6 +819,25 @@ end
 _G.SLASH_MYUICHH1 = "/chh"
 SlashCmdList["MYUICHH"] = function(msg)
     msg = (msg or ""):lower():gsub("%s+", "")
+    if msg == "bloodtestoff" then
+        Core.bloodProbeStacks = nil
+        Refresh()
+        print("凝固之血显示测试已关闭，恢复真实增益。")
+        return
+    end
+    local probe = msg:match("^bloodtest(%d+)$")
+    if probe then
+        local value = tonumber(probe)
+        if value == 0 or value == 16 or value == 75 or value == 150 then
+            Core.bloodProbeStacks = value
+            Refresh()
+            print("凝固之血显示测试：固定" .. value .. "层／150量程；不是实时增益。"
+                .. " 输入 /chh bloodtest off 退出，重载也会退出。")
+        else
+            print("显示测试只接受0、16、75、150，不改变真实设置。")
+        end
+        return
+    end
     if msg == "demo" then
         Core.demo = not Core.demo
         demoFill = 0
