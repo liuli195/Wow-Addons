@@ -62,20 +62,16 @@ class MaintenanceTests(unittest.TestCase):
         run = self.call("begin", "--request-id", "physical-producer", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(3 * 1024 * 1024))
         payload = Path(run["path"]) / "producer.bin"
         payload.write_bytes(b"x" * (3 * 1024 * 1024))
-        setup = ("import os,shutil\nfrom pathlib import Path\nfrom types import SimpleNamespace\noriginal=os.scandir\nclosed=0\n"
-                 "class ResizeBoundary:\n"
-                 " def __init__(self,p): self.p=Path(p); self.inner=original(p)\n"
-                 " def __iter__(self): return iter(self.inner)\n"
-                 " def __next__(self): return next(self.inner)\n"
-                 " def __enter__(self): return self\n"
-                 " def __exit__(self,*a): self.close()\n"
-                 " def close(self):\n  global closed\n  self.inner.close()\n"
-                 "  if self.p==Path(" + repr(run["path"]) + "):\n"
-                 "   closed+=1\n"
-                 "   if closed==3: Path(" + repr(str(payload)) + ").unlink()\n"
-                 "os.scandir=ResizeBoundary\n"
-                 "def usage(path):\n p=Path(" + repr(str(payload)) + ")\n return SimpleNamespace(free=4*1024*1024-(p.stat().st_size if p.exists() else 0))\nshutil.disk_usage=usage\n")
+        marker = Path(self.temporary.name) / "producer-truncated.json"
+        setup = ("import shutil,json\nfrom pathlib import Path\nfrom types import SimpleNamespace\n"
+                 "def usage(path):\n p=Path(" + repr(str(payload)) + ")\n"
+                 " if p.exists():\n"
+                 "  before=p.stat().st_size\n  p.unlink()\n"
+                 "  Path(" + repr(str(marker)) + ").write_text(json.dumps({'before':before,'after':0}))\n"
+                 " return SimpleNamespace(free=4*1024*1024-(p.stat().st_size if p.exists() else 0))\nshutil.disk_usage=usage\n")
         refused = self.injected_call(setup, "begin", "--request-id", "physical-competitor", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(2 * 1024 * 1024), expected=2)
+        self.assertFalse(payload.exists(), "producer truncation must actually occur")
+        self.assertEqual(json.loads(marker.read_text()), {"before": 3 * 1024 * 1024, "after": 0})
         self.assertIn("可用空间不足", refused["error"])
         self.call("lease", "--run-id", run["run_id"], "--token", run["token"], "--action", "release")
 
