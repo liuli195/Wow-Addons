@@ -193,13 +193,18 @@ local function TrackedBloodAura()
             local frames = viewer:GetItemFrames()
             for _, item in ipairs(frames or {}) do
                 local info = item.GetCooldownInfo and item:GetCooldownInfo()
-                if info and (MaybeNumber(info.spellID) == 463730
-                    or MaybeNumber(info.overrideSpellID) == 463730) then
+                local cached = item.auraDataCached
+                local matches = info and (MaybeNumber(info.spellID) == 463730
+                    or MaybeNumber(info.overrideSpellID) == 463730)
+                if type(cached) == "table" then
+                    matches = matches or MaybeNumber(cached.spellId) == 463730
+                end
+                if matches then
                     local unit = item.auraDataUnit
                     local active = item.IsActive and MaybeBoolean(item:IsActive())
                     if not Unreadable(unit) and (unit == nil or unit == "player")
-                        and active ~= false and type(item.auraDataCached) == "table" then
-                        return item.auraDataCached
+                        and active ~= false and type(cached) == "table" then
+                        return cached
                     end
                 end
             end

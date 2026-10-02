@@ -267,6 +267,10 @@ assert(not fill.shown and not Layer("coagulated_blood_arc_shadow.png").shown)
 item.auraDataCached={applications=75}
 function item:GetCooldownInfo() return {spellID=999} end
 Tick();assert(not fill.shown)
+item.auraDataCached={spellId=463730,applications=75}
+Tick();assert(fill.shown, "match actual buff identity, not only monitor item identity")
+item.auraDataCached={spellId=secret,applications=75}
+Tick();assert(not fill.shown, "do not compare restricted spell identity")
 ''')
 
 
