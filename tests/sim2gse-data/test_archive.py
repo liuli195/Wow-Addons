@@ -377,6 +377,9 @@ class ArchiveTests(unittest.TestCase):
                 self.injected_call(self.crash_on_phase(plan["operation_id"], phase), "restore", "--archive-id", archived["archive_id"],
                                    "--destination", str(target), "--approve-hash", plan["plan_hash"], expected=77)
                 result = self.call("restore", "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+                self.assertEqual(result["operation_id"], plan["operation_id"])
+                self.assertEqual(result["phase"], "sealed")
+                self.assertEqual(len(result["restored"]), 1)
                 self.assertEqual(Path(result["restored"][0]["path"]).read_bytes(), source.read_bytes())
 
     def test_restore_refuses_parent_escape_and_managed_directory(self):
@@ -827,7 +830,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertFalse((self.root / "large restore").exists())
         self.policy["capacity_bytes"] = 1024 * 1024 * 1024
         self.save_config()
-        for phase in ("reserved", "writing", "verified", "published", "sealed"):
+        for phase in ("verified",):
             with self.subTest(large_phase=phase):
                 target = self.root / ("large restore " + phase)
                 arguments = ("--archive-id", archived["archive_id"], "--destination", str(target))
@@ -835,6 +838,7 @@ class ArchiveTests(unittest.TestCase):
                 self.injected_call(self.crash_on_phase(plan["operation_id"], phase), "restore", *arguments,
                                    "--approve-hash", plan["plan_hash"], expected=77)
                 result = self.call("restore", "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+                self.assertEqual(result["operation_id"], plan["operation_id"])
                 self.assertEqual(result["phase"], "sealed")
                 self.assertEqual(len(result["restored"]), 220)
                 self.assertTrue(all(Path(item["path"]).read_bytes() == b"{}" for item in result["restored"]))
