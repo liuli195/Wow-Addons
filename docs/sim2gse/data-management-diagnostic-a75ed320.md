@@ -128,3 +128,9 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 8轮原文 `created: 8/8 workers; 8 workers [121 items]`，gw0–gw7均出现；121 passed/79 subtests passed，pytest73.52秒、wall73.960秒、exit0。12轮原文 `created: 12/12 workers; 12 workers [121 items]`，gw0–gw11均出现；同样121+79 passed，pytest60.49秒、wall60.819秒、exit0。两轮均WorkStealingScheduling，没有retry/worker crash/重建提示，正常退出未调用taskkill，已知owned28132/41928随后查询均不存在。旧65.154秒来自夹具复用前源码，不作本轮基线。
 
 12轮wall少13.141秒（17.77%），虽关键case均变慢：深路径36.60→44.21秒、1000空成员33.95→39.97秒、事实字节边界20.96→25.64秒；整体并行排队缩短仍改善wall，不能将单case下降或组耗时相加作为目标。设备20逻辑CPU、31.76GiB物理内存，计划时可用6.67GiB；12运行中一次只读快照可用7403372544字节（约6.90GiB）/load78%，非峰值或无争用证明。仅修改verify.sim2gse-data.pytestXdistWorkers为12，外3、原项目8、全部覆盖和timeout不改。配置变更会使相关成功缓存失效，下一次正式整仓必须如实区分fresh/hit，不保证该单组60.819能使正式端到端低于60。
+
+两份入库日志只去行尾空格，原Temp日志保留。首次保存时差异检查因原生行尾空格失败而PowerShell仍继续提交，已在下一提交a1f622b只修日志空白，重新差异检查通过；没有更改用例记录或测试结果。
+
+满足12全组通过且明显更快的条件后，严格只执行一次正式统一整仓：干净a1f622b25ec7428c638cec4851185721c66b2a77，原固定base、outer3/product8/data12、正式60硬预算，原生PYTEST_ADDOPTS=`-v --durations=5`。仍超时：poll主32440=None，收尾wall60.750秒，owned最终exit1，包装器exit124，taskkill128（不作为成功判断）。日志scene local/config-changed，没有cache-hit或完整check汇总；配置变更全选38，不代表38均已执行或结束，fresh完成范围不可得。原performance-report仍是15:55:46的111.81秒诊断，未更新，不当新正式结果。
+
+终止后只读解析日志所有PID及主ID，共79个（含日志父子关联节点），逐个查询79均absent；本轮已知节点退出，机时已释放，不继续重测/优化/杀未知进程。完整正式日志存仓 `data-management-formal12-a1f622b.log`，包含原taskkill stdout/stderr字节证据。12单组wall改善已证实而正式60未通过，30–40目标未达，候选票据及交付门禁仍开放，下一步等待父端准确远端review。
