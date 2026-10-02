@@ -18,6 +18,8 @@
 
 ## Comments（讨论）
 
+共包实现固定af70d9ea533a818b6d7ff2926f914f0f90185f21：原115加6共121项发现0.03秒；归档专项37项53子测试33.14秒通过；两统一build passed墙钟14.624秒。原220来源同根大清单五阶段方法不改，无cProfile外层60秒内完整通过：体57.324334秒、总墙钟57.719696秒，五阶段均77注错→0恢复封口→220原字节校验，准备含两次容量拒绝且索引/临时区不写断言通过。单例余量2.28秒，不等于整库通过；下一步只一次干净固定全局基线正式60秒验证，分开报告fresh与cache，不调预算/减覆盖。完整证据见docs/sim2gse/data-management-performance-06.md。
+
 2026-10-02父端转交用户明确“确认”（Sentinel_953e187a51388191b345fba88449133f；方案receipt_ba45e7180574819194ac98e7cfdd7369）：从7ccf833仅实施create_archive新输出的小来源共包。来源顺序、现有segment大小/offset/name不变，不切片填缝；单包载荷≤part_bytes/member≤1000，总包≤1000，空源保留一个0字节member，最多一个输出包和当前源流。USTAR/gzip关闭后flush/fsync原始流，再close/rename/hash/登记清单；异常保留私有tmp及已完包、预留和阶段。格式1读取器、CLI/schema、安全身份/SHA/锁及阶段协议不改；预算保持旧N上界。旧sealed不重写、verified/published核验原产品，reserved/writing保留残留后重建。保留115项及220来源同根五阶段全部原字节断言；布局自然减少包artifact，不人为删覆盖或调预算。先公开CLI红绿、补空/边界/大源/成员上限/后续member失败/旧布局与旧阶段兼容/多包及篡改回归，再原五阶段及整库60秒正式验证。此确认不授权另一个仓库提权；不推送、上线、定时或操作真实历史。
 
 389d5c91后按云端明确审查决定仅抽取owned_path纯词法检查为relative_path，在verify_archive分包managed_file及seal_job.restore checked_path两个紧邻双核验处复用；两个完整新鲜物理检查仍执行，read_location/missing/fallback与product_manifest不变，无路径缓存。红灯两个子断言1.53秒；新增4项26子测试通过15.24秒；18个非法清单批量公开登记后归档专项31项48子测试18.00秒通过（外层30秒上限墙钟18.315）。完整发现115项0.04秒（原111加4），原五阶段代码不变；两统一构建passed墙钟14.305秒。同口径60秒cProfile：archive stat82388→79968，reserved恢复68412→61152；恢复9.756→7.528秒，但预览有变慢，不能保证单次墙钟改善。修复后仅reserved/writing两阶段及220字节断言完成，verified预览截止，60.322秒终止自有树，不冒称原五阶段/全仓门禁通过。详细证据见docs/sim2gse/data-management-performance-06.md；正式规格、生产和真实历史不变，未推送。
