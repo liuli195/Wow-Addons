@@ -309,6 +309,120 @@ class ArchiveTests(unittest.TestCase):
             counts.append(json.loads(counter.read_text()))
         self.assertLessEqual(counts[1], counts[0], counts)
 
+    def test_archive_package_and_restored_file_do_not_repeat_owned_path_scans(self):
+        self.initialize()
+        identity, source = self.source("nested/native.json", b"single fresh path check")
+        archived = self.archive(identity)
+        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        package = self.root / manifest["parts"][0]["path"]
+        destination = self.root / "restored path checks"
+        restored = destination / source.relative_to(self.root)
+        counter = Path(self.temporary.name) / "physical-path-count.json"
+        setup = ("from pathlib import Path\nimport sys,atexit,json\noriginal=Path.lstat\ncounts={'package':0,'sealed':0}\n"
+                 "def measured(path,*args,**kwargs):\n"
+                 " caller=sys._getframe(1).f_code.co_name\n parent=sys._getframe(2).f_code.co_name\n"
+                 " if caller=='owned_path':\n"
+                 "  if parent=='verify_archive' and str(path)==" + repr(str(package)) + ": counts['package']+=1\n"
+                 "  if parent=='seal_job' and str(path)==" + repr(str(restored)) + ": counts['sealed']+=1\n"
+                 " return original(path,*args,**kwargs)\nPath.lstat=measured\n"
+                 "atexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(json.dumps(counts)))")
+        arguments = ("--archive-id", archived["archive_id"], "--destination", str(destination))
+        preview = self.injected_call(setup, "restore", *arguments)
+        with self.subTest(stage="package"):
+            self.assertEqual(json.loads(counter.read_text())["package"], 1)
+        result = self.injected_call(setup, "restore", *arguments, "--approve-hash", preview["plan_hash"])
+        self.assertEqual(Path(result["restored"][0]["path"]).read_bytes(), source.read_bytes())
+        with self.subTest(stage="sealed"):
+            self.assertEqual(json.loads(counter.read_text())["sealed"], 0)
+
+    def test_restore_package_names_reject_windows_aliases_escape_and_nonfiles(self):
+        self.initialize()
+        identity, _ = self.source(contents=b"safe original bytes")
+        archived = self.archive(identity)
+        original = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        directory = self.root / "package-directory"
+        directory.mkdir()
+        invalid = ("", "/absolute", "//server/share", "C:/drive", "../escape", "a/../b", "a\\b",
+                   "a//b", "a/./b", "a:b", "NUL", "COM1.json", "LPT9.txt", "trailing.", "trailing ",
+                   "nul\x00byte", directory.name, "missing-package.tar.gz")
+        inputs = self.root / "invalid manifests"
+        inputs.mkdir()
+        for number, relative in enumerate(invalid):
+            manifest = json.loads(json.dumps(original))
+            manifest["parts"][0]["path"] = relative
+            (inputs / ("invalid-package-%d.json" % number)).write_bytes(json.dumps(manifest).encode())
+        plan = self.call("legacy-register", "--directory", str(inputs), "--role", "native")
+        registered = self.call("legacy-register", "--directory", str(inputs), "--role", "native",
+                               "--approve-hash", plan["plan_hash"])
+        self.assertEqual(len(registered["artifacts"]), len(invalid))
+        for number, relative in enumerate(invalid):
+            with self.subTest(relative=relative):
+                path = inputs / ("invalid-package-%d.json" % number)
+                target = self.root / ("invalid-package-target-%d" % number)
+                self.call("restore", "--manifest", str(path), "--destination", str(target), expected=2)
+                self.assertFalse(target.exists())
+
+    def test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries(self):
+        self.initialize()
+        identity, source = self.source("nested/native.json", b"never follow a changed path")
+        archived = self.archive(identity)
+        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        package = self.root / manifest["parts"][0]["path"]
+        for scope in ("package", "sealed"):
+            for part in ("parent", "leaf"):
+                with self.subTest(scope=scope, part=part):
+                    target = self.root / ("reparse-" + scope + "-" + part)
+                    restored = target / source.relative_to(self.root)
+                    checked = package if scope == "package" else restored
+                    checkpoint = checked.parent if part == "parent" else checked
+                    marker = Path(self.temporary.name) / ("reparse-" + scope + "-" + part + ".json")
+                    setup = ("from pathlib import Path\nimport sys,json\noriginal=Path.lstat\n"
+                             "class Reparse:\n"
+                             " def __init__(self,info): self.info=info; self.st_file_attributes=getattr(info,'st_file_attributes',0)|0x400\n"
+                             " def __getattr__(self,name): return getattr(self.info,name)\n"
+                             "def measured(path,*args,**kwargs):\n"
+                             " info=original(path,*args,**kwargs)\n caller=sys._getframe(1)\n parent=sys._getframe(2)\n"
+                             " names=[]\n frame=caller\n while frame is not None:\n  names.append(frame.f_code.co_name); frame=frame.f_back\n"
+                             " scope=" + repr(scope) + "\n"
+                             " boundary=caller.f_code.co_name=='checked_path' and ((scope=='package' and parent.f_code.co_name=='managed_file' and 'verify_archive' in names) or (scope=='sealed' and parent.f_code.co_name=='seal_job'))\n"
+                             " if boundary and str(path)==" + repr(str(checkpoint)) + ":\n"
+                             "  Path(" + repr(str(marker)) + ").write_text(json.dumps({'reached':True}))\n  return Reparse(info)\n"
+                             " return info\nPath.lstat=measured")
+                    arguments = ("--archive-id", archived["archive_id"], "--destination", str(target))
+                    if scope == "package":
+                        self.injected_call(setup, "restore", *arguments, expected=2)
+                        self.assertFalse(target.exists())
+                    else:
+                        plan = self.call("restore", *arguments)
+                        self.injected_call(setup, "restore", *arguments, "--approve-hash", plan["plan_hash"], expected=2)
+                        self.assertEqual(self.call("operation", "--operation-id", plan["operation_id"])["phase"], "published")
+                        self.assertEqual(restored.read_bytes(), source.read_bytes())
+                    self.assertTrue(json.loads(marker.read_text())["reached"])
+                    self.assertEqual(source.read_bytes(), b"never follow a changed path")
+
+    def test_restore_sealing_rejects_missing_or_directory_leaf_after_publication(self):
+        self.initialize()
+        identity, source = self.source("nested/native.json", b"sealed original bytes")
+        archived = self.archive(identity)
+        for kind in ("missing", "directory"):
+            with self.subTest(kind=kind):
+                target = self.root / ("seal-" + kind)
+                restored = target / source.relative_to(self.root)
+                arguments = ("--archive-id", archived["archive_id"], "--destination", str(target))
+                plan = self.call("restore", *arguments)
+                marker = Path(self.temporary.name) / ("seal-" + kind + ".json")
+                setup = ("from pathlib import Path\nimport sys\noriginal=Path.lstat\nfired=False\n"
+                         "def measured(path,*args,**kwargs):\n global fired\n"
+                         " if not fired and sys._getframe(1).f_code.co_name=='checked_path' and sys._getframe(2).f_code.co_name=='seal_job' and str(path)==" + repr(str(restored)) + ":\n"
+                         "  fired=True\n  path.unlink()\n"
+                         + ("  path.mkdir()\n" if kind == "directory" else "")
+                         + "  Path(" + repr(str(marker)) + ").write_text('reached')\n"
+                         " return original(path,*args,**kwargs)\nPath.lstat=measured")
+                self.injected_call(setup, "restore", *arguments, "--approve-hash", plan["plan_hash"], expected=2)
+                self.assertEqual(marker.read_text(), "reached")
+                self.assertEqual(self.call("operation", "--operation-id", plan["operation_id"])["phase"], "published")
+                self.assertEqual(source.read_bytes(), b"sealed original bytes")
+
     def test_archive_preview_does_not_decode_unrelated_pending_operation_plans(self):
         self.initialize()
         pending, _ = self.source("pending.json", b"pending bytes")

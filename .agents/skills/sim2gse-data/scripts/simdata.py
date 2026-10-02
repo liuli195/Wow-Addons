@@ -1344,8 +1344,8 @@ def lifecycle_tables(db):
     db.execute("CREATE TABLE IF NOT EXISTS locations(artifact_id TEXT REFERENCES artifacts(id), path TEXT UNIQUE, identity TEXT NOT NULL, PRIMARY KEY(artifact_id,path))")
 
 
-def owned_path(root, relative):
-    """允许新目录链，但逐层检查现有祖先；拒绝路径别名及链接。"""
+def relative_path(root, relative):
+    """仅校验相对名字并拼接；调用者仍须立即核验文件系统路径。"""
     if not isinstance(relative, str) or not relative or "\x00" in relative or "\\" in relative or ":" in relative:
         raise DataError("受管相对路径无效")
     parts = relative.split("/")
@@ -1354,7 +1354,12 @@ def owned_path(root, relative):
     devices = {"CON", "PRN", "AUX", "NUL", *("COM" + str(i) for i in range(1, 10)), *("LPT" + str(i) for i in range(1, 10))}
     if any(part.split(".")[0].upper() in devices for part in parts):
         raise DataError("相对路径含Windows设备名")
-    path = root.joinpath(*parts)
+    return root.joinpath(*parts)
+
+
+def owned_path(root, relative):
+    """允许新目录链，但逐层检查现有祖先；拒绝路径别名及链接。"""
+    path = relative_path(root, relative)
     for parent in (*reversed(path.parents), path):
         try:
             info = parent.lstat()
@@ -1646,7 +1651,7 @@ def verify_archive(root, manifest, data=None, *, package_root=None):
                 pass
     names = set()
     for part in manifest["parts"]:
-        package = checked_path(package_root / Path(part["path"]).name) if package_root else managed_file(root, str(owned_path(root, part["path"])))
+        package = checked_path(package_root / Path(part["path"]).name) if package_root else managed_file(root, str(relative_path(root, part["path"])))
         current = file_manifest(package)
         if current["sha256"] != part["sha256"] or current["size"] != part["size"]:
             raise DataError("归档包摘要或大小不匹配")
@@ -1913,7 +1918,7 @@ def seal_job(root, db, plan):
             db.execute("INSERT OR IGNORE INTO refs VALUES (?,?,?)", ("archive:" + plan["operation_id"], identity, "durable"))
     elif plan["kind"] == "restore":
         for source in plan["manifest"]["sources"]:
-            path = checked_path(owned_path(destination, source["path"]))
+            path = checked_path(relative_path(destination, source["path"]))
             image = file_manifest(path, allow_sqlite=source["role"] == "sqlite-backup")
             if image["sha256"] != source["sha256"] or image["size"] != source["size"]:
                 raise DataError("发布后恢复原SHA不一致")
