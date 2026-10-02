@@ -197,6 +197,7 @@ function Elements.Create()
     fill:SetTexture(MEDIA .. "coagulated_blood_fill.png", nil, nil, "TRILINEAR")
     bar:SetStatusBarTexture(fill)
     bar:SetRenderMode(_G.Enum.StatusBarRenderMode.Radial)
+    fill:SetAllPoints(bar)
     fill:SetRadialProgressBarStartOffset(7 / 360)
     fill:SetRadialProgressBarEndOffset(60 / 360)
     fill:SetRadialProgressBarReverse(false)
@@ -307,7 +308,11 @@ local function ApplyFillable(part, st)
     if showFill then
         pcall(function()
             local fc = st.fillColor
-            part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+            if part.bar then
+                part.bar:SetStatusBarColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+            else
+                part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+            end
         end)
         -- rotation 可能是秘密值：只能原样交给 setter
         if part.bar then

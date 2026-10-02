@@ -199,31 +199,54 @@ local function BloodInfoMatches(info)
     return false
 end
 
+local function UniqueBloodBinding(info)
+    if type(info) ~= "table" then return false end
+    local current = MaybeNumber(info.linkedSpellID)
+    if type(current) == "number" then return current == 463730 end
+    local found = false
+    if type(info.linkedSpellIDs) == "table" then
+        for _, id in ipairs(info.linkedSpellIDs) do
+            local readable = MaybeNumber(id)
+            if type(readable) ~= "number" or readable ~= 463730 then return false end
+            found = true
+        end
+    end
+    return found or BloodInfoMatches(info)
+end
+
+local function BloodAuraForItem(item)
+    local cached = item.auraDataCached
+    if Unreadable(cached) or type(cached) ~= "table" then return end
+    local unit = item.auraDataUnit
+    local active = item.IsActive and MaybeBoolean(item:IsActive())
+    if Unreadable(unit) or unit ~= "player" or active == false then return end
+    local actual = MaybeNumber(cached.spellId)
+    if type(actual) == "number" then
+        if actual ~= 463730 then return end
+    else
+        local info = item.GetCooldownInfo and item:GetCooldownInfo()
+        local api = _G.C_CooldownViewer
+        if api and api.GetCooldownViewerCooldownInfo and item.GetCooldownID then
+            local id = MaybeNumber(item:GetCooldownID())
+            if type(id) == "number" then
+                info = api.GetCooldownViewerCooldownInfo(id) or info
+            end
+        end
+        if not UniqueBloodBinding(info) then return end
+    end
+    -- 字段访问同样在逐条目的异常保护内；返回自己的表，不泄漏受限缓存表。
+    return { applications = cached.applications }
+end
+
 local function TrackedBloodAura()
     for _, name in ipairs({ "BuffIconCooldownViewer", "BuffBarCooldownViewer" }) do
         local viewer = _G[name]
         if viewer and viewer.GetItemFrames then
-            for _, item in ipairs(viewer:GetItemFrames() or {}) do
-                local info = item.GetCooldownInfo and item:GetCooldownInfo()
-                local matches = BloodInfoMatches(info)
-                local api = _G.C_CooldownViewer
-                if not matches and api and api.GetCooldownViewerCooldownInfo and item.GetCooldownID then
-                    local id = MaybeNumber(item:GetCooldownID())
-                    if type(id) == "number" then
-                        matches = BloodInfoMatches(api.GetCooldownViewerCooldownInfo(id))
-                    end
-                end
-                local cached = item.auraDataCached
-                if type(cached) == "table" then
-                    matches = matches or MaybeNumber(cached.spellId) == 463730
-                end
-                if matches then
-                    local unit = item.auraDataUnit
-                    local active = item.IsActive and MaybeBoolean(item:IsActive())
-                    if not Unreadable(unit) and unit == "player"
-                        and active ~= false and type(cached) == "table" then
-                        return cached
-                    end
+            local ok, frames = pcall(viewer.GetItemFrames, viewer)
+            if ok and type(frames) == "table" then
+                for _, item in ipairs(frames) do
+                    local readable, aura = pcall(BloodAuraForItem, item)
+                    if readable and type(aura) == "table" then return aura end
                 end
             end
         end
@@ -244,16 +267,24 @@ end
 local function UpdateBloodAura()
     last.bloodPresent, last.bloodStacks, last.hasBloodStacks = false, nil, false
     if Config.Get().elements.coagulatedBlood.enabled == false then return end
+    ---@type boolean, table|nil
     local ok, aura = pcall(TrackedBloodAura)
     if not ok or type(aura) ~= "table" then
         local api = _G.C_UnitAuras
         if not (api and api.GetPlayerAuraBySpellID) then return end
-        ok, aura = pcall(api.GetPlayerAuraBySpellID, 463730)
+        ok, aura = pcall(function()
+            local direct = api.GetPlayerAuraBySpellID(463730)
+            if Unreadable(direct) or type(direct) ~= "table" then return end
+            return { applications = direct.applications }
+        end)
     end
     if not ok or Unreadable(aura) or type(aura) ~= "table" then return end
     last.bloodPresent = true
-    last.bloodStacks = aura.applications
-    last.hasBloodStacks = HasStackValue(aura.applications)
+    local readable, stacks = pcall(function() return aura.applications end)
+    if readable then
+        last.bloodStacks = stacks
+        last.hasBloodStacks = HasStackValue(stacks)
+    end
 end
 
 local function UpdateDeathStrike()

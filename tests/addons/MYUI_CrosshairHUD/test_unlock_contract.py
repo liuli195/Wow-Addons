@@ -52,6 +52,7 @@ local frame
 function CreateFrame()
     local f = {}
     function f:SetStatusBarTexture(t) self.texture=t end
+    function f:SetStatusBarColor(...) self.texture:SetVertexColor(...) end
     function f:SetRenderMode(v) self.renderMode=v end
     function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
     function f:SetValue(v) self.value=v end

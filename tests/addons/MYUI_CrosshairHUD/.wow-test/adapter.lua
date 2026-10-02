@@ -103,6 +103,7 @@ return function(ctx)
 
     local function extend(frame)
         function frame:SetStatusBarTexture(t) self.texture=t end
+        function frame:SetStatusBarColor(...) self.texture:SetVertexColor(...) end
         function frame:SetRenderMode(v) self.renderMode=v end
         function frame:SetAllPoints(...) self.allPoints=true end
         function frame:SetSize(w, h) self.width, self.height = w, h end

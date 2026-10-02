@@ -81,6 +81,7 @@ end
 function CreateFrame(kind)
     local f = { events={},scripts={},kind=kind }
     function f:SetStatusBarTexture(t) self.texture=t end
+    function f:SetStatusBarColor(...) self.texture:SetVertexColor(...) end
     function f:GetStatusBarTexture() return self.texture end
     function f:SetRenderMode(v) self.mode=v end
     function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
@@ -366,4 +367,29 @@ local original=bar.SetValue
 function bar:SetValue() error("engine rejected value") end
 aura={applications=secret};Tick();assert(not bar.shown)
 bar.SetValue=original;Tick();assert(bar.shown and rawequal(bar.value,secret))
+''')
+
+
+def test_blood_monitor_skips_wrong_ambiguous_and_broken_cache_items():
+    run_scenario(r'''
+aura=nil
+local wrong={auraDataUnit="player",auraDataCached={spellId=999,applications=75}}
+function wrong:GetCooldownInfo() return {spellID=49998,linkedSpellIDs={463730}} end
+local broken={auraDataUnit="player"}
+function broken:GetCooldownInfo() error("stale item") end
+local good={auraDataUnit="player",auraDataCached={spellId=463730,applications=secret}}
+function good:GetCooldownInfo() return {spellID=49998,linkedSpellIDs={463730,999}} end
+local entries={wrong}
+BuffIconCooldownViewer={GetItemFrames=function() return entries end}
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+Tick();assert(not bar.shown,"explicit different buff must not match linked metadata")
+entries={broken,good};Tick()
+assert(bar.shown and rawequal(bar.value,secret),"bad cache must not stop later valid items")
+good.auraDataCached={spellId=secret,applications=secret};entries={good};Tick()
+assert(not bar.shown,"ambiguous linked buffs must not impersonate coagulated blood")
+function good:GetCooldownInfo() return {spellID=49998,linkedSpellIDs={463730}} end
+Tick();assert(bar.shown and rawequal(bar.value,secret))
+good.auraDataCached=setmetatable({}, {__index=function() error("restricted table access") end})
+Tick();assert(not bar.shown,"unreadable table fields must be caught")
 ''')
