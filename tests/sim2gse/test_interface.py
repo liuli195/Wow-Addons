@@ -59,7 +59,9 @@ class InterfaceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory(prefix="sim2gse-ui-")
         self.server = create_server(Path(self.directory.name) / "输出", port=0)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}/"
 

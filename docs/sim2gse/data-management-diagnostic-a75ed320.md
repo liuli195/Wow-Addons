@@ -164,3 +164,10 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 日志scene local/config-changed，cache-hit行0，无check duration/checked/完成汇总；选中38但实际started/finished范围、case结果及剩余秒数不可得，不能把无完成证据说成实际0项成功或38fresh已执行。原performance-report仍15:55:46/4440字节的旧诊断，不当本轮结果。原完整日志存仓 `data-management-formal-52a8cda.log`，仅去行尾空格、Temp原始文件不改。现有121组12worker60.819及单点4.72秒证据来自不同阶段，不能用于计算当前整仓精确剩余时间或证明当前根因；本轮确切瓶颈仅为全选统一入口在60内无法汇总完成。
 
 按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
+# 完整入口继续优化：HTTP 测试收尾轮询
+
+在 `4463f1b` 之后，只读核对现有稳定版统一验证器，确认整份配置摘要进入每项缓存键，增量入口对缓存缺失项重复计算键，成功缓存直到全部组结束才发布。最近正式 60 秒截断没有完整分组计时，不能据此指定当前最慢组，也不能将旧报告当作新报告。未修改全局验证器或工具链。
+
+`tests/sim2gse/test_interface.py` 的 100 个界面用例各自创建真实 HTTP 服务，原 `serve_forever` 默认轮询间隔为 0.5 秒，关闭服务等待轮询。仅测试夹具改为 `poll_interval=0.01`，仍逐例隔离目录和服务，保留任务取消、线程等待、服务器关闭和全部断言；产品运行时没有改变。没有减少测试数量或安全覆盖。
+
+相同三个代表用例（主页、空输入拒绝、导入检查）原测试 3 passed / 97 deselected / 1.70 秒，各用例调用耗时 0.50、0.55、0.54 秒；修改后 3 passed / 97 deselected / 0.29 秒，各用例 0.01、0.06、0.04 秒，退出码均为 0。命令为 `.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse/test_interface.py -k 'homepage_is_the_real_three_step_shell or empty_submission_is_rejected_without_creating_a_task or import_inspection_lists_versions_and_nested_syntax_without_simulating' --durations=3`。这是定点夹具证据，不代表完整 100 例、311 例或 38 项统一入口通过；完整门禁仍未通过，重型测量等待机器协调。
