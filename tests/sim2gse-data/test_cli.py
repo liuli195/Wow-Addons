@@ -6,12 +6,47 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 
 
-CLI = Path(__file__).resolve().parents[1] / "simdata.py"
+CLI = Path(__file__).resolve().parents[2] / ".agents/skills/sim2gse-data/scripts/simdata.py"
 
 
 class SharedEntryTests(unittest.TestCase):
+    def test_copied_minimal_runtime_works_without_repository_or_tests(self):
+        with tempfile.TemporaryDirectory(prefix="simdata portable runtime ") as directory:
+            skill = Path(directory) / "copied skill"
+            shutil.copytree(CLI.parent.parent, skill)
+            files = {path.relative_to(skill).as_posix() for path in skill.rglob("*") if path.is_file()}
+            self.assertEqual(files, {"SKILL.md", "scripts/simdata.py", "assets/config.default.json"})
+            entry = skill / "scripts/simdata.py"
+            working = Path(directory) / "other working directory"
+            working.mkdir()
+            config = Path(directory) / "machine.json"
+            root = Path(directory) / "data root"
+            policy = json.loads((skill / "assets/config.default.json").read_text(encoding="utf-8"))
+            policy.update(mode="test", root_id=str(uuid.uuid4()), data_root=str(root),
+                          capacity_bytes=4 * 1024 * 1024, retention_days=1, maintenance_interval_hours=1,
+                          maintenance_reserve_bytes=65536, archive_part_bytes=65536,
+                          metadata_reserve_bytes=131072, lease_seconds=1)
+            config.write_text(json.dumps(policy), encoding="utf-8")
+            def invoke(*arguments):
+                result = subprocess.run([sys.executable, "-B", str(entry), *arguments], cwd=working,
+                                        capture_output=True, text=True, encoding="utf-8")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result
+            self.assertIn("usage:", invoke("--help").stdout)
+            preview = json.loads(invoke("init-root", "--config", str(config)).stdout)
+            invoke("init-root", "--config", str(config), "--approve-hash", preview["plan_hash"])
+            source = root / "native.json"
+            source.write_bytes(b'{"synthetic":true}')
+            arguments = ("register", "--config", str(config), "--path", str(source), "--role", "native")
+            preview = json.loads(invoke(*arguments).stdout)
+            registered = json.loads(invoke(*arguments, "--approve-hash", preview["plan_hash"]).stdout)
+            resolved = json.loads(invoke("resolve", "--config", str(config), "--artifact-id",
+                                         registered["artifact_id"], "--inspect").stdout)
+            self.assertEqual(Path(resolved["path"]).read_bytes(), source.read_bytes())
+
     def call(self, *arguments, cwd=None):
         return subprocess.run([sys.executable, "-B", str(CLI), *arguments],
                               cwd=cwd, capture_output=True, text=True, encoding="utf-8")

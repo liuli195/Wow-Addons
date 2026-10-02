@@ -12,7 +12,7 @@ import unittest
 import uuid
 
 
-CLI = Path(__file__).resolve().parents[1] / "simdata.py"
+CLI = Path(__file__).resolve().parents[2] / ".agents/skills/sim2gse-data/scripts/simdata.py"
 
 
 class LifecycleTests(unittest.TestCase):

@@ -20,6 +20,6 @@
 
 门禁一已确认：用户在 Sentinel_169873e099008191b7ce3c9b82730cc7 回复“确认执行吧”，此前门禁内容完整展示。正式规格、真实数据、生产启用和计划任务安装不在本票范围。
 
-第01票实施及7项合成CLI测试完成，等待固定提交后的统一验证和父线程远端独立审查，未宣称票据已验收。红绿记录见技能 references/validation-01.md。统一构建 checked 为 build.sim2gse-product、build.assets，status 为 passed。没有启动本机架构或审查模型。
+第01票实施及7项合成CLI测试完成，等待固定提交后的统一验证和父线程远端独立审查，未宣称票据已验收。红绿记录见docs/sim2gse/data-management-validation-01.md。统一构建 checked 为 build.sim2gse-product、build.assets，status 为 passed。没有启动本机架构或审查模型。
 
 首轮固定基线统一验证38项通过，提交18b2b5d已推送。父线程远端双轴审查要求修复4项路径校验缺口，现经同一CLI逐项红绿补充到11项测试，等待修复提交的统一验证与增量审查；不进入第02票。

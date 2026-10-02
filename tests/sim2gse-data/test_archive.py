@@ -273,6 +273,20 @@ class ArchiveTests(unittest.TestCase):
         result = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(target), "--approve-hash", plan["plan_hash"])
         self.assertEqual(Path(result["restored"][0]["path"]).read_bytes(), source.read_bytes())
 
+    def test_deep_path_resolution_checks_ancestors_without_quadratic_rechecks(self):
+        self.initialize()
+        observed = []
+        for depth in (4, 12):
+            identity, source = self.source("/".join(["level " + "x" * 30] * depth) + "/native.bin", b"checked bytes")
+            counter = Path(self.temporary.name) / ("stat-count-%d.json" % depth)
+            setup = ("from pathlib import Path\nimport atexit,json\noriginal=Path.lstat\ncount=0\n"
+                     "def measured(path,*args,**kwargs):\n global count\n count+=1\n return original(path,*args,**kwargs)\n"
+                     "Path.lstat=measured\natexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(json.dumps(count)))")
+            result = self.injected_call(setup, "resolve", "--artifact-id", identity, "--inspect")
+            self.assertEqual(result["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+            observed.append(json.loads(counter.read_text()))
+        self.assertLessEqual(observed[1] - observed[0], 8 * (12 - 4), observed)
+
     def test_every_persistent_sqlite_backup_phase_is_recoverable(self):
         self.initialize()
         source = self.root / "phase.sqlite3"
@@ -398,7 +412,15 @@ class ArchiveTests(unittest.TestCase):
         self.policy["capacity_bytes"] = 1024 * 1024 * 1024
         self.save_config()
         prefix = "/".join(["nested " + "x" * 180] * 12)
-        identities = [self.source(prefix + "/native-%03d.json" % number, b"{}")[0] for number in range(220)]
+        directory = self.root / prefix
+        directory.mkdir(parents=True)
+        for number in range(220):
+            (directory / ("native-%03d.json" % number)).write_bytes(b"{}")
+        preview = self.call("legacy-register", "--directory", str(directory), "--role", "native")
+        registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
+                               "--approve-hash", preview["plan_hash"])
+        self.assertEqual(len(registered["artifacts"]), 220)
+        identities = [item["artifact_id"] for item in registered["artifacts"]]
         archived = self.archive(*identities)
         arguments = ("--archive-id", archived["archive_id"], "--destination", str(self.root / "large restore"))
         extended = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))

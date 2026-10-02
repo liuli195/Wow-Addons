@@ -3,7 +3,7 @@
 所有自有插件、项目和开发工具的测试统一放在根目录 `tests/`，按被测对象分组。新增插件测试使用 `tests/addons/<插件名>/`，项目测试使用 `tests/<项目名>/`；没有测试的对象不创建空目录。
 
 例外：随 Agent 技能分发、且必须与技能保持同源的自测可以留在技能目录内（当前为
-`.agents/skills/wow-addon-test/scripts/tests/` 和 `.agents/skills/sim2gse-data/scripts/tests/`）。根目录只登记它们的统一调用入口，不再复制第二份实现；
+`.agents/skills/wow-addon-test/scripts/tests/`）。根目录只登记它们的统一调用入口，不再复制第二份实现；
 技能接入 MYUI 的行为测试仍放在 `tests/addons/MYUI_CrosshairHUD/`。
 
 | 目录 | 内容与运行条件 |
@@ -11,6 +11,7 @@
 | `dev/` | 开发检查器回归，使用本机已准备的 Lua（脚本语言）检查工具 |
 | `addons/` | 插件离线测试：`.tools/lua-5.1.5` 沙箱 + 伪造游戏接口，断言插件留下的 SavedVariables；当前有 `AddonProbe/`、`Sim2GSEProbe/`、`MYUI/`、`MYUI_CrosshairHUD/` |
 | `sim2gse/` | 序列项目测试；`test_*.py` 使用构造样例，`manual_native_task.py`、`manual_search_task.py`、`manual_interface.py` 依赖本机私人角色数据 |
+| `sim2gse-data/` | 数据管理技能的公开 CLI 回归；仅临时合成根，完整 pytest 自动发现，运行技能不依赖此目录 |
 | `sim2gse/research/` | 独立运行的原型与源码检查；`prototype-engine-check.py` 同样依赖本机私人角色数据 |
 | `gear-planner/` | 装备规划器回归；纯 JavaScript（脚本语言）检查进入 PR（拉取请求），Python（编程语言）计算和浏览器检查需要本机引擎与数据 |
 | `gear-planner/research/` | 固定样例回放和本地研究证据检查，需按脚本参数准备引擎、样例及报告 |
@@ -34,6 +35,8 @@ PR（拉取请求）中的代码、配置和工作流变更运行素材构建及
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -q tests/sim2gse
+.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 8
+.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 8
 .venv/Scripts/python.exe tests/dev/test_checks.py
 .venv/Scripts/python.exe tests/gear-planner/check-extra-input.py
 node tests/gear-planner/check-async.js
@@ -44,3 +47,7 @@ node tests/gear-planner/check-async.js
 生产程序仍使用的 `projects/gear-planner/fixtures/`（样例目录）保持原位。测试生成的新报告写入 `.local/tests/`；既有研究报告维持原有证据路径。新增测试时同步核对构建与验证配置的执行命令、变更匹配路径及缓存输入，不能只移动文件。
 
 任务四浏览器回归包含在 `test_interface.py` 自动发现中，使用锁定的 Playwright（浏览器自动化工具）与 Edge（浏览器）。完整真实角色界面检查直接运行 `tests/sim2gse/manual_interface.py`，启动独立动态端口服务，核对真实计算、剪贴板、修改输入清理，并保存截图及验收摘要。
+
+数据管理开发记录位于 `docs/sim2gse/data-management-validation-*.md`，不随技能复制。统一入口的整套验收预算为60秒，需记录端到端墙钟时间；`--base` 是固定基线快速差异验证，报告实际执行、缓存及未运行范围，不能冒称全量。仓库原 `fullBudgetSeconds` 仅对完整模式给性能警告，不替代此硬预算。单项技能终止上限已由900秒收回至60秒；超时仍失败，不能靠终止上限或删覆盖宣称性能达标。
+
+数据管理开发记录位于 `docs/sim2gse/data-management-validation-*.md`，不随技能复制。统一入口的整套验收预算为60秒，需记录端到端墙钟时间；`--base` 是固定基线快速差异验证，报告实际执行、缓存及未运行范围，不能冒称全量。仓库原 `fullBudgetSeconds` 仅对完整模式给性能警告，不替代此硬预算。单项技能终止上限已由900秒收回至60秒；超时仍失败，不能靠终止上限或删覆盖宣称性能达标。

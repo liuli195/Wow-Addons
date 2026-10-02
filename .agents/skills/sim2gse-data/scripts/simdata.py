@@ -1353,14 +1353,14 @@ def owned_path(root, relative):
         raise DataError("相对路径含Windows设备名")
     path = root.joinpath(*parts)
     for parent in (*reversed(path.parents), path):
-        if parent.is_relative_to(root):
-            try:
-                parent.lstat()
-            except FileNotFoundError:
-                continue
-            checked_path(parent)
-            if parent != path and not parent.is_dir():
-                raise DataError("路径祖先不是目录，拒绝将异常边界当作缺失")
+        try:
+            info = parent.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise DataError("数据路径含链接或重解析点")
+        if parent != path and not stat.S_ISDIR(info.st_mode):
+            raise DataError("路径祖先不是目录，拒绝将异常边界当作缺失")
     return path
 
 
