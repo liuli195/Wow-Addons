@@ -828,6 +828,19 @@ SlashCmdList["MYUICHH"] = function(msg)
         print("凝固之血：开关" .. (cfg.enabled == false and "关闭" or "开启")
             .. "，增益" .. (last.bloodPresent and "已确认" or "未确认")
             .. "，层数" .. (type(MaybeNumber(last.bloodStacks)) == "number" and "可读取" or "受限或缺失"))
+        local function Reading(value)
+            local readable = MaybeNumber(value)
+            if type(readable) == "number" then return string.format("%.6g", readable) end
+            return "受限或缺失"
+        end
+        print("显示量程：" .. Reading(cfg.maxStacks) .. "；实际读取层数：" .. Reading(last.bloodStacks))
+        local renderOk, rendered = pcall(Elements.BloodDiagnostics)
+        if renderOk and type(rendered) == "table" then
+            print("游戏绘制量程：" .. Reading(rendered.minimum) .. "～" .. Reading(rendered.maximum)
+                .. "；绘制数值：" .. Reading(rendered.value) .. "；圆形进度：" .. Reading(rendered.percent))
+        else
+            print("游戏绘制状态：无法读取")
+        end
         local ok, aura = pcall(TrackedBloodAura)
         if ok and type(aura) == "table" then
             print("暴雪增益监控：已找到；层数"

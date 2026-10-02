@@ -25,7 +25,8 @@ function UnitPowerMax() return maximum end
 function UnitHealthPercent(_, _, curve) return curve:Evaluate(1) end
 function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(0.7) end
 function InCombatLockdown() return false end
-function print() end
+local messages={}
+function print(msg) messages[#messages+1]=msg end
 SlashCmdList = {}
 Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 }, StatusBarRenderMode = { Radial = 1 } }
 C_AddOns = { GetAddOnMetadata = function() return "test" end }
@@ -86,6 +87,8 @@ function CreateFrame(kind)
     function f:SetRenderMode(v) self.mode=v end
     function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
     function f:SetValue(v) self.value=v end
+    function f:GetMinMaxValues() return self.minimum,self.maximum end
+    function f:GetValue() return self.value end
     function f:CreateTexture(_,_,_,sub)
         local t=Region();t.sub=sub;textures[#textures+1]=t;return t
     end
@@ -392,4 +395,41 @@ function good:GetCooldownInfo() return {spellID=49998,linkedSpellIDs={463730}} e
 Tick();assert(bar.shown and rawequal(bar.value,secret))
 good.auraDataCached=setmetatable({}, {__index=function() error("restricted table access") end})
 Tick();assert(not bar.shown,"unreadable table fields must be caught")
+''')
+
+
+def test_blood_fill_has_same_filtered_unsnapped_sampling_as_other_shapes():
+    run_scenario(r'''
+local fill=assert(Layer("coagulated_blood_fill.png",1))
+assert(fill.filter=="TRILINEAR")
+assert(fill.snap==false and fill.bias==0,"new fill must not snap edges to pixels")
+for _,file in ipairs({"health_arc.png","power_arc.png","coagulated_blood_arc.png","coagulated_blood_arc_shadow.png"}) do
+    local t=assert(Layer(file));assert(t.filter=="TRILINEAR" and t.snap==false and t.bias==0)
+end
+for _,scale in ipairs({0.5,1,2}) do
+    rows["常规"]["HUD 缩放"].setValue(scale)
+    Near(NS.Elements.frame.w,128*scale)
+    assert(fill.filter=="TRILINEAR" and fill.snap==false and fill.bias==0)
+    Near(Thickness(Marker()),1.5*scale)
+end
+''')
+
+
+def test_blood_diagnostic_reports_actual_range_and_safe_raw_values():
+    run_scenario(r'''
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+function bar.texture:GetRadialProgressBarPercent()
+    if rawequal(bar.value,secret) then return secret end
+    return (bar.value-bar.minimum)/(bar.maximum-bar.minimum)
+end
+aura={applications=16};Tick();SlashCmdList.MYUICHH("blood")
+local result=table.concat(messages,"\n")
+assert(result:find("实际读取层数：16",1,true))
+assert(result:find("游戏绘制量程：0～150",1,true))
+assert(result:find("圆形进度：0.106667",1,true))
+messages={};aura={applications=secret};Tick();SlashCmdList.MYUICHH("blood")
+result=table.concat(messages,"\n")
+assert(result:find("实际读取层数：受限或缺失",1,true))
+assert(result:find("圆形进度：受限或缺失",1,true))
 ''')

@@ -37,6 +37,7 @@ local Elements = NS.Elements
 ---@field SetRadialProgressBarStartOffset fun(self: CHHRadialTexture, offset: number)
 ---@field SetRadialProgressBarEndOffset fun(self: CHHRadialTexture, offset: number)
 ---@field SetRadialProgressBarReverse fun(self: CHHRadialTexture, reverse: boolean)
+---@field GetRadialProgressBarPercent fun(self: CHHRadialTexture): number
 
 local MEDIA = "Interface\\AddOns\\MYUI\\Media\\CrosshairHUD\\"
 
@@ -134,9 +135,17 @@ end
 --
 -- TRILINEAR 会采样 mipmap，缩小多少就用对应层级的预过滤图。暴雪自家会被缩放的
 -- 贴图（地图）也是这么传的。
+local function SmoothTexture(texture, file, wrap)
+    texture:SetTexture(MEDIA .. file .. ".png", wrap, wrap, "TRILINEAR")
+    if texture.SetSnapToPixelGrid then
+        texture:SetSnapToPixelGrid(false)
+        texture:SetTexelSnappingBias(0)
+    end
+end
+
 local function NewTexture(sub, file)
     local texture = Elements.frame:CreateTexture(nil, "ARTWORK", nil, sub)
-    texture:SetTexture(MEDIA .. file .. ".png", nil, nil, "TRILINEAR")
+    SmoothTexture(texture, file)
     return texture
 end
 
@@ -194,8 +203,8 @@ function Elements.Create()
     local bar = CreateFrame("StatusBar", nil, frame)
     local fill = bar:CreateTexture(nil, "ARTWORK", nil, SUB_FILL)
     ---@cast fill CHHRadialTexture
-    fill:SetTexture(MEDIA .. "coagulated_blood_fill.png", nil, nil, "TRILINEAR")
     bar:SetStatusBarTexture(fill)
+    SmoothTexture(fill, "coagulated_blood_fill")
     bar:SetRenderMode(_G.Enum.StatusBarRenderMode.Radial)
     fill:SetAllPoints(bar)
     fill:SetRadialProgressBarStartOffset(7 / 360)
@@ -211,12 +220,7 @@ function Elements.Create()
     Place(parts.coagulatedBlood.shadow, bloodSpec)
     Place(parts.coagulatedBlood.bg, bloodSpec)
     parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker")
-    parts.deathStrike:SetTexture(MEDIA .. "death_strike_marker.png",
-        "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE", "TRILINEAR")
-    if parts.deathStrike.SetSnapToPixelGrid then
-        parts.deathStrike:SetSnapToPixelGrid(false)
-        parts.deathStrike:SetTexelSnappingBias(0)
-    end
+    SmoothTexture(parts.deathStrike, "death_strike_marker", "CLAMPTOBLACKADDITIVE")
     parts.deathStrike:SetShown(false)
 
     parts.runes = {}
@@ -240,6 +244,17 @@ function Elements.Create()
     PlaceLayers(parts.crosshair, PLACEMENT.crosshair)
 
     return frame
+end
+
+-- 只供现有诊断命令读取；受限数值由调用方检测后决定是否输出。
+function Elements.BloodDiagnostics()
+    local part = parts.coagulatedBlood
+    if not part or not part.bar then return end
+    local low, high = part.bar:GetMinMaxValues()
+    local fill = part.fill
+    ---@cast fill CHHRadialTexture
+    return { minimum = low, maximum = high, value = part.bar:GetValue(),
+        percent = fill:GetRadialProgressBarPercent() }
 end
 
 function Elements.SetStrata(strata)
