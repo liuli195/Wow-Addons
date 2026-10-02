@@ -287,6 +287,105 @@ class ArchiveTests(unittest.TestCase):
             observed.append(json.loads(counter.read_text()))
         self.assertLessEqual(observed[1] - observed[0], 8 * (12 - 4), observed)
 
+    def test_batch_archive_preview_reuses_its_index_connection(self):
+        self.initialize()
+        counts = []
+        for size in (4, 12):
+            directory = self.root / ("batch-%d" % size)
+            directory.mkdir()
+            for number in range(size):
+                (directory / ("native-%d.json" % number)).write_bytes(b"{}")
+            preview = self.call("legacy-register", "--directory", str(directory), "--role", "native")
+            registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
+                                   "--approve-hash", preview["plan_hash"])
+            arguments = [argument for item in registered["artifacts"]
+                         for argument in ("--artifact-id", item["artifact_id"])]
+            counter = Path(self.temporary.name) / ("connect-count-%d.json" % size)
+            setup = ("import sqlite3,atexit,json\nfrom pathlib import Path\noriginal=sqlite3.connect\ncount=0\n"
+                     "def measured(*args,**kwargs):\n global count\n count+=1\n return original(*args,**kwargs)\n"
+                     "sqlite3.connect=measured\natexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(json.dumps(count)))")
+            archived = self.injected_call(setup, "archive", *arguments)
+            self.assertEqual(len(archived["sources"]), size)
+            counts.append(json.loads(counter.read_text()))
+        self.assertLessEqual(counts[1], counts[0], counts)
+
+    def test_archive_preview_does_not_decode_unrelated_pending_operation_plans(self):
+        self.initialize()
+        pending, _ = self.source("pending.json", b"pending bytes")
+        preview = self.call("archive", "--artifact-id", pending)
+        self.injected_call(self.crash_on_phase(preview["operation_id"], "reserved"), "archive",
+                           "--artifact-id", pending, "--approve-hash", preview["plan_hash"], expected=77)
+        directory = self.root / "another batch"
+        directory.mkdir()
+        for number in range(3):
+            (directory / ("native-%d.json" % number)).write_bytes(b"{}")
+        plan = self.call("legacy-register", "--directory", str(directory), "--role", "native")
+        registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
+                               "--approve-hash", plan["plan_hash"])
+        arguments = [argument for item in registered["artifacts"]
+                     for argument in ("--artifact-id", item["artifact_id"])]
+        counter = Path(self.temporary.name) / "operation-decode-count.json"
+        setup = ("import json,atexit\nfrom pathlib import Path\noriginal=json.loads\ncount=0\n"
+                 "def measured(*args,**kwargs):\n global count\n result=original(*args,**kwargs)\n"
+                 " if isinstance(result,dict) and result.get('kind') in ('archive','restore') and 'operation_id' in result: count+=1\n"
+                 " return result\njson.loads=measured\natexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(str(count)))")
+        result = self.injected_call(setup, "archive", *arguments)
+        self.assertEqual(len(result["sources"]), 3)
+        self.assertEqual(int(counter.read_text()), 0)
+        self.assertEqual(self.call("operation", "--operation-id", preview["operation_id"])["phase"], "reserved")
+
+    def test_approved_restore_reads_its_plan_once_under_the_write_lock(self):
+        self.initialize()
+        identity, source = self.source("approved.json", b"checked original")
+        archived = self.archive(identity)
+        destination = self.root / "single plan restore"
+        arguments = ("--archive-id", archived["archive_id"], "--destination", str(destination))
+        preview = self.call("restore", *arguments)
+        counter = Path(self.temporary.name) / "restore-plan-count.json"
+        setup = ("import json,atexit\nfrom pathlib import Path\noriginal=json.loads\ncount=0\n"
+                 "def measured(*args,**kwargs):\n global count\n result=original(*args,**kwargs)\n"
+                 " if isinstance(result,dict) and result.get('format')==1 and 'archive_id' in result: count+=1\n"
+                 " return result\njson.loads=measured\natexit.register(lambda: Path(" + repr(str(counter)) + ").write_text(str(count)))")
+        result = self.injected_call(setup, "restore", *arguments, "--approve-hash", preview["plan_hash"])
+        self.assertEqual(result["phase"], "sealed")
+        self.assertEqual(Path(result["restored"][0]["path"]).read_bytes(), source.read_bytes())
+        self.assertEqual(int(counter.read_text()), 1)
+
+    def test_approved_archive_rechecks_source_after_acquiring_manager_lock(self):
+        self.initialize()
+        identity, source = self.source("changed-at-lock.json", b"before lock")
+        preview = self.call("archive", "--artifact-id", identity)
+        if os.name == "nt":
+            setup = ("import msvcrt\nfrom pathlib import Path\noriginal=msvcrt.locking\nfired=False\n"
+                     "def locking(handle,mode,size):\n global fired\n result=original(handle,mode,size)\n"
+                     " if mode==msvcrt.LK_NBLCK and not fired:\n  fired=True\n  Path(" + repr(str(source)) + ").write_bytes(b'after lock')\n"
+                     " return result\nmsvcrt.locking=locking")
+        else:
+            setup = ("import fcntl\nfrom pathlib import Path\noriginal=fcntl.flock\nfired=False\n"
+                     "def locking(handle,mode):\n global fired\n result=original(handle,mode)\n"
+                     " if mode & fcntl.LOCK_EX and not fired:\n  fired=True\n  Path(" + repr(str(source)) + ").write_bytes(b'after lock')\n"
+                     " return result\nfcntl.flock=locking")
+        self.injected_call(setup, "archive", "--artifact-id", identity, "--approve-hash", preview["plan_hash"], expected=2)
+        self.assertEqual(source.read_bytes(), b"after lock")
+        self.assertFalse((self.root / ".archives").exists())
+        self.call("operation", "--operation-id", preview["operation_id"], expected=2)
+
+    def test_copy_activity_checks_keep_transitive_run_and_reader_leases(self):
+        self.initialize()
+        run = self.call("begin", "--request-id", "dependency-run", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1024")
+        relative = (Path(run["path"]).relative_to(self.root) / "native.json").as_posix()
+        required, _ = self.source("required.json", b"required")
+        dependent, _ = self.source(relative, b"dependent")
+        self.call("dependency", "--artifact-id", dependent, "--requires", required, "--kind", "durable")
+        self.call("archive", "--artifact-id", required, expected=2)
+        self.call("lease", "--run-id", run["run_id"], "--token", run["token"], "--action", "release")
+        reader = self.call("read-lease", "--action", "acquire", "--artifact-id", dependent,
+                           "--owner-pid", str(os.getpid()), "--token", "dependent-reader")
+        self.call("archive", "--artifact-id", required, expected=2)
+        self.call("read-lease", "--action", "release", "--lease-id", reader["lease_id"], "--token", "dependent-reader")
+        self.assertTrue(self.call("protect", "--artifact-id", required)["protected"])
+        self.assertEqual(len(self.call("archive", "--artifact-id", required)["sources"]), 1)
+
     def test_every_persistent_sqlite_backup_phase_is_recoverable(self):
         self.initialize()
         source = self.root / "phase.sqlite3"

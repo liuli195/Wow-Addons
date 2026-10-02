@@ -717,31 +717,34 @@ def finish_run(root, policy, args):
     return dict(run_id=args.run_id, sealed=True, outcome=args.outcome, artifact_ids=artifact_ids)
 
 
-def protection(root, db, artifact_id, *, own_job=None):
+def protection(root, db, artifact_id, *, own_job=None, activity_only=False):
     artifact = artifact_row(db, artifact_id)
     reasons = []
-    if artifact["role"] in PROTECTED_ROLES:
-        reasons.append("protected-role:" + artifact["role"])
-    if {part.casefold() for part in Path(artifact["path"]).parts} & PROTECTED_DIRECTORIES:
-        reasons.append("protected-evidence-path")
-    reasons.extend("pin:" + row[0] for row in db.execute("SELECT label FROM pins WHERE artifact_id=? ORDER BY label", (artifact_id,)))
+    if not activity_only:
+        if artifact["role"] in PROTECTED_ROLES:
+            reasons.append("protected-role:" + artifact["role"])
+        if {part.casefold() for part in Path(artifact["path"]).parts} & PROTECTED_DIRECTORIES:
+            reasons.append("protected-evidence-path")
+        reasons.extend("pin:" + row[0] for row in db.execute("SELECT label FROM pins WHERE artifact_id=? ORDER BY label", (artifact_id,)))
     references = [dict(row) for row in db.execute("SELECT * FROM refs WHERE target=? ORDER BY owner", (artifact_id,))]
-    reasons.extend(row["kind"] + ":" + row["owner"] for row in references if row["kind"] != "cache")
-    reasons.extend(dependency_protection(root, db, artifact_id, own_job=own_job))
-    if db.execute("SELECT count(*) FROM unknown_refs").fetchone()[0]:
-        reasons.append("unknown-legacy-references")
-    if has_table(db, "jobs"):
-        for job in db.execute("SELECT * FROM jobs WHERE phase NOT IN ('sealed','abandoned')"):
-            plan = json.loads(job["plan"])
-            if any(source["id"] == artifact_id for source in plan.get("sources", plan.get("manifest", {}).get("sources", []))):
-                reasons.append("operation:" + job["id"])
-    if has_table(db, "safety_jobs"):
-        for job in db.execute("SELECT * FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
-            if job["id"] == own_job:
-                continue
-            safety_plan = json.loads(job["plan"])
-            if any(source["id"] == artifact_id for source in safety_plan.get("sources", safety_plan.get("items", []))):
-                reasons.append("operation:" + job["id"])
+    if not activity_only:
+        reasons.extend(row["kind"] + ":" + row["owner"] for row in references if row["kind"] != "cache")
+    reasons.extend(dependency_protection(root, db, artifact_id, own_job=own_job, activity_only=activity_only))
+    if not activity_only:
+        if db.execute("SELECT count(*) FROM unknown_refs").fetchone()[0]:
+            reasons.append("unknown-legacy-references")
+        if has_table(db, "jobs"):
+            for job in db.execute("SELECT * FROM jobs WHERE phase NOT IN ('sealed','abandoned')"):
+                plan = json.loads(job["plan"])
+                if any(source["id"] == artifact_id for source in plan.get("sources", plan.get("manifest", {}).get("sources", []))):
+                    reasons.append("operation:" + job["id"])
+        if has_table(db, "safety_jobs"):
+            for job in db.execute("SELECT * FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
+                if job["id"] == own_job:
+                    continue
+                safety_plan = json.loads(job["plan"])
+                if any(source["id"] == artifact_id for source in safety_plan.get("sources", safety_plan.get("items", []))):
+                    reasons.append("operation:" + job["id"])
     if has_table(db, "readers"):
         reasons.extend("read-lease:" + row["id"] + ":" + lease_state(row)
                        for row in db.execute("SELECT * FROM readers WHERE artifact_id=? AND state='active'", (artifact_id,)))
@@ -1461,30 +1464,30 @@ def manage_operation(root, policy, args):
         return dict(preview, applied=True)
 
 
-def artifact_image(root, row):
-    with closing(open_index(root)) as db:
-        _, source, manifest = read_location(root, db, row)
+def artifact_image(root, db, row):
+    _, source, manifest = read_location(root, db, row)
     if not row["sealed"]:
         raise DataError("封口文件身份或摘要不匹配")
     return dict(id=row["id"], path=row["path"], role=row["role"], schema_version=row["schema_version"], **manifest)
 
 
 def idle_image(root, db, row):
-    if any(reason.startswith(("lease:", "read-lease:", "runner-lock")) for reason in protection(root, db, row["id"])["reasons"]):
+    if any(reason.startswith(("lease:", "read-lease:", "runner-lock")) for reason in protection(root, db, row["id"], activity_only=True)["reasons"]):
         raise DataError("活动租约或文件锁阻止读取生命周期输入")
-    return artifact_image(root, row)
+    return artifact_image(root, db, row)
 
 
 def archive_sources(root, db, ids):
     if not ids or len(ids) > 1000 or len(set(ids)) != len(ids):
         raise DataError("归档须列出1至1000个不同的登记ID")
     sources = []
+    index_paths(root)
     for artifact_id in sorted(ids):
         row = artifact_row(db, artifact_id)
-        reasons = protection(root, db, artifact_id)["reasons"]
+        reasons = protection(root, db, artifact_id, activity_only=True)["reasons"]
         if any(reason.startswith(("lease:", "read-lease:", "runner-lock")) for reason in reasons):
             raise DataError("活动租约或文件锁阻止归档")
-        sources.append(artifact_image(root, row))
+        sources.append(artifact_image(root, db, row))
     return sources
 
 
@@ -1549,13 +1552,13 @@ def quarantine_retry(root, stage, db, operation_id):
     os.replace(data, destination)
 
 
-def create_archive(root, plan, data):
+def create_archive(root, db, plan, data):
     manifest = dict(format=1, root_id=plan["root_id"], archive_id=plan["operation_id"], sources=plan["sources"], parts=[])
     part_size = plan["part_bytes"]
     number = 0
+    index_paths(root)
     for source in plan["sources"]:
-        with closing(open_index(root)) as location_db:
-            source_root, path, current_image = read_location(root, location_db, artifact_row(location_db, source["id"]))
+        source_root, path, current_image = read_location(root, db, artifact_row(db, source["id"]))
         if current_image != {key: source[key] for key in ("sha256", "size", "identity")}:
             raise DataError("归档读取位置或身份改变")
         with runner_locks(source_root, path), path.open("rb") as handle:
@@ -1926,14 +1929,14 @@ def seal_job(root, db, plan):
 
 def lifecycle_execute(root, policy, args):
     root_marker(root, policy)
-    with closing(open_index(root)) as reader:
-        plan = lifecycle_plan(root, policy, reader, args)
-    preview = dict(plan, plan_hash=digest(plan), applied=False)
     if args.approve_hash is None:
-        return preview
-    if args.approve_hash != digest(plan) or plan["policy_hash"] != digest(policy):
-        raise DataError("操作须批准当前清单及配置摘要")
+        with closing(open_index(root)) as reader:
+            plan = lifecycle_plan(root, policy, reader, args)
+        return dict(plan, plan_hash=digest(plan), applied=False)
     with write_index(root, policy) as db:
+        plan = lifecycle_plan(root, policy, db, args)
+        if args.approve_hash != digest(plan) or plan["policy_hash"] != digest(policy):
+            raise DataError("操作须批准当前清单及配置摘要")
         job = db.execute("SELECT * FROM jobs WHERE id=?", (plan["operation_id"],)).fetchone() if has_table(db, "jobs") else None
         if job and job["phase"] == "sealed":
             check_product(db, plan["operation_id"], owned_path(root, plan["destination"]))
@@ -1941,9 +1944,6 @@ def lifecycle_execute(root, policy, args):
         if job and job["phase"] == "abandoned":
             raise DataError("已放弃操作不能恢复，须新请求")
         if not job:
-            current = lifecycle_plan(root, policy, db, args)
-            if current != plan:
-                raise DataError("计划在批准后发生变化")
             check_budget(root, db, policy, plan["reserved_bytes"])
             lifecycle_tables(db)
             db.execute("INSERT INTO jobs(id,kind,phase,plan,reserved_bytes) VALUES (?,?,?,?,?)", (plan["operation_id"], plan["kind"], "reserved", compact_json(plan, QUERY_BYTES), plan["reserved_bytes"]))
@@ -1978,7 +1978,7 @@ def lifecycle_execute(root, policy, args):
                 if plan["kind"] == "archive":
                     if archive_sources(root, db, [source["id"] for source in plan["sources"]]) != plan["sources"]:
                         raise DataError("归档来源已变化")
-                    manifest = create_archive(root, plan, data)
+                    manifest = create_archive(root, db, plan, data)
                     verify_archive(root, manifest, package_root=data)
                 elif plan["kind"] == "restore":
                     for part in plan["manifest"]["parts"]:
@@ -2008,7 +2008,7 @@ def lifecycle_execute(root, policy, args):
         return operation_result(root, db, job_row(db, plan["operation_id"]))
 
 
-def dependency_protection(root, db, artifact_id, *, own_job=None):
+def dependency_protection(root, db, artifact_id, *, own_job=None, activity_only=False):
     pending, seen, reasons = [artifact_id], set(), []
     while pending:
         current = pending.pop()
@@ -2023,7 +2023,7 @@ def dependency_protection(root, db, artifact_id, *, own_job=None):
             continue
         refs = db.execute("SELECT owner,kind FROM refs WHERE target=?", (current,)).fetchall()
         if current != artifact_id:
-            if (row["role"] in PROTECTED_ROLES or {part.casefold() for part in Path(row["path"]).parts} & PROTECTED_DIRECTORIES or
+            if not activity_only and (row["role"] in PROTECTED_ROLES or {part.casefold() for part in Path(row["path"]).parts} & PROTECTED_DIRECTORIES or
                     db.execute("SELECT 1 FROM pins WHERE artifact_id=?", (current,)).fetchone() or any(ref["kind"] != "cache" for ref in refs)):
                 reasons.append("persistent-dependency:" + current)
             if has_table(db, "readers") and db.execute("SELECT 1 FROM readers WHERE artifact_id=? AND state='active'", (current,)).fetchone():
@@ -2035,7 +2035,7 @@ def dependency_protection(root, db, artifact_id, *, own_job=None):
                     pass
             except DataError:
                 reasons.append("runner-lock:dependency:" + current)
-            for table in ("jobs", "safety_jobs"):
+            for table in (() if activity_only else ("jobs", "safety_jobs")):
                 if has_table(db, table):
                     for job in db.execute("SELECT * FROM " + table + " WHERE phase NOT IN ('sealed','abandoned')"):
                         if table == "safety_jobs" and job["id"] == own_job:
@@ -2368,7 +2368,7 @@ def safety_source(root, db, identity, *, destructive=False, own_job=None):
         raise DataError("持久/未知引用、活动租约、锁或尚未批准失效的加速缓存阻止隔离/删除")
     if any(value.startswith(("lease:", "read-lease:", "runner-lock", "operation:")) for value in reasons):
         raise DataError("活动操作、租约或锁阻止位置变更")
-    image = artifact_image(root, row)
+    image = artifact_image(root, db, row)
     if destructive:
         original = managed_file(root, str(root / row["path"]))
         image = dict(id=row["id"], path=row["path"], role=row["role"], schema_version=row["schema_version"],
