@@ -413,25 +413,32 @@ class ArchiveTests(unittest.TestCase):
         original_manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
         cases = [("../escape", tarfile.REGTYPE), ("/absolute", tarfile.REGTYPE), ("C:/drive", tarfile.REGTYPE),
                  ("NUL", tarfile.REGTYPE), ("safe", tarfile.SYMTYPE), ("safe", tarfile.LNKTYPE), ("safe", tarfile.XHDTYPE)]
+        fixtures = self.root / "hostile fixtures"
+        fixtures.mkdir()
+        for number, (name, kind) in enumerate(cases):
+            package = fixtures / ("hostile-%d.tar.gz" % number)
+            member = tarfile.TarInfo(name)
+            member.type = kind
+            member.size = 3 if kind == tarfile.REGTYPE else 0
+            member.linkname = "../escape" if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE) else ""
+            with gzip.GzipFile(filename=str(package), mode="wb", mtime=0) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w|", format=tarfile.USTAR_FORMAT) as tar:
+                    tar.addfile(member, io.BytesIO(b"abc") if member.size else None)
+            contents = package.read_bytes()
+            manifest = json.loads(json.dumps(original_manifest))
+            manifest["parts"] = [dict(path=package.relative_to(self.root).as_posix(), sha256=hashlib.sha256(contents).hexdigest(), size=len(contents),
+                                       members=[dict(name=name, artifact_id=identity, offset=0, size=3, sha256=hashlib.sha256(b"abc").hexdigest())])]
+            (fixtures / ("hostile-%d.json" % number)).write_text(json.dumps(manifest), encoding="utf-8")
+        plan = self.call("legacy-register", "--directory", str(fixtures), "--role", "raw")
+        registered = self.call("legacy-register", "--directory", str(fixtures), "--role", "raw", "--approve-hash", plan["plan_hash"])
+        self.assertEqual(len(registered["artifacts"]), 14)
+        for item in registered["artifacts"]:
+            contents = (self.root / item["path"]).read_bytes()
+            self.assertEqual(item["size"], len(contents))
+            self.assertEqual(item["sha256"], hashlib.sha256(contents).hexdigest())
         for number, (name, kind) in enumerate(cases):
             with self.subTest(name=name, kind=kind):
-                package = self.root / ("hostile-%d.tar.gz" % number)
-                member = tarfile.TarInfo(name)
-                member.type = kind
-                member.size = 3 if kind == tarfile.REGTYPE else 0
-                member.linkname = "../escape" if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE) else ""
-                with gzip.GzipFile(filename=str(package), mode="wb", mtime=0) as compressed:
-                    with tarfile.open(fileobj=compressed, mode="w|", format=tarfile.USTAR_FORMAT) as tar:
-                        tar.addfile(member, io.BytesIO(b"abc") if member.size else None)
-                plan = self.call("register", "--path", str(package), "--role", "raw")
-                self.call("register", "--path", str(package), "--role", "raw", "--approve-hash", plan["plan_hash"])
-                manifest = json.loads(json.dumps(original_manifest))
-                manifest["parts"] = [dict(path=package.relative_to(self.root).as_posix(), sha256=plan["sha256"], size=plan["size"],
-                                           members=[dict(name=name, artifact_id=identity, offset=0, size=3, sha256=hashlib.sha256(b"abc").hexdigest())])]
-                path = self.root / ("hostile-%d.json" % number)
-                path.write_text(json.dumps(manifest), encoding="utf-8")
-                registration = self.call("register", "--path", str(path), "--role", "raw")
-                self.call("register", "--path", str(path), "--role", "raw", "--approve-hash", registration["plan_hash"])
+                path = fixtures / ("hostile-%d.json" % number)
                 target = self.root / ("hostile-target-%d" % number)
                 self.call("restore", "--manifest", str(path), "--destination", str(target), expected=2)
                 self.assertFalse(target.exists())
