@@ -204,7 +204,17 @@ class FactTests(unittest.TestCase):
 
     def test_output_byte_bound_refuses_large_query_and_snapshot(self):
         self.initialize()
-        ids = [self.extracted(f"large-{number}.json", self.batch(feedback={"recorded": "x" * 14000})) for number in range(72)]
+        directory = self.root / "large facts"
+        directory.mkdir()
+        for number in range(72):
+            (directory / f"large-{number}.json").write_text(
+                json.dumps(self.batch(feedback={"recorded": "x" * 14000}), ensure_ascii=False), encoding="utf-8")
+        preview = self.call("legacy-register", "--directory", str(directory), "--role", "native")
+        registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
+                               "--approve-hash", preview["plan_hash"])
+        self.assertEqual(len(registered["artifacts"]), 72)
+        ids = [self.call("extract", "--artifact-id", item["artifact_id"])["fact_id"]
+               for item in registered["artifacts"]]
         self.call("query", "--limit", "100", expected=2)
         self.assertEqual(len(self.call("export", "--limit", "1")["rows"]), 1)
         arguments = [argument for identity in ids for argument in ("--fact-id", identity)]
