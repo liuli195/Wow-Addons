@@ -168,6 +168,8 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 
 ## 数据组定向计时与提前长用例
 
+准确提交 `fad1eac906a3912cbcf938510c973551cb4d286c` 随后唯一正式统一增量 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，既有外层 60 秒硬截止，原配置及 `PYTEST_ADDOPTS=-v --durations=5`。35 项成功缓存明确命中，三项未汇总（data/docs/test-inventory）；`bounded-deadline=60.357`、owned root39168 exit1、外层124，正式门禁仍失败。没有以原生55.601秒宣称统一入口通过，也没有再盲重跑。原日志 `data-management-formal-fad1eac.log`。taskkill返回128，不能视为成功；其日志明确列出的52个PID（包含root）逐个只读核查全部absent，未提权或杀其他进程。当前无由本轮启动的已知测试节点存活。初始化、哈希准备和组内并发的精确成本尚缺逐事件计时证据；这一正式日志不能推导三个新测的真实完成数量。
+
 父端确认无其他本机重型测试，源码 `404152f3c250a0028dce4f82b902426766e0d716` 原生 `.venv/Scripts/python.exe -B -m pytest -v tests/sim2gse-data -n 12 --dist=worksteal --durations=15`，既有外层 100 秒仅诊断，实际 created 12/12；121 passed、79 subtests passed，pytest 64.71 / 外墙 65.133 秒，退出 0。慢项长路径恢复 48.06、1000 空文件 42.97、隔离恢复 18.93、旧格式兼容 16.54 秒。记录 `data-management-data-404152f.log`。日志确认旧格式与空文件同 worker gw2，旧格式先执行，空文件不在初始首轮。现有工具无逐事件时间戳，外墙减 pytest 的 0.423 秒是外层初始化与收尾合计，不能再拆分；测试本体单例耗时已列出。
 
 唯一测试变更将 1000 文件用例改名 `test_bounded_archive_with_one_thousand_empty_members_and_restore_preview`，测试体逐字不变，unittest 排序 index21→10，使既有 WorkStealing 初始分配把它放在另一 worker 首项。不引入调度插件、不改 worker 或配置、不减少真实文件和断言。相同条件对照 121 passed、79 subtests passed，pytest 55.22 / 外墙 55.601 秒，退出 0；总墙钟减少 9.532 秒（14.6%），两个最长用例反而为 49.02 和 48.12 秒，收益来自队列尾部缩短，不是测试本体加速。记录 `data-management-data-order-404152f.log`；两次已知 root11624、18452 只读检查 absent，外层未触发 taskkill。单组诊断不等于全仓冷启动或正式统一门禁通过。
