@@ -156,3 +156,11 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 准确起点515e2b07，唯一修改test_output_byte_bound_refuses_large_query_and_snapshot。72真实文件、14KB feedback、公开批登记全部保留；首个extract仍真子进程并changedTrue，局部标准库runpy加载公开main一次，余71次逐次设置argv、重定向stdout/stderr、调用同一公开parser/main。各次返回0、stderr为空、changedTrue；finally恢复argv，最后72fact IDs唯一。每次main仍走真实配置/SHA/锁/容量/独立SQLite事务，不调用私有handler或mock预算/数据。query/export/snapshot仍原真子进程，query和snapshot拒绝明确error含固定字节边界，不让其他错误冒充边界通过。真实CLI79→8，明确减少71重复启动/PID/进程退出cleanup交叉，不声称等价；不增加生产batch接口或共享fake框架，1000成员用例不改。
 
 仅该用例before/after各一次，原生 `-B -m pytest -v tests/sim2gse-data/test_facts.py -k output_byte_bound --durations=5`，既有包装器各30秒上限。before 1 passed（19 deselected）、call14.48/pytest14.50/wall14.861秒，after同样pass、call4.68/pytest4.72/wall5.084秒；wall少9.777秒，不能直接视为整仓同幅收益。两个代表owned23652/37916随后只读查询均不存在，机时释放。本轮生产及并发配置零改动，无whole/121组重测，正式60仍未通过，完成该项后不继续拆覆盖，等待远端review与最后正式机时放行。
+
+## 52a8最终放行正式结果与Gate2缺口
+
+父端确认budget不重测后，仅一次准确source `52a8cdacdf15cd486404c8d81777af05828793da` 干净工作树正式统一 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，原outer3/data12/60硬预算及原生-v/durations日志参数不变，未新增优化。结果仍正式失败：poll主42656=None，收尾wall60.713秒，主最终exit1、包装器exit124、taskkill128。终止后只读解析日志PID+主共78节点，逐个78均absent，机时已释放，无后续测试/盲杀未知/提权。
+
+日志scene local/config-changed，cache-hit行0，无check duration/checked/完成汇总；选中38但实际started/finished范围、case结果及剩余秒数不可得，不能把无完成证据说成实际0项成功或38fresh已执行。原performance-report仍15:55:46/4440字节的旧诊断，不当本轮结果。原完整日志存仓 `data-management-formal-52a8cda.log`，仅去行尾空格、Temp原始文件不改。现有121组12worker60.819及单点4.72秒证据来自不同阶段，不能用于计算当前整仓精确剩余时间或证明当前根因；本轮确切瓶颈仅为全选统一入口在60内无法汇总完成。
+
+按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
