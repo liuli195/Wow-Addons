@@ -168,6 +168,8 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 
 ## 2026-10-03 云端独立 ROI 审查精简
 
+准确clean源码 `154ebeb818d29a83f72507518795ea5b4fdf17db`，受影响3目标通过后 inventory 与216份docs检查通过，随后唯一正式固定base统一 verify、外层60硬截止、原outer3/product8/data12。结果 `bounded-deadline=60.417`、root36512 exit1、外层124，0cache-hit、config-changed全选38，各组未汇总，正式仍失败；60.417是截断收尾时间，不是完整总时长，不能称只差0.417。原日志 `data-management-formal-154ebeb.log`。taskkill128后日志63个已知节点逐个只读核查全absent，完成时本机2026-10-03T02:57:39+08（UTC 2026-10-02T18:57:39），已释放窗口；按用户优先技能仓库要求不再启动任何测试，只保存轻量证据。新配置完整实际group durations、112整套结果及正式门禁尚缺，不用旧报告代替；规范应用和远端审查仍未完成。
+
 用户明确授权删除无必要、重复测试，云端按公开完整源码审查给出确切方法名，本机在 `e722c62` 干净 codex 分支映射后删除9方法：archive四个内部调用次数断言及单文件4×70长路径例，facts的独立ambiguous-dot与双方同时未完成compare例，CLI两个重复复制/安装例。候选规格先记录取舍，正式规格未应用。
 
 覆盖对应：archive 的 lstat 增长、sqlite.connect 次数、私有调用者名及 json.loads 次数不再作为契约；深路径真实220来源12×180归档/恢复原字节、普通五阶段、共享分包、重解析点、锁后源变化及容量竞态保留。规则路径既有5文档已验证 literal/nested 点号及转义变化轴，接替独立两文档例。六种不完整变体仍逐个拒绝且delta缺失，首个追加 validation_complete=False / validation_status={left:complete,right:incomplete}；明确丢失双方同时未完成交叉，不将其他deadline/partial_round误认独立验证未完成。CLI全部原拒绝断言合并到同一安装例，先验证双Agent入口、上级路径两写法拒绝，最后同一合成junction改名index.sqlite3并拒绝；未增加共享fixture。
