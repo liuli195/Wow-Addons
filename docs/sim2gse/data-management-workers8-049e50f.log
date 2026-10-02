@@ -9,327 +9,327 @@ created: 8/8 workers
 
 scheduling tests via WorkStealingScheduling
 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_corruption_and_existing_destination 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_copies_and_verifies_before_selecting_a_new_location 
-tests/sim2gse-data/test_facts.py::FactTests::test_native_context_is_hash_bound_and_opaque_conditions_cannot_be_compared 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_large_unknown_root_counts_all_bytes_before_growth 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_expired_heartbeat_does_not_clear_a_live_owner_or_reused_pid 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_parent_components_cannot_hide_a_junction 
-[gw3] [  0%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_parent_components_cannot_hide_a_junction 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_relative_config_is_rejected_from_each_working_directory 
-[gw3] [  1%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_relative_config_is_rejected_from_each_working_directory 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_rejects_a_link_at_the_known_index_endpoint 
-[gw7] [  2%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_copies_and_verifies_before_selecting_a_new_location 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-[gw2] [  3%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_corruption_and_existing_destination 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication 
-[gw3] [  4%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_rejects_a_link_at_the_known_index_endpoint 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_reports_disabled_unset_policy_without_creating_an_index 
-[gw1] [  4%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable 
-[gw3] [  5%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_reports_disabled_unset_policy_without_creating_an_index 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_write_preflight_explains_disabled_and_incomplete_policy 
-[gw3] [  6%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_write_preflight_explains_disabled_and_incomplete_policy 
-tests/sim2gse-data/test_facts.py::FactTests::test_actual_production_rows_can_compare_known_axes_under_same_opaque_condition 
-[gw5] [  7%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_expired_heartbeat_does_not_clear_a_live_owner_or_reused_pid 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_failed_allocation_with_missing_parents_is_recoverable 
-[gw1] [  7%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable 
-[gw7] [  8%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-[gw4] [  9%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_native_context_is_hash_bound_and_opaque_conditions_cannot_be_compared 
-tests/sim2gse-data/test_facts.py::FactTests::test_output_byte_bound_refuses_large_query_and_snapshot 
-[gw6] [  9%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_large_unknown_root_counts_all_bytes_before_growth 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_maintenance_uses_exact_archive_quarantine_purge_restore_approvals 
-[gw1] [  9%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable 
-[gw2] [ 10%] SUBPASSED(kind="'missing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication 
-[gw1] [ 10%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable 
-[gw5] [ 11%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_failed_allocation_with_missing_parents_is_recoverable 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_finish_retry_is_idempotent_and_rejects_changed_members 
-[gw7] [ 11%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-[gw2] [ 11%] SUBPASSED(kind="'directory'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication 
-[gw2] [ 11%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_shared_part_rejects_a_changed_later_member_digest 
-[gw3] [ 12%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_actual_production_rows_can_compare_known_axes_under_same_opaque_condition 
-tests/sim2gse-data/test_facts.py::FactTests::test_adaptive_request_counts_and_effective_samples_are_not_normalized_to512 
-[gw1] [ 12%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable 
-[gw1] [ 12%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable 
-[gw7] [ 12%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-[gw5] [ 13%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_finish_retry_is_idempotent_and_rejects_changed_members 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_capacity_without_publishing_root 
-[gw1] [ 14%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable 
-[gw5] [ 14%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_capacity_without_publishing_root 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_disk_without_publishing_root 
-[gw2] [ 15%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_shared_part_rejects_a_changed_later_member_digest 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_small_sources_share_a_part_without_changing_original_segments 
-[gw6] [ 16%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_maintenance_uses_exact_archive_quarantine_purge_restore_approvals 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_physical_free_cannot_credit_a_producer_truncated_after_payload_scan 
-[gw1] [ 16%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable 
-[gw5] [ 17%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_disk_without_publishing_root 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_old_cache_adapter_is_read_only_and_preserves_original_native_path 
-[gw7] [ 17%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-[gw1] [ 17%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable 
-[gw3] [ 18%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_adaptive_request_counts_and_effective_samples_are_not_normalized_to512 
-tests/sim2gse-data/test_facts.py::FactTests::test_ambiguous_dot_keys_cannot_hide_condition_changes 
-[gw6] [ 19%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_physical_free_cannot_credit_a_producer_truncated_after_payload_scan 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_producer_growth_between_inventory_and_reservation_credit_cannot_oversell 
-[gw1] [ 19%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable 
-[gw5] [ 19%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_old_cache_adapter_is_read_only_and_preserves_original_native_path 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_pins_durable_and_unknown_references_block_cache_invalidation 
-[gw7] [ 19%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-[gw2] [ 20%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_small_sources_share_a_part_without_changing_original_segments 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_backup_keeps_committed_wal_rows_and_archives_its_original_image 
-[gw1] [ 20%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable 
-[gw1] [ 20%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_interrupted_operation_reservation_blocks_competing_growth 
-[gw3] [ 21%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_ambiguous_dot_keys_cannot_hide_condition_changes 
-tests/sim2gse-data/test_facts.py::FactTests::test_changed_sources_nonfinite_numbers_and_bad_condition_binding_are_rejected 
-[gw7] [ 21%] SUBPASSED(phase="'rename'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-[gw7] [ 21%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_preview_does_not_authorize_new_junction_or_outside_root 
-[gw1] [ 22%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_interrupted_operation_reservation_blocks_competing_growth 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_later_member_interruption_retains_completed_and_partial_parts_before_retry 
-[gw6] [ 23%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_producer_growth_between_inventory_and_reservation_credit_cannot_oversell 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_interval_744_is_valid_and_745_is_refused_without_policy_change 
-[gw2] [ 23%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_backup_keeps_committed_wal_rows_and_archives_its_original_image 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_index_backup_is_consistent_and_normal_registration_rejects_sqlite 
-[gw3] [ 24%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_changed_sources_nonfinite_numbers_and_bad_condition_binding_are_rejected 
-tests/sim2gse-data/test_facts.py::FactTests::test_compare_allows_version_axis_but_refuses_or_stratifies_other_changes 
-[gw6] [ 25%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_interval_744_is_valid_and_745_is_refused_without_policy_change 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_preview_is_disabled_read_only_and_unset_is_not_invented 
-[gw5] [ 26%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_pins_durable_and_unknown_references_block_cache_invalidation 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_process_interruption_after_reservation_is_recoverable 
-[gw7] [ 27%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_preview_does_not_authorize_new_junction_or_outside_root 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_pending_migrations_share_physical_volume_reservation 
-[gw2] [ 28%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_index_backup_is_consistent_and_normal_registration_rejects_sqlite 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_retry_rejects_source_growth_before_creating_payload_image 
-[gw6] [ 28%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_preview_is_disabled_read_only_and_unset_is_not_invented 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_unknown_link_beyond_old_limit_blocks_growth_and_cursor_errors_are_structured 
-[gw5] [ 29%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_process_interruption_after_reservation_is_recoverable 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_registration_is_previewed_stable_and_resolves_original_bytes 
-[gw1] [ 30%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_later_member_interruption_retains_completed_and_partial_parts_before_retry 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_long_windows_paths_restore_without_materializing_absolute_tar_members 
-[gw2] [ 31%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_retry_rejects_source_growth_before_creating_payload_image 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_streamed_parts_restore_original_bytes_without_touching_business_last_used 
-[gw5] [ 32%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_registration_is_previewed_stable_and_resolves_original_bytes 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded 
-[gw1] [ 33%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_long_windows_paths_restore_without_materializing_absolute_tar_members 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible 
-[gw6] [ 33%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_unknown_link_beyond_old_limit_blocks_growth_and_cursor_errors_are_structured 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_verified_finisher_releases_only_its_own_future_physical_payload 
-[gw3] [ 34%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_compare_allows_version_axis_but_refuses_or_stratifies_other_changes 
-tests/sim2gse-data/test_facts.py::FactTests::test_complete_search_summary_is_comparable_only_with_recorded_completion_evidence 
-[gw2] [ 35%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_streamed_parts_restore_original_bytes_without_touching_business_last_used 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_copied_minimal_runtime_works_without_repository_or_tests 
-[gw6] [ 36%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_verified_finisher_releases_only_its_own_future_physical_payload 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_abandon_migration_retains_bytes_and_releases_only_unspent_reservation 
-[gw1] [ 37%] SUBPASSED(legacy_phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible 
-[gw2] [ 38%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_copied_minimal_runtime_works_without_repository_or_tests 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_never_overwrites_an_existing_unrelated_directory 
-[gw2] [ 38%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_never_overwrites_an_existing_unrelated_directory 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_preview_apply_and_both_agent_entries_share_one_skill 
-[gw5] [ 39%] SUBPASSED(oversized='False') tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded 
-[gw7] [ 40%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_pending_migrations_share_physical_volume_reservation 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_persistent_dependency_protects_a_transitive_cache_and_rejects_cycles 
-[gw1] [ 40%] SUBPASSED(legacy_phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible 
-[gw6] [ 41%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_abandon_migration_retains_bytes_and_releases_only_unspent_reservation 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_archive_quarantine_purge_restore_chain_preserves_original_sha_and_id 
-[gw2] [ 42%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_preview_apply_and_both_agent_entries_share_one_skill 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_invalid_config_root_is_rejected_without_a_traceback 
-[gw5] [ 42%] SUBPASSED(oversized='True') tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded 
-[gw5] [ 42%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded 
-[gw4] [ 42%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_output_byte_bound_refuses_large_query_and_snapshot 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_releasing_a_reservation_still_requires_physical_metadata_headroom 
-tests/sim2gse-data/test_facts.py::FactTests::test_query_export_are_bounded_and_preserve_rows 
-[gw2] [ 43%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_invalid_config_root_is_rejected_without_a_traceback 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_from_another_working_directory_is_read_only 
-[gw2] [ 44%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_from_another_working_directory_is_read_only 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_limit_relative_root_and_root_mismatch 
-[gw2] [ 45%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_limit_relative_root_and_root_mismatch 
-tests/sim2gse-data/test_cli.py::SharedEntryTests::test_nul_in_configured_root_returns_a_structured_path_error 
-[gw1] [ 45%] SUBPASSED(legacy_phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible 
-[gw2] [ 46%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_nul_in_configured_root_returns_a_structured_path_error 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_restart_after_partial_write_retains_bytes_and_reservation 
-[gw5] [ 47%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_releasing_a_reservation_still_requires_physical_metadata_headroom 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_test_root_requires_preview_approval_and_is_bound_to_config 
-[gw6] [ 47%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_archive_quarantine_purge_restore_chain_preserves_original_sha_and_id 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_batch_migration_internal_dependencies_do_not_block_own_job 
-[gw5] [ 48%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_test_root_requires_preview_approval_and_is_bound_to_config 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_wal_cache_preview_never_creates_or_modifies_source_side_files 
-[gw3] [ 49%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_complete_search_summary_is_comparable_only_with_recorded_completion_evidence 
-tests/sim2gse-data/test_facts.py::FactTests::test_extract_is_idempotent_retains_missing_and_does_not_touch_last_used 
-[gw1] [ 49%] SUBPASSED(legacy_phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible 
-[gw7] [ 50%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_persistent_dependency_protects_a_transitive_cache_and_rejects_cycles 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover 
-[gw5] [ 51%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_wal_cache_preview_never_creates_or_modifies_source_side_files 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_560000_streamed_unknown_files_are_counted_without_tree_materialization 
-[gw2] [ 52%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_restart_after_partial_write_retains_bytes_and_reservation 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_batch_archive_preview_reuses_its_index_connection 
-[gw4] [ 52%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_query_export_are_bounded_and_preserve_rows 
-tests/sim2gse-data/test_facts.py::FactTests::test_real_rule_path_keys_compare_and_escaped_literal_dot_axes_are_distinct 
-[gw3] [ 53%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_extract_is_idempotent_retains_missing_and_does_not_touch_last_used 
-tests/sim2gse-data/test_facts.py::FactTests::test_failed_incomplete_censored_and_native_uncertainty_are_preserved 
-[gw1] [ 53%] SUBPASSED(legacy_phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible 
-[gw1] [ 53%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them 
-[gw2] [ 54%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_batch_archive_preview_reuses_its_index_connection 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_copy_activity_checks_keep_transitive_run_and_reader_leases 
-[gw7] [ 55%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover 
-[gw5] [ 56%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_560000_streamed_unknown_files_are_counted_without_tree_materialization 
-tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_incremental_inventory_finishes_without_hash_or_business_use 
-[gw7] [ 56%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover 
-[gw6] [ 57%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_batch_migration_internal_dependencies_do_not_block_own_job 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_changed_plan_content_cache_references_and_disk_full_refuse_safely 
-[gw3] [ 57%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_failed_incomplete_censored_and_native_uncertainty_are_preserved 
-tests/sim2gse-data/test_facts.py::FactTests::test_incomplete_search_comparison_does_not_claim_complete_validation 
-[gw4] [ 58%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_real_rule_path_keys_compare_and_escaped_literal_dot_axes_are_distinct 
-tests/sim2gse-data/test_facts.py::FactTests::test_recorded_native_action_sequence_has_a_source_pointer_not_invented_probabilities 
-[gw2] [ 59%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_copy_activity_checks_keep_transitive_run_and_reader_leases 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_deep_path_resolution_checks_ancestors_without_quadratic_rechecks 
-[gw7] [ 59%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover 
-[gw4] [ 60%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_recorded_native_action_sequence_has_a_source_pointer_not_invented_probabilities 
-tests/sim2gse-data/test_facts.py::FactTests::test_request_types_and_nested_json_boolean_numeric_differences_are_preserved 
-[gw3] [ 61%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_incomplete_search_comparison_does_not_claim_complete_validation 
-tests/sim2gse-data/test_facts.py::FactTests::test_native_context_flags_and_multi_player_metric_are_not_lost 
-[gw0] [ 61%] SUBPASSED(large_phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write 
-[gw0] [ 61%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_abandon_is_explicit_and_does_not_delete_partial_products 
-[gw2] [ 62%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_deep_path_resolution_checks_ancestors_without_quadratic_rechecks 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_disk_full_leaves_originals_and_no_publish 
-[gw6] [ 63%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_changed_plan_content_cache_references_and_disk_full_refuse_safely 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval 
-[gw7] [ 63%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover 
-[gw2] [ 64%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_disk_full_leaves_originals_and_no_publish 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_empty_boundary_and_large_sources_keep_original_segment_sizes 
-[gw3] [ 65%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_native_context_flags_and_multi_player_metric_are_not_lost 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_is_recoverable_and_does_not_release_physical_capacity 
-[gw5] [ 66%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_incremental_inventory_finishes_without_hash_or_business_use 
-tests/sim2gse-data/test_facts.py::FactTests::test_summary_result_and_unreported_actions_are_preserved_without_inference 
-[gw0] [ 66%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_abandon_is_explicit_and_does_not_delete_partial_products 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_active_run_and_occupied_runner_lock_block_archive 
-[gw7] [ 66%] SUBPASSED(phase="'deleted'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover 
-[gw7] [ 66%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_requires_saved_current_plan_and_every_item_confirmation 
-[gw5] [ 67%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_summary_result_and_unreported_actions_are_preserved_without_inference 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_begin_finish_reserves_seals_and_resolves_a_new_run 
-[gw2] [ 68%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_empty_boundary_and_large_sources_keep_original_segment_sizes 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent 
-[gw3] [ 69%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_is_recoverable_and_does_not_release_physical_capacity 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_locks_destination_directory_against_swap_at_os_move_boundary 
-[gw0] [ 70%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_active_run_and_occupied_runner_lock_block_archive 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_archive_rechecks_source_after_acquiring_manager_lock 
-[gw5] [ 71%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_begin_finish_reserves_seals_and_resolves_a_new_run 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_changed_registration_preview_and_oversized_run_are_rejected 
-[gw4] [ 71%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_request_types_and_nested_json_boolean_numeric_differences_are_preserved 
-tests/sim2gse-data/test_facts.py::FactTests::test_search_termination_validation_and_elapsed_survive_export_and_snapshot 
-[gw3] [ 72%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_locks_destination_directory_against_swap_at_os_move_boundary 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_death_requires_explicit_recovery_not_only_heartbeat_expiry 
-[gw0] [ 73%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_archive_rechecks_source_after_acquiring_manager_lock 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_restore_reads_its_plan_once_under_the_write_lock 
-[gw7] [ 74%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_requires_saved_current_plan_and_every_item_confirmation 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_validates_every_file_before_any_deletion_and_keeps_tombstone_ids 
-[gw2] [ 75%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent 
-[gw5] [ 76%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_changed_registration_preview_and_oversized_run_are_rejected 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_concurrent_reservations_cannot_oversell_capacity 
-[gw6] [ 76%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval 
-[gw2] [ 76%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent 
-[gw3] [ 77%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_death_requires_explicit_recovery_not_only_heartbeat_expiry 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_lease_blocks_lifecycle_even_with_an_expired_heartbeat 
-[gw0] [ 78%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_restore_reads_its_plan_once_under_the_write_lock 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_capacity_and_active_run_fail_before_publishing 
-[gw5] [ 79%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_concurrent_reservations_cannot_oversell_capacity 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_dead_owner_requires_approved_recovery_without_deleting_payload 
-[gw4] [ 80%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_search_termination_validation_and_elapsed_survive_export_and_snapshot 
-tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_freezes_selection_and_persistently_protects_sources 
-[gw0] [ 80%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_capacity_and_active_run_fail_before_publishing 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans 
-[gw7] [ 81%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_validates_every_file_before_any_deletion_and_keeps_tombstone_ids 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw2] [ 81%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent 
-[gw3] [ 82%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_lease_blocks_lifecycle_even_with_an_expired_heartbeat 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_pid_reuse_is_distinct_from_alive_and_needs_approved_recovery 
-[gw5] [ 83%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_dead_owner_requires_approved_recovery_without_deleting_payload 
-tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_existing_runner_file_is_allowed_but_an_occupied_lock_blocks_writes 
-[gw0] [ 84%] SUBPASSED(stage="'package'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans 
-[gw7] [ 85%] SUBPASSED(phase="'reserved'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw2] [ 85%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent 
-[gw0] [ 85%] SUBPASSED(stage="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans 
-[gw0] [ 85%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_preview_does_not_decode_unrelated_pending_operation_plans 
-[gw5] [ 85%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_existing_runner_file_is_allowed_but_an_occupied_lock_blocks_writes 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_refuses_parent_escape_and_managed_directory 
-[gw7] [ 85%] SUBPASSED(phase="'reserved'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw4] [ 86%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_freezes_selection_and_persistently_protects_sources 
-tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_rechecks_source_before_publish_and_bad_context_shapes_are_rejected 
-[gw3] [ 87%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_pid_reuse_is_distinct_from_alive_and_needs_approved_recovery 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_resolve_tries_missing_locations_but_never_skips_a_suspicious_copy 
-[gw2] [ 87%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent 
-[gw2] [ 87%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries 
-[gw7] [ 87%] SUBPASSED(phase="'writing'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw0] [ 88%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_preview_does_not_decode_unrelated_pending_operation_plans 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw5] [ 89%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_refuses_parent_escape_and_managed_directory 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_an_externally_registered_package_with_active_lease 
-[gw7] [ 89%] SUBPASSED(phase="'writing'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw4] [ 90%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_rechecks_source_before_publish_and_bad_context_shapes_are_rejected 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw6] [ 90%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval 
-[gw6] [ 90%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_legacy_registration_is_stable_and_keeps_unknown_consumers_protected 
-[gw2] [ 90%] SUBPASSED(scope="'package'", part="'parent'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries 
-[gw2] [ 90%] SUBPASSED(scope="'package'", part="'leaf'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries 
-[gw2] [ 90%] SUBPASSED(scope="'sealed'", part="'parent'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries 
-[gw3] [ 91%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_resolve_tries_missing_locations_but_never_skips_a_suspicious_copy 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_restart_after_publish_checks_identity_before_sealing 
-[gw0] [ 92%] SUBPASSED(name="'../escape'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw7] [ 92%] SUBPASSED(phase="'published'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw0] [ 92%] SUBPASSED(name="'/absolute'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw0] [ 92%] SUBPASSED(name="'C:/drive'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw6] [ 93%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_legacy_registration_is_stable_and_keeps_unknown_consumers_protected 
-[gw0] [ 93%] SUBPASSED(name="'NUL'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw2] [ 93%] SUBPASSED(scope="'sealed'", part="'leaf'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries 
-[gw2] [ 93%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_managed_volume_migration_copies_across_actual_volume_and_preserves_origin 
-[gw0] [ 93%] SUBPASSED(name="'safe'", kind="b'2'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw4] [ 94%] SUBPASSED(relative="''") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw7] [ 94%] SUBPASSED(phase="'published'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw0] [ 94%] SUBPASSED(name="'safe'", kind="b'1'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw5] [ 95%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_an_externally_registered_package_with_active_lease 
-[gw4] [ 95%] SUBPASSED(relative="'/absolute'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw0] [ 95%] SUBPASSED(name="'safe'", kind="b'x'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-[gw0] [ 95%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_handle_keeps_spaces_unicode_long_paths_and_no_overwrite 
-[gw4] [ 95%] SUBPASSED(relative="'//server/share'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'C:/drive'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'../escape'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'a/../b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'a\\\\b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'a//b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw7] [ 95%] SUBPASSED(phase="'sealed'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw3] [ 95%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restart_after_publish_checks_identity_before_sealing 
-[gw4] [ 95%] SUBPASSED(relative="'a/./b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'a:b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'NUL'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 95%] SUBPASSED(relative="'COM1.json'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw7] [ 95%] SUBPASSED(phase="'sealed'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw4] [ 95%] SUBPASSED(relative="'LPT9.txt'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw0] [ 96%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_handle_keeps_spaces_unicode_long_paths_and_no_overwrite 
-[gw4] [ 96%] SUBPASSED(relative="'trailing.'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 96%] SUBPASSED(relative="'trailing '") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw2] [ 97%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_managed_volume_migration_copies_across_actual_volume_and_preserves_origin 
-[gw4] [ 97%] SUBPASSED(relative="'nul\\x00byte'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 97%] SUBPASSED(relative="'package-directory'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 97%] SUBPASSED(relative="'missing-package.tar.gz'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw4] [ 97%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles 
-[gw7] [ 97%] SUBPASSED(phase="'rename'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw7] [ 97%] SUBPASSED(phase="'rename'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-[gw7] [ 97%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash 
-tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_existing_file_handle_refuses_then_exact_job_retries 
-[gw7] [ 98%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_existing_file_handle_refuses_then_exact_job_retries 
-[gw1] [ 99%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them 
-tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_decompression_bomb_and_changed_verified_product_are_rejected 
-[gw1] [100%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_decompression_bomb_and_changed_verified_product_are_rejected 
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_corruption_and_existing_destination
+tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_copies_and_verifies_before_selecting_a_new_location
+tests/sim2gse-data/test_facts.py::FactTests::test_native_context_is_hash_bound_and_opaque_conditions_cannot_be_compared
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_large_unknown_root_counts_all_bytes_before_growth
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_expired_heartbeat_does_not_clear_a_live_owner_or_reused_pid
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_parent_components_cannot_hide_a_junction
+[gw3] [  0%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_parent_components_cannot_hide_a_junction
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_relative_config_is_rejected_from_each_working_directory
+[gw3] [  1%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_relative_config_is_rejected_from_each_working_directory
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_rejects_a_link_at_the_known_index_endpoint
+[gw7] [  2%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_copies_and_verifies_before_selecting_a_new_location
+tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+[gw2] [  3%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_corruption_and_existing_destination
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication
+[gw3] [  4%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_rejects_a_link_at_the_known_index_endpoint
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_reports_disabled_unset_policy_without_creating_an_index
+[gw1] [  4%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable
+[gw3] [  5%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_status_reports_disabled_unset_policy_without_creating_an_index
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_write_preflight_explains_disabled_and_incomplete_policy
+[gw3] [  6%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_write_preflight_explains_disabled_and_incomplete_policy
+tests/sim2gse-data/test_facts.py::FactTests::test_actual_production_rows_can_compare_known_axes_under_same_opaque_condition
+[gw5] [  7%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_expired_heartbeat_does_not_clear_a_live_owner_or_reused_pid
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_failed_allocation_with_missing_parents_is_recoverable
+[gw1] [  7%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable
+[gw7] [  8%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+[gw4] [  9%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_native_context_is_hash_bound_and_opaque_conditions_cannot_be_compared
+tests/sim2gse-data/test_facts.py::FactTests::test_output_byte_bound_refuses_large_query_and_snapshot
+[gw6] [  9%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_large_unknown_root_counts_all_bytes_before_growth
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_maintenance_uses_exact_archive_quarantine_purge_restore_approvals
+[gw1] [  9%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable
+[gw2] [ 10%] SUBPASSED(kind="'missing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication
+[gw1] [ 10%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable
+[gw5] [ 11%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_failed_allocation_with_missing_parents_is_recoverable
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_finish_retry_is_idempotent_and_rejects_changed_members
+[gw7] [ 11%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+[gw2] [ 11%] SUBPASSED(kind="'directory'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication
+[gw2] [ 11%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_sealing_rejects_missing_or_directory_leaf_after_publication
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_shared_part_rejects_a_changed_later_member_digest
+[gw3] [ 12%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_actual_production_rows_can_compare_known_axes_under_same_opaque_condition
+tests/sim2gse-data/test_facts.py::FactTests::test_adaptive_request_counts_and_effective_samples_are_not_normalized_to512
+[gw1] [ 12%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable
+[gw1] [ 12%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_restore_phase_is_recoverable
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable
+[gw7] [ 12%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+[gw5] [ 13%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_finish_retry_is_idempotent_and_rejects_changed_members
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_capacity_without_publishing_root
+[gw1] [ 14%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable
+[gw5] [ 14%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_capacity_without_publishing_root
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_disk_without_publishing_root
+[gw2] [ 15%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_shared_part_rejects_a_changed_later_member_digest
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_small_sources_share_a_part_without_changing_original_segments
+[gw6] [ 16%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_maintenance_uses_exact_archive_quarantine_purge_restore_approvals
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_physical_free_cannot_credit_a_producer_truncated_after_payload_scan
+[gw1] [ 16%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable
+[gw5] [ 17%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_initialization_rejects_insufficient_disk_without_publishing_root
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_old_cache_adapter_is_read_only_and_preserves_original_native_path
+[gw7] [ 17%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+[gw1] [ 17%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable
+[gw3] [ 18%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_adaptive_request_counts_and_effective_samples_are_not_normalized_to512
+tests/sim2gse-data/test_facts.py::FactTests::test_ambiguous_dot_keys_cannot_hide_condition_changes
+[gw6] [ 19%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_physical_free_cannot_credit_a_producer_truncated_after_payload_scan
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_producer_growth_between_inventory_and_reservation_credit_cannot_oversell
+[gw1] [ 19%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable
+[gw5] [ 19%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_old_cache_adapter_is_read_only_and_preserves_original_native_path
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_pins_durable_and_unknown_references_block_cache_invalidation
+[gw7] [ 19%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+[gw2] [ 20%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_small_sources_share_a_part_without_changing_original_segments
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_backup_keeps_committed_wal_rows_and_archives_its_original_image
+[gw1] [ 20%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable
+[gw1] [ 20%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_sqlite_backup_phase_is_recoverable
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_interrupted_operation_reservation_blocks_competing_growth
+[gw3] [ 21%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_ambiguous_dot_keys_cannot_hide_condition_changes
+tests/sim2gse-data/test_facts.py::FactTests::test_changed_sources_nonfinite_numbers_and_bad_condition_binding_are_rejected
+[gw7] [ 21%] SUBPASSED(phase="'rename'") tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+[gw7] [ 21%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_every_committed_phase_and_post_publish_crash_are_replayable
+tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_preview_does_not_authorize_new_junction_or_outside_root
+[gw1] [ 22%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_interrupted_operation_reservation_blocks_competing_growth
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_later_member_interruption_retains_completed_and_partial_parts_before_retry
+[gw6] [ 23%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_producer_growth_between_inventory_and_reservation_credit_cannot_oversell
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_interval_744_is_valid_and_745_is_refused_without_policy_change
+[gw2] [ 23%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_backup_keeps_committed_wal_rows_and_archives_its_original_image
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_index_backup_is_consistent_and_normal_registration_rejects_sqlite
+[gw3] [ 24%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_changed_sources_nonfinite_numbers_and_bad_condition_binding_are_rejected
+tests/sim2gse-data/test_facts.py::FactTests::test_compare_allows_version_axis_but_refuses_or_stratifies_other_changes
+[gw6] [ 25%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_interval_744_is_valid_and_745_is_refused_without_policy_change
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_preview_is_disabled_read_only_and_unset_is_not_invented
+[gw5] [ 26%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_pins_durable_and_unknown_references_block_cache_invalidation
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_process_interruption_after_reservation_is_recoverable
+[gw7] [ 27%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_migration_preview_does_not_authorize_new_junction_or_outside_root
+tests/sim2gse-data/test_safety.py::SafetyTests::test_pending_migrations_share_physical_volume_reservation
+[gw2] [ 28%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_index_backup_is_consistent_and_normal_registration_rejects_sqlite
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_retry_rejects_source_growth_before_creating_payload_image
+[gw6] [ 28%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_schedule_preview_is_disabled_read_only_and_unset_is_not_invented
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_unknown_link_beyond_old_limit_blocks_growth_and_cursor_errors_are_structured
+[gw5] [ 29%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_process_interruption_after_reservation_is_recoverable
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_registration_is_previewed_stable_and_resolves_original_bytes
+[gw1] [ 30%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_later_member_interruption_retains_completed_and_partial_parts_before_retry
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_long_windows_paths_restore_without_materializing_absolute_tar_members
+[gw2] [ 31%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_sqlite_retry_rejects_source_growth_before_creating_payload_image
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_streamed_parts_restore_original_bytes_without_touching_business_last_used
+[gw5] [ 32%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_registration_is_previewed_stable_and_resolves_original_bytes
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded
+[gw1] [ 33%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_long_windows_paths_restore_without_materializing_absolute_tar_members
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible
+[gw6] [ 33%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_unknown_link_beyond_old_limit_blocks_growth_and_cursor_errors_are_structured
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_verified_finisher_releases_only_its_own_future_physical_payload
+[gw3] [ 34%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_compare_allows_version_axis_but_refuses_or_stratifies_other_changes
+tests/sim2gse-data/test_facts.py::FactTests::test_complete_search_summary_is_comparable_only_with_recorded_completion_evidence
+[gw2] [ 35%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_streamed_parts_restore_original_bytes_without_touching_business_last_used
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_copied_minimal_runtime_works_without_repository_or_tests
+[gw6] [ 36%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_verified_finisher_releases_only_its_own_future_physical_payload
+tests/sim2gse-data/test_safety.py::SafetyTests::test_abandon_migration_retains_bytes_and_releases_only_unspent_reservation
+[gw1] [ 37%] SUBPASSED(legacy_phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible
+[gw2] [ 38%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_copied_minimal_runtime_works_without_repository_or_tests
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_never_overwrites_an_existing_unrelated_directory
+[gw2] [ 38%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_never_overwrites_an_existing_unrelated_directory
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_preview_apply_and_both_agent_entries_share_one_skill
+[gw5] [ 39%] SUBPASSED(oversized='False') tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded
+[gw7] [ 40%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_pending_migrations_share_physical_volume_reservation
+tests/sim2gse-data/test_safety.py::SafetyTests::test_persistent_dependency_protects_a_transitive_cache_and_rejects_cycles
+[gw1] [ 40%] SUBPASSED(legacy_phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible
+[gw6] [ 41%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_abandon_migration_retains_bytes_and_releases_only_unspent_reservation
+tests/sim2gse-data/test_safety.py::SafetyTests::test_archive_quarantine_purge_restore_chain_preserves_original_sha_and_id
+[gw2] [ 42%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_install_preview_apply_and_both_agent_entries_share_one_skill
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_invalid_config_root_is_rejected_without_a_traceback
+[gw5] [ 42%] SUBPASSED(oversized='True') tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded
+[gw5] [ 42%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded
+[gw4] [ 42%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_output_byte_bound_refuses_large_query_and_snapshot
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_releasing_a_reservation_still_requires_physical_metadata_headroom
+tests/sim2gse-data/test_facts.py::FactTests::test_query_export_are_bounded_and_preserve_rows
+[gw2] [ 43%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_invalid_config_root_is_rejected_without_a_traceback
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_from_another_working_directory_is_read_only
+[gw2] [ 44%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_from_another_working_directory_is_read_only
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_limit_relative_root_and_root_mismatch
+[gw2] [ 45%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_inventory_limit_relative_root_and_root_mismatch
+tests/sim2gse-data/test_cli.py::SharedEntryTests::test_nul_in_configured_root_returns_a_structured_path_error
+[gw1] [ 45%] SUBPASSED(legacy_phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible
+[gw2] [ 46%] PASSED tests/sim2gse-data/test_cli.py::SharedEntryTests::test_nul_in_configured_root_returns_a_structured_path_error
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_restart_after_partial_write_retains_bytes_and_reservation
+[gw5] [ 47%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_releasing_a_reservation_still_requires_physical_metadata_headroom
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_test_root_requires_preview_approval_and_is_bound_to_config
+[gw6] [ 47%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_archive_quarantine_purge_restore_chain_preserves_original_sha_and_id
+tests/sim2gse-data/test_safety.py::SafetyTests::test_batch_migration_internal_dependencies_do_not_block_own_job
+[gw5] [ 48%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_test_root_requires_preview_approval_and_is_bound_to_config
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_wal_cache_preview_never_creates_or_modifies_source_side_files
+[gw3] [ 49%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_complete_search_summary_is_comparable_only_with_recorded_completion_evidence
+tests/sim2gse-data/test_facts.py::FactTests::test_extract_is_idempotent_retains_missing_and_does_not_touch_last_used
+[gw1] [ 49%] SUBPASSED(legacy_phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible
+[gw7] [ 50%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_persistent_dependency_protects_a_transitive_cache_and_rejects_cycles
+tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover
+[gw5] [ 51%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_wal_cache_preview_never_creates_or_modifies_source_side_files
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_560000_streamed_unknown_files_are_counted_without_tree_materialization
+[gw2] [ 52%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_restart_after_partial_write_retains_bytes_and_reservation
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_batch_archive_preview_reuses_its_index_connection
+[gw4] [ 52%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_query_export_are_bounded_and_preserve_rows
+tests/sim2gse-data/test_facts.py::FactTests::test_real_rule_path_keys_compare_and_escaped_literal_dot_axes_are_distinct
+[gw3] [ 53%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_extract_is_idempotent_retains_missing_and_does_not_touch_last_used
+tests/sim2gse-data/test_facts.py::FactTests::test_failed_incomplete_censored_and_native_uncertainty_are_preserved
+[gw1] [ 53%] SUBPASSED(legacy_phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible
+[gw1] [ 53%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_old_single_member_layout_and_all_old_operation_phases_remain_compatible
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them
+[gw2] [ 54%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_batch_archive_preview_reuses_its_index_connection
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_copy_activity_checks_keep_transitive_run_and_reader_leases
+[gw7] [ 55%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover
+[gw5] [ 56%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_560000_streamed_unknown_files_are_counted_without_tree_materialization
+tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_incremental_inventory_finishes_without_hash_or_business_use
+[gw7] [ 56%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover
+[gw6] [ 57%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_batch_migration_internal_dependencies_do_not_block_own_job
+tests/sim2gse-data/test_safety.py::SafetyTests::test_changed_plan_content_cache_references_and_disk_full_refuse_safely
+[gw3] [ 57%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_failed_incomplete_censored_and_native_uncertainty_are_preserved
+tests/sim2gse-data/test_facts.py::FactTests::test_incomplete_search_comparison_does_not_claim_complete_validation
+[gw4] [ 58%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_real_rule_path_keys_compare_and_escaped_literal_dot_axes_are_distinct
+tests/sim2gse-data/test_facts.py::FactTests::test_recorded_native_action_sequence_has_a_source_pointer_not_invented_probabilities
+[gw2] [ 59%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_copy_activity_checks_keep_transitive_run_and_reader_leases
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_deep_path_resolution_checks_ancestors_without_quadratic_rechecks
+[gw7] [ 59%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover
+[gw4] [ 60%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_recorded_native_action_sequence_has_a_source_pointer_not_invented_probabilities
+tests/sim2gse-data/test_facts.py::FactTests::test_request_types_and_nested_json_boolean_numeric_differences_are_preserved
+[gw3] [ 61%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_incomplete_search_comparison_does_not_claim_complete_validation
+tests/sim2gse-data/test_facts.py::FactTests::test_native_context_flags_and_multi_player_metric_are_not_lost
+[gw0] [ 61%] SUBPASSED(large_phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write
+[gw0] [ 61%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_abandon_is_explicit_and_does_not_delete_partial_products
+[gw2] [ 62%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_deep_path_resolution_checks_ancestors_without_quadratic_rechecks
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_disk_full_leaves_originals_and_no_publish
+[gw6] [ 63%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_changed_plan_content_cache_references_and_disk_full_refuse_safely
+tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval
+[gw7] [ 63%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover
+[gw2] [ 64%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_disk_full_leaves_originals_and_no_publish
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_empty_boundary_and_large_sources_keep_original_segment_sizes
+[gw3] [ 65%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_native_context_flags_and_multi_player_metric_are_not_lost
+tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_is_recoverable_and_does_not_release_physical_capacity
+[gw5] [ 66%] PASSED tests/sim2gse-data/test_maintenance.py::MaintenanceTests::test_incremental_inventory_finishes_without_hash_or_business_use
+tests/sim2gse-data/test_facts.py::FactTests::test_summary_result_and_unreported_actions_are_preserved_without_inference
+[gw0] [ 66%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_abandon_is_explicit_and_does_not_delete_partial_products
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_active_run_and_occupied_runner_lock_block_archive
+[gw7] [ 66%] SUBPASSED(phase="'deleted'") tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover
+[gw7] [ 66%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_each_persistent_phase_and_delete_before_commit_recover
+tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_requires_saved_current_plan_and_every_item_confirmation
+[gw5] [ 67%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_summary_result_and_unreported_actions_are_preserved_without_inference
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_begin_finish_reserves_seals_and_resolves_a_new_run
+[gw2] [ 68%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_empty_boundary_and_large_sources_keep_original_segment_sizes
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent
+[gw3] [ 69%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_is_recoverable_and_does_not_release_physical_capacity
+tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_locks_destination_directory_against_swap_at_os_move_boundary
+[gw0] [ 70%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_active_run_and_occupied_runner_lock_block_archive
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_archive_rechecks_source_after_acquiring_manager_lock
+[gw5] [ 71%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_begin_finish_reserves_seals_and_resolves_a_new_run
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_changed_registration_preview_and_oversized_run_are_rejected
+[gw4] [ 71%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_request_types_and_nested_json_boolean_numeric_differences_are_preserved
+tests/sim2gse-data/test_facts.py::FactTests::test_search_termination_validation_and_elapsed_survive_export_and_snapshot
+[gw3] [ 72%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_locks_destination_directory_against_swap_at_os_move_boundary
+tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_death_requires_explicit_recovery_not_only_heartbeat_expiry
+[gw0] [ 73%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_archive_rechecks_source_after_acquiring_manager_lock
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_restore_reads_its_plan_once_under_the_write_lock
+[gw7] [ 74%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_requires_saved_current_plan_and_every_item_confirmation
+tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_validates_every_file_before_any_deletion_and_keeps_tombstone_ids
+[gw2] [ 75%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent
+[gw5] [ 76%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_changed_registration_preview_and_oversized_run_are_rejected
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_concurrent_reservations_cannot_oversell_capacity
+[gw6] [ 76%] SUBPASSED(phase="'reserved'") tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval
+[gw2] [ 76%] SUBPASSED(phase="'writing'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent
+[gw3] [ 77%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_death_requires_explicit_recovery_not_only_heartbeat_expiry
+tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_lease_blocks_lifecycle_even_with_an_expired_heartbeat
+[gw0] [ 78%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_approved_restore_reads_its_plan_once_under_the_write_lock
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_capacity_and_active_run_fail_before_publishing
+[gw5] [ 79%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_concurrent_reservations_cannot_oversell_capacity
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_dead_owner_requires_approved_recovery_without_deleting_payload
+[gw4] [ 80%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_search_termination_validation_and_elapsed_survive_export_and_snapshot
+tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_freezes_selection_and_persistently_protects_sources
+[gw0] [ 80%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_capacity_and_active_run_fail_before_publishing
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans
+[gw7] [ 81%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_purge_validates_every_file_before_any_deletion_and_keeps_tombstone_ids
+tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw2] [ 81%] SUBPASSED(phase="'verified'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent
+[gw3] [ 82%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_lease_blocks_lifecycle_even_with_an_expired_heartbeat
+tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_pid_reuse_is_distinct_from_alive_and_needs_approved_recovery
+[gw5] [ 83%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_dead_owner_requires_approved_recovery_without_deleting_payload
+tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_existing_runner_file_is_allowed_but_an_occupied_lock_blocks_writes
+[gw0] [ 84%] SUBPASSED(stage="'package'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans
+[gw7] [ 85%] SUBPASSED(phase="'reserved'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw2] [ 85%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent
+[gw0] [ 85%] SUBPASSED(stage="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans
+[gw0] [ 85%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_package_and_restored_file_do_not_repeat_owned_path_scans
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_preview_does_not_decode_unrelated_pending_operation_plans
+[gw5] [ 85%] PASSED tests/sim2gse-data/test_lifecycle.py::LifecycleTests::test_existing_runner_file_is_allowed_but_an_occupied_lock_blocks_writes
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_refuses_parent_escape_and_managed_directory
+[gw7] [ 85%] SUBPASSED(phase="'reserved'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw4] [ 86%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_freezes_selection_and_persistently_protects_sources
+tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_rechecks_source_before_publish_and_bad_context_shapes_are_rejected
+[gw3] [ 87%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_reader_pid_reuse_is_distinct_from_alive_and_needs_approved_recovery
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_resolve_tries_missing_locations_but_never_skips_a_suspicious_copy
+[gw2] [ 87%] SUBPASSED(phase="'sealed'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent
+[gw2] [ 87%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_every_persistent_archive_phase_is_recoverable_and_idempotent
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries
+[gw7] [ 87%] SUBPASSED(phase="'writing'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw0] [ 88%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_archive_preview_does_not_decode_unrelated_pending_operation_plans
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw5] [ 89%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_refuses_parent_escape_and_managed_directory
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_an_externally_registered_package_with_active_lease
+[gw7] [ 89%] SUBPASSED(phase="'writing'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw4] [ 90%] PASSED tests/sim2gse-data/test_facts.py::FactTests::test_snapshot_rechecks_source_before_publish_and_bad_context_shapes_are_rejected
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw6] [ 90%] SUBPASSED(phase="'published'") tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval
+[gw6] [ 90%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval
+tests/sim2gse-data/test_safety.py::SafetyTests::test_legacy_registration_is_stable_and_keeps_unknown_consumers_protected
+[gw2] [ 90%] SUBPASSED(scope="'package'", part="'parent'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries
+[gw2] [ 90%] SUBPASSED(scope="'package'", part="'leaf'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries
+[gw2] [ 90%] SUBPASSED(scope="'sealed'", part="'parent'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries
+[gw3] [ 91%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_resolve_tries_missing_locations_but_never_skips_a_suspicious_copy
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_restart_after_publish_checks_identity_before_sealing
+[gw0] [ 92%] SUBPASSED(name="'../escape'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw7] [ 92%] SUBPASSED(phase="'published'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw0] [ 92%] SUBPASSED(name="'/absolute'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw0] [ 92%] SUBPASSED(name="'C:/drive'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw6] [ 93%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_legacy_registration_is_stable_and_keeps_unknown_consumers_protected
+[gw0] [ 93%] SUBPASSED(name="'NUL'", kind="b'0'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw2] [ 93%] SUBPASSED(scope="'sealed'", part="'leaf'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries
+[gw2] [ 93%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_keeps_fresh_parent_and_leaf_reparse_checks_at_both_boundaries
+tests/sim2gse-data/test_safety.py::SafetyTests::test_managed_volume_migration_copies_across_actual_volume_and_preserves_origin
+[gw0] [ 93%] SUBPASSED(name="'safe'", kind="b'2'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw4] [ 94%] SUBPASSED(relative="''") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw7] [ 94%] SUBPASSED(phase="'published'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw0] [ 94%] SUBPASSED(name="'safe'", kind="b'1'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw5] [ 95%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_rejects_an_externally_registered_package_with_active_lease
+[gw4] [ 95%] SUBPASSED(relative="'/absolute'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw0] [ 95%] SUBPASSED(name="'safe'", kind="b'x'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+[gw0] [ 95%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_hostile_tar_members_are_rejected_before_destination_creation
+tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_handle_keeps_spaces_unicode_long_paths_and_no_overwrite
+[gw4] [ 95%] SUBPASSED(relative="'//server/share'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'C:/drive'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'../escape'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'a/../b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'a\\\\b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'a//b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw7] [ 95%] SUBPASSED(phase="'sealed'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw3] [ 95%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restart_after_publish_checks_identity_before_sealing
+[gw4] [ 95%] SUBPASSED(relative="'a/./b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'a:b'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'NUL'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 95%] SUBPASSED(relative="'COM1.json'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw7] [ 95%] SUBPASSED(phase="'sealed'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw4] [ 95%] SUBPASSED(relative="'LPT9.txt'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw0] [ 96%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_handle_keeps_spaces_unicode_long_paths_and_no_overwrite
+[gw4] [ 96%] SUBPASSED(relative="'trailing.'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 96%] SUBPASSED(relative="'trailing '") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw2] [ 97%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_managed_volume_migration_copies_across_actual_volume_and_preserves_origin
+[gw4] [ 97%] SUBPASSED(relative="'nul\\x00byte'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 97%] SUBPASSED(relative="'package-directory'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 97%] SUBPASSED(relative="'missing-package.tar.gz'") tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw4] [ 97%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_restore_package_names_reject_windows_aliases_escape_and_nonfiles
+[gw7] [ 97%] SUBPASSED(phase="'rename'", command="'quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw7] [ 97%] SUBPASSED(phase="'rename'", command="'recover-quarantine'") tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+[gw7] [ 97%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_existing_file_handle_refuses_then_exact_job_retries
+[gw7] [ 98%] PASSED tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_existing_file_handle_refuses_then_exact_job_retries
+[gw1] [ 99%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them
+tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_decompression_bomb_and_changed_verified_product_are_rejected
+[gw1] [100%] PASSED tests/sim2gse-data/test_archive.py::ArchiveTests::test_registered_decompression_bomb_and_changed_verified_product_are_rejected
 
 ============================ slowest 10 durations =============================
 36.60s call     tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write
