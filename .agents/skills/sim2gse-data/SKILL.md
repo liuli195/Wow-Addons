@@ -17,7 +17,7 @@ python "<技能目录>/scripts/simdata.py" inventory --root "<受管数据根绝
 python "<技能目录>/scripts/simdata.py" check-config --root "<受管数据根绝对路径>" --config "<机器配置绝对路径>" --for-write
 ```
 
-当前第01—04票提供共用入口、登记与保护预留、事实提取、查询比较导出和不可变快照，以及分包归档、恢复和SQLite一致性备份。迁移清理及维护按后续票据实现后更新说明；未支持的命令显式失败。
+第01—06票提供共用入口、登记与保护预留、事实提取、查询比较导出和不可变快照、分包归档/恢复/SQLite一致性备份、迁移/隔离/逐项删除，以及维护和禁用计划任务预览。生产启用、真实历史迁移和删除仍须另行配置及具体批准。
 
 `inventory` 不哈希文件、不建索引，仅对显式根有界扫描；默认最多检查1000个目录项，`truncated: true` 表示部分盘点，不可当作全量容量或删除清单。`logical_bytes` 是已扫描普通文件逻辑字节，不是物理占用。`status` 不扫描整棵树，仅报告根、索引是否存在、所在卷可用空间及配置。两者不更新业务 `last_used`。
 
@@ -62,7 +62,7 @@ python "<技能目录>/scripts/simdata.py" cache-references --config "<机器配
 
 `pin --action add/remove --label ...` 管理保留标记；`reference --action add --owner ... --kind durable/cache/unknown` 区分持久、可撤销缓存和未知引用。缓存失效须通过预览及批准，并明确可能重算；持久引用、保留标记、未知引用和活动锁阻止失效。旧 SQLite 适配器只读 batches/reusable（批次/共享缓存）表，保留 absolute origin（绝对来源路径）与 relative artifact（相对产物路径）语义；旧消费者尚无解析接口，因此已识别路径同时建立持久兼容引用，不能据此移动旧 native.json。未识别引用保护全根。原始 SQLite 文件暂拒绝普通登记，后续归档票须用一致性备份处理 WAL（预写日志）。
 
-测试模式仅接受系统临时目录中新建且身份绑定的根，须显式配置 `mode=test`、`root_id`、容量与各项余量；测试中的参数不能复制为生产建议值。生产模板仍为禁用态且所有限额、保留及频率未设置。每次增长同时核算原件、数据库及 WAL、现有预留、维护余量、元数据余量和卷可用空间；满额拒绝增长。当前预算核验上限为 1000 个目录项，超限明确拒绝写入，不能把截断盘点用于容量承诺；规模化容量核算仍须在后续生命周期票完成。
+测试模式仅接受系统临时目录中新建且身份绑定的根，须显式配置 `mode=test`、`root_id`、容量与各项余量；测试中的参数不能复制为生产建议值。生产模板仍为禁用态且所有限额、保留及频率未设置。每次增长在同一根写锁内完整流式核算原件、数据库及 WAL、未知文件、现有预留、维护余量、元数据余量和卷可用空间；满额拒绝增长，不信任截断盘点或陈旧游标。
 
 ## 第03票：事实、比较与不可变快照
 
@@ -115,7 +115,7 @@ SQLite原件不能作为普通封口文件登记/压缩：`backup-sqlite`先登�
 
 元数据预算单独显示 `metadata_phase_bytes/metadata_peak_bytes/retry_metadata_bytes`（各阶段/总峰值/重试元数据预留），由实际UTF-8编码计划、产品路径及字段上界、封口目录记录和阶段/隔离日志估算，并结合SQLite页面大小和索引深度上界，计入主库、WAL及索引复制/拆分页峰值。计划本身包含预算，按序列化字节固定点收敛后批准；在DDL、jobs插入及第一次阶段提交之前检查整个峰值，不能以payload固定常数替代大清单元数据。完成某阶段后，已落盘字节按实际根盘点计入，未完成阶段元数据和重试余量继续预留，不重复保留已完成阶段预算。产品清单编码不得超过批准上界。旧未封口操作缺少此预算时拒绝执行，保留状态/放弃入口；旧封口操作仍可验证解析。
 
-`operation --action abandon-preview`（放弃预览）返回当前 `approval_hash`；核对后 `--action abandon --approve-hash <approval_hash>` 才释放未使用预留并保留全部文件。放弃不能删除数据或重新启用同一操作；后续永久删除仍由票05具体清单门槛处理。当前1000项目录盘点对大根明确拒绝增长，完整框架交付前由票06增量盘点解除该实现限制。
+`operation --action abandon-preview`（放弃预览）返回当前 `approval_hash`；核对后 `--action abandon --approve-hash <approval_hash>` 才释放未使用预留并保留全部文件。放弃不能删除数据或重新启用同一操作；永久删除仍由具体清单门槛处理。大根预算完整流式核算，不再受1000项目录准入限制；每批来源/包/清单与查询仍有界。
 
 ## 第05票：登记、迁移、隔离和逐项删除
 
@@ -145,11 +145,33 @@ python "<技能目录>/scripts/simdata.py" safety-operation --config "<机器配
 
 永久删除仅接受隔离对象的具体保存清单，清单固定根/配置/当前身份、原始摘要、引用、隔离操作及有效期。执行要提供计划摘要及每个ID的confirmation_hash（逐项确认摘要），缺项、重复项、额外项、过期、引用或文件变化均拒绝。全部对象及排他句柄先验证，再逐项按同一已核验Windows句柄删除；逐项删除前后持久日志，中断后核对日志和隔离身份再重试，已删除路径重新出现则拒绝接管。只删除清单中的隔离副本，ID保留为墓碑，其他已登记复制位置不删除。有效时长须操作者显式给定，内部安全上限24小时；未配置任何生产默认时长、容量、保留或维护频率。实际历史永久删除仍必须先向用户展示具体清单并逐项确认，技能可发现不构成删除授权。
 
-票06尚负责维护入口、计划任务配置生成/预览，以及解除1000项目录预算准入限制；当前不能宣称大规模框架最终验收完成。05验证记录见 [validation-05.md](references/validation-05.md)。
+05验证记录见 [validation-05.md](references/validation-05.md)。06本机实现、验证及仍待独立审查的状态见 [validation-06.md](references/validation-06.md)。
 
 05审查修复增加 `purge --renew-operation <原操作ID> --valid-seconds <新有效秒数>`（重新取得当前删除批准预览）。它只读取已登记、未完成的删除操作，核验原隔离身份、已删墓碑及剩余对象的当前引用。返回绑定旧计划摘要、阶段、逐项进度的新保存清单；新计划摘要和每项确认摘要都必须重新明确批准，旧批准不能沿用。保存新JSON后仍用 `--plan/--approve-hash/--confirm-item` 执行，批准变更和核销已删墓碑在同一持久事务内记录，中断后携新清单重试。原已删路径重新出现或剩余对象受保护时拒绝；预检后、逐项日志提交前后再次检查有效期，不忽略过期继续删除。
 
 批量迁移的自身操作豁免由保护计算传递，只豁免当前安全操作对同批来源的直接/传递操作保护；其他安全操作和旧归档操作、读者租约、角色、pins（保留标记）及未知引用仍计算。迁移保留原路径，不撤销持久引用。物理空间按OS卷身份汇总，多个登记目录共享一个未来载荷预留池；计活动运行、旧生命周期操作、安全操作、主卷元数据和维护余量。已写入的私有、身份绑定工作区载荷从未来预留抵扣，部分件重试仍需完整新复制空间，超过批准载荷保留现场并拒绝增长。verified/published（验证/发布）阶段不再写载荷；完成或明确放弃才解除相应未来预留，既有字节仍由卷可用空间及逻辑盘点计入。复核证据见 [validation-05-review.md](references/validation-05-review.md)。
+
+## 完整盘点、增量续扫与维护
+
+```text
+python "<技能目录>/scripts/simdata.py" inventory --config "<机器配置>" --complete
+python "<技能目录>/scripts/simdata.py" inventory --config "<机器配置>" --incremental --limit 1000
+python "<技能目录>/scripts/simdata.py" inventory --config "<机器配置>" --incremental --limit 1000 --cursor "<上一页next_cursor>"
+python "<技能目录>/scripts/simdata.py" maintenance --config "<机器配置>" --limit 100 --offset 0
+python "<技能目录>/scripts/simdata.py" maintenance --config "<机器配置>" --task archive --artifact-id "<ID>"
+python "<技能目录>/scripts/simdata.py" maintenance --config "<机器配置>" --task purge --plan "<具体保存JSON>" --approve-hash "<plan_hash>" --confirm-item "<ID:confirmation_hash>"
+python "<技能目录>/scripts/simdata.py" schedule-preview --config "<机器配置>" --python "<已有Python绝对路径>" --start-at "<明确含时区偏移的ISO8601时间>"
+```
+
+`--complete`（完整）只输出合计、不哈希、不创建运行索引。完整核算内存与同时打开目录数仅随深度增长，上限128层，拒绝链接/特殊对象/目录身份变化，不忽略未知文件。它是实时观察，不能冒充文件系统冻结快照；各代理写入通过共用锁协调，外部生产者应同样使用begin/finish。预算每次重新核算全根及登记卷，没有长期容量缓存。
+
+增量页仅检查至多limit个选中项，累计字节/数量保存在64KiB以内的可续扫游标；游标绑定根及未完成目录的身份/修改时间，变化则拒绝并重新开始。最多128层。为了不依赖操作系统目录枚举顺序，每页流式枚举当前目录名字、保留至多limit+1个名字；超宽目录的名字枚举可能重复，`enumerated_names`如实报告成本，不宣称每页I/O严格只有limit次。已完成目录之后可能改变，所以报告明确是live_observation_not_snapshot（实时观察而非快照），游标绝不用于预算或删除授权。没有扫描/压缩业务last_used更新，没有缓存替代未知字节。
+
+`maintenance`（维护）默认有界状态页，无自动回收/年龄判断。显式task可选择archive/restore/backup-sqlite/migration/quarantine/recover-quarantine/purge/operation/safety-operation；所有参数直接进入同一生命周期实现和同一锁/配置/保护/预留/中断恢复协议，不另造删除脚本。先预览后批准，purge继续要求具体保存清单和每项确认，非所选动作参数拒绝。不安装后台进程。
+
+`schedule-preview`（计划任务预览）返回禁用的Windows任务XML文本，不创建文件、不调用任务调度器、不安装启用。Python/技能/机器配置路径均为绝对路径，支持空格；最小权限、并发IgnoreNew（忽略新实例），定期动作只调用maintenance状态页。缺维护频率、任何必要策略或明确开始时间时返回unresolved及xml=null，不猜参数；有参数时任务与触发器仍禁用。真实定期数据变更须另行批准具体计划，不能把周期任务当成通用删除授权。
+
+上线前需商量：受管根/卷及容量、保留口径和天数、维护频率/开始时间、维护及元数据余量、分包目标、租约时长、历史登记分批与来源保护、持久/缓存引用的兼容处理、迁移目的卷及恢复空间、具体永久删除清单。生产默认模板全部保持unset（未设置），不采用本机测试值。
 
 ## 验证
 

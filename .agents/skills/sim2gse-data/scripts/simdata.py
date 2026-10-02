@@ -1,8 +1,11 @@
 """Sim2GSE 数据生命周期的共用命令行入口；仅使用标准库。"""
 import argparse
+import base64
 import gzip
+from datetime import datetime
 from contextlib import contextmanager, ExitStack, closing
 import hashlib
+import heapq
 import hmac
 import json
 import math
@@ -19,6 +22,7 @@ import tarfile
 import time
 import uuid
 import zlib
+import xml.etree.ElementTree as ET
 from urllib.parse import quote
 
 
@@ -54,22 +58,118 @@ def checked_path(path, *, missing_leaf=False):
 
 def inventory(root, limit):
     files = logical_bytes = visited = 0
-    pending = [root]
-    while pending:
-        with os.scandir(pending.pop()) as entries:
-            for entry in entries:
+    # 深度优先流式遍历；目录项和正文不整树物化。None只供完整预算核算。
+    initial = root.stat()
+    pending = [(root, (initial.st_dev, initial.st_ino), os.scandir(root))]
+    try:
+        while pending:
+            folder, identity, entries = pending[-1]
+            try:
+                entry = next(entries)
+            except StopIteration:
+                current = checked_path(folder).stat()
+                if (current.st_dev, current.st_ino) != identity:
+                    raise DataError("盘点目录身份变化，拒绝不完整核算")
+                entries.close()
+                pending.pop()
+                continue
+            else:
                 visited += 1
-                if visited > limit:
+                if limit is not None and visited > limit:
                     return dict(files=files, logical_bytes=logical_bytes, truncated=True)
                 info = entry.stat(follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
                     raise DataError("数据根内含链接或重解析点")
                 if stat.S_ISDIR(info.st_mode):
-                    pending.append(Path(entry.path))
+                    folder = checked_path(entry.path)
+                    if len(pending) >= 128:
+                        raise DataError("目录深度超过128，拒绝不完整盘点")
+                    current = folder.stat()
+                    pending.append((folder, (current.st_dev, current.st_ino), os.scandir(folder)))
                 elif stat.S_ISREG(info.st_mode):
                     files += 1
                     logical_bytes += info.st_size
+                else:
+                    raise DataError("盘点发现非普通文件，拒绝忽略未知对象")
+    finally:
+        for _, _, entries in pending:
+            entries.close()
     return dict(files=files, logical_bytes=logical_bytes, truncated=False)
+
+
+def inventory_page(root, limit, cursor):
+    """只读续扫。游标是观察进度，不作为容量、身份或删除批准证据。"""
+    def frame(folder):
+        info = checked_path(folder).stat()
+        return dict(path=folder.relative_to(root).as_posix(), after="",
+                    identity=[info.st_dev, info.st_ino, info.st_mtime_ns])
+    state = dict(root=str(root), stack=[frame(root)], files=0, logical_bytes=0)
+    if cursor:
+        if len(cursor) > 65536:
+            raise DataError("盘点游标超过64KiB")
+        try:
+            state = json.loads(base64.b64decode(cursor, validate=True))
+        except (ValueError, UnicodeError) as error:
+            raise DataError("盘点游标格式错误") from error
+        if not isinstance(state, dict) or state.get("root") != str(root) or not isinstance(state.get("stack"), list):
+            raise DataError("盘点游标根不匹配")
+        if len(state["stack"]) > 128 or any(type(state.get(k)) is not int or state[k] < 0 for k in ("files", "logical_bytes")):
+            raise DataError("盘点游标计数/深度错误")
+    def validate(current):
+        if not isinstance(current, dict) or not isinstance(current.get("path"), str) or not isinstance(current.get("after"), str):
+            raise DataError("盘点游标目录格式错误")
+        relative = Path(current["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise DataError("盘点游标越界")
+        folder = checked_path(root / relative)
+        if not folder.is_relative_to(root) or not folder.is_dir():
+            raise DataError("盘点游标目录越界")
+        info = folder.stat()
+        if [info.st_dev, info.st_ino, info.st_mtime_ns] != current.get("identity"):
+            raise DataError("续扫目录身份/内容变化，须重新盘点")
+        return folder
+    for current in state["stack"]:
+        validate(current)
+    visited = enumerated = 0
+    while state["stack"] and visited < limit:
+        current = state["stack"][-1]
+        folder = validate(current)
+        available = limit - visited
+        with os.scandir(folder) as entries:
+            def names():
+                nonlocal enumerated
+                for entry in entries:
+                    enumerated += 1
+                    if entry.name > current["after"]:
+                        yield entry.name
+            selected = heapq.nsmallest(available + 1, names())
+        if not selected:
+            state["stack"].pop()
+            continue
+        descended = False
+        for name in selected[:available]:
+            path = checked_path(folder / name)
+            info = path.stat()
+            visited += 1
+            current["after"] = name
+            if stat.S_ISDIR(info.st_mode):
+                if len(state["stack"]) >= 128:
+                    raise DataError("目录深度超过128")
+                state["stack"].append(frame(path))
+                descended = True
+                break
+            if not stat.S_ISREG(info.st_mode):
+                raise DataError("盘点发现非普通文件")
+            state["files"] += 1
+            state["logical_bytes"] += info.st_size
+        if not descended and len(selected) <= available:
+            state["stack"].pop()
+    token = base64.b64encode(json.dumps(state, ensure_ascii=False).encode()).decode() if state["stack"] else None
+    if token and len(token) > 65536:
+        raise DataError("盘点游标超过64KiB，目录须分根盘点")
+    return dict(files=state["files"], logical_bytes=state["logical_bytes"], truncated=bool(token),
+                next_cursor=token, batch_visited=visited, enumerated_names=enumerated,
+                consistency="live_observation_not_snapshot", budget_evidence=False)
 
 
 def load_policy(config):
@@ -171,7 +271,7 @@ def init_root(root, policy, approval):
         return dict(plan_hash=plan_hash, root=str(root), root_id=policy["root_id"], applied=False)
     if approval != plan_hash:
         raise DataError("初始化计划摘要不符，须批准当前预览")
-    measured = inventory(root, 1000) if root.exists() else dict(logical_bytes=0, truncated=False)
+    measured = inventory(root, None) if root.exists() else dict(logical_bytes=0, truncated=False)
     if measured["truncated"]:
         raise DataError("初始化容量盘点不完整，拒绝发布索引")
     peak = INITIALIZATION_PEAK_BYTES + policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
@@ -476,7 +576,7 @@ def run_payload_bytes(root, run):
     folder = run_folder(root, run)
     if folder is None:
         return 0
-    measured = inventory(folder, 1000)
+    measured = inventory(folder, None)
     if measured["truncated"]:
         raise DataError("活动目录超过有界盘点范围，不能确定容量")
     internal = sum(checked_path(folder / name).stat().st_size for name in (".run-id.json", ".runner.lock")
@@ -485,7 +585,7 @@ def run_payload_bytes(root, run):
 
 
 def check_budget(root, db, policy, growth=0, *, physical_growth=None):
-    # ponytail: 每次变更有界核对至多1000目录项；大根需后续明确盘点策略，不能假称已完整核算。
+    # 同一写锁内每次完整流式核算，不复用分页游标或陈旧缓存；未知字节也计入。
     measured = domain_inventory(root, db)
     if measured["truncated"]:
         raise DataError("容量盘点未完整，拒绝新增长；不能忽略未知文件")
@@ -2091,10 +2191,10 @@ def volume_root(root, db, volume_id):
 
 
 def domain_inventory(root, db):
-    measured = inventory(root, 1000)
+    measured = inventory(root, None)
     if has_table(db, "volumes"):
         for row in db.execute("SELECT id FROM volumes ORDER BY id"):
-            other = inventory(volume_root(root, db, row["id"]), 1000)
+            other = inventory(volume_root(root, db, row["id"]), None)
             measured["logical_bytes"] += other["logical_bytes"]
             measured["truncated"] = measured["truncated"] or other["truncated"]
     return measured
@@ -2119,7 +2219,7 @@ def migration_materialized(root, db, job):
         marker = dict(root_id=plan["root_id"], operation_id=job["id"], plan_hash=digest(plan))
         if json.loads(bounded_text(work / ".job.json")) != marker:
             raise DataError("未完成迁移工作区身份不符，不能抵扣预留")
-        measured = inventory(data, 1000)
+        measured = inventory(data, None)
         if measured["truncated"]:
             raise DataError("迁移工作区盘点不完整")
         actual += measured["logical_bytes"]
@@ -2127,7 +2227,7 @@ def migration_materialized(root, db, job):
     if os.path.lexists(destination):
         if job["phase"] not in ("verified", "published", "sealed"):
             raise DataError("未发布迁移出现未知目标，不能抵扣预留")
-        measured = inventory(destination, 1000)
+        measured = inventory(destination, None)
         if measured["truncated"]:
             raise DataError("迁移产品盘点不完整")
         actual += measured["logical_bytes"]
@@ -2819,17 +2919,86 @@ def install_junction(repository, apply):
     return dict(installed=apply, changed=apply, link=str(link), target=str(SKILL_ROOT))
 
 
+def maintenance_status(root, policy, args):
+    if not 1 <= args.limit <= 1000 or not 0 <= args.offset <= 1000000:
+        raise DataError("维护状态须使用有界分页")
+    report = index_status(root, policy)
+    with closing(open_index(root)) as db:
+        rows = db.execute("SELECT id,role,size,sealed,last_used FROM artifacts ORDER BY id LIMIT ? OFFSET ?",
+                          (args.limit + 1, args.offset)).fetchall()
+        report.update(items=[dict(row) for row in rows[:args.limit]], has_more=len(rows) > args.limit,
+                      next_offset=args.offset + args.limit if len(rows) > args.limit else None)
+    return dict(report, automatic_cleanup=False, applied=False, last_used_updated=False,
+                instruction="明确选择动作并预览具体计划；永久删除须保存清单和逐项批准，不按atime或年龄清理")
+
+
+def schedule_preview(root, policy, args):
+    if not args.config or not args.python:
+        raise DataError("计划任务预览须明确技能外机器配置和已有Python绝对路径")
+    executable = checked_path(args.python)
+    if not Path(args.python).is_absolute() or not executable.is_file():
+        raise DataError("Python须为已有可执行文件绝对路径")
+    unresolved = [key for key in ("root_id", "capacity_bytes", "retention_days", "maintenance_interval_hours",
+                                 "maintenance_reserve_bytes", "archive_part_bytes", "metadata_reserve_bytes", "lease_seconds") if policy[key] is None]
+    if not args.start_at:
+        unresolved.append("start_at")
+    if unresolved:
+        return dict(installed=False, enabled=False, xml=None, unresolved=unresolved, production_enabled=policy["production_enabled"])
+    try:
+        start = datetime.fromisoformat(args.start_at)
+    except ValueError as error:
+        raise DataError("start-at须为含时区的ISO8601时间") from error
+    if start.tzinfo is None:
+        raise DataError("start-at须显式包含时区偏移")
+    task = ET.Element("Task", version="1.4", xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task")
+    trigger = ET.SubElement(ET.SubElement(task, "Triggers"), "TimeTrigger")
+    ET.SubElement(trigger, "StartBoundary").text = start.isoformat()
+    ET.SubElement(trigger, "Enabled").text = "false"
+    ET.SubElement(ET.SubElement(trigger, "Repetition"), "Interval").text = f"PT{policy['maintenance_interval_hours']}H"
+    principals = ET.SubElement(task, "Principals")
+    principal = ET.SubElement(principals, "Principal", id="Author")
+    ET.SubElement(principal, "LogonType").text = "InteractiveToken"
+    ET.SubElement(principal, "RunLevel").text = "LeastPrivilege"
+    settings = ET.SubElement(task, "Settings")
+    ET.SubElement(settings, "MultipleInstancesPolicy").text = "IgnoreNew"
+    ET.SubElement(settings, "Enabled").text = "false"
+    action = ET.SubElement(ET.SubElement(task, "Actions", Context="Author"), "Exec")
+    ET.SubElement(action, "Command").text = str(executable)
+    ET.SubElement(action, "Arguments").text = subprocess.list2cmdline([str(SKILL_ROOT / "scripts/simdata.py"), "maintenance", "--config", str(checked_path(args.config)), "--task", "status"])
+    ET.SubElement(action, "WorkingDirectory").text = str(SKILL_ROOT)
+    return dict(installed=False, enabled=False, unresolved=[], xml=ET.tostring(task, encoding="unicode"),
+                action="maintenance status", production_enabled=policy["production_enabled"],
+                instruction="仅生成配置，不安装或启用；定期入口只报告状态，数据变更另需具体计划批准")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sim2GSE 共用数据管理入口")
     commands = parser.add_subparsers(dest="command", required=True)
     installer = commands.add_parser("install-junction", help="预览或显式安装仓库内共用目录联接")
     installer.add_argument("--repository", required=True)
     installer.add_argument("--apply", action="store_true")
-    for name in ("inventory", "status", "check-config", "init-root", "register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references", "extract", "query", "export", "compare", "snapshot", "archive", "restore", "backup-sqlite", "operation", "read-lease", "legacy-register", "dependency", "volume-register", "migration", "safety-operation", "quarantine", "recover-quarantine", "purge"):
+    for name in ("inventory", "status", "check-config", "init-root", "register", "resolve", "begin", "finish", "protect", "pin", "reference", "lease", "cache-references", "extract", "query", "export", "compare", "snapshot", "archive", "restore", "backup-sqlite", "operation", "read-lease", "legacy-register", "dependency", "volume-register", "migration", "safety-operation", "quarantine", "recover-quarantine", "purge", "maintenance", "schedule-preview"):
         command = commands.add_parser(name, help="查看或按显式授权管理指定的数据根")
         command.add_argument("--root")
         command.add_argument("--config")
         command.add_argument("--limit", type=int, default=1000)
+        if name == "schedule-preview":
+            command.add_argument("--python")
+            command.add_argument("--start-at")
+        if name == "maintenance":
+            command.add_argument("--task", choices=("status", "archive", "restore", "backup-sqlite", "migration", "quarantine", "recover-quarantine", "purge", "operation", "safety-operation"), default="status")
+            command.add_argument("--artifact-id", action="append", default=[])
+            command.add_argument("--confirm-item", action="append", default=[])
+            command.add_argument("--valid-seconds", type=int)
+            command.add_argument("--offset", type=int, default=0)
+            command.add_argument("--action", choices=("status", "abandon-preview", "abandon"), default="status")
+            command.add_argument("--volume-id", default="")
+            for option in ("operation-id", "approve-hash", "plan", "renew-operation", "destination", "archive-id", "manifest", "database", "request-id"):
+                command.add_argument("--" + option)
+        if name == "inventory":
+            command.add_argument("--incremental", action="store_true")
+            command.add_argument("--cursor")
+            command.add_argument("--complete", action="store_true")
         if name == "purge":
             command.add_argument("--artifact-id", action="append", default=[])
             command.add_argument("--valid-seconds", type=int)
@@ -2957,6 +3126,33 @@ def main():
             return 0
         if not root.is_dir() or not 1 <= args.limit <= 100000:
             raise DataError("数据根须为目录；盘点上限须在1至100000之间")
+        if args.command == "schedule-preview":
+            print(compact_json(schedule_preview(root, policy, args), QUERY_BYTES))
+            return 0
+        if args.command == "maintenance":
+            allowed = {
+                "status": {"offset"},
+                "archive": {"artifact_id", "operation_id", "approve_hash"},
+                "restore": {"archive_id", "manifest", "destination", "operation_id", "approve_hash"},
+                "backup-sqlite": {"database", "request_id", "operation_id", "approve_hash"},
+                "migration": {"artifact_id", "destination", "volume_id", "operation_id", "approve_hash"},
+                "quarantine": {"artifact_id", "operation_id", "approve_hash"},
+                "recover-quarantine": {"artifact_id", "operation_id", "approve_hash"},
+                "purge": {"artifact_id", "plan", "approve_hash", "confirm_item", "valid_seconds", "renew_operation"},
+                "operation": {"operation_id", "action", "approve_hash"},
+                "safety-operation": {"operation_id", "action", "approve_hash"},
+            }[args.task]
+            for key in ("artifact_id", "operation_id", "approve_hash", "plan", "confirm_item", "valid_seconds", "renew_operation", "destination", "archive_id", "manifest", "database", "request_id", "volume_id", "offset", "action"):
+                if key not in allowed and getattr(args, key) not in (None, [], "", 0, "status"):
+                    raise DataError("维护动作不接受参数: " + key)
+            if args.task == "status":
+                if args.approve_hash or args.plan or args.artifact_id or args.confirm_item:
+                    raise DataError("状态预览不能携带操作授权")
+                print(compact_json(maintenance_status(root, policy, args), QUERY_BYTES))
+                return 0
+            args.command = args.task
+            if args.command in ("operation", "safety-operation") and not args.operation_id:
+                raise DataError("操作维护须明确operation-id")
         if args.command in ("extract", "query", "export", "compare", "snapshot"):
             handler = {"extract": extract_facts, "query": query_facts, "export": query_facts,
                        "compare": compare_facts, "snapshot": snapshot_facts}[args.command]
@@ -2984,7 +3180,11 @@ def main():
         if args.command != "inventory" and os.path.lexists(root / "index.sqlite3"):
             checked_path(root / "index.sqlite3")
             index_present = True
-        report = inventory(root, args.limit) if args.command == "inventory" else {
+        if args.command == "inventory" and args.cursor and not args.incremental:
+            raise DataError("游标须用于incremental续扫")
+        if args.command == "inventory" and args.complete and args.incremental:
+            raise DataError("complete完整核算不能携带增量观察游标")
+        report = (inventory_page(root, args.limit, args.cursor) if args.incremental else inventory(root, None if args.complete else args.limit)) if args.command == "inventory" else {
             "root": str(root), "index_present": index_present,
             "disk_free_bytes": shutil.disk_usage(root).free,
         }
