@@ -13,6 +13,7 @@ local frames, textures, lines, tickers = {}, {}, {}, {}
 local aura, fee, maximum, playerClass = { applications = 75 }, 35, 100, "DEATHKNIGHT"
 local secret = setmetatable({}, { __index = function() error("secret read") end })
 local detectorThrows, auraThrows, feeThrows = false, false, false
+local feeEntries
 function issecretvalue(v)
     if detectorThrows then error("detector unavailable") end
     return rawequal(v, secret)
@@ -36,6 +37,7 @@ end }
 C_Spell = { GetSpellPowerCost = function(id)
     assert(id == 49998)
     if feeThrows then error("fee unavailable") end
+    if feeEntries then return feeEntries end
     return { { type = 0, minCost = 1, cost = 1 },
         { type = 6, minCost = fee, cost = 90, requiredAuraID = 0, hasRequiredAura = false } }
 end }
@@ -129,6 +131,22 @@ def run_scenario(scenario):
                                 capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'PASS: blood DK features' in result.stdout
+
+
+def test_lowest_applicable_runic_cost():
+    run_scenario(r'''
+feeEntries = {
+    {type=6,minCost=60,requiredAuraID=0},
+    {type=6,minCost=45,requiredAuraID=123,hasRequiredAura=true},
+    {type=6,minCost=35,requiredAuraID=456,hasRequiredAura=true},
+    {type=6,minCost=5,requiredAuraID=789,hasRequiredAura=false},
+    {type=0,minCost=1,requiredAuraID=0},
+}
+Tick()
+local angle = math.rad(441 - 102 * 0.35)
+Near(lines[1].start[1], 49.1 * math.cos(angle))
+Near(lines[1].start[2], -49.1 * math.sin(angle))
+''')
 
 
 def test_aura_controls_and_visibility_through_login_events_and_settings():

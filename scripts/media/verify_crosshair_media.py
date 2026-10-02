@@ -197,6 +197,19 @@ def verify_arc_stroke(asset, scale):
     expected = BLOOD_ARC_STROKE if name == "coagulated_blood_arc.png" else ARC_STROKE
     check(abs(got - expected) <= ARC_STROKE_TOL,
         f"{name}: 沿半径的跨度应为 {expected} 设计单位，实测 {got:.2f}")
+    if name == "coagulated_blood_arc.png":
+        yy, xx = np.mgrid[0:image.shape[0], 0:image.shape[1]]
+        dw, dh = asset["displaySize"]
+        dx = asset["centerOffset"][0] - dw / 2 + (xx + 0.5) / scale
+        dy = asset["centerOffset"][1] - dh / 2 + (yy + 0.5) / scale
+        selected = image[:, :, 3] >= 128
+        radii = np.hypot(dx[selected], dy[selected])
+        angles = np.degrees(np.arctan2(dy[selected], dx[selected])) % 360
+        radius = (radii.min() + radii.max()) / 2
+        check(abs(radius - 57.9) <= 0.3,
+              f"{name}: 中心半径应为 57.9，实测 {radius:.2f}")
+        check(abs(angles.min() - 99) <= 0.3 and abs(angles.max() - 150) <= 0.3,
+              f"{name}: 起止角应为 99–150，实测 {angles.min():.2f}–{angles.max():.2f}")
 
 
 def verify_center_dot(asset, scale):

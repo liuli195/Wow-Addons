@@ -208,7 +208,7 @@ local function UpdateDeathStrike()
     pcall(function()
         local costs = api.GetSpellPowerCost(49998)
         if Unreadable(costs) or type(costs) ~= "table" then return end
-        local selected, priority = nil, -1
+        local selected
         for _, entry in ipairs(costs) do
             if not Unreadable(entry) and type(entry) == "table"
                 and MaybeNumber(entry.type) == powerType then
@@ -216,9 +216,9 @@ local function UpdateDeathStrike()
                 local active = MaybeBoolean(entry.hasRequiredAura)
                 local applicable = required == 0 or (required ~= nil and active == true)
                 local cost = MaybeNumber(entry.minCost)
-                local rank = required == 0 and 0 or 1
-                if applicable and type(cost) == "number" and rank > priority then
-                    selected, priority = cost, rank
+                if applicable and type(cost) == "number" and cost >= 0
+                    and (selected == nil or cost < selected) then
+                    selected = cost
                 end
             end
         end
