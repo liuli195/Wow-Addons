@@ -163,6 +163,18 @@ class MaintenanceTests(unittest.TestCase):
                                      env=environment, capture_output=True, timeout=30)
             self.assertEqual(checked.returncode, 0, checked.stderr)
         self.assertEqual(before, sorted(path.name for path in self.root.iterdir()))
+        self.policy["data_root"] = None
+        self.save_config()
+        config_before = self.config.read_bytes()
+        missing_root = self.call("schedule-preview", "--root", str(self.root), "--python", sys.executable,
+                                 "--start-at", "2026-10-03T08:00:00+08:00")
+        self.assertIsNone(missing_root["xml"])
+        self.assertEqual(missing_root["unresolved"], ["data_root"])
+        self.assertFalse(missing_root["installed"])
+        self.assertFalse(missing_root["enabled"])
+        self.assertEqual(self.config.read_bytes(), config_before)
+        self.assertEqual(before, sorted(path.name for path in self.root.iterdir()))
+        self.policy["data_root"] = str(self.root)
         self.policy.update(mode="production", retention_days=None, maintenance_interval_hours=None)
         self.save_config()
         unset = self.call("schedule-preview", "--python", sys.executable)

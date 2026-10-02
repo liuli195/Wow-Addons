@@ -2985,7 +2985,7 @@ def schedule_preview(root, policy, args):
     executable = checked_path(args.python)
     if not Path(args.python).is_absolute() or not executable.is_file():
         raise DataError("Python须为已有可执行文件绝对路径")
-    unresolved = [key for key in ("root_id", "capacity_bytes", "retention_days", "maintenance_interval_hours",
+    unresolved = [key for key in ("data_root", "root_id", "capacity_bytes", "retention_days", "maintenance_interval_hours",
                                  "maintenance_reserve_bytes", "archive_part_bytes", "metadata_reserve_bytes", "lease_seconds") if policy[key] is None]
     if not args.start_at:
         unresolved.append("start_at")
