@@ -166,6 +166,12 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
 # 完整入口继续优化：HTTP 测试收尾轮询
 
+随后父端确认独占重型窗口，准确源码 `d98e7eaa5dc06be2b1acb7896d52c44a804a5cd6` 唯一一次运行既有统一 `verify --project . --full --performance-report`。诊断外层 180 秒仅用于取得完整报告，配置 `fullBudgetSeconds=60`、组内 data timeout 60、outer 3/product 8/data 12 均未改变。这不是正式 60 秒门禁通过。
+
+结果工具 86.62 秒、外墙 87.328 秒、退出 1，38 项中 37 passed、1 failed。产品组实际 created 8/8，311 passed / pytest 44.48 秒 / 检查 46.62 秒；数据组 `check_timeout` 60 秒，检查总耗时 80.53 秒，是本次明确关键路径；超时处理丢弃部分 stdout，组内完成数量和最慢用例仍未知。其他最长为 dk 20.72、skill 18.64、checker 9.26、annotation 8.14 秒。不能据此断言全部数据用例失败，也不能把旧报告用于推断本轮组内耗时。新 JSON 为 `data-management-diagnostic-d98e7ea-full-report.json`，完整 stdout 为 `data-management-diagnostic-d98e7ea-full.log`（仅去除行尾空格，Temp 原件保留）。外层没有触发 taskkill，已知 owned root 31788 只读检查 absent；没有声称独立核查所有后代。
+
+本地 HTTP 修复提交完成，推送被自动审批拒绝，理由可见用户指令要求不推送且缺少外部披露授权；未重试或绕过。下一步需要协调原生数据组非静默计时，获得当前最慢用例后才能进一步优化；正式门禁、独立审查和规格应用仍待完成。
+
 在 `4463f1b` 之后，只读核对现有稳定版统一验证器，确认整份配置摘要进入每项缓存键，增量入口对缓存缺失项重复计算键，成功缓存直到全部组结束才发布。最近正式 60 秒截断没有完整分组计时，不能据此指定当前最慢组，也不能将旧报告当作新报告。未修改全局验证器或工具链。
 
 `tests/sim2gse/test_interface.py` 的 100 个界面用例各自创建真实 HTTP 服务，原 `serve_forever` 默认轮询间隔为 0.5 秒，关闭服务等待轮询。仅测试夹具改为 `poll_interval=0.01`，仍逐例隔离目录和服务，保留任务取消、线程等待、服务器关闭和全部断言；产品运行时没有改变。没有减少测试数量或安全覆盖。

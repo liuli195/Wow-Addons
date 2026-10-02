@@ -1,0 +1,236 @@
+bounded-start-owned-pid=31788
+scene: local
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\My Project\Wow Addons
+plugins: xdist-3.8.0
+created: 8/8 workers
+8 workers [311 items]
+
+........................................................................ [ 23%]
+........................................................................ [ 46%]
+........................................................................ [ 69%]
+........................................................................ [ 92%]
+.......................                                                  [100%]
+============================= slowest 5 durations =============================
+10.72s call     tests/sim2gse/test_interface.py::InterfaceTests::test_browser_computes_copies_and_clears_real_candidate
+10.46s call     tests/sim2gse/test_interface.py::InterfaceTests::test_native_cast_reaches_candidate
+9.64s call     tests/sim2gse/test_interface.py::InterfaceTests::test_public_service_simulates_selected_import_and_returns_dps
+9.32s call     tests/sim2gse/test_interface.py::InterfaceTests::test_inspection_and_task_share_case_and_stopmacro_reachability
+9.24s call     tests/sim2gse/test_interface.py::InterfaceTests::test_known_false_macro_condition_still_skips_its_unreachable_command
+============================ 311 passed in 44.48s =============================
+duration: verify.sim2gse seconds=46.62
+check_timeout: verify.sim2gse-data exceeded 60s
+duration: verify.sim2gse-data seconds=80.53
+Initializing ...
+
+>>>>>>>>>>>>>>>>>>>> 1/1
+
+Diagnosis completed, no problems found
+璇婃柇鎶ュ憡锛?local\luals\run-elde4ytu\check.json
+duration: verify.luals seconds=6.83
+Checking D:\My Project\Wow Addons\addons\EUI_FacetedPortrait\Core.lua OK
+
+Total: 0 warnings / 0 errors in 1 file
+duration: verify.luacheck seconds=3.11
+PASS: 鎻掍欢娓呭崟銆佺洰鏍囨帴鍙ｅ彿鍜?Lua 5.1 璇硶
+duration: verify.toc seconds=3.12
+Initializing ...
+
+>>>>>>>>>>>>>>>>>>>> 1/1
+
+Diagnosis completed, no problems found
+璇婃柇鎶ュ憡锛?local\luals\run-hc0c8ys8\check.json
+duration: verify.sim2gse-probe-luals seconds=7.17
+Checking addons\Sim2GSEProbe\Core.lua             OK
+
+Total: 0 warnings / 0 errors in 1 file
+duration: verify.sim2gse-probe-luacheck seconds=1.23
+PASS: 鎻掍欢娓呭崟銆佺洰鏍囨帴鍙ｅ彿鍜?Lua 5.1 璇硶
+duration: verify.sim2gse-probe-toc seconds=0.94
+PASS: 19 涓噯鏄?HUD 绾圭悊鐨勫昂瀵搞€佷腑鎬у害銆佽挋鐗堢函搴︿笌閬僵鏂瑰悜
+duration: verify.crosshair-media seconds=4.53
+Initializing ...
+
+>>>>>>>>>>>>>>>>>>>> 1/1
+
+Diagnosis completed, no problems found
+璇婃柇鎶ュ憡锛?local\luals\run-akp8ahua\check.json
+duration: verify.myseries-luals seconds=7.09
+Checking addons\MYUI\Series.lua                   OK
+
+Total: 0 warnings / 0 errors in 1 file
+duration: verify.myseries-luacheck seconds=1.11
+PASS: 鎻掍欢娓呭崟銆佺洰鏍囨帴鍙ｅ彿鍜?Lua 5.1 璇硶
+duration: verify.myseries-toc seconds=1.03
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\My Project\Wow Addons
+plugins: xdist-3.8.0
+collected 1 item
+
+tests\addons\MYUI\test_series.py .                                       [100%]
+
+============================= slowest 5 durations =============================
+0.05s call     tests/addons/MYUI/test_series.py::test_series_roster
+
+(2 durations < 0.005s hidden.  Use -vv to show these durations.)
+============================== 1 passed in 0.08s ==============================
+duration: verify.myseries-series seconds=2.12
+Initializing ...
+
+>>>>================ 1/5
+
+>>>>>>>>============ 2/5
+
+>>>>>>>>>>>>>>>>>>>> 5/5
+
+Diagnosis completed, no problems found
+璇婃柇鎶ュ憡锛?local\luals\run-7b5ui3qx\check.json
+duration: verify.crosshairhud-luals seconds=6.61
+Checking addons\MYUI_CrosshairHUD\Config.lua      OK
+Checking addons\MYUI_CrosshairHUD\Core.lua        OK
+Checking addons\MYUI_CrosshairHUD\Elements.lua    OK
+Checking addons\MYUI_CrosshairHUD\Logic.lua       OK
+Checking addons\MYUI_CrosshairHUD\Visibility.lua  OK
+
+Total: 0 warnings / 0 errors in 5 files
+duration: verify.crosshairhud-luacheck seconds=0.81
+PASS: 鎻掍欢娓呭崟銆佺洰鏍囨帴鍙ｅ彿鍜?Lua 5.1 璇硶
+duration: verify.crosshairhud-toc seconds=0.86
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\My Project\Wow Addons
+plugins: xdist-3.8.0
+collected 15 items
+
+tests\addons\MYUI_CrosshairHUD\test_logic.py .                           [  6%]
+tests\addons\MYUI_CrosshairHUD\test_core_readings.py .                   [ 13%]
+tests\addons\MYUI_CrosshairHUD\test_unlock_contract.py ..                [ 26%]
+tests\addons\MYUI_CrosshairHUD\test_config_color.py .                    [ 33%]
+tests\addons\MYUI_CrosshairHUD\test_config_plan.py .                     [ 40%]
+tests\addons\MYUI_CrosshairHUD\test_visibility.py ........               [ 93%]
+tests\addons\MYUI_CrosshairHUD\test_media_placement.py .                 [100%]
+
+============================= slowest 5 durations =============================
+0.76s call     tests/addons/MYUI_CrosshairHUD/test_logic.py::test_logic_seam
+0.03s call     tests/addons/MYUI_CrosshairHUD/test_visibility.py::test_override_replaces_the_off_state_but_not_the_master_switch
+0.03s call     tests/addons/MYUI_CrosshairHUD/test_visibility.py::test_visibility_falls_open_without_eui_interfaces
+0.02s call     tests/addons/MYUI_CrosshairHUD/test_visibility.py::test_legacy_save_and_demo_mode_stay_visible
+0.02s call     tests/addons/MYUI_CrosshairHUD/test_config_color.py::test_config_color_and_alpha
+============================= 15 passed in 1.15s ==============================
+duration: verify.crosshairhud-tests seconds=3.38
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\My Project\Wow Addons
+plugins: xdist-3.8.0
+collected 19 items
+
+tests\dev\test_wow_addon_test_skill.py ...................               [100%]
+
+============================= slowest 5 durations =============================
+10.27s call     tests/dev/test_wow_addon_test_skill.py::SkillLayoutTest::test_tool_selftest_passes_in_the_repo
+2.17s call     tests/dev/test_wow_addon_test_skill.py::SkillLayoutTest::test_reference_check_saves_full_result_beyond_output_budget
+0.96s call     tests/dev/test_wow_addon_test_skill.py::SkillLayoutTest::test_install_skill_only_writes_inside_the_target_project
+0.63s call     tests/dev/test_wow_addon_test_skill.py::SkillLayoutTest::test_repo_pins_the_lua_backend
+0.61s call     tests/dev/test_wow_addon_test_skill.py::SkillLayoutTest::test_entry_runs_and_reports_integrity
+============================= 19 passed in 17.28s =============================
+duration: verify.wowaddontest-skill seconds=18.64
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\My Project\Wow Addons
+plugins: xdist-3.8.0
+collected 27 items
+
+tests\addons\MYUI_CrosshairHUD\test_wowtest_dk.py ...................... [ 81%]
+.....                                                                    [100%]
+
+============================= slowest 5 durations =============================
+2.21s call     tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py::LockedDataCheckTest::test_repeat_run_leaves_tracked_files_unchanged
+1.88s call     tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py::DefectDetectionTest::test_normal_run_fails_after_injection_then_passes_after_restore
+1.27s call     tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py::LockedDataCheckTest::test_unreadable_reading_is_not_a_silent_pass
+1.26s call     tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py::DeathKnightComparisonTest::test_repo_judgement_has_no_unregistered_differences
+1.21s call     tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py::LockedDataCheckTest::test_every_locked_case_and_checkpoint_is_accounted_for
+============================= 27 passed in 18.74s =============================
+duration: verify.wowaddontest-dk seconds=20.72
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\My Project\Wow Addons
+plugins: xdist-3.8.0
+collected 1 item
+
+tests\addons\Sim2GSEProbe\test_probe.py .                                [100%]
+
+============================= slowest 5 durations =============================
+0.02s call     tests/addons/Sim2GSEProbe/test_probe.py::test_probe_captures_one_real_input_path
+
+(2 durations < 0.005s hidden.  Use -vv to show these durations.)
+============================== 1 passed in 0.04s ==============================
+duration: verify.sim2gse-probe-test seconds=1.30
+Initializing ...
+
+>>>>>>>>>>>>>>>>>>>> 1/1
+
+Diagnosis completed, no problems found
+璇婃柇鎶ュ憡锛?local\luals\run-jiw6wi4w\check.json
+duration: verify.addon-probe-luals seconds=3.33
+Checking addons\AddonProbe\Core.lua               OK
+
+Total: 0 warnings / 0 errors in 1 file
+duration: verify.addon-probe-luacheck seconds=0.55
+PASS: 鎻掍欢娓呭崟銆佺洰鏍囨帴鍙ｅ彿鍜?Lua 5.1 璇硶
+duration: verify.addon-probe-toc seconds=0.53
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\My Project\Wow Addons
+plugins: xdist-3.8.0
+collected 16 items
+
+tests\addons\AddonProbe\test_probe.py ................                   [100%]
+
+============================= slowest 5 durations =============================
+0.02s call     tests/addons/AddonProbe/test_probe.py::test_first_write_fills_missing_baselines
+0.02s call     tests/addons/AddonProbe/test_probe.py::test_flip_rule_separates_rewrites_from_edits
+0.01s call     tests/addons/AddonProbe/test_probe.py::test_second_start_closes_the_previous_session
+0.01s call     tests/addons/AddonProbe/test_probe.py::test_sweep_survives_an_unreadable_path_key
+0.01s call     tests/addons/AddonProbe/test_probe.py::test_watch_without_preset_records_a_generic_call
+============================= 16 passed in 0.26s ==============================
+duration: verify.addon-probe-test seconds=1.44
+PASS: 13 neutral RGBA assets; WoW TGA headers; eight-slice border atlas; clean portrait alpha fringe.
+duration: verify.assets seconds=2.27
+PASS: 216 浠芥枃妗ｇ殑缂栫爜銆佷唬鐮佸洿鏍忓拰 JSON 绀轰緥
+duration: verify.docs seconds=3.56
+PASS: 姝ｇ‘浠ｇ爜閫氳繃锛涢敊璇帴鍙ｅ悕銆佸弬鏁般€佽娉曞強缂哄け鍔犺浇鏂囦欢鍧囪鎷︽埅
+duration: verify.checker-tests seconds=9.26
+PASS: 瑙ｆ瀽銆佺被鍨嬫槧灏勪笌浜у嚭瑙勫垯绗﹀悎棰勬湡
+duration: verify.annotation-build seconds=8.14
+PASS: 鎵€鏈夋祴璇曞叆鍙ｅ潎宸茬櫥璁?
+duration: verify.test-inventory seconds=0.67
+PASS: actual calculation, comparison and merge ignore stale replies; failed edit retains previous result
+duration: verify.gear-async seconds=1.19
+PASS: current name validation and legacy duplicate labels
+duration: verify.gear-build-names seconds=1.23
+PASS: actual delete cancellation, failed persistence, ordinary and last build
+duration: verify.gear-delete seconds=1.22
+PASS: actual empty state resets originals, comparison and filters; no automatic sample
+duration: verify.gear-empty seconds=1.50
+PASS: atomic save/create, armor samples and difference of displayed values; native data retained
+duration: verify.gear-save-armor seconds=1.49
+PASS: blank/duplicate validation, cancel, storage failure atomicity, save current edits and switch, independent old/new builds
+duration: verify.gear-save-as seconds=1.44
+PASS: script syntax, no selection, any/all, crafted pairs, native trinket stats
+PASS: hidden placeholder, saved levels, uniform levels, min/max and mixed levels
+PASS: floating summary values, calculation status and incomplete result handling
+PASS: import/saved default comparison, frozen reference, unsupported field placeholders removed
+PASS: neutral workspace title and character identity derived from loaded model
+duration: verify.gear-stat-filter seconds=1.36
+PASS: unsupported summaries hidden; supported empty marked missing; configured labels retained
+duration: verify.gear-summary seconds=1.33
+duration: verify.myspec-main seconds=1.08
+performance-report: .build-and-verify/runs/performance-report.json
+performance-warning: totalSeconds=86.62 budgetSeconds=60 exceededSeconds=26.62 exceededPercent=44.37 report=.build-and-verify/runs/performance-report.json
+failed: verify.sim2gse-data
+checked: verify.sim2gse, verify.sim2gse-data, verify.luals, verify.luacheck, verify.toc, verify.sim2gse-probe-luals, verify.sim2gse-probe-luacheck, verify.sim2gse-probe-toc, verify.crosshair-media, verify.myseries-luals, verify.myseries-luacheck, verify.myseries-toc, verify.myseries-series, verify.crosshairhud-luals, verify.crosshairhud-luacheck, verify.crosshairhud-toc, verify.crosshairhud-tests, verify.wowaddontest-skill, verify.wowaddontest-dk, verify.sim2gse-probe-test, verify.addon-probe-luals, verify.addon-probe-luacheck, verify.addon-probe-toc, verify.addon-probe-test, verify.assets, verify.docs, verify.checker-tests, verify.annotation-build, verify.test-inventory, verify.gear-async, verify.gear-build-names, verify.gear-delete, verify.gear-empty, verify.gear-save-armor, verify.gear-save-as, verify.gear-stat-filter, verify.gear-summary, verify.myspec-main
+full-not-run: false
+status: failed
+bounded-wall-seconds=87.328; exit=1
