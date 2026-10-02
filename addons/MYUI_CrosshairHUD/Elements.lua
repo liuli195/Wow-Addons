@@ -34,8 +34,6 @@ local Elements = NS.Elements
 
 -- 固定版暴雪文档的新增纹理接口；本机通用类型库尚未包含这些成员。
 ---@class CHHRadialTexture: Texture
----@field SetRadialProgressBarStartOffset fun(self: CHHRadialTexture, offset: number)
----@field SetRadialProgressBarEndOffset fun(self: CHHRadialTexture, offset: number)
 ---@field SetRadialProgressBarReverse fun(self: CHHRadialTexture, reverse: boolean)
 ---@field GetRadialProgressBarPercent fun(self: CHHRadialTexture): number
 
@@ -207,8 +205,6 @@ function Elements.Create()
     SmoothTexture(fill, "coagulated_blood_fill")
     bar:SetRenderMode(_G.Enum.StatusBarRenderMode.Radial)
     fill:SetAllPoints(bar)
-    fill:SetRadialProgressBarStartOffset(7 / 360)
-    fill:SetRadialProgressBarEndOffset(60 / 360)
     fill:SetRadialProgressBarReverse(false)
     bar:SetAllPoints(frame)
     bar:SetShown(false)
@@ -332,7 +328,12 @@ local function ApplyFillable(part, st)
         -- rotation 可能是秘密值：只能原样交给 setter
         if part.bar then
             local ok = pcall(function()
-                part.bar:SetMinMaxValues(0, st.maxStacks)
+                -- 原生比例按整圆计算；将用户量程换算为短弧角度区间。
+                -- 只计算普通配置常量，原始受限层数仍直接传给 SetValue。
+                local arc = Logic.ARCS.coagulatedBlood
+                local start = arc.start - Logic.FILL_MARGIN - 90
+                local unit = st.maxStacks / (arc.span + Logic.FILL_MARGIN)
+                part.bar:SetMinMaxValues(-start * unit, (360 - start) * unit)
                 part.bar:SetValue(st.stacks)
             end)
             if not ok then part.bar:SetShown(false); part.fill:SetShown(false) end

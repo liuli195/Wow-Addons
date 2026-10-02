@@ -197,7 +197,7 @@ assert(not shadow.mask,"shadow must not be fill-masked")
 assert(bg.shown and fill.shown and shadow.shown)
 Near(controls["满条层数"].getValue(),150)
 -- 75/150 的中间位置：起点99减2度余量，加53度的一半。
-assert(not fill.mask);Near(fill.radialStart,7/360)
+assert(not fill.mask and fill.radialStart==nil and fill.radialEnd==nil)
 controls["启用"].setValue(false)
 assert(not bg.shown and not fill.shown and not shadow.shown)
 SlashCmdList.MYUICHH("demo")
@@ -207,7 +207,7 @@ controls["启用"].setValue(true)
 controls["满条层数"].setValue(75)
 local bar
 for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
-Near(bar.maximum,75)
+Near(bar.minimum,-9.90566037735849);Near(bar.maximum,499.528301886792)
 assert(bar.value==75)
 aura=nil;Event("UNIT_AURA")
 assert(not bg.shown and not fill.shown and not shadow.shown)
@@ -259,7 +259,7 @@ aura={applications=300};fee=0;maximum=100;Tick()
 assert(bg.shown and fill.shown and line.shown)
 local bar
 for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
-Near(bar.maximum,150);assert(bar.value==300)
+Near(bar.maximum,999.056603773585);assert(bar.value==300)
 auraThrows=true;feeThrows=true;Tick()
 assert(not bg.shown and not line.shown)
 auraThrows=false;feeThrows=false;Tick()
@@ -299,7 +299,7 @@ BuffIconCooldownViewer={GetItemFrames=function() return {item} end}
 Tick()
 local fill=Layer("coagulated_blood_fill.png",1)
 assert(fill.shown, "tracked buff must render when direct lookup misses")
-assert(not fill.mask);Near(fill.radialStart,7/360)
+assert(not fill.mask and fill.radialStart==nil and fill.radialEnd==nil)
 item.auraDataCached={applications=secret};Tick()
 assert(fill.shown and Layer("coagulated_blood_arc_shadow.png").shown, "restricted stacks must reach native drawing")
 item.auraDataCached=nil;Tick()
@@ -339,12 +339,12 @@ local bar
 for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
 assert(bar and bar.shown,"linked buff must have visible native radial fill")
 assert(rawequal(bar.value,secret),"original restricted stacks must reach the engine unchanged")
-Near(bar.minimum,0);Near(bar.maximum,150)
+Near(bar.minimum,-19.811320754717);Near(bar.maximum,999.056603773585)
 assert(bar.mode==Enum.StatusBarRenderMode.Radial)
-Near(bar.texture.radialStart,7/360);Near(bar.texture.radialEnd,60/360)
+assert(bar.texture.radialStart==nil and bar.texture.radialEnd==nil)
 assert(bar.texture.radialReverse==false and not bar.texture.mask)
 rows["凝固之血"]["满条层数"].setValue(200)
-Near(bar.maximum,200);assert(rawequal(bar.value,secret))
+Near(bar.maximum,1332.07547169811);assert(rawequal(bar.value,secret))
 rows["凝固之血"]["启用"].setValue(false);assert(not bar.shown)
 rows["凝固之血"]["启用"].setValue(true);assert(bar.shown)
 item.auraDataCached=nil;Tick();assert(not bar.shown)
@@ -359,11 +359,11 @@ assert(bar)
 for _,value in ipairs({0,75,150,300}) do
     aura={applications=value};Tick()
     assert(bar.shown and bar.value==value)
-    Near(bar.minimum,0);Near(bar.maximum,150)
+    Near(bar.minimum,-19.811320754717);Near(bar.maximum,999.056603773585)
 end
 rows["常规"]["HUD 缩放"].setValue(2)
 assert(NS.Elements.scale==2)
-Near(bar.texture.radialStart,7/360);Near(bar.texture.radialEnd,60/360)
+assert(bar.texture.radialStart==nil and bar.texture.radialEnd==nil)
 aura={};Tick()
 assert(not bar.shown and Layer("coagulated_blood_arc.png",0).shown)
 local original=bar.SetValue
@@ -426,8 +426,8 @@ end
 aura={applications=16};Tick();SlashCmdList.MYUICHH("blood")
 local result=table.concat(messages,"\n")
 assert(result:find("实际读取层数：16",1,true))
-assert(result:find("游戏绘制量程：0～150",1,true))
-assert(result:find("圆形进度：0.106667",1,true))
+assert(result:find("游戏绘制量程：-19.8113～999.057",1,true))
+assert(result:find("圆形进度：0.0351481",1,true))
 messages={};aura={applications=secret};Tick();SlashCmdList.MYUICHH("blood")
 result=table.concat(messages,"\n")
 assert(result:find("实际读取层数：受限或缺失",1,true))
@@ -442,7 +442,7 @@ for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
 aura={applications=secret};Tick()
 SlashCmdList.MYUICHH("bloodtest 16")
 assert(bar.shown and bar.value==16,"fixed probe must bypass restricted live stacks")
-Near(bar.minimum,0);Near(bar.maximum,150)
+Near(bar.minimum,-19.811320754717);Near(bar.maximum,999.056603773585)
 Tick();assert(bar.value==16,"polling must retain the calibration value")
 SlashCmdList.MYUICHH("bloodtest 75");assert(bar.value==75)
 SlashCmdList.MYUICHH("bloodtest 0");assert(bar.value==0)
@@ -455,4 +455,24 @@ aura=nil;Tick();assert(not bar.shown)
 SlashCmdList.MYUICHH("bloodtest 16");assert(bar.shown and bar.value==16)
 SlashCmdList.MYUICHH("bloodtest off");assert(not bar.shown)
 Near(rows["凝固之血"]["满条层数"].getValue(),150)
+''')
+
+
+def test_blood_stack_counts_map_to_short_arc_angles_not_full_circle_fractions():
+    run_scenario(r'''
+local bar
+for _,f in ipairs(frames) do if f.kind=="StatusBar" then bar=f end end
+for _,pair in ipairs({{0,97},{16,102.653333333333},{75,123.5},{150,150}}) do
+    SlashCmdList.MYUICHH("bloodtest "..pair[1])
+    -- 原生整圆比例：底部90度为起点；预期角度取自已确认的短弧设计。
+    local fraction=(bar.value-bar.minimum)/(bar.maximum-bar.minimum)
+    Near(90+360*fraction,pair[2])
+end
+assert(bar.texture.radialStart==nil and bar.texture.radialEnd==nil,
+    "do not crop or remap the native whole-circle defaults")
+rows["凝固之血"]["满条层数"].setValue(200)
+SlashCmdList.MYUICHH("bloodtest off")
+aura={applications=100};Tick()
+Near(90+360*(bar.value-bar.minimum)/(bar.maximum-bar.minimum),123.5)
+aura={applications=secret};Tick();assert(rawequal(bar.value,secret))
 ''')
