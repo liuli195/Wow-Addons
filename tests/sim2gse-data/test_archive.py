@@ -10,6 +10,7 @@ import io
 import tarfile
 import shutil
 import unittest
+import ast
 
 import test_lifecycle as lifecycle
 
@@ -34,6 +35,156 @@ class ArchiveTests(unittest.TestCase):
         plan = self.call("archive", *arguments)
         return self.call("archive", *arguments, "--approve-hash", plan["plan_hash"])
 
+    def batch_sources(self, directory, values):
+        folder = self.root / directory
+        folder.mkdir()
+        for name, value in values.items():
+            (folder / name).write_bytes(value)
+        plan = self.call("legacy-register", "--directory", str(folder), "--role", "native")
+        result = self.call("legacy-register", "--directory", str(folder), "--role", "native", "--approve-hash", plan["plan_hash"])
+        self.assertEqual(len(result["artifacts"]), len(values))
+        return [item["artifact_id"] for item in result["artifacts"]]
+
+    def restore_archive(self, archived, destination):
+        arguments = ("--archive-id", archived["archive_id"], "--destination", str(destination))
+        plan = self.call("restore", *arguments)
+        return self.call("restore", *arguments, "--approve-hash", plan["plan_hash"])
+
+    def legacy_writer_cli(self):
+        # 真实历史writer源码夹具，仅替换隔离CLI副本的版本；不是业务函数mock。
+        original = lifecycle.CLI.read_text(encoding="utf-8")
+        node = next(node for node in ast.parse(original).body if isinstance(node, ast.FunctionDef) and node.name == "create_archive")
+        lines = original.splitlines(keepends=True)
+        writer = (Path(__file__).parent / "fixtures/archive_format1_single_member.txt").read_text(encoding="utf-8")
+        copied = Path(self.temporary.name) / "legacy skill copy" / "scripts" / "simdata.py"
+        copied.parent.mkdir(parents=True)
+        copied.write_text("".join(lines[:node.lineno - 1]) + writer + "\n" + "".join(lines[node.end_lineno:]), encoding="utf-8")
+        shutil.copytree(lifecycle.CLI.parents[1] / "assets", copied.parents[1] / "assets")
+        shutil.copyfile(lifecycle.CLI.parents[1] / "SKILL.md", copied.parents[1] / "SKILL.md")
+        return copied
+
+    def legacy_call(self, cli, command, *arguments, setup=None, expected=0):
+        original = lifecycle.CLI
+        try:
+            lifecycle.CLI = cli
+            if setup is None:
+                return self.call(command, *arguments, expected=expected)
+            return self.injected_call(setup, command, *arguments, expected=expected)
+        finally:
+            lifecycle.CLI = original
+
+    def test_empty_boundary_and_large_sources_keep_original_segment_sizes(self):
+        self.initialize()
+        self.policy["archive_part_bytes"] = 8
+        self.policy["capacity_bytes"] = 32 * 1024 * 1024
+        self.save_config()
+        values = {"empty.bin": b"", "minus.bin": b"a" * 7, "exact.bin": b"b" * 8,
+                  "plus.bin": b"c" * 9, "large.bin": b"d" * 17}
+        identities = self.batch_sources("boundary sources", values)
+        archived = self.archive(*identities)
+        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        expected = {"empty.bin": [(0, 0)], "minus.bin": [(0, 7)], "exact.bin": [(0, 8)],
+                    "plus.bin": [(0, 8), (8, 1)], "large.bin": [(0, 8), (8, 8), (16, 1)]}
+        members = [member for part in manifest["parts"] for member in part["members"]]
+        self.assertGreater(len(manifest["parts"]), 1)
+        self.assertTrue(all(sum(member["size"] for member in part["members"]) <= 8 for part in manifest["parts"]))
+        self.assertTrue(all(len(part["members"]) <= 1000 for part in manifest["parts"]))
+        for source in manifest["sources"]:
+            observed = [(member["offset"], member["size"]) for member in members if member["artifact_id"] == source["id"]]
+            self.assertEqual(observed, expected[Path(source["path"]).name])
+        self.assertEqual([member["artifact_id"] for member in members],
+                         [source["id"] for source in manifest["sources"] for _ in expected[Path(source["path"]).name]])
+        restored = self.restore_archive(archived, self.root / "boundary restored")
+        self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in restored["restored"]}, values)
+
+    def test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them(self):
+        self.initialize()
+        self.policy["capacity_bytes"] = 2 * 1024 * 1024 * 1024
+        self.save_config()
+        identities = self.batch_sources("empty members", {"empty-%04d.bin" % number: b"" for number in range(1000)})
+        arguments_file = Path(self.temporary.name) / "many public CLI arguments.json"
+        setup = "import sys,json\nfrom pathlib import Path\nsys.argv.extend(json.loads(Path(" + repr(str(arguments_file)) + ").read_text()))"
+        # Windows进程参数最多32767字符；仍经同一公开CLI parser读取完整1000成员请求。
+        arguments_file.write_text(json.dumps([argument for identity in identities + [identities[0]] for argument in ("--artifact-id", identity)]))
+        self.injected_call(setup, "archive", expected=2)
+        arguments_file.write_text(json.dumps([argument for identity in identities for argument in ("--artifact-id", identity)]))
+        plan = self.injected_call(setup, "archive")
+        archived = self.injected_call(setup, "archive", "--approve-hash", plan["plan_hash"])
+        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["parts"]), 1)
+        self.assertEqual(len(manifest["parts"][0]["members"]), 1000)
+        self.assertTrue(all(member["size"] == 0 for member in manifest["parts"][0]["members"]))
+        # 1000文件另有一层来源目录，超过既有恢复产品1000目录项上限；不放宽该上限。
+        preview = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(self.root / "empty restored"))
+        self.assertEqual(len(preview["manifest"]["sources"]), 1000)
+        self.assertTrue(all(member["sha256"] == hashlib.sha256(b"").hexdigest() for member in manifest["parts"][0]["members"]))
+
+    def test_later_member_interruption_retains_completed_and_partial_parts_before_retry(self):
+        self.initialize()
+        self.policy["archive_part_bytes"] = 4
+        self.policy["capacity_bytes"] = 32 * 1024 * 1024
+        self.save_config()
+        values = {"member-%d.bin" % number: b"ok" for number in range(5)}
+        identities = self.batch_sources("interrupted members", values)
+        arguments = [argument for identity in identities for argument in ("--artifact-id", identity)]
+        plan = self.call("archive", *arguments)
+        setup = "import tarfile,os\noriginal=tarfile.TarFile.addfile\ncount=0\ndef fail(self,*args,**kwargs):\n global count\n original(self,*args,**kwargs)\n count+=1\n if count==4: os._exit(77)\ntarfile.TarFile.addfile=fail"
+        self.injected_call(setup, "archive", *arguments, "--approve-hash", plan["plan_hash"], expected=77)
+        stage = self.root / ".staging" / plan["operation_id"]
+        completed = stage / "data" / "part-000000.tar.gz"
+        partial = stage / "data" / "part-000001.tar.gz.tmp"
+        before = completed.read_bytes(), partial.read_bytes()
+        self.assertEqual(self.call("operation", "--operation-id", plan["operation_id"])["phase"], "writing")
+        self.assertGreater(self.call("status")["operation_reserved_bytes"], 0)
+        archived = self.call("archive", "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+        retained = list(stage.glob("retained-*"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual((retained[0] / completed.name).read_bytes(), before[0])
+        self.assertEqual((retained[0] / partial.name).read_bytes(), before[1])
+        restored = self.restore_archive(archived, self.root / "retry restored")
+        self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in restored["restored"]}, values)
+
+    def test_shared_part_rejects_a_changed_later_member_digest(self):
+        self.initialize()
+        identities = self.batch_sources("digest sources", {"left.bin": b"abc", "right.bin": b"def"})
+        archived = self.archive(*identities)
+        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["parts"]), 1)
+        manifest["parts"][0]["members"][1]["sha256"] = "0" * 64
+        _, path = self.source("changed-member-manifest.json", json.dumps(manifest).encode())
+        target = self.root / "changed member restored"
+        self.call("restore", "--manifest", str(path), "--destination", str(target), expected=2)
+        self.assertFalse(target.exists())
+
+    def test_old_single_member_layout_and_all_old_operation_phases_remain_compatible(self):
+        self.initialize()
+        self.policy["archive_part_bytes"] = 8
+        self.save_config()
+        cli = self.legacy_writer_cli()
+        for phase in ("reserved", "writing", "verified", "published", "sealed"):
+            with self.subTest(legacy_phase=phase):
+                values = {"old-%d.bin" % number: b"old" for number in range(3)}
+                identities = self.batch_sources("old " + phase, values)
+                arguments = [argument for identity in identities for argument in ("--artifact-id", identity)]
+                plan = self.legacy_call(cli, "archive", *arguments)
+                self.legacy_call(cli, "archive", *arguments, "--approve-hash", plan["plan_hash"],
+                                 setup=self.crash_on_phase(plan["operation_id"], phase), expected=77)
+                private = self.root / ".staging" / plan["operation_id"] / "data"
+                published = self.root / plan["destination"]
+                prior = {path.name: path.read_bytes() for folder in (private, published) if folder.exists() for path in folder.glob("*.tar.gz")}
+                archived = self.call("archive", "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+                self.assertEqual(archived["phase"], "sealed")
+                for name, content in prior.items():
+                    self.assertEqual((published / name).read_bytes(), content)
+                manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+                if phase in ("verified", "published", "sealed"):
+                    self.assertEqual(len(manifest["parts"]), 3)
+                    self.assertTrue(all(len(part["members"]) == 1 for part in manifest["parts"]))
+                else:
+                    self.assertEqual(len(manifest["parts"]), 2)
+                restored = self.restore_archive(archived, self.root / ("old restored " + phase))
+                self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in restored["restored"]}, values)
+
     def test_streamed_parts_restore_original_bytes_without_touching_business_last_used(self):
         self.initialize()
         identity, source = self.source("输入 空格/native.bin")
@@ -55,6 +206,25 @@ class ArchiveTests(unittest.TestCase):
         source.unlink()  # 仅删除本测试创建的合成原件，演练恢复位置解析。
         self.assertEqual(Path(self.call("resolve", "--artifact-id", identity, "--inspect")["path"]).read_bytes(),
                          bytes(range(256)) * 301)
+
+    def test_small_sources_share_a_part_without_changing_original_segments(self):
+        self.initialize()
+        self.policy["archive_part_bytes"] = 8
+        self.save_config()
+        identities = [self.source("small-%d.bin" % number, value)[0]
+                      for number, value in enumerate((b"abc", b"def"))]
+        archived = self.archive(*identities)
+        manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["parts"]), 1)
+        self.assertEqual([member["artifact_id"] for member in manifest["parts"][0]["members"]], sorted(identities))
+        self.assertEqual([member["size"] for member in manifest["parts"][0]["members"]], [3, 3])
+        self.assertTrue(all(member["offset"] == 0 for member in manifest["parts"][0]["members"]))
+        target = self.root / "small restored"
+        plan = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(target))
+        result = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(target),
+                           "--approve-hash", plan["plan_hash"])
+        self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in result["restored"]},
+                         {"small-0.bin": b"abc", "small-1.bin": b"def"})
 
     def test_restore_rejects_corruption_and_existing_destination(self):
         self.initialize()

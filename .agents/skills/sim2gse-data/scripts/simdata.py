@@ -1561,44 +1561,65 @@ def create_archive(root, db, plan, data):
     manifest = dict(format=1, root_id=plan["root_id"], archive_id=plan["operation_id"], sources=plan["sources"], parts=[])
     part_size = plan["part_bytes"]
     number = 0
+    archive = None
     index_paths(root)
-    for source in plan["sources"]:
-        source_root, path, current_image = read_location(root, db, artifact_row(db, source["id"]))
-        if current_image != {key: source[key] for key in ("sha256", "size", "identity")}:
-            raise DataError("归档读取位置或身份改变")
-        with runner_locks(source_root, path), path.open("rb") as handle:
-            whole = hashlib.sha256()
-            for offset in range(0, max(1, source["size"]), part_size):
-                length = min(part_size, source["size"] - offset)
-                reader = SegmentReader(handle, length)
-                name = "objects/" + source["id"] + "/" + str(offset)
-                part_name = "part-%06d.tar.gz" % number
-                temporary = data / (part_name + ".tmp")
-                with temporary.open("xb") as output:
-                    with gzip.GzipFile(fileobj=output, filename="", mode="wb", mtime=0) as compressed:
-                        with tarfile.open(fileobj=compressed, mode="w|", format=tarfile.USTAR_FORMAT) as archive:
-                            member = tarfile.TarInfo(name)
-                            member.size = length
-                            archive.addfile(member, reader)
-                    output.flush()
-                    os.fsync(output.fileno())
-                if reader.remaining:
-                    raise DataError("归档原件提前结束")
-                # 再次有界读取原片段，供原文件整体摘要验证；不装载整个原件。
-                handle.seek(offset)
-                remaining = length
-                while remaining:
-                    block = handle.read(min(1024 * 1024, remaining))
-                    if not block:
-                        raise DataError("归档原件变化")
-                    whole.update(block)
-                    remaining -= len(block)
-                os.replace(temporary, data / part_name)
-                manifest["parts"].append(dict(path=plan["destination"] + "/" + part_name,
-                    **file_manifest(data / part_name), members=[dict(name=name, artifact_id=source["id"], offset=offset, size=length, sha256=reader.hash.hexdigest())]))
-                number += 1
-            if whole.hexdigest() != source["sha256"] or file_manifest(path, allow_sqlite=source["role"] == "sqlite-backup") != {key: source[key] for key in ("sha256", "size", "identity")}:
-                raise DataError("归档原件身份或原SHA发生变化")
+
+    def finish_part():
+        nonlocal archive, number
+        archive.close()
+        compressed.close()
+        output.flush()
+        os.fsync(output.fileno())
+        handles.close()
+        os.replace(temporary, data / part_name)
+        manifest["parts"].append(dict(path=plan["destination"] + "/" + part_name,
+            **file_manifest(data / part_name), members=members))
+        number += 1
+        archive = None
+
+    with ExitStack() as handles:
+        for source in plan["sources"]:
+            source_root, path, current_image = read_location(root, db, artifact_row(db, source["id"]))
+            if current_image != {key: source[key] for key in ("sha256", "size", "identity")}:
+                raise DataError("归档读取位置或身份改变")
+            with runner_locks(source_root, path):
+                with path.open("rb") as handle:
+                    whole = hashlib.sha256()
+                    for offset in range(0, max(1, source["size"]), part_size):
+                        length = min(part_size, source["size"] - offset)
+                        if archive is not None and (payload + length > part_size or len(members) >= 1000):
+                            finish_part()
+                        if archive is None:
+                            if number >= 1000:
+                                raise DataError("归档分包超过1000，拒绝继续写入")
+                            part_name = "part-%06d.tar.gz" % number
+                            temporary = data / (part_name + ".tmp")
+                            output = handles.enter_context(temporary.open("xb"))
+                            compressed = handles.enter_context(gzip.GzipFile(fileobj=output, filename="", mode="wb", mtime=0))
+                            archive = handles.enter_context(tarfile.open(fileobj=compressed, mode="w|", format=tarfile.USTAR_FORMAT))
+                            payload, members = 0, []
+                        reader = SegmentReader(handle, length)
+                        name = "objects/" + source["id"] + "/" + str(offset)
+                        member = tarfile.TarInfo(name)
+                        member.size = length
+                        archive.addfile(member, reader)
+                        if reader.remaining:
+                            raise DataError("归档原件提前结束")
+                        # 再次有界读取原片段，供原文件整体摘要验证；不装载整个原件。
+                        handle.seek(offset)
+                        remaining = length
+                        while remaining:
+                            block = handle.read(min(1024 * 1024, remaining))
+                            if not block:
+                                raise DataError("归档原件变化")
+                            whole.update(block)
+                            remaining -= len(block)
+                        members.append(dict(name=name, artifact_id=source["id"], offset=offset, size=length, sha256=reader.hash.hexdigest()))
+                        payload += length
+                if whole.hexdigest() != source["sha256"] or file_manifest(path, allow_sqlite=source["role"] == "sqlite-backup") != {key: source[key] for key in ("sha256", "size", "identity")}:
+                    raise DataError("归档原件身份或原SHA发生变化")
+        if archive is not None:
+            finish_part()
     write_json_file(data / "manifest.json", manifest)
     return manifest
 
