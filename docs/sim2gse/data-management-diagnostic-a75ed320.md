@@ -110,3 +110,13 @@ bringing up nodes...
 起点2f3b9a39。只改SafetyTests.test_quarantine_and_recovery_committed_phases_and_post_move_crash的准备：每个reserved/writing/published/sealed/rename阶段fresh一个来源，先完成quarantine故障/恢复/幂等，再复用同一已隔离对象进行同phase recover-quarantine故障/恢复/幂等。五阶段仍五个不同ID，补ID唯一、返回原operation ID/sealed/同artifact断言，无额外业务I/O。十个phase×command故障、rename后exit77、原字节及幂等断言保持。生产计划读取quarantined custody，operation ID包含generation，支持该接续状态；未修改生产。准备72→52 CLI、setup jobs15→10，明确改变每阶段第二来源及正常隔离准备结构，不删除故障组合。
 
 before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data/test_safety.py -k quarantine_and_recovery_committed --dist=worksteal -n 8 --durations=5`，既有Temp包装器各25秒上限。修改前1 passed/10 subtests passed，call13.29秒、pytest23.75秒、外层24.163秒；修改后同样1+10 passed，call9.40秒、pytest10.53秒、外层10.876秒。测试体约少3.89秒；前体外耗时约10.46秒明显大于后约1.13秒，因此不能将wall差13.29秒全归因夹具改动，也不能保证整仓同幅下降。没有运行完整数据组或整仓，本轮正式60仍未通过，等待父端准确远端review与后续放行。
+
+## 放行后的唯一正式60验证
+
+固定干净实现bf04f47b4e2dffd4d3e786264008975af74bbc83，父端确认无budget重测并发后仅一次统一入口 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，既有外层硬限60秒。配置outer3/inner8不变；PYTEST_ADDOPTS=`-v --durations=5`为原生输出参数，未改runner。开始前已知历史owned PID7036/33412/40592/30088均不存在，但历史没有持久化全部后代，不能推断所有历史残留已清空。
+
+结果正式失败：日志scene local、selection-reason config-changed，明确35条cache-hit。其余fresh为verify.sim2gse-data、verify.docs、verify.test-inventory，没有完整结束汇总，不能算通过。缓存原Sim2GSE等35项未实际重跑，不冒充38fresh。原生非quiet worker输出仍被统一工具capture到检查结果，中断前未汇总打印，所以这轮没有created worker行证据，不重新测量补打印。系统Temp日志 `simdata-formal-bf04f47-isolated-60s.log`。
+
+超时边界观察：`bounded-timeout-poll=None; owned-pid=23384`表明该时主进程仍运行；`bounded-deadline=60.495; taskkill=128; bounded-child-exit=1`含终止收尾。taskkill stdout确认主及多个后代终止，但stderr有12个后代“操作不被支持”，故128不能当树终止成功。随后立即只读逐个检查主23384及报错后代6612/12572/27172/40908/30556/36516/23992/23872/36828/3548/41544/33400，13个全部absent；本轮已知节点结束，机器已释放，未盲杀其他进程/提权/重测。包装器实际exit124，统一主进程exit1，不能将PowerShell最后Get-Content的exit0当验证成功。
+
+30–40秒目标仍未达，正式60仍失败。没有自动优化或更多测量，下一步由父端依据现有存量证据安排；候选票据、正式规格和交付门禁未关闭。
