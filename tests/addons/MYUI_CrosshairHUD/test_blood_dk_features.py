@@ -49,7 +49,9 @@ C_CurveUtil = { CreateCurve = function()
     function c:SetType() end
     function c:AddPoint(x, y) self.points[#self.points + 1] = {x,y} end
     function c:Evaluate(x)
-        return self.points[1][2] + (self.points[2][2]-self.points[1][2])*x
+        if rawequal(x, secret) then return secret end
+        local fraction = math.max(0, math.min(1, x / self.points[2][1]))
+        return self.points[1][2] + (self.points[2][2]-self.points[1][2])*fraction
     end
     return c
 end }
@@ -68,6 +70,8 @@ local function Region()
     function t:SetStartPoint(_,_,x,y) self.start={x,y} end
     function t:SetEndPoint(_,_,x,y) self.finish={x,y} end
     function t:SetThickness(v) self.thickness=v end
+    function t:SetSnapToPixelGrid(v) self.snap=v end
+    function t:SetTexelSnappingBias(v) self.bias=v end
     return t
 end
 function CreateFrame()
@@ -242,4 +246,32 @@ MYUI_CrosshairHUDDB.elements.coagulatedBlood.fill={0.2,0.3,0.4}
 NS.Config.Load();NS.Core.ApplyConfig()
 Near(fill.color[1],0.2);Near(fill.color[2],0.3);Near(fill.color[3],0.4)
 assert(not bg.mask and not shadow.mask and fill.mask)
+''')
+
+
+def test_tracked_blood_aura_survives_restricted_direct_lookup():
+    run_scenario(r'''
+aura=nil
+local item={auraDataCached={applications=75},auraDataUnit="player"}
+function item:GetCooldownInfo() return {spellID=463730} end
+function item:IsActive() return true end
+BuffIconCooldownViewer={GetItemFrames=function() return {item} end}
+Tick()
+local fill=Layer("coagulated_blood_arc.png",1)
+assert(fill.shown, "tracked buff must render when direct lookup misses")
+Near(fill.mask.rotation,math.rad(-213.5))
+item.auraDataCached={applications=secret};Tick()
+assert(not fill.shown and Layer("coagulated_blood_arc_shadow.png").shown, "restricted stacks must not be calculated")
+item.auraDataCached=nil;Tick()
+assert(not fill.shown and not Layer("coagulated_blood_arc_shadow.png").shown)
+item.auraDataCached={applications=75}
+function item:GetCooldownInfo() return {spellID=999} end
+Tick();assert(not fill.shown)
+''')
+
+
+def test_native_marker_does_not_snap_oblique_texture_to_pixels():
+    run_scenario(r'''
+assert(#lines==1)
+assert(lines[1].snap==false and lines[1].bias==0, "oblique line texture must not snap to pixel grid")
 ''')

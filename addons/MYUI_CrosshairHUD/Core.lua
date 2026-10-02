@@ -186,12 +186,39 @@ local function UpdateRunes()
 end
 
 -- 新增显示不能保留旧读数：增益消失或读取失败立即收起，恢复后重新读取。
+local function TrackedBloodAura()
+    for _, name in ipairs({ "BuffIconCooldownViewer", "BuffBarCooldownViewer" }) do
+        local viewer = _G[name]
+        if viewer and viewer.GetItemFrames then
+            local frames = viewer:GetItemFrames()
+            for _, item in ipairs(frames or {}) do
+                local info = item.GetCooldownInfo and item:GetCooldownInfo()
+                if info and (MaybeNumber(info.spellID) == 463730
+                    or MaybeNumber(info.overrideSpellID) == 463730) then
+                    local unit = item.auraDataUnit
+                    local active = item.IsActive and MaybeBoolean(item:IsActive())
+                    if not Unreadable(unit) and (unit == nil or unit == "player")
+                        and active ~= false and type(item.auraDataCached) == "table" then
+                        return item.auraDataCached
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function UpdateBloodAura()
     last.bloodPresent, last.bloodStacks = false, nil
     if Config.Get().elements.coagulatedBlood.enabled == false then return end
     local api = _G.C_UnitAuras
-    if not (api and api.GetPlayerAuraBySpellID) then return end
     pcall(function()
+        local tracked = TrackedBloodAura()
+        if type(tracked) == "table" then
+            last.bloodPresent = true
+            last.bloodStacks = MaybeNumber(tracked.applications)
+            return
+        end
+        if not (api and api.GetPlayerAuraBySpellID) then return end
         local aura = api.GetPlayerAuraBySpellID(463730)
         if Unreadable(aura) or type(aura) ~= "table" then return end
         last.bloodPresent = true
@@ -734,6 +761,26 @@ SlashCmdList["MYUICHH"] = function(msg)
     end
     if msg == "media" then
         print("|cff9fd4ff" .. ADDON .. "|r 素材目录：" .. MEDIA_ROOT)
+        return
+    end
+    if msg == "blood" then
+        local cfg = Config.Get().elements.coagulatedBlood
+        print("凝固之血：开关" .. (cfg.enabled == false and "关闭" or "开启")
+            .. "，增益" .. (last.bloodPresent and "已确认" or "未确认")
+            .. "，层数" .. (type(last.bloodStacks) == "number" and "可读取" or "不可读取"))
+        local ok, aura = pcall(TrackedBloodAura)
+        if ok and type(aura) == "table" then
+            print("暴雪增益监控：已找到；层数"
+                .. (type(MaybeNumber(aura.applications)) == "number" and "可读取" or "受限或缺失"))
+        else
+            print("暴雪增益监控：未找到或读取失败")
+        end
+        local api = _G.C_UnitAuras
+        local directOk, direct = pcall(function()
+            return api.GetPlayerAuraBySpellID(463730)
+        end)
+        print("按编号查询：" .. (directOk and "调用成功" or "调用失败")
+            .. "，结果" .. (directOk and type(direct) == "table" and "存在" or "缺失或受限"))
         return
     end
     Report()

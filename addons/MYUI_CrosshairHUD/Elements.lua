@@ -170,6 +170,10 @@ function Elements.Create()
     BuildFillable("power", PLACEMENT.power)
     BuildFillable("coagulatedBlood", PLACEMENT.coagulatedBlood)
     parts.deathStrike = frame:CreateLine(nil, "ARTWORK", nil, SUB_CROSSHAIR)
+    if parts.deathStrike.SetSnapToPixelGrid then
+        parts.deathStrike:SetSnapToPixelGrid(false)
+        parts.deathStrike:SetTexelSnappingBias(0)
+    end
     parts.deathStrike:SetShown(false)
 
     parts.runes = {}
