@@ -104,6 +104,7 @@ return function(ctx)
         function frame:SetFrameStrata(s) self.strata = s end
         function frame:CreateTexture(...) return Texture() end
         function frame:CreateMaskTexture(...) return Mask() end
+        function frame:CreateLine(...) return Texture() end
         return frame
     end
 

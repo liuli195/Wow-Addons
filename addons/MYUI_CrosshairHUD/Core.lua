@@ -53,7 +53,6 @@ Core.mediaRoot = MEDIA_ROOT
 --------------------------------------------------------------------------
 
 local function Unreadable(value)
-    if value == nil then return true end
     -- 检测函数**调用时再取**，不在加载时缓存：一是免得加载顺序影响行为，
     -- 二是它在 12.x 里可能对某些值出错，所以整个调用都要 pcall。
     local detector = rawget(_G, "issecretvalue")
@@ -63,7 +62,7 @@ local function Unreadable(value)
         -- 秘密值，就不该拿它去参与算术。反过来（当成可读）会让秘密值悄悄流进计算。
         if not ok or secret then return true end
     end
-    return false
+    return value == nil
 end
 
 ---@param value number
@@ -186,6 +185,53 @@ local function UpdateRunes()
     end
 end
 
+-- 新增显示不能保留旧读数：增益消失或读取失败立即收起，恢复后重新读取。
+local function UpdateBloodAura()
+    last.bloodPresent, last.bloodStacks = false, nil
+    if Config.Get().elements.coagulatedBlood.enabled == false then return end
+    local api = _G.C_UnitAuras
+    if not (api and api.GetPlayerAuraBySpellID) then return end
+    pcall(function()
+        local aura = api.GetPlayerAuraBySpellID(463730)
+        if Unreadable(aura) or type(aura) ~= "table" then return end
+        last.bloodPresent = true
+        local stacks = MaybeNumber(aura.applications)
+        if type(stacks) == "number" then last.bloodStacks = stacks end
+    end)
+end
+
+local function UpdateDeathStrike()
+    last.costMarker = nil
+    if Config.Get().elements.deathStrike.enabled == false then return end
+    local api, powerType = _G.C_Spell, PowerType()
+    if not (api and api.GetSpellPowerCost and UnitPowerMax and powerType) then return end
+    pcall(function()
+        local costs = api.GetSpellPowerCost(49998)
+        if Unreadable(costs) or type(costs) ~= "table" then return end
+        local selected, priority = nil, -1
+        for _, entry in ipairs(costs) do
+            if not Unreadable(entry) and type(entry) == "table"
+                and MaybeNumber(entry.type) == powerType then
+                local required = MaybeNumber(entry.requiredAuraID)
+                local active = MaybeBoolean(entry.hasRequiredAura)
+                local applicable = required == 0 or (required ~= nil and active == true)
+                local cost = MaybeNumber(entry.minCost)
+                local rank = required == 0 and 0 or 1
+                if applicable and type(cost) == "number" and rank > priority then
+                    selected, priority = cost, rank
+                end
+            end
+        end
+        local maximum = MaybeNumber(UnitPowerMax("player", powerType, false))
+        last.costMarker = Logic.CostMarker(selected, maximum)
+    end)
+end
+
+local function UpdateDKFeatures()
+    UpdateBloodAura()
+    UpdateDeathStrike()
+end
+
 --------------------------------------------------------------------------
 -- 显示状态表
 --------------------------------------------------------------------------
@@ -235,6 +281,16 @@ local function BuildState()
 
     state.health = ElementState(elements.health, last.healthRotation, last.hasHealthArc)
     state.power = ElementState(elements.power, last.powerRotation, last.hasPowerArc)
+    local blood = elements.coagulatedBlood
+    local frac = Logic.DisplayFraction(last.bloodStacks, blood.maxStacks)
+    local arc = Logic.ARCS.coagulatedBlood
+    state.coagulatedBlood = ElementState(blood,
+        frac and Logic.MaskAngle(arc.start, arc.span, frac), frac ~= nil)
+    state.coagulatedBlood.visible = blood.enabled ~= false and last.bloodPresent == true
+    local marker = elements.deathStrike
+    state.deathStrike = { visible = marker.enabled ~= false and last.costMarker ~= nil,
+        points = last.costMarker, thickness = marker.thickness,
+        fillColor = marker.fill, fillAlpha = marker.fillAlpha }
 
     -- 符文：先排序得到「槽位 → 符文索引」，再把每个符文的状态铺到槽位上。
     -- 6 张符文格纹理各自是环上不同角度的弧段，位置固定——重排换的是显示哪个
@@ -304,6 +360,9 @@ local function DemoState()
         shadowColor = ShadowColor(),
         shadowAlpha = ShadowAlpha(),
     }
+    -- 新功能仍按真实增益存在与开关显示，不把演示当成真实层数或费用。
+    local real = BuildState()
+    state.coagulatedBlood, state.deathStrike = real.coagulatedBlood, real.deathStrike
     return state
 end
 
@@ -382,6 +441,7 @@ function Core.UpdateReadings()
     UpdateHealthArc()
     UpdatePowerArc()
     UpdateRunes()
+    UpdateDKFeatures()
 end
 
 --------------------------------------------------------------------------
@@ -404,6 +464,7 @@ end
 for _, event in ipairs({
     "UNIT_HEALTH", "UNIT_MAXHEALTH",
     "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER",
+    "UNIT_AURA",
 }) do
     events:RegisterUnitEvent(event, "player")
 end
@@ -411,12 +472,16 @@ end
 local talentPending = false
 
 local function OnEvent(_, event)
-    if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
+    if event == "UNIT_AURA" then
+        UpdateDKFeatures()
+        Refresh()
+    elseif event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
         UpdateHealthArc()
         Refresh()
     elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT"
         or event == "UNIT_MAXPOWER" then
         UpdatePowerArc()
+        UpdateDeathStrike()
         Refresh()
     elseif event == "RUNE_POWER_UPDATE" then
         -- 事件负载可能不可读：忽略参数、整表重读
@@ -452,6 +517,7 @@ events:SetScript("OnEvent", OnEvent)
 -- 符文轮询。**不能纯事件驱动**：回复速度（急速等）变化不保证触发事件，
 -- 而时长是动态值，纯事件驱动会让进度条在增益生效期间走偏。
 C_Timer.NewTicker(POLL_INTERVAL, function()
+    UpdateDKFeatures()
     if Core.demo then
         Refresh()
         return
@@ -512,6 +578,7 @@ Core.ApplyScaleAndStrata = ApplyScaleAndStrata
 -- 配置页里的每一项改完都走这里
 function Core.ApplyConfig()
     ApplyScaleAndStrata()
+    UpdateDKFeatures()
     Refresh()
 end
 

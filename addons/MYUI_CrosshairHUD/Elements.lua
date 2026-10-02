@@ -69,6 +69,8 @@ local PLACEMENT = {
     crosshair = { file = "crosshair",   w = 128, h = 128, ox = 0,   oy = 0 },
     health    = { file = "health_arc",  w = 128, h = 128, ox = -32, oy = 16 },
     power     = { file = "power_arc",   w = 128, h = 128, ox = 32,  oy = 16 },
+    coagulatedBlood = { file = "coagulated_blood_arc", w = 128, h = 128,
+        ox = -32, oy = 16, shadowSub = -2 },
 }
 
 -- 资源格 1 与 6 的画布本来就是 2 的幂（32 单位 = 256 像素），不需要补边。
@@ -83,6 +85,22 @@ Elements.scale = 1
 
 local parts = {}          -- key -> 该元素的可重定位部件
 local placements = {}     -- key -> 摆放规格，供 SetScale 重新摆放
+local markerState
+
+local function ApplyMarker(st)
+    markerState = st
+    local line = parts.deathStrike
+    if not line then return end
+    local visible = st and st.visible == true and st.points ~= nil
+    line:SetShown(visible and true or false)
+    if not visible then return end
+    local p, s = st.points, Elements.scale
+    line:SetStartPoint("CENTER", Elements.frame, p[1] * s, p[2] * s)
+    line:SetEndPoint("CENTER", Elements.frame, p[3] * s, p[4] * s)
+    line:SetThickness((st.thickness or 1.5) * s)
+    local c = st.fillColor
+    line:SetColorTexture(c[1], c[2], c[3], st.fillAlpha or 1)
+end
 
 --------------------------------------------------------------------------
 
@@ -128,7 +146,7 @@ end
 --
 -- 填充图用遮罩切出已填充的角度区间；阴影在图的最下面一层，**不挂遮罩**。
 local function BuildFillable(key, spec)
-    local shadow = NewTexture(SUB_SHADOW, spec.file .. SHADOW_SUFFIX)
+    local shadow = NewTexture(spec.shadowSub or SUB_SHADOW, spec.file .. SHADOW_SUFFIX)
     local bg = NewTexture(SUB_BG, spec.file)
     local fill = NewTexture(SUB_FILL, spec.file)
     local mask = NewMask()
@@ -150,6 +168,9 @@ function Elements.Create()
 
     BuildFillable("health", PLACEMENT.health)
     BuildFillable("power", PLACEMENT.power)
+    BuildFillable("coagulatedBlood", PLACEMENT.coagulatedBlood)
+    parts.deathStrike = frame:CreateLine(nil, "ARTWORK", nil, SUB_CROSSHAIR)
+    parts.deathStrike:SetShown(false)
 
     parts.runes = {}
     placements.runes = {}
@@ -187,10 +208,12 @@ function Elements.SetScale(scale)
 
     PlaceLayers(parts.health, placements.health)
     PlaceLayers(parts.power, placements.power)
+    PlaceLayers(parts.coagulatedBlood, placements.coagulatedBlood)
     for i = 1, Logic.PIPS.count do
         PlaceLayers(parts.runes[i], placements.runes[i])
     end
     PlaceLayers(parts.crosshair, placements.crosshair)
+    ApplyMarker(markerState)
 end
 
 function Elements.SetVisible(visible)
@@ -257,6 +280,8 @@ function Elements.Apply(state)
     if state.power then
         ApplyFillable(parts.power, state.power)
     end
+    ApplyFillable(parts.coagulatedBlood, state.coagulatedBlood or { visible = false })
+    ApplyMarker(state.deathStrike)
 
     for i = 1, Logic.PIPS.count do
         local slot = state.runes and state.runes[i]

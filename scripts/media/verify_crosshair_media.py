@@ -47,6 +47,7 @@ MASK_SOFTNESS_PX = 8
 RING_RADIUS = 54          # 设计稿圆环半径，与 Logic.RING.radius 一致
 DESIGN_CENTER = 128       # 设计稿坐标系里的圆环中心
 ARC_STROKE = 7.8          # 设计稿定稿的条宽（设计单位）：两条弧是线宽，资源格是半径跨度
+BLOOD_ARC_STROKE = 3.9   # 凝固之血半粗条，不降低原有素材标准
 ARC_STROKE_TOL = 0.3
 CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
 # 中心定位点：设计稿上是准星圆心处一个直径 10 预览单位（＝5 设计稿单位）的实心白点。
@@ -193,8 +194,9 @@ def verify_arc_stroke(asset, scale):
     if got is None:
         check(False, f"{name}: 量不出半径方向的跨度（没有过半覆盖的像素）")
         return
-    check(abs(got - ARC_STROKE) <= ARC_STROKE_TOL,
-        f"{name}: 沿半径的跨度应为 {ARC_STROKE} 设计单位，实测 {got:.2f}")
+    expected = BLOOD_ARC_STROKE if name == "coagulated_blood_arc.png" else ARC_STROKE
+    check(abs(got - expected) <= ARC_STROKE_TOL,
+        f"{name}: 沿半径的跨度应为 {expected} 设计单位，实测 {got:.2f}")
 
 
 def verify_center_dot(asset, scale):

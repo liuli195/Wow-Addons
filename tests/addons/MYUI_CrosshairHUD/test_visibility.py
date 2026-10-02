@@ -56,6 +56,7 @@ function CreateFrame()
     local f = { events = {}, scripts = {}, shown = true }
     function f:CreateTexture() return NewTexture() end
     function f:CreateMaskTexture() return NewTexture() end
+    function f:CreateLine() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint() end
     function f:ClearAllPoints() end

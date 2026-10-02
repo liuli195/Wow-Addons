@@ -23,6 +23,7 @@ CONFIG = ROOT / "addons/MYUI_CrosshairHUD/Config.lua"
 
 HARNESS = r'''
 local source = assert(arg[1])
+UnitClass = function() return "死亡骑士", "DEATHKNIGHT" end
 assert(loadfile(source))()
 local Config = assert(_G.MYUI_CHH, "Config.lua 应导出全局表").Config
 assert(Config, "全局表上应有 Config")
@@ -43,6 +44,8 @@ local expected = {
     power     = { "启用", "填充颜色", "条背景" },
     runes     = { "启用", "填充颜色", "条背景" },
     crosshair = { "启用", "填充颜色" },          -- 准星是线不是块，没有背景
+    coagulatedBlood = { "启用", "填充颜色", "条背景", "满条层数" },
+    deathStrike = { "启用", "刻度颜色", "粗细" },
 }
 
 for _, key in ipairs(ORDER) do
@@ -60,8 +63,8 @@ for _, key in ipairs(ORDER) do
 
     -- 行数 = ceil(格数 / 2)；奇数格意味着末行右边留空
     for i = 1, #plan do
-        assert(plan[i].kind == "toggle" or plan[i].kind == "color",
-            "格子类型只能是开关或颜色")
+        assert(plan[i].kind == "toggle" or plan[i].kind == "color" or plan[i].kind == "slider",
+            "格子类型为开关、颜色或数值")
     end
 end
 assert(#Config.CellPlan("health") % 2 == 1, "生命值条末行应留空（3 格 → 2 行）")
@@ -108,8 +111,12 @@ assert(Config.CellPlan("crosshair")[2].source.mode == "class", "准星的来源�
 ----------------------------------------------------------------------
 for _, key in ipairs(ORDER) do
     local src = Config.CellPlan(key)[2].source
-    assert(src.editable == false,
-        key .. " 的来源色块必须标成不可编辑（点了不能再弹取色器）")
+    if key == "coagulatedBlood" or key == "deathStrike" then
+        assert(src == nil, "新功能仅有自定义色")
+    else
+        assert(src.editable == false,
+            key .. " 的来源色块必须标成不可编辑（点了不能再弹取色器）")
+    end
 end
 
 ----------------------------------------------------------------------

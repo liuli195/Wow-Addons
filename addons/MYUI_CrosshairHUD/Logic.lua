@@ -19,7 +19,7 @@ NS.Logic = Logic
 
 Logic.RING = {
     radius = 54,
-    stroke = 6,
+    stroke = 7.8,
 }
 
 -- reverse = 填充从弧的**另一端**开始。
@@ -29,7 +29,29 @@ Logic.RING = {
 Logic.ARCS = {
     health = { start = 99,  span = 102 },
     power  = { start = 339, span = 102, reverse = true },
+    coagulatedBlood = { start = 99, span = 51, radius = 57.9, stroke = 3.9 },
 }
+
+-- 只接收 Core 已核实可读的普通数字；量程不是增益的真实上限。
+function Logic.DisplayFraction(value, maximum)
+    if type(value) ~= "number" or type(maximum) ~= "number"
+        or value ~= value or maximum ~= maximum or maximum <= 0
+        or value == math.huge or maximum == math.huge then return nil end
+    return math.max(0, math.min(1, value / maximum))
+end
+
+-- 径向直线从主体内缘再向内1单位，到外缘再向外1单位。
+function Logic.CostMarker(cost, maximum)
+    local frac = Logic.DisplayFraction(cost, maximum)
+    if frac == nil or cost < 0 then return nil end
+    local arc = Logic.ARCS.power
+    local angle = arc.start + (arc.reverse and arc.span * (1 - frac) or arc.span * frac)
+    local radians = math.rad(angle)
+    local x, y = math.cos(radians), -math.sin(radians)
+    local inner = Logic.RING.radius - Logic.RING.stroke / 2 - 1
+    local outer = Logic.RING.radius + Logic.RING.stroke / 2 + 1
+    return { x * inner, y * inner, x * outer, y * outer }
+end
 
 Logic.PIPS = { start = 219, step = 18, span = 12, count = 6 }
 

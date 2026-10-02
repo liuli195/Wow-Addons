@@ -58,6 +58,7 @@ function CreateFrame()
     local f = {}
     function f:CreateTexture(a, b, c, sub) return NewTexture(a, b, c, sub) end
     function f:CreateMaskTexture() return NewTexture() end
+    function f:CreateLine() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint() end
     function f:SetFrameStrata() end

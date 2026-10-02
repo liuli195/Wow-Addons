@@ -54,6 +54,15 @@ Config.DEFAULTS = {
     -- 填充与背景各有各的透明度：合成一个只能整条一起淡化，分不开。
     -- 「填充色来源」放在颜色之外单独一项——它是"用哪个色"的选择，不是颜色本身。
     elements = {
+        deathStrike = {
+            enabled = true, thickness = 1.5,
+            fill = { 1, 1, 1 }, fillAlpha = 1,
+        },
+        coagulatedBlood = {
+            enabled = true, maxStacks = 150,
+            fill = { 1, 1, 1 }, fillAlpha = 1,
+            bg = { 0.208, 0.165, 0.188 }, bgAlpha = 0,
+        },
         health = {
             enabled = true,
             fillMode = "custom",    -- "custom" | "class"（职业配色）
@@ -89,11 +98,13 @@ Config.DEFAULTS = {
 }
 
 -- 元素在页面上与状态表里的固定顺序
-Config.ELEMENT_ORDER = { "health", "power", "runes", "crosshair" }
+Config.ELEMENT_ORDER = { "health", "power", "runes", "crosshair", "coagulatedBlood", "deathStrike" }
 
 -- 界面上的元素名（稳定键仍是 health／power／runes，只换显示名）
 Config.ELEMENT_LABELS = {
     health = "生命值条", power = "能量条", runes = "职业资源条", crosshair = "准星",
+    coagulatedBlood = "凝固之血",
+    deathStrike = "灵打消耗刻度",
 }
 
 -- 与填充色来源同理：values 是映射表 + 显式 order。传数组时 EUI 会用 pairs 自己
@@ -313,12 +324,23 @@ function Config.CellPlan(elementKey)
         },
     }
     -- 准星是线不是块：没有背景，也就没有这一格
-    if elementKey ~= "crosshair" then
+    if elementKey ~= "crosshair" and elementKey ~= "deathStrike" then
         plan[3] = {
             kind = "color", text = "条背景",
             colorKey = "bg", alphaKey = "bgAlpha",
             source = Config.SourceFor(elementKey, "bg"),
         }
+    end
+    if elementKey == "coagulatedBlood" then
+        plan[2].modeKey = nil
+        plan[4] = { kind = "slider", text = "满条层数", key = "maxStacks",
+            min = 1, max = 1000, step = 1,
+            tooltip = "仅控制显示量程，不是增益真实上限。" }
+    end
+    if elementKey == "deathStrike" then
+        plan[2].text, plan[2].modeKey = "刻度颜色", nil
+        plan[3] = { kind = "slider", text = "粗细", key = "thickness",
+            min = 0.5, max = 6, step = 0.25 }
     end
     return plan
 end
@@ -367,6 +389,7 @@ end
 function Config.Grayed(key)
     local cfg = Config.Get()
     if cfg.enabled == false then return true end
+    if key == "coagulatedBlood" and PlayerClass() ~= "DEATHKNIGHT" then return true end
     return cfg.elements[key].enabled == false
 end
 
@@ -489,13 +512,26 @@ function Config.BuildPage(_, parent, yOffset)
     end
 
     -- 照清单把一格翻译成 EUI 的 slot 配置。排版与内容都在清单里，这里只做翻译。
-    local function CellSlot(element, cell, grayed)
+    local function CellSlot(element, cell, grayed, key)
         if cell.kind == "toggle" then
             return { type = "toggle", text = cell.text,
                 getValue = function() return element[cell.key] ~= false end,
                 setValue = function(value) element[cell.key] = value; refresh() end,
                 -- 总开关关掉时子开关置灰不可点
-                disabled = function() return Config.Get().enabled == false end }
+                disabled = function()
+                    return Config.Get().enabled == false
+                        or (key == "coagulatedBlood" and PlayerClass() ~= "DEATHKNIGHT")
+                end }
+        end
+        if cell.kind == "slider" then
+            return { type = "slider", text = cell.text,
+                min = cell.min, max = cell.max, step = cell.step, tooltip = cell.tooltip,
+                getValue = function() return element[cell.key] end,
+                setValue = function(value)
+                    element[cell.key] = math.max(cell.min, math.min(cell.max, value))
+                    refresh()
+                end,
+                disabled = grayed }
         end
         -- 颜色格：滑块是**这一格自己的**透明度，色块随后内联挂在它左侧。
         -- 范围优先取格子自己声明的（阴影声明了，因为它"默认即上限"；元素那些没声明，
@@ -645,8 +681,8 @@ function Config.BuildPage(_, parent, yOffset)
         while plan[index] do
             local left, right = plan[index], plan[index + 1]
             local row
-            row, h = W:DualRow(parent, y, CellSlot(element, left, grayed),
-                right and CellSlot(element, right, grayed) or { type = "spacer" })
+            row, h = W:DualRow(parent, y, CellSlot(element, left, grayed, key),
+                right and CellSlot(element, right, grayed, key) or { type = "spacer" })
             y = y - h
 
             AttachCellSwatch(row and row._leftRegion, left, element, grayed, Changed)

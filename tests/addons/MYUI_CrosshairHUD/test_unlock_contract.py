@@ -50,6 +50,7 @@ function CreateFrame()
     local f = {}
     function f:CreateTexture() return NewTexture() end
     function f:CreateMaskTexture() return NewTexture() end
+    function f:CreateLine() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint(point, relativeTo, relPoint, x, y)
         f.point = { point = point, relativeTo = relativeTo, relPoint = relPoint,

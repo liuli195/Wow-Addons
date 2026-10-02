@@ -54,6 +54,7 @@ function CreateFrame()
     local f = {}
     function f:CreateTexture(a, b, c, sub) return NewTexture(a, b, c, sub) end
     function f:CreateMaskTexture() return NewTexture() end
+    function f:CreateLine() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint() end
     function f:ClearAllPoints() end
@@ -206,7 +207,9 @@ resourceThrows = false
 --   出口函数（页面据此建不建第二个色块）、数据模型（有没有 bgMode）、渲染取值。
 ----------------------------------------------------------------------
 local order = Config.ELEMENT_ORDER
-assert(#order == 4, "元素数量变了就要一并检查这条规则")
+assert(#order == 6, "两项新显示也必须遵循独立自定义背景规则")
+assert(Config.SourceFor("coagulatedBlood", "fill") == nil)
+assert(Config.SourceFor("deathStrike", "fill") == nil)
 
 for _, key in ipairs(order) do
     assert(Config.SourceFor(key, "bg") == nil,
