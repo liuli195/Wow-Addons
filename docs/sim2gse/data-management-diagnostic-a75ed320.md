@@ -142,3 +142,11 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 过期purge仅reserved/published原两组：复用isolated_plan已有公开300秒计划，取消每组重复preview及其覆盖计划；现有injected_call中替换标准库time.time，初次批准和原commit后exit77在plan.expires-1，后续purge/renew/pin全在expires+1。断言旧error含过期，renewed.created精确expires+1、期限300；原operation ID/新plan hash、published已完成数量、新逐项确认/保护变化/已删除文件重现拒绝/原文件保留及最终全部purged断言完整。去2×2.1秒等待和2次重复preview，没有新时钟框架/改索引/改生产。其他真实1.05秒心跳等待保留。
 
 仅代表小组before/after各一次，原生 `-v tests/sim2gse-data/test_facts.py tests/sim2gse-data/test_safety.py -k 'request_types_and_nested or complete_search_summary or real_rule_path or expired_interrupted_purge' --dist=worksteal -n 4 --durations=5`，既有包装器各30秒防挂；created4/4，4 tests/2 subtests均pass。before pytest12.56/wall12.910秒，after9.90/wall10.258秒。各call前→后：purge11.81→7.47、完成证据5.91→3.66、类型4.82→3.08、路径轴4.26→2.94秒。数据实际小组wall少2.652秒，不能把四个case差值相加当整仓收益，机器噪声仍存在。本轮无整仓或121完整组重测，正式60仍未通过，等待远端review与机时放行。
+
+## 029a802放行后的唯一正式结果
+
+父端确认budget机时结束后放行，仅一次干净source `029a80279c3a75c40d6c3aeada4ead539693e016` 正式统一 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，原outer3/product8/data12、60硬上限；PYTEST_ADDOPTS仅`-v --durations=5`，无代码/配置变化。仍失败：`bounded-timeout-poll=None; owned-pid=8656; bounded-deadline=60.766; taskkill=128; bounded-child-exit=1`，墙钟含收尾、包装器exit124。
+
+原生输出仅scene local/selection-reason config-changed，没有cache-hit、duration/checked或结束汇总。配置变更全选38，但实际started/finished数量及每组耗时不能从当前工具capture结果取得；不声称38fresh均运行或0项实际成功，仅无可确认的完成证据。原performance-report仍为15:55:46/4440字节的旧诊断，不当本轮正式报告。正式原日志存仓 `data-management-formal-029a802.log`（仅去行尾空格，Temp原始日志不变）。本轮真实瓶颈仍是全选路径在60内不能结束、完成时序证据受现有工具汇总限制；既有8/12完整组和最慢case证据保留，不据此断言本轮某一case具体慢了多少。
+
+终止后只读解析日志PID+主，共83关联节点，逐个查询83全部absent，机时明确释放；128不单独当终止成功。没有重复重测、删边界、调整worker、正式规格应用、合并/上线或历史数据操作。30–40目标未达，正式60及交付门禁仍未通过，下一步由父端review存量证据后安排。
