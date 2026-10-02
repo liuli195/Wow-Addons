@@ -15,6 +15,20 @@ class MaintenanceTests(unittest.TestCase):
     initialize = lifecycle.LifecycleTests.initialize
     injected_call = lifecycle.LifecycleTests.injected_call
 
+    def test_verified_finisher_releases_only_its_own_future_physical_payload(self):
+        self.policy["capacity_bytes"] = 32 * 1024 * 1024
+        self.save_config()
+        self.initialize()
+        other = self.call("begin", "--request-id", "other-producer", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(1024 * 1024))
+        own = self.call("begin", "--request-id", "finisher", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(3 * 1024 * 1024))
+        (Path(own["path"]) / "native.json").write_bytes(b"x" * (3 * 1024 * 1024))
+        args = ("--run-id", own["run_id"], "--token", own["token"], "--outcome", "success")
+        self.injected_call("import shutil\nshutil.disk_usage=lambda p:type('Usage',(),{'free':1048576})()", "finish", *args, expected=2)
+        result = self.injected_call("import shutil\nshutil.disk_usage=lambda p:type('Usage',(),{'free':2097152})()", "finish", *args)
+        self.assertTrue(result["sealed"])
+        self.assertEqual(self.call("status")["reserved_bytes"], 1024 * 1024)
+        self.call("lease", "--run-id", other["run_id"], "--token", other["token"], "--action", "release")
+
     def test_producer_growth_between_inventory_and_reservation_credit_cannot_oversell(self):
         self.initialize()
         run = self.call("begin", "--request-id", "producer", "--owner-pid", str(os.getpid()), "--reserve-bytes", str(3 * 1024 * 1024))

@@ -600,7 +600,7 @@ def run_payload_bytes(root, run):
     return measured["logical_bytes"] - internal
 
 
-def check_budget(root, db, policy, growth=0, *, physical_growth=None):
+def check_budget(root, db, policy, growth=0, *, physical_growth=None, finishing_run_id=None):
     # 同一写锁内每次完整流式核算，不复用分页游标或陈旧缓存；未知字节也计入。
     for run in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"):
         run_folder(root, run)
@@ -610,7 +610,7 @@ def check_budget(root, db, policy, growth=0, *, physical_growth=None):
         raise DataError("容量盘点未完整，拒绝新增长；不能忽略未知文件")
     # 只抵扣本次总量已经计入的同一stat字节；producer不持管理锁，后续扫描会漏账。
     remaining = reserved - measured["active_payload_credit"]
-    root_remaining = physical_future(root, db, root.stat().st_dev)
+    root_remaining = physical_future(root, db, root.stat().st_dev, finishing_run_id=finishing_run_id)
     remaining += job_remaining(root, db) + safety_remaining(db)
     reserve = policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
     if measured["logical_bytes"] + remaining + growth + reserve > policy["capacity_bytes"]:
@@ -693,7 +693,7 @@ def finish_run(root, policy, args):
                     manifests.append((path, file_manifest(path)))
         if run["state"] != "sealed" and sum(manifest["size"] for _, manifest in manifests) > run["reserved_bytes"]:
             raise DataError("实际产物超过预留，保持未封口和保护状态")
-        check_budget(root, db, policy)
+        check_budget(root, db, policy, finishing_run_id=run["id"])
         if run["state"] == "sealed":
             registered = {row[0] for row in db.execute("SELECT artifact_id FROM run_artifacts WHERE run_id=?", (args.run_id,))}
             observed = {str(uuid.uuid5(uuid.UUID(policy["root_id"]), "artifact:" + os.path.normcase(path.relative_to(root).as_posix()))) for path, _ in manifests}
@@ -2255,14 +2255,15 @@ def migration_materialized(root, db, job):
     return actual
 
 
-def physical_future(root, db, device):
+def physical_future(root, db, device, *, finishing_run_id=None):
     """按OS卷合并承诺；锁内迁移可抵扣，锁外producer保守保留完整物理预留。"""
     primary = root.stat().st_dev == device
     future = 0
     if primary:
         # 活动producer可不持管理锁写/截断载荷；disk_usage与目录stat不能组成同一快照。
         # 物理准入保守保留其整个批准载荷直到finish/release，不用另一时点的文件抵扣。
-        future = job_remaining(root, db) + db.execute("SELECT coalesce(sum(reserved_bytes),0) FROM runs WHERE state IN ('allocating','running')").fetchone()[0]
+        future = job_remaining(root, db) + db.execute("SELECT coalesce(sum(reserved_bytes),0) FROM runs WHERE state IN ('allocating','running') AND id != ?",
+                                                   (finishing_run_id or "",)).fetchone()[0]
     if has_table(db, "safety_jobs"):
         for job in db.execute("SELECT * FROM safety_jobs WHERE phase NOT IN ('sealed','abandoned')"):
             plan = json.loads(job["plan"])
