@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[3]
 LUA = ROOT / ".tools/lua-5.1.5/src/lua.exe"
 ADDON = ROOT / "addons/MYUI_CrosshairHUD"
 
-MODULES = '{"Logic", "Elements", "Config", "Visibility", "Core"}'
+MODULES = '{"Logic", "Elements", "Config", "Visibility", "Debug", "Core"}'
 
 
 # 与场景无关的部分：魔兽接口 mock、框体 mock、以及把它装起来的入口。
@@ -439,8 +439,8 @@ assert(general[2].kind == "visibility",
 -- 2026-09-19：新增第 5 项「阴影」（全局一格，颜色与浓淡同格）。5 项 → 三行，
 -- **末行右边留空**——这本来就是清单自己的排布规则（每行两项、奇数时末行留空），
 -- 不是为它破例。前两项的位置断言在上面，不受影响。
-assert(#general == 5,
-    "常规清单应为 5 项（启用／可见性／缩放／图层／阴影），实得 " .. #general)
+assert(#general == 3,
+    "常规清单应为3项：启用、可见性、阴影；缩放与图层位于齿轮")
 
 ----------------------------------------------------------------------
 -- 默认值：显式写「总是」

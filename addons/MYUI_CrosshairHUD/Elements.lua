@@ -128,18 +128,10 @@ end
 
 -- 采样模式必须是 TRILINEAR（第 4 个参数）。
 --
--- 魔兽的默认模式是 LINEAR —— **只做双线性、不采样 mipmap**。贴图被缩小显示时，
--- 它每个屏幕像素只读 4 个纹理像素，高频信息全丢，边缘就出锯齿。HUD 缩放调到 1.0
--- 以下时贴图是缩小的，正是这种情况；调到 2.0 时接近 1:1，反而看着更清楚。
---
--- TRILINEAR 会采样 mipmap，缩小多少就用对应层级的预过滤图。暴雪自家会被缩放的
--- 贴图（地图）也是这么传的。
+-- BLP成品显式包含完整缩小层；仅设置过滤方式不能保证PNG有可用缩小层。
+-- 是否缩小取决于实际屏幕像素，HUD倍数为2也不代表贴图接近1:1。
 local function SmoothTexture(texture, file, wrap)
-    texture:SetTexture(MEDIA .. file .. ".png", wrap, wrap, "TRILINEAR")
-    if texture.SetSnapToPixelGrid then
-        texture:SetSnapToPixelGrid(false)
-        texture:SetTexelSnappingBias(0)
-    end
+    texture:SetTexture(MEDIA .. file .. ".blp", wrap, wrap, "TRILINEAR")
 end
 
 local function NewTexture(sub, file)
@@ -167,7 +159,7 @@ end
 
 local function NewMask()
     local mask = Elements.frame:CreateMaskTexture()
-    SmoothTexture(mask, "mask_half", "CLAMPTOBLACKADDITIVE")
+    mask:SetTexture(MEDIA .. "mask_half.blp", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE", "TRILINEAR")
     mask:SetAllPoints(Elements.frame)
     return mask
 end
@@ -195,6 +187,7 @@ function Elements.Create()
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("MEDIUM")
     Elements.frame = frame
+    if NS.NativeBlood then NS.NativeBlood.Create(frame) end
 
     BuildFillable("health", PLACEMENT.health)
     BuildFillable("power", PLACEMENT.power)
@@ -213,11 +206,9 @@ function Elements.Create()
     bar:SetAllPoints(frame)
     bar:SetShown(false)
     parts.coagulatedBlood = {
-        shadow = NewTexture(bloodSpec.shadowSub, bloodSpec.file .. SHADOW_SUFFIX),
         bg = NewTexture(SUB_BG, bloodSpec.file), fill = fill, bar = bar,
     }
     placements.coagulatedBlood = bloodSpec
-    Place(parts.coagulatedBlood.shadow, bloodSpec)
     Place(parts.coagulatedBlood.bg, bloodSpec)
     parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker")
     SmoothTexture(parts.deathStrike, "death_strike_marker", "CLAMPTOBLACKADDITIVE")
@@ -270,7 +261,6 @@ function Elements.SetScale(scale)
 
     PlaceLayers(parts.health, placements.health)
     PlaceLayers(parts.power, placements.power)
-    Place(parts.coagulatedBlood.shadow, placements.coagulatedBlood)
     Place(parts.coagulatedBlood.bg, placements.coagulatedBlood)
     for i = 1, Logic.PIPS.count do
         PlaceLayers(parts.runes[i], placements.runes[i])
@@ -291,7 +281,7 @@ local function ApplyFillable(part, st)
     local visible = st.visible ~= false
     part.bg:SetShown(visible)
     -- 阴影不跟填充走：空转时填充整格消失，阴影要留着——那正是它标位置的时候
-    part.shadow:SetShown(visible)
+    if part.shadow then part.shadow:SetShown(visible) end
 
     -- 空转必须整格背景色：隐藏填充纹理，而不是把角度设成 0。
     -- 比例为 0 的情形不需要在这里拦：那时遮罩本来就什么都不露。
@@ -315,10 +305,12 @@ local function ApplyFillable(part, st)
     end)
 
     -- 阴影的颜色与浓淡也是各自独立的两个值；同样 pcalled
-    pcall(function()
-        local sc = st.shadowColor
-        part.shadow:SetVertexColor(sc[1], sc[2], sc[3], st.shadowAlpha or 1)
-    end)
+    if part.shadow then
+        pcall(function()
+            local sc = st.shadowColor
+            part.shadow:SetVertexColor(sc[1], sc[2], sc[3], st.shadowAlpha or 1)
+        end)
+    end
 
     if showFill then
         pcall(function()
@@ -362,7 +354,13 @@ function Elements.Apply(state)
     if state.power then
         ApplyFillable(parts.power, state.power)
     end
-    ApplyFillable(parts.coagulatedBlood, state.coagulatedBlood or { visible = false })
+    local blood = state.coagulatedBlood or { visible = false }
+    if NS.NativeBlood then
+        NS.NativeBlood.Apply(blood, Elements.scale)
+        ApplyFillable(parts.coagulatedBlood, blood.probe and blood or { visible = false })
+    else
+        ApplyFillable(parts.coagulatedBlood, blood)
+    end
     ApplyMarker(state.deathStrike)
 
     for i = 1, Logic.PIPS.count do

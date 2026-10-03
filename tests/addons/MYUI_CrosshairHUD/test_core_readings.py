@@ -154,7 +154,7 @@ end
 ----------------------------------------------------------------------
 assert(#curves == 2, "应只建两根曲线（血量、符能），实得 " .. #curves)
 local a0, a1 = Logic.ArcCurvePoints(Logic.ARCS.power.start, Logic.ARCS.power.span,
-    Logic.ARCS.power.reverse)
+    Logic.ARCS.power.reverse, Logic.ARCS.power.endMargin)
 local found = false
 for _, curve in ipairs(curves) do
     local p, q = curve.points[1], curve.points[2]
@@ -171,11 +171,11 @@ assert(found, "符能曲线端点必须等于 ArcCurvePoints")
 -- 这条成立，曲线才可能"精确等价于原公式"；不成立就该回头改公式而不是改曲线。
 ----------------------------------------------------------------------
 for _, arc in ipairs({ Logic.ARCS.health, Logic.ARCS.power }) do
-    local low, high = Logic.ArcCurvePoints(arc.start, arc.span, arc.reverse)
+    local low, high = Logic.ArcCurvePoints(arc.start, arc.span, arc.reverse, arc.endMargin)
     for i = 0, 20 do
         local f = i / 20
         local linear = low + (high - low) * f
-        Near(linear, Logic.MaskAngle(arc.start, arc.span, f, arc.reverse),
+        Near(linear, Logic.MaskAngle(arc.start, arc.span, f, arc.reverse, arc.endMargin),
             "曲线求值必须等于 MaskAngle（f=" .. f .. "）")
     end
 end
@@ -186,16 +186,16 @@ end
 Core.UpdateReadings()
 local r = Core.GetReadings()
 assert(r.hasHealth == true, "满血应取到角度")
-Near(r.healthRotation, Logic.MaskAngle(Logic.ARCS.health.start, Logic.ARCS.health.span, 1),
+Near(r.healthRotation, Logic.MaskAngle(Logic.ARCS.health.start, Logic.ARCS.health.span, 1, false, Logic.ARCS.health.endMargin),
     "满血角度")
 assert(r.hasPower == true, "符能应取到角度")
 Near(r.powerRotation, Logic.MaskAngle(Logic.ARCS.power.start, Logic.ARCS.power.span,
-    powerFrac, Logic.ARCS.power.reverse), "符能角度")
+    powerFrac, Logic.ARCS.power.reverse, Logic.ARCS.power.endMargin), "符能角度")
 
 healthFrac = 0.5
 Core.UpdateReadings()
 Near(Core.GetReadings().healthRotation,
-    Logic.MaskAngle(Logic.ARCS.health.start, Logic.ARCS.health.span, 0.5), "半血角度")
+    Logic.MaskAngle(Logic.ARCS.health.start, Logic.ARCS.health.span, 0.5, false, Logic.ARCS.health.endMargin), "半血角度")
 
 -- 血量归零：角度虽为起点值，但"取到了"仍然必须为真——空弧靠遮罩自然表现，
 -- 不靠在这里拦。
@@ -240,7 +240,7 @@ secretNumber = nil
 healthFrac = 0.25
 Core.UpdateReadings()
 Near(Core.GetReadings().healthRotation,
-    Logic.MaskAngle(Logic.ARCS.health.start, Logic.ARCS.health.span, 0.25), "恢复后跟随")
+    Logic.MaskAngle(Logic.ARCS.health.start, Logic.ARCS.health.span, 0.25, false, Logic.ARCS.health.endMargin), "恢复后跟随")
 
 ----------------------------------------------------------------------
 -- 符文：读到不可读的值必须降级成「空转」，绝不猜一个数字

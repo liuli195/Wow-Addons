@@ -16,23 +16,15 @@ local Core = NS.Core
 local ADDON = "MYUI_CrosshairHUD"
 local MEDIA_ROOT = "Interface\\AddOns\\MYUI\\Media\\CrosshairHUD\\"
 
-local C_AddOns = _G.C_AddOns
 local C_Timer = _G.C_Timer
 local CreateFrame = _G.CreateFrame
 local Enum = _G.Enum
 local GetRuneCooldown = _G.GetRuneCooldown
 local GetTime = _G.GetTime
-local InCombatLockdown = _G.InCombatLockdown
-local SlashCmdList = assert(rawget(_G, "SlashCmdList"))
 local UIParent = _G.UIParent
-local UnitClass = _G.UnitClass
-local UnitHealth = _G.UnitHealth
-local UnitHealthMax = _G.UnitHealthMax
 local UnitHealthPercent = _G.UnitHealthPercent
-local UnitPower = _G.UnitPower
 local UnitPowerMax = _G.UnitPowerMax
 local UnitPowerPercent = _G.UnitPowerPercent
-local print = _G.print
 
 local POLL_INTERVAL = 0.1      -- 符文必须轮询：回复速度变化不保证触发事件
 local TALENT_DEBOUNCE = 0.1
@@ -95,7 +87,7 @@ end
 
 local arcCurves = {}
 
-local function NewArcCurve(start, span, reverse)
+local function NewArcCurve(start, span, reverse, endMargin)
     local CurveUtil = _G.C_CurveUtil
     local linear = Enum and Enum.LuaCurveType and Enum.LuaCurveType.Linear
     if not (CurveUtil and CurveUtil.CreateCurve and linear) then return nil end
@@ -103,7 +95,7 @@ local function NewArcCurve(start, span, reverse)
     local ok, curve = pcall(CurveUtil.CreateCurve)
     if not ok or not curve or not curve.AddPoint then return nil end
 
-    local low, high = Logic.ArcCurvePoints(start, span, reverse)
+    local low, high = Logic.ArcCurvePoints(start, span, reverse, endMargin)
     local built = pcall(function()
         curve:SetType(linear)
         curve:AddPoint(0, low)
@@ -116,9 +108,9 @@ end
 -- 曲线在 PLAYER_LOGIN 时建；也导出给离线测试，让测试走同一段装配
 function Core.BuildArcCurves()
     arcCurves.health = NewArcCurve(Logic.ARCS.health.start, Logic.ARCS.health.span,
-        Logic.ARCS.health.reverse)
+        Logic.ARCS.health.reverse, Logic.ARCS.health.endMargin)
     arcCurves.power = NewArcCurve(Logic.ARCS.power.start, Logic.ARCS.power.span,
-        Logic.ARCS.power.reverse)
+        Logic.ARCS.power.reverse, Logic.ARCS.power.endMargin)
 end
 
 local function PowerType()
@@ -158,6 +150,7 @@ end
 
 local function UpdateHealthArc()
     local got, angle = HealthArc()
+    last.healthReadOK = got
     if got then
         last.healthRotation, last.hasHealthArc = angle, true
     end
@@ -165,6 +158,7 @@ end
 
 local function UpdatePowerArc()
     local got, angle = PowerArc()
+    last.powerReadOK = got
     if got then
         last.powerRotation, last.hasPowerArc = angle, true
     end
@@ -264,11 +258,49 @@ local function HasStackValue(value)
     return type(value) == "number"
 end
 
+-- 独立扫描玩家增益：身份必须可读，层数允许受限并原样交给引擎。
+local function IndependentBloodAura()
+    local api = _G.C_UnitAuras
+    if not (api and api.GetUnitAuras) then return nil, "接口不可用" end
+    local stage = "请求增益列表"
+    local ok, aura, status = pcall(function()
+        local records = api.GetUnitAuras("player", "HELPFUL")
+        if Unreadable(records) or type(records) ~= "table" then return nil, "记录不可读取" end
+        stage = "遍历增益列表"
+        local unknown = false
+        for _, record in ipairs(records) do
+            local readable, found, identityKnown = pcall(function()
+                if Unreadable(record) or type(record) ~= "table" then return nil, false end
+                local id = MaybeNumber(record.spellId)
+                if id == nil then return nil, false end
+                if id == 463730 then return { applications = record.applications }, true end
+                return nil, true
+            end)
+            if readable and found then return found, "已找到" end
+            if not readable or not identityKnown then unknown = true end
+        end
+        return nil, unknown and "增益身份受限或缺失" or "确认不存在"
+    end)
+    if not ok then
+        local detail = not Unreadable(aura) and type(aura) == "string" and aura or "错误内容受限或不可读取"
+        return nil, stage .. "失败：" .. detail
+    end
+    return aura, status
+end
+
 local function UpdateBloodAura()
     last.bloodPresent, last.bloodStacks, last.hasBloodStacks = false, nil, false
+    last.bloodScanStatus = "开关关闭"
+    if NS.NativeBlood then
+        last.bloodScanStatus = "原生容器直接管理；插件不读取层数"
+        return
+    end
     if Config.Get().elements.coagulatedBlood.enabled == false then return end
-    ---@type boolean, table|nil
-    local ok, aura = pcall(TrackedBloodAura)
+    local aura, scanStatus = IndependentBloodAura()
+    last.bloodScanStatus = scanStatus
+    local ok = true
+    if scanStatus == "确认不存在" then return end
+    if type(aura) ~= "table" then ok, aura = pcall(TrackedBloodAura) end
     if not ok or type(aura) ~= "table" then
         local api = _G.C_UnitAuras
         if not (api and api.GetPlayerAuraBySpellID) then return end
@@ -370,17 +402,11 @@ local function BuildState()
     state.power = ElementState(elements.power, last.powerRotation, last.hasPowerArc)
     local blood = elements.coagulatedBlood
     state.coagulatedBlood = ElementState(blood, nil, false)
-    state.coagulatedBlood.visible = blood.enabled ~= false and last.bloodPresent == true
+    state.coagulatedBlood.visible = blood.enabled ~= false and (NS.NativeBlood ~= nil or last.bloodPresent == true)
     state.coagulatedBlood.stacks = last.bloodStacks
     state.coagulatedBlood.hasStacks = last.hasBloodStacks == true
     state.coagulatedBlood.maxStacks = blood.maxStacks
-    -- 临时校准走同一绘制入口，不改存档，也不尝试读取受限层数。
-    if type(Core.bloodProbeStacks) == "number" then
-        state.coagulatedBlood.visible = blood.enabled ~= false
-        state.coagulatedBlood.stacks = Core.bloodProbeStacks
-        state.coagulatedBlood.hasStacks = true
-        state.coagulatedBlood.maxStacks = 150
-    end
+    if NS.Debug then NS.Debug.ApplyProbe(state) end
     local marker = elements.deathStrike
     state.deathStrike = { visible = marker.enabled ~= false and last.costMarker ~= nil,
         points = last.costMarker, thickness = marker.thickness,
@@ -397,7 +423,7 @@ local function BuildState()
         -- 特殊处理——那时遮罩本来就什么都不露。
         local start = Logic.PIPS.start + (slot - 1) * Logic.PIPS.step
         state.runes[slot] = ElementState(elements.runes,
-            Logic.MaskAngle(start, Logic.PIPS.span, rune.frac), true, rune.state)
+            Logic.MaskAngle(start, Logic.PIPS.span, rune.frac, false, Logic.PIPS.endMargin), true, rune.state)
     end
 
     local crosshair = elements.crosshair
@@ -415,58 +441,13 @@ end
 -- 应用
 --------------------------------------------------------------------------
 
-Core.demo = false          -- /chh demo：用假数据驱动，便于在没有战斗时检查渲染
-
-local demoFill = 0
-
--- 假数据是普通数值，角度直接算；实机那条路必须经引擎求值（见「弧线角度」）
-local function ArcRotation(arc, fill)
-    return Logic.MaskAngle(arc.start, arc.span, fill, arc.reverse)
-end
-
-local function DemoState()
-    demoFill = (demoFill + 0.01) % 1.2
-    if demoFill > 1 then demoFill = 1 end
-
-    local elements = Config.Get().elements
-    local state = {}
-    -- 方向由 Logic.DemoFills 定（满血起掉、空起涨），那里有测试守着：
-    -- 方向演反了，拿它检查外观会得出与真实相反的结论。
-    local healthFill, powerFill = Logic.DemoFills(demoFill)
-    state.health = ElementState(elements.health,
-        ArcRotation(Logic.ARCS.health, healthFill), true)
-    state.power = ElementState(elements.power,
-        ArcRotation(Logic.ARCS.power, powerFill), true)
-    state.runes = {}
-    for slot = 1, Logic.PIPS.count do
-        local fill = 1.8 * demoFill - (slot - 1) * 0.16
-        if fill < 0 then fill = 0 elseif fill > 1 then fill = 1 end
-        local start = Logic.PIPS.start + (slot - 1) * Logic.PIPS.step
-        state.runes[slot] = ElementState(elements.runes,
-            Logic.MaskAngle(start, Logic.PIPS.span, fill), true)
-    end
-    state.crosshair = {
-        visible = elements.crosshair.enabled ~= false,
-        fillColor = FillColor(elements.crosshair),
-        -- 键名必须与状态表契约一致（准星带的是 fillAlpha，不是 alpha）——
-        -- 写错了渲染层读不到，表现是 demo 下调准星透明度毫无反应。
-        fillAlpha = elements.crosshair.fillAlpha or 1,
-        shadowColor = ShadowColor(),
-        shadowAlpha = ShadowAlpha(),
-    }
-    -- 新功能仍按真实增益存在与开关显示，不把演示当成真实层数或费用。
-    local real = BuildState()
-    state.coagulatedBlood, state.deathStrike = real.coagulatedBlood, real.deathStrike
-    return state
-end
-
 -- 「现在该不该显示」的唯一出口。
 --
 -- 之所以收成一处：渲染侧（画不画）与解锁元素侧（给不给拖动框）问的是同一个问题。
 -- 两处各写一遍的话，一旦不一致，症状就是「屏幕上看不见它，正中却留着一个能拖的
 -- 空框」——那正是本模块存在的理由。
 local function ShouldShow()
-    if Core.demo then
+    if NS.Debug and NS.Debug.IsDemo() then
         -- 演示模式存在的意义就是「条件不满足时也能看」，所以它绕过可见性。
         -- 与它绕过总开关是同一个道理。
         return true
@@ -498,8 +479,8 @@ local function Refresh()
         return
     end
 
-    if Core.demo then
-        Elements.Apply(DemoState())
+    if NS.Debug and NS.Debug.IsDemo() then
+        Elements.Apply(NS.Debug.DemoState())
         return
     end
     Elements.Apply(BuildState())
@@ -523,6 +504,9 @@ function Core.GetReadings()
     return {
         hasHealth = last.hasHealthArc,
         hasPower = last.hasPowerArc,
+        healthReadOK = last.healthReadOK,
+        powerReadOK = last.powerReadOK,
+        hasMarker = last.costMarker ~= nil,
         -- 实机里这两个是秘密值，只许原样转交；离线测试里它们是普通数值，可断言
         healthRotation = last.healthRotation,
         powerRotation = last.powerRotation,
@@ -612,7 +596,7 @@ events:SetScript("OnEvent", OnEvent)
 -- 而时长是动态值，纯事件驱动会让进度条在增益生效期间走偏。
 C_Timer.NewTicker(POLL_INTERVAL, function()
     UpdateDKFeatures()
-    if Core.demo then
+    if NS.Debug and NS.Debug.IsDemo() then
         Refresh()
         return
     end
@@ -693,197 +677,6 @@ end)
 --------------------------------------------------------------------------
 -- 诊断入口
 --------------------------------------------------------------------------
-
-local function Presence(ok)
-    return ok and "|cff40c040就位|r" or "|cffff4040缺失|r"
-end
-
-local function Version()
-    if C_AddOns and C_AddOns.GetAddOnMetadata then
-        return C_AddOns.GetAddOnMetadata(ADDON, "Version") or "未知"
-    end
-    return "未知"
-end
-
--- 读数探针：逐条报告"这一次读数究竟发生了什么"。
--- 只报告**类型与判定结果**，绝不把数值本身转成字符串（秘密值可能不允许转字符串）。
-local function Probe(label, call)
-    local results = { pcall(call) }
-    if not results[1] then
-        print("  " .. label .. "：调用抛错 → " .. tostring(results[2]))
-        return
-    end
-
-    local value = results[2]
-    local detector = rawget(_G, "issecretvalue")
-    local verdict
-    if not detector then
-        verdict = "无 issecretvalue"
-    else
-        local detOk, secret = pcall(detector, value)
-        verdict = detOk and ("issecretvalue=" .. tostring(secret))
-            or ("issecretvalue 抛错：" .. tostring(secret))
-    end
-
-    local arithOk = pcall(function() return value + 0 end)
-    print(string.format("  %s：返回%d个 type=%s  %s  可取数=%s",
-        label, #results - 1, type(value), verdict, tostring(arithOk)))
-end
-
--- 职业色取值链的探针：只报**类型与成败**，绝不打印颜色本身（通道可能是秘密值）。
-local function ColorSource(label, call)
-    local results = { pcall(call) }
-    if not results[1] then
-        print("  " .. label .. "：调用抛错 → " .. tostring(results[2]))
-        return
-    end
-    local color = results[2]
-    local channels = "-"
-    if type(color) == "table" then
-        local ok, r, g, b = pcall(function() return color.r, color.g, color.b end)
-        channels = ok
-            and (type(r) .. "/" .. type(g) .. "/" .. type(b))
-            or ("读通道抛错 → " .. tostring(r))
-    end
-    local detector = rawget(_G, "issecretvalue")
-    local secret = "无检测函数"
-    if detector then
-        local ok, value = pcall(detector, color)
-        secret = ok and tostring(value) or ("抛错 → " .. tostring(value))
-    end
-    print(string.format("  %s：type=%s 通道=%s issecretvalue=%s",
-        label, type(color), channels, secret))
-end
-
-local function ReportClassColor()
-    print("  职业色取值链：")
-    local ok, _, classFile = pcall(UnitClass, "player")
-    print("  UnitClass：调用成功=" .. tostring(ok) .. "  类名令牌可读="
-        .. tostring(classFile ~= nil))
-    if not (ok and classFile) then return end
-
-    local api = rawget(_G, "C_ClassColor")
-    local EUI = rawget(_G, "EllesmereUI")
-    print("  接口：C_ClassColor=" .. Presence(api ~= nil)
-        .. "  EUI 缓存令牌=" .. Presence(EUI and EUI._playerClass ~= nil)
-        .. "  EUI.GetClassColor=" .. Presence(EUI and EUI.GetClassColor ~= nil)
-        .. "  RAID_CLASS_COLORS=" .. Presence(rawget(_G, "RAID_CLASS_COLORS") ~= nil))
-
-    if EUI and EUI.GetClassColor then
-        ColorSource("第一级 EUI 缓存", function() return EUI.GetClassColor(classFile) end)
-    end
-    if api and api.GetClassColor then
-        ColorSource("第二级 C_ClassColor", function() return api.GetClassColor(classFile) end)
-    end
-    local palette = rawget(_G, "RAID_CLASS_COLORS")
-    if palette then
-        ColorSource("第三级 全局色表", function() return palette[classFile] end)
-    end
-end
-
-local function Report()
-    local cfg = Config.Get()
-    print("|cff9fd4ff" .. ADDON .. "|r 诊断：")
-    print("  版本：" .. Version())
-    print("  EllesmereUI：" .. Presence(rawget(_G, "EllesmereUI") ~= nil))
-    print("  MYUI（共享素材）："
-        .. Presence(C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("MYUI")))
-    print(string.format("  启用=%s  缩放=%.2f  层级=%s  假数据=%s",
-        tostring(cfg.enabled), cfg.scale or 1, cfg.strata or "MEDIUM",
-        Core.demo and "开" or "关"))
-    -- 只报"有没有取到"，绝不打印角度本身：实机里它是秘密值，不允许转字符串
-    print(string.format("  弧线角度：生命值%s  能量%s",
-        last.hasHealthArc and "已取到" or "没取到",
-        last.hasPowerArc and "已取到" or "没取到"))
-
-    -- 读数探针：血量／符能两条弧都空着时，先看是取数接口的问题还是求值链的问题。
-    print("  弧线求值链：C_CurveUtil=" .. Presence(_G.C_CurveUtil ~= nil)
-        .. "  UnitHealthPercent=" .. Presence(UnitHealthPercent ~= nil)
-        .. "  UnitPowerPercent=" .. Presence(UnitPowerPercent ~= nil))
-    print("  读数探针：")
-    Probe("UnitHealth", function() return UnitHealth("player") end)
-    Probe("UnitHealthMax", function() return UnitHealthMax("player") end)
-    local powerType = Enum and Enum.PowerType and Enum.PowerType.RunicPower
-    print("  能量类型：Enum.PowerType.RunicPower=" .. tostring(powerType))
-    if powerType then
-        Probe("UnitPower", function() return UnitPower("player", powerType) end)
-        Probe("UnitPowerMax", function() return UnitPowerMax("player", powerType) end)
-    end
-    Probe("GetRuneCooldown(1)", function() return GetRuneCooldown(1) end)
-    ReportClassColor()
-    if InCombatLockdown and InCombatLockdown() then
-        print("  （战斗中）")
-    end
-end
-
-_G.SLASH_MYUICHH1 = "/chh"
-SlashCmdList["MYUICHH"] = function(msg)
-    msg = (msg or ""):lower():gsub("%s+", "")
-    if msg == "bloodtestoff" then
-        Core.bloodProbeStacks = nil
-        Refresh()
-        print("凝固之血显示测试已关闭，恢复真实增益。")
-        return
-    end
-    local probe = msg:match("^bloodtest(%d+)$")
-    if probe then
-        local value = tonumber(probe)
-        if value == 0 or value == 10 or value == 16 or value == 75 or value == 150 then
-            Core.bloodProbeStacks = value
-            Refresh()
-            print("凝固之血显示测试：固定" .. value .. "层／150量程；不是实时增益。"
-                .. " 输入 /chh bloodtest off 退出，重载也会退出。")
-        else
-            print("显示测试只接受0、10、16、75、150，不改变真实设置。")
-        end
-        return
-    end
-    if msg == "demo" then
-        Core.demo = not Core.demo
-        demoFill = 0
-        Refresh()
-        print("|cff9fd4ff" .. ADDON .. "|r 假数据驱动已" .. (Core.demo and "开启" or "关闭"))
-        return
-    end
-    if msg == "media" then
-        print("|cff9fd4ff" .. ADDON .. "|r 素材目录：" .. MEDIA_ROOT)
-        return
-    end
-    if msg == "blood" then
-        local cfg = Config.Get().elements.coagulatedBlood
-        print("凝固之血：开关" .. (cfg.enabled == false and "关闭" or "开启")
-            .. "，增益" .. (last.bloodPresent and "已确认" or "未确认")
-            .. "，层数" .. (type(MaybeNumber(last.bloodStacks)) == "number" and "可读取" or "受限或缺失"))
-        local function Reading(value)
-            local readable = MaybeNumber(value)
-            if type(readable) == "number" then return string.format("%.6g", readable) end
-            return "受限或缺失"
-        end
-        print("显示量程：" .. Reading(cfg.maxStacks) .. "；实际读取层数：" .. Reading(last.bloodStacks))
-        local renderOk, rendered = pcall(Elements.BloodDiagnostics)
-        if renderOk and type(rendered) == "table" then
-            print("游戏绘制量程：" .. Reading(rendered.minimum) .. "～" .. Reading(rendered.maximum)
-                .. "；绘制数值：" .. Reading(rendered.value) .. "；圆形进度：" .. Reading(rendered.percent))
-        else
-            print("游戏绘制状态：无法读取")
-        end
-        local ok, aura = pcall(TrackedBloodAura)
-        if ok and type(aura) == "table" then
-            print("暴雪增益监控：已找到；层数"
-                .. (type(MaybeNumber(aura.applications)) == "number" and "可读取" or "受限或缺失"))
-        else
-            print("暴雪增益监控：未找到或读取失败")
-        end
-        local api = _G.C_UnitAuras
-        local directOk, direct = pcall(function()
-            return api.GetPlayerAuraBySpellID(463730)
-        end)
-        print("按编号查询：" .. (directOk and "调用成功" or "调用失败")
-            .. "，结果" .. (directOk and type(direct) == "table" and "存在" or "缺失或受限"))
-        return
-    end
-    Report()
-end
 
 --------------------------------------------------------------------------
 -- EUI 挂载（票据 07）
@@ -1051,4 +844,12 @@ function NS.Mount()
     -- 接不上时模块自己降级为「一直显示」，不影响上面三件。
     local visibility = NS.Visibility
     if visibility and visibility.Install then visibility.Install(Refresh) end
+end
+
+-- 开发包才加载可选工具；正式包没有该文件，也不建立这些测试回调。
+if NS.Debug then
+    NS.Debug.Attach({ Core=Core, Logic=Logic, Config=Config, Elements=Elements,
+        last=last, BuildState=BuildState, ElementState=ElementState,
+        FillColor=FillColor, ShadowColor=ShadowColor, ShadowAlpha=ShadowAlpha,
+        MaybeNumber=MaybeNumber, TrackedBloodAura=TrackedBloodAura })
 end

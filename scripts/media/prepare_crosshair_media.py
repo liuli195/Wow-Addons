@@ -1,34 +1,8 @@
-"""把 Figma 的高倍导出加工成仓库里的成品纹理。
+"""将Figma（设计工具）的10倍导出加工成白色透明PNG核对图。
 
-    python scripts/media/prepare_crosshair_media.py <导出目录> [--scale 8] [--out 暂存目录]
-
-- `<导出目录>`：Figma 里选中 18 个画板、Export 倍数填 10x、导出的那个目录。
-  画板名必须与清单里的文件名（去掉扩展名）一致。
-- `--scale`：成品密度，与 `manifest.json` 的 `exportScale` 同义（成品像素 = 显示尺寸 × 它）。
-- `--out`：成品写到哪。缺省直接写 `assets/CrosshairHUDMedia/Textures/`。
-
-## 为什么不能直接用 Figma 的导出
-
-**Figma 的导出不带过渡**。这不是配置问题，是它的渲染结果——形状边缘落在整数像素网格上
-时，硬边就是那个分辨率下的正确渲染。所以要先按 10 倍导出，再降到成品密度，**降采样本身
-留下的那圈过渡就是抗锯齿**。实测（准星）：直接导出 0.08 像素，降采样后 2.4 像素。
-
-## 为什么画布要补成 2 的幂
-
-**这是"缩小显示不出锯齿"真正依赖的一条。** 魔兽的 `SetTexture` 只在过滤模式给
-`TRILINEAR`**且贴图边长是 2 的幂**时才用得上 mipmap；少任何一条就只能双线性采样，
-缩小显示时每屏幕像素只读 4 个纹素、高频全丢。2026-09-19 实机逐条验过：
-
-    密度 8 + 边长非 2 的幂 + TRILINEAR  → 缩到 0.8 档锯齿明显
-    密度 8 + 边长 2 的幂   + TRILINEAR  → 锐利且无锯齿
-
-**不能靠"把边缘抹软"来绕**：软边确实也消锯齿，但那是拿锐度换的。补边才是既锐利又不锯的路。
-
-补边**四周对称**，所以圆心偏移不变、内容位置与大小不变，只有透明边变多；
-`displaySize` 跟着变成新画布的尺寸（它按显示尺寸 × 密度算像素，不跟着改就错位）。
-
-**阴影**额外做两件事：把 RGB 统一成纯白（染色是乘法，颜色由顶点色给），
-并把 alpha 峰值归一化到 255（"最重档"＝通道上限，游戏内只能往下调）。
+成品密度和摆放读manifest.json；对称补边到2的幂，不改内容位置。
+此步骤保留高倍率原图细节并生成边缘过渡，但不能单独保证游戏内平滑。
+后续build_crosshair_media.py保存完整缩小层并经游戏验收。
 """
 
 import argparse
@@ -37,7 +11,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "assets" / "CrosshairHUDMedia"
@@ -101,7 +75,7 @@ def pad_to_pot(image):
     return Image.fromarray(canvas, mode="RGBA"), (pw, ph)
 
 
-def prepare(source, name, want_size, is_shadow):
+def prepare(source, name, want_size, is_shadow, hollow_shadow=False):
     path = source / f"{name}.png"
     if not path.exists():
         raise FileNotFoundError(f"{path} 不存在——Figma 那边导出了吗？画板名对得上吗？")
@@ -110,12 +84,20 @@ def prepare(source, name, want_size, is_shadow):
         image = image.convert("RGBA")
 
     # 用 LANCZOS 降采样：它按缩放比例放大滤波核的支撑，这正是"带权重"的含义，
-    # 也是那圈过渡的来源。NEAREST/BOX 会原样保留硬边（见模块文档的实测）。
+    # 也是那圈过渡的来源；游戏缩小层另用面积平均，不混淆这两个阶段。
     resized = image.resize(want_size, Image.LANCZOS)
 
     data = white_rgb(resized)
     if is_shadow:
         data[:, :, 3] = normalize_peak(data[:, :, 3])
+        if hollow_shadow:
+            shape = prepare(source, name.removesuffix(SHADOW_SUFFIX), want_size, False)
+            # 少挖成品纹理的2像素，留下窄重叠区，避免主体和阴影的软边叠成透明缝。
+            coverage = np.asarray(shape.getchannel("A").filter(
+                ImageFilter.MinFilter(5))).astype(np.uint32)
+            # 只挖去主体覆盖范围，外围扩散和浓淡保持原值；边缘沿用主体平滑覆盖。
+            data[:, :, 3] = ((data[:, :, 3].astype(np.uint32) * (255 - coverage)
+                             + 127) // 255).astype(np.uint8)
     return Image.fromarray(data, mode="RGBA")
 
 
@@ -156,7 +138,8 @@ def main():
             f"{name}: 导出尺寸应为 {expect}，实际 {(sw, sh)}——"
             f"Figma 端的倍数是不是没填对（应填 {args.figma_scale}x）？")
 
-        image = prepare(source, name, want, is_shadow)
+        image = prepare(source, name, want, is_shadow,
+                        name + ".png" in manifest.get("hollowShadows", []))
         image, pot = pad_to_pot(image)
         image.save(out / asset["file"])
         placement[asset["file"]] = [pot[0] // scale, pot[1] // scale]

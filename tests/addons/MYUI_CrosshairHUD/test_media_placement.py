@@ -84,6 +84,12 @@ local Elements = assert(NS.Elements)
 
 Elements.scale = 1
 Elements.Create()
+local hardMasks, softMasks = 0, 0
+for _, t in ipairs(textures) do
+    if t.path and t.path:match("mask_half_hard%.blp$") then hardMasks = hardMasks + 1 end
+    if t.path and t.path:match("mask_half%.blp$") then softMasks = softMasks + 1 end
+end
+assert(hardMasks == 0 and softMasks == 8, "血条、能量条和六个资源槽统一使用柔化遮罩")
 
 ----------------------------------------------------------------------
 -- 逐条比对：清单说什么尺寸、什么偏移，摆放表就得报什么
@@ -142,7 +148,7 @@ def manifest_table():
     for asset in data["assets"]:
         w, h = asset["displaySize"]
         ox, oy = asset["centerOffset"]
-        rows.append(f'    ["{asset["file"]}"] = {{ {w}, {h}, {ox}, {oy} }},')
+        rows.append(f'    ["{asset["file"].replace(".png", ".blp")}"] = {{ {w}, {h}, {ox}, {oy} }},')
     return "{\n" + "\n".join(rows) + "\n}"
 
 

@@ -370,37 +370,40 @@
         70,
         128
       ]
-    },
-    {
-      "file": "coagulated_blood_arc_shadow.png",
-      "pixelSize": [
-        1024,
-        1024
-      ],
-      "displaySize": [
-        128,
-        128
-      ],
-      "centerOffset": [
-        -32,
-        16
-      ],
-      "contentSize": [
-        70,
-        128
-      ]
     }
   ],
   "coagulatedBloodSource": {
     "fileKey": "MmqiPxtGUmYBYtxd5SHgAI",
     "shapeNode": "124:399",
     "shadowNode": "124:401",
-    "exportScale": 10
+    "exportScale": 10,
+    "shadowUsedInGame": false
   },
   "coagulatedBloodGeometry": {
     "radius": 57.9,
     "stroke": 3.9,
     "start": 99,
-    "span": 51
+    "span": 102
+  },
+  "hollowShadows": [
+    "crosshair_shadow.png",
+    "health_arc_shadow.png",
+    "power_arc_shadow.png",
+    "resource_01_shadow.png",
+    "resource_02_shadow.png",
+    "resource_03_shadow.png",
+    "resource_04_shadow.png",
+    "resource_05_shadow.png",
+    "resource_06_shadow.png"
+  ],
+  "gameMaterial": {
+    "format": "BLP2",
+    "encoding": 1,
+    "alphaBits": 8,
+    "preferredFormat": 8,
+    "mipmaps": "full",
+    "downsample": "BOX",
+    "filterMode": "TRILINEAR",
+    "pngReferencePreserved": true
   }
 }

@@ -4,8 +4,7 @@
 -- 它**不需要知道渲染侧的任何东西**——配置变更的「应用」在 Core。依赖方向是
 -- Core → {Config, Elements}，Logic 是唯一叶子。
 --
--- 默认值取设计稿采样色；**每个元素的背景色各自独立**，所以设计稿里三条资源
--- 各不相同的深色背景能原样还原。
+-- 默认值取用户确认的游戏配置；位置居中，可见性总是显示，不带隐藏条件。
 --
 -- 存储是自己持有的 SavedVariables（独立存储，不写进 EllesmereUIDB）。
 
@@ -41,56 +40,56 @@ Config.DEFAULTS = {
     -- 其余可见性状态（多选条件、匹配模式、覆盖）由 EUI 的共享系统按需写进本表，
     -- Merge 只补默认值、不动多余键，所以那些字段不会被清掉。
     visibility = "always",
-    scale = 1.0,                    -- 整体等比缩放 0.5–2.0
+    scale = 0.8,                    -- 整体等比缩放 0.5–2.0
     position = nil,                 -- 由 EUI 的位置控件写入；nil = 默认锚点（屏幕居中）
     strata = "MEDIUM",              -- 框架层级
 
     -- 阴影是**一处全局**设置，不挂在任何元素上：它是"把 HUD 从混乱背景里抠出来"
     -- 这一件事，天然只需要一个口径。颜色只有自定义色（与「背景色只有自定义」同理，
-    -- 没有第二种来源）；浓淡默认 1，即最重——游戏内只能往下调。
+    -- 没有第二种来源）；默认透明度80%，可调整至100%。
     shadow = { 0, 0, 0 },
-    shadowAlpha = 1,      -- 见 Config.SHADOW_ALPHA_MAX：默认值必须正好是上限
+    shadowAlpha = 0.8,
 
     -- 填充与背景各有各的透明度：合成一个只能整条一起淡化，分不开。
     -- 「填充色来源」放在颜色之外单独一项——它是"用哪个色"的选择，不是颜色本身。
     elements = {
         deathStrike = {
-            enabled = true, thickness = 1.5,
+            enabled = true, thickness = 2,
             fill = { 1, 1, 1 }, fillAlpha = 1,
         },
         coagulatedBlood = {
-            enabled = true, maxStacks = 150,
+            enabled = true, maxStacks = 100,
             fill = { 1, 1, 1 }, fillAlpha = 1,
-            bg = { 0.208, 0.165, 0.188 }, bgAlpha = 0,
+            bg = { 0.1921568627450981, 0.1921568627450981, 0.1921568627450981 }, bgAlpha = 0,
         },
         health = {
             enabled = true,
-            fillMode = "custom",    -- "custom" | "class"（职业配色）
-            fill = { 0.851, 0.506, 0.553 },   -- #D9818D
+            fillMode = "class",     -- 职业配色
+            fill = { 1, 0.5177788823967229, 0.5834727737803579 },
             fillAlpha = 1,
-            bg   = { 0.208, 0.165, 0.188 },   -- #352A30
+            bg   = { 0.1921568627450981, 0.1921568627450981, 0.1921568627450981 },
             bgAlpha = 1,
         },
         power = {
             enabled = true,
-            fillMode = "custom",
-            fill = { 0.498, 0.686, 0.796 },   -- #7FAFCB
+            fillMode = "power",
+            fill = { 0.4662868814181948, 0.7402547484972278, 0.9005550962562364 },
             fillAlpha = 1,
-            bg   = { 0.161, 0.212, 0.251 },   -- #293640
+            bg   = { 0.1921568627450981, 0.1921568627450981, 0.1921568627450981 },
             bgAlpha = 1,
         },
         runes = {
             enabled = true,
-            fillMode = "custom",
-            fill = { 0.855, 0.839, 0.796 },   -- #DAD6CB
+            fillMode = "resource",
+            fill = { 0.4662868814181948, 0.7402547484972278, 0.9005550962562364 },
             fillAlpha = 1,
-            bg   = { 0.384, 0.396, 0.408 },   -- #626568
+            bg   = { 0.1921568627450981, 0.1921568627450981, 0.1921568627450981 },
             bgAlpha = 1,
         },
         crosshair = {
             enabled = true,
             fillMode = "custom",
-            fill = { 0.898, 0.914, 0.914 },   -- #E5E9E9
+            fill = { 1, 1, 1 },
             fillAlpha = 1,
             -- 准星是线不是块，**没有背景色**
         },
@@ -119,15 +118,10 @@ local STRATA_ORDER = { "LOW", "MEDIUM", "HIGH", "DIALOG" }
 -- 导出给测试：键必须是魔兽认的层级名，测试就是盯这个的
 Config.STRATA_VALUES, Config.STRATA_ORDER = STRATA_VALUES, STRATA_ORDER
 
--- 整体缩放的取值范围。**尺寸的唯一入口是解锁模式齿轮里的宽度／高度**（它们写的就是
--- 这个 scale），这里是那个入口的钳位范围——超范围不会静默生效，齿轮回读实际值回写。
+-- 配置页总开关齿轮与解锁模式宽度／高度共用scale及同一取值范围。
 Config.SCALE_MIN, Config.SCALE_MAX = 0.5, 2.0
 
--- 阴影浓淡滑杆的取值范围（百分比）。**上限就是默认值**：素材是按最重档烘的，
--- 调过头只会把轮廓糊掉，所以只允许从默认往下调。
---
--- `DEFAULTS.shadowAlpha`（0–1）必须正好等于 `SHADOW_ALPHA_MAX ÷ 100`，
--- `test_config_plan.py` 盯着这一对——两处各写一份就会悄悄分家。
+-- 阴影透明度滑杆上限为100%，新安装默认值为用户确认的80%。
 Config.SHADOW_ALPHA_MAX = 100
 
 local settings = nil
@@ -285,19 +279,17 @@ end
 --- 两处各写一份就会出现"滑块拖到 3.0、实际被钳到 2.0"的静默不一致。
 function Config.GeneralCells()
     return {
-        { kind = "toggle", text = "启用准星HUD", key = "enabled" },
+        { kind = "toggle", text = "启用准星HUD", key = "enabled", gear = {
+            { kind = "dropdown", text = "图层" },
+            { kind = "slider", text = "HUD 缩放", key = "scale",
+              min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05 },
+        } },
         -- 紧挨总开关：总开关关掉时这一格会置灰，两个相邻才一眼看得出从属关系。
         -- 它和别的格子一样只占半格，排布交给清单的自适应规则，不另开分支。
         { kind = "visibility", text = "可见性" },
-        { kind = "slider", text = "HUD 缩放", key = "scale",
-          min = Config.SCALE_MIN, max = Config.SCALE_MAX, step = 0.05,
-          tooltip = "整体等比缩放。与解锁模式齿轮里的宽度／高度是同一个值。" },
-        { kind = "dropdown", text = "图层" },
         -- 阴影是**全局一格**：颜色 + 它自己的浓淡同格（与元素那些颜色格同形）。
         -- 只有自定义色——与「条背景只有自定义」同理，没有第二种来源。
-        -- 阴影的浓淡滑杆范围**写在这里**，别写在渲染函数里：它是"默认即上限"这条
-        -- 规则的载体——`DEFAULTS.shadowAlpha` 必须正好等于 max ÷ 100，测试盯着这一对。
-        -- 素材是按最重档烘的，调过头只会糊，所以上限就是默认值。
+        -- 阴影默认80%，滑杆仍允许调到100%。
         { kind = "color", text = "阴影", colorKey = "shadow", alphaKey = "shadowAlpha",
           min = 0, max = Config.SHADOW_ALPHA_MAX },
     }
@@ -333,14 +325,14 @@ function Config.CellPlan(elementKey)
     end
     if elementKey == "coagulatedBlood" then
         plan[2].modeKey = nil
-        plan[4] = { kind = "slider", text = "满条层数", key = "maxStacks",
+        plan[1].gear = { { kind = "slider", text = "最大显示层数", key = "maxStacks",
             min = 1, max = 1000, step = 1,
-            tooltip = "仅控制显示量程，不是增益真实上限。" }
+            tooltip = "仅控制显示量程，不是增益真实上限。" } }
     end
     if elementKey == "deathStrike" then
         plan[2].text, plan[2].modeKey = "刻度颜色", nil
-        plan[3] = { kind = "slider", text = "粗细", key = "thickness",
-            min = 0.5, max = 6, step = 0.25 }
+        plan[1].gear = { { kind = "slider", text = "粗细", key = "thickness",
+            min = 0.5, max = 6, step = 0.25 } }
     end
     return plan
 end
@@ -425,7 +417,7 @@ function Config.BuildPage(_, parent, yOffset)
     -- spec = { tooltip, getRGB, setRGB, select, isSelected, alpha }
     local function AttachSwatch(rgn, spec, grayed, Changed)
         local swatch = EUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5, spec.getRGB,
-            spec.setRGB, false, 20)
+            function(r, g, b) if not grayed() then spec.setRGB(r, g, b) end end, false, 20)
         swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -8, 0)
         rgn._lastInline = swatch
 
@@ -516,7 +508,11 @@ function Config.BuildPage(_, parent, yOffset)
         if cell.kind == "toggle" then
             return { type = "toggle", text = cell.text,
                 getValue = function() return element[cell.key] ~= false end,
-                setValue = function(value) element[cell.key] = value; refresh() end,
+                setValue = function(value)
+                    element[cell.key] = value
+                    refresh()
+                    if EUI.RefreshPage then EUI:RefreshPage() end
+                end,
                 -- 总开关关掉时子开关置灰不可点
                 disabled = function()
                     return Config.Get().enabled == false
@@ -534,7 +530,7 @@ function Config.BuildPage(_, parent, yOffset)
                 disabled = grayed }
         end
         -- 颜色格：滑块是**这一格自己的**透明度，色块随后内联挂在它左侧。
-        -- 范围优先取格子自己声明的（阴影声明了，因为它"默认即上限"；元素那些没声明，
+        -- 范围优先取格子自己声明的（阴影显式声明上限；元素那些没声明，
         -- 用 0–100 的常规范围）。
         return { type = "slider", text = cell.text,
             min = cell.min or 0, max = cell.max or 100, step = 1,
@@ -550,7 +546,7 @@ function Config.BuildPage(_, parent, yOffset)
     y = y - h
 
     -- 常规节也照清单渲染（Config.GeneralCells）：每项半格、成对成行。
-    -- **这里不再有缩放**——尺寸归解锁模式齿轮里的宽度／高度管，两者是同一个 scale。
+    -- 总开关齿轮的缩放与解锁模式宽度／高度共用scale。
     local function GeneralSlot(cell)
         if cell.kind == "toggle" then
             local key = cell.key
@@ -576,7 +572,12 @@ function Config.BuildPage(_, parent, yOffset)
             local key = cell.alphaKey
             return { type = "slider", text = cell.text, min = 0, max = 100, step = 1,
                 getValue = function() return (cfg[key] or 1) * 100 end,
-                setValue = function(value) cfg[key] = value / 100; refresh() end }
+                setValue = function(value)
+                    if Config.Get().enabled == false then return end
+                    cfg[key] = value / 100
+                    refresh()
+                end,
+                disabled = function() return Config.Get().enabled == false end }
         end
         if cell.kind == "visibility" then
             -- 可见性控件由 EUI 的共享清单填充：这里先落一个占位下拉，建完行再把
@@ -626,8 +627,7 @@ function Config.BuildPage(_, parent, yOffset)
     -- 元素格的左右两格——所以收在这里，别再各抄一份。
     --
     -- 倒序挂是因为挂上去的顺序决定显示顺序，而 `CellSwatches` 是按主次排的。
-    -- `grayed` 由调用方给：元素格随元素开关置灰，常规节的项（缩放、图层、阴影）
-    -- 不随总开关置灰。
+    -- `grayed` 由调用方给：元素格随元素与总开关置灰，阴影随总开关置灰。
     local function AttachCellSwatch(region, cell, store, grayed, onChanged)
         if not (cell and cell.kind == "color" and region) then return end
         if EUI._prebuilding or not EUI.BuildColorSwatch then return end
@@ -638,6 +638,48 @@ function Config.BuildPage(_, parent, yOffset)
     end
 
     local general = Config.GeneralCells()
+    -- 复用EUI原生齿轮弹窗，读写仍走原配置项回调。
+    local function AttachGear(region, cell, store, grayed, key)
+        if not (region and cell and cell.gear and EUI.BuildInlineCog) then return end
+        local function Disabled()
+            if key then return grayed() end
+            return Config.Get().enabled == false
+        end
+        local tip
+        if key == "coagulatedBlood" then
+            tip = "设置凝固之血达到多少层时，条显示为满条。这个数字不是增益的真实上限。"
+        elseif key == "deathStrike" then
+            tip = "调整灵打消耗刻度线的粗细。"
+        else
+            tip = "调整准星HUD的图层和整体大小。"
+        end
+        local function DisabledTip()
+            if key == "coagulatedBlood" and PlayerClass() ~= "DEATHKNIGHT" then
+                return "凝固之血设置只能由死亡骑士使用。"
+            end
+            if Config.Get().enabled == false then
+                return "先打开“启用准星HUD”，才能调整" .. (key and Config.ELEMENT_LABELS[key] or "图层和整体大小") .. "。"
+            end
+            if key == "coagulatedBlood" then return "先启用凝固之血，才能调整最大显示层数。" end
+            return "先启用灵打消耗刻度，才能调整刻度线的粗细。"
+        end
+        local rows = {}
+        for _, item in ipairs(cell.gear) do
+            local slot = key and CellSlot(store, item, grayed, key) or GeneralSlot(item)
+            rows[#rows + 1] = {
+                type = slot.type, label = item.text, min = slot.min, max = slot.max, step = slot.step,
+                values = slot.values, order = slot.order, get = slot.getValue,
+                set = function(value) if not Disabled() then slot.setValue(value) end end,
+                disabled = Disabled, tooltip = item.tooltip,
+            }
+        end
+        EUI.BuildInlineCog(region, {
+            title = key and Config.ELEMENT_LABELS[key] or "准星HUD", rows = rows,
+            captureRegion = region, minWidth = 260,
+            disabled = Disabled, disabledTooltip = DisabledTip,
+            tip = tip, rawTooltip = true,
+        })
+    end
     local gindex = 1
     while general[gindex] do
         local left, right = general[gindex], general[gindex + 1]
@@ -648,9 +690,11 @@ function Config.BuildPage(_, parent, yOffset)
         AttachVisibilityCell(row, right, "_rightRegion")
 
         -- 常规节的颜色格走**同一套**色块逻辑，只是配置对象是顶层 cfg，不是某个元素。
-        local notGrayed = function() return false end
-        AttachCellSwatch(row and row._leftRegion, left, cfg, notGrayed, refresh)
-        AttachCellSwatch(row and row._rightRegion, right, cfg, notGrayed, refresh)
+        local generalGrayed = function() return Config.Get().enabled == false end
+        AttachCellSwatch(row and row._leftRegion, left, cfg, generalGrayed, refresh)
+        AttachCellSwatch(row and row._rightRegion, right, cfg, generalGrayed, refresh)
+        AttachGear(row and row._leftRegion, left, cfg, generalGrayed)
+        AttachGear(row and row._rightRegion, right, cfg, generalGrayed)
 
         y = y - h
         gindex = gindex + 2
@@ -687,6 +731,8 @@ function Config.BuildPage(_, parent, yOffset)
 
             AttachCellSwatch(row and row._leftRegion, left, element, grayed, Changed)
             AttachCellSwatch(row and row._rightRegion, right, element, grayed, Changed)
+            AttachGear(row and row._leftRegion, left, element, grayed, key)
+            AttachGear(row and row._rightRegion, right, element, grayed, key)
             index = index + 2
         end
     end

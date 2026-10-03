@@ -145,7 +145,7 @@ _G.EllesmereUI = {
 local unitClassCalls = 0
 function UnitClass() unitClassCalls = unitClassCalls + 1; return "Death Knight", DK, 6 end
 
-for _, name in ipairs({ "Logic", "Elements", "Config", "Core" }) do
+for _, name in ipairs({ "Logic", "Elements", "Config", "Debug", "Core" }) do
     assert(loadfile(dir .. "/" .. name .. ".lua"))()
 end
 local NS = assert(_G.MYUI_CHH)
@@ -442,7 +442,7 @@ local liveShadow = FindShadow("health_arc_shadow")
 assert(liveShadow and liveShadow.vertex,
     "常规路径下阴影层没收到顶点色——Core 构造状态表时漏了阴影字段")
 Near(liveShadow.vertex[1], 0, "本票先用固定值：阴影纯黑")
-Near(liveShadow.vertex[4], 1, "本票先用固定值：阴影最重")
+Near(liveShadow.vertex[4], 0.8, "新安装阴影透明度为80%")
 
 Core.demo = true
 Core.Refresh()

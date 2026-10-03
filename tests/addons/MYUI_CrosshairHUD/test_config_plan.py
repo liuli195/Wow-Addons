@@ -29,6 +29,13 @@ local Config = assert(_G.MYUI_CHH, "Config.lua 应导出全局表").Config
 assert(Config, "全局表上应有 Config")
 
 Config.Load()
+local d = Config.DEFAULTS
+assert(d.scale == 0.8 and d.strata == "MEDIUM" and d.shadowAlpha == 0.8)
+assert(d.position == nil and d.visibility == "always")
+for key in pairs(d) do assert(not key:match("^visHide"), "新安装不得勾选隐藏条件") end
+assert(d.elements.coagulatedBlood.maxStacks == 100 and d.elements.deathStrike.thickness == 2)
+assert(d.elements.health.fillMode == "class" and d.elements.power.fillMode == "power")
+assert(d.elements.runes.fillMode == "resource" and d.elements.crosshair.fillMode == "custom")
 local ORDER = Config.ELEMENT_ORDER
 
 assert(type(Config.CellPlan) == "function", "需要 Config.CellPlan 这个出口函数")
@@ -44,8 +51,8 @@ local expected = {
     power     = { "启用", "填充颜色", "条背景" },
     runes     = { "启用", "填充颜色", "条背景" },
     crosshair = { "启用", "填充颜色" },          -- 准星是线不是块，没有背景
-    coagulatedBlood = { "启用", "填充颜色", "条背景", "满条层数" },
-    deathStrike = { "启用", "刻度颜色", "粗细" },
+    coagulatedBlood = { "启用", "填充颜色", "条背景" },
+    deathStrike = { "启用", "刻度颜色" },
 }
 
 for _, key in ipairs(ORDER) do
@@ -131,6 +138,9 @@ end
 ----------------------------------------------------------------------
 assert(type(Config.GeneralCells) == "function", "需要 Config.GeneralCells 这个出口函数")
 local general = Config.GeneralCells()
+assert(#general[1].gear == 2 and general[1].gear[1].text == "图层")
+assert(Config.CellPlan("coagulatedBlood")[1].gear[1].text == "最大显示层数")
+assert(Config.CellPlan("deathStrike")[1].gear[1].text == "粗细")
 assert(type(general) == "table" and #general > 0, "常规节要有格子")
 
 local texts = {}
@@ -138,11 +148,11 @@ for i = 1, #general do
     texts[general[i].text] = true
 end
 assert(texts["启用准星HUD"], "常规节要有总开关")
-assert(texts["图层"], "常规节要有图层")
+assert(not texts["图层"] and not texts["HUD 缩放"], "图层和缩放仅放在总开关齿轮")
 
 local scaleCell
-for i = 1, #general do
-    if general[i].text:find("缩放", 1, true) then scaleCell = general[i] end
+for _, cell in ipairs(general[1].gear) do
+    if cell.text:find("缩放", 1, true) then scaleCell = cell end
 end
 assert(scaleCell, "常规节要有缩放")
 assert(scaleCell.kind == "slider", "缩放应是个滑块")
@@ -193,7 +203,7 @@ assert(shadowCell.source == nil, "阴影只有自定义色，**不能**有来源
 assert(shadowCell.max == Config.SHADOW_ALPHA_MAX,
     "阴影滑杆的上限应是 SHADOW_ALPHA_MAX，实得 " .. tostring(shadowCell.max))
 assert(shadowCell.min == 0, "阴影滑杆的下限应是 0（调到 0 就是关掉阴影）")
-assert(math.abs(Config.DEFAULTS.shadowAlpha * 100 - shadowCell.max) < 0.001,
+assert(Config.DEFAULTS.shadowAlpha == 0.8 and shadowCell.max == 100,
     string.format("默认浓淡 %g 必须正好是上限 %g——「默认即上限」就是这么落的",
         Config.DEFAULTS.shadowAlpha * 100, shadowCell.max))
 
