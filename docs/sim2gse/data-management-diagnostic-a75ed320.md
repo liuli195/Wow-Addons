@@ -221,3 +221,18 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 `tests/sim2gse/test_interface.py` 的 100 个界面用例各自创建真实 HTTP 服务，原 `serve_forever` 默认轮询间隔为 0.5 秒，关闭服务等待轮询。仅测试夹具改为 `poll_interval=0.01`，仍逐例隔离目录和服务，保留任务取消、线程等待、服务器关闭和全部断言；产品运行时没有改变。没有减少测试数量或安全覆盖。
 
 相同三个代表用例（主页、空输入拒绝、导入检查）原测试 3 passed / 97 deselected / 1.70 秒，各用例调用耗时 0.50、0.55、0.54 秒；修改后 3 passed / 97 deselected / 0.29 秒，各用例 0.01、0.06、0.04 秒，退出码均为 0。命令为 `.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse/test_interface.py -k 'homepage_is_the_real_three_step_shell or empty_submission_is_rejected_without_creating_a_task or import_inspection_lists_versions_and_nested_syntax_without_simulating' --durations=3`。这是定点夹具证据，不代表完整 100 例、311 例或 38 项统一入口通过；完整门禁仍未通过，重型测量等待机器协调。
+
+
+## 28f7efa云端接手：事实准备复用公开main
+
+2026-10-03云端独立clone后fetch核对准确起点28f7efac440cd8b54b38aca1493c4075bcb4669a，与已批准推送的本机9提交完全一致；未从旧远端重做、未修改生产运行时。Python3.12.14，隔离venv按仓库requirements的原锁定版本准备pytest9.1.1/xdist3.8.0，未更改pin或全局工具。
+
+只读核对4463f1b至28f7efa的inputs：68个目录/**替换、27个不同目录，以git ls-files --cached --others --exclude-standard的全仓可见文件集合经fnmatch筛选，对照同一Git命令限制目录的集合，当前全部相等。38项检查除inputs外所有配置字段严格相同，build部分相同。此为当前checkout的文件集合复核，结合前段既有验证器源码审查；云端没有安装本机build-and-verify，未声称在云端重跑其缓存键实现或证明Windows完整门禁。
+
+最小复用既有LifecycleTests公开接缝call_main，每个unittest实例lazy加载一次main，无模块级共享状态。initialize、事实compare及register/legacy-register/extract准备调用同一parser/main；真实配置、文件身份/SHA、锁、容量及独立SQLite事务仍执行。每次finally恢复sys.argv，stdout/stderr重定向自动恢复，成功还检查stderr为空。两个测试实例分别初始化、通过/拒绝命令后检查main身份不同、argv/stdout/stderr恢复均通过。明确减少事实准备重复启动/PID退出交叉，不声称与进程隔离覆盖等价。
+
+72事实保留首个extract真子进程，其余71继续公开main；原72唯一ID、逐项changed、字节query/export/snapshot仍真子进程且全部断言不变。完整版本轴compare代表仍真子进程，初始化批准/失败、生命周期/安全故障CLI不改；归档大清单与1000成员边界方法未改。仅测试两文件净减28行，无生产接口/新框架。
+
+同云端串行事实组前后各一次，python -B -m pytest -q tests/sim2gse-data/test_facts.py --durations=5：前18 passed/18.60秒，后18 passed/6.43秒，测试体墙钟少12.17秒（65.4%）。这是Linux事实组观察，不能等同Windows整仓收益。完整发现仍112项/0.02秒。
+
+Linux原基线全数据组8worker诊断23.79秒：103 passed、77 subtests passed、7 failed、2 skipped。7失败为Linux没有pwsh、WinDLL/msvcrt或Windows排他句柄语义，以及计划任务预览对隔离venv软链解释器拒绝；没有为Linux改安全逻辑或把失败记为通过。修改后显式不选这7个Windows/解释器环境相关用例的可移植诊断22.44秒：103 passed、77 subtests passed、2原有Windows联接skipped。排除仅在云端诊断命令，不改仓库测试选择或skip；缺失9项须Windows同SHA验证。单组诊断均90秒防挂，不替代60秒统一门禁。测试入口登记通过，文档检查215份通过，git diff --check通过。正式Windows完整60门禁、独立远端审查和Gate2仍待父端组织，未合并上线或操作真实历史。

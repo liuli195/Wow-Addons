@@ -12,24 +12,9 @@ class FactTests(unittest.TestCase):
     initialize = lifecycle.LifecycleTests.initialize
 
     def call(self, command, *arguments, expected=0):
-        if command != "compare":
-            return lifecycle.LifecycleTests.call(self, command, *arguments, expected=expected)
-        import io
-        import runpy
-        import sys
-        from contextlib import redirect_stderr, redirect_stdout
-
-        main = runpy.run_path(str(lifecycle.CLI))["main"]
-        original = sys.argv
-        output, error = io.StringIO(), io.StringIO()
-        try:
-            sys.argv = [str(lifecycle.CLI), command, "--config", str(self.config), *arguments]
-            with redirect_stdout(output), redirect_stderr(error):
-                code = main()
-        finally:
-            sys.argv = original
-        self.assertEqual(code, expected, error.getvalue())
-        return json.loads(output.getvalue() if expected == 0 else error.getvalue())
+        if command in ("compare", "register", "legacy-register", "extract"):
+            return lifecycle.LifecycleTests.call_main(self, command, *arguments, expected=expected)
+        return lifecycle.LifecycleTests.call(self, command, *arguments, expected=expected)
 
     def source(self, name, value):
         path = self.root / name
@@ -244,28 +229,13 @@ class FactTests(unittest.TestCase):
         registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
                                "--approve-hash", preview["plan_hash"])
         self.assertEqual(len(registered["artifacts"]), 72)
-        first = self.call("extract", "--artifact-id", registered["artifacts"][0]["artifact_id"])
+        first = lifecycle.LifecycleTests.call(self, "extract", "--artifact-id", registered["artifacts"][0]["artifact_id"])
         self.assertTrue(first["changed"])
         ids = [first["fact_id"]]
-        import io
-        import runpy
-        import sys
-        from contextlib import redirect_stdout, redirect_stderr
-        main = runpy.run_path(str(lifecycle.CLI))["main"]
-        original_argv = sys.argv
-        try:
-            for item in registered["artifacts"][1:]:
-                sys.argv = [str(lifecycle.CLI), "extract", "--config", str(self.config), "--artifact-id", item["artifact_id"]]
-                stdout, stderr = io.StringIO(), io.StringIO()
-                with redirect_stdout(stdout), redirect_stderr(stderr):
-                    exit_code = main()
-                self.assertEqual(exit_code, 0, stderr.getvalue())
-                self.assertEqual(stderr.getvalue(), "")
-                extracted = json.loads(stdout.getvalue())
-                self.assertTrue(extracted["changed"])
-                ids.append(extracted["fact_id"])
-        finally:
-            sys.argv = original_argv
+        for item in registered["artifacts"][1:]:
+            extracted = self.call("extract", "--artifact-id", item["artifact_id"])
+            self.assertTrue(extracted["changed"])
+            ids.append(extracted["fact_id"])
         self.assertEqual(len(set(ids)), 72)
         self.assertIn("固定字节边界", self.call("query", "--limit", "100", expected=2)["error"])
         self.assertEqual(len(self.call("export", "--limit", "1")["rows"]), 1)

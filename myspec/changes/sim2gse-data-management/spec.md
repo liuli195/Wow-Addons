@@ -55,6 +55,8 @@ Status: ready-for-agent
 
 ## Testing Decisions
 
+2026-10-03云端事实准备复用：现有LifecycleTests提供同一公开call_main，每个测试实例仅加载一次main；initialize和事实compare/register/legacy-register/extract复用。每次恢复argv/stdout/stderr，无全局main共享；首个72事实extract、完整版本轴compare及字节query/export/snapshot保留真子进程，其他安全故障与真实恢复不变。明确减少重复进程隔离交叉，不声称等价；不增加生产接口或测试框架，112项发现保持。
+
 2026-10-03 本轮最小进程内迁移：现有 initialize 夹具只用局部 runpy 加载同一公开 main，真实执行预览及批准、解析退出码和JSON、保存并恢复sys.argv/stdout/stderr；不新增共享框架，不伪造文件/预算/SQLite。普通facts比较同样调用公开main，登记、提取、字节边界query/export/snapshot、故障注入及路径/容量/锁代表仍为真实CLI进程，保留一个完整compare CLI代表。明确减少重复建根和业务比较的Python启动/PID退出交叉，不能声称进程隔离覆盖等价；1000实际空文件和220深路径来源本批不变。
 
 2026-10-03 用户明确授权删除不必要、重复测试，经云端独立 ROI（投入收益）审查，删除五个 archive 独立用例：deep_path_resolution_checks_ancestors_without_quadratic_rechecks、batch_archive_preview_reuses_its_index_connection、archive_package_and_restored_file_do_not_repeat_owned_path_scans、approved_restore_reads_its_plan_once_under_the_write_lock 的内部调用次数约束不再作为验收契约；long_windows_paths_restore_without_materializing_absolute_tar_members 的单文件4×70长路径组合由220来源12×180深路径真实归档/恢复及原字节核验接替。保留1000真实空成员、56万条目内存边界、72事实字节上限、普通五阶段、损坏包、重解析点、锁后源变化、容量竞态和破坏性恢复。
