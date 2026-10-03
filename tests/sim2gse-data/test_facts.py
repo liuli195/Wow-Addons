@@ -9,8 +9,27 @@ import test_lifecycle as lifecycle
 class FactTests(unittest.TestCase):
     setUp = lifecycle.LifecycleTests.setUp
     save_config = lifecycle.LifecycleTests.save_config
-    call = lifecycle.LifecycleTests.call
     initialize = lifecycle.LifecycleTests.initialize
+
+    def call(self, command, *arguments, expected=0):
+        if command != "compare":
+            return lifecycle.LifecycleTests.call(self, command, *arguments, expected=expected)
+        import io
+        import runpy
+        import sys
+        from contextlib import redirect_stderr, redirect_stdout
+
+        main = runpy.run_path(str(lifecycle.CLI))["main"]
+        original = sys.argv
+        output, error = io.StringIO(), io.StringIO()
+        try:
+            sys.argv = [str(lifecycle.CLI), command, "--config", str(self.config), *arguments]
+            with redirect_stdout(output), redirect_stderr(error):
+                code = main()
+        finally:
+            sys.argv = original
+        self.assertEqual(code, expected, error.getvalue())
+        return json.loads(output.getvalue() if expected == 0 else error.getvalue())
 
     def source(self, name, value):
         path = self.root / name
@@ -98,7 +117,7 @@ class FactTests(unittest.TestCase):
         left = self.extracted("left.json", self.batch())
         right = self.extracted("right.json", self.batch(version="v2", dps=110))
         args = ("--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
-        comparison = self.call("compare", *args)
+        comparison = lifecycle.LifecycleTests.call(self, "compare", *args)
         self.assertTrue(comparison["comparable"])
         self.assertEqual(comparison["delta_dps"], 10)
         self.assertIsNone(comparison["delta_confidence_interval"])

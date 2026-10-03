@@ -166,6 +166,14 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
 # 完整入口继续优化：HTTP 测试收尾轮询
 
+## 无 WoW 混杂重测与最小进程内迁移
+
+源86774aa完整重测已生成，不因后续额度中断重跑。正式full60截断60.363秒、外层124/child1；51个已知节点退出。一次full诊断取得38项完整报告，工具66.27/墙66.857秒、退出1，37passed、data超时60（检查61.25秒，不是完整pytest耗时）。产品311passed/pytest44.87/check45.75；旧DK14.92、skill14.36、checker7.05等全部明细见data-management-full-diagnostic-86774aa-report.json及同名stdout。正式前CPU5.136%、可用16673681408字节/load51；诊断前CPU2.754%、可用17105145856字节/load49；20逻辑CPU、总34104328192字节。两份preflight记录UTC，已知WoW客户端无匹配，未关闭进程。低负载仍失败，不能仅归因WoW。
+
+新独占窗口仅一次原生数据组诊断，同86774aa代码配置：112passed+77subtests、实际12/12、WorkStealing，pytest43.64/墙44.586秒退出0。最慢1000真实空成员39.80、220深路径恢复37.70、隔离恢复15.21、旧格式13.89；完整case日志data-management-native-data-86774aa.log，已知root13100只读absent。与整库并发超时不能直接比较为代码收益。1000合法上限成功及off-by-one是独有覆盖，缩减损失已报父端，本批没有删1000或220真实边界。
+
+仅修改两个既有测试接缝：initialize用公开main真预览及批准（静态99调用点），facts普通compare用公开main；文件、SHA、SQLite、容量、锁都真实执行，恢复argv及输出。显式初始化批准/失败、begin/finish和一个完整compare版本轴仍真CLI；extract、字节query/export/snapshot和故障/路径/容量代表不改。不新增框架、生产接口或测试，明确减重复启动/PID退出交叉而非隔离等价。受影响7例通过10.54秒，不是112或整库验收。修改后仅一次正式整库结果待记录。
+
 ## 2026-10-03 云端独立 ROI 审查精简
 
 准确clean源码 `154ebeb818d29a83f72507518795ea5b4fdf17db`，受影响3目标通过后 inventory 与216份docs检查通过，随后唯一正式固定base统一 verify、外层60硬截止、原outer3/product8/data12。结果 `bounded-deadline=60.417`、root36512 exit1、外层124，0cache-hit、config-changed全选38，各组未汇总，正式仍失败；60.417是截断收尾时间，不是完整总时长，不能称只差0.417。原日志 `data-management-formal-154ebeb.log`。taskkill128后日志63个已知节点逐个只读核查全absent，完成时本机2026-10-03T02:57:39+08（UTC 2026-10-02T18:57:39），已释放窗口；按用户优先技能仓库要求不再启动任何测试，只保存轻量证据。新配置完整实际group durations、112整套结果及正式门禁尚缺，不用旧报告代替；规范应用和远端审查仍未完成。

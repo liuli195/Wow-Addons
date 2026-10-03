@@ -166,8 +166,26 @@ class LifecycleTests(unittest.TestCase):
         return json.loads(result.stdout if expected == 0 else result.stderr)
 
     def initialize(self):
-        preview = self.call("init-root")
-        return self.call("init-root", "--approve-hash", preview["plan_hash"])
+        import io
+        import runpy
+        from contextlib import redirect_stderr, redirect_stdout
+
+        main = runpy.run_path(str(CLI))["main"]
+        original = sys.argv
+
+        def invoke(*arguments):
+            output, error = io.StringIO(), io.StringIO()
+            sys.argv = [str(CLI), "init-root", "--config", str(self.config), *arguments]
+            with redirect_stdout(output), redirect_stderr(error):
+                code = main()
+            self.assertEqual(code, 0, error.getvalue())
+            return json.loads(output.getvalue())
+
+        try:
+            preview = invoke()
+            return invoke("--approve-hash", preview["plan_hash"])
+        finally:
+            sys.argv = original
 
     def test_test_root_requires_preview_approval_and_is_bound_to_config(self):
         preview = self.call("init-root")

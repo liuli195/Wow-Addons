@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source_head": "86774aae5bf46affc7d06b25fd09eb5f50b19da8",
+  "phase": "before-formal-full",
+  "machine": {
+    "captured_at_utc": "2026-10-02T19:37:51.6803850Z",
+    "cpu_sample_seconds": 1.0003138999963994,
+    "cpu_busy_percent": 5.136186770428016,
+    "logical_processors": 20,
+    "memory_load_percent": 51,
+    "total_physical_bytes": 34104328192,
+    "available_physical_bytes": 16673681408
+  },
+  "wow_clients": [],
+  "wow_client_detected": false,
+  "processes_closed": false
+}
