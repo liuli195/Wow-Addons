@@ -1,0 +1,303 @@
+# 数据管理性能诊断与测试证据修正
+
+2026-10-02。本轮起点为干净的 `a75ed32069a6480ee680f13d3b7a07ba6fef3a3f`，固定正式基线为 `f554538993161cc045d19c4ed47d261f709f741b`。不修改共享 build-and-verify、模式绑定、缓存或并发配置；本轮独立 pytest 诊断不代替正式验收。
+
+## 正式失败的具体范围
+
+原正式报告生成于 `2026-10-02T14:24:35.822Z`，38 项检查，总耗时 60.0143788 秒，原因 `total_budget_timeout`，阶段 `finalization`。重新按报告数组计数，纠正此前口头 37/19 的误报：15 passed、3 timed_out、20 not_started。日志的选择原因是 `config-changed`，没有缓存命中记录。15 个通过项有实际 `check-start/check-end`，不能把未启动项的 0 秒解释为缓存通过。
+
+通过项（秒）：luals 5.75、luacheck 1.86、toc 2.00、sim2gse-probe-luals 6.28、sim2gse-probe-luacheck 0.69、sim2gse-probe-toc 0.64、crosshair-media 3.45、myseries-luals 6.48、myseries-luacheck 0.86、myseries-toc 0.77、myseries-series 1.72、crosshairhud-luals 6.39、crosshairhud-luacheck 0.74、crosshairhud-toc 0.64、crosshairhud-tests 2.95。均带 `verify.` 前缀。
+
+未完成：`verify.sim2gse` 41.67 秒、`verify.sim2gse-data` 41.67 秒、`verify.wowaddontest-skill` 0.44 秒。
+
+未启动 20 项：wowaddontest-dk、sim2gse-probe-test、addon-probe-luals、addon-probe-luacheck、addon-probe-toc、addon-probe-test、assets、docs、checker-tests、annotation-build、test-inventory、gear-async、gear-build-names、gear-delete、gear-empty、gear-save-armor、gear-save-as、gear-stat-filter、gear-summary、myspec-main。均带 `verify.` 前缀。
+
+原配置外层 `maxParallel=3`；前两项分别为 `.venv\Scripts\python.exe -m pytest -q tests/sim2gse --dist=worksteal` 与 `.venv\Scripts\python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal`，工具配置各注入 8 个 xdist worker。第三个位置依次运行上述 Lua/插件检查。所有具体命令保持在 `.build-and-verify/config.json`，本轮未改变。
+
+两大检查仅获得 41.67 秒，故总预算中约 18.34 秒花在检查外准备和收尾；报告没有更细分的准备计时，不能进一步归因。原深路径单例独立运行 57.719696 秒，保留 220 文件、12 层长路径、同一索引与全部五阶段，其本身已超过该实际窗口。8+8 worker 并行可能增加争用，但本轮没有并行/独占的受控全套对照，不能宣称争用是根因。
+
+## 有限诊断结果
+
+全部使用临时合成数据、原生 `--durations` 和独立总限时包装器；没有重跑正式工具。
+
+| 诊断 | 结果 | pytest 秒 | 外层秒 |
+| --- | --- | ---: | ---: |
+| 旧截断注入加实际触发断言，15 秒上限 | 如预期失败，文件仍存在 | 0.83 | 1.259 |
+| 修正后的维护全组串行，20 秒上限 | 超时，仅部分完成，不算通过 | 未完成 | 20.444（含终止收尾） |
+| 修正截断及相邻两个容量用例，12 秒上限 | 3 passed | 3.97 | 4.260 |
+| 可复制最小运行技能用例，串行，12 秒上限 | 1 passed | 0.91 | 1.184 |
+| 同一最小运行技能用例，8 worker，12 秒上限 | 1 passed | 1.90 | 2.217 |
+| 维护全组，原有 8 worker，25 秒上限 | 10 passed | 11.20 | 11.512 |
+
+最小入口的测试体分别 0.88/0.89 秒，8 worker 额外约 1.03 秒主要在体外；不外推为完整测试配置收益。维护组最慢用例：56 万条流式合成盘点 10.19 秒、增量盘点 4.02 秒、完整维护授权链 3.30 秒、大未知根 3.25 秒。并行维护组的截断用例 1.18 秒，独立相邻组三项中该用例 0.80 秒。
+
+## 测试修正范围
+
+远端审查发现旧注入依赖第三次 `scandir.close`，当前路径只扫描一次，导致截断场景没有发生。现在仅在测试的 `shutil.disk_usage` 操作系统边界、读取模拟 free 之前删除既有 3 MiB producer 文件；落盘 marker 记录 `before=3145728, after=0`，父测试断言文件消失及 marker 精确值，然后保留原“可用空间不足”拒绝断言。没有修改生产容量逻辑、恢复额外扫描或减少测试数。
+
+## 按收益与风险排序的下一步
+
+1. 深路径单例是已测量的主瓶颈。已知准备 19.97 秒、归档批准执行 10.11 秒，五阶段合计约 37.36 秒；后续优先定位重复路径/身份/盘点调用的成本，但任何合并必须保留并验证每个锁和竞态边界。不得改 220 文件、五阶段、同根累积历史或元数据拒绝断言。需先形成具体安全等价设计供父端评估。
+2. 检查前约 18.34 秒直接挤占预算；本轮仅报告事实。共享验证工具和跨工作区模式调查由父端负责，本仓不改工具、不调用 doctor、不改缓存。
+3. 批量登记可减少每文件两次 CLI 启动，但当前最慢深路径准备已批量登记 220 文件；已有小型多文件夹具可逐项检查是否适合批量接口，收益上限先按实际调用数估算，涉及注册语义/覆盖改变须先评估。
+4. 不采用简单 worker 数量下降或取消追踪：独立最小用例只能证明约 1 秒启动成本，尚无整套收益证据。56 万流式夹具在 tracemalloc 下逐条创建对象；复用同一对象会削弱“错误全树物化超过内存上限”检测，不能当作等价优化。
+
+原 121 项核心测试和原五阶段保持，正式整套仍失败。没有生产启用、真实历史操作或计划任务安装。
+
+## 优先调度单行试验
+
+父端远端完整审查提出采用 unittest 既有字典序及 xdist 既有调度，不添加 hook 或修改 runner。修改前 collect 大例为第 18 项（index 17）；仅改名为 `test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write`，修改后首项，仍 121 项（0.06 秒），方法体和所有断言完全不变。实现检查点 `4320aeff1c25141fc93605b32d27bc321826ceb0`。
+
+本轮安装的共享工具已由外部恢复为原有 CLI，不支持此前 `--execution-context local`。第一次启动仅解析参数即退出（0.246 秒，exit 2），没有运行检查。只读核对当前技能和 parser 后，以其支持的 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b` 实际执行一次；不修改共享工具、绑定、配置或缓存，外层同样从启动起硬限时 60 秒。
+
+实际验证仍超时，外层报告 `bounded-deadline=60.601; owned-pid=40592; taskkill=128`，包含终止收尾时间，不能记为通过。当前入口汇总输出被缓冲，截止时没有逐项输出或新的性能报告；原报告仍为 `2026-10-02T14:24:35.822Z`。因此本轮已完成/未完成项、cache fresh/hit、深路径在并发环境的实际耗时均无法从证据可靠确定，不能沿用旧报告统计当本轮结果。日志保存在系统 Temp 的 `simdata-formal-4320aef-priority-compatible-60s.log`；参数拒绝日志另存 `simdata-formal-4320aef-priority-60s.log`。
+
+单行调度未获得整套通过，不继续盲调核心或反复正式运行。数据单例独立 57.72 秒距离总预算仅 2.28 秒，而此前检查外时间约 18.34 秒，仍需具体、保留安全边界的性能方案。批量登记在主瓶颈中已采用；缩小文件/阶段或复用 56 万条同一对象均会改变核心覆盖，不采用。下一步由父端评估主路径安全等价优化与准备成本的责任范围，已有开放问题仍保留。
+
+## 缺少配置根的计划任务预览修正
+
+远端审查发现机器配置缺 `data_root` 时，单次 `--root` 可使预览生成 XML，但任务动作仅带 `--config`，后续无法找到根。仅将 `data_root` 加入预览的 unresolved 字段元组，不扩大 CLI 或安装计划任务。扩展既有预览测试：配置根置 null，同时传入临时 `--root`，断言 XML 为 null、未决项精确为 `[data_root]`、未安装/未启用、机器配置字节不变和数据根目录内容不变；随后恢复配置字段继续原有未定参数拒绝测试。有效 XML、Windows 内存任务 XML 解析及 744/745 小时间隔断言均保留。
+
+测试先失败：旧实现仍输出 XML，pytest 1.01 秒，外层 1.406 秒。单字段修正后，只运行两个预览/间隔相关测试，2 passed / 8 deselected，pytest 2.19 秒，外层 2.520 秒（15 秒硬限时）。collect 仍 121 项、0.04 秒。未运行完整正式 60 验证，未减少原大型五阶段覆盖；候选票据和整套验证门禁仍未完成。
+
+## 用户批准的覆盖矩阵取舍量测
+
+用户明确批准 Sentinel_1a4a1203b51c8191b11fcdff1bff695b。第一项保留大型220源/12层深路径/801KiB及两次紧容量拒绝全部断言，只留verified大规模持久中断恢复；普通同根同index同archive五阶段保持，补operation ID/sealed/返回数量的零I/O断言。明确少四条大规模中断交叉及1100→220恢复位置历史，不声称等价。相关2 tests/6 subtests passed，pytest23.74秒、外层24.120秒；大型22.63秒、普通4.20秒。固定实现f48bbc402512fad1ccc1a83c546dd52c8845dd61随后正式统一入口仍被60秒外层终止（60.585含收尾，PID33412，taskkill128），无逐项输出，不作通过。
+
+第二项经父端完整review确认，56万规模保持一次complete全数/字节/未截断及32MiB峰值检测；去除同规模低容量/足额两准入交叉，准入继续由2400实体未知文件用例覆盖，补返回reserved_bytes=10。每条仍新对象，tracemalloc不变，增长/截断竞态不变。8 worker维护组仍10 passed，pytest5.63秒、外层5.951秒；56万用例4.09秒，对照此前同组11.20秒/用例10.19秒，整组约少5.57秒、该例少6.10秒，存在机器噪声，不能保证正式整套同幅收益。目标30–40秒，正式硬上限仍60秒；未获正式pass不能交付。
+
+最后采用公开夹具批量登记优化，敌意tar七种输入（穿越、绝对、驱动器、设备名、软链、硬链、PAX）及七次恢复拒绝/目标不存在断言完整保留。先生成独立7包+7清单，清单包摘要/大小取实际包字节；公开legacy-register一次预览一次批准登记全部14文件，再逐项核对登记SHA/size。准备28→2次CLI，没有生产改动或新增helper。相同单测前1 passed/7 subtests passed，pytest6.71秒/外层7.042；后同样1+7通过，pytest2.77秒/外层3.128，约少3.94秒。正式整套另测，不将局部改善冒充30–40秒目标已达。
+
+本轮最终正式量测固定干净实现 `ec3dac6d27d71a17b52b444631a14c18d0cbb514`，统一入口、原固定基线、外层60秒上限；设置PYTHONUNBUFFERED仅用于输出证据，不改工具或配置。结果仍超时：`scene: local; selection-reason: config-changed; bounded-deadline=60.605; owned-pid=7036; taskkill=128`，墙钟含终止收尾。没有完整逐项汇总或新性能报告，旧报告仍不代表本轮fresh/cache和完成范围。完整日志位于系统Temp `simdata-formal-ec3dac6-final-60s.log`。正式未通过，30–40秒目标未达成，不能交付或关闭票据；不再盲删其他核心测试或扩大本轮优化范围。
+
+## 一次完整诊断和数据组独立测量
+
+按父端明确授权，只运行一次完整诊断：固定 `7a78c613d84ccc1f00fe902e085f97f276065337`，既有统一工具 `verify --project . --full --performance-report`，原Temp防挂包装器180秒，未修改全局工具/模式/仓库预算或worker配置。此为诊断，不是正式60秒验收。原生工具报告111.81秒、外层113.426秒、exit1：38项检查实际执行，37 passed、1 failed；full路径不读取通过缓存，本轮各项均fresh，原工具正常写入37个成功结果缓存，未把失败数据组写成通过。原生完整报告已保留为 `data-management-diagnostic-7a78c61-full-report.json`，其中含38项状态/耗时。系统Temp完整日志 `simdata-diagnostic-7a78c61-full-180s.log`。
+
+主要检查：原Sim2GSE 311 passed/95 subtests passed、pytest62.26秒/check66.76秒；数据组 `check_timeout: verify.sim2gse-data exceeded 60s`，check实际111.73秒；wowaddontest-dk19.14秒、wowaddontest-skill16.47秒、checker-tests11.89秒、annotation-build9.94秒。数据超时路径不保留其partial pytest stdout。111.73包含cache-key准备/命令/超时收尾，不能当纯测试体耗时或推断精确阶段。源码通过Windows shell=True调用subprocess.run，超时后的后代持有管道可能延长收尾，但当前证据没有父子进程和开始/结束精确轨迹，不能断言因果。
+
+并行核验：当前真实调用源码 `_run_scheduled_checks` 使用ThreadPoolExecutor，max=min(配置3,并行检查数)，提交所有checkParallel；两个pytest的命令构造在实际调用路径各注入 `-n 8`，--dist不被误判为已有-n。执行输出有xdist节点启动及测试进度，没有降级提示。38项原生耗时合计322.79秒，整仓wall111.81秒，比值2.89，构成外层实际重叠执行证据，不能把汇总迟到解读成全组串行。该工具在所有future结束后按配置顺序输出，不提供每check start/end/排队或worker分配轨迹；未新造runner补伪时间。原生源码+节点输出支持内层启用，但无法从quiet输出验证每个worker的具体分配。
+
+为了取得优化后数据121组独立耗时，再使用授权的原生单组诊断 `.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 8 --durations=15`，独立90秒上限，未修改生产配置。121 passed、79 subtests passed，pytest64.81秒、外层65.154秒、exit0；这是超60的诊断通过，不能变成正式通过。系统Temp日志 `simdata-diagnostic-7a78c61-data-alone-90s.log`。最慢：深路径37.98秒、1000空成员27.25秒、事实输出边界21.76秒、隔离恢复五阶段15.44秒、过期purge新计划14.43秒、旧归档五阶段12.88秒、迁移阶段11.03秒、purge阶段11.01秒。数据自身超60，原项目也62.26秒，因此并非仅靠某一大例再命名即可达到30–40。
+
+进程与taskkill核验：以前7036/33412/40592 PID在本轮查询时均不存在，但旧包装器没有保留当时poll/最终child.returncode及taskkill文本，不能追溯证明自然退出或树终止成功，`taskkill=128`必须视为未证实的终止结果。只在既有Temp包装器补poll/最终exit/捕获的taskkill stdout和stderr，不修改共享runner；本轮两次诊断均正常结束，不触发taskkill，完整诊断exit1、独立组exit0。系统有较早Python/Node进程，但八个旧Python累计CPU数十秒间隔完全不变；CIM父进程/命令行读取被拒，不提权、不终止其他进程，无法确认其他仓库是否正在测试或CPU竞争。
+
+最小后续配置对照候选：保持outer3/data8，仅原Sim2GSE inner8→4，避免两大组同时16worker；必须实测整仓wall与121完整通过才能采用，当前并无受控8/4对照证据，本轮不修改。独立数据组也65.15秒，降低别组worker不能保证数据低于60；不能硬堆worker或继续盲删。正式60仍未通过，需父端评估有边界的并行配置对照和生产主路径成本后继续。
+
+### 独立数据组最慢五项及worker证据原文
+
+以下直接来自既有 `simdata-diagnostic-7a78c61-data-alone-90s.log` 的原生durations，不新增运行：
+
+```text
+37.98s call tests/sim2gse-data/test_archive.py::ArchiveTests::test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write
+27.25s call tests/sim2gse-data/test_archive.py::ArchiveTests::test_one_thousand_empty_members_are_bounded_and_restore_preview_validates_them
+21.76s call tests/sim2gse-data/test_facts.py::FactTests::test_output_byte_bound_refuses_large_query_and_snapshot
+15.44s call tests/sim2gse-data/test_safety.py::SafetyTests::test_quarantine_and_recovery_committed_phases_and_post_move_crash
+14.43s call tests/sim2gse-data/test_safety.py::SafetyTests::test_expired_interrupted_purge_requires_new_bound_plan_and_item_approval
+```
+
+日志节点启动原文只有：
+
+```text
+bringing up nodes...
+bringing up nodes...
+```
+
+该quiet日志没有 `created: 8/8 workers`、`gw0`–`gw7` 或case对应worker前缀，所以可列出的实际worker IDs为空；不能仅根据argv显式 `-n 8` 或启动提示断言八个worker全已创建/每例分配已确认。完整命令是 `.venv/Scripts/python.exe -B C:/Users/liuli/AppData/Local/Temp/simdata-bounded-check.py 90 .venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 8 --durations=15`。已有日志未出现retry/restart/crash/replacing，`u`是subtest进度，不是重试；正常exit0未调用taskkill，但没有后代进程树审计，不能证明全部无残留。本次仅补文档，不重新测量。
+
+## 单点隔离/恢复夹具复用
+
+起点2f3b9a39。只改SafetyTests.test_quarantine_and_recovery_committed_phases_and_post_move_crash的准备：每个reserved/writing/published/sealed/rename阶段fresh一个来源，先完成quarantine故障/恢复/幂等，再复用同一已隔离对象进行同phase recover-quarantine故障/恢复/幂等。五阶段仍五个不同ID，补ID唯一、返回原operation ID/sealed/同artifact断言，无额外业务I/O。十个phase×command故障、rename后exit77、原字节及幂等断言保持。生产计划读取quarantined custody，operation ID包含generation，支持该接续状态；未修改生产。准备72→52 CLI、setup jobs15→10，明确改变每阶段第二来源及正常隔离准备结构，不删除故障组合。
+
+before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data/test_safety.py -k quarantine_and_recovery_committed --dist=worksteal -n 8 --durations=5`，既有Temp包装器各25秒上限。修改前1 passed/10 subtests passed，call13.29秒、pytest23.75秒、外层24.163秒；修改后同样1+10 passed，call9.40秒、pytest10.53秒、外层10.876秒。测试体约少3.89秒；前体外耗时约10.46秒明显大于后约1.13秒，因此不能将wall差13.29秒全归因夹具改动，也不能保证整仓同幅下降。没有运行完整数据组或整仓，本轮正式60仍未通过，等待父端准确远端review与后续放行。
+
+## 放行后的唯一正式60验证
+
+固定干净实现bf04f47b4e2dffd4d3e786264008975af74bbc83，父端确认无budget重测并发后仅一次统一入口 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，既有外层硬限60秒。配置outer3/inner8不变；PYTEST_ADDOPTS=`-v --durations=5`为原生输出参数，未改runner。开始前已知历史owned PID7036/33412/40592/30088均不存在，但历史没有持久化全部后代，不能推断所有历史残留已清空。
+
+结果正式失败：日志scene local、selection-reason config-changed，明确35条cache-hit。其余fresh为verify.sim2gse-data、verify.docs、verify.test-inventory，没有完整结束汇总，不能算通过。缓存原Sim2GSE等35项未实际重跑，不冒充38fresh。原生非quiet worker输出仍被统一工具capture到检查结果，中断前未汇总打印，所以这轮没有created worker行证据，不重新测量补打印。系统Temp日志 `simdata-formal-bf04f47-isolated-60s.log`。
+
+超时边界观察：`bounded-timeout-poll=None; owned-pid=23384`表明该时主进程仍运行；`bounded-deadline=60.495; taskkill=128; bounded-child-exit=1`含终止收尾。taskkill stdout确认主及多个后代终止，但stderr有12个后代“操作不被支持”，故128不能当树终止成功。随后立即只读逐个检查主23384及报错后代6612/12572/27172/40908/30556/36516/23992/23872/36828/3548/41544/33400，13个全部absent；本轮已知节点结束，机器已释放，未盲杀其他进程/提权/重测。包装器实际exit124，统一主进程exit1，不能将PowerShell最后Get-Content的exit0当验证成功。
+
+30–40秒目标仍未达，正式60仍失败。没有自动优化或更多测量，下一步由父端依据现有存量证据安排；候选票据、正式规格和交付门禁未关闭。
+
+## 同源8与12 worker单方向对照
+
+放行后仅8/12各一次，源码固定049e50ff（实现bf04），两轮参数同为原生 `-B -m pytest -v tests/sim2gse-data --dist=worksteal -n N --durations=10`，既有包装器各90秒防挂，不改变正式60。完整日志随仓保留 `data-management-workers8-049e50f.log` 和 `data-management-workers12-049e50f.log`，包含全部121 case对应worker记录。
+
+8轮原文 `created: 8/8 workers; 8 workers [121 items]`，gw0–gw7均出现；121 passed/79 subtests passed，pytest73.52秒、wall73.960秒、exit0。12轮原文 `created: 12/12 workers; 12 workers [121 items]`，gw0–gw11均出现；同样121+79 passed，pytest60.49秒、wall60.819秒、exit0。两轮均WorkStealingScheduling，没有retry/worker crash/重建提示，正常退出未调用taskkill，已知owned28132/41928随后查询均不存在。旧65.154秒来自夹具复用前源码，不作本轮基线。
+
+12轮wall少13.141秒（17.77%），虽关键case均变慢：深路径36.60→44.21秒、1000空成员33.95→39.97秒、事实字节边界20.96→25.64秒；整体并行排队缩短仍改善wall，不能将单case下降或组耗时相加作为目标。设备20逻辑CPU、31.76GiB物理内存，计划时可用6.67GiB；12运行中一次只读快照可用7403372544字节（约6.90GiB）/load78%，非峰值或无争用证明。仅修改verify.sim2gse-data.pytestXdistWorkers为12，外3、原项目8、全部覆盖和timeout不改。配置变更会使相关成功缓存失效，下一次正式整仓必须如实区分fresh/hit，不保证该单组60.819能使正式端到端低于60。
+
+两份入库日志只去行尾空格，原Temp日志保留。首次保存时差异检查因原生行尾空格失败而PowerShell仍继续提交，已在下一提交a1f622b只修日志空白，重新差异检查通过；没有更改用例记录或测试结果。
+
+满足12全组通过且明显更快的条件后，严格只执行一次正式统一整仓：干净a1f622b25ec7428c638cec4851185721c66b2a77，原固定base、outer3/product8/data12、正式60硬预算，原生PYTEST_ADDOPTS=`-v --durations=5`。仍超时：poll主32440=None，收尾wall60.750秒，owned最终exit1，包装器exit124，taskkill128（不作为成功判断）。日志scene local/config-changed，没有cache-hit或完整check汇总；配置变更全选38，不代表38均已执行或结束，fresh完成范围不可得。原performance-report仍是15:55:46的111.81秒诊断，未更新，不当新正式结果。
+
+终止后只读解析日志所有PID及主ID，共79个（含日志父子关联节点），逐个查询79均absent；本轮已知节点退出，机时已释放，不继续重测/优化/杀未知进程。完整正式日志存仓 `data-management-formal12-a1f622b.log`，包含原taskkill stdout/stderr字节证据。12单组wall改善已证实而正式60未通过，30–40目标未达，候选票据及交付门禁仍开放，下一步等待父端准确远端review。
+
+## 三事实组登记与过期时钟准备复用
+
+93e780bd起点，未改生产或worker配置。事实类型6、完成证据8、路径轴5个文档各先生成隔离子目录，以小型batch_extracted测试夹具复用公开legacy-register一次预览一次批准；19个extract仍分别执行，全部原compare/assert保持，少10+14+8=32个准备CLI。坏trace仍原独立注册提取拒绝。72事实字节边界本轮完全不改，不向Safety未知引用推广legacy-register。
+
+过期purge仅reserved/published原两组：复用isolated_plan已有公开300秒计划，取消每组重复preview及其覆盖计划；现有injected_call中替换标准库time.time，初次批准和原commit后exit77在plan.expires-1，后续purge/renew/pin全在expires+1。断言旧error含过期，renewed.created精确expires+1、期限300；原operation ID/新plan hash、published已完成数量、新逐项确认/保护变化/已删除文件重现拒绝/原文件保留及最终全部purged断言完整。去2×2.1秒等待和2次重复preview，没有新时钟框架/改索引/改生产。其他真实1.05秒心跳等待保留。
+
+仅代表小组before/after各一次，原生 `-v tests/sim2gse-data/test_facts.py tests/sim2gse-data/test_safety.py -k 'request_types_and_nested or complete_search_summary or real_rule_path or expired_interrupted_purge' --dist=worksteal -n 4 --durations=5`，既有包装器各30秒防挂；created4/4，4 tests/2 subtests均pass。before pytest12.56/wall12.910秒，after9.90/wall10.258秒。各call前→后：purge11.81→7.47、完成证据5.91→3.66、类型4.82→3.08、路径轴4.26→2.94秒。数据实际小组wall少2.652秒，不能把四个case差值相加当整仓收益，机器噪声仍存在。本轮无整仓或121完整组重测，正式60仍未通过，等待远端review与机时放行。
+
+## 029a802放行后的唯一正式结果
+
+父端确认budget机时结束后放行，仅一次干净source `029a80279c3a75c40d6c3aeada4ead539693e016` 正式统一 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，原outer3/product8/data12、60硬上限；PYTEST_ADDOPTS仅`-v --durations=5`，无代码/配置变化。仍失败：`bounded-timeout-poll=None; owned-pid=8656; bounded-deadline=60.766; taskkill=128; bounded-child-exit=1`，墙钟含收尾、包装器exit124。
+
+原生输出仅scene local/selection-reason config-changed，没有cache-hit、duration/checked或结束汇总。配置变更全选38，但实际started/finished数量及每组耗时不能从当前工具capture结果取得；不声称38fresh均运行或0项实际成功，仅无可确认的完成证据。原performance-report仍为15:55:46/4440字节的旧诊断，不当本轮正式报告。正式原日志存仓 `data-management-formal-029a802.log`（仅去行尾空格，Temp原始日志不变）。本轮真实瓶颈仍是全选路径在60内不能结束、完成时序证据受现有工具汇总限制；既有8/12完整组和最慢case证据保留，不据此断言本轮某一case具体慢了多少。
+
+终止后只读解析日志PID+主，共83关联节点，逐个查询83全部absent，机时明确释放；128不单独当终止成功。没有重复重测、删边界、调整worker、正式规格应用、合并/上线或历史数据操作。30–40目标未达，正式60及交付门禁仍未通过，下一步由父端review存量证据后安排。
+
+## 最后单点72事实提取准备复用
+
+准确起点515e2b07，唯一修改test_output_byte_bound_refuses_large_query_and_snapshot。72真实文件、14KB feedback、公开批登记全部保留；首个extract仍真子进程并changedTrue，局部标准库runpy加载公开main一次，余71次逐次设置argv、重定向stdout/stderr、调用同一公开parser/main。各次返回0、stderr为空、changedTrue；finally恢复argv，最后72fact IDs唯一。每次main仍走真实配置/SHA/锁/容量/独立SQLite事务，不调用私有handler或mock预算/数据。query/export/snapshot仍原真子进程，query和snapshot拒绝明确error含固定字节边界，不让其他错误冒充边界通过。真实CLI79→8，明确减少71重复启动/PID/进程退出cleanup交叉，不声称等价；不增加生产batch接口或共享fake框架，1000成员用例不改。
+
+仅该用例before/after各一次，原生 `-B -m pytest -v tests/sim2gse-data/test_facts.py -k output_byte_bound --durations=5`，既有包装器各30秒上限。before 1 passed（19 deselected）、call14.48/pytest14.50/wall14.861秒，after同样pass、call4.68/pytest4.72/wall5.084秒；wall少9.777秒，不能直接视为整仓同幅收益。两个代表owned23652/37916随后只读查询均不存在，机时释放。本轮生产及并发配置零改动，无whole/121组重测，正式60仍未通过，完成该项后不继续拆覆盖，等待远端review与最后正式机时放行。
+
+## 52a8最终放行正式结果与Gate2缺口
+
+父端确认budget不重测后，仅一次准确source `52a8cdacdf15cd486404c8d81777af05828793da` 干净工作树正式统一 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，原outer3/data12/60硬预算及原生-v/durations日志参数不变，未新增优化。结果仍正式失败：poll主42656=None，收尾wall60.713秒，主最终exit1、包装器exit124、taskkill128。终止后只读解析日志PID+主共78节点，逐个78均absent，机时已释放，无后续测试/盲杀未知/提权。
+
+日志scene local/config-changed，cache-hit行0，无check duration/checked/完成汇总；选中38但实际started/finished范围、case结果及剩余秒数不可得，不能把无完成证据说成实际0项成功或38fresh已执行。原performance-report仍15:55:46/4440字节的旧诊断，不当本轮结果。原完整日志存仓 `data-management-formal-52a8cda.log`，仅去行尾空格、Temp原始文件不改。现有121组12worker60.819及单点4.72秒证据来自不同阶段，不能用于计算当前整仓精确剩余时间或证明当前根因；本轮确切瓶颈仅为全选统一入口在60内无法汇总完成。
+
+按最后放行约束停止性能扩展，不再重测、拆覆盖或修改时限。保留当前覆盖与60门禁则必须保持未验收；如要继续量化剩余时间/改变验证策略，需要用户明确取舍及新机时授权，不能凭旧耗时提出假精确值或默改预算。Gate2前缺口：正式60完整验证未通过、最新source/证据远端复核待父端完成、候选正式规格尚未确认应用（myspec/specs对固定base diff为空）。06票/交付门禁不关闭，不合并、specapply、上线或历史清理。
+# 完整入口继续优化：HTTP 测试收尾轮询
+
+## 无 WoW 混杂重测与最小进程内迁移
+
+源1ef09063295ae0b1933ada376a3dae5c6a97ab55 clean 后，窗口释放仅一次正式完整38项verify --full --performance-report、60秒硬截止。现场2026-10-03T08:44:21Z一秒CPU17.016%、可用8676184064字节/load74，WoW PID28504、工作集6700015616字节仍运行，未关闭用户进程。与之前无WoW的测量有混杂，不归因代码收益。结果截止收尾60.365秒、child1/外层124，0cache-hit；full要求38项真实执行，但实际启动/完成数量及各组结果均未汇总，不能称38已完成或只差0.365秒。旧performance-report仍867的66.27，未冒作新报告。taskkill128后41个已知日志PID逐个只读核查全部absent（08:46:01Z），窗口释放，不再自动重跑。原日志data-management-full-formal-1ef0906.log、现场data-management-preflight-1ef0906.json；正式门禁仍未通过。
+
+源86774aa完整重测已生成，不因后续额度中断重跑。正式full60截断60.363秒、外层124/child1；51个已知节点退出。一次full诊断取得38项完整报告，工具66.27/墙66.857秒、退出1，37passed、data超时60（检查61.25秒，不是完整pytest耗时）。产品311passed/pytest44.87/check45.75；旧DK14.92、skill14.36、checker7.05等全部明细见data-management-full-diagnostic-86774aa-report.json及同名stdout。正式前CPU5.136%、可用16673681408字节/load51；诊断前CPU2.754%、可用17105145856字节/load49；20逻辑CPU、总34104328192字节。两份preflight记录UTC，已知WoW客户端无匹配，未关闭进程。低负载仍失败，不能仅归因WoW。
+
+新独占窗口仅一次原生数据组诊断，同86774aa代码配置：112passed+77subtests、实际12/12、WorkStealing，pytest43.64/墙44.586秒退出0。最慢1000真实空成员39.80、220深路径恢复37.70、隔离恢复15.21、旧格式13.89；完整case日志data-management-native-data-86774aa.log，已知root13100只读absent。与整库并发超时不能直接比较为代码收益。1000合法上限成功及off-by-one是独有覆盖，缩减损失已报父端，本批没有删1000或220真实边界。
+
+仅修改两个既有测试接缝：initialize用公开main真预览及批准（静态99调用点），facts普通compare用公开main；文件、SHA、SQLite、容量、锁都真实执行，恢复argv及输出。显式初始化批准/失败、begin/finish和一个完整compare版本轴仍真CLI；extract、字节query/export/snapshot和故障/路径/容量代表不改。不新增框架、生产接口或测试，明确减重复启动/PID退出交叉而非隔离等价。受影响7例通过10.54秒，不是112或整库验收。修改后仅一次正式整库结果待记录。
+
+## 2026-10-03 云端独立 ROI 审查精简
+
+准确clean源码 `154ebeb818d29a83f72507518795ea5b4fdf17db`，受影响3目标通过后 inventory 与216份docs检查通过，随后唯一正式固定base统一 verify、外层60硬截止、原outer3/product8/data12。结果 `bounded-deadline=60.417`、root36512 exit1、外层124，0cache-hit、config-changed全选38，各组未汇总，正式仍失败；60.417是截断收尾时间，不是完整总时长，不能称只差0.417。原日志 `data-management-formal-154ebeb.log`。taskkill128后日志63个已知节点逐个只读核查全absent，完成时本机2026-10-03T02:57:39+08（UTC 2026-10-02T18:57:39），已释放窗口；按用户优先技能仓库要求不再启动任何测试，只保存轻量证据。新配置完整实际group durations、112整套结果及正式门禁尚缺，不用旧报告代替；规范应用和远端审查仍未完成。
+
+用户明确授权删除无必要、重复测试，云端按公开完整源码审查给出确切方法名，本机在 `e722c62` 干净 codex 分支映射后删除9方法：archive四个内部调用次数断言及单文件4×70长路径例，facts的独立ambiguous-dot与双方同时未完成compare例，CLI两个重复复制/安装例。候选规格先记录取舍，正式规格未应用。
+
+覆盖对应：archive 的 lstat 增长、sqlite.connect 次数、私有调用者名及 json.loads 次数不再作为契约；深路径真实220来源12×180归档/恢复原字节、普通五阶段、共享分包、重解析点、锁后源变化及容量竞态保留。规则路径既有5文档已验证 literal/nested 点号及转义变化轴，接替独立两文档例。六种不完整变体仍逐个拒绝且delta缺失，首个追加 validation_complete=False / validation_status={left:complete,right:incomplete}；明确丢失双方同时未完成交叉，不将其他deadline/partial_round误认独立验证未完成。CLI全部原拒绝断言合并到同一安装例，先验证双Agent入口、上级路径两写法拒绝，最后同一合成junction改名index.sqlite3并拒绝；未增加共享fixture。
+
+精简前4个相关facts通过8.57秒；精简后两替代facts与合并CLI安装共3例通过7.98秒。范围不同，不以此计算整体性能收益，也不以58次CLI估算墙钟。实际collect112（原121），1000空成员、56万条目内存、72事实字节上限、损坏包/路径越界/租约/隔离删除恢复均保留。删方法后worksteal初始块长度约9，保留空成员例名称由bounded_archive...改为empty_archive_with_one_thousand_members_and_restore_preview，使排序index9继续在另一worker首轮启动（旧排序index7会与large例同组），测试体不变。
+
+缓存输入源码复核：本机 npm 元数据为 `@liuli195/build-and-verify` 2.1.0，上游 `https://github.com/liuli195/my-agent-skills` / `plugins/build-and-verify`；实际runner SHA256 `83b536638236ede339b03298f7e5cc73b0f414ca706e20bb467678513a601b08`。`_hash_input`525起glob分支全Git可见文件fnmatch，目录分支Git路径限定；两者最终同样 relative path、`_is_relative_to_project`越界核验和 `_hash_file`流式SHA。27种现存目录文件集已逐项相等，目录缺失时类型标记更保守、Git不可用时不同枚举路径需依实际fallback语义复核；不宣称任何状态下cache key相同。云端最终公开同版本源码复核仍待完成，不把最新不同runtime当本机。尚未执行本源码正式统一60秒结果，推送不重试，生产未启用。
+
+## 缓存键准备成本与等价目录输入
+
+`cf267fa8ff11abf59feda04fe045f3e0c4da36fe` 原配置，按父端独占窗口用标准库 cProfile 调用既有 Python 验证核心，100 秒诊断截断于 100.387 秒，35 cache-hit、data/docs/test-inventory 三组仍无汇总，profile 文件未落盘；这是失败诊断，不是实际总时长。原日志 `data-management-entry-profile-cf267fa.log`。taskkill128后日志53个已知PID逐个只读核查均absent。没有以60.357或100.387宣称“只差0.36/40.39秒”，也没有改工具链或预算。
+
+随后只读独立测量 `_cache_key`，没有启动测试或写缓存。原38项的 cProfile 输出为51.715367秒、44,493,566函数调用；226次 `_hash_input`、118,782次 stat（累计16.069秒）、109,006次 is_file、113,660次 relative_to，表明递归 glob 每次全仓 Git 可见文件枚举和路径筛选成本。性能分析器会增加开销，不能直接把51.715367当正式前置耗时。此原测量输出保存在会话工具结果，未伪造原始日志文件。
+
+最小配置变更仅把 verify 各项 inputs 的68个 `目录/**` 改为目录输入（27个不同目录）。按现有验证器 `_git_visible_files` 和 fnmatch 对每目录逐项核对当前文件集合完全相等，包括旧 `.tools` 忽略目录仍为0项；未减少依赖文件，保留 glob 选择 paths。配置现有 `_load_config` 成功，38个id/command/paths、worker8/12、outer3、全部超时和60预算逐项与提交前严格相同，build部分没有改变。目录分支通过 Git 路径限制枚举，避免对每个glob重复遍历不相关文件；不改全局工具、不引入框架。
+
+同样只读38键 cProfile 为15.457822秒、5,070,310调用（`data-management-cache-directory-cf267fa.log`），约减少70%。为排除profile开销，在同一进程顺序测原配置和新配置（原配置从git show读取内存，未写回），无profile测量原16.472720秒 / 新8.434634秒，减少8.038086秒（48.8%），两次均38键且退出0（`data-management-cache-unprofiled-cf267fa.log`）。这只是键准备比较，不含配置读取、改变文件判定、缓存读取、三组执行、落盘和Node探测，不能代替统一入口总计。当前三组全为parallel，outer3可同时提交，没有必须等待其他38组完成的队列；但源码准备与执行再次算键、结束统一汇总的机制仍在。
+
+文档与测试清单正确入口分别 `scripts/dev/check.py docs`（216份通过）、`tests/dev/test_inventory.py`（全部入口登记通过）。首次误用 check.py test-inventory 仅参数失败未执行测试，已经纠正，不计为测试失败或通过。新输入配置使整配置摘要与旧缓存键不同，旧35命中不能冒充新配置证据；新配置的完整统一验证及实际总时长尚未运行，正式60门禁仍待通过。本轮没有进一步削减边界、提高资源、启用生产或推送。
+
+## 数据组定向计时与提前长用例
+
+准确提交 `fad1eac906a3912cbcf938510c973551cb4d286c` 随后唯一正式统一增量 `verify --project . --base f554538993161cc045d19c4ed47d261f709f741b`，既有外层 60 秒硬截止，原配置及 `PYTEST_ADDOPTS=-v --durations=5`。35 项成功缓存明确命中，三项未汇总（data/docs/test-inventory）；`bounded-deadline=60.357`、owned root39168 exit1、外层124，正式门禁仍失败。没有以原生55.601秒宣称统一入口通过，也没有再盲重跑。原日志 `data-management-formal-fad1eac.log`。taskkill返回128，不能视为成功；其日志明确列出的52个PID（包含root）逐个只读核查全部absent，未提权或杀其他进程。当前无由本轮启动的已知测试节点存活。初始化、哈希准备和组内并发的精确成本尚缺逐事件计时证据；这一正式日志不能推导三个新测的真实完成数量。
+
+父端确认无其他本机重型测试，源码 `404152f3c250a0028dce4f82b902426766e0d716` 原生 `.venv/Scripts/python.exe -B -m pytest -v tests/sim2gse-data -n 12 --dist=worksteal --durations=15`，既有外层 100 秒仅诊断，实际 created 12/12；121 passed、79 subtests passed，pytest 64.71 / 外墙 65.133 秒，退出 0。慢项长路径恢复 48.06、1000 空文件 42.97、隔离恢复 18.93、旧格式兼容 16.54 秒。记录 `data-management-data-404152f.log`。日志确认旧格式与空文件同 worker gw2，旧格式先执行，空文件不在初始首轮。现有工具无逐事件时间戳，外墙减 pytest 的 0.423 秒是外层初始化与收尾合计，不能再拆分；测试本体单例耗时已列出。
+
+唯一测试变更将 1000 文件用例改名 `test_bounded_archive_with_one_thousand_empty_members_and_restore_preview`，测试体逐字不变，unittest 排序 index21→10，使既有 WorkStealing 初始分配把它放在另一 worker 首项。不引入调度插件、不改 worker 或配置、不减少真实文件和断言。相同条件对照 121 passed、79 subtests passed，pytest 55.22 / 外墙 55.601 秒，退出 0；总墙钟减少 9.532 秒（14.6%），两个最长用例反而为 49.02 和 48.12 秒，收益来自队列尾部缩短，不是测试本体加速。记录 `data-management-data-order-404152f.log`；两次已知 root11624、18452 只读检查 absent，外层未触发 taskkill。单组诊断不等于全仓冷启动或正式统一门禁通过。
+
+父端提供用户逐字推送授权后，仅同一原操作重试一次，仍被自动审批拒绝（代理转述不被认可为授权），未再重试。本地提交保留，远端独立审查阻塞。
+
+随后父端确认独占重型窗口，准确源码 `d98e7eaa5dc06be2b1acb7896d52c44a804a5cd6` 唯一一次运行既有统一 `verify --project . --full --performance-report`。诊断外层 180 秒仅用于取得完整报告，配置 `fullBudgetSeconds=60`、组内 data timeout 60、outer 3/product 8/data 12 均未改变。这不是正式 60 秒门禁通过。
+
+结果工具 86.62 秒、外墙 87.328 秒、退出 1，38 项中 37 passed、1 failed。产品组实际 created 8/8，311 passed / pytest 44.48 秒 / 检查 46.62 秒；数据组 `check_timeout` 60 秒，检查总耗时 80.53 秒，是本次明确关键路径；超时处理丢弃部分 stdout，组内完成数量和最慢用例仍未知。其他最长为 dk 20.72、skill 18.64、checker 9.26、annotation 8.14 秒。不能据此断言全部数据用例失败，也不能把旧报告用于推断本轮组内耗时。新 JSON 为 `data-management-diagnostic-d98e7ea-full-report.json`，完整 stdout 为 `data-management-diagnostic-d98e7ea-full.log`（仅去除行尾空格，Temp 原件保留）。外层没有触发 taskkill，已知 owned root 31788 只读检查 absent；没有声称独立核查所有后代。
+
+本地 HTTP 修复提交完成，推送被自动审批拒绝，理由可见用户指令要求不推送且缺少外部披露授权；未重试或绕过。下一步需要协调原生数据组非静默计时，获得当前最慢用例后才能进一步优化；正式门禁、独立审查和规格应用仍待完成。
+
+在 `4463f1b` 之后，只读核对现有稳定版统一验证器，确认整份配置摘要进入每项缓存键，增量入口对缓存缺失项重复计算键，成功缓存直到全部组结束才发布。最近正式 60 秒截断没有完整分组计时，不能据此指定当前最慢组，也不能将旧报告当作新报告。未修改全局验证器或工具链。
+
+`tests/sim2gse/test_interface.py` 的 100 个界面用例各自创建真实 HTTP 服务，原 `serve_forever` 默认轮询间隔为 0.5 秒，关闭服务等待轮询。仅测试夹具改为 `poll_interval=0.01`，仍逐例隔离目录和服务，保留任务取消、线程等待、服务器关闭和全部断言；产品运行时没有改变。没有减少测试数量或安全覆盖。
+
+相同三个代表用例（主页、空输入拒绝、导入检查）原测试 3 passed / 97 deselected / 1.70 秒，各用例调用耗时 0.50、0.55、0.54 秒；修改后 3 passed / 97 deselected / 0.29 秒，各用例 0.01、0.06、0.04 秒，退出码均为 0。命令为 `.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse/test_interface.py -k 'homepage_is_the_real_three_step_shell or empty_submission_is_rejected_without_creating_a_task or import_inspection_lists_versions_and_nested_syntax_without_simulating' --durations=3`。这是定点夹具证据，不代表完整 100 例、311 例或 38 项统一入口通过；完整门禁仍未通过，重型测量等待机器协调。
+
+
+## 28f7efa云端接手：事实准备复用公开main
+
+2026-10-03云端独立clone后fetch核对准确起点28f7efac440cd8b54b38aca1493c4075bcb4669a，与已批准推送的本机9提交完全一致；未从旧远端重做、未修改生产运行时。Python3.12.14，隔离venv按仓库requirements的原锁定版本准备pytest9.1.1/xdist3.8.0，未更改pin或全局工具。
+
+只读核对4463f1b至28f7efa的inputs：68个目录/**替换、27个不同目录，以git ls-files --cached --others --exclude-standard的全仓可见文件集合经fnmatch筛选，对照同一Git命令限制目录的集合，当前全部相等。38项检查除inputs外所有配置字段严格相同，build部分相同。此为当前checkout的文件集合复核，结合前段既有验证器源码审查；云端没有安装本机build-and-verify，未声称在云端重跑其缓存键实现或证明Windows完整门禁。
+
+最小复用既有LifecycleTests公开接缝call_main，每个unittest实例lazy加载一次main，无模块级共享状态。initialize、事实compare及register/legacy-register/extract准备调用同一parser/main；真实配置、文件身份/SHA、锁、容量及独立SQLite事务仍执行。每次finally恢复sys.argv，stdout/stderr重定向自动恢复，成功还检查stderr为空。两个测试实例分别初始化、通过/拒绝命令后检查main身份不同、argv/stdout/stderr恢复均通过。明确减少事实准备重复启动/PID退出交叉，不声称与进程隔离覆盖等价。
+
+72事实保留首个extract真子进程，其余71继续公开main；原72唯一ID、逐项changed、字节query/export/snapshot仍真子进程且全部断言不变。完整版本轴compare代表仍真子进程，初始化批准/失败、生命周期/安全故障CLI不改；归档大清单与1000成员边界方法未改。仅测试两文件净减28行，无生产接口/新框架。
+
+同云端串行事实组前后各一次，python -B -m pytest -q tests/sim2gse-data/test_facts.py --durations=5：前18 passed/18.60秒，后18 passed/6.43秒，测试体墙钟少12.17秒（65.4%）。这是Linux事实组观察，不能等同Windows整仓收益。完整发现仍112项/0.02秒。
+
+Linux原基线全数据组8worker诊断23.79秒：103 passed、77 subtests passed、7 failed、2 skipped。7失败为Linux没有pwsh、WinDLL/msvcrt或Windows排他句柄语义，以及计划任务预览对隔离venv软链解释器拒绝；没有为Linux改安全逻辑或把失败记为通过。修改后显式不选这7个Windows/解释器环境相关用例的可移植诊断22.44秒：103 passed、77 subtests passed、2原有Windows联接skipped。排除仅在云端诊断命令，不改仓库测试选择或skip；缺失9项须Windows同SHA验证。单组诊断均90秒防挂，不替代60秒统一门禁。测试入口登记通过，文档检查215份通过，git diff --check通过。正式Windows完整60门禁、独立远端审查和Gate2仍待父端组织，未合并上线或操作真实历史。
+
+## 2764f59正式性能达标后的正确性阻塞与最小修复
+
+父端Windows同2764f59正式完整验证：38实际执行、cache0，37通过1失败；tool56.30秒/外层57.176秒、exit1。数据112项及77子测试全部通过45.27秒，产品310通过1失败；这不是整仓验收通过。准确失败为test_search_deadline_terminates_a_hung_native_batch：runtime.run_command先抛BudgetExceeded，在finally删除本次.stdout随机临时文件时WinError32覆盖原异常，再由task包装TaskError。没有文件持有者/具体batch PID或wait返回证据，不能把根因归为杀软或句柄泄漏。
+
+仅run_command finally两临时文件unlink接缝增加11次尝试/10次20ms的有界重试，只接受PermissionError且winerror==32；其他错误立即抛、耗尽仍失败。原terminate、反复wait至作业退出、process.close及预留释放顺序保持，未扩大_create_windows_process创建失败清理或replace_file。最多两文件名义0.4秒仍计入现有TaskRuntime.elapsed_seconds，不重置截止、不在清理调用runtime.check替换原异常；成功重试后继续传递原BudgetExceeded。
+
+新增一条标准库可移植test_runtime回归，先红2个子测试（短暂冲突覆盖原BudgetExceeded、耗尽只尝试一次），实现后1项/5子测试通过0.34秒：stdout/stderr短暂冲突后实际删除且原异常身份保持，持续冲突11次耗尽仍抛，winerror5及无winerror不重试；检查terminate/wait/close、同预留ID释放、实际临时字节/删除和预算不重置、elapsed包含实际等待。原test_search真实hung-native用例未改。云端test_search收集因msvcrt不可用明确失败，不把替身当Windows验收；独立test_runtime仅使用runtime标准库和已拥有合成临时文件，不新造框架。统一测试入口登记通过。Windows真实挂起回归及整仓同SHA正式验证仍须父端在低负载窗口组织，Gate2仍未关闭。
+
+
+## e6b4226低负载独占诊断与单行并发对照候选
+
+Windows e6定向hung-native/callback/runtime：3项5子测试通过，pytest5.45秒/墙5.876秒。新严格local完整正式验证38选中/cache0，total60.03/墙60.429秒、exit124；19启动（16通过3超时）19未启动。产品312项100子测试通过45.76秒（pytest44.76）；数据组total_budget_timeout50.19秒，没有独立stdout。早先本机转述误把产品312/100归为数据，已由原始日志/JSON纠正，未发现命令重复执行。入口实际绑定74718c0ce5b419d597495ddefebbd7adca795ecb，impl sha256:d23f7cac9f1dd15bc2991114f418e4bc405910837ead172427a33db1055a93a3；outer3、product8、data12，正式60包括准备及收尾。
+
+随后仅一次同e6数据独占原生命令-v/durations诊断：112项77子测试全通过，12worker，pytest38.25秒/墙38.569秒、exit0；无WoW/其他测试，终止后无残留。最慢220深路径35.17秒、1000空成员34.74秒、隔离恢复16.64秒、旧布局12.41秒、过期purge12.03秒、迁移阶段10.10秒、卷预留9.84秒、purge阶段9.66秒、归档阶段9.14秒。90秒仅已有包装器防挂诊断上限，不改变正式60或构成整仓通过。
+
+据独占完整通过与并行超时的竞争关联证据，父端批准一次可逆资源对照：仅verify.sim2gse的pytestXdistWorkers由8改4，data12/outer3保持，所有checkParallel、命令、paths/inputs、timeout和完整覆盖不变。不是4/8方案，不预报优化成功；数据重用例35秒已近独占下界，不为试验删真实来源/1000上限/阶段/物理核验。回退为e6配置该字段8；候选须独立review及同SHA fresh完整正式60实测，失败不反复盲调，转为真实阶段计时取证。
+
+## 29491对照失败后：保持物理锁检查的词法热点收敛
+
+Windows同29491正式fresh完整对照仍失败：tool60.186秒/外层60.398秒、exit124，cache0，38选中、22通过3超时13未启动。产品312项100子测试通过50.49秒（pytest49.65），数据112项77子测试通过46.29秒（pytest45.86）；产品比e6的45.76秒变慢，数据由超时转完成但不能称整仓达标。未完成wowaddontest-dk/addon-probe-test/assets及13未启动项如实保留，不再盲调worker。
+
+云端以现有公开CLI及标准库Profile/runpy对原220深路径和1000空成员完整测试取证，诊断各45秒防挂、所有原断言保留。首次直接使用python -m cProfile会吞SystemExit，使预期退出2变0；该诊断失败后改为Profile+runpy finally写采样，保持真实CLI退出码，没有为诊断错误改生产或放松断言。profile不用于正式通过或Windows速度保证。
+
+热点runner_locks原来逐祖先is_relative_to(root)，pathlib内部反复构造祖先，造成纯词法重复。最小修改仅入口source.parent一次包含判断，之后仍遍历原祖先元组逐层lexists/byte_lock，取得根锁后parent==root停止；无路径缓存，不跳物理检查。完整读14调用点及根来源，并用实际旧/新函数核对140个POSIX/Windows/UNC/根/根外词法路径的probe、获取及逆序释放序列相同。
+
+同19正常CLI采样，220原完整例通过：前10.934秒/后8.452秒，runner_locks4444→4444、lstat115432→115432、lexists28758→28758、byte_lock12→12；is_relative_to34812→6158，runner_locks嵌套累计3.235→1.365秒，累计不能相加。1000原完整例通过：前8.511秒/后7.114秒，runner_locks20008→20008、lstat133665→133665、lexists20064→20064、byte_lock4→4，is_relative_to44062→24050。1000前采样与一次普通两例baseline短暂重叠，后采样独占，不能把墙钟差全部归因候选；220也仅单次含采样观察，不外推Windows收益。
+
+候选Linux可移植诊断103项77子测试通过20.60秒、2原有Windows联接skipped；7个既有Windows/隔离解释器环境相关用例仅在该诊断命令不选，没有改仓库发现或skip。两个原完整大例另通过，来源数量、长路径、1000上限、容量拒绝、持久恢复和全部物理锁行为未删。独立只读review完整核14callers与原始profile，No findings（未发现问题），确认以上四种物理调用次数完全相同，允许最小候选交付实测；review未修改仓库。Windows同SHA两个完整大例与整仓60正式仍待父端低负载窗口验证，未应用正式规格、合并或操作真实历史。
+
+## 用户新授权：整仓ROI测试删减、内存化与两层并行
+
+2026-10-03用户明确否决修改验证技能，要求回到整个Wow仓测试的高耗时部分，按频率、影响、重复覆盖与成本删减/合并/缩量，纯逻辑直接内存验证。此次不修改跨仓运行器、不改生产默认迭代或数据限额。旧固定1000/220/56万/全部交叉覆盖不是现行要求，不能把删减说成等价100%覆盖；正式规格冲突仅准备预览，尚未应用。
+
+数据真实1000空文件→8（省992原件），限值1000允许进入对象校验/1001与重复ID拒绝改内存SQLite逻辑；1000真实集成与Windows巨长argv交叉不再验收。220来源/恢复副本→3份不同内容（各省217），仍12层长路径、逆序输入稳定排序、801KiB清单、两容量拒绝不写索引/staging、verified中断恢复及原字节。小样空成员用32MiB只容纳原有保守预留/元数据峰值，生产策略和独立低容量拒绝不变。72份大反馈事实准备删除，16KiB/1MiB精确ASCII/中文字节与非有限值直接内存测；来源SHA/快照仍少量真文件，剩余事实公开main调用不再起CLI，不把其真实I/O叫纯内存。
+
+安全/维护/生命周期三文件省132次CLI；7807实体→22，省7785写文件；21故障组合→4个真实移动/删除后恢复，保留ID/封口/字节/幂等。phase_commit和safety_phase分别:memory:测提交/日志/封口预留释放；维护重复13CLI完整链改参数分派逻辑。56万条目→9条严格单遍及limit2，测禁止物化/活条目峰值2/精确计数/关闭，不声称56万/32MiB峰值仍验收。删17阶段真实交叉与两COM XML接纳交叉，不伪称替代；跨卷、句柄锁、PID复用、危险目录交换、全量预检、过期重批及墓碑重现独有测试仍保留。三文件定向14项7.465秒，6/6内存缺陷变体被抓。
+
+产品五文件对应方法238→225：interface真实服务100→45，省55服务/线程/临时根/POST，检查逻辑直inspect_import；删9职业/重复任务，省9×100基准迭代与18Lua，native_cast另省100受控迭代。benchmark7汇总内存，省280summary文件；search6完整任务改真实纯函数并删3重复任务，取消/租约并入真实取消恢复，不再每批sleep0.6。历史golden精确编码/SHA交叉撤掉，不称其他覆盖等价。重放200→4迭代，要求非空两轮battle/真实时刻；同seed一致、不同seed明确不等。reset7→3不同执行分支，mask13导出→3地面技能/普通技能/地面饰品代表，省20Lua，11独有目标数据规则仍内存核对。benchmark17pytest通过0.08秒，search14标准库抽取测试体通过0.009秒（不是完整pytest）；计算/位置/seed/脱敏等错误变体被抓。cbor2/Lua/SIMC/Windows取消与两轮trace实际边界云端未跑，不装新工具链或伪造模块。
+
+其他组：DK正常10→共享1，四实际缺陷各1目标、健康恢复同1目标，动态案例1404→83，独立deepcopy反例不污染共享结果且生产字节不变。event/poll各846→43完整步骤代表、10行为家族，保留取整/小数分支，全846/40身份资产结构完整性仍核；determinism1、五mutation各1、对应参考再生43，不声称846动态验收。外层doctor2→1/catalog3→1，删重复846参考再生。注解365真文件语法365Lua→1，单参数兼容、坏第二文件非零，Windows命令12164字符；Generator复用一次仍对全部磁盘字节/TOC覆盖。删checker重复整套素材构建。已有Lua5.4诊断DK24项3.480秒，selftest38项7.882→3.465秒，外层13项5.696秒及9纯逻辑/路径项通过；这些不是固定Lua5.1/Windows结果。
+
+整合数据可移植诊断：4worker，105 passed、67 subtests passed、2既有Windows联接skipped，25.91秒；5个明确Windows环境项仅本次诊断命令不选，仓库发现未筛选。此前8worker的Linux组不可直接当同口径速度对照。整合benchmark+runtime18pytest/5子测试0.44秒；JSON字节/限值以及其他逻辑真实代码缺陷变体验证有效。生产数据实现未变，语法helper及skill自测代表选择属于本次明确范围。
+
+唯一候选配置outer4/product4/data4：旧outer3长期让两大组占2槽、其余36组共1队列；精简后降内层进程，给其余2槽，20逻辑核留资源余量。只测这一候选，不称已极致或最优，正式60包括准备/实际检查/收尾，验证技能零改动。上游main e059已增HUD三项测试命令及生产/适配更新；当前固定基线未换，未覆盖上游改动或自动合并，正规同步后必须最终同HEAD重测。当前所有Linux/Lua5.4结果不构成Windows60通过；本机后端/完整原生序列、解码/HTTP、取消、annotation365固定Lua5.1、checker全组及最终fresh完整入口仍待父端。
+
+## 312513正式53.8秒但两测试失败：确定性夹具修复
+
+Windows同312513正式fresh完整38组全部完成、cache0，无总超时：tool53.8226秒/外层53.890秒，37组通过1产品组失败，不能称验收通过。产品298 passed/95 subtests、2 failed/1 subfailed，pytest35.23秒/check36.10秒；数据112/77通过check45.04秒。两处准确失败都在测试：cleanup elapsed实际0.032小于硬断言0.04；恢复测试观察phase initialize而非search。
+
+cleanup不再用真实sleep时长与Windows分辨率有限的monotonic硬比。仅测试中记录实际sleep调用次数和每次0.02参数、用确定性clock累计，检查started及budget不重置、elapsed包含调用；原真实unlink、原异常身份、耗尽/其他错误拒绝、进程顺序和预留释放断言保留，生产没有改变。单项5子测试0.06秒通过；实际run_command缺少cleanup sleep的内存代码变体被检测。
+
+恢复夹具旧轮询只判断completed_batches==0；read_task初始initialize进度包含completed_batches=null，None==0为False，导致没等待心跳发布search进度就跳出。现在必须同时看到真实phase search及非零已完成批次才结束轮询，原phase==search/批次>0严格断言、真实取消/租约拒绝/预算与缓存恢复不放松，也不改生产状态。实际循环谓词对null、0、错误phase及真实已发布search批次的四种内存输入通过；完整Windows取消恢复仍须定向/正式实测，不把谓词检查称为集成通过。
+
+## 最终整合本机验证（2026-10-03）
+
+6c201两个失败定向2测试/5子测试通过，1.63秒；fresh full 38/38通过、cache0、tool53.985秒。最终整合2f0e906保留main e059全部HUD增量并带入已确认正式规格，再次Windows fresh full：38/38通过、cache0、exit0，tool56.172秒/外层56.240秒。产品304测试+96子测试check35.28秒，数据112测试+67子测试check47.03秒，HUD46测试check9.65秒，三个新增文件确实执行；既有85个LFS对象取回，44份运行媒体可读。无WoW及测试残留、工作树干净。此前数据77子测试转述不作为最终证据，本轮实际67与云端一致。
+
+完整验证独立60秒达标，不宣称构建加验证合计60秒。Linux新HUD可移植package/mipmap9通过、2明确WindowsLua项排除；固定Windows完整组的上述实际结果才是验收依据。最终公开全量双轴审查及CI尚未完成，未合并主干、未上线或触碰历史数据。
+
+## 最终审查P2：finish登记元数据峰值
+
+独立公开2f0e906审查在既有4MiB/维护64KiB/元数据128KiB合成策略下，用300份1字节长名文件及一份批准载荷补足文件复现：finish封口后根4214885字节超过容量4194304，超20581字节，原件未丢。原因是finish预算检查growth=0之后批量写入artifact及run_artifact登记行，未为新增SQLite页/索引/WAL留峰值。
+
+最小修复复用既有check_budget与事实/快照估算口径：非sealed取实际相对路径和manifest的UTF8 JSON编码长度×8加64KiB，先准入再插入登记；仍只核销本次run结束的未来载荷，其他保护不变。sealed重试不重新计新增登记峰值。回归仅2个真实180字符名文件，经既有进程内公开入口操作真实索引：旧实现意外成功为红；新实现先容量拒绝、登记数不增、1024载荷预留未核销且原字节保留；扩容后正常封口，缩回近满容量已有sealed幂等重试成功。4个finish/并发定向检查2.11秒通过。修复尚待独立复核及最终新SHA的Windows全组/CI，不沿用2f0e906通过结果冒称新增修复已完整验收。

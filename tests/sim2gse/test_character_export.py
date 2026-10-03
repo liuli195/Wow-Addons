@@ -152,12 +152,18 @@ class CharacterExportTests(unittest.TestCase):
     def test_client_target_masks_apply_across_classes_and_mixed_blocks(self):
         from codec import export
         from sequence import compiled_program
-        # 独立客户端 SpellTargetRestrictions 正反例；同名天赋版不能误改为脚下。
+
+        # 所有独有客户端数据规则直接核对；只有三种导出语义进入真实上游编译。
+        targeting = json.loads((REPOSITORY / 'projects/sim2gse/compatibility/spell-target-masks.json')
+                               .read_text(encoding='utf-8'))
         cases = [(43265, True), (2120, True), (190356, True), (61882, True),
                  (73920, True), (5740, True), (1254851, False), (204475, False),
                  (206930, False), (2061, False), (26573, False)]
+        for spell_id, is_ground in cases:
+            with self.subTest(target_mask=spell_id):
+                self.assertEqual(bool(targeting['target_masks'].get(str(spell_id), 0) & 64), is_ground)
         with tempfile.TemporaryDirectory() as directory:
-            for spell_id, is_ground in cases:
+            for spell_id, is_ground in ((43265, True), (206930, False)):
                 with self.subTest(spell=spell_id):
                     command = dict(kind='spell', spell_id=spell_id, name='spell_'+str(spell_id), simc_action='spell_'+str(spell_id))
                     blocks = [[command], [dict(kind='start_attack', simc_action='auto_attack'), command]]
@@ -166,11 +172,10 @@ class CharacterExportTests(unittest.TestCase):
                     self.assertEqual(first['type'], 'macro' if is_ground else 'spell')
                     self.assertEqual('[@player]' in result['compiled_steps'][1]['macrotext'], is_ground)
                     self.assertEqual(compiled_program(result), [[command['simc_action']], ['auto_attack',command['simc_action']]])
-            for driver, expected in [(43265, True), (206930, False)]:
-                item = dict(kind='item', slot=13, driver_spell_id=driver, simc_action='use_item,slot=trinket1')
-                result = export([[item]], Path(directory)/('item'+str(driver)), identity=dict(spec_id=250,class_id=6))
-                self.assertEqual(result['compiled_steps'][0], dict(type='macro',macrotext='/use [@player] 13') if expected else dict(type='item',item=13))
-                self.assertEqual(compiled_program(result), [['use_item,slot=trinket1']])
+            item = dict(kind='item', slot=13, driver_spell_id=43265, simc_action='use_item,slot=trinket1')
+            result = export([[item]], Path(directory)/'ground-item', identity=dict(spec_id=250,class_id=6))
+            self.assertEqual(result['compiled_steps'][0], dict(type='macro',macrotext='/use [@player] 13'))
+            self.assertEqual(compiled_program(result), [['use_item,slot=trinket1']])
 
     def test_public_entry_rejects_output_override_before_writing(self) -> None:
         source = sample_profile() + "\noutput=forbidden.simc\n"

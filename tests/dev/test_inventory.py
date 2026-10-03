@@ -53,6 +53,10 @@ def main():
     sim2gse_pytest = '-m pytest' in sim2gse_command and 'tests/sim2gse' in sim2gse_command
     assert sim2gse_pytest, 'Sim2GSE 必须由 pytest 自动发现'
     assert ' -k ' not in sim2gse_command, 'Sim2GSE 验证不得筛选测试'
+    simdata = next(check for check in config['verify']['checks'] if check['id'] == 'verify.sim2gse-data')
+    simdata_command = str(simdata['command']).replace('\\', '/')
+    simdata_pytest = '-m pytest' in simdata_command and 'tests/sim2gse-data' in simdata_command
+    assert simdata_pytest and ' -k ' not in simdata_command, '数据管理测试必须完整自动发现'
     build_source = ast.parse((ROOT / 'scripts/dev/sim2gse/build.py').read_text())
     build_modes = [
         ast.literal_eval(node.iter)
@@ -83,6 +87,7 @@ def main():
         if local_acceptance(path):
             continue
         discovered = path.parent == ROOT / 'tests/sim2gse' and path.match('test_*.py') and sim2gse_pytest
+        discovered |= path.parent == ROOT / 'tests/sim2gse-data' and path.match('test_*.py') and simdata_pytest
         if relative not in commands and not discovered:
             missing.append(relative)
     assert not missing, '未接入统一验证的测试：\n' + '\n'.join(sorted(missing))

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "mode": "production",
+  "root_id": null,
+  "data_root": null,
+  "production_enabled": false,
+  "capacity_bytes": null,
+  "retention_days": null,
+  "maintenance_interval_hours": null,
+  "maintenance_reserve_bytes": null,
+  "archive_part_bytes": null,
+  "metadata_reserve_bytes": null,
+  "lease_seconds": null
+}

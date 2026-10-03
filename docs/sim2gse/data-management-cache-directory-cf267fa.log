@@ -1,0 +1,27 @@
+cache-preparation-checks= 38 seconds= 15.457822399999714
+         5070310 function calls (4881125 primitive calls) in 15.457 seconds
+
+   Ordered by: cumulative time
+   List reduced from 276 to 18 due to restriction <18>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       38    0.005    0.000   15.457    0.407 C:/Users/liuli/AppData/Roaming/npm/node_modules/@liuli195/build-and-verify/python/build_and_verify_runner.py:594(_cache_key)
+      226    0.108    0.000   15.439    0.068 C:/Users/liuli/AppData/Roaming/npm/node_modules/@liuli195/build-and-verify/python/build_and_verify_runner.py:525(_hash_input)
+     4810    0.016    0.000    5.754    0.001 C:/Users/liuli/AppData/Roaming/npm/node_modules/@liuli195/build-and-verify/python/build_and_verify_runner.py:476(_is_relative_to_project)
+     9620    0.031    0.000    5.036    0.001 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\pathlib.py:1228(resolve)
+     9620    0.058    0.000    3.940    0.000 <frozen ntpath>:705(realpath)
+    19246    3.745    0.000    3.745    0.000 {built-in method nt._getfinalpathname}
+       70    0.004    0.000    3.685    0.053 C:/Users/liuli/AppData/Roaming/npm/node_modules/@liuli195/build-and-verify/python/build_and_verify_runner.py:505(_git_visible_files)
+       70    0.001    0.000    3.639    0.052 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\subprocess.py:506(run)
+     4740    0.047    0.000    3.203    0.001 C:/Users/liuli/AppData/Roaming/npm/node_modules/@liuli195/build-and-verify/python/build_and_verify_runner.py:468(_hash_file)
+      140    0.001    0.000    2.806    0.020 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\threading.py:1117(join)
+  980/700    0.005    0.000    2.803    0.004 {method 'acquire' of '_thread.lock' objects}
+      140    0.001    0.000    2.802    0.020 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\threading.py:1155(_wait_for_tstate_lock)
+       70    0.000    0.000    2.758    0.039 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\subprocess.py:1165(communicate)
+       70    0.001    0.000    2.735    0.039 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\subprocess.py:1603(_communicate)
+   140/70    0.014    0.000    2.723    0.039 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\threading.py:1018(_bootstrap)
+   140/70    0.001    0.000    2.715    0.039 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\threading.py:1058(_bootstrap_inner)
+   140/70    0.001    0.000    2.633    0.038 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\threading.py:1001(run)
+   140/70    0.000    0.000    2.630    0.038 C:\Users\liuli\AppData\Local\Programs\Python\Python312\Lib\subprocess.py:1598(_readerthread)
+
+

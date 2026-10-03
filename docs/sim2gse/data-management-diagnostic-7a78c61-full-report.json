@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "2.1.0",
+  "generatedAt": "2026-10-02T15:55:46Z",
+  "totalSeconds": 111.81,
+  "budgetSeconds": 60,
+  "overBudget": true,
+  "verificationStatus": "failed",
+  "checks": [
+    {
+      "id": "verify.sim2gse",
+      "status": "passed",
+      "durationSeconds": 66.76
+    },
+    {
+      "id": "verify.sim2gse-data",
+      "status": "failed",
+      "durationSeconds": 111.73
+    },
+    {
+      "id": "verify.luals",
+      "status": "passed",
+      "durationSeconds": 9.3
+    },
+    {
+      "id": "verify.luacheck",
+      "status": "passed",
+      "durationSeconds": 3.5
+    },
+    {
+      "id": "verify.toc",
+      "status": "passed",
+      "durationSeconds": 3.58
+    },
+    {
+      "id": "verify.sim2gse-probe-luals",
+      "status": "passed",
+      "durationSeconds": 8.09
+    },
+    {
+      "id": "verify.sim2gse-probe-luacheck",
+      "status": "passed",
+      "durationSeconds": 1.55
+    },
+    {
+      "id": "verify.sim2gse-probe-toc",
+      "status": "passed",
+      "durationSeconds": 1.24
+    },
+    {
+      "id": "verify.crosshair-media",
+      "status": "passed",
+      "durationSeconds": 5.41
+    },
+    {
+      "id": "verify.myseries-luals",
+      "status": "passed",
+      "durationSeconds": 8.61
+    },
+    {
+      "id": "verify.myseries-luacheck",
+      "status": "passed",
+      "durationSeconds": 1.94
+    },
+    {
+      "id": "verify.myseries-toc",
+      "status": "passed",
+      "durationSeconds": 1.59
+    },
+    {
+      "id": "verify.myseries-series",
+      "status": "passed",
+      "durationSeconds": 3.09
+    },
+    {
+      "id": "verify.crosshairhud-luals",
+      "status": "passed",
+      "durationSeconds": 8.12
+    },
+    {
+      "id": "verify.crosshairhud-luacheck",
+      "status": "passed",
+      "durationSeconds": 1.31
+    },
+    {
+      "id": "verify.crosshairhud-toc",
+      "status": "passed",
+      "durationSeconds": 1.05
+    },
+    {
+      "id": "verify.crosshairhud-tests",
+      "status": "passed",
+      "durationSeconds": 3.81
+    },
+    {
+      "id": "verify.wowaddontest-skill",
+      "status": "passed",
+      "durationSeconds": 16.47
+    },
+    {
+      "id": "verify.wowaddontest-dk",
+      "status": "passed",
+      "durationSeconds": 19.14
+    },
+    {
+      "id": "verify.sim2gse-probe-test",
+      "status": "passed",
+      "durationSeconds": 1.39
+    },
+    {
+      "id": "verify.addon-probe-luals",
+      "status": "passed",
+      "durationSeconds": 3.67
+    },
+    {
+      "id": "verify.addon-probe-luacheck",
+      "status": "passed",
+      "durationSeconds": 0.47
+    },
+    {
+      "id": "verify.addon-probe-toc",
+      "status": "passed",
+      "durationSeconds": 0.42
+    },
+    {
+      "id": "verify.addon-probe-test",
+      "status": "passed",
+      "durationSeconds": 1.39
+    },
+    {
+      "id": "verify.assets",
+      "status": "passed",
+      "durationSeconds": 2.44
+    },
+    {
+      "id": "verify.docs",
+      "status": "passed",
+      "durationSeconds": 3.41
+    },
+    {
+      "id": "verify.checker-tests",
+      "status": "passed",
+      "durationSeconds": 11.89
+    },
+    {
+      "id": "verify.annotation-build",
+      "status": "passed",
+      "durationSeconds": 9.94
+    },
+    {
+      "id": "verify.test-inventory",
+      "status": "passed",
+      "durationSeconds": 0.75
+    },
+    {
+      "id": "verify.gear-async",
+      "status": "passed",
+      "durationSeconds": 1.3
+    },
+    {
+      "id": "verify.gear-build-names",
+      "status": "passed",
+      "durationSeconds": 1.27
+    },
+    {
+      "id": "verify.gear-delete",
+      "status": "passed",
+      "durationSeconds": 1.22
+    },
+    {
+      "id": "verify.gear-empty",
+      "status": "passed",
+      "durationSeconds": 1.2
+    },
+    {
+      "id": "verify.gear-save-armor",
+      "status": "passed",
+      "durationSeconds": 1.22
+    },
+    {
+      "id": "verify.gear-save-as",
+      "status": "passed",
+      "durationSeconds": 1.22
+    },
+    {
+      "id": "verify.gear-stat-filter",
+      "status": "passed",
+      "durationSeconds": 1.2
+    },
+    {
+      "id": "verify.gear-summary",
+      "status": "passed",
+      "durationSeconds": 1.19
+    },
+    {
+      "id": "verify.myspec-main",
+      "status": "passed",
+      "durationSeconds": 0.91
+    }
+  ]
+}

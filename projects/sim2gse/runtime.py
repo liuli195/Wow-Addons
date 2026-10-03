@@ -434,7 +434,14 @@ def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | 
         if runtime.reservation:
             runtime.reservation(reservation, None)
         for path in (process.stdout_path, process.stderr_path):
-            path.unlink(missing_ok=True)
+            for attempt in range(11):
+                try:
+                    path.unlink(missing_ok=True)
+                    break
+                except PermissionError as error:
+                    if getattr(error, "winerror", None) != 32 or attempt == 10:
+                        raise
+                    time.sleep(0.02)
 
 
 __all__ = ["BudgetExceeded", "ProcessResult", "ProcessTimeout", "TaskCancelled", "TaskRuntime", "run_command"]

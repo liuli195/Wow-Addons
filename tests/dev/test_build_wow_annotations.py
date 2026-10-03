@@ -3,8 +3,10 @@
 用例对应实机数据里出现过的构造与已修缺陷，不依赖游戏运行时。
 """
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,9 +23,7 @@ def parse(source, module):
     return module.parse_documentation("local X = " + source)
 
 
-def main():
-    module = load()
-
+def check_parser_rules(module):
     # 表字面量：具名键与数组部分分开存放。
     table = parse('{ A = 1, { Name = "x" } }', module)
     assert table["A"] == 1
@@ -84,6 +84,12 @@ def main():
     line = typed.annotation("field", {"Name": "x", "Type": "number", "StrideIndex": True})
     assert line.startswith("---@field ... number")
 
+
+
+def main():
+    module = load()
+    check_parser_rules(module)
+
     # 产出必须是合法 Lua。文档正文里的 `\n` 若原样铺开会让注释断行、
     # 产出行外文本，这条断言专门盯住那个缺陷。
     syntax = ROOT / "scripts/dev/check_syntax.lua"
@@ -91,24 +97,41 @@ def main():
     produced = sorted((ROOT / "scripts/dev/annotations/api/Blizzard_APIDocumentationGenerated").glob("*.lua"))
     produced += sorted((ROOT / "scripts/dev/annotations/scriptobject").glob("*.lua"))
     assert produced, "注解产出为空"
-    broken = [path.name for path in produced
-              if subprocess.run([str(lua), str(syntax), str(path)],
-                                cwd=ROOT, capture_output=True).returncode]
-    assert not broken, f"注解产出不是合法 Lua：{broken[:5]}"
-
-    # 产出与磁盘一致（--check 是同一份比较逻辑）。
-    result = subprocess.run([str(ROOT / ".venv/Scripts/python.exe"),
-                             str(ROOT / "scripts/dev/build_wow_annotations.py"), "--check"],
-                            cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    directory = produced[0].parent
+    command = [str(lua), str(syntax),
+               *(os.path.relpath(path, directory) for path in produced)]
+    assert len(subprocess.list2cmdline(command)) < 32767, "Lua 语法检查超过 Windows 命令长度"
+    result = subprocess.run(command, cwd=directory, capture_output=True,
+                            text=True, encoding="utf-8", errors="replace")
     assert result.returncode == 0, result.stdout + result.stderr
+    # 第二个文件故意损坏，证明批量入口没有只检查第一个参数。
+    with tempfile.TemporaryDirectory(prefix="wow-syntax-batch-") as temporary:
+        folder = Path(temporary)
+        (folder / "good.lua").write_text("local x = 1\n", encoding="utf-8")
+        (folder / "bad.lua").write_text("local =\n", encoding="utf-8")
+        failed = subprocess.run([str(lua), str(syntax), "good.lua", "bad.lua"],
+                                cwd=folder, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")
+        assert failed.returncode != 0 and "bad.lua" in failed.stderr, failed.stderr
 
-    # 覆盖率：清单里的每个文件都必须落在产出或跳过里，不允许静默丢弃。
-    report = subprocess.run([str(ROOT / ".venv/Scripts/python.exe"),
-                             str(ROOT / "scripts/dev/build_wow_annotations.py"), "--report"],
-                            cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
-    assert report.returncode == 0, report.stdout + report.stderr
-    assert "合计 612" in report.stdout, report.stdout
+    # 复用真实生成器，只解析一次；完整生成结果在内存中同时做覆盖与磁盘比较。
+    upstream = ROOT / ".tools/wow-api/Annotations/Core"
+    generator = module.Generator(module.load_systems(), module.handwritten_types(upstream),
+                                 module.enum_names(upstream), module.widget_mapping(),
+                                 module.collect_upstream_methods(upstream))
+    outputs, skipped = generator.build()
+    scripts, _ = generator.script_methods()
+    assert set(module.toc_files()) == set(outputs) | set(skipped), "清单文件未产出也未跳过"
+    assert not set(outputs) & set(skipped), "文件同时计入产出和跳过"
+    for folder, expected in ((module.OUTPUT, outputs), (module.SCRIPT_OUTPUT, scripts)):
+        assert {p.name for p in folder.glob("*.lua")} == set(expected), "注解产出文件清单不一致"
+        for name, text in expected.items():
+            assert (folder / name).read_text(encoding="utf-8") == text, f"注解产出与磁盘不一致：{name}"
     print("PASS: 解析、类型映射与产出规则符合预期")
+
+
+def test_parser_rules():
+    check_parser_rules(load())
 
 
 def test_build_wow_annotations():
