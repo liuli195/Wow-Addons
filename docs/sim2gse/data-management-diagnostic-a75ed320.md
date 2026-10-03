@@ -236,3 +236,11 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 同云端串行事实组前后各一次，python -B -m pytest -q tests/sim2gse-data/test_facts.py --durations=5：前18 passed/18.60秒，后18 passed/6.43秒，测试体墙钟少12.17秒（65.4%）。这是Linux事实组观察，不能等同Windows整仓收益。完整发现仍112项/0.02秒。
 
 Linux原基线全数据组8worker诊断23.79秒：103 passed、77 subtests passed、7 failed、2 skipped。7失败为Linux没有pwsh、WinDLL/msvcrt或Windows排他句柄语义，以及计划任务预览对隔离venv软链解释器拒绝；没有为Linux改安全逻辑或把失败记为通过。修改后显式不选这7个Windows/解释器环境相关用例的可移植诊断22.44秒：103 passed、77 subtests passed、2原有Windows联接skipped。排除仅在云端诊断命令，不改仓库测试选择或skip；缺失9项须Windows同SHA验证。单组诊断均90秒防挂，不替代60秒统一门禁。测试入口登记通过，文档检查215份通过，git diff --check通过。正式Windows完整60门禁、独立远端审查和Gate2仍待父端组织，未合并上线或操作真实历史。
+
+## 2764f59正式性能达标后的正确性阻塞与最小修复
+
+父端Windows同2764f59正式完整验证：38实际执行、cache0，37通过1失败；tool56.30秒/外层57.176秒、exit1。数据112项及77子测试全部通过45.27秒，产品310通过1失败；这不是整仓验收通过。准确失败为test_search_deadline_terminates_a_hung_native_batch：runtime.run_command先抛BudgetExceeded，在finally删除本次.stdout随机临时文件时WinError32覆盖原异常，再由task包装TaskError。没有文件持有者/具体batch PID或wait返回证据，不能把根因归为杀软或句柄泄漏。
+
+仅run_command finally两临时文件unlink接缝增加11次尝试/10次20ms的有界重试，只接受PermissionError且winerror==32；其他错误立即抛、耗尽仍失败。原terminate、反复wait至作业退出、process.close及预留释放顺序保持，未扩大_create_windows_process创建失败清理或replace_file。最多两文件名义0.4秒仍计入现有TaskRuntime.elapsed_seconds，不重置截止、不在清理调用runtime.check替换原异常；成功重试后继续传递原BudgetExceeded。
+
+新增一条标准库可移植test_runtime回归，先红2个子测试（短暂冲突覆盖原BudgetExceeded、耗尽只尝试一次），实现后1项/5子测试通过0.34秒：stdout/stderr短暂冲突后实际删除且原异常身份保持，持续冲突11次耗尽仍抛，winerror5及无winerror不重试；检查terminate/wait/close、同预留ID释放、实际临时字节/删除和预算不重置、elapsed包含实际等待。原test_search真实hung-native用例未改。云端test_search收集因msvcrt不可用明确失败，不把替身当Windows验收；独立test_runtime仅使用runtime标准库和已拥有合成临时文件，不新造框架。统一测试入口登记通过。Windows真实挂起回归及整仓同SHA正式验证仍须父端在低负载窗口组织，Gate2仍未关闭。
