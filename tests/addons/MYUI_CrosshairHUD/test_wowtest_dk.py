@@ -3,7 +3,8 @@
 只断言外部可观察结果：工具跑完，出的报告里三专精 × 生命/主资源/职业资源都有实质断言。
 不触碰适配器与投影的内部实现。
 """
-import hashlib
+import copy
+from functools import lru_cache
 import json
 import os
 import shutil
@@ -48,12 +49,32 @@ def run_tool(output_name):
     return result, report, payload if self_check else {}
 
 
+@lru_cache(maxsize=1)
+def _normal_result():
+    """本进程只执行一次真实生产对照，后续逻辑断言共享只读结果。"""
+    before = {name: (ROOT / name).read_bytes()
+              for name in json.loads(CONFIG.read_text(encoding="utf-8"))["files"]}
+    result, report, _ = run_tool("dk-run.json")
+    unchanged = before == {name: (ROOT / name).read_bytes() for name in before}
+    # 失败也缓存退出状态；不可读旧报告，更不能因每个断言重新跑一遍失败的全量。
+    if result.returncode:
+        return result, unchanged, (None, None)
+    return result, unchanged, (json.loads(report.read_text(encoding="utf-8")),
+                               json.loads(ACTUAL.read_text(encoding="utf-8")))
+
+
+def normal_run():
+    result, unchanged, (report, actual) = _normal_result()
+    assert result.returncode == 0, result.stdout[-500:] + result.stderr[-500:]
+    assert unchanged, "正常运行改动了生产文件"
+    return result, report, actual
+
+
 class DeathKnightComparisonTest(unittest.TestCase):
     def test_report_loaded_real_production_files(self):
-        result, report, _ = run_tool("dk-run.json")
+        result, data, _ = normal_run()
         self.assertIn(result.returncode, (0, 1), f"工具未正常完成：{result.stdout[-500:]}{result.stderr[-500:]}")
         self.assertNotIn("tool_error", result.stdout, f"工具报错：{result.stdout[:300]}")
-        data = json.loads(report.read_text(encoding="utf-8"))
         loaded = set(data["execution"]["source_sha256"])
         self.assertEqual(
             loaded,
@@ -63,8 +84,7 @@ class DeathKnightComparisonTest(unittest.TestCase):
         )
 
     def test_all_three_components_have_substantive_assertions(self):
-        _, report, _ = run_tool("dk-run.json")
-        data = json.loads(report.read_text(encoding="utf-8"))
+        _, data, _ = normal_run()
         covered = [row for row in data["coverage"] if str(row["spec_id"]) in DK_SPECS]
         self.assertEqual(len(covered), len(DK_SPECS), "并非三专精都被覆盖")
         for row in covered:
@@ -74,10 +94,10 @@ class DeathKnightComparisonTest(unittest.TestCase):
 
     def test_repo_judgement_has_no_unregistered_differences(self):
         """仓库侧双边投影的判定：通过 + 已知差异，未登记差异必须为零。"""
-        _, report, _ = run_tool("dk-run.json")
+        _, _, observed = normal_run()
         import wowtest_projection as projection
         dk_cases, dk_ref = locked_data()
-        judged = projection.judge(dk_cases, dk_ref, json.loads(ACTUAL.read_text(encoding="utf-8")))
+        judged = projection.judge(dk_cases, dk_ref, observed)
         totals = judged["totals"]
         self.assertEqual(totals["errors"], 0, "存在执行错误")
         self.assertEqual(totals.get("difference", 0), 0, "存在未登记的差异")
@@ -92,8 +112,7 @@ class DeathKnightComparisonTest(unittest.TestCase):
         工具认不了，真正的判定落在仓库侧辅助程序里。那等于工具根本没在用：
         任何人直接跑工具，得到的结论都是"全错"。
         """
-        _, report, _ = run_tool("dk-run.json")
-        data = json.loads(report.read_text(encoding="utf-8"))
+        _, data, _ = normal_run()
         self.assertEqual(data["execution"]["verdict"], "project-projection",
                          "工具没有走项目投影，仍在用通用比较")
         self.assertEqual(data["status"], "pass", f"工具给出的判定不是通过：{data['summary']}")
@@ -126,8 +145,7 @@ class DeathKnightComparisonTest(unittest.TestCase):
         self.assertIn("投影", message, f"失败原因不是投影加载：{message[:200]}")
 
     def test_death_knight_run_has_no_execution_errors(self):
-        _, report, _ = run_tool("dk-run.json")
-        data = json.loads(report.read_text(encoding="utf-8"))
+        _, data, _ = normal_run()
         errors = [e for case in data["cases"] for e in case.get("errors", [])]
         self.assertEqual(errors, [], f"存在执行错误：{errors[:3]}")
 
@@ -136,11 +154,11 @@ class LockedDataCheckTest(unittest.TestCase):
     """逐条核对与失败路径：不只看总数，也不允许"缺读数"被当成通过。"""
 
     def test_every_locked_case_and_checkpoint_is_accounted_for(self):
-        _, report, _ = run_tool("dk-run.json")
+        _, _, observed = normal_run()
         dk_cases, _ = locked_data()
         expected = {c["id"]: len(c["steps"]) for c in dk_cases}
         actual = {r["id"]: len(r.get("snapshots") or [])
-                  for r in json.loads(ACTUAL.read_text(encoding="utf-8"))}
+                  for r in observed}
         self.assertEqual(set(expected), set(actual), "用例清单与锁定数据不一致")
         mismatched = {cid: (steps, actual[cid]) for cid, steps in expected.items()
                       if actual[cid] != steps}
@@ -157,9 +175,9 @@ class LockedDataCheckTest(unittest.TestCase):
 
     def test_unreadable_reading_is_not_a_silent_pass(self):
         """缺读数必须被显式判为无效，不得补默认值后通过。"""
-        _, report, _ = run_tool("dk-run.json")
+        _, _, actual = normal_run()
         dk_cases, dk_ref = locked_data()
-        observed = json.loads(ACTUAL.read_text(encoding="utf-8"))
+        observed = copy.deepcopy(actual)
         for record in observed:
             record["snapshots"] = [dict(s, observed=dict(s["observed"], has_health=False))
                                    for s in record["snapshots"]]
@@ -168,16 +186,9 @@ class LockedDataCheckTest(unittest.TestCase):
         self.assertEqual(judged["totals"].get("pass", 0), 0, "缺读数却仍有用例被判通过")
         self.assertGreater(judged["totals"].get("difference", 0), 0, "缺读数未被判为差异")
 
-    def test_repeat_run_leaves_tracked_files_unchanged(self):
-        def tracked_state():
-            return subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
-                                  capture_output=True, text=True, encoding="utf-8").stdout
-        before = tracked_state()
-        run_tool("dk-run.json")
-        run_tool("dk-run.json")
-        self.assertEqual(before, tracked_state(), "重复运行改动了受版本控制的文件")
 
 
+@lru_cache(maxsize=1)
 def locked_data():
     """会话锁定数据里属于死亡骑士三专精的用例与基线。"""
     _, cases, baseline, _ = core.data()
@@ -195,8 +206,7 @@ class KnownDifferenceScopeTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        run_tool("dk-run.json")
-        cls.observations = json.loads(ACTUAL.read_text(encoding="utf-8"))
+        _, _, cls.observations = normal_run()
         cls.cases, cls.baseline = locked_data()
 
     def _judge(self, observations=None, cases=None):
@@ -207,7 +217,7 @@ class KnownDifferenceScopeTest(unittest.TestCase):
                                 else self.observations)
 
     def _copy(self):
-        return json.loads(json.dumps(self.observations))
+        return copy.deepcopy(self.observations)
 
     def test_every_known_difference_names_its_field_and_approved_value(self):
         """通过了的登记差异，必须能说出「哪个字段」和「批准它是什么值」。"""
@@ -223,7 +233,7 @@ class KnownDifferenceScopeTest(unittest.TestCase):
         做法是把该步**输入**改掉——批准口径是「等于该步输入」，输入一变，
         观测值就不再符合批准口径，必须由「通过」翻成「失败」。
         """
-        cases = json.loads(json.dumps(self.cases))
+        cases = copy.deepcopy(self.cases)
         touched = 0
         for case in cases:
             if case["id"].endswith(".disconnect-reconnect"):
@@ -394,30 +404,35 @@ class DefectDetectionTest(unittest.TestCase):
             json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
         return target
 
-    def _run_project(self, project, output_name):
+    def _run_project(self, project, output_name, case_id):
         output = OUTPUT_DIR / output_name
         actual = OUTPUT_DIR / (Path(output_name).stem + "-actual.json")
         result = subprocess.run(
             [sys.executable, str(ENTRY), "run", "--config", str(project / "wowtest.json"),
-             "--output", str(output), "--save-actual", str(actual), "--json"],
+             "--case", case_id, "--output", str(output), "--save-actual", str(actual), "--json"],
             capture_output=True, text=True, encoding="utf-8", timeout=600, env=SKILL_ENV,
         )
         self.assertIn(result.returncode, (0, 1), f"工具未正常完成：{result.stdout[-400:]}")
         return json.loads(output.read_text(encoding="utf-8")), json.loads(
             actual.read_text(encoding="utf-8"))
 
-    def _component_defect_is_detected(self, name, filename, marker, replacement, component):
+    def _component_defect_is_detected(self, name, filename, marker, replacement, component, case_id):
         """该组件必须有一条**真的会响**的断言链：改坏生产代码就得产生未登记差异。"""
+        tracked = ROOT / "addons" / "MYUI_CrosshairHUD"
+        before = {n: (tracked / n).read_bytes() for n in self.PRODUCTION}
         project = self._temp_project(name)
         source = project / "addons" / "MYUI_CrosshairHUD" / filename
         original = source.read_bytes()
         self.assertIn(marker.encode("utf-8"), original, f"{filename} 里未找到注入点")
         source.write_bytes(original.replace(marker.encode("utf-8"),
                                             replacement.encode("utf-8"), 1))
-        data, actual = self._run_project(project, f"{name}.json")
+        data, actual = self._run_project(project, f"{name}.json", case_id)
         import wowtest_projection as projection
         dk_cases, dk_ref = locked_data()
-        judged = projection.judge(dk_cases, dk_ref, actual)
+        selected = [c for c in dk_cases if c["id"] == case_id]
+        self.assertEqual(len(selected), 1, "缺陷注入目标用例不存在")
+        self.assertEqual([r["id"] for r in actual], [case_id], "注入未执行确切目标用例")
+        judged = projection.judge(selected, dk_ref, actual)
         hit = [row["id"] for row in judged["cases"]
                for d in row["differences"]
                if d["component"] == component and not d.get("known")]
@@ -425,22 +440,28 @@ class DefectDetectionTest(unittest.TestCase):
                            f"{component} 组件被改坏，却没有产生未登记的差异")
         self.assertTrue(hit, f"{component} 组件未出现预期差异")
         self.assertEqual(data["execution"]["adapter_sha256"],
-                         json.loads((OUTPUT_DIR / "dk-run.json").read_text(
-                             encoding="utf-8"))["execution"]["adapter_sha256"],
+                         normal_run()[1]["execution"]["adapter_sha256"],
                          "适配器不应随注入变化——差异必须来自生产代码")
+        self.assertEqual(before, {n: (tracked / n).read_bytes() for n in self.PRODUCTION},
+                         "注入改动了受版本控制的生产文件")
+        if name == "health-arc":
+            # 同一临时项目原字节恢复后重跑同一目标，保留真实失败→恢复闭环。
+            source.write_bytes(original)
+            restored, _ = self._run_project(project, "health-restored.json", case_id)
+            self.assertEqual(restored["status"], "pass", "恢复后目标用例没有重新通过")
 
     def test_injected_health_curve_defect_is_detected(self):
         self._component_defect_is_detected("health-arc", "Logic.lua",
-                                           "start = 99", "start = 111", "health")
+                                           "start = 99", "start = 111", "health", "spec-250.health-partial")
 
     def test_injected_power_curve_defect_is_detected(self):
         self._component_defect_is_detected("power-arc", "Logic.lua",
-                                           "start = 339", "start = 349", "primary")
+                                           "start = 339", "start = 349", "primary", "spec-250.primary-partial")
 
     def test_injected_rune_charge_defect_is_detected(self):
         self._component_defect_is_detected("rune-charge", "Logic.lua",
                                            "(now - start) / duration",
-                                           "(now - start) / (duration * 2)", "resource")
+                                           "(now - start) / (duration * 2)", "resource", "spec-250.runes-depleted-1")
 
     def test_injected_event_update_defect_is_detected(self):
         """事件更新路径：让生命事件分支不再更新读数，必须被抓到。
@@ -453,42 +474,8 @@ class DefectDetectionTest(unittest.TestCase):
             "event-branch", "Core.lua",
             'if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then',
             'if event == "UNIT_HEALTH_OFF" or event == "UNIT_MAXHEALTH_OFF" then',
-            "health")
+            "health", "spec-250.health-max-roundtrip")
 
-    def test_normal_run_fails_after_injection_then_passes_after_restore(self):
-        """完整闭环：正常通过 → 注入后失败 → 换一份干净副本重新通过。
-
-        只证明"注入能被抓到"还不够——还得证明**干净的那份确实是通的**，
-        否则"抓到"可能只是这套比较对什么都报错。
-        """
-        clean = self._temp_project("cycle-clean")
-        report, _ = self._run_project(clean, "dk-cycle-clean.json")
-        self.assertEqual(report["status"], "pass", f"干净副本本应通过：{report['summary']}")
-
-        mutated = self._temp_project("cycle-mutated")
-        source = mutated / "addons" / "MYUI_CrosshairHUD" / "Logic.lua"
-        source.write_bytes(source.read_bytes().replace(b"start = 99", b"start = 111", 1))
-        report, _ = self._run_project(mutated, "dk-cycle-mutated.json")
-        self.assertIn(report["status"], ("difference", "error"),
-                      f"改坏生产代码后工具未报失败：{report['summary']}")
-
-        restored = self._temp_project("cycle-restored")
-        report, _ = self._run_project(restored, "dk-cycle-restored.json")
-        self.assertEqual(report["status"], "pass", "换回干净副本后没有重新通过")
-
-    def test_injection_leaves_tracked_production_files_untouched(self):
-        """注入全程不得改动受版本控制的生产文件。"""
-        before = subprocess.run(["git", "status", "--porcelain", "addons/MYUI_CrosshairHUD"],
-                                cwd=ROOT, capture_output=True, text=True,
-                                encoding="utf-8").stdout
-        project = self._temp_project("untouched-check")
-        source = project / "addons" / "MYUI_CrosshairHUD" / "Logic.lua"
-        source.write_bytes(source.read_bytes().replace(b"start = 99", b"start = 111", 1))
-        self._run_project(project, "dk-untouched.json")
-        after = subprocess.run(["git", "status", "--porcelain", "addons/MYUI_CrosshairHUD"],
-                               cwd=ROOT, capture_output=True, text=True,
-                               encoding="utf-8").stdout
-        self.assertEqual(before, after, "注入改动了受版本控制的生产文件")
 
 
 if __name__ == "__main__":

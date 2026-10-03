@@ -196,37 +196,59 @@ def selftest(report_path=None):
     check('unit_event_filter',lambda:yes(env_test("local n=0;local f=ctx.env.CreateFrame('Frame'); f:RegisterUnitEvent('UNIT_HEALTH','player');f:SetScript('OnEvent',function()n=n+1 end);ctx.emit('UNIT_HEALTH','target');ctx.emit('UNIT_HEALTH','player');return M.json({n=n})")['n']==1))
     check('timers_order_and_cancellation',lambda:yes(env_test("local a={};ctx.env.C_Timer.NewTimer(1,function()a[#a+1]=1 end);local t=ctx.env.C_Timer.NewTimer(1,function()a[#a+1]=2 end);t:Cancel();ctx.env.C_Timer.NewTimer(1,function()a[#a+1]=3 end);ctx.advance(1);return M.json(a)")==[1,3]))
     check('nil_rune_tuple_preserved',lambda:yes(env_test("ctx.state.runes[1]={ready=false};local a,b,c=ctx.env.GetRuneCooldown(1);return M.json({ok=a==nil and b==nil and c==false})")['ok']))
+    # 按行为选代表，不重复40个身份的同一共享场景；完整步骤保持不变。
+    sample_ids={
+        71:('health-empty','health-partial','health-full','health-max-roundtrip',
+            'health-zero-maximum','disconnect-reconnect','death-revive','primary-empty',
+            'primary-partial','primary-full','primary-max-roundtrip','primary-type-roundtrip',
+            'unrelated-events','duplicate-events','three-components-together',
+            'no-selected-secondary','specialization-roundtrip'),
+        65:('resource-0','resource-2','resource-5'),
+        259:('resource-0','resource-cap-roundtrip','charged-roundtrip'),
+        250:('rune-nil-start','rune-empty-cooldown-ready','rune-zero-start-is-truthy','runes-depleted-6'),
+        62:('resource-0','resource-2','resource-4'),
+        265:('shards-raw-19','shards-zero-modifier'),267:('shards-raw-19',),
+        268:('stagger-None','stagger-300'),269:('resource-cap-roundtrip',),
+        103:('druid-forms','resource-cap-roundtrip'),
+        1467:('essence-partial-500','essence-rate-0','essence-rate-None',
+              'essence-rate-0.4','resource-cap-roundtrip')}
+    wanted={f'spec-{spec}.{kind}'for spec,kinds in sample_ids.items()for kind in kinds}
+    representatives=[c for c in cases if c['id']in wanted]
+    yes({c['id']for c in representatives}==wanted,'代表用例缺失')
+    families={c['steps'][0]['state']['resource_kind']for c in representatives}
+    yes(families=={'none','holy','combo','runes','arcane','shards','stagger','chi',
+                   'druid_combo','essence'},'代表用例没有覆盖十个资源家族')
     def good_example(name):
-        actual,cfg,meta=core.run(cases,profiles,ASSETS/f'examples/{name}/wowtest.json')
-        r=core.compare(cases,baseline,actual,profiles,cfg['components'],True)
+        actual,cfg,meta=core.run(representatives,profiles,ASSETS/f'examples/{name}/wowtest.json')
+        r=core.compare(representatives,baseline,actual,profiles,cfg['components'],True)
         yes(r['status']=='pass',str(r['summary']))
         return r['summary']
-    check('event_addon_full_matrix',lambda:good_example('event-hud'))
-    check('poll_addon_full_matrix',lambda:good_example('poll-hud'))
-    subset=core.selection(cases,profiles,'259,267,250,1467,103')
+    check('event_addon_representative_cases',lambda:good_example('event-hud'))
+    check('poll_addon_representative_cases',lambda:good_example('poll-hud'))
+    subset=core.selection(cases,profiles,'259','resource-cap-roundtrip')
     def determinism():
         a,_,_=core.run(subset,profiles,ASSETS/'examples/event-hud/wowtest.json');b,_,_=core.run(subset,profiles,ASSETS/'examples/event-hud/wowtest.json')
         yes(a==b,'outputs differ');return {'cases':len(a)}
     check('deterministic_repeat',determinism)
     eventsource=(ASSETS/'examples/event-hud/addon.lua').read_text('utf-8')
-    def mutation(name,before,after,specs):
+    def mutation(name,before,after,specs,case_filter):
         yes(before in eventsource,'mutation marker absent')
         with tempfile.TemporaryDirectory(prefix='wowtest-mutation-')as tmp:
             t=pathlib.Path(tmp)
             for p in(ASSETS/'examples/event-hud').iterdir():
                 if p.is_file():shutil.copy2(p,t/p.name)
             (t/'addon.lua').write_text(eventsource.replace(before,after,1),'utf-8')
-            selected=core.selection(cases,profiles,specs)
+            selected=core.selection(cases,profiles,specs,case_filter)
             actual,cfg,_=core.run(selected,profiles,t/'wowtest.json')
             r=core.compare(selected,baseline,actual,profiles,cfg['components'],True)
             yes(r['status']=='difference','mutation was not detected as difference: '+str(r['summary']))
             fail=next(x for x in r['cases']if x['status']=='difference')
             return {'detected_cases':r['summary']['differences'],'first_case':fail['id'],'first_diff':fail['differences'][0]}
-    check('mutation_frozen_resource_capacity',lambda:mutation('capacity',"local max=UnitPowerMax('player',t);", "local max=UnitPowerMax('player',t); model.firstCapacity=model.firstCapacity or max; max=model.firstCapacity;",'259'))
-    check('mutation_stale_primary_type',lambda:mutation('type',"local pt,token=UnitPowerType('player');", "local pt,token=UnitPowerType('player'); model.firstType=model.firstType or pt;pt=model.firstType;",'259'))
-    check('mutation_double_shard_conversion',lambda:mutation('conversion',"UnitPower('player',7,true)/mod", "UnitPower('player',7,true)/mod/mod",'267'))
-    check('mutation_missing_sixth_rune',lambda:mutation('runes','r.nodes={};for i=1,6 do','r.nodes={};for i=1,5 do','250'))
-    check('mutation_missing_maxpower_event',lambda:mutation('event',"frame:RegisterEvent(event)","if event~='UNIT_MAXPOWER'then frame:RegisterEvent(event) end ",'259'))
+    check('mutation_frozen_resource_capacity',lambda:mutation('capacity',"local max=UnitPowerMax('player',t);", "local max=UnitPowerMax('player',t); model.firstCapacity=model.firstCapacity or max; max=model.firstCapacity;",'259','resource-cap-roundtrip'))
+    check('mutation_stale_primary_type',lambda:mutation('type',"local pt,token=UnitPowerType('player');", "local pt,token=UnitPowerType('player'); model.firstType=model.firstType or pt;pt=model.firstType;",'259','primary-type-roundtrip'))
+    check('mutation_double_shard_conversion',lambda:mutation('conversion',"UnitPower('player',7,true)/mod", "UnitPower('player',7,true)/mod/mod",'267','shards-raw-19'))
+    check('mutation_missing_sixth_rune',lambda:mutation('runes','r.nodes={};for i=1,6 do','r.nodes={};for i=1,5 do','250','rune-empty-cooldown-ready'))
+    check('mutation_missing_maxpower_event',lambda:mutation('event',"frame:RegisterEvent(event)","if event~='UNIT_MAXPOWER'then frame:RegisterEvent(event) end ",'259','primary-max-roundtrip'))
     def leaked_timer():
         with tempfile.TemporaryDirectory(prefix='wowtest-leak-')as tmp:
             t=pathlib.Path(tmp)
@@ -284,9 +306,10 @@ def selftest(report_path=None):
     check('source_audit_lexer',lexer)
     from reference.generate import generate
     def native_again():
-        out=generate(cases,profiles);yes(out==baseline,'native regeneration mismatch');return {'cases':len(out)}
-    check('native_method_regeneration_exact',native_again)
+        out=generate(representatives,profiles);expected=[b for b in baseline if b['id']in wanted];yes(out==expected,'native representative regeneration mismatch');return {'cases':len(out)}
+    check('native_representative_regeneration_exact',native_again)
     result={'status':'pass'if all(c['status']=='pass'for c in checks)else'fail','checks':len(checks),'passed':sum(c['status']=='pass'for c in checks),'results':checks,
+      'selected_case_count':len(representatives),'selected_resource_families':sorted(families),
       'environment':{'platform':platform.platform(),'python':sys.version.split()[0],'lua':backend()},'duration_seconds':round(time.perf_counter()-began,3),
       'not_executed':['Windows installation/runtime','Actual MYUI integration','Real WoW client/talents/Secret Values','Codex or Claude end-to-end autonomous onboarding']}
     # 落盘目标由调用方决定：默认写到系统临时目录，**不往技能目录里写受跟踪资产**

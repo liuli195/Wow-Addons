@@ -43,48 +43,53 @@ class SafetyTests(unittest.TestCase):
                 "  if row and row[0]==" + repr(phase) + ": os._exit(77)\n"
                 "def connect(*a,**k):\n k['factory']=CrashConnection\n return original(*a,**k)\nsqlite3.connect=connect\n")
 
-    def test_migration_every_committed_phase_and_post_publish_crash_are_replayable(self):
+    def test_migration_post_publish_crash_is_replayable(self):
         self.initialize()
-        for phase in ("reserved", "writing", "verified", "published", "sealed", "rename"):
-            with self.subTest(phase=phase):
-                identity, source = self.source(phase + "/native.json")
-                args = ("--artifact-id", identity, "--destination", str(self.root / ("target " + phase)))
-                plan = self.call("migration", *args)
-                setup = self.crash_on_phase(plan["operation_id"], phase)
-                if phase == "rename":
-                    setup = "import os\noriginal=os.replace\ndef replace(a,b,*args,**kwargs):\n original(a,b,*args,**kwargs)\n if 'target rename' in str(b): os._exit(77)\nos.replace=replace\n"
-                self.injected_call(setup, "migration", *args, "--approve-hash", plan["plan_hash"], expected=77)
-                recovered = self.call("migration", *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
-                self.assertEqual(Path(recovered["copies"][0]["path"]).read_bytes(), source.read_bytes())
-                self.assertEqual(self.call("migration", *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"]), recovered)
+        # 只保留真实发布后、日志提交前的恢复；阶段提交逻辑另用内存数据库验证。
+        identity, source = self.source("native.json")
+        destination = self.root / "target rename"
+        args = ("--artifact-id", identity, "--destination", str(destination))
+        plan = self.call("migration", *args)
+        self.assertFalse(destination.exists())
+        setup = "import os\noriginal=os.replace\ndef replace(a,b,*args,**kwargs):\n original(a,b,*args,**kwargs)\n if 'target rename' in str(b): os._exit(77)\nos.replace=replace\n"
+        self.injected_call(setup, "migration", *args, "--approve-hash", plan["plan_hash"], expected=77)
+        recovered = self.call("migration", *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+        self.assertEqual(recovered["operation_id"], plan["operation_id"])
+        self.assertEqual(recovered["phase"], "sealed")
+        self.assertTrue(source.exists())
+        self.assertEqual(Path(recovered["copies"][0]["path"]).read_bytes(), source.read_bytes())
+        resolved = self.call("resolve", "--artifact-id", identity, "--inspect")
+        self.assertEqual(resolved["artifact_id"], identity)
+        self.assertEqual(resolved["path"], recovered["copies"][0]["path"])
+        self.assertEqual(self.call("migration", *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"]), recovered)
 
-    def test_quarantine_and_recovery_committed_phases_and_post_move_crash(self):
+    def test_quarantine_and_recovery_post_move_crash_are_replayable(self):
         self.initialize()
-        identities = set()
-        for phase in ("reserved", "writing", "published", "sealed", "rename"):
-            identity, source = self.source("quarantine recovery " + phase + "/native.json")
-            self.assertNotIn(identity, identities)
-            identities.add(identity)
-            args = ("--artifact-id", identity)
-            for command in ("quarantine", "recover-quarantine"):
-                with self.subTest(phase=phase, command=command):
-                    plan = self.call(command, *args)
-                    setup = self.crash_on_phase(plan["operation_id"], phase)
-                    if phase == "rename":
-                        setup = ("import os\noriginal=os.fdopen\nclass ClosingCrash:\n"
-                                 " def __init__(self,h): self.h=h\n"
-                                 " def __getattr__(self,n): return getattr(self.h,n)\n"
-                                 " def __enter__(self): return self\n"
-                                 " def __exit__(self,*a):\n  self.h.close()\n  os._exit(77)\n"
-                                 "def fdopen(*a,**k): return ClosingCrash(original(*a,**k))\nos.fdopen=fdopen\n")
-                    self.injected_call(setup, command, *args, "--approve-hash", plan["plan_hash"], expected=77)
-                    result = self.call(command, *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
-                    self.assertEqual(result["operation_id"], plan["operation_id"])
-                    self.assertEqual(result["phase"], "sealed")
-                    self.assertEqual(result["items"][0]["artifact_id"], identity)
-                    self.assertEqual(Path(result["items"][0]["path"]).read_bytes(), b'{"test":"synthetic"}')
-                    self.assertEqual(self.call(command, *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"]), result)
-        self.assertEqual(len(identities), 5)
+        identity, source = self.source("quarantine recovery/native.json")
+        args = ("--artifact-id", identity)
+        setup = ("import os\noriginal=os.fdopen\nclass ClosingCrash:\n"
+                 " def __init__(self,h): self.h=h\n"
+                 " def __getattr__(self,n): return getattr(self.h,n)\n"
+                 " def __enter__(self): return self\n"
+                 " def __exit__(self,*a):\n  self.h.close()\n  os._exit(77)\n"
+                 "def fdopen(*a,**k): return ClosingCrash(original(*a,**k))\nos.fdopen=fdopen\n")
+        for command in ("quarantine", "recover-quarantine"):
+            with self.subTest(command=command):
+                plan = self.call(command, *args)
+                self.injected_call(setup, command, *args, "--approve-hash", plan["plan_hash"], expected=77)
+                result = self.call(command, *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
+                self.assertEqual(result["operation_id"], plan["operation_id"])
+                self.assertEqual(result["phase"], "sealed")
+                self.assertFalse(result["space_released"])
+                self.assertEqual(result["items"][0]["artifact_id"], identity)
+                self.assertEqual(Path(result["items"][0]["path"]).read_bytes(), b'{"test":"synthetic"}')
+                if command == "quarantine":
+                    self.assertFalse(source.exists())
+                    self.call("resolve", "--artifact-id", identity, "--inspect", expected=2)
+                else:
+                    self.assertEqual(source.read_bytes(), b'{"test":"synthetic"}')
+                    self.assertEqual(self.call("resolve", "--artifact-id", identity, "--inspect")["artifact_id"], identity)
+                self.assertEqual(self.call(command, *args, "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"]), result)
 
     def test_managed_volume_migration_copies_across_actual_volume_and_preserves_origin(self):
         self.initialize()
@@ -162,36 +167,6 @@ class SafetyTests(unittest.TestCase):
         self.assertTrue(self.call("protect", "--artifact-id", leaf)["protected"])
         self.call("quarantine", "--artifact-id", leaf, expected=2)
 
-    def test_migration_copies_and_verifies_before_selecting_a_new_location(self):
-        self.initialize()
-        identity, source = self.source()
-        destination = self.root / "migration target"
-        args = ("--artifact-id", identity, "--destination", str(destination))
-        plan = self.call("migration", *args)
-        self.assertFalse(destination.exists())
-        result = self.call("migration", *args, "--approve-hash", plan["plan_hash"])
-        self.assertEqual(Path(result["copies"][0]["path"]).read_bytes(), source.read_bytes())
-        resolved = self.call("resolve", "--artifact-id", identity, "--inspect")
-        self.assertEqual(resolved["path"], result["copies"][0]["path"])
-        self.assertTrue(source.exists())
-        self.assertEqual(resolved["artifact_id"], identity)
-
-    def test_quarantine_is_recoverable_and_does_not_release_physical_capacity(self):
-        self.initialize()
-        identity, source = self.source()
-        args = ("--artifact-id", identity)
-        plan = self.call("quarantine", *args)
-        result = self.call("quarantine", *args, "--approve-hash", plan["plan_hash"])
-        self.assertFalse(source.exists())
-        isolated = Path(result["items"][0]["path"])
-        self.assertEqual(isolated.read_bytes(), b'{"test":"synthetic"}')
-        self.assertFalse(result["space_released"])
-        self.call("resolve", "--artifact-id", identity, "--inspect", expected=2)
-        restore = self.call("recover-quarantine", *args)
-        self.call("recover-quarantine", *args, "--approve-hash", restore["plan_hash"])
-        self.assertEqual(source.read_bytes(), b'{"test":"synthetic"}')
-        self.assertEqual(self.call("resolve", "--artifact-id", identity, "--inspect")["artifact_id"], identity)
-
     def test_purge_requires_saved_current_plan_and_every_item_confirmation(self):
         self.initialize()
         identity, source = self.source()
@@ -240,26 +215,24 @@ class SafetyTests(unittest.TestCase):
         self.assertTrue(all(not path.exists() for path in paths))
         self.assertEqual(self.call("status")["registered_artifacts"], 2)
 
-    def test_purge_each_persistent_phase_and_delete_before_commit_recover(self):
+    def test_purge_delete_before_commit_is_replayable(self):
         self.initialize()
-        for phase in ("reserved", "writing", "published", "sealed", "deleted"):
-            with self.subTest(phase=phase):
-                identity, _ = self.source(phase + "/native.json")
-                plan, isolated, args = self.isolated_plan([identity], phase + " approval.json")
-                setup = self.crash_on_phase(plan["operation_id"], phase)
-                if phase == "deleted":
-                    # OS关闭排他句柄后崩溃；不是内部索引写入，也不增加测试专用产品开关。
-                    setup = ("import os\noriginal=os.fdopen\nclass ClosingCrash:\n"
-                             " def __init__(self,h): self.h=h\n"
-                             " def __getattr__(self,n): return getattr(self.h,n)\n"
-                             " def __enter__(self): return self\n"
-                             " def __exit__(self,*a):\n  self.h.close()\n  os._exit(77)\n"
-                             "def fdopen(*a,**k): return ClosingCrash(original(*a,**k))\nos.fdopen=fdopen\n")
-                self.injected_call(setup, "purge", *args, expected=77)
-                recovered = self.call("purge", *args)
-                self.assertEqual(recovered["purged"], [identity])
-                self.assertFalse(Path(isolated["items"][0]["path"]).exists())
-                self.assertEqual(self.call("purge", *args), recovered)
+        identity, _ = self.source("native.json")
+        plan, isolated, args = self.isolated_plan([identity])
+        # OS关闭排他句柄后崩溃；不是内部索引写入，也不增加测试专用产品开关。
+        setup = ("import os\noriginal=os.fdopen\nclass ClosingCrash:\n"
+                 " def __init__(self,h): self.h=h\n"
+                 " def __getattr__(self,n): return getattr(self.h,n)\n"
+                 " def __enter__(self): return self\n"
+                 " def __exit__(self,*a):\n  self.h.close()\n  os._exit(77)\n"
+                 "def fdopen(*a,**k): return ClosingCrash(original(*a,**k))\nos.fdopen=fdopen\n")
+        self.injected_call(setup, "purge", *args, expected=77)
+        recovered = self.call("purge", *args)
+        self.assertEqual(recovered["operation_id"], plan["operation_id"])
+        self.assertEqual(recovered["phase"], "sealed")
+        self.assertEqual(recovered["purged"], [identity])
+        self.assertFalse(Path(isolated["items"][0]["path"]).exists())
+        self.assertEqual(self.call("purge", *args), recovered)
 
     def test_changed_plan_content_cache_references_and_disk_full_refuse_safely(self):
         self.initialize()

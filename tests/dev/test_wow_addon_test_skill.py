@@ -147,23 +147,16 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"入口执行失败：{result.stderr[-400:]}")
         report = json.loads(result.stdout)
         self.assertEqual(report.get("data_integrity"), "pass")
-
-    def test_repo_pins_the_lua_backend(self):
-        """仓库自带的 Lua 必须真的被用上，而不是碰运气用机器上装的那个。"""
         self.assertTrue(REPO_LUA.is_file(), f"仓库自带的 Lua 缺失：{REPO_LUA}")
-        result = subprocess.run(
-            [sys.executable, str(ENTRY), "doctor", "--json"],
-            capture_output=True, text=True, encoding="utf-8", timeout=300,
-            env=skill_env(),
-        )
-        self.assertEqual(result.returncode, 0, f"入口执行失败：{result.stderr[-400:]}")
-        self.assertEqual(Path(json.loads(result.stdout)["lua"]["path"]), REPO_LUA,
+        self.assertEqual(Path(report["lua"]["path"]), REPO_LUA,
                          "实际使用的 Lua 不是仓库固定指定的那个")
 
-    def test_agent_facing_output_stays_within_budget(self):
-        """给代理看的输出有大小上限；超限必须**显式标注缩裁**，不能悄悄丢内容。"""
+    def test_catalog_preview_and_full_result(self):
+        """一次真实目录查询同时验证缩裁、计数及完整结果可达。"""
+        target = ROOT / ".local" / "tests" / "wow-addon-test" / "catalog-full.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
-            [sys.executable, str(ENTRY), "catalog", "--json"],
+            [sys.executable, str(ENTRY), "catalog", "--json", "--output", str(target)],
             capture_output=True, text=True, encoding="utf-8", timeout=300, env=skill_env(),
         )
         self.assertEqual(result.returncode, 0, f"入口执行失败：{result.stderr[-400:]}")
@@ -172,48 +165,14 @@ class SkillLayoutTest(unittest.TestCase):
         report = json.loads(result.stdout)
         self.assertTrue(report.get("details_truncated"), "缩裁没有被显式标注")
         self.assertEqual(report.get("budget_bytes"), OUTPUT_BUDGET, "未报出预算值")
-
-    def test_truncated_output_says_how_much_was_left_out(self):
-        """缩裁必须报出「少了几条」，代理才知道要不要去取完整结果。"""
-        result = subprocess.run(
-            [sys.executable, str(ENTRY), "catalog", "--json"],
-            capture_output=True, text=True, encoding="utf-8", timeout=300, env=skill_env(),
-        )
-        report = json.loads(result.stdout)
         preview = report["profiles"]
         omitted = [item for item in preview if isinstance(item, dict) and "omitted" in item]
-        self.assertEqual(len(omitted), 1, f"缩裁未报出省略条数：{preview[-1]!r}")
-        self.assertEqual(len(preview) - 1 + omitted[0]["omitted"], 40, "省略条数与专精总数不符")
-
-    def test_full_result_is_reachable_past_the_budget(self):
-        """屏幕上被截掉的内容必须另有去处——否则就是静默丢数据。"""
-        target = ROOT / ".local" / "tests" / "wow-addon-test" / "catalog-full.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            [sys.executable, str(ENTRY), "catalog", "--json", "--output", str(target)],
-            capture_output=True, text=True, encoding="utf-8", timeout=300, env=skill_env(),
-        )
-        self.assertEqual(result.returncode, 0, f"入口执行失败：{result.stderr[-400:]}")
+        self.assertEqual(len(omitted), 1, "缩裁未报出省略条数")
+        self.assertEqual(len(preview) - 1 + omitted[0]["omitted"], 40,
+                         "省略条数与专精总数不符")
         full = json.loads(target.read_text(encoding="utf-8"))
         self.assertEqual(len(full["profiles"]), 40, "完整结果里专精数不对")
         self.assertNotIn("details_truncated", full, "落盘的完整结果不应被缩裁")
-
-    def test_reference_check_saves_full_result_beyond_output_budget(self):
-        """参考基线复核的完整比较结果必须可取回，不能只剩屏幕预览。"""
-        target = ROOT / ".local" / "tests" / "wow-addon-test" / "reference-check-full.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            [sys.executable, str(ENTRY), "reference-check", "--json", "--output", str(target)],
-            capture_output=True, text=True, encoding="utf-8", timeout=600, env=skill_env(),
-        )
-        self.assertEqual(result.returncode, 0, f"参考基线复核失败：{result.stderr[-600:]}")
-        self.assertLessEqual(len(result.stdout.encode("utf-8")), OUTPUT_BUDGET,
-                             "参考基线复核的屏幕输出超出预算")
-        full = json.loads(target.read_text(encoding="utf-8"))
-        self.assertEqual(full["summary"]["cases"], 846, "完整参考复核缺少用例")
-        self.assertEqual(full["summary"]["compared_checkpoints"], 1613,
-                         "完整参考复核缺少检查点")
-        self.assertNotIn("details_truncated", full, "落盘的完整参考复核不应被缩裁")
 
     def test_budget_holds_when_field_count_is_large(self):
         """**字典的键数不受条数限制约束**：字段一多，裁剪一次照样能超出预算。

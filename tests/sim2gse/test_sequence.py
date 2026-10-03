@@ -33,27 +33,6 @@ def imported_sequence(name, actions):
 
 
 class SequenceSimulationTests(unittest.TestCase):
-    def test_castsequence_idle_timeout_restarts_first_member(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        program = from_search_program([
-            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"],
-             "reset": {"timeout_seconds": 2, "flags": []}},
-        ], capabilities)
-        with tempfile.TemporaryDirectory(prefix="castsequence-timeout-") as directory:
-            root = Path(directory)
-            candidate = compile_program(program, root / "export", identity=native["identity"],
-                                        capabilities=capabilities)
-            result = evaluate(source, candidate, root / "controlled", character=character,
-                              iterations=1, input_times=[0, 3000, 6000, 9000, 12000])
-        executions = [event for event in result["trace"]
-                      if event["event"] == "native_execute"
-                      and event["action"] in {"festering_strike", "scourge_strike"}]
-        self.assertGreaterEqual(len(executions), 2, result["trace"])
-        self.assertEqual([event["action"] for event in executions[:2]],
-                         ["festering_strike", "festering_strike"])
-
     def test_castsequence_timeout_refreshes_on_repeated_use(self):
         from program import compile_program, from_search_program
 
@@ -153,14 +132,13 @@ class SequenceSimulationTests(unittest.TestCase):
 
         source, character, native, capabilities = self.prepared
         cases = [
-            ('target', ['target'], 4500), ('combat', ['combat'], 4500),
-            ('shift', ['shift'], 9000), ('ctrl', ['ctrl'], 9000),
-            ('alt', ['alt'], 9000), ('death', [], 4500),
-            ('combined', ['target', 'shift'], 4500),
+            ('target', ['target'], 4500),
+            ('shift', ['shift'], 9000),
+            ('death', [], 4500),
         ]
         for event_kind, flags, at in cases:
             with self.subTest(event=event_kind):
-                reset = ({"timeout_seconds": 30 if event_kind == 'combined' else None,
+                reset = ({"timeout_seconds": None,
                           "flags": flags} if flags else None)
                 program = from_search_program([
                     {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"],
@@ -172,7 +150,7 @@ class SequenceSimulationTests(unittest.TestCase):
                                                 capabilities=capabilities)
                     result = evaluate(source, candidate, root / "controlled", character=character,
                                       iterations=1, input_times=[0, 3000, 6000, 9000, 12000],
-                                      reset_events=[(at, event_kind if event_kind != 'combined' else 'target')])
+                                      reset_events=[(at, event_kind)])
                 executions = [event for event in result["trace"]
                               if event["event"] == "native_execute"
                               and event["action"] in {"festering_strike", "scourge_strike"}]
@@ -631,19 +609,18 @@ class SequenceSimulationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             candidate, source, character = self.candidate(
                 self.prepared, [['dark_transformation'], ['outbreak']])
-            for failure_at in (1501, 1502):
-                with self.subTest(failure_at=failure_at):
-                    simulation = evaluate(
-                        source, candidate, Path(directory) / f'immediate-rejection-{failure_at}',
-                        character=character, iterations=2,
-                        input_times=[0, 1500, 1600],
-                        failure_events=[(failure_at, 2, 'dark_transformation')])
-                    events = simulation['trace']
-                    self.assertTrue(any(e['event'] == 'observed_failed' and e['ms'] == failure_at
-                                        and e['origin'] == 2 for e in events), events)
-                    self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 2
-                                         for e in events), events)
-                    self.assertFalse(any(e['event'] == 'late_negative_feedback' for e in events), events)
+            failure_at = 1501
+            simulation = evaluate(
+                source, candidate, Path(directory) / f'immediate-rejection-{failure_at}',
+                character=character, iterations=2,
+                input_times=[0, 1500, 1600],
+                failure_events=[(failure_at, 2, 'dark_transformation')])
+            events = simulation['trace']
+            self.assertTrue(any(e['event'] == 'observed_failed' and e['ms'] == failure_at
+                                and e['origin'] == 2 for e in events), events)
+            self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 2
+                                 for e in events), events)
+            self.assertFalse(any(e['event'] == 'late_negative_feedback' for e in events), events)
 
     def test_long_delayed_failure_is_not_hidden_by_execution_grace(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -756,14 +733,16 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def test_phase_reset_and_replay(self):
         program = [['outbreak'], ['scourge_strike']]
-        first = self.task(program, phase_ms=150, iterations=100)['controlled_simulation']
-        second = self.task(program, phase_ms=150, iterations=100)['controlled_simulation']
+        first = self.task(program, phase_ms=150, iterations=2)['controlled_simulation']
+        second = self.task(program, phase_ms=150, iterations=2)['controlled_simulation']
         inputs = [e for e in first['trace'] if e['event'] == 'input']
         self.assertEqual(inputs[0]['ms'], 150)
         self.assertTrue(all(e['step'] == 0 and e['ms'] == 150 for e in inputs if e['origin'] == 1))
         self.assertEqual(first['trace'], second['trace'])
         self.assertEqual(first['report']['sim']['players'], second['report']['sim']['players'])
-        self.assertEqual(first['summary']['samples'], 99)
+        self.assertEqual(first['summary']['samples'], 1)
+        self.assertEqual(first['input_times'], list(range(150, 180000, 300)))
+        self.assertEqual({e['battle'] for e in inputs if e['origin'] == 1}, {0, 1})
 
     def test_disabled_controller_matches_original(self):
         with tempfile.TemporaryDirectory() as directory:

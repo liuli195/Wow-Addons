@@ -97,26 +97,27 @@ class ArchiveTests(unittest.TestCase):
         restored = self.restore_archive(archived, self.root / "boundary restored")
         self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in restored["restored"]}, values)
 
-    def test_empty_archive_with_one_thousand_members_and_restore_preview(self):
+    def test_empty_members_use_a_small_real_batch_and_keep_id_count_guard(self):
         self.initialize()
-        self.policy["capacity_bytes"] = 2 * 1024 * 1024 * 1024
+        self.policy["capacity_bytes"] = 32 * 1024 * 1024
         self.save_config()
-        identities = self.batch_sources("empty members", {"empty-%04d.bin" % number: b"" for number in range(1000)})
-        arguments_file = Path(self.temporary.name) / "many public CLI arguments.json"
-        setup = "import sys,json\nfrom pathlib import Path\nsys.argv.extend(json.loads(Path(" + repr(str(arguments_file)) + ").read_text()))"
-        # Windows进程参数最多32767字符；仍经同一公开CLI parser读取完整1000成员请求。
-        arguments_file.write_text(json.dumps([argument for identity in identities + [identities[0]] for argument in ("--artifact-id", identity)]))
-        self.injected_call(setup, "archive", expected=2)
-        arguments_file.write_text(json.dumps([argument for identity in identities for argument in ("--artifact-id", identity)]))
-        plan = self.injected_call(setup, "archive")
-        archived = self.injected_call(setup, "archive", "--approve-hash", plan["plan_hash"])
+        identities = self.batch_sources("empty members", {"empty-%02d.bin" % number: b"" for number in range(8)})
+        # 只测1000/1001参数边界，不把内存索引冒充1000文件集成。
+        with sqlite3.connect(":memory:") as db:
+            db.execute("CREATE TABLE artifacts(id TEXT PRIMARY KEY)")
+            namespace = self._main.__globals__
+            with self.assertRaisesRegex(namespace["DataError"], "未知对象ID"):
+                namespace["archive_sources"](self.root, db, [str(number) for number in range(1000)])
+            for ids in ([str(number) for number in range(1001)], ["duplicate", "duplicate"]):
+                with self.assertRaisesRegex(namespace["DataError"], "1至1000个不同"):
+                    namespace["archive_sources"](self.root, db, ids)
+        archived = self.archive(*identities)
         manifest = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
         self.assertEqual(len(manifest["parts"]), 1)
-        self.assertEqual(len(manifest["parts"][0]["members"]), 1000)
+        self.assertEqual(len(manifest["parts"][0]["members"]), 8)
         self.assertTrue(all(member["size"] == 0 for member in manifest["parts"][0]["members"]))
-        # 1000文件另有一层来源目录，超过既有恢复产品1000目录项上限；不放宽该上限。
         preview = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(self.root / "empty restored"))
-        self.assertEqual(len(preview["manifest"]["sources"]), 1000)
+        self.assertEqual(len(preview["manifest"]["sources"]), 8)
         self.assertTrue(all(member["sha256"] == hashlib.sha256(b"").hexdigest() for member in manifest["parts"][0]["members"]))
 
     def test_later_member_interruption_retains_completed_and_partial_parts_before_retry(self):
@@ -716,21 +717,23 @@ class ArchiveTests(unittest.TestCase):
             self.assertLessEqual(logical_bytes + pending_bytes + self.policy["maintenance_reserve_bytes"]
                                  + self.policy["metadata_reserve_bytes"], self.policy["capacity_bytes"])
 
-    def test_000_large_legal_restore_plan_is_admitted_before_any_metadata_write(self):
+    def test_long_path_batch_and_large_manifest_preserve_data_on_recovery(self):
         self.initialize()
         self.policy["capacity_bytes"] = 1024 * 1024 * 1024
         self.save_config()
         prefix = "/".join(["nested " + "x" * 180] * 12)
         directory = self.root / prefix
         directory.mkdir(parents=True)
-        for number in range(220):
-            (directory / ("native-%03d.json" % number)).write_bytes(b"{}")
+        values = {"native-%03d.json" % number: json.dumps({"sample": number}).encode() for number in range(3)}
+        for name, value in values.items():
+            (directory / name).write_bytes(value)
         preview = self.call("legacy-register", "--directory", str(directory), "--role", "native")
         registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
                                "--approve-hash", preview["plan_hash"])
-        self.assertEqual(len(registered["artifacts"]), 220)
+        self.assertEqual(len(registered["artifacts"]), 3)
         identities = [item["artifact_id"] for item in registered["artifacts"]]
-        archived = self.archive(*identities)
+        archived = self.archive(*reversed(identities))
+        self.assertEqual([item["id"] for item in json.loads(Path(archived["manifest_path"]).read_text())["sources"]], sorted(identities))
         arguments = ("--archive-id", archived["archive_id"], "--destination", str(self.root / "large restore"))
         extended = json.loads(Path(archived["manifest_path"]).read_text(encoding="utf-8"))
         encoded = json.dumps(extended, ensure_ascii=False, separators=(",", ":")).encode()
@@ -738,14 +741,15 @@ class ArchiveTests(unittest.TestCase):
         _, extended_path = self.source("extended-801KiB.json", json.dumps(extended, ensure_ascii=False, separators=(",", ":")).encode())
         measured = self.call("inventory", "--limit", "1000")
         self.assertFalse(measured["truncated"])
-        self.policy["capacity_bytes"] = measured["logical_bytes"] + self.policy["maintenance_reserve_bytes"] + self.policy["metadata_reserve_bytes"] + 600000
+        self.policy["capacity_bytes"] = measured["logical_bytes"] + self.policy["maintenance_reserve_bytes"] + self.policy["metadata_reserve_bytes"] + 32768
         self.save_config()
         for rejected in (arguments, ("--manifest", str(extended_path), "--destination", str(self.root / "extended restore"))):
             plan = self.call("restore", *rejected)
             self.assertGreater(plan["metadata_peak_bytes"], len(json.dumps(plan["manifest"]).encode()))
             before = self.call("inventory", "--limit", "1000")["logical_bytes"]
             database_before = hashlib.sha256((self.root / "index.sqlite3").read_bytes()).hexdigest()
-            self.call("restore", *rejected, "--approve-hash", plan["plan_hash"], expected=2)
+            self.assertGreater(plan["reserved_bytes"], 32768)
+            self.assertIn("容量", self.call("restore", *rejected, "--approve-hash", plan["plan_hash"], expected=2)["error"])
             self.assertLessEqual(self.call("inventory", "--limit", "1000")["logical_bytes"], before)
             self.assertEqual(hashlib.sha256((self.root / "index.sqlite3").read_bytes()).hexdigest(), database_before)
             self.call("operation", "--operation-id", plan["operation_id"], expected=2)
@@ -763,8 +767,8 @@ class ArchiveTests(unittest.TestCase):
                 result = self.call("restore", "--operation-id", plan["operation_id"], "--approve-hash", plan["plan_hash"])
                 self.assertEqual(result["operation_id"], plan["operation_id"])
                 self.assertEqual(result["phase"], "sealed")
-                self.assertEqual(len(result["restored"]), 220)
-                self.assertTrue(all(Path(item["path"]).read_bytes() == b"{}" for item in result["restored"]))
+                self.assertEqual(len(result["restored"]), 3)
+                self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes() for item in result["restored"]}, values)
                 # 仅清理本测试新建的Temp恢复副本，让有界盘点逐阶段保持完整。
                 self.assertTrue(target.resolve().is_relative_to(self.root.resolve()))
                 shutil.rmtree(target)

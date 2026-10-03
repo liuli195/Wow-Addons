@@ -15,7 +15,7 @@
     ]
   },
   "verify": {
-    "maxParallel": 3,
+    "maxParallel": 4,
     "fullBudgetSeconds": 60,
     "checks": [
       {
@@ -53,7 +53,7 @@
         "id": "verify.sim2gse-data",
         "command": ".venv\\Scripts\\python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal",
         "checkParallel": true,
-        "pytestXdistWorkers": 12,
+        "pytestXdistWorkers": 4,
         "paths": [
           ".agents/skills/sim2gse-data/**",
           "tests/sim2gse-data/**",

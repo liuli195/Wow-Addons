@@ -55,31 +55,19 @@ Status: ready-for-agent
 
 ## Testing Decisions
 
-2026-10-03云端事实准备复用：现有LifecycleTests提供同一公开call_main，每个测试实例仅加载一次main；initialize和事实compare/register/legacy-register/extract复用。每次恢复argv/stdout/stderr，无全局main共享；首个72事实extract、完整版本轴compare及字节query/export/snapshot保留真子进程，其他安全故障与真实恢复不变。明确减少重复进程隔离交叉，不声称等价；不增加生产接口或测试框架，112项发现保持。
+2026-10-03最新用户明确授权替代此前固定测试规模/次数要求：按真实频率、影响、重复覆盖和成本精简整个Wow仓测试，纯逻辑直接内存调用，复用现有两层并行；禁止改动验证技能/跨仓运行器。旧数量和全部交叉不是不可改变契约。下面为当前候选测试要求，历史失败及旧规模证据留在docs/sim2gse，不改写。
 
-2026-10-03 本轮最小进程内迁移：现有 initialize 夹具只用局部 runpy 加载同一公开 main，真实执行预览及批准、解析退出码和JSON、保存并恢复sys.argv/stdout/stderr；不新增共享框架，不伪造文件/预算/SQLite。普通facts比较同样调用公开main，登记、提取、字节边界query/export/snapshot、故障注入及路径/容量/锁代表仍为真实CLI进程，保留一个完整compare CLI代表。明确减少重复建根和业务比较的Python启动/PID退出交叉，不能声称进程隔离覆盖等价；1000实际空文件和220深路径来源本批不变。
+- 生产1000来源/成员与1MiB清单等限制不变。空成员用8个真实文件验证写包/摘要/恢复预览；1000允许进入下一对象校验、1001及重复ID拒绝仅用内存SQLite测参数逻辑，不声称完成1000文件集成。
+- 真实长路径批次用3份不同内容，保留12层长路径、逆序输入后稳定排序、801KiB清单、普通与扩展清单低容量拒绝且不写索引/临时区，以及verified中断后原operation恢复、封口和原字节。撤掉220来源规模交叉，不以小样声称规模上限验收。
+- 事实转换、比较、查询与JSON字节界限使用直接函数或既有进程内入口；单纯进程内CLI仍有真实文件/SQLite时明确这样报告，不叫纯内存。16KiB/1MiB精确边界及非有限值直接内存验证，删除72份大反馈事实的重复准备。来源SHA/上下文绑定、快照不可变及源变化拒绝仍留少量真实文件。
+- 真实故障恢复保留能判别数据丢失的rename/delete-before-commit与幂等代表，阶段记录/日志提交/封口预留核销直接用内存SQLite。删掉同机制不同阶段的重复真实CLI组合，明确不声称与旧全阶段集成覆盖等价。
+- 完整/增量盘点保留未知字节计账、跨多页、游标变化拒绝、增长/截断竞态及未知链接拒绝；实体文件用少量样本，纯流式遍历使用严格单遍小生成器检测禁止物化、活条目峰值和关闭，不以固定56万对象/32MiB阈值作为当前验收。
+- 产品位置/起点/反馈、导入检查、基准汇总等逻辑直接调用既有生产函数；删重复职业成功冒烟和重复任务启动。原生控制器不能在内存调用的独有重置分支保留最少真实代表；确定性重放用两次各2迭代，仍要求非空真实轨迹、两轮重置、同种子一致且不同种子有判别力，不改产品默认迭代数。
+- HUD正常实际适配结果复用一次，反例使用独立deepcopy，保留实际错误注入；资源例按10行为家族及独有分支保留明确代表，不把43代表动态检查叫全846验收。资产全量完整性/身份结构不删，参考/生产算法不伪造。
+- 注解语法复用单次真实Lua5.1逐文件检查，仍覆盖全部产出且任一错误非零；不能用Lua5.4诊断替代5.1验收。构建/语法/资料解析的重复启动与产出验证按已有能力合并，不造新框架。
+- 每项删减/合并准确记录覆盖映射与减少的实际启动、文件和模拟次数，并以缺陷变体核逻辑检查仍有效。最后同最终SHA运行所有当前登记检查及自动发现的测试，正式端到端60秒保持，Linux定向/诊断/缓存/未运行不可冒充Windows完整通过。
 
-2026-10-03 用户明确授权删除不必要、重复测试，经云端独立 ROI（投入收益）审查，删除五个 archive 独立用例：deep_path_resolution_checks_ancestors_without_quadratic_rechecks、batch_archive_preview_reuses_its_index_connection、archive_package_and_restored_file_do_not_repeat_owned_path_scans、approved_restore_reads_its_plan_once_under_the_write_lock 的内部调用次数约束不再作为验收契约；long_windows_paths_restore_without_materializing_absolute_tar_members 的单文件4×70长路径组合由220来源12×180深路径真实归档/恢复及原字节核验接替。保留1000真实空成员、56万条目内存边界、72事实字节上限、普通五阶段、损坏包、重解析点、锁后源变化、容量竞态和破坏性恢复。
-
-facts 的 ambiguous_dot_keys_cannot_hide_condition_changes 删除，literal/nested 点号碰撞和转义变化轴由 real_rule_path_keys_compare_and_escaped_literal_dot_axes_are_distinct 覆盖；incomplete_search_comparison_does_not_claim_complete_validation 删除，validation_complete=False 与 left:complete/right:incomplete 的状态断言合并进 complete_search_summary_is_comparable_only_with_recorded_completion_evidence 首个拒绝变体。明确移除的是双方同时未完成的交叉组合，保留六种不完整变体的拒绝与delta缺失，独立验证完成与搜索完成不可混为一谈。
-
-CLI 的 parent_components_cannot_hide_a_junction、status_rejects_a_link_at_the_known_index_endpoint 所有拒绝断言并入 install_preview_apply_and_both_agent_entries_share_one_skill，先完成两Agent入口及两种上级路径拒绝，最后才将同一临时junction改名index.sqlite3并验证拒绝，减少两套复制/安装准备，不增加共享夹具框架。仅测试变化，不改产品、正式规格或生产策略；必要受影响验证和唯一60秒正式统一结果据实记录，推送拒绝不绕过。
-
-最新单点72事实提取准备：72真实文件及公开batch register保留，首个extract真子进程，余71用局部标准库runpy加载公开main一次并逐次sys.argv/stdout/stderr调用同一parser/main；每次真实配置/SHA/锁/容量/独立SQLite事务不改，断言exit0/changedTrue及72唯一fact IDs。query/export/snapshot仍真子进程，两处拒绝明确固定字节边界。真实CLI79→8，明确减少71重复启动/PID退出cleanup交叉，不声称与进程隔离覆盖等价；无生产batch接口/共享框架，1000成员边界不改。
-
-事实准备复用仅限6类型/8完成证据/5路径轴组：各组公开legacy-register一次预览一次批准，19次extract及全部原compare断言逐项保留，减少32次准备CLI；72事实真实字节边界及Safety未知引用不改，72提取准备仅依前述最新单点授权。过期purge复用isolated_plan原计划，现有injected_call只替换time.time：首次批准及77故障在expires-1，此后全部相关CLI在expires+1，显式断言过期错误、续批created和300秒期限；reserved/published、保护变更、文件重现、最终结果保持，去两次2.1秒等待及重复preview，不引入新fakeclock框架，真实心跳1.05秒仍保留。
-
-隔离/恢复阶段夹具复用：每个reserved/writing/published/sealed/rename阶段分别fresh登记一个来源，先做quarantine注错/恢复/幂等，再对该已隔离对象做recover-quarantine同阶段注错/恢复/幂等；五阶段共五个不同ID，十个阶段×命令故障组合、rename后77和原字节全部保留。准备CLI72→52、setup jobs15→10，减少每阶段第二来源及重复正常隔离准备；这是准备结构变化，非删除故障覆盖，生产custody/预算逻辑不改。
-
-同一批准下进一步减少“56万规模×低容量拒绝/足额准入”的两条交叉：56万逐条独立合成对象保留一次complete盘点、完整573440000字节计数、未截断及32MiB峰值检测，不复用同一假对象、不关闭tracemalloc。低容量拒绝和足额准入由同文件2400实体未知文件用例继续覆盖，并断言足额准入返回精确预留；增长和截断竞态保持。减少交叉不声称与原组合等价。
-
-最高公开接缝为同一CLI，TDD（测试驱动开发）经退出码/输出/文件及索引状态验证，不绕过锁或审批直接调用私有删除。仓库测试登记统一验证，整套验收端到端硬预算60秒，目标30–40秒；未经用户批准不能删覆盖、提高预算或将缓存/未运行冒充全量通过。用户明确批准 Sentinel_1a4a1203b51c8191b11fcdff1bff695b 的覆盖矩阵取舍：保留220源文件、12层深路径、801KiB大清单及两次紧容量拒绝不写DB/staging的全部断言，大规模恢复仅保留verified持久阶段中断77→原operation恢复0→sealed并逐字节校验220文件；普通规模同根、同index、同archive的五阶段全部保留，并断言原operation ID、sealed及返回数量。明确减少四条“大规模×不同中断点”覆盖及恢复位置累积历史1100→220的交叉覆盖，不声称等价；生产实现、安全预算不改。
-
-批准归档/恢复/一致性备份在现有写锁内重核当前计划并匹配批准摘要，不缓存锁外清单作为执行证据；同批读取可借用当前索引连接，不能跨操作或持久缓存替代核验。复制读取保留原先直接和传递活动锁/运行/读者租约阻止语义；保护查询、迁移、隔离及删除仍计算完整持久/未知依赖。阶段提交后的产品身份、成员和原始摘要重核不得为性能删除。
-
-隔离合成根覆盖全部命令、不同cwd及两代理共用入口、空格/中文/长路径、链接/越界/覆盖/跨卷；并发锁与预留、持久依赖及加速撤销、PID复用/陈旧lease/runner字节锁；损坏包/穿越/链接/膨胀/恢复SHA、WAL备份、每阶段中断重试幂等、计划后变化、磁盘不足、同卷隔离；事实幂等/缺失/失败/删失/样本/误差、有界查询/变化轴/快照复现。
-
-正式构建与固定基线验证按统一技能，失败、缺依赖、跳过分别报告，不冒充通过。真实历史可只读小样本，不写回；本次不运行游戏验收。
+正式规格当前“不得减少测试或模拟次数”等旧条款与最新授权冲突，候选修正仅放.local/spec-work，门禁二确认后再应用myspec/specs；本实施阶段不提前修改正式规格、合并上线或真实历史数据。
 
 ## Out of Scope
 

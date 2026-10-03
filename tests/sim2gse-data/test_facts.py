@@ -1,4 +1,4 @@
-"""事实、比较及快照的公开CLI回归；仅使用隔离合成数据。"""
+"""事实逻辑在进程内验证；来源绑定与快照保留少量真实合成文件检查。"""
 import hashlib
 import json
 import unittest
@@ -12,9 +12,7 @@ class FactTests(unittest.TestCase):
     initialize = lifecycle.LifecycleTests.initialize
 
     def call(self, command, *arguments, expected=0):
-        if command in ("compare", "register", "legacy-register", "extract"):
-            return lifecycle.LifecycleTests.call_main(self, command, *arguments, expected=expected)
-        return lifecycle.LifecycleTests.call(self, command, *arguments, expected=expected)
+        return lifecycle.LifecycleTests.call_main(self, command, *arguments, expected=expected)
 
     def source(self, name, value):
         path = self.root / name
@@ -102,7 +100,7 @@ class FactTests(unittest.TestCase):
         left = self.extracted("left.json", self.batch())
         right = self.extracted("right.json", self.batch(version="v2", dps=110))
         args = ("--left", left, "--right", right, "--axis", "condition.engine.controlled.version")
-        comparison = lifecycle.LifecycleTests.call(self, "compare", *args)
+        comparison = self.call("compare", *args)
         self.assertTrue(comparison["comparable"])
         self.assertEqual(comparison["delta_dps"], 10)
         self.assertIsNone(comparison["delta_confidence_interval"])
@@ -217,30 +215,6 @@ class FactTests(unittest.TestCase):
         self.assertEqual(observations["action_sequence"], {"artifact_id": source, "entries": 1,
                                                           "json_pointer": "/sim/players/0/collected_data/action_sequence"})
         self.assertIsNone(observations["probabilities"])
-
-    def test_output_byte_bound_refuses_large_query_and_snapshot(self):
-        self.initialize()
-        directory = self.root / "large facts"
-        directory.mkdir()
-        for number in range(72):
-            (directory / f"large-{number}.json").write_text(
-                json.dumps(self.batch(feedback={"recorded": "x" * 14000}), ensure_ascii=False), encoding="utf-8")
-        preview = self.call("legacy-register", "--directory", str(directory), "--role", "native")
-        registered = self.call("legacy-register", "--directory", str(directory), "--role", "native",
-                               "--approve-hash", preview["plan_hash"])
-        self.assertEqual(len(registered["artifacts"]), 72)
-        first = lifecycle.LifecycleTests.call(self, "extract", "--artifact-id", registered["artifacts"][0]["artifact_id"])
-        self.assertTrue(first["changed"])
-        ids = [first["fact_id"]]
-        for item in registered["artifacts"][1:]:
-            extracted = self.call("extract", "--artifact-id", item["artifact_id"])
-            self.assertTrue(extracted["changed"])
-            ids.append(extracted["fact_id"])
-        self.assertEqual(len(set(ids)), 72)
-        self.assertIn("固定字节边界", self.call("query", "--limit", "100", expected=2)["error"])
-        self.assertEqual(len(self.call("export", "--limit", "1")["rows"]), 1)
-        arguments = [argument for identity in ids for argument in ("--fact-id", identity)]
-        self.assertIn("固定字节边界", self.call("snapshot", *arguments, expected=2)["error"])
 
     def production_batch(self, program="death_strike", seed=7, dps=100):
         # 按search.py1270—1325的实际记录结构，不加入condition_details或fidelity。
@@ -390,6 +364,23 @@ class FactTests(unittest.TestCase):
         escaped = "condition.rules.D%3A%5CMy%20Project%5CWow%20Addons%5Cprojects%5Csim2gse%5Ctask%2Epy"
         self.assertTrue(self.call("compare", "--left", left, "--right", changed,
                                  "--axis", "condition.engine.controlled.version", "--axis", escaped)["comparable"])
+
+
+
+
+
+class FactJsonLogicTests(unittest.TestCase):
+    def test_json_byte_bound_and_nonfinite_values_are_checked_in_memory(self):
+        import runpy
+        namespace = runpy.run_path(str(lifecycle.CLI))
+        compact = namespace["compact_json"]
+        for maximum in (namespace["FACT_BYTES"], namespace["QUERY_BYTES"]):
+            for text in ("x" * (maximum - 2), "汉" * ((maximum - 2) // 3) + "x" * ((maximum - 2) % 3)):
+                self.assertEqual(len(compact(text, maximum).encode()), maximum)
+                with self.assertRaisesRegex(namespace["DataError"], "固定字节边界"):
+                    compact(text + "x", maximum)
+        with self.assertRaisesRegex(namespace["DataError"], "非有限"):
+            compact(float("nan"), namespace["FACT_BYTES"])
 
 
 if __name__ == "__main__":

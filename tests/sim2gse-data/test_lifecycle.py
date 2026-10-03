@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 
 
 CLI = Path(__file__).resolve().parents[2] / ".agents/skills/sim2gse-data/scripts/simdata.py"
@@ -120,8 +121,12 @@ class LifecycleTests(unittest.TestCase):
         self.call("lease", "--run-id", run_id, "--action", "recover", "--approve-hash", plan["plan_hash"])
         self.assertEqual(self.call("status")["reserved_bytes"], 0)
 
-    def test_release_and_dead_owner_recovery_work_when_inventory_or_quota_is_exceeded(self):
+    def test_release_and_dead_owner_recovery_do_not_need_inventory_or_quota_headroom(self):
         self.initialize()
+        def unavailable_inventory(folder):
+            return ("import os\noriginal=os.scandir\ndef scandir(path):\n"
+                    " if str(path)==" + repr(str(folder)) + ": raise PermissionError('inventory unavailable')\n"
+                    " return original(path)\nos.scandir=scandir\n")
         for number, oversized in enumerate((False, True)):
             with self.subTest(oversized=oversized):
                 owner = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
@@ -131,10 +136,10 @@ class LifecycleTests(unittest.TestCase):
                     payload = folder / "large.json"
                     payload.write_bytes(b"x" * self.policy["capacity_bytes"])
                 else:
-                    for index in range(1001):
+                    for index in range(3):
                         (folder / f"{index}.json").touch()
                 try:
-                    self.call("lease", "--run-id", begun["run_id"], "--token", begun["token"], "--action", "release")
+                    self.injected_call(unavailable_inventory(folder), "lease", "--run-id", begun["run_id"], "--token", begun["token"], "--action", "release")
                     self.assertEqual(self.call("status")["reserved_bytes"], 0)
                 finally:
                     owner.communicate(timeout=10)
@@ -148,13 +153,13 @@ class LifecycleTests(unittest.TestCase):
                 if oversized:
                     (second_folder / "large.json").write_bytes(b"x" * self.policy["capacity_bytes"])
                 else:
-                    for index in range(1001):
+                    for index in range(3):
                         (second_folder / f"{index}.json").touch()
                 dead_owner.communicate(timeout=10)
-                preview = self.call("lease", "--run-id", second["run_id"], "--action", "recover-preview")
-                self.call("lease", "--run-id", second["run_id"], "--action", "recover", "--approve-hash", preview["plan_hash"])
+                preview = self.injected_call(unavailable_inventory(second_folder), "lease", "--run-id", second["run_id"], "--action", "recover-preview")
+                self.injected_call(unavailable_inventory(second_folder), "lease", "--run-id", second["run_id"], "--action", "recover", "--approve-hash", preview["plan_hash"])
                 self.assertEqual(self.call("status")["reserved_bytes"], 0)
-                self.assertTrue((second_folder / ("large.json" if oversized else "1000.json")).exists())
+                self.assertTrue((second_folder / ("large.json" if oversized else "2.json")).exists())
                 for path in second_folder.glob("*.json"):
                     if path.name != ".run-id.json":
                         path.unlink()
@@ -385,6 +390,66 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(safety["last_used"], last_used)
         self.assertEqual(database.read_bytes(), original)
         self.assertEqual(native.read_bytes(), b"hello")
+
+
+class LifecycleLogicTests(unittest.TestCase):
+    """阶段与所有者判断只使用内存数据库和输入，不创建数据根。"""
+
+    def setUp(self):
+        import runpy
+        self.module = runpy.run_path(str(CLI))["main"].__globals__
+
+    def test_lifecycle_phase_is_committed_with_its_operation_log(self):
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        db.execute("CREATE TABLE operations(id,kind,phase,payload)")
+        self.module["lifecycle_tables"](db)
+        db.execute("INSERT INTO jobs VALUES ('job','archive','reserved','{}',9,NULL)")
+        db.commit()
+        for number, phase in enumerate(("reserved", "writing", "verified", "published", "sealed"), 1):
+            self.module["phase_commit"](db, "job", phase)
+            self.assertTrue(db.in_transaction)
+            db.rollback()  # 提交的阶段和日志不能被后续事务回滚。
+            self.assertEqual(db.execute("SELECT phase FROM jobs").fetchone()[0], phase)
+            logs = db.execute("SELECT kind,phase,payload FROM operations ORDER BY rowid").fetchall()
+            self.assertEqual(len(logs), number)
+            self.assertEqual(logs[-1][:2], ("lifecycle", phase))
+            self.assertEqual(json.loads(logs[-1][2]), {"operation_id": "job"})
+
+    def test_safety_phase_commits_progress_and_releases_reservation_only_when_sealed(self):
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        db.execute("CREATE TABLE operations(id,kind,phase,payload)")
+        self.module["safety_tables"](db)
+        db.execute("INSERT INTO safety_jobs VALUES ('job','migration','reserved','{}',9,'{}')")
+        db.commit()
+        for number, phase in enumerate(("reserved", "writing", "verified", "published", "sealed"), 1):
+            progress = {"artifact": phase}
+            self.module["safety_phase"](db, "job", phase, progress)
+            self.assertTrue(db.in_transaction)
+            db.rollback()
+            observed = db.execute("SELECT phase,progress,reserved_bytes FROM safety_jobs").fetchone()
+            self.assertEqual(observed, (phase, self.module["compact_json"](progress, self.module["QUERY_BYTES"]), 0 if phase == "sealed" else 9))
+            logs = db.execute("SELECT kind,phase,payload FROM operations ORDER BY rowid").fetchall()
+            self.assertEqual(len(logs), number)
+            self.assertEqual(logs[-1][:2], ("safety", phase))
+            self.assertEqual(json.loads(logs[-1][2]), {"operation_id": "job"})
+
+    def test_owner_identity_and_token_require_a_live_matching_process(self):
+        run = dict(owner_pid=123, owner_start="birth", expires=0,
+                   token_hash=hashlib.sha256(b"token").hexdigest())
+        for current, state in (("birth", "alive"), (None, "dead"), ("new-birth", "pid-reused")):
+            with self.subTest(state=state), patch.dict(self.module, process_start=lambda pid: current):
+                self.assertEqual(self.module["lease_state"](run), state)
+                if state == "alive":
+                    self.module["authorize_run"](run, "token")
+                else:
+                    with self.assertRaises(self.module["DataError"]):
+                        self.module["authorize_run"](run, "token")
+                with self.assertRaises(self.module["DataError"]):
+                    self.module["authorize_run"](run, "wrong")
+        with patch.dict(self.module, process_start=lambda pid: (_ for _ in ()).throw(self.module["DataError"]("denied"))):
+            self.assertEqual(self.module["lease_state"](run), "unknown")
 
 
 if __name__ == "__main__":
