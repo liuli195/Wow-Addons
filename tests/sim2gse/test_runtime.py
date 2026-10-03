@@ -26,6 +26,11 @@ class RuntimeTests(TestCase):
                                           close=lambda: events.append("close"))
                 task_runtime = runtime.TaskRuntime(10)
                 task_runtime.reservation = lambda key, allowance: reservations.append((key, allowance))
+                started = task_runtime.started
+                clock, sleeps = [started], []
+                def sleep(seconds):
+                    sleeps.append(seconds)
+                    clock[0] += seconds
                 original_unlink = Path.unlink
                 violation = PermissionError("injected sharing or access failure")
                 if winerror is not None:
@@ -42,15 +47,21 @@ class RuntimeTests(TestCase):
                 original_budget = runtime.BudgetExceeded("original native budget")
                 expected_error = runtime.BudgetExceeded if failures < expected_calls else PermissionError
                 with patch.object(runtime, "_create_process", return_value=process), \
-                        patch.object(Path, "unlink", unlink), self.assertRaises(expected_error) as raised:
-                    runtime.run_command(["simc"], directory, timeout_seconds=5, runtime=task_runtime,
-                                        on_start=lambda: (_ for _ in ()).throw(original_budget))
+                        patch.object(Path, "unlink", unlink), \
+                        patch.object(runtime.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(runtime.time, "sleep", side_effect=sleep):
+                    with self.assertRaises(expected_error) as raised:
+                        runtime.run_command(["simc"], directory, timeout_seconds=5, runtime=task_runtime,
+                                            on_start=lambda: (_ for _ in ()).throw(original_budget))
+                    elapsed = task_runtime.elapsed_seconds
                 self.assertEqual(len(attempts), expected_calls)
                 self.assertEqual(events, ["terminate", "wait", "close"])
                 self.assertIsNone(reservations[-1][1])
                 self.assertEqual(reservations[0][0], reservations[-1][0])
                 self.assertEqual(task_runtime.budget_seconds, 10)
-                self.assertGreaterEqual(task_runtime.elapsed_seconds, (expected_calls - 1) * 0.02)
+                self.assertEqual(sleeps, [0.02] * (expected_calls - 1))
+                self.assertEqual(task_runtime.started, started)
+                self.assertAlmostEqual(elapsed, sum(sleeps), places=6)
                 if expected_error is runtime.BudgetExceeded:
                     self.assertIs(raised.exception, original_budget)
                     self.assertFalse(stdout.exists())

@@ -1421,7 +1421,7 @@ class SearchAndValidationTests(TestCase):
                     self.assertTrue(paused.wait(5), "search never reached its second batch")
                     deadline = time.monotonic() + 5
                     observed = read_task(destination)
-                    while observed.get("completed_batches", 0) == 0 and time.monotonic() < deadline:
+                    while (observed.get("phase") != "search" or not observed.get("completed_batches")) and time.monotonic() < deadline:
                         time.sleep(0.01)
                         observed = read_task(destination)
                     self.assertEqual(observed.get("phase"), "search")

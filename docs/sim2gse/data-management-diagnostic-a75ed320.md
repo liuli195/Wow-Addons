@@ -281,3 +281,11 @@ Windows同29491正式fresh完整对照仍失败：tool60.186秒/外层60.398秒�
 整合数据可移植诊断：4worker，105 passed、67 subtests passed、2既有Windows联接skipped，25.91秒；5个明确Windows环境项仅本次诊断命令不选，仓库发现未筛选。此前8worker的Linux组不可直接当同口径速度对照。整合benchmark+runtime18pytest/5子测试0.44秒；JSON字节/限值以及其他逻辑真实代码缺陷变体验证有效。生产数据实现未变，语法helper及skill自测代表选择属于本次明确范围。
 
 唯一候选配置outer4/product4/data4：旧outer3长期让两大组占2槽、其余36组共1队列；精简后降内层进程，给其余2槽，20逻辑核留资源余量。只测这一候选，不称已极致或最优，正式60包括准备/实际检查/收尾，验证技能零改动。上游main e059已增HUD三项测试命令及生产/适配更新；当前固定基线未换，未覆盖上游改动或自动合并，正规同步后必须最终同HEAD重测。当前所有Linux/Lua5.4结果不构成Windows60通过；本机后端/完整原生序列、解码/HTTP、取消、annotation365固定Lua5.1、checker全组及最终fresh完整入口仍待父端。
+
+## 312513正式53.8秒但两测试失败：确定性夹具修复
+
+Windows同312513正式fresh完整38组全部完成、cache0，无总超时：tool53.8226秒/外层53.890秒，37组通过1产品组失败，不能称验收通过。产品298 passed/95 subtests、2 failed/1 subfailed，pytest35.23秒/check36.10秒；数据112/77通过check45.04秒。两处准确失败都在测试：cleanup elapsed实际0.032小于硬断言0.04；恢复测试观察phase initialize而非search。
+
+cleanup不再用真实sleep时长与Windows分辨率有限的monotonic硬比。仅测试中记录实际sleep调用次数和每次0.02参数、用确定性clock累计，检查started及budget不重置、elapsed包含调用；原真实unlink、原异常身份、耗尽/其他错误拒绝、进程顺序和预留释放断言保留，生产没有改变。单项5子测试0.06秒通过；实际run_command缺少cleanup sleep的内存代码变体被检测。
+
+恢复夹具旧轮询只判断completed_batches==0；read_task初始initialize进度包含completed_batches=null，None==0为False，导致没等待心跳发布search进度就跳出。现在必须同时看到真实phase search及非零已完成批次才结束轮询，原phase==search/批次>0严格断言、真实取消/租约拒绝/预算与缓存恢复不放松，也不改生产状态。实际循环谓词对null、0、错误phase及真实已发布search批次的四种内存输入通过；完整Windows取消恢复仍须定向/正式实测，不把谓词检查称为集成通过。
