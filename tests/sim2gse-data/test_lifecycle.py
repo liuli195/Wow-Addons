@@ -242,6 +242,33 @@ class LifecycleTests(unittest.TestCase):
         plan = self.call("register", "--path", str(source), "--role", role)
         return self.call("register", "--path", str(source), "--role", role, "--approve-hash", plan["plan_hash"])["artifact_id"]
 
+    def test_finish_reserves_registration_metadata_before_writing(self):
+        self.initialize()
+        begun = self.call_main("begin", "--request-id", "metadata-headroom", "--owner-pid", str(os.getpid()),
+                               "--reserve-bytes", "1024")
+        folder = Path(begun["path"])
+        sources = [folder / (letter * 180 + ".json") for letter in ("a", "b")]
+        for source in sources:
+            source.write_bytes(b"keep")
+        before = self.call_main("status")
+        measured = self._main.__globals__["inventory"](self.root, None)["logical_bytes"]
+        self.policy["capacity_bytes"] = measured + self.policy["maintenance_reserve_bytes"] + self.policy["metadata_reserve_bytes"] + 32768
+        self.save_config()
+        finish = ("--run-id", begun["run_id"], "--token", begun["token"], "--outcome", "success")
+        self.assertIn("容量不足", self.call_main("finish", *finish, expected=2)["error"])
+        rejected = self.call_main("status")
+        self.assertEqual(rejected["reserved_bytes"], 1024)
+        self.assertEqual(rejected["registered_artifacts"], before["registered_artifacts"])
+        self.assertEqual([source.read_bytes() for source in sources], [b"keep", b"keep"])
+        self.policy["capacity_bytes"] = 4 * 1024 * 1024
+        self.save_config()
+        sealed = self.call_main("finish", *finish)
+        # Existing sealed rows do not require a fresh registration peak on retry.
+        measured = self._main.__globals__["inventory"](self.root, None)["logical_bytes"]
+        self.policy["capacity_bytes"] = measured + self.policy["maintenance_reserve_bytes"] + self.policy["metadata_reserve_bytes"] + 32768
+        self.save_config()
+        self.assertEqual(self.call_main("finish", *finish), sealed)
+
     def test_finish_retry_is_idempotent_and_rejects_changed_members(self):
         self.initialize()
         args = ("--request-id", "retry", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1024", "--token", "stable-token")

@@ -289,3 +289,15 @@ Windows同312513正式fresh完整38组全部完成、cache0，无总超时：too
 cleanup不再用真实sleep时长与Windows分辨率有限的monotonic硬比。仅测试中记录实际sleep调用次数和每次0.02参数、用确定性clock累计，检查started及budget不重置、elapsed包含调用；原真实unlink、原异常身份、耗尽/其他错误拒绝、进程顺序和预留释放断言保留，生产没有改变。单项5子测试0.06秒通过；实际run_command缺少cleanup sleep的内存代码变体被检测。
 
 恢复夹具旧轮询只判断completed_batches==0；read_task初始initialize进度包含completed_batches=null，None==0为False，导致没等待心跳发布search进度就跳出。现在必须同时看到真实phase search及非零已完成批次才结束轮询，原phase==search/批次>0严格断言、真实取消/租约拒绝/预算与缓存恢复不放松，也不改生产状态。实际循环谓词对null、0、错误phase及真实已发布search批次的四种内存输入通过；完整Windows取消恢复仍须定向/正式实测，不把谓词检查称为集成通过。
+
+## 最终整合本机验证（2026-10-03）
+
+6c201两个失败定向2测试/5子测试通过，1.63秒；fresh full 38/38通过、cache0、tool53.985秒。最终整合2f0e906保留main e059全部HUD增量并带入已确认正式规格，再次Windows fresh full：38/38通过、cache0、exit0，tool56.172秒/外层56.240秒。产品304测试+96子测试check35.28秒，数据112测试+67子测试check47.03秒，HUD46测试check9.65秒，三个新增文件确实执行；既有85个LFS对象取回，44份运行媒体可读。无WoW及测试残留、工作树干净。此前数据77子测试转述不作为最终证据，本轮实际67与云端一致。
+
+完整验证独立60秒达标，不宣称构建加验证合计60秒。Linux新HUD可移植package/mipmap9通过、2明确WindowsLua项排除；固定Windows完整组的上述实际结果才是验收依据。最终公开全量双轴审查及CI尚未完成，未合并主干、未上线或触碰历史数据。
+
+## 最终审查P2：finish登记元数据峰值
+
+独立公开2f0e906审查在既有4MiB/维护64KiB/元数据128KiB合成策略下，用300份1字节长名文件及一份批准载荷补足文件复现：finish封口后根4214885字节超过容量4194304，超20581字节，原件未丢。原因是finish预算检查growth=0之后批量写入artifact及run_artifact登记行，未为新增SQLite页/索引/WAL留峰值。
+
+最小修复复用既有check_budget与事实/快照估算口径：非sealed取实际相对路径和manifest的UTF8 JSON编码长度×8加64KiB，先准入再插入登记；仍只核销本次run结束的未来载荷，其他保护不变。sealed重试不重新计新增登记峰值。回归仅2个真实180字符名文件，经既有进程内公开入口操作真实索引：旧实现意外成功为红；新实现先容量拒绝、登记数不增、1024载荷预留未核销且原字节保留；扩容后正常封口，缩回近满容量已有sealed幂等重试成功。4个finish/并发定向检查2.11秒通过。修复尚待独立复核及最终新SHA的Windows全组/CI，不沿用2f0e906通过结果冒称新增修复已完整验收。

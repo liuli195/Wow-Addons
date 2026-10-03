@@ -694,7 +694,11 @@ def finish_run(root, policy, args):
                     manifests.append((path, file_manifest(path)))
         if run["state"] != "sealed" and sum(manifest["size"] for _, manifest in manifests) > run["reserved_bytes"]:
             raise DataError("实际产物超过预留，保持未封口和保护状态")
-        check_budget(root, db, policy, finishing_run_id=run["id"])
+        # Cover new artifact/link rows, indexes and WAL before any registration writes.
+        registration_bytes = len(json.dumps([(path.relative_to(root).as_posix(), manifest)
+                                             for path, manifest in manifests]).encode("utf-8"))
+        growth = 0 if run["state"] == "sealed" else 65536 + registration_bytes * 8
+        check_budget(root, db, policy, growth, finishing_run_id=run["id"])
         if run["state"] == "sealed":
             registered = {row[0] for row in db.execute("SELECT artifact_id FROM run_artifacts WHERE run_id=?", (args.run_id,))}
             observed = {str(uuid.uuid5(uuid.UUID(policy["root_id"]), "artifact:" + os.path.normcase(path.relative_to(root).as_posix()))) for path, _ in manifests}
