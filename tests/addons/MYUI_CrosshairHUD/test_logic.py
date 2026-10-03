@@ -26,13 +26,24 @@ ADDON = ROOT / "addons/MYUI_CrosshairHUD/Logic.lua"
 HARNESS = r'''
 local source = assert(arg[1])
 assert(loadfile(source))()
+assert(loadfile(source:gsub("Logic.lua$", "Debug.lua")))()
 local Logic = assert(_G.MYUI_CHH, "Logic.lua 应导出全局表").Logic
 assert(Logic, "全局表上应有 Logic")
+-- 撤回附加2度余量，保持原有进度角度，禁止为消除黑边移动中间进度。
+do
+    local arc = Logic.ARCS.health
+    local _, full = Logic.ArcCurvePoints(arc.start, arc.span, arc.reverse, arc.endMargin)
+    assert(math.abs(full - math.rad(-291)) < 1e-12, "满血端点不得额外延伸")
+    local half = Logic.MaskAngle(arc.start, arc.span, 0.5, arc.reverse, arc.endMargin)
+    assert(math.abs(half - math.rad(-239)) < 1e-12, "半血不得因末端补齐偏移")
+    assert(Logic.MaskAngle(arc.start, arc.span, 0, arc.reverse, arc.endMargin)
+        == Logic.MaskAngle(arc.start, arc.span, 0, arc.reverse), "空血端点不得改变")
+end
 
 ----------------------------------------------------------------------
 -- 几何常量与设计稿一致
 ----------------------------------------------------------------------
-assert(Logic.RING.radius == 54 and Logic.RING.stroke == 6, "圆环常量")
+assert(Logic.RING.radius == 54 and Logic.RING.stroke == 7.8, "圆环常量与现有成品一致")
 assert(Logic.ARCS.health.start == 99 and Logic.ARCS.health.span == 102, "血弧常量")
 assert(Logic.ARCS.power.start == 339 and Logic.ARCS.power.span == 102, "符能弧常量")
 -- 两条弧都必须**从靠近 6 点钟那端向上长**：左弧顺时针、右弧逆时针。

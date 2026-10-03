@@ -70,40 +70,35 @@
 - **THEN** 它们在连续两次刷新之间的先后次序保持不变
 ### Requirement: Resource values remain correct in restricted contexts
 
-系统 MUST 在副本、PvP 等受限上下文中继续按当前数值显示生命值与能量。系统 MUST NOT 对客户端标记为不可读（秘密）的读数做比较、运算或字符串化；无法确认读数可读时 MUST 跳过本次更新并保留上一次的显示值，「有没有读到」MUST 由另一个普通布尔表示。
+系统 MUST 在受限场景中将客户端允许用于显示的生命值和能量读数交给游戏绘制，MUST NOT 对不可读数值做普通比较、运算或转成文本。接口调用失败时 MUST 保留最近一次成功显示的生命值和能量状态；凝固之血层数 MUST 由游戏直接管理和绘制，不由插件反向读取。
 
-#### Scenario: Player enters restricted content
+#### Scenario: Restricted display
 
-- **WHEN** 玩家进入副本或 PvP 等受限内容
-- **THEN** 两条弧仍按当前生命值与能量正确填充
+- **WHEN** 生命值或能量读数受限但游戏显示接口调用成功
+- **THEN** 对应弧线继续由游戏按当前读数绘制，不产生非法数值运算
 
-#### Scenario: A reading is marked unreadable
+#### Scenario: Reading call fails
 
-- **WHEN** 客户端把某个读数标记为不可读
-- **THEN** 本次更新被跳过、保留上一次的显示值，且不产生 Lua 错误
+- **WHEN** 生命值或能量接口调用失败
+- **THEN** 保留最近一次成功显示状态，不猜测当前数值
+
+#### Scenario: Buff stacks are restricted
+
+- **WHEN** 凝固之血层数对插件不可读
+- **THEN** 层数仍由游戏绑定到新条，不把受限值打印到报告
 ### Requirement: The master switch and per-element switches control visibility
 
-系统 MUST 提供总开关与四个元素各自的开关；总开关关闭时整个 HUD MUST 不可见，四个元素开关 MUST 置灰不可操作。单个元素关闭时只有该元素消失。总开关关闭后 MUST NOT 在解锁模式里残留可拖动的空框。
+系统 MUST 提供总开关、四个基础元素开关以及凝固之血和灵打消耗刻度的独立开关。总开关关闭时整个 HUD MUST 隐藏，相关配置（含阴影、可见性和三个齿轮）MUST 置灰不可操作，MUST NOT 残留可拖动的空框。单项开关关闭时该项 MUST 隐藏，其控件和齿轮 MUST 禁用；重新打开 MUST 恢复可操作状态，MUST NOT 自动打开齿轮弹窗。
 
-#### Scenario: Master switch is turned off
+#### Scenario: Master off
 
-- **WHEN** 玩家关闭总开关
-- **THEN** HUD 整体消失，四个元素开关置灰不可点
+- **WHEN** 关闭准星 HUD 总开关
+- **THEN** 整组隐藏，所有从属配置禁用，解锁模式也没有空框
 
-#### Scenario: A single element is turned off
+#### Scenario: Feature off and on
 
-- **WHEN** 玩家关闭其中某一个元素
-- **THEN** 只有该元素消失，其余元素不受影响
-
-#### Scenario: Unlock mode after the master switch is off
-
-- **WHEN** 玩家在总开关关闭后进入解锁模式
-- **THEN** 屏幕中心没有可拖动的空框
-
-#### Scenario: Master switch is turned back on
-
-- **WHEN** 玩家重新打开总开关
-- **THEN** 各元素按各自的开关恢复显示
+- **WHEN** 关闭后重新开启凝固之血或灵打消耗刻度
+- **THEN** 该项按开关隐藏或恢复，自己的齿轮同步禁用或启用，但弹窗不会自动打开
 ### Requirement: The whole HUD scales proportionally within a fixed range
 
 系统 MUST 支持以 0.5–2.0 倍整体等比缩放 HUD。配置页的缩放滑块与解锁模式里的宽度／高度 MUST 读写同一个值，MUST NOT 两处各存一份，也 MUST NOT 允许超出该范围的值生效。
@@ -119,40 +114,35 @@
 - **THEN** 配置页的缩放滑块回读同一个值
 ### Requirement: Each element's fill colour, background colour and opacity are configurable
 
-系统 MUST 让每个元素各自配置填充色与填充透明度、背景色与背景透明度（准星没有背景色）。修改 MUST 立即生效且 MUST NOT 影响其他元素；元素关闭时它自己的控件 MUST 置灰不可点。颜色 MUST 与它自己的透明度显示在同一格内，填充与背景的透明度 MUST 互相独立。
+系统 MUST 让各组成项独立配置填充颜色与透明度；血条、能量条、职业资源和凝固之血 MUST 另有独立背景颜色与透明度，准星和灵打刻度没有背景。修改 MUST 立即生效，不影响其他项；颜色及其透明度 MUST 同格显示，填充和背景的透明度互相独立。对应开关或总开关关闭时相关控件 MUST 禁用。
 
-#### Scenario: Fill colour is changed
+#### Scenario: Independent appearance
 
-- **WHEN** 玩家修改某个元素的填充色
-- **THEN** 该元素立即变色，其他元素不受影响
+- **WHEN** 只调整某项填充或背景颜色与透明度
+- **THEN** 仅对应图层变化，其他项与另一图层不受影响
 
-#### Scenario: Fill opacity is changed
+#### Scenario: Feature disabled
 
-- **WHEN** 玩家只调整填充透明度
-- **THEN** 只有填充部分变透明，背景保持不变，反过来亦然
-
-#### Scenario: Element is disabled
-
-- **WHEN** 玩家关闭某个元素
-- **THEN** 该元素的控件置灰不可点
+- **WHEN** 关闭对应开关或总开关
+- **THEN** 该项外观控件置灰不可操作
 ### Requirement: Fill colour can follow the EllesmereUI palette but background colour cannot
 
-填充色 MUST 允许在「自定义颜色」与来源配色之间二选一。来源配色 MUST 只取自 EllesmereUI 统一管理的配色（生命值弧与准星用职业色、能量弧用能量色、职业资源格用职业资源色），MUST NOT 退回暴雪的默认色表。取不到该来源时 MUST 回落到该元素的自定义色，MUST NOT 显示为黑或无色。背景色 MUST 只有自定义颜色，MUST NOT 提供任何来源配色。
+四个基础元素的填充色 MUST 可选自定义或 EllesmereUI 的来源配色：生命值和准星用职业色、能量条用能量色、职业资源用资源色。来源不可用时 MUST 回落到该项自定义色，不退回暴雪色表或显示成黑块。背景 MUST 只有自定义颜色；凝固之血和灵打刻度填充也 MUST 只有自定义颜色，不提供职业色选择。
 
-#### Scenario: A source palette is selected
+#### Scenario: Source palette
 
-- **WHEN** 玩家为某个元素选择来源配色
-- **THEN** 该元素的填充色变为 EllesmereUI 中该来源的颜色，并在玩家于 EllesmereUI 里改过该颜色之后跟随变化
+- **WHEN** 基础元素选择来源配色且共享配色变化
+- **THEN** 填充颜色跟随对应共享配色
 
-#### Scenario: The source palette is unavailable
+#### Scenario: Unavailable palette
 
-- **WHEN** EllesmereUI 的配色接口取不到该来源的颜色
-- **THEN** 填充色回落到该元素的自定义颜色，不会出现无色或黑块
+- **WHEN** 取不到所选来源配色
+- **THEN** 使用该项自定义色
 
-#### Scenario: Background colour is configured
+#### Scenario: Custom only
 
-- **WHEN** 玩家查看任一元素的背景色配置
-- **THEN** 背景只有自定义色块与背景透明度，没有来源色块
+- **WHEN** 查看背景、凝固之血或灵打刻度颜色配置
+- **THEN** 只有自定义颜色，不显示来源色选项
 ### Requirement: Palette swatches are selectable but not editable
 
 系统 MUST 复用 EllesmereUI 的颜色控件。来源色块 MUST 只能被选中、MUST NOT 可编辑：点击来源色块 MUST NOT 打开取色器；打开自定义色的取色器后取消 MUST NOT 改变当前的来源选择。
@@ -168,17 +158,17 @@
 - **THEN** 填充色的来源保持原样
 ### Requirement: The configuration page lives in the EllesmereUI MYUI group
 
-系统 MUST 在 EllesmereUI 设置面板的 `MYUI` 分组下以「准星HUD」为名占一行，点开即为其配置页。页面 MUST 由 EllesmereUI 的标准控件构建，外观与 EUI 自家页面一致，并按常规、生命值条、能量条、职业资源条、准星五组呈现。该行右侧 MUST 保留电源按钮。
+系统 MUST 在 EllesmereUI 设置面板的 MYUI 分组下提供“准星HUD”配置页，保留该行右侧电源按钮，复用现有标准控件。页面 MUST 包含常规、生命值条、能量条、职业资源条、准星、凝固之血和灵打消耗刻度分组，MUST NOT 为新增功能另建设置菜单。
 
-#### Scenario: The page is opened
+#### Scenario: Open options
 
-- **WHEN** 玩家在 EllesmereUI 设置面板里点击「准星HUD」这一行
-- **THEN** 打开配置页，页面按五组列出可配置项
+- **WHEN** 玩家从 MYUI 分组打开准星HUD
+- **THEN** 同一配置页列出上述七组设置
 
-#### Scenario: Global search builds the page
+#### Scenario: Global search
 
-- **WHEN** 玩家在 EllesmereUI 的全局搜索里输入关键字
-- **THEN** 页面在离屏、无内容头接口的状态下也能被安全构建，不报错
+- **WHEN** 共享搜索在离屏状态构建配置页
+- **THEN** 配置页能安全构建，不因缺少内容头接口报错
 ### Requirement: Configuration items occupy half a row and pair left to right
 
 配置项 MUST 按「每项占半格、从左到右成对排列、末行不足时右侧留空」的规则排布。系统 MUST NOT 为了填满而行间挪动配置项，MUST NOT 使用通栏控件代替左右分栏。
@@ -272,43 +262,53 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** HUD 显示在它们之下
 ### Requirement: A diagnostic command reports the environment
 
-系统 MUST 提供一条斜杠命令，打印插件版本、EllesmereUI 与公共核心的就位状态、当前配置摘要、各读数的可读性以及素材目录。该命令 MUST 还能切换假数据驱动，供不在战斗时检查外观。
+正式插件 MUST 保留手动诊断命令 /chh diag（/chh report 也可），默认不运行诊断。调用后 MUST 打开可全选复制的文本窗口，报告插件及游戏版本、依赖状态、配置摘要、最近读数状态和凝固之血绑定状态。聊天 MUST 仅显示短提示，MUST NOT 自动发送报告。报告 MUST NOT 包含账号、角色名、聊天、本机路径、原始错误文本或受限数值。正式包 MUST NOT 提供假数据演示及独立测试工具。
 
-#### Scenario: The diagnostic command is run
+#### Scenario: Manual report
 
-- **WHEN** 玩家执行该斜杠命令
-- **THEN** 打印版本、依赖就位状态与读数可读性，且不打印不可读的读数本身
+- **WHEN** 玩家执行诊断命令
+- **THEN** 出现可复制报告窗口，不向聊天发送详细报告
 
-#### Scenario: Fake data drives the HUD
+#### Scenario: Restricted reading in report
 
-- **WHEN** 玩家用该命令开启假数据驱动
-- **THEN** 三条资源按循环变化的比例显示，可以独立检查外观
+- **WHEN** 某个读数不可读或尚未取得
+- **THEN** 报告仅说明状态，不把该值转成文本
+
+#### Scenario: Normal gameplay
+
+- **WHEN** 玩家未执行诊断命令
+- **THEN** 不自动创建报告、持续日志或发送诊断内容
 ### Requirement: Shipped textures are used as designed with one added mask
 
-系统 MUST 使用从设计稿导出、并在发布前加工过的成品纹理：每张纹理的像素边长 MUST 是 2 的幂，边缘 MUST 带有按设计稿单位算足够宽的过渡带；九个形状每个 MUST 配一张柔化阴影贴图；角度填充 MUST 使用一张半平面遮罩，它的明暗方向与软边宽度 MUST 与填充换算的约定一致，使缩放到上限时纹理仍不被放大。玩家把 HUD 缩放到范围内的**任意**档位时，元素边缘 MUST NOT 出现锯齿，也 MUST NOT 因放大而发糊。
+正式游戏素材 MUST 保留确认设计的轮廓、位置及独立透明度，长宽各自 MUST 为 2 的幂，MUST 包含从最大尺寸逐级减半到 1×1 的完整缩小图层，并使用平滑采样。主体、背景、阴影、刻度和遮罩 MUST 遵循同一素材格式标准。血条、能量条和职业资源格 MUST 使用统一的柔和填充切口；凝固之血 MUST 使用游戏原生圆弧填充，其移动切口的处理与旋转遮罩不同，MUST NOT 宣称两者完全相同。正式成品 MUST 经过尺寸、透明度和各级缩小图层检查；仅凭本机检查 MUST NOT 宣称所有屏幕分辨率都已验收。
 
-#### Scenario: Shipped textures are verified
+#### Scenario: Validate game assets
 
-- **WHEN** 校验随插件发布的纹理
-- **THEN** 每张的像素边长都是 2 的幂、过渡带宽度达标，九个形状各有一张阴影贴图，半平面遮罩的明暗方向与软边宽度符合约定
+- **WHEN** 检查正式游戏素材
+- **THEN** 主体和配套素材均符合统一格式，缺少缩小图层或尺寸不合要求时检查失败
 
-#### Scenario: HUD is scaled to the low end
+#### Scenario: Scale the HUD
 
-- **WHEN** 玩家把 HUD 缩放到允许范围的最小档
-- **THEN** 元素边缘清晰，看不到锯齿
+- **WHEN** 玩家在允许范围内放大或缩小 HUD
+- **THEN** 所有素材随整体缩放，并使用其对应平滑采样
 
-#### Scenario: HUD is scaled to the high end
+#### Scenario: Compare fill edges
 
-- **WHEN** 玩家把 HUD 缩放到允许范围的最大档
-- **THEN** 元素边缘清晰，不发糊
+- **WHEN** 观察血条、能量条及职业资源的移动填充切口
+- **THEN** 这三类采用同一柔化规格；凝固之血原生填充单独核对
 ### Requirement: User-facing text names no specific class
 
-界面文案 MUST 使用与职业无关的名称（生命值条、能量条、职业资源条、准星），MUST NOT 出现任何具体职业名称。
+基础元素界面文案 MUST 使用生命值条、能量条、职业资源条、准星等名称。新增职业相关功能的说明 MAY 明确适用职业；凝固之血配置在非死亡骑士时 MUST 置灰，MUST NOT 为保持旧的无职业文案而省略禁用原因。
 
-#### Scenario: Configuration page and addon list are read
+#### Scenario: Read basic labels
 
-- **WHEN** 玩家查看配置页与插件说明
-- **THEN** 文案里没有任何具体职业名称
+- **WHEN** 查看基础元素设置
+- **THEN** 保留原有通用名称
+
+#### Scenario: Non death knight settings
+
+- **WHEN** 非死亡骑士查看凝固之血设置
+- **THEN** 设置置灰，说明清楚告知该设置仅供死亡骑士使用
 ### Requirement: Visibility conditions decide when the HUD appears
 
 系统 MUST 遵循 EllesmereUI 共享可见性系统给出的判定，决定**整条**准星 HUD 是否出现——判定针对整条 HUD，各元素的取舍由元素开关负责，两者是相互独立的两个维度。可选条件 MUST 覆盖该共享系统提供的全部条件（从不、总是、战斗中、脱战、团队、队伍、单人、御空术空中、非御空术空中、御空术坐骑、副本、住宅、骑乘中、目标、敌对目标、休息中、载具），MUST 支持「全部满足／任一满足」两种匹配模式，并 MUST 支持「显示」与「隐藏」两条通道。MUST NOT 提供鼠标悬停条件：共享悬停机制会在光标进入时对元素打开鼠标交互，与《The HUD never intercepts mouse input》相抵触。系统 MUST 在设置面板的常规分区提供一行可见性控件，MUST 紧随总开关之后，且 MUST 与其他配置项一样以「每行两项」的方式参与排布。总开关关闭时，该控件 MUST 置灰不可操作。当共享系统的接口不可用或返回值不可识别时，HUD MUST 保持可见，MUST NOT 因此消失。
@@ -354,11 +354,6 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **WHEN** 玩家关闭总开关，或在可见性里选择「从不」，然后进入解锁模式
 - **THEN** 屏幕中心没有可拖动的空框
 
-#### Scenario: Demo mode while a condition fails
-
-- **WHEN** 玩家在可见性条件不满足时开启演示模式
-- **THEN** HUD 照常显示
-
 #### Scenario: Upgrading from a save without visibility settings
 
 - **WHEN** 既有玩家升级后首次进入游戏，且从未设置过可见性
@@ -370,35 +365,40 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** HUD 保持可见且不报错
 ### Requirement: Every element carries a soft shadow beneath its base image
 
-系统 MUST 在每个元素的底图**之下**再叠一层黑色柔化阴影。阴影的形状 MUST 跟随元素轮廓，MUST NOT 随填充比例变化；处于空转（没有任何填充）的元素 MUST 仍然显示自己的阴影。阴影层 MUST NOT 参与填充换算，MUST 与元素一起缩放、一起受框架层级影响，并 MUST NOT 拦截鼠标。
+四个原有基础元素 MUST 在底图之下保留轮廓外围的柔和阴影。主体覆盖区域 MUST 透明，背景调为透明后阴影 MUST NOT 成为一整块背景。阴影 MUST 不随填充比例变化，MUST 与对应元素一起缩放、受整体图层控制且不拦截鼠标。凝固之血和灵打消耗刻度 MUST NOT 绘制阴影。
 
-#### Scenario: Element is empty
+#### Scenario: Transparent background
 
-- **WHEN** 某个元素处于空转、没有填充
-- **THEN** 它的阴影轮廓仍然可见，能看出这里本该有个元素
+- **WHEN** 将血条、能量条或职业资源背景调为透明
+- **THEN** 能透过主体区域看到游戏，只在轮廓周边保留阴影
 
-#### Scenario: HUD is scaled
+#### Scenario: Empty and scaled
 
-- **WHEN** 玩家缩放 HUD
-- **THEN** 阴影与元素始终对齐，不跑位
+- **WHEN** 基础元素没有填充或 HUD 整体缩放
+- **THEN** 外围阴影仍随对应轮廓保持位置
+
+#### Scenario: Additional features
+
+- **WHEN** 凝固之血条或灵打刻度显示
+- **THEN** 新增两项没有阴影
 ### Requirement: Shadow colour and opacity are one global setting
 
-阴影的颜色与浓淡 MUST 是**一处全局设置**，MUST NOT 按元素分别配置。颜色 MUST 只有自定义色。浓淡 MUST 取值 0–100，且默认值 MUST 就是上限——素材按最重档烘制，只允许往下调。浓淡调到 0 时阴影 MUST 消失，而元素本身 MUST NOT 受任何影响。该设置 MUST 与其它配置一样存在插件自己的存档里。
+所有原有阴影 MUST 共用一处自定义颜色和浓淡设置，不提供独立阴影配置。浓淡 MUST 可在 0–100% 调整，默认 MUST 为黑色、80%。设为 0 MUST 隐藏阴影但不改变主体。总开关关闭时阴影控件 MUST 禁用且不允许写入设置。
 
-#### Scenario: Colour or opacity is changed
+#### Scenario: Change shared shadow
 
-- **WHEN** 玩家修改阴影的颜色或浓淡
-- **THEN** 所有元素的阴影当场一起改变，元素本身的颜色不受影响
+- **WHEN** 修改阴影颜色或浓淡
+- **THEN** 所有原有阴影同步变化，主体颜色不变
 
-#### Scenario: Opacity is turned all the way down
+#### Scenario: Opacity endpoints
 
-- **WHEN** 玩家把阴影浓淡调到 0
-- **THEN** 阴影消失，元素本身完好如初
+- **WHEN** 将阴影浓淡设为 0 或 100%
+- **THEN** 分别完全隐藏阴影或使用最大浓淡，默认80%不是上限
 
-#### Scenario: Opacity is pushed past the default
+#### Scenario: Master switch off
 
-- **WHEN** 玩家尝试把浓淡调到比默认值更重
-- **THEN** 调不上去：默认档就是上限
+- **WHEN** 关闭总开关后操作阴影控件或已有取色窗口
+- **THEN** 控件禁用，回调也不改变阴影设置
 ### Requirement: The crosshair carries a centre dot
 
 准星 MUST 在正中带一个白点（中心定位点），它的直径 MUST 与设计稿一致。它是**准星的一部分**：MUST NOT 单独成元素，MUST NOT 有单独的开关；显示、隐藏与染色 MUST 都跟着准星走。
@@ -430,3 +430,114 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 - **WHEN** 玩家重新连上
 - **THEN** 两条弧恢复跟随生命值与能量的变化，且全程不报错
+### Requirement: Coagulated Blood displays raw stacks independently of the default buff viewer
+
+凝固之血条 MUST 仅显示玩家自身法术 463730 的原始增益层数，不换算预计回血量。它 MUST 有独立开关；关闭或没有该增益时背景和填充全部隐藏。开启时 MUST 不按专精限制，且 MUST 不依赖暴雪默认增益监控是否开启，不显示额外增益图标。最大显示层数 MUST 可配置，默认100；达到或超过该量程显示满条，该值 MUST NOT 被称为技能真实上限。临时绑定失败 MUST 隐藏新条并自动重试恢复，不要求用户修改配置或重载。
+
+#### Scenario: Viewer disabled
+
+- **WHEN** 关闭暴雪默认增益监控，同时开启新条且身上存在463730
+- **THEN** 独立新条仍按游戏管理的层数显示
+
+#### Scenario: No buff or disabled
+
+- **WHEN** 增益消失或关闭新条开关
+- **THEN** 新条背景和填充均隐藏
+
+#### Scenario: Display range
+
+- **WHEN** 最大显示层数为100且实际层数为25、50或至少100
+- **THEN** 分别显示约四分之一、二分之一或满条，不表示回血百分比
+
+#### Scenario: Binding recovers
+
+- **WHEN** 原生绑定临时失败后接口恢复可用
+- **THEN** 新条自动恢复绑定，无需改变配置
+### Requirement: Coagulated Blood keeps the approved full arc and independent colours
+
+凝固之血条 MUST 使用已确认的完整圆弧，与血条同圆心、同起止角及对应填充方向，主体粗细为血条的一半。位置 MUST 固定在已确认的血条边界处，并随整体缩放，不提供独立位置或缩放。背景和填充 MUST 为分开的图层，颜色及透明度分别可配置，填充默认白色、100%，背景默认深灰、0%。
+
+#### Scenario: Full buff arc
+
+- **WHEN** 新条显示满条
+- **THEN** 覆盖与血条相同的完整起止角，主体仍为半粗
+
+#### Scenario: Change colour
+
+- **WHEN** 仅修改新条背景或填充颜色及透明度
+- **THEN** 只改变对应图层，不影响血条或另一个图层
+### Requirement: Death Strike cost marker follows current cost and power capacity
+
+灵打消耗刻度 MUST 有独立开关，关闭时始终隐藏。开启时 MUST 根据当前实际灵界打击所需最低符能与当前最大符能的比例，沿能量条填充方向确定位置，不固定费用或上限。刻度 MUST 为始终指向共同圆心的单根直线，平头，两端略超出能量条；位置变化时方向同时旋转。粗细、颜色及透明度 MUST 可配置，默认粗细2、白色、100%。费用或上限不可用或受限时 MUST 隐藏刻度，恢复后重新显示。
+
+#### Scenario: Cost changes
+
+- **WHEN** 灵界打击费用或最大符能变化且数值可用
+- **THEN** 刻度位置和朝向随当前比例变化
+
+#### Scenario: Marker disabled
+
+- **WHEN** 关闭灵打消耗刻度
+- **THEN** 刻度始终隐藏，包括解锁显示状态
+
+#### Scenario: Unavailable cost
+
+- **WHEN** 无法取得可用费用或符能上限
+- **THEN** 隐藏刻度，恢复后重新显示，不猜测位置
+### Requirement: New installations use the confirmed HUD defaults without replacing saved settings
+
+新安装 MUST 默认位置居中、可见性总是显示且没有隐藏条件；整体缩放0.8、图层中、所有组成项开启。血条默认职业色、能量条默认能量色、职业资源默认资源色，准星及新增两项默认白色，填充浓淡100%。基础条背景 MUST 为深灰#313131、100%，凝固之血背景0%；阴影黑色80%、最大显示层数100、刻度粗细2。已有设置 MUST 保留，升级只补缺失默认项，不覆盖用户的位置、可见性或配色。
+
+#### Scenario: Fresh installation
+
+- **WHEN** 没有插件存档时首次加载
+- **THEN** 使用上述默认值，位置居中，总是显示且没有勾选隐藏条件
+
+#### Scenario: Upgrade existing save
+
+- **WHEN** 已有个人设置时更新插件
+- **THEN** 原配置保留，缺失项才补默认值
+### Requirement: Three inline gears collect secondary settings and follow their switches
+
+设置页 MUST 在总开关、凝固之血启用、灵打刻度启用旁各提供一个现有界面风格的齿轮。三个齿轮 MUST 分别收纳图层与HUD缩放、最大显示层数、粗细，不再为这些次要项占独立页面格。说明 MUST 各自对应并用大白话解释；总开关或该功能开关关闭时相关齿轮及弹窗控件 MUST 置灰不可操作，重新开启仅恢复可点击，不自动展开。
+
+#### Scenario: Gear contents
+
+- **WHEN** 分别点击三个可用齿轮
+- **THEN** 看到对应的图层与缩放、最大显示层数或刻度粗细
+
+#### Scenario: Gear disabled
+
+- **WHEN** 总开关或对应功能开关关闭
+- **THEN** 相应齿轮禁用，说明准确且不串用另一个功能的说明
+### Requirement: The standard material workflow preserves source exports and verifies game outputs
+
+仓库素材生产流程 MUST 保留设计原图与10倍透明导出图，并从导出图统一生成游戏成品及缩小图层。新增准星HUD素材 MUST 进入同一生产和检查流程，不临时替换原有组件参数。正式游戏素材 MUST 使用支持完整缩小图层的BLP格式，长宽各为2的幂，白色可染色模板与独立透明度保持一致；核对用PNG与源图 MUST 留在仓库，不随正式包部署。
+
+#### Scenario: Add new media
+
+- **WHEN** 制作或更新准星 HUD 素材
+- **THEN** 保留源图，按同一流程生成并检查成品
+
+#### Scenario: Reject nonstandard media
+
+- **WHEN** 成品尺寸、透明度或缩小图层不符合标准
+- **THEN** 素材检查失败，不以成功生成文件代替校验
+### Requirement: Production packages contain only runtime files and deploy with verified backups
+
+正式包 MUST 只包含最小运行代码、所需公共核心和已确认游戏素材，保留手动诊断，排除假数据、额外对照素材、独立测试插件及旧开发命令，仓库源码可保留。部署 MUST 先在游戏目录外备份本次准确修改范围并逐文件核对，再更新运行文件；备份 MUST 区分旧安装版本与新目标版本，旧版本未知时如实标注。部署 MUST 不修改WTF个人设置或无关插件文件，MUST 拒绝指向个人设置目录的部署目标。
+
+#### Scenario: Build release
+
+- **WHEN** 打包正式插件
+- **THEN** 包内只有白名单运行文件和游戏素材，不含测试内容
+
+#### Scenario: Deploy validated package
+
+- **WHEN** 部署通过检查的正式包
+- **THEN** 先完成备份和核对，再替换准确范围，个人设置与其他文件保持不变
+
+#### Scenario: Invalid input
+
+- **WHEN** 包校验失败、备份核对失败或目标位于个人设置目录
+- **THEN** 停止部署，不清理现有游戏文件

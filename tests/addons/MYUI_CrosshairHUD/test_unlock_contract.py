@@ -34,6 +34,10 @@ local dir = assert(arg[1])
 ----------------------------------------------------------------------
 local function NewTexture()
     local t = {}
+    function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
+    function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
+    function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
+    function t:SetRadialProgressBarFeather(v) self.radialFeather=v end
     function t:SetTexture() end
     function t:SetSize() end
     function t:SetPoint() end
@@ -48,8 +52,15 @@ end
 local frame
 function CreateFrame()
     local f = {}
+    function f:SetStatusBarTexture(t) self.texture=t end
+    function f:SetStatusBarColor(...) self.texture:SetVertexColor(...) end
+    function f:SetRenderMode(v) self.renderMode=v end
+    function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
+    function f:SetValue(v) self.value=v end
+    function f:SetAllPoints() end
     function f:CreateTexture() return NewTexture() end
     function f:CreateMaskTexture() return NewTexture() end
+    function f:CreateLine() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint(point, relativeTo, relPoint, x, y)
         f.point = { point = point, relativeTo = relativeTo, relPoint = relPoint,
@@ -78,7 +89,7 @@ function CreateFrame()
 end
 
 UIParent = { GetEffectiveScale = function() return 1 end }
-Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 } }
+Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 }, StatusBarRenderMode = { Radial = 1 } }
 SlashCmdList = {}
 C_AddOns = { GetAddOnMetadata = function() return "test" end,
              IsAddOnLoaded = function() return true end }

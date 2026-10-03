@@ -32,6 +32,12 @@ local Logic = NS.Logic
 NS.Elements = NS.Elements or {}
 local Elements = NS.Elements
 
+-- 固定版暴雪文档的新增纹理接口；本机通用类型库尚未包含这些成员。
+---@class CHHRadialTexture: Texture
+---@field SetRadialProgressBarReverse fun(self: CHHRadialTexture, reverse: boolean)
+---@field SetRadialProgressBarFeather fun(self: CHHRadialTexture, feather: number)
+---@field GetRadialProgressBarPercent fun(self: CHHRadialTexture): number
+
 local MEDIA = "Interface\\AddOns\\MYUI\\Media\\CrosshairHUD\\"
 
 local CreateFrame = _G.CreateFrame
@@ -69,6 +75,8 @@ local PLACEMENT = {
     crosshair = { file = "crosshair",   w = 128, h = 128, ox = 0,   oy = 0 },
     health    = { file = "health_arc",  w = 128, h = 128, ox = -32, oy = 16 },
     power     = { file = "power_arc",   w = 128, h = 128, ox = 32,  oy = 16 },
+    coagulatedBlood = { file = "coagulated_blood_arc", w = 128, h = 128,
+        ox = -32, oy = 16, shadowSub = -2 },
 }
 
 -- 资源格 1 与 6 的画布本来就是 2 的幂（32 单位 = 256 像素），不需要补边。
@@ -83,20 +91,52 @@ Elements.scale = 1
 
 local parts = {}          -- key -> 该元素的可重定位部件
 local placements = {}     -- key -> 摆放规格，供 SetScale 重新摆放
+local markerState
+
+local function ApplyMarker(st)
+    markerState = st
+    local line = parts.deathStrike
+    if not line then return end
+    local visible = st and st.visible == true and st.points ~= nil
+    line:SetShown(visible and true or false)
+    if not visible then return end
+    local p, s = st.points, Elements.scale
+    local dx, dy = p[3] - p[1], p[4] - p[2]
+    -- 素材白色主体占画布长度的7/8、宽度的1/4；透明边距不改变实际端点和粗细。
+    local length = math.sqrt(dx * dx + dy * dy)
+    local cw, ch = length * s / 0.875, (st.thickness or 1.5) * s / 0.25
+    local c, sn = dx / length, dy / length
+    local w, h = math.abs(c) * cw + math.abs(sn) * ch,
+        math.abs(sn) * cw + math.abs(c) * ch
+    line:SetSize(w, h)
+    line:SetPoint("CENTER", Elements.frame, "CENTER", (p[1] + p[3]) * s / 2,
+        (p[2] + p[4]) * s / 2)
+    -- 单个矩形内反向映射纹理，四角同时旋转，避免长条旋转后被自己的矩形裁掉。
+    local function UV(x, y)
+        return 0.5 + (c * x + sn * y) / cw, 0.5 - (-sn * x + c * y) / ch
+    end
+    local ulx, uly = UV(-w / 2, h / 2)
+    local llx, lly = UV(-w / 2, -h / 2)
+    local urx, ury = UV(w / 2, h / 2)
+    local lrx, lry = UV(w / 2, -h / 2)
+    line:SetTexCoord(ulx, uly, llx, lly, urx, ury, lrx, lry)
+    local color = st.fillColor
+    line:SetVertexColor(color[1], color[2], color[3], st.fillAlpha or 1)
+end
 
 --------------------------------------------------------------------------
 
 -- 采样模式必须是 TRILINEAR（第 4 个参数）。
 --
--- 魔兽的默认模式是 LINEAR —— **只做双线性、不采样 mipmap**。贴图被缩小显示时，
--- 它每个屏幕像素只读 4 个纹理像素，高频信息全丢，边缘就出锯齿。HUD 缩放调到 1.0
--- 以下时贴图是缩小的，正是这种情况；调到 2.0 时接近 1:1，反而看着更清楚。
---
--- TRILINEAR 会采样 mipmap，缩小多少就用对应层级的预过滤图。暴雪自家会被缩放的
--- 贴图（地图）也是这么传的。
+-- BLP成品显式包含完整缩小层；仅设置过滤方式不能保证PNG有可用缩小层。
+-- 是否缩小取决于实际屏幕像素，HUD倍数为2也不代表贴图接近1:1。
+local function SmoothTexture(texture, file, wrap)
+    texture:SetTexture(MEDIA .. file .. ".blp", wrap, wrap, "TRILINEAR")
+end
+
 local function NewTexture(sub, file)
     local texture = Elements.frame:CreateTexture(nil, "ARTWORK", nil, sub)
-    texture:SetTexture(MEDIA .. file .. ".png", nil, nil, "TRILINEAR")
+    SmoothTexture(texture, file)
     return texture
 end
 
@@ -119,7 +159,7 @@ end
 
 local function NewMask()
     local mask = Elements.frame:CreateMaskTexture()
-    mask:SetTexture(MEDIA .. "mask_half.png", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    mask:SetTexture(MEDIA .. "mask_half.blp", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE", "TRILINEAR")
     mask:SetAllPoints(Elements.frame)
     return mask
 end
@@ -128,7 +168,7 @@ end
 --
 -- 填充图用遮罩切出已填充的角度区间；阴影在图的最下面一层，**不挂遮罩**。
 local function BuildFillable(key, spec)
-    local shadow = NewTexture(SUB_SHADOW, spec.file .. SHADOW_SUFFIX)
+    local shadow = NewTexture(spec.shadowSub or SUB_SHADOW, spec.file .. SHADOW_SUFFIX)
     local bg = NewTexture(SUB_BG, spec.file)
     local fill = NewTexture(SUB_FILL, spec.file)
     local mask = NewMask()
@@ -147,9 +187,32 @@ function Elements.Create()
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("MEDIUM")
     Elements.frame = frame
+    if NS.NativeBlood then NS.NativeBlood.Create(frame) end
 
     BuildFillable("health", PLACEMENT.health)
     BuildFillable("power", PLACEMENT.power)
+    local bloodSpec = PLACEMENT.coagulatedBlood
+    local bar = CreateFrame("StatusBar", nil, frame)
+    local fill = bar:CreateTexture(nil, "ARTWORK", nil, SUB_FILL)
+    ---@cast fill CHHRadialTexture
+    bar:SetStatusBarTexture(fill)
+    SmoothTexture(fill, "coagulated_blood_fill")
+    bar:SetRenderMode(_G.Enum.StatusBarRenderMode.Radial)
+    fill:SetAllPoints(bar)
+    fill:SetRadialProgressBarReverse(false)
+    -- 参照现有遮罩1设计单位的过渡，先按整圆角度比例设置窄边候选。
+    -- 暴雪文档未定义羽化宽度的精确换算，实际观感仍需客户端校准。
+    fill:SetRadialProgressBarFeather(1 / (2 * math.pi * Logic.ARCS.coagulatedBlood.radius))
+    bar:SetAllPoints(frame)
+    bar:SetShown(false)
+    parts.coagulatedBlood = {
+        bg = NewTexture(SUB_BG, bloodSpec.file), fill = fill, bar = bar,
+    }
+    placements.coagulatedBlood = bloodSpec
+    Place(parts.coagulatedBlood.bg, bloodSpec)
+    parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker")
+    SmoothTexture(parts.deathStrike, "death_strike_marker", "CLAMPTOBLACKADDITIVE")
+    parts.deathStrike:SetShown(false)
 
     parts.runes = {}
     placements.runes = {}
@@ -174,6 +237,17 @@ function Elements.Create()
     return frame
 end
 
+-- 只供现有诊断命令读取；受限数值由调用方检测后决定是否输出。
+function Elements.BloodDiagnostics()
+    local part = parts.coagulatedBlood
+    if not part or not part.bar then return end
+    local low, high = part.bar:GetMinMaxValues()
+    local fill = part.fill
+    ---@cast fill CHHRadialTexture
+    return { minimum = low, maximum = high, value = part.bar:GetValue(),
+        percent = fill:GetRadialProgressBarPercent() }
+end
+
 function Elements.SetStrata(strata)
     if Elements.frame then
         Elements.frame:SetFrameStrata(strata)
@@ -187,10 +261,12 @@ function Elements.SetScale(scale)
 
     PlaceLayers(parts.health, placements.health)
     PlaceLayers(parts.power, placements.power)
+    Place(parts.coagulatedBlood.bg, placements.coagulatedBlood)
     for i = 1, Logic.PIPS.count do
         PlaceLayers(parts.runes[i], placements.runes[i])
     end
     PlaceLayers(parts.crosshair, placements.crosshair)
+    ApplyMarker(markerState)
 end
 
 function Elements.SetVisible(visible)
@@ -205,7 +281,7 @@ local function ApplyFillable(part, st)
     local visible = st.visible ~= false
     part.bg:SetShown(visible)
     -- 阴影不跟填充走：空转时填充整格消失，阴影要留着——那正是它标位置的时候
-    part.shadow:SetShown(visible)
+    if part.shadow then part.shadow:SetShown(visible) end
 
     -- 空转必须整格背景色：隐藏填充纹理，而不是把角度设成 0。
     -- 比例为 0 的情形不需要在这里拦：那时遮罩本来就什么都不露。
@@ -213,7 +289,9 @@ local function ApplyFillable(part, st)
     -- **"有没有角度"看 hasRotation 这个普通布尔，不许去比较 rotation 本身**：
     -- rotation 可能是秘密值，而秘密值不许参与比较——Core 的读数段里连"读到了吗"
     -- 都是用另一个布尔表示的，这里不能开这个口子。
-    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and st.hasRotation == true
+    local hasFill = part.bar and st.hasStacks == true or not part.bar and st.hasRotation == true
+    local showFill = visible and st.state ~= Logic.RUNE_EMPTY and hasFill
+    if part.bar then part.bar:SetShown(showFill) end
     part.fill:SetShown(showFill)
     if not visible then
         return
@@ -227,18 +305,37 @@ local function ApplyFillable(part, st)
     end)
 
     -- 阴影的颜色与浓淡也是各自独立的两个值；同样 pcalled
-    pcall(function()
-        local sc = st.shadowColor
-        part.shadow:SetVertexColor(sc[1], sc[2], sc[3], st.shadowAlpha or 1)
-    end)
+    if part.shadow then
+        pcall(function()
+            local sc = st.shadowColor
+            part.shadow:SetVertexColor(sc[1], sc[2], sc[3], st.shadowAlpha or 1)
+        end)
+    end
 
     if showFill then
         pcall(function()
             local fc = st.fillColor
-            part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+            if part.bar then
+                part.bar:SetStatusBarColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+            else
+                part.fill:SetVertexColor(fc[1], fc[2], fc[3], st.fillAlpha or 1)
+            end
         end)
         -- rotation 可能是秘密值：只能原样交给 setter
-        part.mask:SetRotation(st.rotation)
+        if part.bar then
+            local ok = pcall(function()
+                -- 原生比例按整圆计算；将用户量程换算为短弧角度区间。
+                -- 只计算普通配置常量，原始受限层数仍直接传给 SetValue。
+                local arc = Logic.ARCS.coagulatedBlood
+                local start = arc.start - Logic.FILL_MARGIN - 90
+                local unit = st.maxStacks / (arc.span + Logic.FILL_MARGIN)
+                part.bar:SetMinMaxValues(-start * unit, (360 - start) * unit)
+                part.bar:SetValue(st.stacks)
+            end)
+            if not ok then part.bar:SetShown(false); part.fill:SetShown(false) end
+        else
+            part.mask:SetRotation(st.rotation)
+        end
     end
 end
 
@@ -257,6 +354,14 @@ function Elements.Apply(state)
     if state.power then
         ApplyFillable(parts.power, state.power)
     end
+    local blood = state.coagulatedBlood or { visible = false }
+    if NS.NativeBlood then
+        NS.NativeBlood.Apply(blood, Elements.scale)
+        ApplyFillable(parts.coagulatedBlood, blood.probe and blood or { visible = false })
+    else
+        ApplyFillable(parts.coagulatedBlood, blood)
+    end
+    ApplyMarker(state.deathStrike)
 
     for i = 1, Logic.PIPS.count do
         local slot = state.runes and state.runes[i]

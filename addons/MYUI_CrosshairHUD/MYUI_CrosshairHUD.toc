@@ -5,11 +5,13 @@
 ## Group: MYUI
 ## Author: MYUI
 ## Version: 0.1.0
-## Dependencies: EllesmereUI, MYUI
+## Dependencies: EllesmereUI, MYUI, Blizzard_AuraContainer
 ## SavedVariables: MYUI_CrosshairHUDDB
 
 Logic.lua
+NativeBlood.lua
 Elements.lua
 Config.lua
 Visibility.lua
 Core.lua
+Diagnostics.lua
