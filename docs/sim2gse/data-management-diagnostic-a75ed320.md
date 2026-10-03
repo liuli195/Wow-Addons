@@ -244,3 +244,12 @@ Linux原基线全数据组8worker诊断23.79秒：103 passed、77 subtests passe
 仅run_command finally两临时文件unlink接缝增加11次尝试/10次20ms的有界重试，只接受PermissionError且winerror==32；其他错误立即抛、耗尽仍失败。原terminate、反复wait至作业退出、process.close及预留释放顺序保持，未扩大_create_windows_process创建失败清理或replace_file。最多两文件名义0.4秒仍计入现有TaskRuntime.elapsed_seconds，不重置截止、不在清理调用runtime.check替换原异常；成功重试后继续传递原BudgetExceeded。
 
 新增一条标准库可移植test_runtime回归，先红2个子测试（短暂冲突覆盖原BudgetExceeded、耗尽只尝试一次），实现后1项/5子测试通过0.34秒：stdout/stderr短暂冲突后实际删除且原异常身份保持，持续冲突11次耗尽仍抛，winerror5及无winerror不重试；检查terminate/wait/close、同预留ID释放、实际临时字节/删除和预算不重置、elapsed包含实际等待。原test_search真实hung-native用例未改。云端test_search收集因msvcrt不可用明确失败，不把替身当Windows验收；独立test_runtime仅使用runtime标准库和已拥有合成临时文件，不新造框架。统一测试入口登记通过。Windows真实挂起回归及整仓同SHA正式验证仍须父端在低负载窗口组织，Gate2仍未关闭。
+
+
+## e6b4226低负载独占诊断与单行并发对照候选
+
+Windows e6定向hung-native/callback/runtime：3项5子测试通过，pytest5.45秒/墙5.876秒。新严格local完整正式验证38选中/cache0，total60.03/墙60.429秒、exit124；19启动（16通过3超时）19未启动。产品312项100子测试通过45.76秒（pytest44.76）；数据组total_budget_timeout50.19秒，没有独立stdout。早先本机转述误把产品312/100归为数据，已由原始日志/JSON纠正，未发现命令重复执行。入口实际绑定74718c0ce5b419d597495ddefebbd7adca795ecb，impl sha256:d23f7cac9f1dd15bc2991114f418e4bc405910837ead172427a33db1055a93a3；outer3、product8、data12，正式60包括准备及收尾。
+
+随后仅一次同e6数据独占原生命令-v/durations诊断：112项77子测试全通过，12worker，pytest38.25秒/墙38.569秒、exit0；无WoW/其他测试，终止后无残留。最慢220深路径35.17秒、1000空成员34.74秒、隔离恢复16.64秒、旧布局12.41秒、过期purge12.03秒、迁移阶段10.10秒、卷预留9.84秒、purge阶段9.66秒、归档阶段9.14秒。90秒仅已有包装器防挂诊断上限，不改变正式60或构成整仓通过。
+
+据独占完整通过与并行超时的竞争关联证据，父端批准一次可逆资源对照：仅verify.sim2gse的pytestXdistWorkers由8改4，data12/outer3保持，所有checkParallel、命令、paths/inputs、timeout和完整覆盖不变。不是4/8方案，不预报优化成功；数据重用例35秒已近独占下界，不为试验删真实来源/1000上限/阶段/物理核验。回退为e6配置该字段8；候选须独立review及同SHA fresh完整正式60实测，失败不反复盲调，转为真实阶段计时取证。
