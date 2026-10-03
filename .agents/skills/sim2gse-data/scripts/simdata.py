@@ -405,12 +405,13 @@ def managed_file(root, path):
 @contextmanager
 def runner_locks(root, source):
     with ExitStack() as stack:
-        for parent in (source.parent, *source.parent.parents):
-            if not parent.is_relative_to(root):
-                break
-            lock = parent / ".runner.lock"
-            if os.path.lexists(lock):
-                stack.enter_context(byte_lock(lock))
+        if source.parent.is_relative_to(root):
+            for parent in (source.parent, *source.parent.parents):
+                lock = parent / ".runner.lock"
+                if os.path.lexists(lock):
+                    stack.enter_context(byte_lock(lock))
+                if parent == root:
+                    break
         yield
 
 

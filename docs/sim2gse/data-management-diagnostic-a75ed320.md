@@ -253,3 +253,15 @@ Windows e6定向hung-native/callback/runtime：3项5子测试通过，pytest5.45
 随后仅一次同e6数据独占原生命令-v/durations诊断：112项77子测试全通过，12worker，pytest38.25秒/墙38.569秒、exit0；无WoW/其他测试，终止后无残留。最慢220深路径35.17秒、1000空成员34.74秒、隔离恢复16.64秒、旧布局12.41秒、过期purge12.03秒、迁移阶段10.10秒、卷预留9.84秒、purge阶段9.66秒、归档阶段9.14秒。90秒仅已有包装器防挂诊断上限，不改变正式60或构成整仓通过。
 
 据独占完整通过与并行超时的竞争关联证据，父端批准一次可逆资源对照：仅verify.sim2gse的pytestXdistWorkers由8改4，data12/outer3保持，所有checkParallel、命令、paths/inputs、timeout和完整覆盖不变。不是4/8方案，不预报优化成功；数据重用例35秒已近独占下界，不为试验删真实来源/1000上限/阶段/物理核验。回退为e6配置该字段8；候选须独立review及同SHA fresh完整正式60实测，失败不反复盲调，转为真实阶段计时取证。
+
+## 29491对照失败后：保持物理锁检查的词法热点收敛
+
+Windows同29491正式fresh完整对照仍失败：tool60.186秒/外层60.398秒、exit124，cache0，38选中、22通过3超时13未启动。产品312项100子测试通过50.49秒（pytest49.65），数据112项77子测试通过46.29秒（pytest45.86）；产品比e6的45.76秒变慢，数据由超时转完成但不能称整仓达标。未完成wowaddontest-dk/addon-probe-test/assets及13未启动项如实保留，不再盲调worker。
+
+云端以现有公开CLI及标准库Profile/runpy对原220深路径和1000空成员完整测试取证，诊断各45秒防挂、所有原断言保留。首次直接使用python -m cProfile会吞SystemExit，使预期退出2变0；该诊断失败后改为Profile+runpy finally写采样，保持真实CLI退出码，没有为诊断错误改生产或放松断言。profile不用于正式通过或Windows速度保证。
+
+热点runner_locks原来逐祖先is_relative_to(root)，pathlib内部反复构造祖先，造成纯词法重复。最小修改仅入口source.parent一次包含判断，之后仍遍历原祖先元组逐层lexists/byte_lock，取得根锁后parent==root停止；无路径缓存，不跳物理检查。完整读14调用点及根来源，并用实际旧/新函数核对140个POSIX/Windows/UNC/根/根外词法路径的probe、获取及逆序释放序列相同。
+
+同19正常CLI采样，220原完整例通过：前10.934秒/后8.452秒，runner_locks4444→4444、lstat115432→115432、lexists28758→28758、byte_lock12→12；is_relative_to34812→6158，runner_locks嵌套累计3.235→1.365秒，累计不能相加。1000原完整例通过：前8.511秒/后7.114秒，runner_locks20008→20008、lstat133665→133665、lexists20064→20064、byte_lock4→4，is_relative_to44062→24050。1000前采样与一次普通两例baseline短暂重叠，后采样独占，不能把墙钟差全部归因候选；220也仅单次含采样观察，不外推Windows收益。
+
+候选Linux可移植诊断103项77子测试通过20.60秒、2原有Windows联接skipped；7个既有Windows/隔离解释器环境相关用例仅在该诊断命令不选，没有改仓库发现或skip。两个原完整大例另通过，来源数量、长路径、1000上限、容量拒绝、持久恢复和全部物理锁行为未删。独立只读review完整核14callers与原始profile，No findings（未发现问题），确认以上四种物理调用次数完全相同，允许最小候选交付实测；review未修改仓库。Windows同SHA两个完整大例与整仓60正式仍待父端低负载窗口验证，未应用正式规格、合并或操作真实历史。
