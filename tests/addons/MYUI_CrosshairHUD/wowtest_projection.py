@@ -70,7 +70,7 @@ RUNES_STATE_MAP = {"ready": "ready", "recharging": "cooldown", "empty": "empty"}
 
 def angle_to_ratio(angle, arc):
     """由设计常量独立推导的「角度 → 填充比例」逆映射。"""
-    reach = arc["span"] + FILL_MARGIN
+    reach = arc["span"] + FILL_MARGIN + arc.get("end_margin", 0.0)
     degrees = math.degrees(angle)
     if arc["reverse"]:
         cut = -degrees - 270.0

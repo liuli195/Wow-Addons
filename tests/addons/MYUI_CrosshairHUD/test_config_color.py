@@ -37,6 +37,10 @@ local dir = assert(arg[1])
 local textures = {}
 local function NewTexture(_, _, _, sub)
     local t = { sub = sub, path = nil, vertex = nil, shown = nil }
+    function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
+    function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
+    function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
+    function t:SetRadialProgressBarFeather(v) self.radialFeather=v end
     function t:SetTexture(path) t.path = path end
     function t:SetSize() end
     function t:SetPoint() end
@@ -52,8 +56,15 @@ end
 local frame
 function CreateFrame()
     local f = {}
+    function f:SetStatusBarTexture(t) self.texture=t end
+    function f:SetStatusBarColor(...) self.texture:SetVertexColor(...) end
+    function f:SetRenderMode(v) self.renderMode=v end
+    function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
+    function f:SetValue(v) self.value=v end
+    function f:SetAllPoints() end
     function f:CreateTexture(a, b, c, sub) return NewTexture(a, b, c, sub) end
     function f:CreateMaskTexture() return NewTexture() end
+    function f:CreateLine() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint() end
     function f:ClearAllPoints() end
@@ -72,7 +83,7 @@ function CreateFrame()
 end
 
 UIParent = { GetEffectiveScale = function() return 1 end }
-Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 } }
+Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 }, StatusBarRenderMode = { Radial = 1 } }
 SlashCmdList = {}
 C_AddOns = { GetAddOnMetadata = function() return "test" end,
              IsAddOnLoaded = function() return true end }
@@ -134,7 +145,7 @@ _G.EllesmereUI = {
 local unitClassCalls = 0
 function UnitClass() unitClassCalls = unitClassCalls + 1; return "Death Knight", DK, 6 end
 
-for _, name in ipairs({ "Logic", "Elements", "Config", "Core" }) do
+for _, name in ipairs({ "Logic", "Elements", "Config", "Debug", "Core" }) do
     assert(loadfile(dir .. "/" .. name .. ".lua"))()
 end
 local NS = assert(_G.MYUI_CHH)
@@ -206,7 +217,9 @@ resourceThrows = false
 --   出口函数（页面据此建不建第二个色块）、数据模型（有没有 bgMode）、渲染取值。
 ----------------------------------------------------------------------
 local order = Config.ELEMENT_ORDER
-assert(#order == 4, "元素数量变了就要一并检查这条规则")
+assert(#order == 6, "两项新显示也必须遵循独立自定义背景规则")
+assert(Config.SourceFor("coagulatedBlood", "fill") == nil)
+assert(Config.SourceFor("deathStrike", "fill") == nil)
 
 for _, key in ipairs(order) do
     assert(Config.SourceFor(key, "bg") == nil,
@@ -429,7 +442,7 @@ local liveShadow = FindShadow("health_arc_shadow")
 assert(liveShadow and liveShadow.vertex,
     "常规路径下阴影层没收到顶点色——Core 构造状态表时漏了阴影字段")
 Near(liveShadow.vertex[1], 0, "本票先用固定值：阴影纯黑")
-Near(liveShadow.vertex[4], 1, "本票先用固定值：阴影最重")
+Near(liveShadow.vertex[4], 0.8, "新安装阴影透明度为80%")
 
 Core.demo = true
 Core.Refresh()

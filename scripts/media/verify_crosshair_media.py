@@ -17,7 +17,7 @@
    定稿的样子，而这条只有量过才知道。2026-09-19 从 Figma 重导时它丢了，游戏里边缘出现
    锯齿，当时**所有断言都是绿的**：图还是那张图、尺寸还对、颜色还白，只有过渡带没了。
    这条就是那次留下的。判据为什么用「宽度」而不是「占比」，见 EDGE_TRANSITION_MIN。
-10. 贴图的像素边长必须是 **2 的幂**——这是「缩小显示不出锯齿」真正依赖的那一条，
+10. 贴图的像素边长必须是 **2 的幂**——这是本仓库制作标准的一部分，
    而补边是没写代码就看不出来的东西：画布悄悄变大、内容原地不动，图还是那张图。
    理由与实机验证记录见 POT_REQUIRED。
 
@@ -30,7 +30,8 @@ import math
 import sys
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
+from white_blp import MATERIAL_POLICY, verify_white_blp
 
 REPO = Path(__file__).resolve().parents[2]
 ASSETS = REPO / "assets" / "CrosshairHUDMedia"
@@ -43,10 +44,11 @@ MASK_PX_PER_UNIT = 8
 MASK_UNITS = 128
 # 中线过渡带的宽度（像素）。**下面断言的两侧纯净区要从它推导，不能写死**
 # ——过渡带一宽，写死的边界就会把过渡像素当成"左半"，报出假的"左半不纯"。
-MASK_SOFTNESS_PX = 8
+MASK_SOFTNESS_PX = 4
 RING_RADIUS = 54          # 设计稿圆环半径，与 Logic.RING.radius 一致
 DESIGN_CENTER = 128       # 设计稿坐标系里的圆环中心
 ARC_STROKE = 7.8          # 设计稿定稿的条宽（设计单位）：两条弧是线宽，资源格是半径跨度
+BLOOD_ARC_STROKE = 3.9   # 凝固之血半粗条，不降低原有素材标准
 ARC_STROKE_TOL = 0.3
 CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
 # 中心定位点：设计稿上是准星圆心处一个直径 10 预览单位（＝5 设计稿单位）的实心白点。
@@ -72,19 +74,9 @@ SHADOW_SUFFIX = "_shadow"
 # (1.57, 2.38) 是一段空档，2.0 落在正中。
 EDGE_TRANSITION_MIN = 2.0
 
-# 贴图的**像素边长必须是 2 的幂**。这是「缩小显示不出锯齿」真正依赖的那一条。
-#
-# 魔兽的 `SetTexture` 只有在过滤模式给 `TRILINEAR` 且**贴图边长是 2 的幂**时才用得上
-# mipmap。少了任何一条，它就只能双线性采样：缩小显示时每个屏幕像素只读 4 个纹素，
-# 高频全丢，边缘出锯齿。2026-09-19 实机逐条验过：
-#
-#     密度 8 + 边长非 2 的幂 + TRILINEAR   → 缩到 0.8 档锯齿明显
-#     密度 8 + 边长 2 的幂   + TRILINEAR   → **锐利且无锯齿**（实机确认）
-#
-# **不能靠"把边缘抹软"来绕**：软边确实也能消锯齿，但那是拿锐度换的（实机原话：
-# 「它不锐利，但是很柔」）。2 的幂这一条才是既锐利又不锯的正路。
-#
-# 补边必须**四周对称**地补：圆心偏移不变，内容位置与大小不变，只有透明边变多。
+# 仓库制作标准：宽高为2的幂，保证完整缩小链及一致的保存格式。
+# 这不是已经证实的暴雪绝对限制；平滑检查还必须读取实际BLP的每一级。
+# 补边保持对称，不改变内容位置。
 POT_REQUIRED = True
 
 # 拖动框的容差。
@@ -193,8 +185,22 @@ def verify_arc_stroke(asset, scale):
     if got is None:
         check(False, f"{name}: 量不出半径方向的跨度（没有过半覆盖的像素）")
         return
-    check(abs(got - ARC_STROKE) <= ARC_STROKE_TOL,
-        f"{name}: 沿半径的跨度应为 {ARC_STROKE} 设计单位，实测 {got:.2f}")
+    expected = BLOOD_ARC_STROKE if name == "coagulated_blood_arc.png" else ARC_STROKE
+    check(abs(got - expected) <= ARC_STROKE_TOL,
+        f"{name}: 沿半径的跨度应为 {expected} 设计单位，实测 {got:.2f}")
+    if name == "coagulated_blood_arc.png":
+        yy, xx = np.mgrid[0:image.shape[0], 0:image.shape[1]]
+        dw, dh = asset["displaySize"]
+        dx = asset["centerOffset"][0] - dw / 2 + (xx + 0.5) / scale
+        dy = asset["centerOffset"][1] - dh / 2 + (yy + 0.5) / scale
+        selected = image[:, :, 3] >= 128
+        radii = np.hypot(dx[selected], dy[selected])
+        angles = np.degrees(np.arctan2(dy[selected], dx[selected])) % 360
+        radius = (radii.min() + radii.max()) / 2
+        check(abs(radius - 57.9) <= 0.3,
+              f"{name}: 中心半径应为 57.9，实测 {radius:.2f}")
+        check(abs(angles.min() - 99) <= 0.3 and abs(angles.max() - 201) <= 0.3,
+              f"{name}: 起止角应为 99–201，实测 {angles.min():.2f}–{angles.max():.2f}")
 
 
 def verify_center_dot(asset, scale):
@@ -393,6 +399,7 @@ def verify_mask():
     # 常量见 addons/MYUI_CrosshairHUD/Logic.lua 的 Logic.FILL_MARGIN。
     fill_margin_deg = 2.0
     soft_px = int(np.count_nonzero((alpha[h // 2, :mid] > 0) & (alpha[h // 2, :mid] < 255)))
+    check(soft_px == 3, "遮罩渐隐应为4像素宽、3个中间透明度采样点")
     # 1 像素 = 1 / MASK_PX_PER_UNIT 个设计单位；换算成角度要除以环半径
     soft_deg = np.degrees(soft_px / MASK_PX_PER_UNIT / RING_RADIUS)
     check(soft_deg <= fill_margin_deg,
@@ -401,7 +408,18 @@ def verify_mask():
 
 def main():
     manifest = json.loads((ASSETS / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("gameMaterial") != MATERIAL_POLICY:
+        print("FAIL: 清单中的游戏材质标准不一致")
+        return 1
     scale = manifest["exportScale"]
+    for name in manifest.get("hollowShadows", []):
+        shadow = load(MEDIA / name)
+        shape = load(MEDIA / name.replace("_shadow.png", ".png"))
+        if shadow is not None and shape is not None:
+            core = np.asarray(Image.fromarray(shape[:, :, 3].astype(np.uint8)).filter(
+                ImageFilter.MinFilter(5))) == 255
+            check(np.all(shadow[:, :, 3][core] == 0),
+                  f"{name}: 主体内部必须完全透明")
     for asset in manifest["assets"]:
         want = (asset["displaySize"][0] * scale, asset["displaySize"][1] * scale)
         verify_texture(asset["file"], want)
@@ -412,6 +430,30 @@ def main():
         verify_canvas_padding(asset, scale)
         verify_drag_box(asset, scale)
     verify_mask()
+    verify_texture("coagulated_blood_fill.png", (1024, 1024))
+    source = load(MEDIA / "coagulated_blood_arc.png")
+    fill = load(MEDIA / "coagulated_blood_fill.png")
+    if source is not None and fill is not None:
+        expected = np.full_like(source, 255)
+        expected[:, :, 3] = 0
+        expected[128:, :768] = source[:896, 256:]
+        check(np.array_equal(fill, expected), "凝固之血填充必须保持原像素，只校正圆心")
+        check(np.count_nonzero(fill[:, :, 3]) == np.count_nonzero(source[:, :, 3]),
+              "凝固之血填充平移不得丢失可见像素")
+    verify_texture("death_strike_marker.png", (1024, 1024))
+    marker = load(MEDIA / "death_strike_marker.png")
+    if marker is not None:
+        alpha = marker[:, :, 3]
+        yy, xx = np.where(alpha >= 128)
+        if len(xx):
+            check((xx.min(), xx.max(), yy.min(), yy.max()) == (64, 959, 384, 639),
+                  "death_strike_marker.png: 主体比例与绘制补偿不一致")
+        check(np.all(alpha[[0, -1], :] == 0) and np.all(alpha[:, [0, -1]] == 0),
+              "death_strike_marker.png: 画布边缘必须透明")
+        check(np.count_nonzero((alpha[512] > 0) & (alpha[512] < 255)) >= 16,
+              "death_strike_marker.png: 平头端部缺少采样过渡")
+        check(np.count_nonzero((alpha[:, 512] > 0) & (alpha[:, 512] < 255)) >= 16,
+              "death_strike_marker.png: 长边缺少采样过渡")
 
     if failures:
         print("FAIL: 准星 HUD 纹理校验未通过")
@@ -420,8 +462,20 @@ def main():
         print(f"诊断目录：{MEDIA}")
         return 1
 
-    total = len(manifest["assets"]) + 1
-    print(f"PASS: {total} 个准星 HUD 纹理的尺寸、中性度、蒙版纯度与遮罩方向")
+    total = len(manifest["assets"]) + 3
+    names = [a["file"] for a in manifest["assets"]] + [MASK_NAME, "coagulated_blood_fill.png", "death_strike_marker.png"]
+    for name in names:
+        try:
+            with Image.open(MEDIA / name) as image:
+                verify_white_blp((MEDIA / name).with_suffix(".blp"), image)
+        except (OSError, ValueError) as error:
+            print(f"FAIL: {error}")
+            return 1
+    expected = {Path(name).with_suffix(".blp").name for name in names}
+    if {p.name for p in MEDIA.glob("*.blp")} != expected:
+        print("FAIL: BLP成品清单存在缺失或多余素材")
+        return 1
+    print(f"PASS: {total} 个准星 HUD 纹理及对应BLP完整缩小层、格式与透明度")
     return 0
 
 

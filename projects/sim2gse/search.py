@@ -20,8 +20,9 @@ from runtime import replace_file
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 
 
-SEARCH_ALGORITHM = "multi-start-local-v1"
+SEARCH_ALGORITHM = "multi-start-local-adaptive-v2"
 STATS_VERSION = "paired-bootstrap-v1"
+SCREENING_ERROR_MULTIPLIER = 1.96
 DEFAULT_SCENARIOS = ("nominal", "jitter", "slow", "pause", "phase")
 DEFAULT_CONFIG = {
     "total_budget_seconds": 600.0,
@@ -872,13 +873,22 @@ def _score(rows):
     return sum(r['dps'] * r['samples'] for r in rows) / sum(r['samples'] for r in rows)
 
 
+def _score_bounds(rows):
+    count = sum(row['samples'] for row in rows)
+    mean = _score(rows)
+    variance_sum = sum(row['samples'] * (row['variance'] + (row['dps'] - mean) ** 2)
+                       for row in rows)
+    error = SCREENING_ERROR_MULTIPLIER * math.sqrt(variance_sum / count / count)
+    return mean - error, mean + error
+
+
 def _tuple(value):
     return tuple(_tuple(v) for v in value) if isinstance(value, list) else value
 
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
-    from engine import check_report, player_report, CandidateError
+    from engine import check_report, player_report, damage_statistics, CandidateError
     from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity
     from simulation_config import config_for
@@ -1094,6 +1104,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def queue_position_observation(work, program, comparison):
         if observability is not None:
             with store.lock:
+                if any(job['event_id'] == work['observation_id'] and job['comparison'] == comparison
+                       for job in position_jobs):
+                    return
                 position_jobs.append(dict(
                     event_id=work['observation_id'], program=_copy_program(program),
                     comparison=comparison, status='pending'))
@@ -1258,6 +1271,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def candidate_key(program):
         return prepare(program)['identity']
 
+    def score_variance(report):
+        variance = damage_statistics(report, character).get('variance')
+        if type(variance) not in (int, float) or not math.isfinite(variance) or variance < 0:
+            raise CandidateError('伤害方差无效')
+        return variance
+
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False):
         seed_offset = {'search': 0, 'validation': 100000, 'final': 200000}[purpose]
         # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
@@ -1288,7 +1307,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     raise ValueError('缓存报告散列或身份不符')
                 summary = check_report(json.loads(raw), character, iterations,
                                        simulation_config=simulation_config)
-                if summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']:
+                if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
+                        or score_variance(json.loads(raw)) != cached['variance']):
                     raise ValueError('缓存摘要不符')
                 store.put_batch(key, cached, counter='batch_cache_hits')
                 return dict(cached, cached=True)
@@ -1317,8 +1337,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started, **kwargs)
             raw = (folder / 'native.json').read_bytes()
+            variance = score_variance(result['report'])
             row = dict(status='success', request=request, dps=result['summary']['dps'],
-                       samples=result['summary']['samples'], requested_iterations=iterations,
+                       samples=result['summary']['samples'], variance=variance, requested_iterations=iterations,
                        artifact=folder.relative_to(destination).as_posix(), origin=str(destination), sha256=hashlib.sha256(raw).hexdigest(),
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
                            player_report(result['report'], character)['collected_data'].get('resource_overflowed',{}).get(reference['identity']['resource'],{}).get('mean',0)>0,
@@ -1366,25 +1387,70 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     rows[side].append(future.result())
         return rows
 
-    def record(program):
+    def append_score(program, rows, index):
+        target = config['batch_targets'][index]
+        previous = config['batch_targets'][index - 1] if index else 0
+        row = batch(program, 'search', index, target - previous,
+                    trace=(config['diagnostic_logging'] and not state['archive'] and index == 0))
+        rows.append(dict(row, target=target))
+
+    def screen_round():
+        pending = state['pending']
+        if all(work.get('screen_complete') for work in pending):
+            return
+        for index in range(len(config['batch_targets'])):
+            active = [work for work in pending if not work.get('screened_out') and not work.get('score_error')]
+            for work in active:
+                rows = work.setdefault('score_batches', [])
+                try:
+                    if len(rows) <= index:
+                        append_score(work['program'], rows, index)
+                        store.save()
+                except CandidateError as error:
+                    work['score_error'] = str(error)
+                    store.save()
+            active = [work for work in active if not work.get('score_error')]
+            if not active:
+                break
+            bounds = [_score_bounds(work['score_batches'][:index + 1]) for work in active]
+            best_lower = max(lower for lower, upper in bounds)
+            for work, (lower, upper) in zip(active, bounds):
+                if upper < best_lower:
+                    work['screened_out'] = True
+            store.save()
+            if sum(not work.get('screened_out') for work in active) <= 1:
+                break
+        for work in pending:
+            work['screen_complete'] = True
+        store.save()
+
+    def record(program, rows=None):
         compiled = candidate(program)  # 编译合法性必须先于任何原生计算。
         key = candidate_key(program)
-        rows, previous = [], 0
-        incumbent = next((r for r in state['archive'] if r['key'] == state.get('best')), None)
-        for index, target in enumerate(config['batch_targets']):
-            row = batch(program, 'search', index, target-previous,
-                        trace=(config['diagnostic_logging'] and not state['archive'] and index == 0))
-            row = dict(row, target=target)
-            rows.append(row)
-            previous = target
-            if incumbent and len(rows) >= 2:
-                reference_rows = incumbent['batches'][:len(rows)]
-                # 独立批次比较；明确落后才停止，不按一次噪声排名淘汰。
-                ci = paired_ci([r['dps'] for r in rows], [r['dps'] for r in reference_rows])
-                if ci and ci[1] < 0:
-                    break
+        if rows is None:
+            rows = []
+            targets = len(config['batch_targets']) if not state['archive'] else 1
+            for index in range(targets):
+                append_score(program, rows, index)
         return dict(key=key, program=program, batches=rows, score=_score(rows),
                     candidate=compiled,candidate_sha256=digest(compiled))
+
+    def challenges(current, opponent):
+        for index in range(len(config['batch_targets'])):
+            for item in (current, opponent):
+                if len(item['batches']) <= index:
+                    append_score(item['program'], item['batches'], index)
+                    item['score'] = _score(item['batches'])
+                    store.save()
+            left = current['batches'][:index + 1]
+            right = opponent['batches'][:index + 1]
+            low, high = _score_bounds(left)
+            other_low, other_high = _score_bounds(right)
+            if high < other_low:
+                return False
+            if low > other_high:
+                return True
+        return _score(left) > _score(right)
 
     def search():
         runtime.phase_limit = min(config['search_budget_seconds'], config['total_budget_seconds'])
@@ -1511,7 +1577,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if observability:
                     mark_work(work, 'score_started', 'score_started')
                     scoring_started = time.perf_counter()
-                current = record(work['program'])
+                if not work['start']:
+                    screen_round()
+                    if work.get('score_error'):
+                        raise CandidateError(work['score_error'])
+                current = record(work['program'], work.get('score_batches'))
                 if observability:
                     with store.lock:
                         row = event_for(work)
@@ -1540,12 +1610,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     dict(program=program_key(work['program']), error=str(error)))
                 current = None
             if current:
+                route_promoted = global_promoted = False
                 if not state['archive']:
                     state['best']=key
                 else:
                     opponent_key=state['best'] if work['start'] else state['chains'][work['lane']]['best']
                     opponent=next(r for r in state['archive'] if r['key']==opponent_key)
-                    if current['score']>opponent['score']:
+                    if not work.get('screened_out') and challenges(current, opponent):
                         if observability:
                             if work['start']:
                                 mark_promotion(work, 'global', checked=True)
@@ -1572,13 +1643,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                 if opponent_key == state['best']:
                                     mark_promotion(work, 'global', promoted=route_promoted)
                         if route_promoted:
-                            if not work['start']:
-                                state['chains'][work['lane']]['best']=key
                             global_best=next(r for r in state['archive'] if r['key']==state['best'])
                             if opponent_key==state['best']:
-                                state['best']=key
-                                state['round_improved']=True
-                            elif current['score']>global_best['score']:
+                                global_promoted = True
+                            elif challenges(current, global_best):
                                 if observability:
                                     mark_promotion(work, 'global', checked=True)
                                     global_started = time.perf_counter()
@@ -1594,10 +1662,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                 global_promoted = bool(ci and ci[0] > 0)
                                 if observability:
                                     mark_promotion(work, 'global', promoted=global_promoted)
-                                if global_promoted:
-                                    state['best']=key
-                                    state['round_improved']=True
                 state['archive'].append(current)
+                # 后续加测可能取消；只有候选完整入档后才发布赢家指针。
+                if route_promoted and not work['start']:
+                    state['chains'][work['lane']]['best'] = key
+                if global_promoted:
+                    state['best'] = key
+                    state['round_improved'] = True
                 if work['start']:
                     state['chains'].append(dict(best=key,visited=[key],rounds=0))
                 else:

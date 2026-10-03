@@ -32,7 +32,7 @@ MANIFEST = ROOT / "assets/CrosshairHUDMedia/manifest.json"
 HARNESS = r'''
 local dir = assert(arg[1])
 
-Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 } }
+Enum = { PowerType = { RunicPower = 6 }, LuaCurveType = { Linear = 0 }, StatusBarRenderMode = { Radial = 1 } }
 UIParent = { GetEffectiveScale = function() return 1 end }
 
 ----------------------------------------------------------------------
@@ -42,6 +42,10 @@ local textures = {}
 local frame
 local function NewTexture(_, _, _, sub)
     local t = { sub = sub, path = nil, size = nil, point = nil, filter = nil }
+    function t:SetRadialProgressBarStartOffset(v) self.radialStart=v end
+    function t:SetRadialProgressBarEndOffset(v) self.radialEnd=v end
+    function t:SetRadialProgressBarReverse(v) self.radialReverse=v end
+    function t:SetRadialProgressBarFeather(v) self.radialFeather=v end
     function t:SetTexture(path, _, _, filter) t.path = path; t.filter = filter end
     function t:SetSize(w, h) t.size = { w, h } end
     function t:SetPoint(a, b, c, x, y) t.point = { x, y } end
@@ -56,8 +60,15 @@ end
 
 function CreateFrame()
     local f = {}
+    function f:SetStatusBarTexture(t) self.texture=t end
+    function f:SetStatusBarColor(...) self.texture:SetVertexColor(...) end
+    function f:SetRenderMode(v) self.renderMode=v end
+    function f:SetMinMaxValues(a,b) self.minimum,self.maximum=a,b end
+    function f:SetValue(v) self.value=v end
+    function f:SetAllPoints() end
     function f:CreateTexture(a, b, c, sub) return NewTexture(a, b, c, sub) end
     function f:CreateMaskTexture() return NewTexture() end
+    function f:CreateLine() return NewTexture() end
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint() end
     function f:SetFrameStrata() end
@@ -73,6 +84,12 @@ local Elements = assert(NS.Elements)
 
 Elements.scale = 1
 Elements.Create()
+local hardMasks, softMasks = 0, 0
+for _, t in ipairs(textures) do
+    if t.path and t.path:match("mask_half_hard%.blp$") then hardMasks = hardMasks + 1 end
+    if t.path and t.path:match("mask_half%.blp$") then softMasks = softMasks + 1 end
+end
+assert(hardMasks == 0 and softMasks == 8, "血条、能量条和六个资源槽统一使用柔化遮罩")
 
 ----------------------------------------------------------------------
 -- 逐条比对：清单说什么尺寸、什么偏移，摆放表就得报什么
@@ -131,7 +148,7 @@ def manifest_table():
     for asset in data["assets"]:
         w, h = asset["displaySize"]
         ox, oy = asset["centerOffset"]
-        rows.append(f'    ["{asset["file"]}"] = {{ {w}, {h}, {ox}, {oy} }},')
+        rows.append(f'    ["{asset["file"].replace(".png", ".blp")}"] = {{ {w}, {h}, {ox}, {oy} }},')
     return "{\n" + "\n".join(rows) + "\n}"
 
 
