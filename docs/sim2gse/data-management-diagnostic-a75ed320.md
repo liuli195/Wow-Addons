@@ -168,6 +168,8 @@ before/after只运行该代表用例，准确pytest参数 `-q tests/sim2gse-data
 
 ## 无 WoW 混杂重测与最小进程内迁移
 
+源1ef09063295ae0b1933ada376a3dae5c6a97ab55 clean 后，窗口释放仅一次正式完整38项verify --full --performance-report、60秒硬截止。现场2026-10-03T08:44:21Z一秒CPU17.016%、可用8676184064字节/load74，WoW PID28504、工作集6700015616字节仍运行，未关闭用户进程。与之前无WoW的测量有混杂，不归因代码收益。结果截止收尾60.365秒、child1/外层124，0cache-hit；full要求38项真实执行，但实际启动/完成数量及各组结果均未汇总，不能称38已完成或只差0.365秒。旧performance-report仍867的66.27，未冒作新报告。taskkill128后41个已知日志PID逐个只读核查全部absent（08:46:01Z），窗口释放，不再自动重跑。原日志data-management-full-formal-1ef0906.log、现场data-management-preflight-1ef0906.json；正式门禁仍未通过。
+
 源86774aa完整重测已生成，不因后续额度中断重跑。正式full60截断60.363秒、外层124/child1；51个已知节点退出。一次full诊断取得38项完整报告，工具66.27/墙66.857秒、退出1，37passed、data超时60（检查61.25秒，不是完整pytest耗时）。产品311passed/pytest44.87/check45.75；旧DK14.92、skill14.36、checker7.05等全部明细见data-management-full-diagnostic-86774aa-report.json及同名stdout。正式前CPU5.136%、可用16673681408字节/load51；诊断前CPU2.754%、可用17105145856字节/load49；20逻辑CPU、总34104328192字节。两份preflight记录UTC，已知WoW客户端无匹配，未关闭进程。低负载仍失败，不能仅归因WoW。
 
 新独占窗口仅一次原生数据组诊断，同86774aa代码配置：112passed+77subtests、实际12/12、WorkStealing，pytest43.64/墙44.586秒退出0。最慢1000真实空成员39.80、220深路径恢复37.70、隔离恢复15.21、旧格式13.89；完整case日志data-management-native-data-86774aa.log，已知root13100只读absent。与整库并发超时不能直接比较为代码收益。1000合法上限成功及off-by-one是独有覆盖，缩减损失已报父端，本批没有删1000或220真实边界。
