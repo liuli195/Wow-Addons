@@ -18,7 +18,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - run: npm install --global --ignore-scripts --no-audit --no-fund @liuli195/myspec@2.2.0
-      - run: npm install --global --ignore-scripts --no-audit --no-fund @liuli195/build-and-verify@2.2.0
+      - run: |
+          git clone --no-checkout https://github.com/liuli195/my-agent-skills $RUNNER_TEMP/myspec
+          git -C $RUNNER_TEMP/myspec checkout --detach 881ee3b77867de326f845ed7a716ef734c10f707
+          tarball=$(python $RUNNER_TEMP/myspec/plugins/tool-lifecycle/pack.py myspec $RUNNER_TEMP)
+          npm install --global --ignore-scripts --no-audit --no-fund "$tarball"
+      - run: |
+          git clone --no-checkout https://github.com/liuli195/my-agent-skills $RUNNER_TEMP/build-and-verify
+          git -C $RUNNER_TEMP/build-and-verify checkout --detach 881ee3b77867de326f845ed7a716ef734c10f707
+          tarball=$(python $RUNNER_TEMP/build-and-verify/plugins/tool-lifecycle/pack.py build-and-verify $RUNNER_TEMP)
+          npm install --global --ignore-scripts --no-audit --no-fund "$tarball"
       - run: myspec doctor --all
       - run: build-and-verify verify --project .
