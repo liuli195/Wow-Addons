@@ -20,7 +20,7 @@ class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="simdata 合成 lifecycle ")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name) / "data root"
+        self.root = Path(self.temporary.name).resolve() / "data root"
         self.config = Path(self.temporary.name) / "machine.json"
         self.policy = dict(schema_version=1, mode="test", root_id=str(uuid.uuid4()),
                            data_root=str(self.root), production_enabled=False,
