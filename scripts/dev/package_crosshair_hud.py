@@ -110,6 +110,8 @@ def safe_scopes(addons):
     if raw.is_symlink() or (hasattr(raw, 'is_junction') and raw.is_junction()):
         raise ValueError('游戏插件目录不能是链接目录')
     root = raw.resolve()
+    if any(part.lower() == 'wtf' for part in (*raw.parts, *root.parts)):
+        raise ValueError('部署目标不得位于WTF个人设置目录内')
     targets = []
     for name in SCOPES:
         path = root / name
@@ -129,6 +131,13 @@ def deploy(package, addons, backups):
     package = Path(package).resolve()
     manifest = validate(package)
     root, targets = safe_scopes(addons)
+    old_build = 'unknown'
+    old_toc = root / 'MYUI_CrosshairHUD/MYUI_CrosshairHUD.toc'
+    if old_toc.is_file():
+        for line in old_toc.read_text(encoding='utf-8-sig', errors='replace').splitlines():
+            key, separator, value = line.partition(':')
+            if separator and key.strip().lower() == '## x-myui-build':
+                old_build = value.strip()[:80] or 'unknown'
     backups = Path(backups).resolve()
     if backups.is_relative_to(root.parent.parent):
         raise ValueError('备份必须保存在游戏目录外')
@@ -157,7 +166,8 @@ def deploy(package, addons, backups):
                 raise ValueError('备份核对失败，尚未部署')
             records.append({'path': name_in_backup, 'sha256': checksum})
     (backup / 'backup-manifest.json').write_text(json.dumps(
-        {'installedBuild': manifest['build'], 'scopes': list(SCOPES), 'files': records},
+        {'installedBuild': old_build, 'targetBuild': manifest['build'],
+         'scopes': list(SCOPES), 'files': records},
         ensure_ascii=False, indent=2), encoding='utf-8')
     # targets已经逐个解析并限定在准确的授权目录内。
     for path in targets:

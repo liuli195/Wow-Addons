@@ -149,3 +149,29 @@ io.write('PASS diagnostic window\n')
     result = subprocess.run([str(ROOT / '.tools/lua-5.1.5/src/lua.exe'), str(harness),
                              str(package / 'AddOns/MYUI_CrosshairHUD')], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_deployment_rejects_wtf_even_when_suffix_looks_correct(tmp_path):
+    module = tool()
+    package = module.build(ROOT, tmp_path / 'packages')
+    wrong = tmp_path / '_retail_/WTF/Interface/AddOns'
+    wrong.mkdir(parents=True)
+    with pytest.raises(ValueError, match='WTF'):
+        module.deploy(package, wrong, tmp_path / 'backups')
+    assert list(wrong.iterdir()) == []
+    assert not (tmp_path / 'backups').exists()
+
+
+@pytest.mark.parametrize('old_build', ['previous-build', None])
+def test_backup_identifies_old_install_separately_from_target(tmp_path, old_build):
+    module = tool()
+    package = module.build(ROOT, tmp_path / 'packages')
+    addons = tmp_path / '_retail_/Interface/AddOns'
+    toc = addons / 'MYUI_CrosshairHUD/MYUI_CrosshairHUD.toc'
+    toc.parent.mkdir(parents=True)
+    toc.write_text('## Version: 0.1.0\n' + (f'## X-MYUI-Build: {old_build}\n' if old_build else ''), encoding='utf-8')
+    backup = module.deploy(package, addons, tmp_path / 'backups')
+    import json
+    metadata = json.loads((backup / 'backup-manifest.json').read_text(encoding='utf-8'))
+    assert metadata['installedBuild'] == (old_build or 'unknown')
+    assert metadata['targetBuild'] == module.validate(package)['build']

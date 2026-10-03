@@ -649,3 +649,30 @@ rows["常规"]["HUD 缩放"].setValue(0.5);assert(NS.NativeBlood.host.scale==0.5
 SlashCmdList.MYUICHH("bloodtest 10");assert(not NS.NativeBlood.host.shown)
 SlashCmdList.MYUICHH("bloodtest off");assert(NS.NativeBlood.host.shown)
 ''',native=True)
+
+
+def test_native_binding_recovers_after_temporary_failure_without_config_change():
+    run_scenario(r'''
+local base=CreateFrame
+local fail=true
+local attempts=0
+local clock=10
+GetTime=function() return clock end
+CreateFrame=function(kind,...)
+ if kind=="AuraContainer" then
+  attempts=attempts+1
+  if fail then error("temporary bind failure") end
+ end
+ return base(kind,...)
+end
+rows["凝固之血"]["最大显示层数"].setValue(200)
+assert(not NS.NativeBlood.ready and not NS.NativeBlood.host.shown)
+fail=false
+for _=1,10 do Tick() end
+assert(attempts==1,"binding retry must not create containers on every refresh")
+clock=12;Tick()
+assert(attempts==2 and NS.NativeBlood.ready and NS.NativeBlood.host.shown,
+ "same configuration must recover after transient binding failure")
+assert(nativeContainer.button.maximum==200)
+NativeUpdate(10);Tick();assert(nativeContainer.button.boundBar.value==10)
+''',native=True)

@@ -5,6 +5,7 @@ local Native = {}
 NS.NativeBlood = Native
 local MEDIA = "Interface\\AddOns\\MYUI\\Media\\CrosshairHUD\\"
 local container, appearance
+local retryAfter = 0
 Native.status = "尚未绑定"
 
 local function Texture(parent, file, sub, ox, oy)
@@ -87,15 +88,20 @@ function Native.Apply(st, scale)
     if not enabled then return end
     local nextAppearance = Appearance(st)
     if not Changed(nextAppearance) then return end
+    local now = _G.GetTime()
+    if now < retryAfter then return end
     -- 设置变更重建单个槽位，避免访问已经受限的按钮和进度条。
     local ok, err = pcall(Build, st)
     if ok then
         appearance = nextAppearance
         Native.ready = true
+        retryAfter = 0
         Native.host:SetShown(true)
         Native.status = "原生层数绑定就绪；增益存在与层数由暴雪管理"
     else
-        appearance = nextAppearance
+        appearance = nil
+        -- 借用既有刷新节奏，每秒至多重试一次，不增加定时器。
+        retryAfter = now + 1
         Native.ready = false
         Native.host:SetShown(false)
         Native.status = "原生绑定失败"
