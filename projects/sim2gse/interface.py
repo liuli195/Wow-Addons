@@ -221,7 +221,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if managed is not None:
             handle = start_task(None, destination, input_text=profile, **options)
         else:
-            self.input_root.mkdir(parents=True, exist_ok=True)
+            self.server.input_root.mkdir(parents=True, exist_ok=True)
             input_path.write_text(profile, encoding="utf-8", newline="")
             try:
                 handle = start_task(input_path, destination, **options)
