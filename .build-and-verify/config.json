@@ -50,23 +50,6 @@
         "timeoutSeconds": 600
       },
       {
-        "id": "verify.sim2gse-data",
-        "command": ".venv\\Scripts\\python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal",
-        "checkParallel": true,
-        "pytestXdistWorkers": 4,
-        "paths": [
-          ".agents/skills/sim2gse-data/**",
-          "tests/sim2gse-data/**",
-          ".build-and-verify/config.json",
-          "tests/README.md"
-        ],
-        "inputs": [
-          ".agents/skills/sim2gse-data",
-          "tests/sim2gse-data",
-          ".build-and-verify/config.json"
-        ]
-      },
-      {
         "id": "verify.luals",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals",
         "checkParallel": true,

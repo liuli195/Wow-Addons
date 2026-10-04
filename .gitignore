@@ -24,20 +24,6 @@ Desktop.ini
 
 # 技能目录连接：真身在 .agents/skills/，此处仅为代理侧的目录连接，不入库
 /.claude/skills/wow-addon-test/
-/.claude/skills/sim2gse-data/
-
-# Sim2GSE 数据根固定管理产物
-/.simdata-root.json
-/.manager.lock
-/index.sqlite3
-/index.sqlite3-wal
-/index.sqlite3-shm
-/index.sqlite3-journal
-/.archives/
-/.backups/
-/.staging/
-/.quarantine/
-/runs/
 
 # 工具运行产物：自测报告默认写系统临时目录；此处兜底，防止误写进技能目录
 /.agents/skills/wow-addon-test/reports/

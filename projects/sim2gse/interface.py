@@ -10,7 +10,7 @@ import threading
 from urllib.parse import urlsplit
 import uuid
 
-from task import TaskError, cancel_task, data_options, parse_character, read_task, start_task
+from task import TaskError, cancel_task, parse_character, read_task, start_task
 
 
 PAGE = (Path(__file__).with_name("interface.html")).read_bytes()
@@ -24,16 +24,13 @@ class InterfaceServer(ThreadingHTTPServer):
     allow_reuse_address = False
 
     def __init__(self, server_address, output_root: Path, *, task_options=None):
-        options = dict(task_options or {})
-        managed = data_options(output_root, options.get("data_config"), options.get("reserve_bytes"))
         super().__init__(server_address, InterfaceHandler)
         self.output_root = Path(output_root).resolve()
-        self.task_options = options
+        self.task_options = dict(task_options or {})
         self.task_root = self.output_root / "tasks"
         self.input_root = self.output_root / "inputs"
-        if managed is None:
-            self.task_root.mkdir(parents=True, exist_ok=True)
-            self.input_root.mkdir(parents=True, exist_ok=True)
+        self.task_root.mkdir(parents=True, exist_ok=True)
+        self.input_root.mkdir(parents=True, exist_ok=True)
         self.tasks: dict[str, tuple[Path, object]] = {}
         self.tasks_lock = threading.RLock()
 
@@ -217,17 +214,12 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         parse_character(profile)
         task_id = uuid.uuid4().hex
         input_path, destination = self.server.task_paths(task_id)
-        managed = data_options(destination, options.get("data_config"), options.get("reserve_bytes"))
-        if managed is not None:
-            handle = start_task(None, destination, input_text=profile, **options)
-        else:
-            self.server.input_root.mkdir(parents=True, exist_ok=True)
-            input_path.write_text(profile, encoding="utf-8", newline="")
-            try:
-                handle = start_task(input_path, destination, **options)
-            except BaseException:
-                input_path.unlink(missing_ok=True)
-                raise
+        input_path.write_text(profile, encoding="utf-8", newline="")
+        try:
+            handle = start_task(input_path, destination, **options)
+        except BaseException:
+            input_path.unlink(missing_ok=True)
+            raise
         with self.server.tasks_lock:
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, {"task_id": task_id, "status": "starting"})
@@ -313,8 +305,6 @@ def _public_state(state: dict, destination: Path) -> dict:
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
-    if "data_management" in state:
-        response["data_management"] = state["data_management"]
     search = state.get("search") or state
     metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
                     "canonicalized_duplicates")
