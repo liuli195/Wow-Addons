@@ -285,7 +285,7 @@ class SharedEntryTests(unittest.TestCase):
             config = Path(directory) / "machine with spaces.json"
             config.write_text(json.dumps(dict(data_root=str(data))), encoding="utf-8")
             for entry in (direct, link / "scripts" / "simdata.py"):
-                disabled = invoke(entry, "schedule-preview", "--config", str(config), "--python", sys.executable)
+                disabled = invoke(entry, "schedule-preview", "--config", str(config), "--python", str(Path(sys.executable).resolve()))
                 self.assertEqual(disabled.returncode, 0, disabled.stderr)
                 self.assertIsNone(json.loads(disabled.stdout)["xml"])
                 self.assertFalse(json.loads(disabled.stdout)["installed"])
