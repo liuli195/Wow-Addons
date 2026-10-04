@@ -29,6 +29,7 @@ from urllib.parse import quote
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 # 固定初始化DDL的保守峰值：主库、写事务/WAL、SHM和根标记；不是用户容量建议。
 INITIALIZATION_PEAK_BYTES = 256 * 1024
+REFERENCE_INDEX_SQL = "CREATE INDEX refs_target_idx ON refs(target)"
 MAX_REPORTED_DIRECTORY_LINKS = 1000
 RUN_METADATA = (".run-id.json", ".runner.lock", ".simdata-run.json", ".simdata-run.json.tmp")
 FILE_ATTRIBUTE_DIRECTORY = getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
@@ -329,6 +330,13 @@ def open_index(root, *, writable=False):
         raise
 
 
+def reference_index_ready(db):
+    row = db.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='refs_target_idx'").fetchone()
+    if row is not None and row[0] != REFERENCE_INDEX_SQL:
+        raise DataError("既有引用目标索引定义不符，拒绝覆盖")
+    return row is not None
+
+
 def init_root(root, policy, approval):
     require_write_policy(policy)
     if policy["data_root"] is None or policy["root_id"] is None:
@@ -349,11 +357,25 @@ def init_root(root, policy, approval):
     elif any(os.path.lexists(root / name) for name in
              ("index.sqlite3", "index.sqlite3-wal", "index.sqlite3-shm", "index.sqlite3-journal")):
         raise DataError("既有未登记索引或侧文件受保护，不能覆盖")
-    plan_hash = digest(dict(action="init-root", root=str(root), policy=policy))
+    ready = False
+    if not initializing:
+        with closing(open_index(root)) as db:
+            ready = reference_index_ready(db)
+    plan_hash = digest(dict(action="init-root", root=str(root), policy=policy, reference_index=REFERENCE_INDEX_SQL))
     if approval is None:
-        return dict(plan_hash=plan_hash, root=str(root), root_id=policy["root_id"], applied=False)
+        return dict(plan_hash=plan_hash, root=str(root), root_id=policy["root_id"], applied=False,
+                    reference_index=REFERENCE_INDEX_SQL, reference_index_ready=ready)
     if approval != plan_hash:
         raise DataError("初始化计划摘要不符，须批准当前预览")
+    if not initializing:
+        with write_index(root, policy) as db:
+            if not reference_index_ready(db):
+                # 整库页体量保守覆盖新增索引、排序和主库/WAL；仅升级时一次计算。
+                peak = max(INITIALIZATION_PEAK_BYTES, 4 * db.execute("PRAGMA page_count").fetchone()[0]
+                           * db.execute("PRAGMA page_size").fetchone()[0])
+                check_budget(root, db, policy, metadata_peak=peak)
+                db.execute(REFERENCE_INDEX_SQL)
+        return dict(plan_hash=plan_hash, root_id=policy["root_id"], applied=True, reference_index_ready=True)
     measured = inventory(root, None, skip_directory_links=True) if root.exists() else dict(logical_bytes=0, truncated=False)
     if measured["truncated"]:
         raise DataError("初始化容量盘点不完整，拒绝发布索引")
@@ -382,6 +404,7 @@ def init_root(root, policy, approval):
                 db.execute("CREATE TABLE IF NOT EXISTS run_artifacts (run_id TEXT NOT NULL REFERENCES runs(id), artifact_id TEXT NOT NULL REFERENCES artifacts(id), PRIMARY KEY(run_id,artifact_id))")
                 db.execute("CREATE TABLE IF NOT EXISTS pins (artifact_id TEXT NOT NULL REFERENCES artifacts(id), label TEXT NOT NULL, PRIMARY KEY(artifact_id,label))")
                 db.execute("CREATE TABLE IF NOT EXISTS refs (owner TEXT NOT NULL, target TEXT NOT NULL REFERENCES artifacts(id), kind TEXT NOT NULL, PRIMARY KEY(owner,target))")
+                db.execute(REFERENCE_INDEX_SQL)
                 db.execute("CREATE TABLE IF NOT EXISTS unknown_refs (source TEXT PRIMARY KEY, reason TEXT NOT NULL)")
                 db.execute("INSERT OR IGNORE INTO metadata VALUES ('root_id', ?)", (policy["root_id"],))
                 if db.execute("SELECT value FROM metadata WHERE key='root_id'").fetchone()[0] != policy["root_id"]:
@@ -404,7 +427,7 @@ def init_root(root, policy, approval):
             if new_root and not any(root.iterdir()):
                 root.rmdir()
         raise
-    return dict(plan_hash=plan_hash, root_id=policy["root_id"], applied=True)
+    return dict(plan_hash=plan_hash, root_id=policy["root_id"], applied=True, reference_index_ready=True)
 
 
 def index_status(root, policy):
@@ -1988,7 +2011,7 @@ def create_archive(root, db, plan, data):
                             part_name = "part-%06d.tar.gz" % number
                             temporary = data / (part_name + ".tmp")
                             output = handles.enter_context(temporary.open("xb"))
-                            compressed = handles.enter_context(gzip.GzipFile(fileobj=output, filename="", mode="wb", mtime=0))
+                            compressed = handles.enter_context(gzip.GzipFile(fileobj=output, filename="", mode="wb", mtime=0, compresslevel=6))
                             archive = handles.enter_context(tarfile.open(fileobj=compressed, mode="w|", format=tarfile.USTAR_FORMAT))
                             payload, members = 0, []
                         reader = SegmentReader(handle, length)

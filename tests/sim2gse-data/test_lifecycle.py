@@ -290,6 +290,50 @@ class LifecycleTests(unittest.TestCase):
         preview = LifecycleTests.call_main(self, "init-root")
         return LifecycleTests.call_main(self, "init-root", "--approve-hash", preview["plan_hash"])
 
+    def test_initialization_upgrades_legacy_reference_lookup_without_changing_data(self):
+        self.call = self.call_main
+        preview = self.call("init-root")
+        self.assertFalse(preview["reference_index_ready"])
+        # 模拟旧版建根，只在数据库边界省略新索引；仍走公开CLI。
+        legacy = ("import sqlite3\nconnect=sqlite3.connect\n"
+                  "class Legacy(sqlite3.Connection):\n"
+                  " def execute(self,sql,*a,**k):\n"
+                  "  if sql.startswith('CREATE INDEX'): return super().execute('SELECT 1')\n"
+                  "  return super().execute(sql,*a,**k)\n"
+                  "sqlite3.connect=lambda *a,**k:connect(*a,**dict(k,factory=Legacy))")
+        self.injected_call(legacy, "init-root", "--approve-hash", preview["plan_hash"])
+        source = self.root / "original.json"
+        source.write_bytes(b"keep original")
+        registration = self.call("register", "--path", str(source), "--role", "input")
+        identity = self.call("register", "--path", str(source), "--role", "input",
+                             "--approve-hash", registration["plan_hash"])["artifact_id"]
+        self.call("reference", "--action", "add", "--artifact-id", identity,
+                  "--owner", "existing consumer", "--kind", "durable")
+        preview = self.call("init-root")
+        self.assertFalse(preview["reference_index_ready"])
+        self.assertFalse(preview["applied"])
+        upgrade = ("init-root", "--approve-hash", preview["plan_hash"])
+        full_disk = "import shutil\nshutil.disk_usage=lambda p:type('Usage',(),{'free':0})()"
+        self.injected_call(full_disk, *upgrade, expected=2)
+        locked = (f"import os\nh=open({str(self.root / '.manager.lock')!r},'a+b')\n"
+                  "if os.name=='nt':\n import msvcrt\n msvcrt.locking(h.fileno(),msvcrt.LK_NBLCK,1)\n"
+                  "else:\n import fcntl\n fcntl.flock(h,fcntl.LOCK_EX|fcntl.LOCK_NB)\n")
+        self.injected_call(locked, *upgrade, expected=2)
+        failed_ddl = ("import sqlite3\nconnect=sqlite3.connect\n"
+                      "class Failing(sqlite3.Connection):\n"
+                      " def execute(self,sql,*a,**k):\n"
+                      "  result=super().execute(sql,*a,**k)\n"
+                      "  if sql.startswith('CREATE INDEX'): raise sqlite3.OperationalError('synthetic DDL failure')\n"
+                      "  return result\n"
+                      "sqlite3.connect=lambda *a,**k:connect(*a,**dict(k,factory=Failing))")
+        self.injected_call(failed_ddl, *upgrade, expected=2)
+        self.assertFalse(self.call("init-root")["reference_index_ready"])
+        self.assertTrue(self.call("init-root", "--approve-hash", preview["plan_hash"])["reference_index_ready"])
+        self.assertTrue(self.call("init-root", "--approve-hash", preview["plan_hash"])["reference_index_ready"])
+        self.assertEqual(self.call("status")["registered_artifacts"], 1)
+        self.assertIn("durable:existing consumer", self.call("protect", "--artifact-id", identity)["reasons"])
+        self.assertEqual(source.read_bytes(), b"keep original")
+
     def test_test_root_requires_preview_approval_and_is_bound_to_config(self):
         preview = self.call("init-root")
         self.assertFalse(self.root.exists())
