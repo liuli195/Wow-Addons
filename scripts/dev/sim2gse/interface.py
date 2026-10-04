@@ -25,9 +25,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         simulation_config = load_config()
+        task_options = {"simulation_config": simulation_config}
+        if args.data_config is not None:
+            task_options["data_config"] = args.data_config
+        if args.reserve_bytes is not None:
+            task_options["reserve_bytes"] = args.reserve_bytes
         serve(args.output_root, host=args.host, port=args.port,
-              task_options={"simulation_config": simulation_config, "data_config": args.data_config,
-                            "reserve_bytes": args.reserve_bytes})
+              task_options=task_options)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
