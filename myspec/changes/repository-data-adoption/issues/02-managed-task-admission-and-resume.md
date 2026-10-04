@@ -20,3 +20,5 @@
 - 同入口红绿：CLI 缺预留由未识别参数转为明确拒绝；原路径任务由无管理状态转为同根运行登记；HTTP 由启动先建目录转为准入前零任务文件；取消后恢复由缺运行身份失败转为保留同一 run ID 和原预留。原始输出位于 `.local/repository-data-adoption/ticket02-*-red.txt` 与 `ticket02-green.txt`。
 - 云端合成验收：`pytest -q tests/sim2gse/test_data_management.py tests/sim2gse-data/test_lifecycle.py`，29 passed、7 subtests，16.79s。含禁用策略旧行为、标记根漏配置、实际空间不足、原持有者仍活动拒绝与真实子进程退出后续领。Windows 互斥锁在云端仅用 OS 边界适配；原生 Windows 统一留到三票后的 fast 验收。
 - 该票只建立准入与可恢复状态；终态产物登记依赖下一票完成后才能宣称完整生产接入。
+
+- 交付验收更新（2026-10-04）：本票实现与本机验收通过，统一审查及修复复核完成；最终代码a186873固定基线fast通过，正式规格已按门禁二批准应用。完整证据见[需求验收汇总](../spec.md)。远端CI、合并和非强制收尾待本机正式流程执行。
