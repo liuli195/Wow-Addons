@@ -1634,13 +1634,14 @@ class SearchAndValidationTests(TestCase):
                 while time.monotonic()<deadline and process.poll() is None:
                     try: state=read_task(destination)
                     except TaskError: pass
-                    if state.get('phase') == 'search':
+                    completed = state.get('completed_batches')
+                    if state.get('phase') == 'search' and type(completed) is int and completed > 0:
                         for pid in children(process.pid):
                             held=kernel.OpenProcess(0x100000,False,pid)
                             if held: break
                     if held: break
                     time.sleep(0.02)
-                self.assertIsNotNone(held,'没有观察到真实引擎进程')
+                self.assertIsNotNone(held,'没有在已完成批次检查点后观察到真实引擎进程')
                 process.kill();process.wait(timeout=5)
                 self.assertEqual(kernel.WaitForSingleObject(held,2000),0,'任务退出后仍有所属模拟进程')
                 before=state['elapsed_seconds']

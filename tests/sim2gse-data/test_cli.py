@@ -1,5 +1,6 @@
 """从真实命令行入口验证数据管理；测试根全部为临时合成目录。"""
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,6 +14,18 @@ CLI = Path(__file__).resolve().parents[2] / ".agents/skills/sim2gse-data/scripts
 
 
 class SharedEntryTests(unittest.TestCase):
+    def test_managed_root_outputs_are_ignored_only_at_repository_root(self):
+        repository = CLI.parents[4]
+        managed_paths = (".simdata-root.json", ".manager.lock", "index.sqlite3", "index.sqlite3-wal",
+                         "index.sqlite3-shm", "index.sqlite3-journal", ".archives/", ".backups/",
+                         ".staging/", ".quarantine/", "runs/")
+        for relative in managed_paths:
+            with self.subTest(path=relative):
+                result = subprocess.run(["git", "check-ignore", "-q", "--no-index", relative], cwd=repository)
+                self.assertEqual(result.returncode, 0, f"repository-root management path not ignored: {relative}")
+        nested = subprocess.run(["git", "check-ignore", "-q", "--no-index", "tests/.simdata-root.json"], cwd=repository)
+        self.assertEqual(nested.returncode, 1, "the ignore rules must not become a recursive exclusion framework")
+
     def test_copied_minimal_runtime_works_without_repository_or_tests(self):
         with tempfile.TemporaryDirectory(prefix="simdata portable runtime ") as directory:
             skill = Path(directory) / "copied skill"
@@ -66,7 +79,7 @@ class SharedEntryTests(unittest.TestCase):
             self.assertFalse(report["index_present"])
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_write_preflight_explains_disabled_and_incomplete_policy(self):
+    def test_write_preflight_explains_disabled_and_requires_root_identity(self):
         with tempfile.TemporaryDirectory(prefix="simdata policy ") as directory:
             root = Path(directory)
             disabled = self.call("check-config", "--root", str(root), "--for-write")
@@ -76,8 +89,48 @@ class SharedEntryTests(unittest.TestCase):
             config.write_text(json.dumps({"schema_version": 1, "production_enabled": True}), encoding="utf-8")
             incomplete = self.call("check-config", "--root", str(root), "--config", str(config), "--for-write")
             self.assertEqual(incomplete.returncode, 2)
-            self.assertIn("生产策略未完整配置", json.loads(incomplete.stderr)["error"])
+            self.assertIn("数据根身份", json.loads(incomplete.stderr)["error"])
             self.assertEqual(list(root.iterdir()), [config])
+
+    def test_on_demand_root_metadata_actions_allow_unset_long_term_policy(self):
+        with tempfile.TemporaryDirectory(prefix="simdata unset policies ") as directory:
+            base = Path(directory)
+            root = base / "synthetic managed root"
+            root.mkdir()
+            config = base / "synthetic config.json"
+            policy = json.loads((CLI.parent.parent / "assets" / "config.default.json").read_text(encoding="utf-8"))
+            policy.update(mode="production", production_enabled=True, root_id=str(uuid.uuid4()), data_root=str(root))
+            config.write_text(json.dumps(policy), encoding="utf-8")
+
+            def invoke(*arguments, expected=0):
+                result = subprocess.run([sys.executable, "-B", str(CLI), *arguments, "--config", str(config)],
+                                        capture_output=True, text=True, encoding="utf-8")
+                self.assertEqual(result.returncode, expected, result.stderr)
+                return json.loads(result.stdout if expected == 0 else result.stderr)
+
+            checked = invoke("check-config", "--for-write")
+            self.assertTrue(checked["production_enabled"])
+            plan = invoke("init-root")
+            invoke("init-root", "--approve-hash", plan["plan_hash"])
+            source = root / "native.json"
+            source.write_bytes(b'{"synthetic":true}')
+            registration = invoke("register", "--path", str(source), "--role", "native")
+            artifact = invoke("register", "--path", str(source), "--role", "native",
+                              "--approve-hash", registration["plan_hash"])
+            invoke("pin", "--artifact-id", artifact["artifact_id"], "--label", "keep", "--action", "add")
+            invoke("reference", "--artifact-id", artifact["artifact_id"], "--owner", "synthetic-reader",
+                   "--kind", "durable", "--action", "add")
+            resolved = invoke("resolve", "--artifact-id", artifact["artifact_id"])
+            self.assertEqual(Path(resolved["path"]).read_bytes(), source.read_bytes())
+            status = invoke("status")
+            for key in ("capacity_bytes", "retention_days", "maintenance_interval_hours",
+                        "maintenance_reserve_bytes", "metadata_reserve_bytes"):
+                self.assertIsNone(status[key])
+            missing_lease = invoke("begin", "--request-id", "missing-lease", "--owner-pid", str(os.getpid()),
+                                   "--reserve-bytes", "1024", expected=2)
+            self.assertIn("lease_seconds", missing_lease["error"])
+            missing_part = invoke("archive", "--artifact-id", artifact["artifact_id"], expected=2)
+            self.assertIn("archive_part_bytes", missing_part["error"])
 
     def test_invalid_config_root_is_rejected_without_a_traceback(self):
         with tempfile.TemporaryDirectory(prefix="simdata invalid ") as directory:
@@ -127,6 +180,83 @@ class SharedEntryTests(unittest.TestCase):
             self.assertEqual(mismatch.returncode, 2)
             self.assertIn("不一致", json.loads(mismatch.stderr)["error"])
 
+    def test_inventory_reports_directory_symlinks_without_following_them(self):
+        with tempfile.TemporaryDirectory(prefix="simdata root links ") as directory:
+            base = Path(directory)
+            root = base / "data"
+            target = base / "outside"
+            root.mkdir()
+            target.mkdir()
+            (root / "inside.json").write_bytes(b"inside")
+            (target / "external.json").write_bytes(b"outside")
+            link = root / "external skills"
+            link.symlink_to(target, target_is_directory=True)
+
+            result = self.call("inventory", "--root", str(root), "--complete")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual((report["files"], report["logical_bytes"]), (1, 6))
+            self.assertEqual(report["skipped_directory_links_count"], 1)
+            self.assertEqual(report["skipped_directory_links"], ["external skills"])
+            self.assertFalse(report["skipped_directory_links_truncated"])
+
+    def test_incremental_inventory_reports_directory_symlinks_without_following_them(self):
+        with tempfile.TemporaryDirectory(prefix="simdata incremental links ") as directory:
+            base = Path(directory)
+            root = base / "data"
+            target = base / "outside"
+            root.mkdir()
+            target.mkdir()
+            (target / "external.json").write_bytes(b"outside")
+            (root / "z-inside.json").write_bytes(b"inside")
+            (root / "a-external").symlink_to(target, target_is_directory=True)
+
+            first = self.call("inventory", "--root", str(root), "--incremental", "--limit", "1")
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_report = json.loads(first.stdout)
+            self.assertEqual(first_report["skipped_directory_links_count"], 1)
+            self.assertEqual(first_report["skipped_directory_links"], ["a-external"])
+            second = self.call("inventory", "--root", str(root), "--incremental", "--limit", "1",
+                               "--cursor", first_report["next_cursor"])
+            self.assertEqual(second.returncode, 0, second.stderr)
+            second_report = json.loads(second.stdout)
+            self.assertEqual((second_report["files"], second_report["logical_bytes"]), (1, 6))
+            self.assertEqual(second_report["skipped_directory_links_count"], 0)
+
+    def test_metadata_write_peak_is_checked_in_addition_to_configured_reserve(self):
+        with tempfile.TemporaryDirectory(prefix="simdata metadata peak ") as directory:
+            base = Path(directory)
+            root = base / "data"
+            config = base / "machine.json"
+            policy = json.loads((CLI.parent.parent / "assets" / "config.default.json").read_text(encoding="utf-8"))
+            policy.update(mode="test", root_id=str(uuid.uuid4()), data_root=str(root), capacity_bytes=4 * 1024 * 1024,
+                          metadata_reserve_bytes=1)
+            config.write_text(json.dumps(policy), encoding="utf-8")
+
+            def invoke(*arguments):
+                result = subprocess.run([sys.executable, "-B", str(CLI), *arguments, "--config", str(config)],
+                                        capture_output=True, text=True, encoding="utf-8")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            plan = invoke("init-root")
+            invoke("init-root", "--approve-hash", plan["plan_hash"])
+            source = root / "native.json"
+            source.write_bytes(b"synthetic")
+            registration = invoke("register", "--path", str(source), "--role", "native")
+            artifact = invoke("register", "--path", str(source), "--role", "native",
+                              "--approve-hash", registration["plan_hash"])
+            code = ("import shutil,sys,runpy\nfrom types import SimpleNamespace\n"
+                    "shutil.disk_usage=lambda _: SimpleNamespace(total=1,used=0,free=1)\n"
+                    "path=sys.argv[1]; sys.argv=[path,*sys.argv[2:]]; runpy.run_path(path,run_name='__main__')")
+            result = subprocess.run([sys.executable, "-B", "-c", code, str(CLI), "pin", "--config", str(config),
+                                     "--artifact-id", artifact["artifact_id"], "--label", "keep", "--action", "add"],
+                                    capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("所在卷可用空间不足", json.loads(result.stderr)["error"])
+
 
     @unittest.skipUnless(sys.platform == "win32", "Windows目录联接行为")
     def test_install_preview_apply_and_both_agent_entries_share_one_skill(self):
@@ -163,8 +293,10 @@ class SharedEntryTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 2)
             self.assertIn("重解析点", json.loads(refused.stderr)["error"])
             inner = invoke(direct, "inventory", "--root", str(repository))
-            self.assertEqual(inner.returncode, 2)
-            self.assertIn("重解析点", json.loads(inner.stderr)["error"])
+            self.assertEqual(inner.returncode, 0, inner.stderr)
+            inner_report = json.loads(inner.stdout)
+            self.assertEqual(inner_report["skipped_directory_links_count"], 1)
+            self.assertEqual(inner_report["skipped_directory_links"], [".claude/skills/sim2gse-data"])
             for path in (str(link) + "\\..", str(link) + "/../"):
                 result = self.call("status", "--root", path)
                 self.assertEqual(result.returncode, 2)
