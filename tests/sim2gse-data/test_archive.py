@@ -330,6 +330,8 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual([member["artifact_id"] for member in manifest["parts"][0]["members"]], sorted(identities))
         self.assertEqual([member["size"] for member in manifest["parts"][0]["members"]], [3, 3])
         self.assertTrue(all(member["offset"] == 0 for member in manifest["parts"][0]["members"]))
+        # gzip XFL=0 为常规压缩；最高等级9会写2。
+        self.assertEqual((self.root / manifest["parts"][0]["path"]).read_bytes()[8], 0)
         target = self.root / "small restored"
         plan = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(target))
         result = self.call("restore", "--archive-id", archived["archive_id"], "--destination", str(target),
