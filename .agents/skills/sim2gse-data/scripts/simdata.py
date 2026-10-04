@@ -490,13 +490,15 @@ def managed_file(root, path):
 
 
 @contextmanager
-def runner_locks(root, source):
+def runner_locks(root, source, *, held=None):
     with ExitStack() as stack:
+        target, seen = (stack, set()) if held is None else held
         if source.parent.is_relative_to(root):
             for parent in (source.parent, *source.parent.parents):
                 lock = parent / ".runner.lock"
-                if os.path.lexists(lock):
-                    stack.enter_context(byte_lock(lock))
+                if os.path.lexists(lock) and lock not in seen:
+                    target.enter_context(byte_lock(lock))
+                    seen.add(lock)
                 if parent == root:
                     break
         yield
@@ -977,7 +979,7 @@ def finish_run(root, policy, args):
     return dict(result, **completion)
 
 
-def protection(root, db, artifact_id, *, own_job=None, activity_only=False):
+def protection(root, db, artifact_id, *, own_job=None, activity_only=False, held=None):
     artifact = artifact_row(db, artifact_id)
     reasons = []
     if not activity_only:
@@ -989,7 +991,7 @@ def protection(root, db, artifact_id, *, own_job=None, activity_only=False):
     references = [dict(row) for row in db.execute("SELECT * FROM refs WHERE target=? ORDER BY owner", (artifact_id,))]
     if not activity_only:
         reasons.extend(row["kind"] + ":" + row["owner"] for row in references if row["kind"] != "cache")
-    reasons.extend(dependency_protection(root, db, artifact_id, own_job=own_job, activity_only=activity_only))
+    reasons.extend(dependency_protection(root, db, artifact_id, own_job=own_job, activity_only=activity_only, held=held))
     if not activity_only:
         if db.execute("SELECT count(*) FROM unknown_refs").fetchone()[0]:
             reasons.append("unknown-legacy-references")
@@ -1013,7 +1015,7 @@ def protection(root, db, artifact_id, *, own_job=None, activity_only=False):
         if path.is_relative_to(root / run["path"]):
             reasons.append("lease:" + run["id"] + ":" + lease_state(run))
     try:
-        with runner_locks(root, path):
+        with runner_locks(root, path, held=held):
             pass
     except DataError:
         reasons.append("runner-lock")
@@ -1045,6 +1047,10 @@ def pin_artifact(root, policy, args):
 
 
 def change_reference(root, policy, args):
+    if args.action == "resolve-legacy":
+        return resolve_legacy_reference(root, policy, args)
+    if not args.artifact_id or any((args.archive_id, args.role, args.consumer_status, args.reason)):
+        raise DataError("原引用动作须指定artifact-id，不接受历史核实参数")
     if not args.owner or len(args.owner) > 256 or "\x00" in args.owner:
         raise DataError("引用所有者须为1至256字符")
     if args.action == "add":
@@ -1091,6 +1097,125 @@ def change_reference(root, policy, args):
         db.execute("INSERT INTO operations VALUES (?,?,?,?)", (str(uuid.uuid4()), "invalidate-cache-reference", "committed", json.dumps(plan)))
         plan["applied"] = True
         return plan
+
+
+def legacy_role_audit_id(artifact_id):
+    return str(uuid.uuid5(uuid.UUID(artifact_id), "resolved-legacy-role"))
+
+
+def archived_role_matches(db, row, source):
+    if row["role"] == source["role"]:
+        return True
+    if source["role"] != "unknown":
+        return False
+    audit = db.execute("SELECT payload FROM operations WHERE id=? AND kind='resolve-legacy-role' AND phase='committed'",
+                       (legacy_role_audit_id(row["id"]),)).fetchone()
+    if audit is None:
+        return False
+    item = json.loads(audit[0])
+    return (item["old_role"] == "unknown" and item["role"] == row["role"] and
+            all(item[key] == source[key] for key in ("path", "sha256", "size")) and item["artifact_id"] == row["id"])
+
+
+def resolve_legacy_reference(root, policy, args):
+    """核实单个既有归档批次的自动历史占位；不解除其它保护或删除文件。"""
+    marker = root_marker(root, policy)
+    if (args.artifact_id or not args.owner or args.kind != "unknown" or not args.archive_id or not args.role or not args.consumer_status
+            or not args.reason or not args.reason.strip() or len(args.reason) > 1024 or "\x00" in args.reason):
+        raise DataError("历史核实须明确archive-id、已核实登记来源的精确owner、目标role、consumer-status和reason")
+    directory = args.owner.removeprefix("legacy-path:")
+    if (not args.owner.startswith("legacy-path:") or not directory or len(args.owner) > 256 or "\x00" in args.owner
+            or Path(directory).is_absolute() or ".." in Path(directory).parts):
+        raise DataError("owner须为操作者已核实来源的精确legacy-path目录占位，不能仅凭前缀推断归属")
+    request = dict(archive_id=args.archive_id, owner=args.owner, role=args.role,
+                   consumer_status=args.consumer_status, reason=args.reason)
+
+    def preview(db, held):
+        job = job_row(db, args.archive_id)
+        if job["kind"] != "archive" or job["phase"] != "sealed":
+            raise DataError("历史核实须选择已封口归档")
+        archived = json.loads(job["plan"])
+        check_product(db, job["id"], owned_path(root, archived["destination"]))
+        items = []
+        for source in archived["sources"]:
+            row = artifact_row(db, source["id"])
+            reference = db.execute("SELECT * FROM refs WHERE owner=? AND target=? AND kind='unknown'",
+                                   (args.owner, row["id"])).fetchone()
+            if reference is None:
+                continue
+            if not row["path"].startswith(directory + "/"):
+                raise DataError("所选登记owner与对象原路径不符")
+            if (row["role"] not in ("unknown", args.role) or not row["sealed"] or
+                    any(row[key] != source[key] for key in ("path", "sha256", "size"))):
+                raise DataError("只能分类unknown占位或保持已有同角色，且归档必须对应当前原件")
+            protected = protection(root, db, row["id"], held=held)
+            if any(reason.startswith(("lease:", "read-lease:", "runner-lock", "operation:"))
+                   for reason in protected["reasons"]):
+                raise DataError("活动消费者或操作阻止历史核实")
+            removed = [dict(reference)]
+            original = managed_file(root, str(root / row["path"]))
+            with runner_locks(root, original, held=held):
+                image = file_manifest(original)
+            if image["sha256"] != row["sha256"] or json.dumps(image["identity"]) != row["identity"]:
+                raise DataError("历史原件身份或摘要变化")
+            locations = db.execute("SELECT path,identity FROM locations WHERE artifact_id=? ORDER BY path LIMIT 1001",
+                                   (row["id"],)).fetchall() if has_table(db, "locations") else []
+            if len(locations) > 1000:
+                raise DataError("恢复位置清单超过有界范围")
+            restored = None
+            for location in locations:
+                path = owned_path(root, location["path"])
+                if not os.path.lexists(path):
+                    continue
+                with runner_locks(root, path, held=held):
+                    recovered = file_manifest(managed_file(root, str(path)))
+                if (recovered["sha256"] != row["sha256"] or recovered["size"] != row["size"]
+                        or json.dumps(recovered["identity"]) != location["identity"]):
+                    raise DataError("恢复证据身份或摘要变化")
+                restored = dict(path=location["path"], **recovered)
+                break
+            if restored is None:
+                raise DataError("历史核实须先有经核验的已登记恢复副本")
+            items.append(dict(artifact_id=row["id"], path=row["path"], **image, old_role=row["role"], role=args.role,
+                              remove_references=removed, protection=protected, restored=restored))
+        if not items:
+            raise DataError("归档中没有所选精确owner的未知占位对象")
+        plan = dict(action="resolve-legacy", root_id=marker["root_id"], policy_hash=digest(policy),
+                    archive_plan_hash=digest(archived), items=items, **request)
+        compact_json(plan, QUERY_BYTES)
+        return plan
+
+    if args.approve_hash is None:
+        with ExitStack() as locks, closing(open_index(root)) as db:
+            plan = preview(db, (locks, set()))
+        return dict(plan, plan_hash=digest(plan), applied=False)
+    operation_id = str(uuid.uuid5(uuid.UUID(marker["root_id"]), "resolve-legacy:" + args.approve_hash))
+    # 同批共享祖先锁仅获取一次，保留至索引事务提交之后。
+    with ExitStack() as locks, write_index(root, policy) as db:
+        held = (locks, set())
+        previous = db.execute("SELECT payload FROM operations WHERE id=? AND kind='resolve-legacy' AND phase='committed'",
+                              (operation_id,)).fetchone()
+        if previous:
+            saved = json.loads(previous[0])
+            if any(saved[key] != value for key, value in request.items()):
+                raise DataError("历史核实重试参数与原批准不同")
+            return dict(operation_id=operation_id, plan_hash=args.approve_hash, applied=True, already_applied=True)
+        plan = preview(db, held)
+        if digest(plan) != args.approve_hash:
+            raise DataError("历史核实身份、引用或配置已变，须重新批准当前计划")
+        check_budget(root, db, policy, 131072 + len(compact_json(plan, QUERY_BYTES).encode("utf-8")) * 8)
+        for item in plan["items"]:
+            if item["old_role"] == "unknown":
+                db.execute("UPDATE artifacts SET role=? WHERE id=?", (item["role"], item["artifact_id"]))
+                db.execute("INSERT INTO operations VALUES (?,'resolve-legacy-role','committed',?)",
+                           (legacy_role_audit_id(item["artifact_id"]), compact_json(item, QUERY_BYTES)))
+            for reference in item["remove_references"]:
+                db.execute("DELETE FROM refs WHERE owner=? AND target=? AND kind='unknown'",
+                           (reference["owner"], item["artifact_id"]))
+        db.execute("INSERT INTO operations VALUES (?,'resolve-legacy','committed',?)",
+                   (operation_id, compact_json(plan, QUERY_BYTES)))
+        return dict(operation_id=operation_id, plan_hash=args.approve_hash, applied=True, already_applied=False,
+                    artifacts=[protection(root, db, item["artifact_id"], held=held) for item in plan["items"]])
 
 
 def manage_lease(root, policy, args):
@@ -2064,7 +2189,8 @@ def lifecycle_plan(root, policy, db, args):
                 raise DataError("归档包须先登记并核对当前身份")
         for source in plan["manifest"]["sources"]:
             row = artifact_row(db, source["id"])
-            if row["sha256"] != source["sha256"] or row["size"] != source["size"] or row["role"] != source["role"] or row["path"] != source["path"]:
+            if (row["sha256"] != source["sha256"] or row["size"] != source["size"] or row["path"] != source["path"]
+                    or not archived_role_matches(db, row, source)):
                 raise DataError("归档与登记来源不一致")
         target = Path(args.destination) if args.destination else None
         if target is None or not target.is_absolute() or not target.is_relative_to(root):
@@ -2324,7 +2450,7 @@ def lifecycle_execute(root, policy, args):
         return operation_result(root, db, job_row(db, plan["operation_id"]))
 
 
-def dependency_protection(root, db, artifact_id, *, own_job=None, activity_only=False):
+def dependency_protection(root, db, artifact_id, *, own_job=None, activity_only=False, held=None):
     pending, seen, reasons = [artifact_id], set(), []
     while pending:
         current = pending.pop()
@@ -2347,7 +2473,7 @@ def dependency_protection(root, db, artifact_id, *, own_job=None, activity_only=
             if any(row["path"].startswith(run["path"] + "/") for run in db.execute("SELECT path FROM runs WHERE state IN ('allocating','running')")):
                 reasons.append("lease:dependency:" + current)
             try:
-                with runner_locks(root, owned_path(root, row["path"])):
+                with runner_locks(root, owned_path(root, row["path"]), held=held):
                     pass
             except DataError:
                 reasons.append("runner-lock:dependency:" + current)
@@ -3438,15 +3564,20 @@ def main():
             command.add_argument("--outcome", choices=("success", "failed", "incomplete", "censored"), required=True)
             command.add_argument("--prepare", action="store_true", help="持有生产锁时先写封口门闩，尚不读取产物")
             command.add_argument("--database", action="append", default=[], help="本任务父目录的共享缓存来源")
-        if name in ("protect", "pin", "reference"):
+        if name in ("protect", "pin"):
             command.add_argument("--artifact-id", required=True)
         if name == "pin":
             command.add_argument("--label", required=True)
             command.add_argument("--action", choices=("add", "remove"), required=True)
         if name == "reference":
-            command.add_argument("--owner", required=True)
+            command.add_argument("--artifact-id")
+            command.add_argument("--owner")
             command.add_argument("--kind", choices=("durable", "cache", "unknown"), default="unknown")
-            command.add_argument("--action", choices=("add", "invalidate-preview", "invalidate"), required=True)
+            command.add_argument("--action", choices=("add", "invalidate-preview", "invalidate", "resolve-legacy"), required=True)
+            command.add_argument("--archive-id")
+            command.add_argument("--role", choices=("raw", "input", "native", "evidence", "model", "analysis", "cache"))
+            command.add_argument("--consumer-status", choices=("unreferenced", "redirected"))
+            command.add_argument("--reason")
             command.add_argument("--approve-hash")
         if name == "lease":
             command.add_argument("--run-id", required=True)

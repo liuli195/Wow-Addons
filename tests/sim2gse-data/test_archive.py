@@ -50,6 +50,113 @@ class ArchiveTests(unittest.TestCase):
         plan = self.call("restore", *arguments)
         return self.call("restore", *arguments, "--approve-hash", plan["plan_hash"])
 
+    def test_confirmed_legacy_classification_keeps_old_archive_restorable(self):
+        self.initialize()
+        folder = self.root / "old generated samples"
+        folder.mkdir()
+        values = {"native.json": b"synthetic report", "expected.lua": b"return {}"}
+        for name, contents in values.items():
+            (folder / name).write_bytes(contents)
+        lock = folder / ".runner.lock"
+        lock.write_bytes(b"0")
+        register = ("--directory", str(folder))
+        plan = self.call("legacy-register", *register)
+        registered = self.call("legacy-register", *register, "--approve-hash", plan["plan_hash"])
+        identities = [row["artifact_id"] for row in registered["artifacts"]]
+        archived = self.archive(*identities)
+        arguments = ("--action", "resolve-legacy", "--archive-id", archived["archive_id"],
+                     "--owner", "legacy-path:old generated samples",
+                     "--role", "native", "--consumer-status", "unreferenced",
+                     "--reason", "Synthetic generated samples: no original-path consumers")
+        self.call("reference", *arguments, expected=2)
+        self.restore_archive(archived, self.root / "first restore")
+        original_manifest = Path(archived["manifest_path"]).read_bytes()
+        preview = self.call("reference", *arguments)
+        self.assertFalse(preview["applied"])
+        self.assertEqual(len(preview["items"]), 2)
+        self.assertTrue(self.call("protect", "--artifact-id", identities[0])["protected"])
+        probe = ("import os,sys\nh=open(" + repr(str(lock)) + ",'r+b')\ntry:\n"
+                 " if os.name=='nt':\n  import msvcrt\n  msvcrt.locking(h.fileno(),msvcrt.LK_NBLCK,1)\n"
+                 " else:\n  import fcntl\n  fcntl.flock(h,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+                 "except OSError: sys.exit(0)\nsys.exit(1)\n")
+        boundary = ("import sqlite3,subprocess,sys\nconnect=sqlite3.connect\n"
+                    "class Observed(sqlite3.Connection):\n"
+                    " def execute(self,sql,*args,**kwargs):\n"
+                    "  if sql.startswith('UPDATE artifacts SET role'):\n"
+                    "   if subprocess.run([sys.executable,'-c'," + repr(probe) + "]).returncode != 0:\n"
+                    "    raise sqlite3.OperationalError('consumer acquired lock during classification')\n"
+                    "  return super().execute(sql,*args,**kwargs)\n"
+                    "sqlite3.connect=lambda *a,**k:connect(*a,**dict(k,factory=Observed))")
+        applied = self.injected_call(boundary, "reference", *arguments, "--approve-hash", preview["plan_hash"])
+        self.assertTrue(applied["applied"])
+        self.assertTrue(self.call("reference", *arguments, "--approve-hash", preview["plan_hash"])["already_applied"])
+        for identity in identities:
+            self.assertFalse(self.call("protect", "--artifact-id", identity)["protected"])
+            self.assertFalse(self.call("quarantine", "--artifact-id", identity)["applied"])
+        restored = self.restore_archive(archived, self.root / "after classification")
+        self.assertEqual({Path(item["path"]).name: Path(item["path"]).read_bytes()
+                          for item in restored["restored"]}, values)
+        self.assertEqual(Path(archived["manifest_path"]).read_bytes(), original_manifest)
+        self.assertEqual({name: (folder / name).read_bytes() for name in values}, values)
+
+    def legacy_review_sample(self):
+        self.initialize()
+        folder = self.root / "legacy/group"
+        folder.mkdir(parents=True)
+        source = folder / "native.json"
+        source.write_bytes(b"synthetic sample")
+        plan = self.call("legacy-register", "--directory", str(folder))
+        registered = self.call("legacy-register", "--directory", str(folder), "--approve-hash", plan["plan_hash"])
+        identity = registered["artifacts"][0]["artifact_id"]
+        archived = self.archive(identity)
+        self.restore_archive(archived, self.root / "restored")
+        arguments = ("--action", "resolve-legacy", "--archive-id", archived["archive_id"],
+                     "--owner", "legacy-path:legacy/group",
+                     "--role", "native", "--consumer-status", "unreferenced", "--reason", "Reviewed synthetic consumers")
+        return identity, source, arguments
+
+    def test_legacy_review_requires_clear_intent_and_retains_live_and_durable_protection(self):
+        identity, source, arguments = self.legacy_review_sample()
+        self.call("reference", *arguments, "--kind", "cache", expected=2)
+        self.call("reference", *arguments[:-2], expected=2)
+        lease = self.call("read-lease", "--action", "acquire", "--artifact-id", identity, "--owner-pid", str(os.getpid()))
+        self.call("reference", *arguments, expected=2)
+        self.call("read-lease", "--action", "release", "--lease-id", lease["lease_id"], "--token", lease["token"])
+        stale = self.call("reference", *arguments)
+        self.call("pin", "--artifact-id", identity, "--action", "add", "--label", "retain input")
+        self.call("reference", "--action", "add", "--artifact-id", identity, "--owner", "actual consumer", "--kind", "durable")
+        self.call("reference", "--action", "add", "--artifact-id", identity, "--owner", "legacy-path:legacy", "--kind", "unknown")
+        self.call("reference", *arguments, "--approve-hash", stale["plan_hash"], expected=2)
+        cache = self.root / "unrecognized.sqlite3"
+        with sqlite3.connect(cache) as db:
+            db.execute("CREATE TABLE unknown_records(value TEXT)")
+        cache_plan = self.call("cache-references", "--database", str(cache))
+        self.call("cache-references", "--database", str(cache), "--approve-hash", cache_plan["plan_hash"])
+        plan = self.call("reference", *arguments)
+        self.call("reference", *arguments, "--approve-hash", plan["plan_hash"])
+        protected = self.call("protect", "--artifact-id", identity)
+        for reason in ("pin:retain input", "durable:actual consumer", "unknown:legacy-path:legacy", "unknown-legacy-references"):
+            self.assertIn(reason, protected["reasons"])
+        self.call("quarantine", "--artifact-id", identity, expected=2)
+        self.assertEqual(source.read_bytes(), b"synthetic sample")
+
+    def test_legacy_review_rejects_changed_source_and_never_reclassifies_a_known_role(self):
+        identity, source, arguments = self.legacy_review_sample()
+        plan = self.call("reference", *arguments)
+        source.write_bytes(b"changed source")
+        self.call("reference", *arguments, "--approve-hash", plan["plan_hash"], expected=2)
+        self.assertIn("protected-role:unknown", self.call("protect", "--artifact-id", identity)["reasons"])
+        known, _ = self.source("known/native.json", b"known native")
+        register = ("--directory", str(self.root / "known"), "--role", "native")
+        registered = self.call("legacy-register", *register)
+        self.call("legacy-register", *register, "--approve-hash", registered["plan_hash"])
+        archived = self.archive(known)
+        self.restore_archive(archived, self.root / "known restored")
+        rejected = self.call("reference", "--action", "resolve-legacy", "--archive-id", archived["archive_id"],
+                             "--owner", "legacy-path:known",
+                             "--role", "cache", "--consumer-status", "unreferenced", "--reason", "not a role editor", expected=2)
+        self.assertIn("只能分类unknown", rejected["error"])
+
     def legacy_writer_cli(self):
         # 真实历史writer源码夹具，仅替换隔离CLI副本的版本；不是业务函数mock。
         original = lifecycle.CLI.read_text(encoding="utf-8")
