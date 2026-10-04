@@ -16,9 +16,13 @@ import string
 import argparse
 import sys
 import os
+import runpy
+import subprocess
 import threading
 import time
 from contextlib import contextmanager, nullcontext
+from functools import cache
+from types import SimpleNamespace
 import msvcrt
 
 from runtime import replace_file
@@ -28,6 +32,131 @@ from simulation_config import config_for as simulation_config_for, engine_option
 
 class TaskError(ValueError):
     """用户输入或任务前置检查失败。"""
+
+
+DATA_ENTRY = Path(__file__).resolve().parents[2] / ".agents/skills/sim2gse-data/scripts/simdata.py"
+
+
+@cache
+def _data_runtime():
+    # 同一技能实现；run_path 不在可独立复制的技能中留下导入缓存。
+    return SimpleNamespace(**runpy.run_path(str(DATA_ENTRY)))
+
+
+def data_options(output_root, data_config=None, reserve_bytes=None):
+    """只读准入前置检查；显式禁用保留原入口行为。"""
+    if output_root is None:
+        raise TaskError("任务输出目录尚未配置")
+    destination = Path(os.path.abspath(output_root))
+    if data_config is None:
+        for path in (destination, destination.resolve()):
+            if any(os.path.lexists(parent / ".simdata-root.json") for parent in (path, *path.parents)):
+                raise TaskError("受管目录中的任务需要 --data-config 与本次载荷预留")
+        if reserve_bytes is not None:
+            raise TaskError("本次载荷预留需要 --data-config")
+        return None
+    manager = _data_runtime()
+    try:
+        policy = manager.load_policy(str(data_config))
+        if policy["mode"] == "production" and not policy["production_enabled"]:
+            return None
+        manager.require_write_policy(policy)
+        if type(reserve_bytes) is not int or reserve_bytes <= 0:
+            raise TaskError("受管任务须明确本次载荷预留 --reserve-bytes")
+        if policy["data_root"] is None or policy["root_id"] is None:
+            raise TaskError("受管任务缺少数据根身份配置")
+        root = manager.checked_path(policy["data_root"])
+        manager.root_marker(root, policy)
+        if not destination.is_relative_to(root) or destination == root:
+            raise TaskError("任务输出须位于配置的受管根内")
+        manager.owned_path(root, destination.relative_to(root).as_posix())
+        return dict(config=str(data_config), root=root, path=destination, reserve_bytes=reserve_bytes)
+    except (ValueError, OSError) as error:
+        raise TaskError(str(error)) from error
+
+
+def _data_command(options, *arguments):
+    result = subprocess.run([sys.executable, "-B", str(DATA_ENTRY), *map(str, arguments),
+                             "--config", options["config"]], capture_output=True,
+                            text=True, encoding="utf-8")
+    try:
+        report = json.loads(result.stdout if result.returncode == 0 else result.stderr)
+    except ValueError as error:
+        raise TaskError("数据管理入口未返回有效状态") from error
+    if result.returncode:
+        raise TaskError(report.get("error", "数据管理操作失败"))
+    return report
+
+
+def _task_receipt(options):
+    try:
+        receipt = _data_runtime().checked_path(options["path"] / ".simdata-run.json")
+        saved = json.loads(receipt.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict) or not all(isinstance(saved.get(key), str) for key in ("run_id", "token", "request_id")):
+            raise TaskError("受管任务的运行身份记录无效")
+        if saved.get("reserve_bytes") != options["reserve_bytes"]:
+            raise TaskError("恢复任务须保持原载荷预留")
+        return saved
+    except (ValueError, OSError) as error:
+        raise TaskError(str(error)) from error
+
+
+def _admit_task(options, *, resume=False):
+    if options is None:
+        return
+    request = "task:" + hashlib.sha256(str(options["path"]).encode()).hexdigest()
+    extra = []
+    if resume:
+        saved = _task_receipt(options)
+        if saved["request_id"] != request:
+            raise TaskError("恢复任务的原路径身份不符")
+        extra = ["--resume", "--token", saved["token"]]
+    report = _data_command(options, "begin", "--path", options["path"], "--request-id", request,
+                           "--owner-pid", os.getpid(), "--reserve-bytes", options["reserve_bytes"], *extra)
+    receipt = dict(run_id=report["run_id"], token=report["token"], request_id=request,
+                   reserve_bytes=options["reserve_bytes"], config=options["config"], state=report["phase"])
+    _write_json(options["path"] / ".simdata-run.json", receipt, atomic=True)
+    options.update(receipt)
+
+
+def _prepare_task_data(options):
+    receipt = _task_receipt(options)
+    receipt['state'] = options['state'] = 'finishing'
+    try:
+        # 先保存已完成生产的意图；prepare 失败仍只能重试封口，不能重跑模拟。
+        _write_json(options['path'] / '.simdata-run.json', receipt, atomic=True)
+        arguments = ['finish', '--prepare', '--run-id', options['run_id'],
+                     '--token', options['token'], '--outcome', 'success']
+        shared = options['path'].parent / 'cache.sqlite3'
+        if (options['path'] / 'task.sqlite3').is_file() and shared.is_file():
+            arguments.extend(('--database', shared))
+        _data_command(options, *arguments)
+    except (TaskError, OSError) as error:
+        receipt['error'] = '数据封口准备未完成：' + str(error)
+        _write_json(options['path'] / '.simdata-run.json', receipt, atomic=True)
+        raise TaskError(receipt['error']) from error
+
+
+def _complete_task_data(options):
+    if options is None or options.get("state") != "finishing":
+        return
+    arguments = ["finish", "--run-id", options["run_id"], "--token", options["token"], "--outcome", "success"]
+    try:
+        completed = _data_command(options, *arguments)
+        receipt = _task_receipt(options)
+        receipt.update(state="sealed", sqlite_backups=completed["sqlite_backups"],
+                       dependencies_complete=completed["dependencies_complete"])
+        receipt.pop("error", None)
+        _write_json(options["path"] / ".simdata-run.json", receipt, atomic=True)
+        if options.get("result") is not None:
+            options["result"]["data_management"] = {key: receipt[key] for key in
+                ("run_id", "state", "sqlite_backups", "dependencies_complete")}
+        options["state"] = "sealed"
+    except (TaskError, OSError) as error:
+        receipt = _task_receipt(options)
+        receipt.update(state="finishing", error="数据登记或一致性备份未完成：" + str(error))
+        _write_json(options["path"] / ".simdata-run.json", receipt, atomic=True)
+        raise TaskError(receipt["error"]) from error
 
 
 _CLASS_KEYS = {
@@ -330,8 +459,8 @@ def _effective_input_bytes(original_bytes: bytes, raw_text: str, simulation_conf
     ).encode("utf-8")
 
 
-def _prepare_task(input_path, output_root, *, resume=False, simulation_config=None):
-    path = Path(input_path).resolve()
+def _prepare_task(input_path, output_root, *, resume=False, simulation_config=None, managed=None, input_text=None):
+    path = Path(input_path).resolve() if input_path is not None else None
     simulation_config = simulation_config_for(simulation_config)
     if output_root is None:
         raise TaskError("任务输出目录尚未配置")
@@ -346,21 +475,31 @@ def _prepare_task(input_path, output_root, *, resume=False, simulation_config=No
         except UnicodeDecodeError as error:
             raise TaskError("原始输入副本必须是 UTF-8 文本") from error
         character = parse_character(raw_text)
+        if managed is not None:
+            managed.update(_task_receipt(managed))
         return destination / "input.simc", raw_text, character, destination
-    if not path.is_file():
-        raise TaskError(f"角色文件不存在: {path}")
-    original_bytes, raw_text = _read_utf8(path, description="角色文件")
+    if input_text is not None:
+        if not isinstance(input_text, str) or input_path is not None:
+            raise TaskError("角色文本与角色文件须二选一")
+        original_bytes, raw_text = input_text.encode("utf-8"), input_text
+    else:
+        if path is None or not path.is_file():
+            raise TaskError(f"角色文件不存在: {path}")
+        original_bytes, raw_text = _read_utf8(path, description="角色文件")
     character = parse_character(raw_text)
     effective_bytes = _effective_input_bytes(original_bytes, raw_text, simulation_config)
     if destination.exists():
         raise TaskError(f"任务输出目录已存在，不覆盖已有产物: {destination}")
-    destination.mkdir(parents=True)
+    if managed is not None:
+        _admit_task(managed)
+    else:
+        destination.mkdir(parents=True)
     (destination / "input.original.simc").write_bytes(original_bytes)
     (destination / "input.simc").write_bytes(effective_bytes)
     _write_json(destination / "profile.json", _profile(character, raw_text,
                                                          original_bytes=original_bytes,
                                                          effective_bytes=effective_bytes))
-    return path, raw_text, character, destination
+    return path or destination / "input.simc", raw_text, character, destination
 
 
 def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
@@ -535,7 +674,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
 
 
 @contextmanager
-def _task_lease(destination):
+def _task_lease(destination, after_release=None):
     with (destination/'.runner.lock').open('a+b') as lock:
         if lock.tell()==0:
             lock.write(b'0')
@@ -550,13 +689,17 @@ def _task_lease(destination):
         finally:
             lock.seek(0)
             msvcrt.locking(lock.fileno(),msvcrt.LK_UNLCK,1)
+    if after_release is not None:
+        after_release()
 
 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None) -> dict:
+             version=None, gse_context=None, data_config=None, reserve_bytes=None, input_text=None,
+             _managed=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
+    managed = _managed if _managed is not None else data_options(output_root, data_config, reserve_bytes)
     if resume and not _lease:
         if mode!='optimize':
             raise TaskError('单次评估不支持恢复')
@@ -571,7 +714,8 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
             if current_original != saved_original:
                 raise TaskError('恢复任务的原始输入已变化，请创建新任务')
         return resume_task(destination, search_config=search_config, simulation_config=simulation_config,
-                           _runtime=_runtime, cancel_event=cancel_event)
+                           _runtime=_runtime, cancel_event=cancel_event,
+                           data_config=data_config, reserve_bytes=reserve_bytes)
     if mode=='optimize' and (program is not None or phase_ms!=0):
         raise TaskError('优化入口自动选择动作，手工程序仅用于单次评估')
     if mode not in ("optimize", "single", "import"):
@@ -598,17 +742,26 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
     simulation_config = simulation_config_for(simulation_config)
     runtime = _runtime or TaskRuntime(config['total_budget_seconds'] if mode == 'optimize' else 600, cancel_event=cancel_event)
     path, raw_text, character, destination = _prepare_task(
-        input_path, output_root, resume=resume, simulation_config=simulation_config
+        input_path, output_root, resume=resume, simulation_config=simulation_config, managed=managed,
+        input_text=input_text
     )
+    def managed_result(result):
+        if managed is not None:
+            managed["result"] = result
+            if result["status"] in ("completed", "offline_ready"):
+                _prepare_task_data(managed)
+            result["data_management"] = _data_command(managed, "lease", "--action", "status",
+                                                       "--run-id", managed["run_id"])
+        return result
     if gse_program is not None:
         (destination / "input.gse").write_text(gse_text, encoding="ascii", newline="")
-    with nullcontext() if _lease else _task_lease(destination):
+    with nullcontext() if _lease else _task_lease(destination, lambda: _complete_task_data(managed)):
         if mode in ("single", "import"):
             try:
-                return _run_single(path, destination, character, program=program, phase_ms=phase_ms,
+                return managed_result(_run_single(path, destination, character, program=program, phase_ms=phase_ms,
                                    runtime=runtime, interval_ms=config["input_interval_ms"],
                                    simulation_config=simulation_config, gse_program=gse_program,
-                                   gse_context=gse_context)
+                                   gse_context=gse_context))
             except TaskCancelled:
                 _write_json(destination / "result.json", dict(status="cancelled", elapsed_seconds=runtime.elapsed_seconds), atomic=True)
                 return dict(status="cancelled", output_root=destination)
@@ -619,11 +772,12 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                 message = str(error) or "上游校验未返回预期结果"
                 if isinstance(error, ImportError):
                     message = "缺少任务依赖，请按本机任务文档准备依赖: " + message
-                _write_json(destination / "result.json", dict(status="failed", error=message), atomic=True)
+                if managed is None or managed.get('state') != 'finishing':
+                    _write_json(destination / "result.json", dict(status="failed", error=message), atomic=True)
                 raise TaskError(message) from error
         try:
-            return _run_optimize(destination, character, config=config, runtime=runtime,
-                                 simulation_config=simulation_config)
+            return managed_result(_run_optimize(destination, character, config=config, runtime=runtime,
+                                                simulation_config=simulation_config))
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _write_json(destination / "result.json", state, atomic=True)
@@ -657,6 +811,7 @@ _ACTIVE_LOCK = threading.RLock()
 
 def start_task(input_path, output_root, **kwargs):
     """异步启动同一公开任务入口，返回可取消的任务句柄。"""
+    data_options(output_root, kwargs.get("data_config"), kwargs.get("reserve_bytes"))
     config = kwargs.get("search_config")
     from search import config_for
     runtime = TaskRuntime(config_for(config)["total_budget_seconds"] if kwargs.get("mode", "optimize") == "optimize" else 600)
@@ -692,9 +847,27 @@ def cancel_task(task):
 
 
 def resume_task(output_root, **kwargs):
+    managed = data_options(output_root, kwargs.get("data_config"), kwargs.get("reserve_bytes"))
+    production_complete = False
+    if managed is not None:
+        receipt = _task_receipt(managed)
+        state = _data_command(managed, "lease", "--action", "status", "--run-id", receipt["run_id"])
+        if Path(state["path"]) != managed["path"]:
+            raise TaskError("恢复任务的运行路径身份不符")
+        if state["state"] == "sealed":
+            managed.update(receipt, state="finishing")
+            _complete_task_data(managed)
+            return read_task(managed["path"])
+        if (managed['path'] / 'result.json').is_file():
+            production_complete = read_task(managed['path']).get('business_status') in ('completed', 'offline_ready')
+    _admit_task(managed, resume=True)
     destination = Path(output_root).resolve()
+    if managed is not None and (managed["state"] == "finishing" or production_complete):
+        with _task_lease(destination, lambda: _complete_task_data(managed)):
+            _prepare_task_data(managed)
+        return read_task(destination)
     simulation_config = simulation_config_for(kwargs.pop("simulation_config", None))
-    with _task_lease(destination):
+    with _task_lease(destination, lambda: _complete_task_data(managed)):
         try:
             profile = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -759,7 +932,7 @@ def resume_task(output_root, **kwargs):
         runtime.budget_seconds=config['total_budget_seconds']
         runtime.phase_limit=runtime.budget_seconds
         return run_task(destination/'input.simc', destination, resume=True, _runtime=runtime, _lease=True,
-                        search_config=config, simulation_config=simulation_config, **kwargs)
+                        search_config=config, simulation_config=simulation_config, _managed=managed, **kwargs)
 
 
 def read_task(output_root):
@@ -772,7 +945,18 @@ def read_task(output_root):
             except (OSError,ValueError):
                 continue
             if result.get('status') not in ('running','stopping') and (destination/'result.json').exists():
-                return json.loads((destination/'result.json').read_text(encoding='utf-8'))
+                result = json.loads((destination/'result.json').read_text(encoding='utf-8'))
+            receipt = destination / '.simdata-run.json'
+            if receipt.is_file():
+                managed = json.loads(receipt.read_text(encoding='utf-8'))
+                result['data_management'] = {key: managed[key] for key in
+                    ('run_id', 'state', 'sqlite_backups', 'dependencies_complete') if key in managed}
+                if result.get('status') in ('completed', 'offline_ready') and managed['state'] != 'sealed':
+                    result['business_status'] = result['status']
+                    result['status'] = 'failed' if managed.get('error') else 'running'
+                    result['phase'] = 'data-management'
+                if managed.get('error'):
+                    result['error'] = managed['error']
             return result
     raise TaskError(f'任务结果不存在: {destination}')
 
@@ -782,16 +966,23 @@ def main():
     parser.add_argument('input',type=Path,nargs='?',help='角色导出文件')
     parser.add_argument('--resume',action='store_true',help='按原有清单和预算恢复任务')
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')
+    parser.add_argument('--data-config', type=Path, help='受管任务的绝对机器配置路径')
+    parser.add_argument('--reserve-bytes', type=int, help='本次任务载荷预留，不是长期容量限额')
     args = parser.parse_args()
     try:
         simulation_config = load_config()
         if args.resume:
-            result = resume_task(args.output, simulation_config=simulation_config)
+            result = resume_task(args.output, simulation_config=simulation_config,
+                                 data_config=args.data_config, reserve_bytes=args.reserve_bytes)
         else:
             if args.input is None:
                 parser.error('新任务需要角色文件')
-            result = run_task(args.input, args.output, simulation_config=simulation_config)
-        print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
+            result = run_task(args.input, args.output, simulation_config=simulation_config,
+                              data_config=args.data_config, reserve_bytes=args.reserve_bytes)
+        report = dict(status=result['status'], result=str(args.output.resolve() / 'result.json'))
+        if 'data_management' in result:
+            report['data_management'] = result['data_management']
+        print(json.dumps(report, ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:
         print(str(error), file=sys.stderr)

@@ -78,7 +78,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertIn("可用空间不足", refused["error"])
         self.call("lease", "--run-id", run["run_id"], "--token", run["token"], "--action", "release")
 
-    def test_unknown_link_blocks_growth_and_cursor_errors_are_structured(self):
+    def test_unrecognized_file_link_blocks_growth_and_cursor_errors_are_structured(self):
         self.initialize()
         folder = self.root / "synthetic extras"
         folder.mkdir()
@@ -90,9 +90,16 @@ class MaintenanceTests(unittest.TestCase):
             result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.root.parent)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.addCleanup(lambda: os.rmdir(link))
+            page = self.call("inventory", "--incremental", "--limit", "100")
+            self.assertIn("synthetic extras/outside link", page["skipped_directory_links"])
+            self.assertEqual(page["skipped_directory_links_scope"], "page")
+            begun = self.call("begin", "--request-id", "linked", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1")
+            self.call("lease", "--run-id", begun["run_id"], "--token", begun["token"], "--action", "release")
         else:
-            link.symlink_to(self.root.parent, target_is_directory=True)
-        self.call("begin", "--request-id", "linked", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1", expected=2)
+            external = self.root.parent / "external file"
+            external.write_bytes(b"outside")
+            link.symlink_to(external)
+            self.call("begin", "--request-id", "linked", "--owner-pid", str(os.getpid()), "--reserve-bytes", "1", expected=2)
         self.call("inventory", "--incremental", "--cursor", "broken", expected=2)
         self.call("maintenance", "--task", "archive", "--plan", str(self.config), expected=2)
         self.call("schedule-preview", "--python", sys.executable, "--start-at", "2026-10-03T08:00:00", expected=2)

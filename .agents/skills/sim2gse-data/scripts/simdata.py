@@ -29,6 +29,11 @@ from urllib.parse import quote
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 # 固定初始化DDL的保守峰值：主库、写事务/WAL、SHM和根标记；不是用户容量建议。
 INITIALIZATION_PEAK_BYTES = 256 * 1024
+MAX_REPORTED_DIRECTORY_LINKS = 1000
+RUN_METADATA = (".run-id.json", ".runner.lock", ".simdata-run.json", ".simdata-run.json.tmp")
+FILE_ATTRIBUTE_DIRECTORY = getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+DIRECTORY_REPARSE_TAGS = {0xA0000003, 0xA000000C}  # mount point (junction) and symbolic link
 PROTECTED_ROLES = {"input", "evidence", "model", "analysis", "unknown", "sqlite-source"}
 PROTECTED_DIRECTORIES = {"captures", "live-evidence", "archive", "phase2-product-20261001-02", "duration-curve-20261001-01", "start-origin-analysis-20261001"}
 
@@ -56,8 +61,38 @@ def checked_path(path, *, missing_leaf=False):
     return path.resolve(strict=True)
 
 
-def inventory(root, limit, *, run_db=None):
+def directory_link(path, info):
+    """识别可安全跳过的已知目录链接；文件链接及未知重解析点仍拒绝。"""
+    attributes = getattr(info, "st_file_attributes", 0)
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT:
+        tag = getattr(info, "st_reparse_tag", None)
+        if tag in DIRECTORY_REPARSE_TAGS and attributes & FILE_ATTRIBUTE_DIRECTORY:
+            return True
+        raise DataError("数据根内含文件链接或未知重解析类型")
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            target = os.stat(path, follow_symlinks=True)
+        except OSError as error:
+            raise DataError("悬空符号链接类型未知，拒绝忽略") from error
+        if stat.S_ISDIR(target.st_mode):
+            return True
+        raise DataError("数据根内含文件链接")
+    return False
+
+
+def inventory_result(files, logical_bytes, truncated, skipped_count, skipped_paths, *, skipped_scope="scan",
+                     include_link_report=True, **extra):
+    result = dict(files=files, logical_bytes=logical_bytes, truncated=truncated, **extra)
+    if include_link_report:
+        result.update(skipped_directory_links_count=skipped_count, skipped_directory_links=skipped_paths,
+                      skipped_directory_links_truncated=skipped_count > len(skipped_paths),
+                      skipped_directory_links_scope=skipped_scope)
+    return result
+
+
+def inventory(root, limit, *, run_db=None, skip_directory_links=False):
     files = logical_bytes = visited = 0
+    skipped_count, skipped_paths = 0, []
     active_payload_credit = 0
     # 深度优先流式遍历；目录项和正文不整树物化。None只供完整预算核算。
     initial = root.stat()
@@ -79,17 +114,24 @@ def inventory(root, limit, *, run_db=None):
             else:
                 visited += 1
                 if limit is not None and visited > limit:
-                    return dict(files=files, logical_bytes=logical_bytes, truncated=True)
+                    return inventory_result(files, logical_bytes, True, skipped_count, skipped_paths,
+                                            include_link_report=skip_directory_links)
                 info = entry.stat(follow_symlinks=False)
-                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-                    raise DataError("数据根内含链接或重解析点")
+                entry_path = getattr(entry, "path", None)
+                if directory_link(entry_path, info):
+                    if not skip_directory_links:
+                        raise DataError("数据根内含链接或重解析点")
+                    skipped_count += 1
+                    if len(skipped_paths) < MAX_REPORTED_DIRECTORY_LINKS:
+                        skipped_paths.append(Path(entry_path).relative_to(root).as_posix())
+                    continue
                 if stat.S_ISDIR(info.st_mode):
                     folder = checked_path(entry.path)
                     if len(pending) >= 128:
                         raise DataError("目录深度超过128，拒绝不完整盘点")
                     current = folder.stat()
                     selected_run = active_run
-                    if run_db is not None and folder.is_relative_to(root / "runs"):
+                    if run_db is not None:
                         run = run_db.execute("SELECT * FROM runs WHERE path=? AND state IN ('allocating','running')",
                                              (folder.relative_to(root).as_posix(),)).fetchone()
                         if run is not None:
@@ -100,14 +142,16 @@ def inventory(root, limit, *, run_db=None):
                 elif stat.S_ISREG(info.st_mode):
                     files += 1
                     logical_bytes += info.st_size
-                    if active_run is not None and not (folder == active_run[0] and entry.name in (".run-id.json", ".runner.lock")):
+                    if active_run is not None and not (folder == active_run[0] and entry.name in RUN_METADATA):
                         active_run[2] += info.st_size
                 else:
                     raise DataError("盘点发现非普通文件，拒绝忽略未知对象")
     finally:
         for _, _, entries, _ in pending:
             entries.close()
-    result = dict(files=files, logical_bytes=logical_bytes, truncated=False)
+    result = inventory_result(files, logical_bytes, False, skipped_count, skipped_paths,
+                              skipped_scope="complete" if limit is None else "scan",
+                              include_link_report=skip_directory_links)
     if run_db is not None:
         result["active_payload_credit"] = active_payload_credit
     return result
@@ -146,7 +190,8 @@ def inventory_page(root, limit, cursor):
         return folder
     for current in state["stack"]:
         validate(current)
-    visited = enumerated = 0
+    visited = enumerated = skipped_count = 0
+    skipped_paths = []
     while state["stack"] and visited < limit:
         current = state["stack"][-1]
         folder = validate(current)
@@ -164,10 +209,17 @@ def inventory_page(root, limit, cursor):
             continue
         descended = False
         for name in selected[:available]:
-            path = checked_path(folder / name)
-            info = path.stat()
+            candidate = folder / name
+            info = os.stat(candidate, follow_symlinks=False)
             visited += 1
             current["after"] = name
+            if directory_link(candidate, info):
+                skipped_count += 1
+                if len(skipped_paths) < MAX_REPORTED_DIRECTORY_LINKS:
+                    skipped_paths.append(candidate.relative_to(root).as_posix())
+                continue
+            path = checked_path(candidate)
+            info = path.stat()
             if stat.S_ISDIR(info.st_mode):
                 if len(state["stack"]) >= 128:
                     raise DataError("目录深度超过128")
@@ -183,9 +235,10 @@ def inventory_page(root, limit, cursor):
     token = base64.b64encode(json.dumps(state, ensure_ascii=False).encode()).decode() if state["stack"] else None
     if token and len(token) > 65536:
         raise DataError("盘点游标超过64KiB，目录须分根盘点")
-    return dict(files=state["files"], logical_bytes=state["logical_bytes"], truncated=bool(token),
-                next_cursor=token, batch_visited=visited, enumerated_names=enumerated,
-                consistency="live_observation_not_snapshot", budget_evidence=False)
+    return inventory_result(state["files"], state["logical_bytes"], bool(token), skipped_count, skipped_paths,
+                            skipped_scope="page",
+                            next_cursor=token, batch_visited=visited, enumerated_names=enumerated,
+                            consistency="live_observation_not_snapshot", budget_evidence=False)
 
 
 def load_policy(config):
@@ -224,12 +277,20 @@ def load_policy(config):
 def require_write_policy(policy):
     if policy["mode"] == "production" and not policy["production_enabled"]:
         raise DataError("生产管理未启用；只读操作仍可使用")
-    required = ("capacity_bytes", "retention_days", "maintenance_interval_hours",
-                "maintenance_reserve_bytes", "archive_part_bytes", "metadata_reserve_bytes", "lease_seconds")
-    if any(policy[key] is None for key in required):
-        raise DataError("生产策略未完整配置；须先商量容量、保留、频率及维护空间")
-    if policy["maintenance_reserve_bytes"] >= policy["capacity_bytes"]:
-        raise DataError("维护预留须小于容量")
+    if (policy["capacity_bytes"] is not None and policy["maintenance_reserve_bytes"] is not None
+            and policy["maintenance_reserve_bytes"] >= policy["capacity_bytes"]):
+        raise DataError("维护预留须小于已配置容量")
+
+
+def optional_reserve(policy, key):
+    return policy[key] if policy[key] is not None else 0
+
+
+def require_action_policy(policy, key, action):
+    value = policy[key]
+    if value is None:
+        raise DataError(f"{action}须先配置{key}")
+    return value
 
 
 def digest(value):
@@ -258,10 +319,14 @@ def open_index(root, *, writable=False):
     index_paths(root)
     path = root / "index.sqlite3"
     db = sqlite3.connect(str(path) if writable else path.as_uri() + "?mode=ro", uri=not writable, timeout=5)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys=ON")
-    db.execute("PRAGMA synchronous=FULL" if writable else "PRAGMA query_only=ON")
-    return db
+    try:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA synchronous=FULL" if writable else "PRAGMA query_only=ON")
+        return db
+    except BaseException:
+        db.close()
+        raise
 
 
 def init_root(root, policy, approval):
@@ -269,6 +334,7 @@ def init_root(root, policy, approval):
     if policy["data_root"] is None or policy["root_id"] is None:
         raise DataError("初始化须明确配置数据根及root_id")
     marker_path = root / ".simdata-root.json"
+    initializing = not os.path.lexists(marker_path)
     if policy["mode"] == "test":
         if not root.is_relative_to(checked_path(tempfile.gettempdir())):
             raise DataError("测试初始化仅允许系统临时目录内的新隔离根")
@@ -280,43 +346,64 @@ def init_root(root, policy, approval):
         marker = root_marker(root, policy)
         if marker["mode"] != policy["mode"]:
             raise DataError("配置与数据根模式绑定不符")
-    elif os.path.lexists(root / "index.sqlite3"):
-        raise DataError("既有未登记索引受保护，不能覆盖")
+    elif any(os.path.lexists(root / name) for name in
+             ("index.sqlite3", "index.sqlite3-wal", "index.sqlite3-shm", "index.sqlite3-journal")):
+        raise DataError("既有未登记索引或侧文件受保护，不能覆盖")
     plan_hash = digest(dict(action="init-root", root=str(root), policy=policy))
     if approval is None:
         return dict(plan_hash=plan_hash, root=str(root), root_id=policy["root_id"], applied=False)
     if approval != plan_hash:
         raise DataError("初始化计划摘要不符，须批准当前预览")
-    measured = inventory(root, None) if root.exists() else dict(logical_bytes=0, truncated=False)
+    measured = inventory(root, None, skip_directory_links=True) if root.exists() else dict(logical_bytes=0, truncated=False)
     if measured["truncated"]:
         raise DataError("初始化容量盘点不完整，拒绝发布索引")
-    peak = INITIALIZATION_PEAK_BYTES + policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
-    if measured["logical_bytes"] + peak > policy["capacity_bytes"]:
+    peak = (INITIALIZATION_PEAK_BYTES + optional_reserve(policy, "maintenance_reserve_bytes")
+            + optional_reserve(policy, "metadata_reserve_bytes"))
+    if policy["capacity_bytes"] is not None and measured["logical_bytes"] + peak > policy["capacity_bytes"]:
         raise DataError("初始化容量不足：须容纳索引/WAL峰值及维护、元数据余量")
     if shutil.disk_usage(root if root.exists() else checked_path(root.parent)).free < peak:
         raise DataError("初始化所在卷空间不足，不创建根标记或索引")
-    if not root.exists():
+    created, new_root = [], not root.exists()
+    if new_root:
         root.mkdir()
-    if not os.path.lexists(marker_path):
-        with marker_path.open("x", encoding="utf-8") as output:
-            json.dump(dict(root=str(root), root_id=policy["root_id"], mode=policy["mode"]), output)
-    db = open_index(root, writable=True)
+    root_identity = root.stat()
     try:
-        db.execute("PRAGMA journal_mode=WAL")
-        with db:
-            db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, role TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, identity TEXT NOT NULL, schema_version INTEGER NOT NULL, sealed INTEGER NOT NULL, last_used REAL NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, phase TEXT NOT NULL, payload TEXT NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, path TEXT UNIQUE NOT NULL, state TEXT NOT NULL, owner_pid INTEGER NOT NULL, owner_start TEXT NOT NULL, token_hash TEXT NOT NULL, expires REAL NOT NULL, reserved_bytes INTEGER NOT NULL, last_used REAL NOT NULL, outcome TEXT)")
-            db.execute("CREATE TABLE IF NOT EXISTS run_artifacts (run_id TEXT NOT NULL REFERENCES runs(id), artifact_id TEXT NOT NULL REFERENCES artifacts(id), PRIMARY KEY(run_id,artifact_id))")
-            db.execute("CREATE TABLE IF NOT EXISTS pins (artifact_id TEXT NOT NULL REFERENCES artifacts(id), label TEXT NOT NULL, PRIMARY KEY(artifact_id,label))")
-            db.execute("CREATE TABLE IF NOT EXISTS refs (owner TEXT NOT NULL, target TEXT NOT NULL REFERENCES artifacts(id), kind TEXT NOT NULL, PRIMARY KEY(owner,target))")
-            db.execute("CREATE TABLE IF NOT EXISTS unknown_refs (source TEXT PRIMARY KEY, reason TEXT NOT NULL)")
-            db.execute("INSERT OR IGNORE INTO metadata VALUES ('root_id', ?)", (policy["root_id"],))
-            if db.execute("SELECT value FROM metadata WHERE key='root_id'").fetchone()[0] != policy["root_id"]:
-                raise DataError("索引与数据根身份绑定不符")
-    finally:
-        db.close()
+        if initializing:
+            with (root / "index.sqlite3").open("xb") as output:
+                created.append((root / "index.sqlite3", os.fstat(output.fileno())))
+        db = open_index(root, writable=True)
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            with db:
+                db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                db.execute("CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, role TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, identity TEXT NOT NULL, schema_version INTEGER NOT NULL, sealed INTEGER NOT NULL, last_used REAL NOT NULL)")
+                db.execute("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, phase TEXT NOT NULL, payload TEXT NOT NULL)")
+                db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, path TEXT UNIQUE NOT NULL, state TEXT NOT NULL, owner_pid INTEGER NOT NULL, owner_start TEXT NOT NULL, token_hash TEXT NOT NULL, expires REAL NOT NULL, reserved_bytes INTEGER NOT NULL, last_used REAL NOT NULL, outcome TEXT)")
+                db.execute("CREATE TABLE IF NOT EXISTS run_artifacts (run_id TEXT NOT NULL REFERENCES runs(id), artifact_id TEXT NOT NULL REFERENCES artifacts(id), PRIMARY KEY(run_id,artifact_id))")
+                db.execute("CREATE TABLE IF NOT EXISTS pins (artifact_id TEXT NOT NULL REFERENCES artifacts(id), label TEXT NOT NULL, PRIMARY KEY(artifact_id,label))")
+                db.execute("CREATE TABLE IF NOT EXISTS refs (owner TEXT NOT NULL, target TEXT NOT NULL REFERENCES artifacts(id), kind TEXT NOT NULL, PRIMARY KEY(owner,target))")
+                db.execute("CREATE TABLE IF NOT EXISTS unknown_refs (source TEXT PRIMARY KEY, reason TEXT NOT NULL)")
+                db.execute("INSERT OR IGNORE INTO metadata VALUES ('root_id', ?)", (policy["root_id"],))
+                if db.execute("SELECT value FROM metadata WHERE key='root_id'").fetchone()[0] != policy["root_id"]:
+                    raise DataError("索引与数据根身份绑定不符")
+        finally:
+            db.close()
+        # 完整表结构已提交且连接关闭后，才发布根标记。
+        if initializing:
+            with marker_path.open("x", encoding="utf-8") as output:
+                created.append((marker_path, os.fstat(output.fileno())))
+                json.dump(dict(root=str(root), root_id=policy["root_id"], mode=policy["mode"]), output)
+    except BaseException:
+        current = checked_path(root).stat()
+        if (current.st_dev, current.st_ino) == (root_identity.st_dev, root_identity.st_ino):
+            for path, identity in reversed(created):
+                if os.path.lexists(path):
+                    observed = checked_path(path).stat()
+                    if (observed.st_dev, observed.st_ino) == (identity.st_dev, identity.st_ino):
+                        path.unlink()
+            if new_root and not any(root.iterdir()):
+                root.rmdir()
+        raise
     return dict(plan_hash=plan_hash, root_id=policy["root_id"], applied=True)
 
 
@@ -575,8 +662,9 @@ def lease_state(run):
 def run_folder(root, run):
     """持久分配可能尚未创建任意父层；只检查已存在层，不消除重解析点。"""
     relative = Path(run["path"])
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "runs":
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
         raise DataError("运行路径身份无效")
+    owned_path(root, run["path"])
     current = root
     for part in relative.parts:
         current = current / part
@@ -596,30 +684,37 @@ def run_payload_bytes(root, run):
     measured = inventory(folder, None)
     if measured["truncated"]:
         raise DataError("活动目录超过有界盘点范围，不能确定容量")
-    internal = sum(checked_path(folder / name).stat().st_size for name in (".run-id.json", ".runner.lock")
+    internal = sum(checked_path(folder / name).stat().st_size for name in RUN_METADATA
                    if os.path.lexists(folder / name))
     return measured["logical_bytes"] - internal
 
 
-def check_budget(root, db, policy, growth=0, *, physical_growth=None, finishing_run_id=None):
-    # 同一写锁内每次完整流式核算，不复用分页游标或陈旧缓存；未知字节也计入。
+def check_budget(root, db, policy, growth=0, *, physical_growth=None, finishing_run_id=None, metadata_peak=None):
+    # 已设逻辑额度才完整计量；未设时OS实际free已计入未知占用，不虚构逻辑总量。
     for run in db.execute("SELECT * FROM runs WHERE state IN ('allocating','running')"):
         run_folder(root, run)
     reserved = db.execute("SELECT coalesce(sum(reserved_bytes),0) FROM runs WHERE state IN ('allocating','running')").fetchone()[0]
-    measured = domain_inventory(root, db, observe_runs=True)
+    measured = (domain_inventory(root, db, observe_runs=True) if policy["capacity_bytes"] is not None
+                else dict(logical_bytes=None, active_payload_credit=0, truncated=False))
     if measured["truncated"]:
         raise DataError("容量盘点未完整，拒绝新增长；不能忽略未知文件")
     # 只抵扣本次总量已经计入的同一stat字节；producer不持管理锁，后续扫描会漏账。
     remaining = reserved - measured["active_payload_credit"]
     root_remaining = physical_future(root, db, root.stat().st_dev, finishing_run_id=finishing_run_id)
     remaining += job_remaining(root, db) + safety_remaining(db)
-    reserve = policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
-    if measured["logical_bytes"] + remaining + growth + reserve > policy["capacity_bytes"]:
+    if metadata_peak is None:
+        metadata_peak = metadata_write_peak(db, {"action": "managed-write", "growth_bytes": growth})
+    reserve = (optional_reserve(policy, "maintenance_reserve_bytes")
+               + optional_reserve(policy, "metadata_reserve_bytes") + metadata_peak)
+    if (policy["capacity_bytes"] is not None
+            and measured["logical_bytes"] + remaining + growth + reserve > policy["capacity_bytes"]):
         raise DataError("容量不足：原件、索引/WAL、活动预留和维护空间必须共存")
     if shutil.disk_usage(root).free < root_remaining + (growth if physical_growth is None else physical_growth) + reserve:
         raise DataError("所在卷可用空间不足，拒绝增长且不自动清理")
     return dict(logical_bytes=measured["logical_bytes"], remaining_reserved_bytes=remaining,
-                maintenance_reserve_bytes=policy["maintenance_reserve_bytes"], metadata_reserve_bytes=policy["metadata_reserve_bytes"])
+                logical_capacity_checked=policy["capacity_bytes"] is not None,
+                maintenance_reserve_bytes=policy["maintenance_reserve_bytes"], metadata_reserve_bytes=policy["metadata_reserve_bytes"],
+                operation_metadata_peak_bytes=metadata_peak)
 
 
 def run_row(db, run_id):
@@ -629,14 +724,15 @@ def run_row(db, run_id):
     return run
 
 
-def authorize_run(run, token):
+def authorize_run(run, token, *, read_sealed=False):
     if not token or not hmac.compare_digest(run["token_hash"], hashlib.sha256(token.encode()).hexdigest()):
         raise DataError("租约令牌不符")
-    if lease_state(run) != "alive":
+    if not (read_sealed and run["state"] == "sealed") and lease_state(run) != "alive":
         raise DataError("运行所有者身份不能核实；须先预览明确的租约恢复")
 
 
 def begin_run(root, policy, args):
+    require_action_policy(policy, "lease_seconds", "新运行租约")
     write_guard(root, policy)
     if not args.request_id or len(args.request_id) > 128 or "\x00" in args.request_id or args.reserve_bytes <= 0:
         raise DataError("请求ID须非空且不超过128字符；预留须为正数")
@@ -646,21 +742,51 @@ def begin_run(root, policy, args):
     token = args.token or secrets.token_hex(32)
     run_id = str(uuid.uuid5(uuid.UUID(policy["root_id"]), "run:" + args.request_id))
     relative = f"runs/{run_id}"
+    if getattr(args, "path", None):
+        selected = Path(args.path)
+        if not selected.is_absolute() or not selected.is_relative_to(root) or selected == root:
+            raise DataError("运行输出须为受管根内的绝对目录")
+        relative = selected.relative_to(root).as_posix()
+        if selected.relative_to(root).parts[0] in (".git", ".agents", ".claude", ".archives", ".backups", ".staging", ".quarantine"):
+            raise DataError("运行输出不能占用代码管理或数据管理目录")
+    folder = owned_path(root, relative) if getattr(args, "path", None) else root / relative
     with write_index(root, policy) as db:
         existing = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if existing:
-            authorize_run(existing, args.token)
-            if existing["state"] not in ("allocating", "running") or existing["reserved_bytes"] != args.reserve_bytes:
+            if (existing["state"] not in ("allocating", "running") or existing["reserved_bytes"] != args.reserve_bytes
+                    or existing["path"] != relative):
                 raise DataError("同请求运行已封口或预留不同，不能覆盖")
+            if getattr(args, "resume", False):
+                if not args.token or not hmac.compare_digest(existing["token_hash"], hashlib.sha256(args.token.encode()).hexdigest()):
+                    raise DataError("恢复运行的租约令牌不符")
+                same_owner = existing["owner_pid"] == args.owner_pid and existing["owner_start"] == owner_start
+                if not same_owner and lease_state(existing) not in ("dead", "pid-reused"):
+                    raise DataError("原运行所有者仍活动或身份未知，不能续领")
+                run_folder(root, existing)
+                with runner_locks(root, folder / ".lease-probe"):
+                    check_budget(root, db, policy)
+                    db.execute("UPDATE runs SET owner_pid=?,owner_start=?,expires=? WHERE id=?",
+                               (args.owner_pid, owner_start, time.time() + policy["lease_seconds"], run_id))
+            else:
+                authorize_run(existing, args.token)
+                if existing["owner_pid"] != args.owner_pid or existing["owner_start"] != owner_start:
+                    raise DataError("运行所有者不同，须显式恢复并核实死亡证明")
         else:
+            if getattr(args, "resume", False):
+                raise DataError("未知运行不能恢复或接管")
+            if getattr(args, "path", None) and os.path.lexists(folder):
+                raise DataError("运行输出已存在，不接管未绑定内容")
+            for row in db.execute("SELECT path FROM runs"):
+                other = root / row["path"]
+                if folder.is_relative_to(other) or other.is_relative_to(folder):
+                    raise DataError("运行路径与已登记运行重叠")
             check_budget(root, db, policy, args.reserve_bytes)
             db.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)", (run_id, args.request_id, relative, "allocating", args.owner_pid,
                        owner_start, hashlib.sha256(token.encode()).hexdigest(), time.time() + policy["lease_seconds"], args.reserve_bytes, time.time(), None))
             db.execute("INSERT INTO operations VALUES (?,?,?,?)", (run_id, "begin", "allocating", json.dumps(dict(run_id=run_id))))
             db.commit()  # 先持久预留；中断后不能把它当作未发生。
             db.execute("BEGIN IMMEDIATE")
-        parent = checked_path(root / "runs", missing_leaf=True)
-        parent.mkdir(exist_ok=True)
+        folder.parent.mkdir(parents=True, exist_ok=True)
         folder = checked_path(root / relative, missing_leaf=True)
         if not folder.exists():
             folder.mkdir()
@@ -675,51 +801,180 @@ def begin_run(root, policy, args):
             with marker.open("x", encoding="utf-8") as output:
                 json.dump(expected, output)
         db.execute("UPDATE runs SET state='running' WHERE id=?", (run_id,))
-        db.execute("UPDATE operations SET phase='running' WHERE id=?", (run_id,))
-    return dict(run_id=run_id, path=str(folder), token=token, reserved_bytes=args.reserve_bytes, owner_start=owner_start)
+        db.execute("UPDATE operations SET phase='running' WHERE id=? AND phase!='finishing'", (run_id,))
+        phase = db.execute("SELECT phase FROM operations WHERE id=?", (run_id,)).fetchone()[0]
+    return dict(run_id=run_id, path=str(folder), token=token, reserved_bytes=args.reserve_bytes, owner_start=owner_start, phase=phase)
+
+
+def run_product_paths(root, folder, shared):
+    """只枚举；严格预扫和每个对象检查共同拒绝链接，内存不随任务文件数增长。"""
+    inventory(folder, None)
+    for path in folder.rglob("*"):
+        path = checked_path(path)
+        if not path.is_file() or (path.parent == folder and path.name in RUN_METADATA):
+            continue
+        if any(path.name.endswith(suffix) for suffix in ("-wal", "-shm", "-journal")):
+            base = Path(str(path).rsplit("-", 1)[0])
+            if base.is_file():
+                with checked_path(base).open("rb") as source:
+                    if source.read(16) == b"SQLite format 3\x00":
+                        continue
+        yield path
+    for relative in shared:
+        path = managed_file(root, str(root / relative))
+        if path != folder.parent / "cache.sqlite3":
+            raise DataError("共享来源仅允许本任务父目录的cache.sqlite3")
+        with path.open("rb") as source:
+            if source.read(16) != b"SQLite format 3\x00":
+                raise DataError("共享缓存来源不是SQLite")
+        yield path
+
+
+def run_product_record(root, root_id, path):
+    with path.open("rb") as source:
+        sql = source.read(16) == b"SQLite format 3\x00"
+    image = file_manifest(path, allow_sqlite=sql)
+    role = ("sqlite-source" if sql else "input" if path.name in ("input.simc", "input.original.simc", "input.gse")
+            else "evidence" if path.name in ("result.json", "profile.json", "candidate.txt") else "native")
+    relative = path.relative_to(root).as_posix()
+    return dict(id=str(uuid.uuid5(uuid.UUID(root_id), "artifact:" + os.path.normcase(relative))),
+                path=relative, role=role, sealed=not sql, **image)
+
+
+def verify_run_record(db, record):
+    old = db.execute("SELECT * FROM artifacts WHERE id=?", (record["id"],)).fetchone()
+    if old is None:
+        return False
+    same = old["path"] == record["path"] and old["role"] == record["role"] and bool(old["sealed"]) == record["sealed"]
+    if record["sealed"]:
+        same = same and old["sha256"] == record["sha256"] and old["size"] == record["size"] and old["identity"] == json.dumps(record["identity"])
+    else:
+        same = same and json.loads(old["identity"])[:2] == record["identity"][:2]
+    if not same:
+        raise DataError("运行对象身份、角色或已封口字节变化；不覆盖")
+    return True
 
 
 def finish_run(root, policy, args):
+    batch_limit = min(getattr(args, "limit", 1000), 1000)
+    with write_index(root, policy) as db:
+        run = run_row(db, args.run_id)
+        authorize_run(run, args.token, read_sealed=True)
+        folder = run_folder(root, run)
+        if folder is None:
+            raise DataError("运行目录尚未创建，不能封口")
+        operation = db.execute("SELECT * FROM operations WHERE id=?", (run["id"],)).fetchone()
+        payload = json.loads(operation["payload"])
+        shared = sorted({managed_file(root, str(path)).relative_to(root).as_posix()
+                         for path in (getattr(args, "database", None) or [])})
+        if len(shared) > 1 or any(root / path != folder.parent / "cache.sqlite3" for path in shared):
+            raise DataError("共享来源仅允许本任务父目录的cache.sqlite3")
+        if operation["phase"] in ("finishing", "sealed"):
+            if payload.get("outcome", run["outcome"]) != args.outcome or (shared and shared != payload.get("shared", [])):
+                raise DataError("封口请求的结果或共享来源已变化")
+            shared = payload.get("shared", [])
+        else:
+            payload.update(outcome=args.outcome, shared=shared)
+        if getattr(args, "prepare", False):
+            if run["state"] != "sealed":
+                check_budget(root, db, policy, metadata_peak=metadata_write_peak(db, payload))
+                db.execute("UPDATE operations SET phase='finishing',payload=? WHERE id=?", (json.dumps(payload), run["id"]))
+            return dict(run_id=run["id"], phase="sealed" if run["state"] == "sealed" else "finishing", sealed=run["state"] == "sealed")
+        if run["state"] not in ("running", "sealed"):
+            raise DataError("未启动或已放弃运行不能封口")
+        sealed = run["state"] == "sealed"
+        with runner_locks(root, folder / ".lease-probe"):
+            paths = lambda: run_product_paths(root, folder, shared)
+            planned_bytes = sum(len(json.dumps(path.relative_to(root).as_posix(), ensure_ascii=False).encode()) + 1024 for path in paths())
+            if not sealed:
+                shared_bytes = sum(checked_path(str(root / name) + suffix).stat().st_size
+                                   for name in shared for suffix in ("", "-wal", "-shm", "-journal")
+                                   if os.path.lexists(str(root / name) + suffix))
+                if run_payload_bytes(root, run) + shared_bytes > run["reserved_bytes"]:
+                    raise DataError("实际产物及共享缓存超过预留，保持未封口和保护状态")
+                # 根锁覆盖整次登记；一次全根准入覆盖全部批次，不为每千项重扫全仓。
+                check_budget(root, db, policy, 65536 + planned_bytes * 8, finishing_run_id=run["id"])
+                db.execute("UPDATE operations SET phase='finishing',payload=? WHERE id=?", (json.dumps(payload), run["id"]))
+            count, identities, databases, batch, encoded_bytes, batches = 0, [], [], [], 0, 0
+            def register_batch():
+                nonlocal batches
+                if not batch:
+                    return
+                peak = metadata_write_peak(db, batch)
+                future = physical_future(root, db, root.stat().st_dev, finishing_run_id=run["id"])
+                if shutil.disk_usage(root).free < future + peak + optional_reserve(policy, "metadata_reserve_bytes") + optional_reserve(policy, "maintenance_reserve_bytes"):
+                    raise DataError("登记批次元数据物理空间不足；保留已登记进度")
+                for record in batch:
+                    verify_run_record(db, record)
+                    db.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?,?,?,?,?,?)",
+                               (record["id"], record["path"], record["role"], record["sha256"], record["size"],
+                                json.dumps(record["identity"]), 1, int(record["sealed"]), time.time()))
+                    db.execute("INSERT OR IGNORE INTO run_artifacts VALUES (?,?)", (run["id"], record["id"]))
+                db.commit()
+                db.execute("BEGIN IMMEDIATE")
+                batches += 1
+            for path in paths():
+                record = run_product_record(root, policy["root_id"], path)
+                count += 1
+                if len(identities) < 1000:
+                    identities.append(record["id"])
+                if not record["sealed"]:
+                    databases.append(str(path))
+                    if len(databases) > 1000:
+                        raise DataError("SQLite来源超过有界上限，保持未封口")
+                if sealed:
+                    if not verify_run_record(db, record):
+                        raise DataError("封口后成员清单已变化")
+                    continue
+                size = len(compact_json(record, QUERY_BYTES).encode())
+                if batch and (len(batch) >= batch_limit or encoded_bytes + size > QUERY_BYTES):
+                    register_batch()
+                    batch, encoded_bytes = [], 0
+                batch.append(record)
+                encoded_bytes += size
+            if not sealed:
+                register_batch()
+            registered = db.execute("SELECT count(*) FROM run_artifacts WHERE run_id=?", (run["id"],)).fetchone()[0]
+            if registered != count:
+                raise DataError("运行成员清单已变化，不能封口")
+            result = dict(run_id=run["id"], sealed=True, outcome=args.outcome, artifact_ids=sorted(identities),
+                          artifact_count=count, artifact_ids_truncated=count > len(identities))
+            if sealed:
+                for backup in payload.get("completion", {}).get("sqlite_backups", []):
+                    check_product(db, backup["operation_id"], checked_path(backup["path"]).parent)
+                return dict(result, **payload.get("completion", {}))
+    backups, dependencies_complete = [], True
+    for database in databases:
+        request = "run:" + args.run_id + ":" + hashlib.sha256(database.encode()).hexdigest()
+        backup = argparse.Namespace(command="backup-sqlite", database=database, request_id=request,
+                                    operation_id=None, approve_hash=None, run_id=args.run_id, token=args.token)
+        plan = lifecycle_execute(root, policy, backup)
+        backup.approve_hash = plan["plan_hash"]
+        image = lifecycle_execute(root, policy, backup)
+        backups.append({key: image[key] for key in ("operation_id", "artifact_id", "path")})
+        reference = argparse.Namespace(database=image["path"], limit=1000, approve_hash=None)
+        plan = cache_references(root, policy, reference)
+        reference.approve_hash = plan["plan_hash"]
+        cache_references(root, policy, reference)
+        dependencies_complete &= not plan["truncated"] and all(row["target"] for row in plan["references"])
+    completion = dict(sqlite_backups=backups, dependencies_complete=bool(dependencies_complete),
+                      registration_batches=batches)
     with write_index(root, policy) as db:
         run = run_row(db, args.run_id)
         authorize_run(run, args.token)
-        folder = checked_path(root / run["path"])
-        if inventory(folder, 1000)["truncated"]:
-            raise DataError("运行超过有界封口范围，不能假称完整")
-        manifests = []
-        for path in sorted(folder.rglob("*")):
-            checked_path(path)
-            if path.is_file() and path.name not in (".runner.lock", ".run-id.json"):
-                with runner_locks(root, path):
-                    manifests.append((path, file_manifest(path)))
-        if run["state"] != "sealed" and sum(manifest["size"] for _, manifest in manifests) > run["reserved_bytes"]:
-            raise DataError("实际产物超过预留，保持未封口和保护状态")
-        # Cover new artifact/link rows, indexes and WAL before any registration writes.
-        registration_bytes = len(json.dumps([(path.relative_to(root).as_posix(), manifest)
-                                             for path, manifest in manifests]).encode("utf-8"))
-        growth = 0 if run["state"] == "sealed" else 65536 + registration_bytes * 8
-        check_budget(root, db, policy, growth, finishing_run_id=run["id"])
-        if run["state"] == "sealed":
-            registered = {row[0] for row in db.execute("SELECT artifact_id FROM run_artifacts WHERE run_id=?", (args.run_id,))}
-            observed = {str(uuid.uuid5(uuid.UUID(policy["root_id"]), "artifact:" + os.path.normcase(path.relative_to(root).as_posix()))) for path, _ in manifests}
-            if registered != observed:
-                raise DataError("封口后成员清单已变化，不能改写")
-        artifact_ids = []
-        for path, manifest in manifests:
-            relative = path.relative_to(root).as_posix()
-            artifact_id = str(uuid.uuid5(uuid.UUID(policy["root_id"]), "artifact:" + os.path.normcase(relative)))
-            old = db.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,)).fetchone()
-            if old and (old["sha256"] != manifest["sha256"] or old["identity"] != json.dumps(manifest["identity"])):
-                raise DataError("封口后产物已变化，不能覆盖")
-            db.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?,?,?,?,?,?)", (artifact_id, relative, "native", manifest["sha256"],
-                       manifest["size"], json.dumps(manifest["identity"]), 1, 1, time.time()))
-            db.execute("INSERT OR IGNORE INTO run_artifacts VALUES (?,?)", (args.run_id, artifact_id))
-            artifact_ids.append(artifact_id)
-        if run["state"] == "sealed" and run["outcome"] != args.outcome:
-            raise DataError("封口结果状态不同，不能改写")
-        db.execute("UPDATE runs SET state='sealed',reserved_bytes=0,outcome=?,last_used=? WHERE id=?", (args.outcome, time.time(), args.run_id))
-        db.execute("UPDATE operations SET phase='sealed' WHERE id=?", (args.run_id,))
-    return dict(run_id=args.run_id, sealed=True, outcome=args.outcome, artifact_ids=artifact_ids)
+        with runner_locks(root, folder / ".lease-probe"):
+            observed = 0
+            for path in run_product_paths(root, folder, shared):
+                if not verify_run_record(db, run_product_record(root, policy["root_id"], path)):
+                    raise DataError("最终封口前出现未登记成员")
+                observed += 1
+            if observed != count:
+                raise DataError("最终封口前运行成员变化")
+            check_budget(root, db, policy, metadata_peak=metadata_write_peak(db, completion), finishing_run_id=run["id"])
+            payload["completion"] = completion
+            db.execute("UPDATE runs SET state='sealed',reserved_bytes=0,outcome=?,last_used=? WHERE id=?", (args.outcome, time.time(), run["id"]))
+            db.execute("UPDATE operations SET phase='sealed',payload=? WHERE id=?", (json.dumps(payload), run["id"]))
+    return dict(result, **completion)
 
 
 def protection(root, db, artifact_id, *, own_job=None, activity_only=False):
@@ -840,9 +1095,13 @@ def change_reference(root, policy, args):
 
 def manage_lease(root, policy, args):
     root_marker(root, policy)
+    if args.action == "heartbeat":
+        require_action_policy(policy, "lease_seconds", "运行续租")
     def report(db):
         run = run_row(db, args.run_id)
         return dict(run_id=run["id"], state=run["state"], owner_pid=run["owner_pid"], owner_start=run["owner_start"],
+                    path=str(root / run["path"]), outcome=run["outcome"],
+                    phase=db.execute("SELECT phase FROM operations WHERE id=?", (run["id"],)).fetchone()[0],
                     owner_state=lease_state(run), heartbeat_expired=run["expires"] < time.time(), reserved_bytes=run["reserved_bytes"])
     def recovery(db):
         result = report(db)
@@ -862,7 +1121,8 @@ def manage_lease(root, policy, args):
     with write_index(root, policy) as db:
         if args.action in ("release", "recover"):
             # 核销预留不增长payload；禁止用业务限额或全树扫描卡死必要维护。
-            if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"]:
+            metadata_peak = metadata_write_peak(db, {"action": "lease-maintenance", "run_id": args.run_id})
+            if shutil.disk_usage(root).free < optional_reserve(policy, "metadata_reserve_bytes") + metadata_peak:
                 raise DataError("租约维护所需元数据余量不足；保留状态并拒绝写入")
         else:
             check_budget(root, db, policy)
@@ -946,12 +1206,15 @@ def cache_references(root, policy, args):
                 source_identity=[info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns], references=refs,
                 truncated=truncated, policy_hash=digest(policy))
     plan_hash = digest(plan)
+    operation_id = str(uuid.uuid5(uuid.UUID(marker["root_id"]), "cache-references:" + plan_hash))
     if args.approve_hash is None:
         return dict(plan_hash=plan_hash, applied=False, **plan)
     if args.approve_hash != plan_hash:
         raise DataError("缓存引用清单在预览后已变化，须重新批准")
     with write_index(root, policy) as db:
-        check_budget(root, db, policy)
+        if db.execute("SELECT 1 FROM operations WHERE id=? AND phase='committed'", (operation_id,)).fetchone():
+            return dict(plan_hash=plan_hash, applied=True, **plan)
+        check_budget(root, db, policy, len(json.dumps(plan, ensure_ascii=False).encode("utf-8")) * 8)
         for reference in refs:
             if reference["target"] is None:
                 db.execute("INSERT OR REPLACE INTO unknown_refs VALUES (?,?)", (reference["owner"], reference["reason"]))
@@ -959,7 +1222,7 @@ def cache_references(root, policy, args):
                 db.execute("INSERT OR IGNORE INTO refs VALUES (?,?,'cache')", (reference["owner"], reference["target"]))
                 # 旧消费者仍按绝对origin读native.json；兼容依赖必须另外保留，不能用失效元数据冒充旧库已切换。
                 db.execute("INSERT OR IGNORE INTO refs VALUES (?,?,'durable')", ("legacy-path:" + reference["owner"], reference["target"]))
-        db.execute("INSERT INTO operations VALUES (?,?,?,?)", (str(uuid.uuid4()), "cache-references", "committed", json.dumps(plan)))
+        db.execute("INSERT INTO operations VALUES (?,?,?,?)", (operation_id, "cache-references", "committed", json.dumps(plan)))
     return dict(plan_hash=plan_hash, applied=True, **plan)
 
 
@@ -1468,7 +1731,7 @@ def manage_operation(root, policy, args):
             raise DataError("放弃操作须批准当前清单，已封口操作不能放弃")
         plan = json.loads(job["plan"])
         write_peak = plan.get("metadata_phase_bytes", {}).get("writing", 4 * len(job["plan"].encode("utf-8")) + 131072)
-        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"] + write_peak:
+        if shutil.disk_usage(root).free < optional_reserve(policy, "metadata_reserve_bytes") + write_peak:
             raise DataError("缺少操作日志写入空间")
         phase_commit(db, job["id"], "abandoned")
         return dict(preview, applied=True)
@@ -1732,13 +1995,30 @@ def verify_archive(root, manifest, data=None, *, package_root=None):
             raise DataError("恢复原SHA或原大小不匹配")
 
 
+def backup_run_guard(root, db, source, run_id=None, token=None):
+    if run_id:
+        run = run_row(db, run_id)
+        authorize_run(run, token)
+        phase = db.execute("SELECT phase FROM operations WHERE id=?", (run_id,)).fetchone()[0]
+        folder = run_folder(root, run)
+        if phase != "finishing" or folder is None or not (source.is_relative_to(folder) or source == folder.parent / "cache.sqlite3"):
+            raise DataError("运行备份须为已进入封口阶段的同一任务来源")
+    for run in db.execute("SELECT id,path FROM runs WHERE state IN ('allocating','running')"):
+        if source.is_relative_to(root / run["path"]) and run["id"] != run_id:
+            raise DataError("活动运行租约阻止SQLite备份")
+
+
 def lifecycle_plan(root, policy, db, args):
+    if args.command == "archive":
+        require_action_policy(policy, "archive_part_bytes", "归档")
     if args.operation_id:
         job = job_row(db, args.operation_id)
         if job["kind"] != args.command:
             raise DataError("操作类型不匹配")
         return json.loads(job["plan"])
     plan = dict(kind=args.command, root_id=root_marker(root, policy)["root_id"], policy_hash=digest(policy))
+    if args.command == "backup-sqlite" and getattr(args, "run_id", None):
+        plan["run_id"] = args.run_id
     if args.command == "backup-sqlite" and args.request_id and has_table(db, "jobs"):
         operation_id = str(uuid.uuid5(uuid.UUID(plan["root_id"]), "operation:" + digest(dict(kind=args.command, root_id=plan["root_id"], request_id=args.request_id))))
         existing = db.execute("SELECT * FROM jobs WHERE id=?", (operation_id,)).fetchone()
@@ -1806,9 +2086,7 @@ def lifecycle_plan(root, policy, db, args):
             raise DataError("SQLite源须为受管根内普通文件")
         if source.relative_to(root).parts[0] == ".staging":
             raise DataError("SQLite备份不能读取未封口工作区")
-        for run in db.execute("SELECT path FROM runs WHERE state IN ('allocating','running')"):
-            if source.is_relative_to(root / run["path"]):
-                raise DataError("活动运行租约阻止SQLite备份")
+        backup_run_guard(root, db, source, getattr(args, "run_id", None), getattr(args, "token", None))
         with source.open("rb") as handle:
             if handle.read(16) != b"SQLite format 3\x00":
                 raise DataError("源不是SQLite数据库")
@@ -1963,9 +2241,17 @@ def lifecycle_execute(root, policy, args):
     if args.approve_hash is None:
         with closing(open_index(root)) as reader:
             plan = lifecycle_plan(root, policy, reader, args)
+            if plan["kind"] == "backup-sqlite" and plan.get("run_id"):
+                if plan["run_id"] != getattr(args, "run_id", None):
+                    raise DataError("备份重试缺少原运行授权")
+                backup_run_guard(root, reader, owned_path(root, plan["source"]), args.run_id, args.token)
         return dict(plan, plan_hash=digest(plan), applied=False)
     with write_index(root, policy) as db:
         plan = lifecycle_plan(root, policy, db, args)
+        if plan["kind"] == "backup-sqlite" and plan.get("run_id"):
+            if plan["run_id"] != getattr(args, "run_id", None):
+                raise DataError("备份重试缺少原运行授权")
+            backup_run_guard(root, db, owned_path(root, plan["source"]), args.run_id, args.token)
         if args.approve_hash != digest(plan) or plan["policy_hash"] != digest(policy):
             raise DataError("操作须批准当前清单及配置摘要")
         job = db.execute("SELECT * FROM jobs WHERE id=?", (plan["operation_id"],)).fetchone() if has_table(db, "jobs") else None
@@ -2019,8 +2305,7 @@ def lifecycle_execute(root, policy, args):
                     verify_archive(root, plan["manifest"], data)
                 else:
                     source = owned_path(root, plan["source"])
-                    if any(source.is_relative_to(root / run["path"]) for run in db.execute("SELECT path FROM runs WHERE state IN ('allocating','running')")):
-                        raise DataError("活动运行租约阻止SQLite备份重试")
+                    backup_run_guard(root, db, source, plan.get("run_id"), getattr(args, "token", None))
                     backup_image(root, plan, data)
                 product = product_manifest(data)
                 if len(compact_json(product, QUERY_BYTES).encode("utf-8")) > plan["product_metadata_bound_bytes"]:
@@ -2160,6 +2445,8 @@ def legacy_register(root, policy, args):
 
 def reader_lease(root, policy, args):
     root_marker(root, policy)
+    if args.action in ("acquire", "heartbeat"):
+        require_action_policy(policy, "lease_seconds", "读取租约" if args.action == "acquire" else "读取者续租")
     if args.action in ("status", "recover-preview"):
         with closing(open_index(root)) as db:
             row = db.execute("SELECT * FROM readers WHERE id=?", (args.lease_id,)).fetchone() if has_table(db, "readers") else None
@@ -2198,7 +2485,8 @@ def reader_lease(root, policy, args):
                 raise DataError("读取者未确定死亡/复用或当前恢复计划未批准；过期不能单独回收")
         else:
             authorize_run(row, args.token)
-        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"]:
+        metadata_peak = metadata_write_peak(db, {"action": "reader-lease-maintenance", "lease_id": args.lease_id})
+        if shutil.disk_usage(root).free < optional_reserve(policy, "metadata_reserve_bytes") + metadata_peak:
             raise DataError("读取租约维护缺少元数据空间")
         if args.action == "heartbeat":
             check_budget(root, db, policy, 65536)
@@ -2241,10 +2529,10 @@ def volume_root(root, db, volume_id):
 
 
 def domain_inventory(root, db, *, observe_runs=False):
-    measured = inventory(root, None, run_db=db if observe_runs else None)
+    measured = inventory(root, None, run_db=db if observe_runs else None, skip_directory_links=True)
     if has_table(db, "volumes"):
         for row in db.execute("SELECT id FROM volumes ORDER BY id"):
-            other = inventory(volume_root(root, db, row["id"]), None)
+            other = inventory(volume_root(root, db, row["id"]), None, skip_directory_links=True)
             measured["logical_bytes"] += other["logical_bytes"]
             measured["truncated"] = measured["truncated"] or other["truncated"]
     return measured
@@ -2318,7 +2606,10 @@ def physical_future(root, db, device, *, finishing_run_id=None):
 
 def check_physical_volume(root, db, policy, target, growth=0):
     future = physical_future(root, db, target.stat().st_dev)
-    headroom = policy["maintenance_reserve_bytes"] + policy["metadata_reserve_bytes"]
+    metadata_peak = metadata_write_peak(db, {"action": "volume-write", "target_device": target.stat().st_dev,
+                                             "growth_bytes": growth})
+    headroom = (optional_reserve(policy, "maintenance_reserve_bytes")
+                + optional_reserve(policy, "metadata_reserve_bytes") + metadata_peak)
     if shutil.disk_usage(target).free < future + growth + headroom:
         raise DataError("实际目标卷未来载荷/元数据并发预留和维护余量不足，拒绝超卖")
     return dict(future_reserved_bytes=future, headroom_bytes=headroom)
@@ -2330,6 +2621,16 @@ def safety_metadata_peak(db, payload):
     checkpoint = db.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
     # 两代主库/WAL页面、计划/进度重写、六个索引DDL与逐项日志的保守余量。
     return max(1048576, 2 * (max(1000, checkpoint) + 64) * page) + encoded * 16 + len(payload) * 32 * page
+
+
+def metadata_write_peak(db, payload):
+    """最小通用SQLite事务峰值：编码载荷、索引深度、WAL与主库页写入。"""
+    encoded = len(compact_json(payload, QUERY_BYTES).encode("utf-8"))
+    page_size = db.execute("PRAGMA page_size").fetchone()[0]
+    page_count = db.execute("PRAGMA page_count").fetchone()[0]
+    depth_bound = max(1, math.ceil(math.log2(page_count + 1)))
+    changed_pages = max(1, math.ceil(encoded / page_size)) + 2 * depth_bound + 4
+    return 2 * changed_pages * page_size + 65536
 
 
 def canonical_operation_id(identity):
@@ -2371,7 +2672,7 @@ def register_volume(root, policy, args):
         raise DataError("受管卷须批准当前预览")
     with write_index(root, policy) as db:
         check_budget(root, db, policy, 262144)
-        if shutil.disk_usage(target).free < 262144 + policy["maintenance_reserve_bytes"]:
+        if shutil.disk_usage(target).free < 262144 + optional_reserve(policy, "maintenance_reserve_bytes"):
             raise DataError("目标卷无维护空间")
         if not os.path.lexists(marker_path):
             with marker_path.open("x", encoding="utf-8") as handle:
@@ -2428,7 +2729,8 @@ def safety_job_status(root, policy, args):
             raise DataError("放弃操作须批准当前清单，全部复制件保留")
         if job["kind"] != "migration" or job["phase"] in ("sealed", "abandoned"):
             raise DataError("只允许放弃未封口非破坏性迁移；隔离/删除须恢复其具体操作")
-        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"] + 131072:
+        write_peak = metadata_write_peak(db, preview)
+        if shutil.disk_usage(root).free < optional_reserve(policy, "metadata_reserve_bytes") + write_peak:
             raise DataError("放弃操作缺少日志空间")
         safety_phase(db, args.operation_id, "abandoned", result["progress"])
     return dict(preview, applied=True)
@@ -2523,7 +2825,7 @@ def migration(root, policy, args):
                             raise DataError("复制重试耗尽已批准载荷预留，保留部分产品")
                         if os.path.lexists(output):
                             os.replace(checked_path(output), output.with_name(output.name + ".retained-" + str(uuid.uuid4())))
-                        if shutil.disk_usage(target_root).free < item["size"] + policy["metadata_reserve_bytes"]:
+                        if shutil.disk_usage(target_root).free < item["size"] + optional_reserve(policy, "metadata_reserve_bytes"):
                             raise DataError("复制期间目标卷空间不足")
                         with runner_locks(source_root, source), source.open("rb") as incoming, output.open("xb") as outgoing:
                             shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
@@ -2909,7 +3211,7 @@ def purge(root, policy, args):
         reserve = safety_metadata_peak(db, plan)
         if not plan["created"] <= time.time() < plan["expires"]:
             raise DataError("逐项预检期间批准已过期，须重新取得当前清单批准")
-        if shutil.disk_usage(root).free < policy["metadata_reserve_bytes"] + reserve:
+        if shutil.disk_usage(root).free < optional_reserve(policy, "metadata_reserve_bytes") + reserve:
             raise DataError("删除仍须保留足够的日志空间")
         if job is None:
             check_budget(root, db, policy, reserve)
@@ -3104,6 +3406,8 @@ def main():
         if name == "backup-sqlite":
             command.add_argument("--database")
             command.add_argument("--request-id")
+            command.add_argument("--run-id")
+            command.add_argument("--token")
         if name == "operation":
             command.add_argument("--operation-id", required=True)
             command.add_argument("--action", choices=("status", "abandon-preview", "abandon"), default="status")
@@ -3126,10 +3430,14 @@ def main():
             command.add_argument("--owner-start")
             command.add_argument("--reserve-bytes", type=int, required=True)
             command.add_argument("--token")
+            command.add_argument("--path", help="新运行的原输出目录；省略时使用根内 runs")
+            command.add_argument("--resume", action="store_true", help="同请求同令牌恢复；异主须核实死亡或PID复用")
         if name == "finish":
             command.add_argument("--run-id", required=True)
             command.add_argument("--token", required=True)
             command.add_argument("--outcome", choices=("success", "failed", "incomplete", "censored"), required=True)
+            command.add_argument("--prepare", action="store_true", help="持有生产锁时先写封口门闩，尚不读取产物")
+            command.add_argument("--database", action="append", default=[], help="本任务父目录的共享缓存来源")
         if name in ("protect", "pin", "reference"):
             command.add_argument("--artifact-id", required=True)
         if name == "pin":
@@ -3228,6 +3536,8 @@ def main():
             return 0
         if args.command == "check-config" and args.for_write:
             require_write_policy(policy)
+            if policy["data_root"] is None or policy["root_id"] is None:
+                raise DataError("写入须明确配置数据根身份")
             if policy["mode"] == "test":
                 root_marker(root, policy)
         index_present = False
@@ -3238,7 +3548,8 @@ def main():
             raise DataError("游标须用于incremental续扫")
         if args.command == "inventory" and args.complete and args.incremental:
             raise DataError("complete完整核算不能携带增量观察游标")
-        report = (inventory_page(root, args.limit, args.cursor) if args.incremental else inventory(root, None if args.complete else args.limit)) if args.command == "inventory" else {
+        report = (inventory_page(root, args.limit, args.cursor) if args.incremental else
+                  inventory(root, None if args.complete else args.limit, skip_directory_links=True)) if args.command == "inventory" else {
             "root": str(root), "index_present": index_present,
             "disk_free_bytes": shutil.disk_usage(root).free,
         }

@@ -32,6 +32,82 @@ class LifecycleTests(unittest.TestCase):
     def save_config(self):
         self.config.write_text(json.dumps(self.policy), encoding="utf-8")
 
+    def test_original_path_resume_requires_token_and_dead_or_same_owner(self):
+        self.initialize()
+        destination = self.root / "original" / "task"
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            arguments = ("--request-id", "original-owner", "--path", str(destination),
+                         "--reserve-bytes", "65536", "--token", "synthetic-token")
+            original = self.call("begin", *arguments, "--owner-pid", str(owner.pid))
+            source = destination / "input.simc"
+            source.write_bytes(b"original synthetic input")
+            self.call("begin", *arguments, "--owner-pid", str(os.getpid()), "--resume", expected=2)
+            owner.terminate()
+            owner.wait(timeout=5)
+
+            resumed = self.call("begin", *arguments, "--owner-pid", str(os.getpid()), "--resume")
+            self.assertEqual(resumed["run_id"], original["run_id"])
+            self.assertEqual(resumed["path"], str(destination))
+            self.assertEqual(source.read_bytes(), b"original synthetic input")
+            state = self.call("lease", "--action", "status", "--run-id", resumed["run_id"])
+            self.assertEqual(state["owner_pid"], os.getpid())
+            self.assertEqual(state["reserved_bytes"], 65536)
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+            owner.wait(timeout=5)
+
+    def test_finish_registers_multiple_bounded_batches_without_moving_sources(self):
+        self.initialize()
+        begun = self.call("begin", "--request-id", "batched", "--owner-pid", str(os.getpid()),
+                          "--reserve-bytes", "65536")
+        for number in range(5):
+            (Path(begun["path"]) / f"sample-{number}.json").write_bytes(b"synthetic")
+        arguments = ("--run-id", begun["run_id"], "--token", begun["token"], "--outcome", "success", "--limit", "2")
+        completed = self.call("finish", *arguments)
+        self.assertEqual(completed["registration_batches"], 3)
+        self.assertEqual(completed["artifact_count"], 5)
+        self.assertEqual(self.call("status")["reserved_bytes"], 0)
+        for identity in completed["artifact_ids"]:
+            source = self.call("resolve", "--artifact-id", identity, "--inspect")
+            self.assertEqual(Path(source["path"]).read_bytes(), b"synthetic")
+        self.assertEqual(self.call("finish", *arguments), completed)
+
+    def test_finish_registers_nested_files_named_like_root_metadata(self):
+        self.initialize()
+        begun = self.call("begin", "--request-id", "nested-metadata", "--owner-pid", str(os.getpid()),
+                          "--reserve-bytes", "65536")
+        folder = Path(begun["path"]) / "nested"
+        folder.mkdir()
+        source = folder / ".simdata-run.json"
+        source.write_bytes(b"ordinary nested evidence")
+        completed = self.call("finish", "--run-id", begun["run_id"], "--token", begun["token"],
+                              "--outcome", "success")
+        self.assertEqual(completed["artifact_count"], 1)
+        resolved = self.call("resolve", "--artifact-id", completed["artifact_ids"][0], "--inspect")
+        self.assertEqual(Path(resolved["path"]), source)
+        self.assertEqual(source.read_bytes(), b"ordinary nested evidence")
+
+    def test_unset_capacity_skips_quota_scan_but_keeps_physical_admission(self):
+        self.policy.update(capacity_bytes=None, maintenance_reserve_bytes=None, metadata_reserve_bytes=None)
+        self.save_config()
+        self.initialize()
+        boundary = ("import os\nfrom pathlib import Path\nscan=os.scandir\n"
+                    "def checked(path):\n"
+                    f" if Path(path)==Path({str(self.root)!r}): raise OSError('synthetic root quota scan')\n"
+                    " return scan(path)\nos.scandir=checked\n")
+        arguments = ("--owner-pid", str(os.getpid()), "--reserve-bytes", "1024")
+        admitted = self.injected_call(boundary, "begin", "--request-id", "no-quota-scan", *arguments)
+        self.assertEqual(admitted["reserved_bytes"], 1024)
+        full_disk = boundary + "import shutil\nshutil.disk_usage=lambda p:type('Usage',(),{'free':0})()\n"
+        refused = self.injected_call(full_disk, "begin", "--request-id", "full-disk", *arguments, expected=2)
+        self.assertIn("可用空间不足", refused["error"])
+        self.policy["capacity_bytes"] = 4 * 1024 * 1024
+        self.save_config()
+        measured = self.injected_call(boundary, "begin", "--request-id", "quota-scan", *arguments, expected=2)
+        self.assertIn("synthetic root quota scan", measured["error"])
+
     def injected_call(self, setup, command, *arguments, expected=0):
         # 仅在子进程替换操作系统边界，仍调用公开CLI，不读写内部索引。
         code = setup + "\nimport runpy, sys\nsys.argv=sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')"
@@ -54,6 +130,26 @@ class LifecycleTests(unittest.TestCase):
         self.injected_call("import shutil\nshutil.disk_usage=lambda path: type('Usage',(),{'free':0})()",
                            "init-root", "--approve-hash", plan["plan_hash"], expected=2)
         self.assertFalse(self.root.exists())
+
+    def test_failed_initialization_removes_only_its_new_files(self):
+        self.root.mkdir()
+        source = self.root / 'original.json'
+        source.write_bytes(b'keep original')
+        self.policy.update(mode='production', production_enabled=True)
+        self.save_config()
+        plan = self.call('init-root')
+        setup = ("import sqlite3\nconnect=sqlite3.connect\n"
+                 "class Failing(sqlite3.Connection):\n"
+                 " def execute(self,sql,*args,**kwargs):\n"
+                 "  if sql.startswith('CREATE TABLE IF NOT EXISTS artifacts'): raise sqlite3.OperationalError('synthetic DDL failure')\n"
+                 "  return super().execute(sql,*args,**kwargs)\n"
+                 "sqlite3.connect=lambda *a,**k: connect(*a,**dict(k,factory=Failing))")
+        self.injected_call(setup, 'init-root', '--approve-hash', plan['plan_hash'], expected=2)
+        self.assertFalse((self.root / '.simdata-root.json').exists())
+        self.assertFalse((self.root / 'index.sqlite3').exists())
+        self.assertEqual(source.read_bytes(), b'keep original')
+        self.call('init-root', '--approve-hash', plan['plan_hash'])
+        self.assertEqual(self.call('status')['registered_artifacts'], 0)
 
     def test_releasing_a_reservation_still_requires_physical_metadata_headroom(self):
         self.initialize()
