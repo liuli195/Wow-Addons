@@ -19,6 +19,7 @@ class ArchiveTests(unittest.TestCase):
     setUp = lifecycle.LifecycleTests.setUp
     save_config = lifecycle.LifecycleTests.save_config
     call = lifecycle.LifecycleTests.call
+    call_main = lifecycle.LifecycleTests.call_main
     initialize = lifecycle.LifecycleTests.initialize
     injected_call = lifecycle.LifecycleTests.injected_call
 
@@ -51,6 +52,7 @@ class ArchiveTests(unittest.TestCase):
         return self.call("restore", *arguments, "--approve-hash", plan["plan_hash"])
 
     def test_confirmed_legacy_classification_keeps_old_archive_restorable(self):
+        self.call = self.call_main
         self.initialize()
         folder = self.root / "old generated samples"
         folder.mkdir()
@@ -100,6 +102,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual({name: (folder / name).read_bytes() for name in values}, values)
 
     def legacy_review_sample(self):
+        self.call = self.call_main
         self.initialize()
         folder = self.root / "legacy/group"
         folder.mkdir(parents=True)
@@ -128,7 +131,7 @@ class ArchiveTests(unittest.TestCase):
         self.call("reference", "--action", "add", "--artifact-id", identity, "--owner", "legacy-path:legacy", "--kind", "unknown")
         self.call("reference", *arguments, "--approve-hash", stale["plan_hash"], expected=2)
         cache = self.root / "unrecognized.sqlite3"
-        with sqlite3.connect(cache) as db:
+        with closing(sqlite3.connect(cache)) as db:
             db.execute("CREATE TABLE unknown_records(value TEXT)")
         cache_plan = self.call("cache-references", "--database", str(cache))
         self.call("cache-references", "--database", str(cache), "--approve-hash", cache_plan["plan_hash"])
