@@ -609,6 +609,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(resumed['locked_candidate_key'], completed['locked_candidate_key'])
 
     def test_local_and_second_global_comparisons_both_record_positions(self):
+        import result_store
         import search
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-global-position-") as directory:
@@ -625,6 +626,21 @@ class SearchAndValidationTests(TestCase):
                     search, "initial_programs",
                     return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
                 result = run_task(source, root / "task", search_config=config)
+
+            run_id = json.loads((root / "task" / "profile.json").read_text())["run_id"]
+            observation_batches = list(result_store.iter_rows(
+                "SELECT batch_key FROM batches WHERE run_id = ? AND purpose = 'position_observation'",
+                [run_id]))
+            traces = list(result_store.iter_rows(
+                "SELECT t.batch_key, b.purpose FROM traces t LEFT JOIN batches b "
+                "ON t.batch_key = b.batch_key AND t.run_id = b.run_id WHERE t.run_id = ?", [run_id]))
+            self.assertTrue(observation_batches)
+            self.assertTrue(traces)
+            self.assertTrue(all(row["batch_key"] is not None for row in traces))
+            self.assertTrue(all(row["purpose"] is not None for row in traces))
+            self.assertEqual({row["batch_key"] for row in traces
+                              if row["purpose"] == "position_observation"},
+                             {row["batch_key"] for row in observation_batches})
 
         candidate = next(row for row in result["search"]["records"]
                          if "global_validation" in row)
@@ -1689,7 +1705,8 @@ class SearchAndValidationTests(TestCase):
                     if expanded==descendants:
                         break
                     descendants=expanded
-                return [child for child,_,name in processes if child in descendants and name=='simc.exe']
+                return [(child, parent) for child,parent,name in processes
+                        if child in descendants and name=='simc.exe']
             finally:
                 kernel.CloseHandle(snapshot)
         with tempfile.TemporaryDirectory(prefix='sim2gse-crash-') as directory:
@@ -1704,7 +1721,7 @@ class SearchAndValidationTests(TestCase):
                   "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))")
             process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),
                                       str(source),str(destination),json.dumps(config),str(result_store.DATA_ROOT)])
-            held=None
+            held=owner=None
             try:
                 deadline=time.monotonic()+45
                 state={}
@@ -1713,19 +1730,25 @@ class SearchAndValidationTests(TestCase):
                     except TaskError: pass
                     completed = state.get('completed_batches')
                     if state.get('phase') == 'search' and type(completed) is int and completed > 0:
-                        for pid in children(process.pid):
+                        for pid,owner_pid in children(process.pid):
                             held=kernel.OpenProcess(0x100000,False,pid)
-                            if held: break
+                            if held:
+                                owner=kernel.OpenProcess(0x100000,False,owner_pid)
+                                if owner: break
+                                kernel.CloseHandle(held)
+                                held=None
                     if held: break
                     time.sleep(0.02)
                 self.assertIsNotNone(held,'没有在已完成批次检查点后观察到真实引擎进程')
                 process.kill();process.wait(timeout=5)
+                self.assertEqual(kernel.WaitForSingleObject(owner,2000),0,'实际任务进程尚未退出，不能恢复')
                 self.assertEqual(kernel.WaitForSingleObject(held,2000),0,'任务退出后仍有所属模拟进程')
                 before=state['elapsed_seconds']
                 resumed=resume_task(destination)
                 self.assertGreaterEqual(resumed['elapsed_seconds'],before)
                 self.assertGreaterEqual(resumed['completed_batches'], state['completed_batches'])
             finally:
+                if owner:kernel.CloseHandle(owner)
                 if held:kernel.CloseHandle(held)
                 if process.poll() is None:process.kill();process.wait(timeout=5)
 
