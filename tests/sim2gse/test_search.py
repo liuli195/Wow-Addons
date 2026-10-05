@@ -999,6 +999,34 @@ class SearchAndValidationTests(TestCase):
                          + second["search"]["native_batch_starts"])
         self.assertGreater(len(traces), 0)
 
+    def test_same_task_comparisons_reuse_verified_results_without_storage_reads(self):
+        import result_store
+        import search
+
+        original = result_store.one
+
+        def unavailable_batch(table, field, value):
+            if table == 'batches':
+                raise result_store.DataReadError('historical reads unavailable')
+            return original(table, field, value)
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-memory-reuse-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            with _fast_search_boundary(), patch.object(
+                    search, 'initial_programs',
+                    return_value=[[['outbreak']], [['death_coil']], [['scourge_strike']]]), \
+                    patch.object(result_store, 'one', side_effect=unavailable_batch):
+                result = run_task(source, Path(directory) / 'task', search_config=dict(
+                    total_budget_seconds=60, candidate_limit=3, batch_targets=(2,),
+                    iterations=2, validation_batches=1, max_processes=1,
+                    scenarios=('nominal',), diagnostic_logging=True))
+            self.assertEqual(result['status'], 'completed')
+            self.assertGreater(result['search']['batch_cache_hits'], 0)
+            self.assertEqual(result['search']['batch_requests'],
+                             result['search']['native_batch_starts'] + result['search']['batch_cache_hits'])
+            self.assertEqual(result['completed_batches'], result['search']['native_batch_starts'])
+
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
         import sqlite3
 
