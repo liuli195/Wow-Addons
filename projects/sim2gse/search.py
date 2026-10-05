@@ -761,6 +761,7 @@ class TaskStore:
             self.state.update(elapsed_seconds=progress[0], status=progress[1], inflight=json.loads(progress[2]))
         self.state_write_count = 0
         self.lua_compiler_starts = 0
+        self.verified_batches = {}
         self.db.commit()
 
     def save(self):
@@ -819,8 +820,9 @@ class TaskStore:
             self.put_batch(key,dict(status='invalid',error='缓存行损坏'))
             return None
 
-    def put_batch(self, key, value, *, counter=None):
+    def put_batch(self, key, value, *, counter=None, verified=False):
         with self.lock, self.db:
+            self.verified_batches.pop(key, None)
             self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
             if value.get('status')=='success' and value['request']['purpose']!='final':
                 self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
@@ -832,6 +834,8 @@ class TaskStore:
             if self.state.get('config', {}).get('diagnostic_logging', False):
                 self.state_write_count += 1
             self._save_progress()
+            if verified and value.get('status') == 'success':
+                self.verified_batches[key] = value
 
     @contextmanager
     def active(self, runtime):
@@ -866,6 +870,7 @@ class TaskStore:
                                lua_compiler_starts=self.lua_compiler_starts)
             (self.destination / 'diagnostics.json').write_text(
                 _json(diagnostics), encoding='utf-8')
+        self.verified_batches.clear()
         self.db.close()
 
 
@@ -1296,6 +1301,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return variance
 
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False):
+        runtime.check()
         seed_offset = {'search': 0, 'validation': 100000, 'final': 200000}[purpose]
         # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
         nonce = int(state['run_nonce'][:8], 16) % 100000000 if purpose == 'final' else 0
@@ -1315,11 +1321,25 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         with store.lock:
             if config['diagnostic_logging']:
                 state['batch_requests'] += 1
+            verified = store.verified_batches.get(key)
+            if verified is not None and config['diagnostic_logging']:
+                state['batch_cache_hits'] += 1
+        if verified is not None:
+            runtime.check()
+            return dict(verified, cached=True)
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
+            from result_store import one as read_record, DataReadError, InvalidRecordError
             try:
-                from result_store import one as read_record
-                saved = read_record('batches', 'batch_key', cached['data_key'])
+                saved = (read_record('batches', 'batch_key', key)
+                         if cached['request'] == request and cached['data_key'] == key else None)
+            except InvalidRecordError:
+                saved = None
+            except DataReadError:
+                runtime.check()
+                raise
+            runtime.check()
+            try:
                 report = saved['report'] if saved is not None else None
                 if (cached['request'] != request or not isinstance(report, dict)
                         or saved['batch_key'] != key
@@ -1345,10 +1365,14 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         or saved['dps'] != cached['dps'] or saved['samples'] != cached['samples']
                         or saved['variance'] != cached['variance']):
                     raise ValueError('缓存摘要不符')
-                store.put_batch(key, cached, counter='batch_cache_hits')
-                return dict(cached, cached=True)
-            except (ValueError, OSError, KeyError, TypeError, RuntimeError):
+            except (BudgetExceeded, TaskCancelled):
+                raise
+            except (ValueError, KeyError, TypeError, RuntimeError):
                 store.put_batch(key, dict(status='invalid', request=request))
+            else:
+                runtime.check()
+                store.put_batch(key, cached, counter='batch_cache_hits', verified=True)
+                return dict(cached, cached=True)
         elif cached and cached['status'] == 'failed':
             raise CandidateError('该批次此前失败，不自动重跑: ' + cached['error'])
         runtime.check()
@@ -1404,7 +1428,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             with store.lock:
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
-                store.put_batch(key, row)
+                store.put_batch(key, row, verified=True)
             return row
         except (BudgetExceeded, TaskCancelled):
             raise

@@ -999,6 +999,59 @@ class SearchAndValidationTests(TestCase):
                          + second["search"]["native_batch_starts"])
         self.assertGreater(len(traces), 0)
 
+    def test_same_task_comparisons_reuse_verified_results_without_storage_reads(self):
+        import result_store
+        import search
+
+        original = result_store.one
+        original_connect = search.sqlite3.connect
+        repeated_storage_access = []
+
+        def traced_connect(*args, **kwargs):
+            import re
+            connection = original_connect(*args, **kwargs)
+            registered = set()
+
+            def trace(statement):
+                if 'batches' not in statement:
+                    return
+                key = re.search(r"(?:WHERE key\s*=\s*|VALUES \()'([^']+)'", statement)
+                if key is None:
+                    return
+                if statement.startswith('SELECT value FROM batches') and key[1] in registered:
+                    repeated_storage_access.append('重复读取已核验批次')
+                if statement.startswith('INSERT OR REPLACE INTO batches') and '"status":"success"' in statement:
+                    if key[1] in registered:
+                        repeated_storage_access.append('重复登记成功批次及状态')
+                    registered.add(key[1])
+
+            connection.set_trace_callback(trace)
+            return connection
+
+        def unavailable_batch(table, field, value):
+            if table == 'batches':
+                raise result_store.DataReadError('historical reads unavailable')
+            return original(table, field, value)
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-memory-reuse-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            with _fast_search_boundary(), patch.object(
+                    search, 'initial_programs',
+                    return_value=[[['outbreak']], [['death_coil']], [['scourge_strike']]]), \
+                    patch.object(result_store, 'one', side_effect=unavailable_batch), \
+                    patch.object(search.sqlite3, 'connect', side_effect=traced_connect):
+                result = run_task(source, Path(directory) / 'task', search_config=dict(
+                    total_budget_seconds=60, candidate_limit=3, batch_targets=(2,),
+                    iterations=2, validation_batches=1, max_processes=1,
+                    scenarios=('nominal',), diagnostic_logging=True))
+            self.assertEqual(result['status'], 'completed')
+            self.assertGreater(result['search']['batch_cache_hits'], 0)
+            self.assertEqual(result['search']['batch_requests'],
+                             result['search']['native_batch_starts'] + result['search']['batch_cache_hits'])
+            self.assertEqual(result['completed_batches'], result['search']['native_batch_starts'])
+            self.assertEqual(repeated_storage_access, [])
+
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
         import sqlite3
 
@@ -1622,6 +1675,43 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(len(calls), 2)
             self.assertFalse(second['search']['records'][0]['batches'][0].get('cached', False))
             self.assertIsNotNone(result_store.one('batches', 'batch_key', batch_key)['report'])
+
+    def test_cold_cache_storage_failure_and_cancellation_do_not_resimulate(self):
+        import result_store
+        import sequence
+        import threading
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-cold-read-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            config = dict(total_budget_seconds=60, candidate_limit=1, batch_targets=(2,),
+                          iterations=2, validation_batches=1, max_processes=1,
+                          scenarios=('nominal',))
+            original = result_store.one
+            with _fast_search_boundary():
+                first = run_task(source, Path(directory) / 'first', search_config=config)
+                for failure in ('unavailable', 'cancelled'):
+                    with self.subTest(failure=failure):
+                        cancelled = threading.Event()
+
+                        def read(table, field, value):
+                            if table == 'batches' and failure == 'unavailable':
+                                raise result_store.DataReadError('storage unavailable')
+                            result = original(table, field, value)
+                            if table == 'batches':
+                                cancelled.set()
+                            return result
+
+                        with patch.object(result_store, 'one', side_effect=read), \
+                                patch.object(sequence, 'evaluate', side_effect=AssertionError('unexpected resimulation')):
+                            if failure == 'unavailable':
+                                with self.assertRaisesRegex(TaskError, 'storage unavailable'):
+                                    run_task(source, Path(directory) / failure, search_config=config)
+                            else:
+                                result = run_task(source, Path(directory) / failure,
+                                                  search_config=config, cancel_event=cancelled)
+                                self.assertEqual(result['status'], 'cancelled')
+                self.assertEqual(read_task(Path(directory) / 'first')['status'], first['status'])
 
     def test_valid_exchange_report_is_kept_when_center_write_fails(self):
         import result_store

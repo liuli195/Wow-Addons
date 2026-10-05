@@ -40,6 +40,10 @@ class DataReadError(RuntimeError):
     """The data-store query boundary could not read a logical record."""
 
 
+class InvalidRecordError(DataReadError):
+    """The selected record is definitely corrupt, rather than temporarily unavailable."""
+
+
 def _skill_root() -> Path:
     return Path.home() / ".agents" / "skills" / "data-store"
 
@@ -55,7 +59,10 @@ def _api():
                         "未找到已安装的 data-store 技能，请检查 ~/.agents/skills/data-store 联接"
                     )
                 functions = runpy.run_path(str(script))
-                _SKILL_API = functions["write"], functions["query"]
+                required = ("write", "query", "read_key", "MissingKeyError", "CorruptDataError")
+                if any(name not in functions for name in required):
+                    raise RuntimeError("data-store 技能缺少逻辑键点读能力，请同步已安装的技能")
+                _SKILL_API = {name: functions[name] for name in required}
     return _SKILL_API
 
 
@@ -70,8 +77,7 @@ def ensure_available() -> None:
 
 def write(table: str, key: str, rows: list[dict], *, schema=None) -> int:
     """Write caller-defined typed records through the installed skill."""
-    write_records, _ = _api()
-    return write_records(DATA_ROOT, table, key, rows, schema=schema)
+    return _api()["write"](DATA_ROOT, table, key, rows, schema=schema)
 
 
 
@@ -105,8 +111,7 @@ def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -
 
 def query(sql: str, parameters=None):
     """Return the installed skill's DuckDB cursor for bounded reads."""
-    _, query_records = _api()
-    return query_records(DATA_ROOT, sql, parameters)
+    return _api()["query"](DATA_ROOT, sql, parameters)
 
 
 def one(table: str, field: str, value):
@@ -115,15 +120,24 @@ def one(table: str, field: str, value):
         "run_id", "candidate_key", "candidate_data_key", "batch_key"
     }:
         raise ValueError("不支持的数据中心读取键")
+    api = _api()
+    stored_key = {"runs": "run_id", "candidates": "candidate_data_key", "batches": "batch_key"}
     try:
-        with query(f"SELECT * FROM {table} WHERE {field} = ?", [value]) as cursor:
+        cursor = (api["read_key"](DATA_ROOT, table, value) if field == stored_key[table]
+                  else query(f"SELECT * FROM {table} WHERE {field} = ?", [value]))
+        with cursor:
             columns = [column[0] for column in cursor.description]
             rows = cursor.fetchmany(2)
+    except api["MissingKeyError"]:
+        return None
+    except api["CorruptDataError"] as error:
+        raise InvalidRecordError("结果中心目标记录损坏") from error
     except Exception as error:
-        raise DataReadError("结果中心记录不可读") from error
+        raise DataReadError(f"结果中心记录不可读: {error}") from error
     if len(rows) != 1:
         return None
-    return dict(zip(columns, rows[0]))
+    record = dict(zip(columns, rows[0]))
+    return record if record.get(field) == value else None
 
 
 def iter_rows(sql: str, parameters=None, *, batch_size: int = 500):
