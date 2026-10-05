@@ -1004,6 +1004,29 @@ class SearchAndValidationTests(TestCase):
         import search
 
         original = result_store.one
+        original_connect = search.sqlite3.connect
+        repeated_storage_access = []
+
+        def traced_connect(*args, **kwargs):
+            import re
+            connection = original_connect(*args, **kwargs)
+            registered = set()
+
+            def trace(statement):
+                if 'batches' not in statement:
+                    return
+                key = re.search(r"(?:WHERE key\s*=\s*|VALUES \()'([^']+)'", statement)
+                if key is None:
+                    return
+                if statement.startswith('SELECT value FROM batches') and key[1] in registered:
+                    repeated_storage_access.append('重复读取已核验批次')
+                if statement.startswith('INSERT OR REPLACE INTO batches') and '"status":"success"' in statement:
+                    if key[1] in registered:
+                        repeated_storage_access.append('重复登记成功批次及状态')
+                    registered.add(key[1])
+
+            connection.set_trace_callback(trace)
+            return connection
 
         def unavailable_batch(table, field, value):
             if table == 'batches':
@@ -1016,7 +1039,8 @@ class SearchAndValidationTests(TestCase):
             with _fast_search_boundary(), patch.object(
                     search, 'initial_programs',
                     return_value=[[['outbreak']], [['death_coil']], [['scourge_strike']]]), \
-                    patch.object(result_store, 'one', side_effect=unavailable_batch):
+                    patch.object(result_store, 'one', side_effect=unavailable_batch), \
+                    patch.object(search.sqlite3, 'connect', side_effect=traced_connect):
                 result = run_task(source, Path(directory) / 'task', search_config=dict(
                     total_budget_seconds=60, candidate_limit=3, batch_targets=(2,),
                     iterations=2, validation_batches=1, max_processes=1,
@@ -1026,6 +1050,7 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(result['search']['batch_requests'],
                              result['search']['native_batch_starts'] + result['search']['batch_cache_hits'])
             self.assertEqual(result['completed_batches'], result['search']['native_batch_starts'])
+            self.assertEqual(repeated_storage_access, [])
 
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
         import sqlite3
