@@ -1795,6 +1795,29 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["phase"], "done")
         self.assertGreater(state["elapsed_seconds"], 0)
 
+    def test_finished_task_error_is_not_hidden_by_a_completed_result(self):
+        import task
+        locking = task.msvcrt.locking
+        def fail_unlock(fd, mode, size):
+            if mode == task.msvcrt.LK_UNLCK:
+                raise OSError("synthetic task lock release failure")
+            return locking(fd, mode, size)
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
+            final_iterations=2, scenarios=("nominal",), max_processes=1)}
+        with _fast_search_boundary(), patch.object(task.msvcrt, "locking", side_effect=fail_unlock):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] == "failed":
+                    break
+                time.sleep(0.01)
+        self.assertEqual(state["status"], "failed", state)
+        self.assertFalse(state["result_ready"])
+        self.assertTrue(state["error"])
+
     def test_public_search_stops_clear_round_without_scoring_everyone_to_512(self) -> None:
         self._check_adaptive_round()
 

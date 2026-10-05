@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import tempfile
+import contextlib
+import io
 import json
+import runpy
 import unittest
 from pathlib import Path
 import sys
@@ -32,6 +35,27 @@ def sample_profile() -> str:
 
 
 class CharacterExportTests(unittest.TestCase):
+    def test_public_commands_reject_retired_data_options(self):
+        for entry in ("task.py", "interface.py"):
+            command = REPOSITORY / "scripts/dev/sim2gse" / entry
+            with self.subTest(entry=entry):
+                output = io.StringIO()
+                with patch.object(sys, "argv", [str(command), "--help"]), \
+                        contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as help_exit:
+                    runpy.run_path(str(command), run_name="__main__")
+                self.assertEqual(help_exit.exception.code, 0)
+                self.assertNotIn("--data-config", output.getvalue())
+                self.assertNotIn("--reserve-bytes", output.getvalue())
+                error = io.StringIO()
+                arguments = [str(command), "--data-config", "retired.json", "--reserve-bytes", "1"]
+                if entry == "task.py":
+                    arguments += ["--output", "unused-output"]
+                with patch.object(sys, "argv", arguments), contextlib.redirect_stderr(error), \
+                        self.assertRaises(SystemExit) as rejected:
+                    runpy.run_path(str(command), run_name="__main__")
+                self.assertEqual(rejected.exception.code, 2)
+                self.assertIn("unrecognized arguments", error.getvalue())
+
     def test_lua_compiler_receives_only_ascii_paths(self):
         import codec
 

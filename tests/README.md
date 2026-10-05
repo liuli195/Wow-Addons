@@ -11,7 +11,6 @@
 | `dev/` | 开发检查器回归，使用本机已准备的 Lua（脚本语言）检查工具 |
 | `addons/` | 插件离线测试：`.tools/lua-5.1.5` 沙箱 + 伪造游戏接口，断言插件留下的 SavedVariables；当前有 `AddonProbe/`、`Sim2GSEProbe/`、`MYUI/`、`MYUI_CrosshairHUD/` |
 | `sim2gse/` | 序列项目测试；`test_*.py` 使用构造样例，`manual_native_task.py`、`manual_search_task.py`、`manual_interface.py` 依赖本机私人角色数据 |
-| `sim2gse-data/` | 数据逻辑内存检查及最少真实文件/锁/恢复代表；完整 pytest 自动发现，运行技能不依赖此目录 |
 | `sim2gse/research/` | 独立运行的原型与源码检查；`prototype-engine-check.py` 同样依赖本机私人角色数据 |
 | `gear-planner/` | 装备规划器回归；纯 JavaScript（脚本语言）检查进入 PR（拉取请求），Python（编程语言）计算和浏览器检查需要本机引擎与数据 |
 | `gear-planner/research/` | 固定样例回放和本地研究证据检查，需按脚本参数准备引擎、样例及报告 |
@@ -35,7 +34,6 @@ PR（拉取请求）中的代码、配置和工作流变更运行素材构建及
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -q tests/sim2gse
-.venv/Scripts/python.exe -B -m pytest -q tests/sim2gse-data --dist=worksteal -n 4
 .venv/Scripts/python.exe tests/dev/test_checks.py
 .venv/Scripts/python.exe tests/gear-planner/check-extra-input.py
 node tests/gear-planner/check-async.js
@@ -47,6 +45,6 @@ node tests/gear-planner/check-async.js
 
 任务四浏览器回归包含在 `test_interface.py` 自动发现中，使用锁定的 Playwright（浏览器自动化工具）与 Edge（浏览器）。完整真实角色界面检查直接运行 `tests/sim2gse/manual_interface.py`，启动独立动态端口服务，核对真实计算、剪贴板、修改输入清理，并保存截图及验收摘要。
 
-数据管理与整仓ROI重构证据位于 `docs/sim2gse/data-management-diagnostic-a75ed320.md`，不随技能复制。最新用户批准按频率、影响、重复覆盖与成本删减、合并、缩低收益规模并将纯逻辑移到内存；测试数量和样本不固定，不伪称旧1000/220/56万规模或完整交叉仍被集成验收。生产默认与真实安全边界不随测试规模改变。
+旧数据管理与整仓ROI重构的历史证据位于 `docs/sim2gse/data-management-diagnostic-a75ed320.md`，不随技能复制。最新用户批准按频率、影响、重复覆盖与成本删减、合并、缩低收益规模并将纯逻辑移到内存；测试数量和样本不固定，不伪称旧1000/220/56万规模或完整交叉仍被集成验收。生产默认与真实安全边界不随测试规模改变。
 
-统一入口整套正式预算60秒，从调用准备至完成收尾连续计时；本机正式命令 `build-and-verify verify --project . --full --performance-report --execution-context local` 实际执行当前全部登记检查。固定基线快速验证单独使用 `--base`，报告命中缓存与未运行范围；Linux定向、Lua5.4诊断或有效缓存不能冒充Windows固定Lua5.1/引擎完整验收。候选并行为outer4/product4/data4，只测这一组，不称已最优。
+统一入口整套正式预算60秒，从调用准备至完成收尾连续计时；本机正式命令 `build-and-verify verify --project . --full --performance-report --execution-context local` 实际执行当前全部登记检查。固定基线快速验证单独使用 `--base`，报告命中缓存与未运行范围；Linux定向、Lua5.4诊断或有效缓存不能冒充Windows固定Lua5.1/引擎完整验收。旧并行候选的测量保留在历史证据中，不作为移除数据工具后当前配置的最优性证明。
