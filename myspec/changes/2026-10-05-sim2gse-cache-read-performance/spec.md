@@ -1,6 +1,6 @@
 # 搜索缓存读取性能修复
 
-Status: ready-for-agent
+Status: completed
 
 ## Problem Statement
 
@@ -51,3 +51,10 @@ Status: ready-for-agent
 - 已使用代码架构技能核验 Module、Interface、Seam、Adapter；已按 grilling 与 domain-modeling 将“缓存命中”“独立样本”“当前任务快照”“最终归档”分开。没有新增领域词汇或改正式规格的必要。
 - to-spec 与 to-tickets 按现有讨论生成需求及串行票据；公开接缝、分支、开发/审查安排随门禁一一并确认。
 - 上游技能点读票完成后，实施本仓库票一；本仓库票二依赖票一。只写本变更需求产物，不改正式规格。
+
+
+## 2026-10-06 完成记录
+
+用户已确认门禁二，实施、验证和独立审查完成，正式规格已应用并校验通过。历史未实施说明仅记录当时状态。
+
+验收证据保存在魔兽主目录 .local/manual-validation/cache-read-performance/：ac-fair-20261006/production-acceptance-report.md、final-overall-diagnostic-20261006/验收报告.md、fixed-work-main-20261006-v2/固定工作量对照报告.md。十三种读取及批量完整/指定字段均完成公平对照，值与类型一致，原始数据未变。固定工作量81次计算、14次缓存读取、8167样本，编译和导出一致；历史旧版684.271秒，新版73.900秒，减少89.20%。新版按工作量截止，观察开销计入，各一次未清系统缓存，不承诺稳定倍数；实际游戏验收未执行。审查模型为用户指定GPT-6.1 Sol、高思考强度，无遗留阻塞。

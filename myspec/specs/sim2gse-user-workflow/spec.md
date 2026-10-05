@@ -84,3 +84,35 @@
 
 - **WHEN** 当前环境缺少已安装的数据存储技能入口或所需依赖
 - **THEN** 任务在启动模拟前明确失败并提示准备安装或依赖，不启动模拟，也不宣称结果已经保存。
+### Requirement: Sim2GSE reuses verified task results without repeated storage access
+
+系统 MUST 在同一搜索任务重复比较已经核验的成功批次时，直接复用当前任务的小结果，不再次读取结果中心、报告或本地批次记录，也不重复登记批次和整份任务状态。重复使用 MUST 不增加独立样本或成功批次数量；首次引入历史结果仍核对请求身份、成绩和统计，并登记本任务的使用结果。
+
+#### Scenario: A task compares the same verified batch again
+
+- **WHEN** 当前任务再次使用已经成功保存、登记并核验的批次
+- **THEN** 任务使用当前已核验成绩，重复读取和重复登记次数为零，独立样本及成功批次数量不变
+
+#### Scenario: A new or resumed task imports historical results
+
+- **WHEN** 新任务或恢复任务首次引入一个历史成功批次
+- **THEN** 任务按该批次的真实存储键读取完整结果，重新核对请求身份、成绩和统计，并只登记一次本任务使用结果
+- **THEN** 同一任务内使用已核验快照；任务自身更新或失效该键后不继续使用旧成绩，外部改写在新任务或恢复时重新核验
+### Requirement: Sim2GSE preserves successful cache references during temporary storage failures
+
+系统 MUST 区分目标缺失、确定损坏及身份或成绩不符，与存储暂时不可读；只有前一类问题允许失效重算。存储不可读 MUST 保留已有成功引用并明确报告失败，不静默补跑。缓存读取和复用 MUST 继续遵守累计预算、取消和恢复规则，不把取消或预算耗尽误判为损坏。
+
+#### Scenario: Stored results are unavailable temporarily
+
+- **WHEN** 已完成结果因权限、锁、磁盘或无法确定为内容损坏的读取错误暂时不可读
+- **THEN** 任务报告读取失败并保留成功引用，不失效成绩或自动补跑
+
+#### Scenario: Stored results are missing or definitely invalid
+
+- **WHEN** 目标结果缺失、确定损坏，或请求身份、成绩、统计不符
+- **THEN** 任务按原有规则失效并重算该批次
+
+#### Scenario: Cancellation or budget exhaustion occurs on a cache path
+
+- **WHEN** 任务在进入批次、冷读取或核验后、返回已核验结果前观察到取消或累计预算耗尽
+- **THEN** 任务按原有取消或预算规则停止，保留恢复所需的已完成成绩，不将其登记为坏缓存
