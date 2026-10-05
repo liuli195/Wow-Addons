@@ -609,6 +609,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(resumed['locked_candidate_key'], completed['locked_candidate_key'])
 
     def test_local_and_second_global_comparisons_both_record_positions(self):
+        import result_store
         import search
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-global-position-") as directory:
@@ -625,6 +626,21 @@ class SearchAndValidationTests(TestCase):
                     search, "initial_programs",
                     return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
                 result = run_task(source, root / "task", search_config=config)
+
+            run_id = json.loads((root / "task" / "profile.json").read_text())["run_id"]
+            observation_batches = list(result_store.iter_rows(
+                "SELECT batch_key FROM batches WHERE run_id = ? AND purpose = 'position_observation'",
+                [run_id]))
+            traces = list(result_store.iter_rows(
+                "SELECT t.batch_key, b.purpose FROM traces t LEFT JOIN batches b "
+                "ON t.batch_key = b.batch_key AND t.run_id = b.run_id WHERE t.run_id = ?", [run_id]))
+            self.assertTrue(observation_batches)
+            self.assertTrue(traces)
+            self.assertTrue(all(row["batch_key"] is not None for row in traces))
+            self.assertTrue(all(row["purpose"] is not None for row in traces))
+            self.assertEqual({row["batch_key"] for row in traces
+                              if row["purpose"] == "position_observation"},
+                             {row["batch_key"] for row in observation_batches})
 
         candidate = next(row for row in result["search"]["records"]
                          if "global_validation" in row)

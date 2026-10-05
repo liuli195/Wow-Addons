@@ -1805,7 +1805,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 observation_folder = destination / 'observability' / f"{work['observation_id']}-{comparison}-{job_index}"
                 (observation_folder / 'native.json').unlink(missing_ok=True)
                 if config['diagnostic_logging']:
-                    write_traces(trace_key, state['run_id'], traced['trace'])
+                    write_traces(trace_key, state['run_id'], traced['trace'], batch_key=trace_key)
                 add_position_summary(
                     work, _position_observations(
                         compiled, candidate_key(program), traced['trace']))
