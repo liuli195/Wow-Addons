@@ -1329,9 +1329,17 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             return dict(verified, cached=True)
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
+            from result_store import one as read_record, DataReadError, InvalidRecordError
             try:
-                from result_store import one as read_record
-                saved = read_record('batches', 'batch_key', cached['data_key'])
+                saved = (read_record('batches', 'batch_key', key)
+                         if cached['request'] == request and cached['data_key'] == key else None)
+            except InvalidRecordError:
+                saved = None
+            except DataReadError:
+                runtime.check()
+                raise
+            runtime.check()
+            try:
                 report = saved['report'] if saved is not None else None
                 if (cached['request'] != request or not isinstance(report, dict)
                         or saved['batch_key'] != key
@@ -1357,10 +1365,14 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         or saved['dps'] != cached['dps'] or saved['samples'] != cached['samples']
                         or saved['variance'] != cached['variance']):
                     raise ValueError('缓存摘要不符')
+            except (BudgetExceeded, TaskCancelled):
+                raise
+            except (ValueError, KeyError, TypeError, RuntimeError):
+                store.put_batch(key, dict(status='invalid', request=request))
+            else:
+                runtime.check()
                 store.put_batch(key, cached, counter='batch_cache_hits', verified=True)
                 return dict(cached, cached=True)
-            except (ValueError, OSError, KeyError, TypeError, RuntimeError):
-                store.put_batch(key, dict(status='invalid', request=request))
         elif cached and cached['status'] == 'failed':
             raise CandidateError('该批次此前失败，不自动重跑: ' + cached['error'])
         runtime.check()
