@@ -1651,6 +1651,43 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(second['search']['records'][0]['batches'][0].get('cached', False))
             self.assertIsNotNone(result_store.one('batches', 'batch_key', batch_key)['report'])
 
+    def test_cold_cache_storage_failure_and_cancellation_do_not_resimulate(self):
+        import result_store
+        import sequence
+        import threading
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-cold-read-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            config = dict(total_budget_seconds=60, candidate_limit=1, batch_targets=(2,),
+                          iterations=2, validation_batches=1, max_processes=1,
+                          scenarios=('nominal',))
+            original = result_store.one
+            with _fast_search_boundary():
+                first = run_task(source, Path(directory) / 'first', search_config=config)
+                for failure in ('unavailable', 'cancelled'):
+                    with self.subTest(failure=failure):
+                        cancelled = threading.Event()
+
+                        def read(table, field, value):
+                            if table == 'batches' and failure == 'unavailable':
+                                raise result_store.DataReadError('storage unavailable')
+                            result = original(table, field, value)
+                            if table == 'batches':
+                                cancelled.set()
+                            return result
+
+                        with patch.object(result_store, 'one', side_effect=read), \
+                                patch.object(sequence, 'evaluate', side_effect=AssertionError('unexpected resimulation')):
+                            if failure == 'unavailable':
+                                with self.assertRaisesRegex(TaskError, 'storage unavailable'):
+                                    run_task(source, Path(directory) / failure, search_config=config)
+                            else:
+                                result = run_task(source, Path(directory) / failure,
+                                                  search_config=config, cancel_event=cancelled)
+                                self.assertEqual(result['status'], 'cancelled')
+                self.assertEqual(read_task(Path(directory) / 'first')['status'], first['status'])
+
     def test_valid_exchange_report_is_kept_when_center_write_fails(self):
         import result_store
         import sequence
