@@ -2278,6 +2278,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(public["search_metrics"], state["search"])
 
     def test_diagnostic_master_switch_blocks_detail_settings(self) -> None:
+        from task import read_task
         self.server.task_options = {"search_config": dict(
             total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
             batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
@@ -2297,7 +2298,7 @@ class InterfaceTests(unittest.TestCase):
                 time.sleep(0.05)
         self.assertNotIn("search_observability", state)
         _, destination = self.server.task_paths(created["task_id"])
-        result = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+        result = read_task(destination)
         self.assertNotIn("diagnostics", result["search"])
         self.assertFalse((destination / "diagnostics.json").exists())
         self.assertFalse((destination / "observability").exists())
@@ -2328,7 +2329,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertFalse(list(destination.rglob("native.txt")))
         self.assertFalse(list(destination.rglob("process.log")))
         self.assertFalse(list(destination.rglob("invocation.json")))
-        self.assertTrue(list(destination.rglob("native.json")))
+        self.assertEqual(list(destination.rglob("native.json")), [])
 
     def test_search_exports_its_winner_without_final_retest(self) -> None:
         self.server.task_options = {"search_config": dict(
@@ -2344,7 +2345,8 @@ class InterfaceTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
         _, destination = self.server.task_paths(created["task_id"])
-        result = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+        from task import read_task
+        result = read_task(destination)
         self.assertEqual(state["status"], "completed", state)
         self.assertEqual(result["config"]["search_budget_seconds"], 600)
         self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
@@ -2372,7 +2374,8 @@ class InterfaceTests(unittest.TestCase):
                     break
                 time.sleep(.05)
         _, destination = self.server.task_paths(created['task_id'])
-        result = json.loads((destination / 'result.json').read_text(encoding='utf-8'))
+        from task import read_task
+        result = read_task(destination)
         self.assertEqual(state['status'], 'completed', state)
         self.assertEqual(result['search']['candidate_count'], 2)
         self.assertGreater(state['elapsed_seconds'], 450)
@@ -2607,10 +2610,13 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         root.mkdir()
         source.write_text(profile, encoding='utf-8')
         from unittest.mock import patch
-        with patch('sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'}):
+        from test_search import _fast_evaluate
+        with patch('sequence.evaluate', side_effect=_fast_evaluate):
             result = run_task(source, root / 'task', mode='single')
         self._decode_candidate(result['candidate']['text'], expected_spec)
-        self.native_report = json.loads((root / 'task/reference/native.json').read_text(encoding='utf-8'))
+        import result_store
+        self.native_report = result_store.one(
+            'batches', 'batch_key', result['reference_data_key'])['report']
         self.native_reference = result['native_reference']
         self.controlled = result['controlled_simulation']
 
@@ -2641,7 +2647,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
             self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180)
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
-        result = read_task(destination)
+        result = read_task(destination, include_search_records=True)
         for row in result['search']['records'][0]['batches']:
             self.assertEqual(row['request']['times'], list(range(0, 180000, 180)))
         scenarios = result['final']['scenarios']

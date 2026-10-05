@@ -812,7 +812,7 @@ class TaskStore:
             value=json.loads(row[0])
             if not isinstance(value,dict) or value.get('status') not in ('success','failed','invalid'):
                 raise ValueError('缓存行结构损坏')
-            if value['status']=='success' and not {'artifact','sha256','request','dps','samples'} <= value.keys():
+            if value['status']=='success' and not {'data_key','request','dps','samples','variance'} <= value.keys():
                 raise ValueError('缓存行缺少完整身份')
             return value
         except (ValueError,TypeError):
@@ -1212,7 +1212,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             state.setdefault(name, 0)
     state.setdefault('completed_batches', 0)
     state.setdefault('batch_estimate', 0.25)
-    starts = initial_programs(capabilities, reference, config['random_seed'])
+    starts = state.get('starts')
+    if starts is None:
+        starts = initial_programs(capabilities, reference, config['random_seed'])
     observable_flags = tuple(name for name in ('target', 'combat', 'shift', 'ctrl', 'alt')
                              if any(kind == name for _, kind in config['reset_events']))
     state.setdefault('starts', starts)
@@ -1223,6 +1225,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     prepared = {}
     candidate_compilations = 0
     diagnostic_events = []
+    from result_store import CANDIDATE_SCHEMA, write as write_records, write_batch, write_traces
 
     def prepare(program):
         source_key = program_key(program)
@@ -1259,6 +1262,21 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     if canonical['form'] != compiled_identity(compiled):
                         raise CandidateError('候选标准形式与编译计划不一致')
                 candidates[key] = compiled
+                candidate_data_key = digest(dict(run_id=state['run_id'], candidate_key=key))
+                search_order = next((index for index, row in enumerate(state['archive'])
+                                     if row.get('key') == key), len(state['archive']))
+                write_records('candidates', candidate_data_key, [dict(
+                    run_id=state['run_id'], candidate_key=key,
+                    candidate_data_key=candidate_data_key,
+                    search_order=search_order,
+                    source=compiled.get('source', 'search'),
+                    program=canonical['program'], export_text=compiled['text'],
+                    simulation=compiled.get('simulation'),
+                    selected_sequence=compiled.get('selected_sequence'),
+                    selected_version=compiled.get('selected_version'),
+                    import_sha256=compiled.get('import_sha256'),
+                    game_validation=compiled.get('game_validation'))],
+                    schema=CANDIDATE_SCHEMA)
             if config['diagnostics'] == 'full':
                 diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
                                               candidate_compilations_so_far=candidate_compilations))
@@ -1292,27 +1310,44 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         stats=STATS_VERSION, trace=trace,
                         reset_events=[list(row) for row in config['reset_events']])
         key = digest(request)
+        program_identity = json.dumps(request['program'], ensure_ascii=False,
+                                      sort_keys=True, separators=(',', ':'))
         with store.lock:
             if config['diagnostic_logging']:
                 state['batch_requests'] += 1
         cached = store.batch(key)
         if cached and cached['status'] == 'success':
             try:
-                origin=Path(cached.get('origin',destination)).resolve()
-                folder=(origin/cached['artifact']).resolve()
-                if not folder.is_relative_to(origin):
-                    raise ValueError('缓存路径越界')
-                raw = (folder / 'native.json').read_bytes()
-                if hashlib.sha256(raw).hexdigest() != cached['sha256'] or cached['request'] != request:
-                    raise ValueError('缓存报告散列或身份不符')
-                summary = check_report(json.loads(raw), character, iterations,
+                from result_store import one as read_record
+                saved = read_record('batches', 'batch_key', cached['data_key'])
+                report = saved['report'] if saved is not None else None
+                if (cached['request'] != request or not isinstance(report, dict)
+                        or saved['batch_key'] != key
+                        or saved['condition_key'] != request['condition']
+                        or saved['candidate_key'] != request['behavior_identity']
+                        or saved['purpose'] != request['purpose']
+                        or saved.get('program_identity') != program_identity
+                        or saved['seed'] != request['seed']
+                        or saved['input_seed'] != request['input_seed']
+                        or saved['iterations'] != request['iterations']
+                        or saved.get('batch_index') != index
+                        or saved.get('scenario') != scenario
+                        or saved.get('stats_version') != request['stats']
+                        or saved['times'] != request['times']
+                        or saved['trace'] != request['trace']
+                        or (saved.get('reset_events') or []) != [
+                            dict(ms=ms, kind=kind) for ms, kind in request['reset_events']]):
+                    raise ValueError('缓存报告或请求身份缺失')
+                summary = check_report(report, character, iterations,
                                        simulation_config=simulation_config)
                 if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
-                        or score_variance(json.loads(raw)) != cached['variance']):
+                        or score_variance(report) != cached['variance']
+                        or saved['dps'] != cached['dps'] or saved['samples'] != cached['samples']
+                        or saved['variance'] != cached['variance']):
                     raise ValueError('缓存摘要不符')
                 store.put_batch(key, cached, counter='batch_cache_hits')
                 return dict(cached, cached=True)
-            except (ValueError, OSError, KeyError, TypeError):
+            except (ValueError, OSError, KeyError, TypeError, RuntimeError):
                 store.put_batch(key, dict(status='invalid', request=request))
         elif cached and cached['status'] == 'failed':
             raise CandidateError('该批次此前失败，不自动重跑: ' + cached['error'])
@@ -1327,26 +1362,45 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             store.save()
         folder = destination / 'batches' / key
         started = time.monotonic()
+        report_valid = False
+        center_stored = False
         try:
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
             def native_started():
                 with store.lock:
-                    if config['diagnostic_logging']:
-                        state['native_batch_starts'] += 1
+                    state['native_batch_starts'] = state.get('native_batch_starts', 0) + 1
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started, **kwargs)
-            raw = (folder / 'native.json').read_bytes()
             variance = score_variance(result['report'])
+            report_valid = True
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], variance=variance, requested_iterations=iterations,
-                       artifact=folder.relative_to(destination).as_posix(), origin=str(destination), sha256=hashlib.sha256(raw).hexdigest(),
+                       data_key=key,
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
                            player_report(result['report'], character)['collected_data'].get('resource_overflowed',{}).get(reference['identity']['resource'],{}).get('mean',0)>0,
                            {v['simc_action']: a['simc_action'] for a in capabilities['actions'] for v in a.get('variants',[a])}) if trace else None)
             if trace:
                 row['position_summary'] = _position_observations(
                     compiled, behavior_id, result['trace'])
+            from result_store import write as write_records
+            stored = dict(batch_key=key, run_id=state['run_id'],
+                          condition_key=request['condition'],
+                          candidate_key=request['behavior_identity'],
+                          program_identity=program_identity, purpose=request['purpose'],
+                          batch_index=index, scenario=scenario, stats_version=request['stats'],
+                          seed=request['seed'],
+                          input_seed=request['input_seed'], iterations=iterations,
+                          times=request['times'], trace=trace, dps=row['dps'],
+                          samples=row['samples'], variance=row['variance'],
+                          requested_iterations=iterations, report=result['report'])
+            if request['reset_events']:
+                stored['reset_events'] = [dict(ms=ms, kind=kind)
+                                          for ms, kind in request['reset_events']]
+            write_batch(key, stored, diagnostic_logging=config['diagnostic_logging'])
+            center_stored = True
+            if trace and config['diagnostic_logging']:
+                write_traces(key, state['run_id'], result['trace'], batch_key=key)
             with store.lock:
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
@@ -1358,6 +1412,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             store.put_batch(key, dict(status='failed', request=request, error=str(error)))
             raise
         finally:
+            if center_stored or not report_valid:
+                (folder / 'native.json').unlink(missing_ok=True)
+            (folder / 'native.pending.json').unlink(missing_ok=True)
             if not config['diagnostic_logging']:
                 from engine import discard_diagnostic_files
                 discard_diagnostic_files(folder)
@@ -1738,6 +1795,17 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     simulation_config=simulation_config,
                     **observation_kwargs,
                 )
+                trace_key = digest(dict(run_id=state['run_id'], event_id=work['observation_id'],
+                                        comparison=comparison, job_index=job_index))
+                write_batch(trace_key, dict(
+                    batch_key=trace_key, run_id=state['run_id'], purpose='position_observation',
+                    candidate_key=candidate_key(program), seed=seed, requested_iterations=2,
+                    samples=traced['summary']['samples'], dps=traced['summary']['dps'],
+                    report=traced['report']), diagnostic_logging=config['diagnostic_logging'])
+                observation_folder = destination / 'observability' / f"{work['observation_id']}-{comparison}-{job_index}"
+                (observation_folder / 'native.json').unlink(missing_ok=True)
+                if config['diagnostic_logging']:
+                    write_traces(trace_key, state['run_id'], traced['trace'])
                 add_position_summary(
                     work, _position_observations(
                         compiled, candidate_key(program), traced['trace']))

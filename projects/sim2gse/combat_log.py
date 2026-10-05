@@ -133,14 +133,14 @@ def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
         } | {
             actor
             for row in rows
-            for actor in owned_actor_indices(row.get('children', []))
+            for actor in owned_actor_indices(row.get('children') or [])
         }
 
     def add(rows: list[dict], inherited_owner: str, separate_owned: set[int]) -> None:
         for row in rows:
-            owner_type = row.get('sim2gse_owner_type', inherited_owner)
+            owner_type = row.get('sim2gse_owner_type') or inherited_owner
             actor_index = row.get('sim2gse_actor_index')
-            add(row.get('children', []), owner_type, separate_owned)
+            add(row.get('children') or [], owner_type, separate_owned)
             if owner_type == 'owned_unit' and actor_index in separate_owned:
                 continue
             amount = row.get('actual_amount') or {}
@@ -170,8 +170,8 @@ def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
             if isinstance(mean_executes, (int, float)) and not isinstance(mean_executes, bool):
                 target['uses'] += executes['mean']
 
-    pet_rows = [row for rows in player.get('stats_pets', {}).values() for row in rows]
-    add(player.get('stats', []), 'player', owned_actor_indices(pet_rows))
+    pet_rows = [row for rows in (player.get('stats_pets') or {}).values() for row in rows]
+    add(player.get('stats') or [], 'player', owned_actor_indices(pet_rows))
     add(pet_rows, 'owned_unit', set())
     expected_damage = player.get('collected_data', {}).get('dps', {}).get('mean')
     if isinstance(expected_damage, (int, float)) and not isinstance(expected_damage, bool):
@@ -443,7 +443,11 @@ def analyze(
         result["gse_debug"] = debug_result
     if simulation is not None:
         try:
-            report = json.loads(simulation.read_text(encoding="utf-8"))
+            if simulation.is_dir():
+                from result_store import report_for_task
+                report = report_for_task(simulation)
+            else:
+                report = json.loads(simulation.read_text(encoding="utf-8"))
             matches = [
                 item for item in report["sim"]["players"]
                 if _matches_player(item["name"], player)
@@ -541,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=float, default=180)
     parser.add_argument("--gse-debug", type=Path)
     parser.add_argument("--gse-utc-offset", type=float, help="GSE 时间相对 UTC 的小时偏移；默认使用本机时区")
-    parser.add_argument("--simulation", type=Path, help="SimC JSON 结果")
+    parser.add_argument("--simulation", type=Path, help="Sim2GSE 任务目录，或外部 SimC JSON 结果")
     parser.add_argument("--primary-target", help="主目标名称或 GUID；同名目标请使用 GUID")
     parser.add_argument(
         "--owned-source",

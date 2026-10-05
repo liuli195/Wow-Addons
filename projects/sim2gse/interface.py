@@ -229,7 +229,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         try:
             if handle is not None and handle.done and handle.error is not None:
                 raise TaskError(str(handle.error))
-            return _public_state(read_task(destination), destination)
+            return _public_state(read_task(destination, include_reports=False), destination)
         except TaskError as error:
             if handle is not None and not handle.done:
                 return _starting_state()
@@ -324,33 +324,31 @@ def _public_state(state: dict, destination: Path) -> dict:
                         result_ready=False, simulation_ready=True, progress=1.0)
         return response
     if status in ("completed", "validation_incomplete"):
-        candidate_path = destination / "candidate.txt"
-        if candidate_path.is_file():
-            text = candidate_path.read_text(encoding="ascii").strip()
-            expected = (state.get("candidate") or {}).get("text")
-            if text and expected == text:
-                response.update(
-                    result_ready=True,
-                    candidate_text=text,
-                    evidence_status=("complete" if state.get("independent_validation_complete")
-                                      else "insufficient_validation"),
-                )
-                if state.get('improvement') == 'search_result':
-                    response['evidence_status'] = 'search_result'
-                    response['search_result'] = state.get('search_result', {})
-                    response['result_note'] = '已输出搜索选中的序列；未进行最终独立复测，游戏效果尚待验证。'
-                    return response
-                if status == "validation_incomplete" and state.get("improvement") == "not_proven_better":
-                    response["result_note"] = (
-                        "复测未完成；已保留锁定候选，不能视为验证通过。"
-                        if state.get("locked_candidate_key") == state.get("selected_candidate_key")
-                        else "复测未完成；未证明优于初始序列，已保留初始序列。"
-                    )
-                elif state.get("improvement") == "not_proven_better":
-                    response["result_note"] = "未证明优于初始序列，已保留初始序列。"
-                elif status == "validation_incomplete":
-                    response["result_note"] = "复测未完成，结果仅供查看，不能视为验证通过。"
+        candidate = state.get("candidate") or {}
+        text = candidate.get("text", "").strip()
+        if text:
+            response.update(
+                result_ready=True,
+                candidate_text=text,
+                evidence_status=("complete" if state.get("independent_validation_complete")
+                                  else "insufficient_validation"),
+            )
+            if state.get('improvement') == 'search_result':
+                response['evidence_status'] = 'search_result'
+                response['search_result'] = state.get('search_result', {})
+                response['result_note'] = '已输出搜索选中的序列；未进行最终独立复测，游戏效果尚待验证。'
                 return response
+            if status == "validation_incomplete" and state.get("improvement") == "not_proven_better":
+                response["result_note"] = (
+                    "复测未完成；已保留锁定候选，不能视为验证通过。"
+                    if state.get("locked_candidate_key") == state.get("selected_candidate_key")
+                    else "复测未完成；未证明优于初始序列，已保留初始序列。"
+                )
+            elif state.get("improvement") == "not_proven_better":
+                response["result_note"] = "未证明优于初始序列，已保留初始序列。"
+            elif status == "validation_incomplete":
+                response["result_note"] = "复测未完成，结果仅供查看，不能视为验证通过。"
+            return response
         response.update(status="failed", error="结果文件缺失，未生成可复制文本")
     response.setdefault("result_ready", False)
     return response

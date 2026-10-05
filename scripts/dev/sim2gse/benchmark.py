@@ -26,6 +26,8 @@ def materialize(root,commit,label,worktree=False):
   replacement=f'ROOT = Path({str(ROOT)!r})'
   for name in ("engine.py","codec.py","macro_interpreter.py","simulation_config.py"):
    p=pending/"projects/sim2gse"/name;p.write_text(p.read_text().replace("ROOT = Path(__file__).resolve().parents[2]",replacement))
+  storage=pending/"projects/sim2gse/result_store.py"
+  if storage.is_file():storage.write_text(storage.read_text().replace('DATA_ROOT = Path(__file__).resolve().parents[2] / "data"',f'DATA_ROOT = Path({str(ROOT / "data")!r})'))
   files={p.relative_to(pending).as_posix():_sha(p) for p in sorted((pending/"projects/sim2gse").rglob("*")) if p.is_file()};(pending/"source-manifest.json").write_text(json.dumps({"commit":commit,"files":files,"worktree_files":originals},indent=2))
   try:os.replace(pending,base)
   except FileExistsError:shutil.rmtree(pending)
@@ -33,13 +35,14 @@ def materialize(root,commit,label,worktree=False):
   if pending.exists():shutil.rmtree(pending)
  return materialize(root,commit,label,worktree=worktree)
 def behavior_id(c):
+ if isinstance(c.get("identity"),str):return c["identity"]
  cp=c.get("compiled_program",{});clicks=[[] if x.get("kind")=="EmptyClick" else list(x.get("commands",[])) for x in cp.get("clicks",[])];cast=[]
  for r in cp.get("castsequences",[]):
   reset=r.get("reset") or {};cast.append({"step":r["step"],"members":list(r["members"]),"reset":{"timeout_seconds":reset.get("timeout_seconds"),"flags":sorted(set(reset.get("flags",[])))}})
  return hashlib.sha256(_json({"start_step":1,"sequence_reset":"end","clicks":clicks,"castsequences":cast}).encode()).hexdigest()
 def extract(result,out,wall,*,phase2=False):
  s=result.get("search") or {};records=s.get("records") or [];final=(result.get("final") or {}).get("scenarios") or {};selected="candidate_mean_dps" if phase2 or result.get("selected_candidate_key")==result.get("locked_candidate_key") else "control_mean_dps";dps=[v.get("comparison",{}).get(selected) for v in final.values()];dps=[v for v in dps if isinstance(v,(int,float))]
- starts=s.get("native_batch_starts");starts=starts if starts is not None else len(list((out/"batches").glob("*/native.json")))
+ starts=s.get("native_batch_starts_total",s.get("native_batch_starts"));starts=starts if starts is not None else len(list((out/"batches").glob("*/native.json")))
  return {"status":result.get("status","failed"),"evidence_complete":len(dps)==5,"wall_seconds":wall,"final_dps":statistics.median(dps) if dps else None,"measurement":"locked_candidate" if phase2 else "exported_sequence","reported_candidate_key":result.get("locked_candidate_key") if phase2 else result.get("selected_candidate_key"),"candidate_scores":[r["score"] for r in records if isinstance(r.get("score"),(int,float))],"common_unique_candidates":len({behavior_id(r["candidate"]) for r in records if r.get("candidate")}),"native_batch_starts":starts,"batch_requests":s.get("batch_requests"),"batch_cache_hits":s.get("batch_cache_hits"),"canonicalized_duplicates":s.get("canonicalized_duplicates")}
 
 def extract_product(result):
@@ -80,7 +83,8 @@ def run(source,profile,out,seed,*,phase2=False):
   time.sleep(.1)
  stdout,stderr=p.communicate();wall=time.monotonic()-start;search_wall=search_wall if search_wall is not None else (time.monotonic()-search_started if search_started is not None else wall)
  if not (out/"result.json").is_file():raise RuntimeError(stderr[-4000:] or "任务没有生成结果")
- row=extract(json.loads((out/"result.json").read_text()),out,wall,phase2=phase2)
+ result=read_task_result(source,out,include_search_records=True)
+ row=extract(result,out,wall,phase2=phase2)
  for score in row["candidate_scores"][len(timeline):]:timeline.append({"evaluation":len(timeline)+1,"wall_seconds":search_wall,"score":score})
  row["candidate_timeline"]=timeline
  try:
@@ -89,6 +93,16 @@ def run(source,profile,out,seed,*,phase2=False):
   row["engine_identities"]=sorted({_json(x["identity"]) for x in invocations})
  except (ValueError,OSError,KeyError,TypeError):row["simc_total_iterations"]=None
  row["search_wall_seconds"]=search_wall;row["evidence_complete"]=row["evidence_complete"] and row.get("simc_total_iterations") is not None and bool(row.get("engine_identities"));row.update(process_returncode=p.returncode,stderr_tail=stderr[-4000:]);return row
+
+def read_task_result(source,out,*,include_search_records=False):
+ code=("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\nfrom task import read_task\n"
+       f"try:\n result=read_task(Path(sys.argv[2]),include_search_records={include_search_records!r},include_reports=False)\n"
+       "except TypeError:\n result=read_task(Path(sys.argv[2]))\n"
+       "print(json.dumps(result,ensure_ascii=False,default=str))\n")
+ process=subprocess.run([sys.executable,'-c',code,str(source),str(out)],cwd=ROOT,text=True,
+                        stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ if process.returncode==0 and process.stdout.strip():return json.loads(process.stdout)
+ raise RuntimeError(process.stderr[-4000:] or '无法读取数据中心任务结果')
 def med(rows,key):
  v=[r[key] for r in rows if isinstance(r.get(key),(int,float))];return statistics.median(v) if v else None
 def distribution(rows,key,higher_is_better=True):
@@ -178,7 +192,7 @@ def run_product(source,profile,out,seed,side):
   observe();time.sleep(1)
  stdout,stderr=process.communicate();observe()
  if not (out/'result.json').is_file():raise RuntimeError(stderr[-4000:] or '任务没有生成结果')
- result=json.loads((out/'result.json').read_text(encoding='utf-8'))
+ result=read_task_result(source,out)
  row=extract_product(result)
  with sqlite3.connect(f'{(out/"task.sqlite3").as_uri()}?mode=ro',uri=True) as db:
   state=json.loads(db.execute('SELECT value FROM state WHERE id=1').fetchone()[0])
@@ -192,7 +206,8 @@ def run_product(source,profile,out,seed,side):
             candidate_timeline=timeline,candidate_count=(result.get('search') or {}).get('candidate_count'),
             completed_batches=result.get('completed_batches'),process_returncode=process.returncode,stderr_tail=stderr[-4000:])
  row['evidence_complete']=bool(row['evidence_complete'] and process.returncode==0 and identities and
-                               (out/'candidate.txt').is_file() and (out/'candidate.txt').read_text()==result['candidate']['text'])
+                               result.get('candidate_data_key') and
+                               (result.get('candidate') or {}).get('text','').startswith('!GSE3!'))
  return row
 
 def product_command(args,root):

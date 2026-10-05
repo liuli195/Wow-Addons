@@ -184,6 +184,20 @@ class CombatLogToolTests(unittest.TestCase):
             self.assertEqual(comparison[('player', 100)]['percent_of_simulation'], 50)
             self.assertNotIn(('unattributed', -1), comparison)
             self.assertEqual(sum(row['simulation_dps'] for row in comparison.values()), 1875)
+            # The same public analysis accepts the task pointer and reads typed center data.
+            import result_store
+            from combat_log import analyze
+            task_directory = root / 'task'
+            task_directory.mkdir()
+            (task_directory / 'result.json').write_text('{"run_id":"analysis"}', encoding='utf-8')
+            result_store.write('batches', 'analysis-report', [dict(
+                batch_key='analysis-report', report=json.loads(simulation.read_text(encoding='utf-8')))])
+            result_store.write('runs', 'analysis', [dict(
+                run_id='analysis', controlled_data_key='analysis-report')])
+            centered = analyze(combat, '测试者', 2, simulation=task_directory, primary_target='Creature-1')
+            self.assertEqual(centered['simulation_damage_sources'], result['simulation_damage_sources'])
+            self.assertEqual(centered['simulation_dps_distribution'], result['simulation_dps_distribution'])
+
             self.assertEqual(result['successful_casts_by_spell_id']['100']['count'], 1)
 
     def test_rejects_overcounted_simulation_damage_sources(self) -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = {
+    'tests/sim2gse/conftest.py': 'tests/sim2gse/test_search.py',
     'tests/gear-planner/test-page.cjs': 'tests/gear-planner/check-async.js',
     'tests/sim2gse/research/prototype-export.lua': 'tests/sim2gse/research/prototype-export.py',
     'tests/addons/MYUI_CrosshairHUD/wowtest_projection.py': 'tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py',
