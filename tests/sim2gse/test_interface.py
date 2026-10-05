@@ -1945,8 +1945,8 @@ class InterfaceTests(unittest.TestCase):
             "search_config": {
                 "total_budget_seconds": 60,
                 "search_budget_seconds": 30,
-                "candidate_limit": 8,
-                "round_candidate_limit": 8,
+                "candidate_limit": 2,
+                "round_candidate_limit": 1,
                 "batch_targets": (2,),
                 "validation_batches": 2,
                 "final_batches": 2,
@@ -1965,6 +1965,7 @@ class InterfaceTests(unittest.TestCase):
              patch.object(sequence, "check_report", new=engine.check_report), \
              patch.object(search, "DEFAULT_SCENARIOS", ("nominal",)), \
              patch.dict(search.DEFAULT_CONFIG, {"final_batches": 2, "final_iterations": 2}), \
+             patch.object(search, "initial_programs", return_value=[[["outbreak"], ["death_coil"]]]), \
              patch.object(search, "mutate", side_effect=mutate_castsequence), \
              patch.object(sequence, "evaluate", side_effect=evaluate):
             created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
@@ -2702,7 +2703,8 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 source = Path(directory) / 'input.simc'
                 source.write_text(profile, encoding='utf-8')
                 with self.assertRaisesRegex(TaskError, '原生未提供'):
-                    run_task(source, Path(directory) / 'task', mode='single')
+                    run_task(source, Path(directory) / 'task', mode='single',
+                             search_config={'diagnostic_logging': True})
                 if failure == 'native_default':
                     invocation = json.loads((Path(directory) / 'task/reference/invocation.json').read_text(encoding='utf-8'))
                     self.assertFalse(any(arg.startswith('allow_experimental_specializations=')

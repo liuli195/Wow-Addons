@@ -1698,8 +1698,12 @@ class SearchAndValidationTests(TestCase):
             config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=20,
                         batch_targets=(2,),validation_batches=1,final_batches=2,iterations=2,
                         final_iterations=32,max_processes=2)
-            code="import sys,json;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))"
-            process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),str(source),str(destination),json.dumps(config)])
+            import result_store
+            code=("import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
+                  "import result_store;result_store.DATA_ROOT=Path(sys.argv[5]);"
+                  "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))")
+            process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),
+                                      str(source),str(destination),json.dumps(config),str(result_store.DATA_ROOT)])
             held=None
             try:
                 deadline=time.monotonic()+45
