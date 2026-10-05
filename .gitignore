@@ -1,5 +1,6 @@
 # 本地压缩包与历史备份
 /archive/
+/data/
 /assets/EUI_FacetedMedia/Backup/
 *.bak
 

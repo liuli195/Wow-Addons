@@ -37,7 +37,11 @@ def _fast_capabilities():
 
 
 def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-                    simulation_config=None):
+                    simulation_config=None, import_spell_ids=(), import_spell_names=()):
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "native.json").write_text(json.dumps(_fast_report(character, 100.0, max(1, iterations-1))),
+                                         encoding="utf-8")
     return dict(dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
                 identity=dict(class_id=6, spec_id=252, spec=character.spec, race=character.race,
                               role=character.fields.get("role", "attack"), resource="runic_power"),
@@ -68,7 +72,7 @@ def _fast_report(character, score, samples):
         "collected_data": {"dps": {"mean": score, "count": samples, "variance": 0}, "fight_length": {"mean": 180},
                            "resource_overflowed": {"runic_power": {"mean": 0}}},
     }
-    return {"sim": {"players": [player], "targets": [{}],
+    return {"sim": {"players": [player], "targets": [{"name": "Damage_Dummy", "level": 90}],
                     "statistics": {"raid_dps": {"mean": score, "count": samples}},
                     "options": {"dbc": {"Live": {"build_level": 69587, "version_used": "Live"}}}}}
 
@@ -601,6 +605,8 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(resumed["status"], "validation_incomplete")
         self.assertEqual(resumed["search_observability"]["details"],
                          completed["search"]["observability"]["details"])
+        self.assertEqual(resumed['search_result'], completed['search_result'])
+        self.assertEqual(resumed['locked_candidate_key'], completed['locked_candidate_key'])
 
     def test_local_and_second_global_comparisons_both_record_positions(self):
         import search
@@ -951,16 +957,22 @@ class SearchAndValidationTests(TestCase):
                     self.assertEqual(row["request"]["behavior_identity"], record["key"])
 
     def test_search_reports_requests_cache_hits_and_native_batch_starts_separately(self):
+        import result_store
+
         with tempfile.TemporaryDirectory(prefix="sim2gse-cache-counters-") as directory:
             source = Path(directory) / "role.simc"
             source.write_text(sample_profile(), encoding="utf-8")
+            first_destination = Path(directory) / "first"
             config = dict(total_budget_seconds=60, search_budget_seconds=30,
                           candidate_limit=2, batch_targets=(2,), iterations=2,
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, diagnostic_logging=True)
             with _fast_search_boundary():
-                first = run_task(source, Path(directory) / "first", search_config=config)
+                first = run_task(source, first_destination, search_config=config)
                 second = run_task(source, Path(directory) / "second", search_config=config)
+            first_run_id = json.loads((first_destination / "profile.json").read_text())["run_id"]
+            traces = list(result_store.iter_rows(
+                'SELECT event_index FROM traces WHERE run_id = ?', [first_run_id]))
 
         self.assertEqual(first["search"]["batch_cache_hits"], 0)
         self.assertEqual(first["search"]["batch_requests"],
@@ -969,6 +981,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(second["search"]["batch_requests"],
                          second["search"]["batch_cache_hits"]
                          + second["search"]["native_batch_starts"])
+        self.assertGreater(len(traces), 0)
 
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
         import sqlite3
@@ -1402,7 +1415,7 @@ class SearchAndValidationTests(TestCase):
             self.assertIn("validation", result)
             self.assertIn("final", result)
             self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
-            self.assertEqual((destination / "candidate.txt").read_text(encoding="ascii"), result["candidate"]["text"])
+            self.assertEqual(read_task(destination)["candidate"]["text"], result["candidate"]["text"])
             self.assertNotEqual(result["search"]["dataset"], result["validation"]["dataset"])
             self.assertNotEqual(result["validation"]["dataset"], result["final"]["dataset"])
 
@@ -1456,7 +1469,7 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(result["improvement"], "search_result")
             self.assertNotEqual(result["locked_candidate_key"], seed_key)
             self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
-            self.assertEqual((destination / "candidate.txt").read_text(encoding="ascii"), result["candidate"]["text"])
+            self.assertEqual(read_task(destination)["candidate"]["text"], result["candidate"]["text"])
 
     def test_search_batch_targets_add_independent_requested_iterations(self):
         with tempfile.TemporaryDirectory(prefix="sim2gse-batches-") as directory:
@@ -1529,7 +1542,7 @@ class SearchAndValidationTests(TestCase):
                         cancel_task(handle)
                     handle.join(5)
                 self.assertTrue(handle.done)
-                cancelled = read_task(destination)
+                cancelled = read_task(destination, include_search_records=True)
                 self.assertEqual(cancelled["status"], "cancelled")
                 resumed = run_task(destination/"input.simc",destination,resume=True)
             self.assertEqual(resumed['search']['records'][0]['key'], cancelled['search']['records'][0]['key'])
@@ -1543,6 +1556,8 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(resumed["final"]["scenarios"], {})
 
     def test_corrupt_success_report_is_recomputed_and_changed_config_rejected(self):
+        import result_store
+
         with tempfile.TemporaryDirectory(prefix="sim2gse-cache-") as directory:
             source = Path(directory)/'role.simc'
             destination = Path(directory)/'task'
@@ -1553,16 +1568,74 @@ class SearchAndValidationTests(TestCase):
             with _fast_search_boundary():
                 first=run_task(source,destination,search_config=config)
                 row=first['search']['records'][0]['batches'][0]
-                report=destination/row['artifact']/'native.json'
-                data=json.loads(report.read_text(encoding='utf-8'))
-                data['sim']['players'][0]['collected_data']['dps']['mean']=1
-                report.write_text(json.dumps(data),encoding='utf-8')
+                saved = result_store.one('batches', 'batch_key', row['data_key'])
+                saved['report']['sim']['players'][0]['collected_data']['dps']['mean'] = 1.0
+                saved['report']['sim']['statistics']['raid_dps']['mean'] = 1.0
+                result_store.write('batches', row['data_key'], [saved])
                 resumed=run_task(source,Path(directory)/'second',search_config=config)
                 self.assertGreater(resumed['search']['records'][0]['batches'][0]['dps'],1)
                 self.assertFalse(resumed['search']['records'][0]['batches'][0].get('cached',False))
                 with self.assertRaises(TaskError):
                     resume_task(destination,search_config=dict(config,max_processes=2))
                 self.assertFalse(resumed['independent_validation_complete'])
+
+    def test_corrupt_parquet_cache_shard_is_recomputed(self):
+        import result_store
+        import sequence
+
+        calls = []
+        def evaluate(*args, **kwargs):
+            calls.append(1)
+            return _fast_evaluate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-corrupt-center-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            config = dict(total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+                          batch_targets=(2,), iterations=2, validation_batches=1,
+                          final_batches=1, final_iterations=2, scenarios=('nominal',),
+                          max_processes=1)
+            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+                first = run_task(source, Path(directory) / 'first', search_config=config)
+                batch_key = first['search']['records'][0]['batches'][0]['data_key']
+                # Fault injection only: mimic a damaged Parquet shard behind the read-only API.
+                shard = result_store.DATA_ROOT / 'batches' / f'{batch_key}.parquet'
+                shard.write_bytes(b'corrupt parquet')
+                second = run_task(source, Path(directory) / 'second', search_config=config)
+
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(second['search']['records'][0]['batches'][0].get('cached', False))
+            self.assertIsNotNone(result_store.one('batches', 'batch_key', batch_key)['report'])
+
+    def test_valid_exchange_report_is_kept_when_center_write_fails(self):
+        import result_store
+        import sequence
+
+        original_write = result_store.write
+        exchange_paths = []
+        def fail_search_batch_write(table, key, rows, **kwargs):
+            if table == 'batches' and rows[0].get('purpose') == 'search':
+                raise OSError('synthetic data-center write failure')
+            return original_write(table, key, rows, **kwargs)
+
+        def evaluate(*args, **kwargs):
+            exchange_paths.append(Path(args[2]) / 'native.json')
+            return _fast_evaluate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-write-failure-') as directory:
+            source = Path(directory) / 'role.simc'
+            destination = Path(directory) / 'task'
+            source.write_text(sample_profile(), encoding='utf-8')
+            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(result_store, 'write', side_effect=fail_search_batch_write):
+                with self.assertRaisesRegex(TaskError, 'synthetic data-center write failure'):
+                    run_task(source, destination, search_config=dict(
+                        total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+                        batch_targets=(2,), iterations=2, validation_batches=1,
+                        final_batches=1, final_iterations=2, scenarios=('nominal',), max_processes=1))
+            self.assertEqual(len(exchange_paths), 1)
+            self.assertTrue(exchange_paths[0].is_file())
+            self.assertIsInstance(json.loads(exchange_paths[0].read_text(encoding='utf-8')), dict)
 
     def test_old_rule_checkpoint_is_rejected_without_overwriting_its_result(self):
         import sqlite3
@@ -1625,8 +1698,12 @@ class SearchAndValidationTests(TestCase):
             config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=20,
                         batch_targets=(2,),validation_batches=1,final_batches=2,iterations=2,
                         final_iterations=32,max_processes=2)
-            code="import sys,json;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))"
-            process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),str(source),str(destination),json.dumps(config)])
+            import result_store
+            code=("import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
+                  "import result_store;result_store.DATA_ROOT=Path(sys.argv[5]);"
+                  "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))")
+            process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),
+                                      str(source),str(destination),json.dumps(config),str(result_store.DATA_ROOT)])
             held=None
             try:
                 deadline=time.monotonic()+45
@@ -1723,6 +1800,103 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(third['search']['records'][0]['batches'][0].get('cached'))
             self.assertEqual(first['final']['scenarios'], {})
             self.assertEqual(second['final']['scenarios'], {})
+
+    def test_completed_search_removes_native_report_exchange_files(self):
+        import sequence
+        import result_store
+
+        def evaluate_with_damage_detail(*args, **kwargs):
+            result = _fast_evaluate(*args, **kwargs)
+            collected = result['report']['sim']['players'][0]['collected_data']
+            collected['action_sequence'] = [{'time': 0.5, 'name': 'outbreak'}]
+            collected['action_sequence_precombat'] = [{'time': -1.0, 'name': 'raise_dead'}]
+            collected['combat_end_resource'] = {}
+            collected['dps']['distribution'] = [98.25, 102.5]
+            collected['damage_sources'] = [{'source': 'outbreak', 'damage': 1250.5}]
+            collected['pet_damage'] = [{'source': 'ghoul', 'damage': 250.25}]
+            (Path(args[2]) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+            return result
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-data-store-') as directory:
+            source = Path(directory) / 'role.simc'
+            destination = Path(directory) / 'task'
+            source.write_text(sample_profile(), encoding='utf-8')
+            config = dict(total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+                          batch_targets=(2,), iterations=2, validation_batches=1,
+                          final_batches=1, final_iterations=2, scenarios=('nominal',),
+                          max_processes=1)
+            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate_with_damage_detail):
+                result = run_task(source, destination, search_config=config)
+
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(list(destination.rglob('native.json')), [])
+            batch = result['search']['records'][0]['batches'][0]
+            report = result_store.one('batches', 'batch_key', batch['data_key'])['report']
+            collected = report['sim']['players'][0]['collected_data']
+            self.assertNotIn('action_sequence', collected)
+            self.assertNotIn('action_sequence_precombat', collected)
+            self.assertIsNone(collected['combat_end_resource'])
+            self.assertEqual(collected['dps']['distribution'], [98.25, 102.5])
+            self.assertEqual(collected['damage_sources'][0]['damage'], 1250.5)
+            self.assertEqual(collected['pet_damage'][0]['damage'], 250.25)
+            loaded = read_task(destination, include_search_records=True, include_reports=True)
+            self.assertEqual(loaded['candidate']['text'], result['candidate']['text'])
+            self.assertEqual(loaded['search_result'], result['search_result'])
+            self.assertNotIn('action_sequence', loaded['native_reference'])
+            self.assertEqual(loaded['search']['records'][0]['batches'][0]['request']['times'],
+                             batch['request']['times'])
+            candidates = list(result_store.iter_rows(
+                'SELECT candidate_key, export_text FROM candidates WHERE run_id = ?',
+                [loaded['run_id']]))
+            self.assertIn(batch['request']['behavior_identity'],
+                          {candidate['candidate_key'] for candidate in candidates})
+            self.assertIn(result['candidate']['text'],
+                          {candidate['export_text'] for candidate in candidates})
+            try:
+                stored_traces = list(result_store.iter_rows(
+                    'SELECT event_index FROM traces WHERE run_id = ?', [loaded['run_id']]))
+            except result_store.DataReadError:
+                stored_traces = []
+            self.assertEqual(stored_traces, [])
+            reference = result_store.one('batches', 'batch_key', loaded['reference_data_key'])
+            self.assertEqual(reference['report']['sim']['statistics']['raid_dps']['mean'], 100.0)
+            pointer = json.loads((destination / 'result.json').read_text(encoding='utf-8'))
+            self.assertEqual(pointer['run_id'], loaded['run_id'])
+            self.assertNotIn('report', pointer)
+            run = result_store.one('runs', 'run_id', loaded['run_id'])
+            self.assertNotIn('result', run)
+
+    def test_single_task_stores_exchange_reports_in_center(self):
+        import result_store
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-single-data-store-') as directory:
+            source = Path(directory) / 'role.simc'
+            destination = Path(directory) / 'task'
+            source.write_text(sample_profile(), encoding='utf-8')
+            with _fast_search_boundary():
+                result = run_task(source, destination, mode='single', program=[['outbreak']],
+                                  phase_ms=30, search_config={'input_interval_ms': 180})
+
+            self.assertEqual(result['status'], 'offline_ready')
+            self.assertEqual(list(destination.rglob('native.json')), [])
+            loaded = read_task(destination, include_reports=True)
+            self.assertEqual(loaded['candidate']['text'], result['candidate']['text'])
+            self.assertEqual(loaded['config']['input_interval_ms'], 180)
+            reference = result_store.one('batches', 'batch_key', result['reference_data_key'])
+            controlled = result_store.one('batches', 'batch_key', result['controlled_data_key'])
+            self.assertEqual(reference['report']['sim']['statistics']['raid_dps']['mean'], 100.0)
+            self.assertEqual(controlled['report']['sim']['players'][0]['collected_data']['dps']['mean'],
+                             result['controlled_simulation']['summary']['dps'])
+            self.assertEqual(controlled['times'][:2], [30, 210])
+            self.assertEqual(controlled['phase_ms'], 30)
+            self.assertNotIn('action_sequence', loaded['native_reference'])
+            self.assertEqual(loaded['controlled_simulation']['summary'],
+                             result['controlled_simulation']['summary'])
+            pointer = json.loads((destination / 'result.json').read_text(encoding='utf-8'))
+            self.assertNotIn('report', pointer)
+            self.assertNotIn('candidate', pointer)
+            from result_store import report_for_task
+            self.assertEqual(report_for_task(destination), controlled['report'])
 
     def test_native_global_failure_stops_task(self):
         import ctypes

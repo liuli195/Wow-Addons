@@ -4,7 +4,7 @@ import sys
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
-ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/"scripts/dev/sim2gse"))
+ROOT=Path(__file__).resolve().parents[2];sys.path.append(str(ROOT/"scripts/dev/sim2gse"))
 from benchmark import SEEDS,PHASE2_BASELINE,behavior_id,extract,summarize,summarize_profile,materialize
 class BenchmarkTests(TestCase):
  def test_product_rejects_missing_candidate_identity_and_incomplete_nominal(self):
@@ -102,6 +102,7 @@ class BenchmarkTests(TestCase):
  def row(self,dps,starts,unique=10,scores=(80,100),complete=True,times=(10,20)):
   return {"final_dps":dps,"native_batch_starts":starts,"common_unique_candidates":unique,"wall_seconds":60,"search_wall_seconds":420,"candidate_scores":list(scores),"candidate_timeline":[{"score":score,"wall_seconds":wall} for score,wall in zip(scores,times)],"evidence_complete":complete,"simc_total_iterations":1000,"engine_identities":["engine"]}
  def test_behavior_identity_includes_castsequence_timeout_seconds(self):
+  self.assertEqual(behavior_id({"identity":"stored-key"}),"stored-key")
   def candidate(timeout):
    return {"compiled_program":{"clicks":[],"castsequences":[{"step":1,"members":["a","b"],"reset":{"timeout_seconds":timeout,"flags":[]}}]}}
   self.assertNotEqual(behavior_id(candidate(2)),behavior_id(candidate(3)))

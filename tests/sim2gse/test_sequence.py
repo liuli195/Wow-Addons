@@ -267,7 +267,11 @@ class SequenceSimulationTests(unittest.TestCase):
 
     def task_entry(self, program):
         destination = Path(tempfile.mkdtemp(prefix='entry-', dir=self.directory.name)) / 'task'
-        with patch('engine.reference', return_value=self.prepared[2]), \
+        def reference_fixture(profile, folder, *args, **kwargs):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / 'native.json').write_bytes((self.prepared[0].parent / 'reference/native.json').read_bytes())
+            return self.prepared[2]
+        with patch('engine.reference', side_effect=reference_fixture), \
                 patch('engine.inspect', return_value=self.prepared[3]):
             return run_task(self.prepared[0], destination, program=program, mode='single')
 

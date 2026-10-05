@@ -18,6 +18,7 @@ import sys
 import os
 import threading
 import time
+import uuid
 from contextlib import contextmanager, nullcontext
 import msvcrt
 
@@ -255,7 +256,7 @@ def parse_character(raw_text: str) -> Character:
 
 
 def _profile(character: Character, raw_text: str, *, original_bytes: bytes | None = None,
-             effective_bytes: bytes | None = None) -> dict:
+             effective_bytes: bytes | None = None, run_id: str | None = None) -> dict:
     original_bytes = raw_text.encode("utf-8") if original_bytes is None else original_bytes
     effective_bytes = original_bytes if effective_bytes is None else effective_bytes
     original_sha256 = hashlib.sha256(original_bytes).hexdigest()
@@ -282,6 +283,7 @@ def _profile(character: Character, raw_text: str, *, original_bytes: bytes | Non
         "input_sha256": original_sha256,
         "input_original_sha256": original_sha256,
         "input_effective_sha256": effective_sha256,
+        "run_id": run_id,
     }
 
 
@@ -292,8 +294,147 @@ def _write_json(path: Path, value: dict, *, atomic=False) -> None:
         replace_file(target, path)
 
 
+def _discard_native_exchange(folder: Path, *, keep_valid=False) -> None:
+    for path in Path(folder).rglob('native.pending.json'):
+        path.unlink(missing_ok=True)
+    if not keep_valid:
+        for path in Path(folder).rglob('native.json'):
+            path.unlink(missing_ok=True)
+
+
 def _json_result(result: dict) -> dict:
     return {key: value for key, value in result.items() if key not in ("character", "output_root")}
+
+
+def _store_candidate(run_id: str, candidate: dict, *, search_order=None) -> tuple[str, str]:
+    from result_store import CANDIDATE_SCHEMA, write as write_records
+    from search import digest
+
+    program = candidate.get('program') or {}
+    key = candidate.get('identity') or digest(program)
+    data_key = digest(dict(run_id=run_id, candidate_key=key))
+    write_records('candidates', data_key, [dict(
+        run_id=run_id, candidate_key=key, candidate_data_key=data_key,
+        source=candidate.get('source', 'search'), search_order=search_order, program=program,
+        export_text=candidate.get('text', ''), simulation=candidate.get('simulation'),
+        selected_sequence=candidate.get('selected_sequence'),
+        selected_version=candidate.get('selected_version'),
+        import_sha256=candidate.get('import_sha256'),
+        game_validation=candidate.get('game_validation'))], schema=CANDIDATE_SCHEMA)
+    return key, data_key
+
+
+def _store_run(destination: Path, result: dict, *, state=None) -> dict:
+    from result_store import RUN_SCHEMA, write as write_records
+
+    profile_path = destination / 'profile.json'
+    profile = json.loads(profile_path.read_text(encoding='utf-8'))
+    run_id = profile.get('run_id')
+    if not isinstance(run_id, str) or not run_id:
+        raise TaskError('任务缺少结果中心身份')
+    candidate = result.get('candidate')
+    candidate_key = (candidate.get('identity') if isinstance(candidate, dict) else None)
+    candidate_key = (candidate_key or result.get('locked_candidate_key')
+                     or result.get('selected_candidate_key')
+                     or (state or {}).get('locked_candidate_key'))
+    candidate_data_key = None
+    search_order = next((index for index, row in enumerate((state or {}).get('archive', []))
+                         if row.get('key') == candidate_key), None)
+    if isinstance(candidate, dict):
+        candidate_key, candidate_data_key = _store_candidate(run_id, candidate, search_order=search_order)
+    elif candidate_key:
+        archived = next((row.get('candidate') for row in (state or {}).get('archive', [])
+                         if row.get('key') == candidate_key and row.get('candidate')), None)
+        if archived is not None:
+            candidate_key, candidate_data_key = _store_candidate(run_id, archived, search_order=search_order)
+    search = result.get('search') or state or {}
+    native = result.get('native_reference') or (state or {}).get('native') or {}
+    summary = result.get('search_result') or (state or {}).get('search_result') or {}
+    locked_key = result.get('locked_candidate_key') or (state or {}).get('locked_candidate_key')
+    if not summary and locked_key:
+        locked = next((row for row in (state or {}).get('archive', [])
+                       if row.get('key') == locked_key), None)
+        if locked and isinstance(locked.get('score'), (int, float)):
+            samples = sum(batch.get('samples', 0) for batch in locked.get('batches', []))
+            summary = dict(dps=locked['score'], samples=samples,
+                           reference_dps=native.get('dps'),
+                           reference_ratio=(locked['score'] / native['dps']
+                                            if native.get('dps') else None))
+    final = result.get('final') or {}
+    batch_keys = set()
+
+    def collect_batch_keys(value):
+        if isinstance(value, dict):
+            data_key = value.get('data_key')
+            if isinstance(data_key, str):
+                batch_keys.add(data_key)
+            for child in value.values():
+                collect_batch_keys(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_batch_keys(child)
+
+    collect_batch_keys(result)
+    collect_batch_keys((state or {}).get("archive", []))
+    reference_data_key = result.get('reference_data_key') or (state or {}).get('reference_data_key')
+    controlled_data_key = result.get('controlled_data_key')
+    for data_key in (reference_data_key, controlled_data_key):
+        if isinstance(data_key, str):
+            batch_keys.add(data_key)
+    search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
+                           'canonicalized_duplicates')
+    search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
+                             for row in record.get('batches', [])
+                             if row.get('cached') and isinstance(row.get('data_key'), str)})
+    original = _read_utf8(destination / 'input.original.simc', description='原始输入副本')[1]
+    effective = _read_utf8(destination / 'input.simc', description='任务输入副本')[1]
+    record = dict(
+        run_id=run_id, status=result.get('status', 'failed'), phase=result.get('phase', 'done'),
+        profile=profile, identity=profile.get('identity', {}),
+        input_original=original, input_effective=effective,
+        config=result.get('config') or (state or {}).get('config', {}),
+        simulation_config=result.get('simulation_config') or (state or {}).get('simulation_config', {}),
+        engines=result.get('engines') or (state or {}).get('engines', {}), condition_key=(state or {}).get('condition'),
+        elapsed_seconds=float(result.get('elapsed_seconds', (state or {}).get('elapsed_seconds', 0)) or 0),
+        candidate_key=candidate_key, candidate_data_key=candidate_data_key,
+        reference_data_key=reference_data_key, controlled_data_key=controlled_data_key,
+        batch_keys=sorted(batch_keys), cache_hit_keys=cache_hit_keys,
+        completed_batches=result.get('completed_batches', (state or {}).get('completed_batches', 0)),
+        reference_dps=native.get('dps'), reference_samples=native.get('samples'),
+        reference_metric=native.get('metric'), reference_personal_dps=native.get('personal_dps'),
+        reference_identity=native.get('identity', {}), reference_summary=native,
+        search_dps=summary.get('dps'), search_samples=summary.get('samples'),
+        search_reference_ratio=summary.get('reference_ratio'),
+        search_candidate_count=search.get('candidate_count'),
+        search_unique_candidates=search.get('unique_candidates'),
+        search_rounds=search.get('rounds'), search_partial_round=search.get('partial_round'),
+        search_stop_reason=search.get('stop_reason'), search_chains=search.get('chains', []),
+        search_observability=(result.get('search_observability') or search.get('observability')),
+        search_errors=search.get('errors', []), search_metrics=search_metrics,
+        selected_candidate_key=(result.get('selected_candidate_key')
+                                or (state or {}).get('selected_candidate_key') or locked_key),
+        locked_candidate_key=locked_key,
+        improvement=(result.get('improvement') or (state or {}).get('improvement')
+                     or ('search_result' if summary else None)),
+        independent_validation_complete=result.get('independent_validation_complete'),
+        native_batch_starts=search.get('native_batch_starts',
+                                       (state or {}).get('native_batch_starts', 0)),
+        validation_summary=result.get('validation', {}),
+        final_status=final.get('status'), final_scenarios=final.get('scenarios', {}),
+        error=result.get('error'))
+    write_records('runs', run_id, [record], schema=RUN_SCHEMA)
+    return dict(run_id=run_id, status=record['status'], phase=record['phase'])
+
+
+def _save_failure(destination: Path, result: dict, *, state=None) -> None:
+    try:
+        pointer = _store_run(destination, result, state=state)
+    except Exception:
+        run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8'))['run_id']
+        pointer = dict(run_id=run_id, status=result.get('status', 'failed'),
+                       phase=result.get('phase', 'done'), error=result.get('error'))
+    _write_json(destination / 'result.json', pointer, atomic=True)
 
 
 def _read_utf8(path: Path, *, description: str) -> tuple[bytes, str]:
@@ -359,16 +500,22 @@ def _prepare_task(input_path, output_root, *, resume=False, simulation_config=No
     (destination / "input.simc").write_bytes(effective_bytes)
     _write_json(destination / "profile.json", _profile(character, raw_text,
                                                          original_bytes=original_bytes,
-                                                         effective_bytes=effective_bytes))
+                                                         effective_bytes=effective_bytes,
+                                                         run_id=uuid.uuid4().hex))
     return path, raw_text, character, destination
 
 
 def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
-                simulation_config, gse_program=None, gse_context=None):
-    from engine import inspect, reference
+                simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False):
+    from engine import inspect, reference, damage_statistics
     from sequence import select, evaluate
     from program import compile_program, from_action_blocks
     from gse_import import import_action_spell_ids, import_action_spell_names
+    from result_store import write_batch
+    from search import digest
+
+    runtime.diagnostic_logging = diagnostic_logging
+    run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8'))['run_id']
 
     if type(phase_ms) is not int or not 0 <= phase_ms < interval_ms:
         raise ValueError(f"起始相位必须在 0 至 {interval_ms - 1} 毫秒之间")
@@ -385,20 +532,68 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
                                          if gse_program is not None else ()),
                        import_spell_names=(import_action_spell_names(gse_program)
                                            if gse_program is not None else ()))
+    reference_report_path = destination / 'reference' / 'native.json'
+    reference_valid = reference_stored = False
+    try:
+        reference_report = json.loads(reference_report_path.read_text(encoding='utf-8'))
+        reference_key = digest(dict(run_id=run_id, purpose='reference',
+                                    input_sha256=json.loads((destination / 'profile.json').read_text(encoding='utf-8'))['input_effective_sha256'],
+                                    simulation_config=simulation_config))
+        reference_damage = damage_statistics(reference_report, character)
+        reference_valid = True
+        write_batch(reference_key, dict(
+            batch_key=reference_key, run_id=run_id, purpose='reference',
+            seed=20260912, requested_iterations=100, samples=native['samples'],
+            dps=native['dps'], variance=reference_damage.get('variance'), report=reference_report),
+                    diagnostic_logging=diagnostic_logging)
+        reference_stored = True
+    finally:
+        _discard_native_exchange(destination / 'reference', keep_valid=reference_valid and not reference_stored)
     character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
     _write_json(
         destination / 'profile.json',
         _profile(character, character.raw_text,
                  original_bytes=(destination / 'input.original.simc').read_bytes(),
-                 effective_bytes=(destination / 'input.simc').read_bytes()),
+                 effective_bytes=(destination / 'input.simc').read_bytes(), run_id=run_id),
     )
     capabilities = inspect(native, destination / "capabilities")
+    if not diagnostic_logging:
+        native.pop('action_sequence', None)
+        native.pop('precombat_sequence', None)
     candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
                                 destination / "export", identity=native['identity'], runtime=runtime,
                                 capabilities=capabilities, context=gse_context)
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
                           input_times=list(range(phase_ms, 180000, interval_ms)), runtime=runtime,
                           simulation_config=simulation_config)
+    controlled_candidate_key = candidate.get('identity') or digest(candidate.get('program') or {})
+    controlled_key = digest(dict(run_id=run_id, purpose='controlled',
+                                 candidate_key=controlled_candidate_key, phase_ms=phase_ms,
+                                 interval_ms=interval_ms,
+                                 input_sha256=json.loads((destination / 'profile.json').read_text(encoding='utf-8'))['input_effective_sha256'],
+                                 simulation_config=simulation_config))
+    controlled_damage = damage_statistics(controlled['report'], character)
+    controlled_stored = False
+    try:
+        write_batch(controlled_key, dict(
+            batch_key=controlled_key, run_id=run_id, purpose='controlled',
+            candidate_key=controlled_candidate_key, seed=20260912, requested_iterations=100,
+            samples=controlled['summary']['samples'], dps=controlled['summary']['dps'],
+            variance=controlled_damage.get('variance'), report=controlled['report'],
+            times=controlled['input_times'], phase_ms=phase_ms,
+            reset_events=controlled.get('reset_events', [])), diagnostic_logging=diagnostic_logging)
+        controlled_stored = True
+    finally:
+        _discard_native_exchange(destination / 'controlled',
+                                 keep_valid=not controlled_stored and isinstance(controlled.get('report'), dict))
+    if diagnostic_logging:
+        from result_store import write_traces
+        write_traces(controlled_key, run_id, controlled['trace'], batch_key=controlled_key)
+    else:
+        from engine import discard_diagnostic_files
+        discard_diagnostic_files(destination / 'reference')
+        discard_diagnostic_files(destination / 'controlled')
+    controlled['data_key'] = controlled_key
     candidate["simulation"] = "passed_native_model"
     result = {
         "status": "completed" if gse_program is not None else "offline_ready",
@@ -408,12 +603,13 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
         "profile": json.loads((destination / "profile.json").read_text(encoding="utf-8")),
         "capabilities": capabilities,
         "native_reference": native,
+        "reference_data_key": reference_key,
         "candidate": candidate,
         "controlled_simulation": controlled,
+        "controlled_data_key": controlled_key,
         "simulation_config": simulation_config,
+        "engines": {mode: entry[1] for mode, entry in runtime.identities.items()},
     }
-    (destination / "candidate.txt").write_text(candidate["text"], encoding="ascii")
-    _write_json(destination / "result.json", _json_result(result), atomic=True)
     return result
 
 
@@ -426,10 +622,18 @@ def _rule_hashes():
 
 
 def _run_optimize(destination, character, *, config, runtime, simulation_config):
-    from engine import identity, inspect, reference, COMMON
-    from search import TaskStore, _export_search_observability, digest, optimize
+    from engine import identity, inspect, reference, damage_statistics, COMMON
+    from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
     state = store.state
+    run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8')).get('run_id')
+    if not isinstance(run_id, str) or not run_id:
+        store.close()
+        raise TaskError('任务缺少结果中心身份，请创建新任务')
+    if state.get('run_id') not in (None, run_id):
+        store.close()
+        raise TaskError('任务结果中心身份与检查点不符，请创建新任务')
+    state['run_id'] = run_id
     runtime.diagnostic_logging = config['diagnostic_logging']
     def reservation(key, allowance):
         with store.lock:
@@ -484,14 +688,40 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                     if not config['diagnostic_logging']:
                         from engine import discard_diagnostic_files
                         discard_diagnostic_files(destination/'reference')
+                reference_report_path = destination / 'reference' / 'native.json'
+                reference_valid = reference_stored = False
+                try:
+                    reference_report = json.loads(reference_report_path.read_text(encoding='utf-8'))
+                    reference_key = digest(dict(run_id=run_id, purpose='reference',
+                                                condition=condition, seed=config['random_seed'],
+                                                iterations=config['iterations']))
+                    reference_damage = damage_statistics(reference_report, character)
+                    reference_valid = True
+                    from result_store import write_batch
+                    write_batch(reference_key, dict(
+                        batch_key=reference_key, run_id=run_id, condition_key=condition,
+                        purpose='reference', seed=config['random_seed'],
+                        requested_iterations=config['iterations'], samples=native['samples'],
+                        dps=native['dps'], variance=reference_damage.get('variance'),
+                        report=reference_report), diagnostic_logging=config['diagnostic_logging'])
+                    reference_stored = True
+                finally:
+                    _discard_native_exchange(destination / 'reference',
+                                             keep_valid=reference_valid and not reference_stored)
                 capabilities = inspect(native, destination/'capabilities')
-                state.update(capabilities=capabilities, native=native, phase='search', inflight={})
+                state['starts'] = initial_programs(capabilities, native, config['random_seed'])
+                if not config['diagnostic_logging']:
+                    native.pop('action_sequence', None)
+                    native.pop('precombat_sequence', None)
+                state.update(capabilities=capabilities, native=native,
+                             reference_data_key=reference_key, phase='search', inflight={})
                 store.save()
             character = replace(character, spec_id=state['native']['identity']['spec_id'], race=state['native']['identity']['race'])
             _write_json(
                 destination / 'profile.json',
                 _profile(character, character.raw_text,
-                         original_bytes=original_bytes, effective_bytes=effective_bytes),
+                         original_bytes=original_bytes, effective_bytes=effective_bytes,
+                         run_id=run_id),
             )
             result = optimize(profile=destination/'input.simc', character=character,
                               capabilities=state['capabilities'], reference=state['native'],
@@ -499,12 +729,12 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                               condition_key=condition, store=store,
                               simulation_config=simulation_config)
             result.update(config=config, simulation_config=simulation_config,
-                          character=character, output_root=destination,capabilities=state['capabilities'],
-                          profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')))
-            if result['status'] not in ('cancelled',):
-                (destination/'candidate.txt').write_text(result['candidate']['text'],encoding='ascii')
+                              character=character, output_root=destination,capabilities=state['capabilities'],
+                              profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
+                              reference_data_key=state.get('reference_data_key'))
             result['elapsed_seconds'] = runtime.elapsed_seconds
-            _write_json(destination/'result.json', _json_result(result), atomic=True)
+            pointer = _store_run(destination, result, state=state)
+            _write_json(destination/'result.json', pointer, atomic=True)
             state.update(status=result['status'], phase=result['phase'])
             store.save()
             return result
@@ -521,12 +751,14 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
             with store.lock:
                 result['search_observability'] = _export_search_observability(
                     observation, include_details=observation.get('mode') == 'full')
-        _write_json(destination/'result.json', result, atomic=True)
+        _save_failure(destination, result, state=state)
         return result
     except Exception as error:
         state.update(status='failed', elapsed_seconds=runtime.elapsed_seconds, error=str(error), inflight={})
         store.save()
-        _write_json(destination/'result.json', dict(status='failed',error=str(error)),atomic=True)
+        failure = dict(status='failed', phase=state.get('phase', 'done'),
+                       elapsed_seconds=runtime.elapsed_seconds, error=str(error))
+        _save_failure(destination, failure, state=state)
         raise TaskError(str(error)) from error
     finally:
         runtime.reservation = None
@@ -595,6 +827,8 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
         gse_program = None
     from search import config_for
     config = config_for(search_config)
+    from result_store import ensure_available
+    ensure_available()
     simulation_config = simulation_config_for(simulation_config)
     runtime = _runtime or TaskRuntime(config['total_budget_seconds'] if mode == 'optimize' else 600, cancel_event=cancel_event)
     path, raw_text, character, destination = _prepare_task(
@@ -605,32 +839,43 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
     with nullcontext() if _lease else _task_lease(destination):
         if mode in ("single", "import"):
             try:
-                return _run_single(path, destination, character, program=program, phase_ms=phase_ms,
-                                   runtime=runtime, interval_ms=config["input_interval_ms"],
-                                   simulation_config=simulation_config, gse_program=gse_program,
-                                   gse_context=gse_context)
-            except TaskCancelled:
-                _write_json(destination / "result.json", dict(status="cancelled", elapsed_seconds=runtime.elapsed_seconds), atomic=True)
-                return dict(status="cancelled", output_root=destination)
-            except BudgetExceeded:
-                _write_json(destination / "result.json", dict(status="budget_exhausted", elapsed_seconds=runtime.elapsed_seconds), atomic=True)
-                return dict(status="budget_exhausted", output_root=destination)
+                result = _run_single(path, destination, character, program=program, phase_ms=phase_ms,
+                                     runtime=runtime, interval_ms=config["input_interval_ms"],
+                                     simulation_config=simulation_config, gse_program=gse_program,
+                                     gse_context=gse_context, diagnostic_logging=config["diagnostic_logging"])
+                result['config'] = config
+                result['elapsed_seconds'] = runtime.elapsed_seconds
+                pointer = _store_run(destination, result)
+                _write_json(destination / "result.json", pointer, atomic=True)
+                return result
+            except TaskCancelled as error:
+                failure = dict(status="cancelled", phase='done', elapsed_seconds=runtime.elapsed_seconds,
+                               error=str(error))
+                _save_failure(destination, failure)
+                return failure
+            except BudgetExceeded as error:
+                failure = dict(status="budget_exhausted", phase='done', elapsed_seconds=runtime.elapsed_seconds,
+                               error=str(error))
+                _save_failure(destination, failure)
+                return failure
             except (ValueError, OSError, KeyError, ImportError, StopIteration) as error:
                 message = str(error) or "上游校验未返回预期结果"
                 if isinstance(error, ImportError):
                     message = "缺少任务依赖，请按本机任务文档准备依赖: " + message
-                _write_json(destination / "result.json", dict(status="failed", error=message), atomic=True)
+                failure = dict(status="failed", phase='done', elapsed_seconds=runtime.elapsed_seconds,
+                               error=message)
+                _save_failure(destination, failure)
                 raise TaskError(message) from error
         try:
             return _run_optimize(destination, character, config=config, runtime=runtime,
                                  simulation_config=simulation_config)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
-            _write_json(destination / "result.json", state, atomic=True)
+            _save_failure(destination, state)
             return state
         except BudgetExceeded as error:
             state = {"status": "budget_exhausted", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
-            _write_json(destination / "result.json", state, atomic=True)
+            _save_failure(destination, state)
             return state
 
 
@@ -694,6 +939,8 @@ def cancel_task(task):
 def resume_task(output_root, **kwargs):
     destination = Path(output_root).resolve()
     simulation_config = simulation_config_for(kwargs.pop("simulation_config", None))
+    from result_store import ensure_available
+    ensure_available()
     with _task_lease(destination):
         try:
             profile = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
@@ -739,16 +986,14 @@ def resume_task(output_root, **kwargs):
                 if state.get('status')!='completed':
                     state.update(status='validation_incomplete',elapsed_seconds=used,error='计算预算已耗尽')
                     store.save()
-                    result={k:state.get(k) for k in (
-                        'status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
-                        'batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                        'canonicalized_duplicates', 'error')}
+                    result = dict(state)
                     result['independent_validation_complete']=False
                     observation = state.get('search_observability')
                     if observation and observation.get('mode') != 'off':
                         result['search_observability'] = _export_search_observability(
                             observation, include_details=observation.get('mode') == 'full')
-                    _write_json(destination/'result.json',result,atomic=True)
+                    pointer = _store_run(destination, result, state=state)
+                    _write_json(destination/'result.json',pointer,atomic=True)
                 store.publish()
                 return read_task(destination)
         finally:
@@ -762,19 +1007,150 @@ def resume_task(output_root, **kwargs):
                         search_config=config, simulation_config=simulation_config, **kwargs)
 
 
-def read_task(output_root):
+def read_task(output_root, *, include_search_records=False, include_reports=False):
+    from result_store import DataReadError
+    try:
+        return _read_task(output_root, include_search_records=include_search_records,
+                          include_reports=include_reports)
+    except DataReadError as error:
+        raise TaskError(str(error)) from error
+
+
+def _read_task(output_root, *, include_search_records=False, include_reports=False):
     destination = Path(output_root).resolve()
-    for name in ('progress.json','result.json'):
-        path = destination/name
-        if path.exists():
-            try:
-                result = json.loads(path.read_text(encoding='utf-8'))
-            except (OSError,ValueError):
+    progress_path = destination / 'progress.json'
+    if progress_path.is_file():
+        try:
+            progress = json.loads(progress_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            progress = None
+        if progress and progress.get('status') in ('running', 'stopping'):
+            return progress
+
+    pointer_path = destination / 'result.json'
+    if not pointer_path.is_file():
+        if progress_path.is_file() and progress is not None:
+            return progress
+        raise TaskError(f'任务结果不存在: {destination}')
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as error:
+        raise TaskError(f'任务结果不可读取: {destination}') from error
+    run_id = pointer.get('run_id')
+    if not run_id:
+        return pointer
+
+    from result_store import iter_rows, one as read_record
+
+    saved = read_record('runs', 'run_id', run_id)
+    if saved is None:
+        return pointer
+
+    def decode(value):
+        return json.loads(value) if isinstance(value, str) else value
+
+    search = dict(
+        candidate_count=saved['search_candidate_count'],
+        unique_candidates=saved['search_unique_candidates'],
+        rounds=saved['search_rounds'], partial_round=saved['search_partial_round'],
+        stop_reason=saved['search_stop_reason'], chains=decode(saved['search_chains']) or [],
+        errors=decode(saved['search_errors']) or [],
+        batch_keys=saved['batch_keys'] or [])
+    if saved['search_metrics']:
+        search.update(decode(saved['search_metrics']))
+    if saved['search_observability']:
+        search['observability'] = decode(saved['search_observability'])
+    search['native_batch_starts_total'] = saved['native_batch_starts'] or 0
+    task_result = dict(
+        run_id=run_id, status=saved['status'], phase=saved['phase'],
+        profile=decode(saved['profile']), identity=decode(saved['identity']),
+        config=decode(saved['config']), simulation_config=decode(saved['simulation_config']),
+        elapsed_seconds=saved['elapsed_seconds'], completed_batches=saved['completed_batches'],
+        reference_data_key=saved['reference_data_key'], controlled_data_key=saved['controlled_data_key'],
+        candidate_key=saved['candidate_key'], candidate_data_key=saved['candidate_data_key'],
+        selected_candidate_key=saved['selected_candidate_key'],
+        locked_candidate_key=saved['locked_candidate_key'], improvement=saved['improvement'],
+        independent_validation_complete=saved['independent_validation_complete'],
+        native_reference=decode(saved['reference_summary']), search=search,
+        final=dict(dataset='final', status=saved['final_status'],
+                   scenarios=decode(saved['final_scenarios']) or {}),
+        error=saved['error'], output_root=destination)
+    if saved['search_observability']:
+        task_result['search_observability'] = decode(saved['search_observability'])
+    if saved['search_dps'] is not None:
+        task_result['search_result'] = dict(
+            dps=saved['search_dps'], samples=saved['search_samples'],
+            reference_dps=saved['reference_dps'], reference_ratio=saved['search_reference_ratio'])
+    if saved['validation_summary']:
+        task_result['validation'] = decode(saved['validation_summary'])
+
+    if saved['candidate_data_key']:
+        candidate = read_record('candidates', 'candidate_data_key', saved['candidate_data_key'])
+        if candidate is None:
+            raise TaskError('结果中心的导出候选缺失')
+        task_result['candidate'] = dict(
+            identity=candidate['candidate_key'], source=candidate['source'],
+            program=decode(candidate['program']), text=candidate['export_text'],
+            simulation=candidate['simulation'], selected_sequence=candidate['selected_sequence'],
+            selected_version=candidate['selected_version'], import_sha256=candidate['import_sha256'],
+            game_validation=candidate['game_validation'])
+
+    if saved['controlled_data_key']:
+        controlled = read_record('batches', 'batch_key', saved['controlled_data_key'])
+        if controlled is None:
+            raise TaskError('结果中心的受控模拟报告缺失')
+        controlled_simulation = dict(summary=dict(dps=controlled['dps'], samples=controlled['samples']),
+                                     data_key=saved['controlled_data_key'])
+        if include_reports:
+            controlled_simulation['report'] = controlled['report']
+        task_result['controlled_simulation'] = controlled_simulation
+
+    if include_search_records and search['batch_keys']:
+        candidates = {}
+        for row in iter_rows('SELECT * FROM candidates WHERE run_id = ?', [run_id]):
+            candidates[row['candidate_key']] = row
+        sql = ("SELECT batch_key, candidate_key, purpose, condition_key, program_identity, "
+               "batch_index, scenario, stats_version, seed, input_seed, iterations, times, "
+               "trace, dps, samples, variance, requested_iterations "
+               "FROM batches WHERE list_contains(?, batch_key) ORDER BY candidate_key, batch_index")
+        grouped = {}
+        for row in iter_rows(sql, [search['batch_keys']]):
+            if row['purpose'] != 'search' or not row['candidate_key']:
                 continue
-            if result.get('status') not in ('running','stopping') and (destination/'result.json').exists():
-                return json.loads((destination/'result.json').read_text(encoding='utf-8'))
-            return result
-    raise TaskError(f'任务结果不存在: {destination}')
+            key = row['candidate_key']
+            candidate = candidates.get(key)
+            request = dict(
+                condition=row['condition_key'],
+                program=decode(row['program_identity']), purpose=row['purpose'],
+                behavior_identity=key, seed=row['seed'], input_seed=row['input_seed'],
+                iterations=row['iterations'], times=row['times'], stats=row['stats_version'],
+                trace=row['trace'],
+                reset_events=[list(event) for event in task_result['config'].get('reset_events', [])])
+            batch = dict(status='success', data_key=row['batch_key'], request=request,
+                         dps=row['dps'], samples=row['samples'], variance=row['variance'],
+                         requested_iterations=row['requested_iterations'], batch_index=row['batch_index'],
+                         scenario=row['scenario'])
+            record = grouped.setdefault(key, dict(key=key, batches=[]))
+            record['batches'].append(batch)
+            if candidate is not None:
+                record['program'] = decode(candidate['program'])
+                record['candidate'] = dict(identity=key, source=candidate['source'],
+                                           program=decode(candidate['program']),
+                                           text=candidate['export_text'],
+                                           simulation=candidate['simulation'])
+        records = []
+        for record in grouped.values():
+            rows = record['batches']
+            samples = sum(row['samples'] for row in rows)
+            record['score'] = (sum(row['dps'] * row['samples'] for row in rows) / samples
+                               if samples else 0.0)
+            records.append(record)
+        records.sort(key=lambda record: (
+            candidates.get(record['key'], {}).get('search_order') is None,
+            candidates.get(record['key'], {}).get('search_order') or 0,
+            record['key']))
+        search['records'] = records
+    return task_result
 
 
 def main():

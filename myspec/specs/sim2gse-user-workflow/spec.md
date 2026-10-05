@@ -66,3 +66,21 @@
 
 - **WHEN** 本地工具生成游戏导入文本
 - **THEN** 工具不自动写入游戏目录、不接管按键，也不修改配装器的引擎或数据。
+### Requirement: Sim2GSE stores and queries shared typed results
+
+系统 MUST 通过已安装的 data-store（数据存储）技能统一保存和查询普通模拟与搜索结果；同一仓库的所有任务共用根目录 data（数据目录），以 Parquet（列式文件）内部 Zstd（压缩算法）保存可查询字段。runs（任务）、candidates（候选）、batches（批次）及按需产生的 traces（轨迹）逻辑表 MUST 保留相应的实际运行条件、候选、成绩和普通原生伤害统计；数据查询不要求用户先手工解包，也不另外长期保留完整原生 JSON（数据交换格式）报告副本。既有诊断开关、缓存身份与取消恢复规则继续适用。
+
+#### Scenario: A simulation or search produces results
+
+- **WHEN** 单次模拟、导入模拟或搜索产生有效结果
+- **THEN** 系统将实际配置、按键条件、成绩、候选及相应原生伤害分布和伤害来源写入共享结果中心；列式数据保留非空数值和嵌套内容，原生空统计对象表示为空值，运行交换报告在成功保存后清理。
+
+#### Scenario: A consumer reads completed results
+
+- **WHEN** 页面读取或复制结果，或分析与训练调用者通过稳定逻辑表查询已保存数据
+- **THEN** 调用者直接读取同一共享中心的相应记录，可按批取得查询结果，无需手工定位压缩包或先解压完整历史数据。
+
+#### Scenario: The storage skill is unavailable
+
+- **WHEN** 当前环境缺少已安装的数据存储技能入口或所需依赖
+- **THEN** 任务在启动模拟前明确失败并提示准备安装或依赖，不启动模拟，也不宣称结果已经保存。

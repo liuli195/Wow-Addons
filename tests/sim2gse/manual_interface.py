@@ -13,7 +13,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'projects/sim2gse'))
 from interface import create_server
 from runtime import TaskRuntime, run_command
-from task import cancel_task
+from task import cancel_task, read_task
 
 
 def main():
@@ -67,9 +67,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
         assert process.returncode==0,stdout+stderr
         browser=json.loads((output/'browser.json').read_text(encoding='utf-8'))
         task=output/'tasks'/browser['task_id']
-        result=json.loads((task/'result.json').read_text(encoding='utf-8'))
-        text=(task/'candidate.txt').read_text(encoding='ascii')
-        assert text==browser['state']['candidate_text']==result['candidate']['text']
+        result=read_task(task,include_reports=False)
+        text=result['candidate']['text']
+        assert text==browser['state']['candidate_text']
         assert (task/'input.original.simc').read_bytes()==profile.encode('utf-8')
         assert result['candidate']['simulation']=='passed_native_model'
         assert result['candidate']['game_validation']=='not_run'

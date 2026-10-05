@@ -217,10 +217,12 @@ class CharacterExportTests(unittest.TestCase):
             input_path = Path(directory) / "中文 角色.simc"
             output_path = Path(directory) / "task-output"
             input_path.write_text(source, encoding="utf-8")
-            with patch('sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'}):
+            from test_search import _fast_evaluate
+            with patch('sequence.evaluate', side_effect=_fast_evaluate):
                 result = run_task(input_path, output_path, mode="single")
             self.assertEqual(result['status'], 'offline_ready')
-            self.assertTrue((output_path / 'candidate.txt').exists())
+            from task import read_task
+            self.assertEqual(read_task(output_path)['candidate']['text'], result['candidate']['text'])
             capabilities = result['capabilities']
             self.assertEqual(capabilities['scope'], 'baseline_executed_player_actions')
             self.assertEqual(capabilities['coverage'], 'all_baseline_iterations')
@@ -270,7 +272,8 @@ class CharacterExportTests(unittest.TestCase):
             source.write_text(sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=270168,ilevel=311'), encoding='utf-8')
             destination = Path(directory) / '任务'
             result = run_task(source, destination, mode="single")
-            self.assertTrue((destination / 'candidate.txt').exists())
+            from task import read_task
+            self.assertEqual(read_task(destination)['candidate']['text'], result['candidate']['text'])
             self.assertTrue(result['controlled_simulation']['consistent'])
             self.assertIn(270168, {a['item_id'] for a in result['capabilities']['actions'] if a['kind']=='item'})
 
@@ -280,7 +283,8 @@ class CharacterExportTests(unittest.TestCase):
             source.write_text(sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
                               .replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311'), encoding='utf-8')
             destination = Path(directory) / '任务'
-            with patch('sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'}):
+            from test_search import _fast_evaluate
+            with patch('sequence.evaluate', side_effect=_fast_evaluate):
                 result = run_task(source, destination, mode="single")
             self.assertEqual([a['slot'] for a in result['capabilities']['actions'] if a['kind'] == 'item'], [13,14])
             self.assertIn(dict(type='item', item=13), result['candidate']['compiled_steps'])
@@ -292,11 +296,13 @@ class CharacterExportTests(unittest.TestCase):
             source = Path(directory) / '角色.simc'
             source.write_text(sample_profile().replace('highmountain_tauren', 'undead'), encoding='utf-8')
             destination = Path(directory) / '任务'
-            with patch('sequence.evaluate', return_value={'trace': [], 'model': 'constructed-test-boundary'}):
+            from test_search import _fast_evaluate
+            with patch('sequence.evaluate', side_effect=_fast_evaluate):
                 result = run_task(source, destination, mode="single")
             self.assertEqual(result['status'], 'offline_ready')
             self.assertTrue((destination / 'reference').exists())
-            self.assertTrue((destination / 'candidate.txt').exists())
+            from task import read_task
+            self.assertEqual(read_task(destination)['candidate']['text'], result['candidate']['text'])
 
 
 if __name__ == "__main__":

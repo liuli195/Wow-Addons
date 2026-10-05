@@ -28,11 +28,15 @@
 .venv/Scripts/python.exe scripts/dev/sim2gse/task.py '角色文件.simc' --output '.local/sim2gse/新任务'
 ```
 
-产品代码位于 `projects/sim2gse/`，命令入口与界面共用 `run_task`（执行任务）。角色原始字节、规范化运行文本及成功缓存核验所需原生报告保留在任务目录。`result.json`（任务结果）保存能力来源、自由选招参考、搜索必需成绩和选中候选；`progress.json`（进度）报告阶段、累计耗时和完成批次。`candidate.txt`（候选导入文本）对应搜索选中序列。结果不标为最终独立复测通过，失败不会覆盖旧任务。
+产品代码位于 `projects/sim2gse/`，命令入口与界面共用 `run_task`（执行任务）。首先按技能仓库现有安装命令把 `data-store`（数据存储）技能联接到用户级 `~/.agents/skills/data-store`，Claude Code 同样使用该源码技能的目录联接；再为当前 `.venv` 安装 `projects/sim2gse/requirements.txt`。消费端只通过安装目录加载运行脚本，不引用技能源码仓库路径。 用户级核心独立更新后，需失效 `.build-and-verify/cache/` 中 `id` 为 `verify.sim2gse` 的可重建缓存，再运行固定基线快速验证并确认该项实际执行；本仓库的缓存不会自动感知外部技能源码变化。
+
+全部任务的持久结果共用本仓库根目录 `data/`，排除于 Git。`runs`、`candidates`、`batches`、`traces` 是稳定逻辑表，数据以 Parquet 内部 Zstd 保存，直接通过安装技能的 DuckDB 查询接口读取。普通原生报告保留有类型嵌套数据，详细轨迹仅随诊断开关保存。
+
+任务目录保留冻结输入、进度与取消/恢复检查点；`result.json` 只保存数据中心任务身份和状态，不再保存完整结果或根目录 `candidate.txt`。`read_task`（读取任务）从中心还原页面结果与候选；需要搜索记录或原生报告时分别使用 `include_search_records=True`、`include_reports=True`。原生 JSON 是运行交换文件，成功入库后清理。结果不标为最终独立复测通过，失败不会覆盖旧任务。战斗日志对比工具的 `--simulation` 可传任务目录，直接读取中心报告；也保留外部 SimC JSON 输入。
 
 ## 取消与恢复
 
-同一任务模块提供 `start_task`（启动）、`cancel_task`（取消）、`resume_task`（恢复）和 `read_task`（读取）入口，供后续界面共用。取消立即停止派发并清理所属进程树，完整批次留在 SQLite（本地数据库）。任务正在运行时拒绝第二个执行者恢复。
+同一任务模块提供 `start_task`（启动）、`cancel_task`（取消）、`resume_task`（恢复）和 `read_task`（读取）入口，供后续界面共用。取消立即停止派发并清理所属进程树，完整批次保存在结果中心，SQLite（本地数据库）保留恢复状态与批次身份。任务正在运行时拒绝第二个执行者恢复。
 
 ```powershell
 .venv/Scripts/python.exe scripts/dev/sim2gse/task.py --resume --output '.local/sim2gse/已有任务'
