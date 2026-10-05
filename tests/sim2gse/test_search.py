@@ -1806,6 +1806,7 @@ class SearchAndValidationTests(TestCase):
             collected = result['report']['sim']['players'][0]['collected_data']
             collected['action_sequence'] = [{'time': 0.5, 'name': 'outbreak'}]
             collected['action_sequence_precombat'] = [{'time': -1.0, 'name': 'raise_dead'}]
+            collected['combat_end_resource'] = {}
             collected['dps']['distribution'] = [98.25, 102.5]
             collected['damage_sources'] = [{'source': 'outbreak', 'damage': 1250.5}]
             collected['pet_damage'] = [{'source': 'ghoul', 'damage': 250.25}]
@@ -1830,6 +1831,7 @@ class SearchAndValidationTests(TestCase):
             collected = report['sim']['players'][0]['collected_data']
             self.assertNotIn('action_sequence', collected)
             self.assertNotIn('action_sequence_precombat', collected)
+            self.assertIsNone(collected['combat_end_resource'])
             self.assertEqual(collected['dps']['distribution'], [98.25, 102.5])
             self.assertEqual(collected['damage_sources'][0]['damage'], 1250.5)
             self.assertEqual(collected['pet_damage'][0]['damage'], 250.25)

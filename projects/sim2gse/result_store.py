@@ -75,6 +75,15 @@ def write(table: str, key: str, rows: list[dict], *, schema=None) -> int:
 
 
 
+def _report_columns(value):
+    # SimC emits empty objects for absent statistics; Parquet represents these as NULL.
+    if isinstance(value, dict):
+        return {name: _report_columns(item) for name, item in value.items()} or None
+    if isinstance(value, list):
+        return [_report_columns(item) for item in value]
+    return value
+
+
 def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
     """Persist normal report columns; sampled action traces follow the diagnostic switch."""
     if not diagnostic_logging:
@@ -84,7 +93,7 @@ def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
                     if name not in {'action_sequence', 'action_sequence_precombat'}})
                    for player in report['sim']['players']]
         row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
-    return write('batches', key, [row])
+    return write('batches', key, [dict(row, report=_report_columns(row['report']))])
 
 def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -> int:
     if not events:
