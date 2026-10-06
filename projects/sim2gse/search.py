@@ -966,13 +966,15 @@ class TaskStore:
                     if len(retained) > 12:
                         raise ValueError('报告组超过十二份')
                     write('batches', group, list(retained.values()))
-                self._commit_report_group(group, number, metadata, checkpoint=position == len(plans) - 1)
+                last = position == len(plans) - 1
+                self._commit_report_group(group, number, metadata, checkpoint=last,
+                                          clear_intents=tuple(plans) if last else ())
             for key, row, _ in self.report_buffer:
                 row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
                 (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
             self.report_buffer.clear()
 
-    def _commit_report_group(self, group, number, metadata, *, checkpoint=True):
+    def _commit_report_group(self, group, number, metadata, *, checkpoint=True, clear_intents=()):
         with self.lock, self._transaction():
             for key, row in metadata:
                 self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(row)))
@@ -983,9 +985,10 @@ class TaskStore:
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
             self.persisted_batches = self.state['completed_batches']
             self.state['next_report_group'] = max(number + 1, self.state.get('next_report_group', 0))
-            self.db.execute('DELETE FROM report_intents WHERE key=?', (group,))
             if checkpoint:
                 self._persist_state()
+                self.db.executemany('DELETE FROM report_intents WHERE key=?',
+                                    ((key,) for key in {group, *clear_intents}))
             self._save_progress()
 
     def recover_reports(self, character, simulation_config):

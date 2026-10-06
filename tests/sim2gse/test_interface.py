@@ -1928,17 +1928,23 @@ class InterfaceTests(unittest.TestCase):
         import sqlite3
         import shutil
         import result_store
+        import sequence
         from search import TaskStore
         from task import resume_task
         self.server.task_options = {'search_config': dict(
             total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
             round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
             validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
+            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
         original_stage = TaskStore.stage_report
         original_commit = TaskStore._commit_report_group
         snapshot = Path(self.directory.name) / 'partial-commit.sqlite3'
         interrupted = False
+        evaluated = []
+
+        def evaluate(*args, **kwargs):
+            evaluated.append(Path(args[2]).name)
+            return _fast_evaluate(*args, **kwargs)
 
         def seed_legacy_last_report(store, key, row, stored, **kwargs):
             if len(store.report_buffer) == 11 and not interrupted:
@@ -1956,10 +1962,11 @@ class InterfaceTests(unittest.TestCase):
                 target.close()
                 raise OSError('stop after partial group commit')
 
-        with _fast_search_boundary():
+        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
             with patch.object(TaskStore, 'stage_report', seed_legacy_last_report), patch.object(
                     TaskStore, '_commit_report_group', interrupt_after_commit):
-                created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                created = self._json_request('POST', '/api/tasks', {
+                    'profile': sample_profile(), 'diagnostic_logging': True})
                 _, handle = self.server.tasks[created['task_id']]
                 handle.join(30)
                 self.assertTrue(interrupted)
@@ -1968,6 +1975,7 @@ class InterfaceTests(unittest.TestCase):
             shutil.copyfile(snapshot, handle.output_root / 'task.sqlite3')
             resumed = resume_task(handle.output_root)
         self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'") as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
