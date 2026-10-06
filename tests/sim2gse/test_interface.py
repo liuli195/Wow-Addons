@@ -1759,6 +1759,92 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("99999999", state["error"])
         self.assertNotIn("dps", state)
 
+    def test_search_publishes_grouped_complete_reports_through_task_service(self) -> None:
+        import result_store
+
+        self.server.task_options = {"search_config": {
+            "total_budget_seconds": 20, "search_budget_seconds": 8,
+            "candidate_limit": 1, "round_candidate_limit": 1,
+            "batch_targets": tuple(range(2, 30, 2)), "validation_batches": 1,
+            "final_batches": 1, "iterations": 2, "final_iterations": 2,
+            "scenarios": ("nominal",), "max_processes": 1,
+        }}
+        with _fast_search_boundary():
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 30
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+        self.assertEqual(state["status"], "completed", state)
+        self.assertTrue(state["result_ready"])
+        with result_store.query(
+            "SELECT storage_group_key, count(*) FROM batches "
+            "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
+        ) as cursor:
+            groups = cursor.fetchall()
+        self.assertGreater(sum(row[1] for row in groups), 12)
+        self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
+        self.assertEqual(len(groups), (sum(row[1] for row in groups) + 11) // 12)
+        with result_store.query(
+            "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
+            "WHERE purpose IN ('search', 'validation', 'final')"
+        ) as cursor:
+            reports = cursor.fetchall()
+        self.assertEqual(len(reports), sum(row[1] for row in groups))
+        self.assertEqual(len({key for key, _ in reports}), len(reports))
+        self.assertTrue(all(score > 0 for _, score in reports))
+
+    def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
+        import result_store
+        import sequence
+        from task import resume_task
+
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        original_write = result_store.write
+        interrupted = False
+        evaluated = []
+
+        def publish_then_interrupt(table, key, rows, **kwargs):
+            nonlocal interrupted
+            result = original_write(table, key, rows, **kwargs)
+            if table == 'batches' and len(rows) == 12 and not interrupted:
+                interrupted = True
+                raise OSError('published group before registration')
+            return result
+
+        def evaluate(*args, **kwargs):
+            evaluated.append(Path(args[2]).name)
+            return _fast_evaluate(*args, **kwargs)
+
+        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+            with patch.object(result_store, 'write', side_effect=publish_then_interrupt):
+                created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    state = self._task_state_request(created['task_id'], deadline)
+                    if state['status'] == 'failed':
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(state['status'], 'failed', state)
+                self.assertIn('published group before registration', state['error'])
+            _, handle = self.server.tasks[created['task_id']]
+            handle.join(5)
+            resumed = resume_task(handle.output_root)
+        self.assertEqual(resumed['status'], 'completed')
+        self.assertTrue(interrupted)
+        self.assertEqual(len(evaluated), len(set(evaluated)))
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(keys), len(set(keys)))
+
     def test_real_task_reaches_candidate_through_the_same_public_service(self) -> None:
         self.server.task_options = {
             "search_config": {

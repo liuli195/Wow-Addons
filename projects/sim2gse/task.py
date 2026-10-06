@@ -717,6 +717,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                              reference_data_key=reference_key, phase='search', inflight={})
                 store.save()
             character = replace(character, spec_id=state['native']['identity']['spec_id'], race=state['native']['identity']['race'])
+            store.recover_reports(character, simulation_config)
             _write_json(
                 destination / 'profile.json',
                 _profile(character, character.raw_text,
@@ -739,6 +740,17 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
             store.save()
             return result
     except (TaskCancelled, BudgetExceeded) as error:
+        try:
+            store.flush_reports()
+        except Exception as storage_error:
+            store.discard_unsaved_reports()
+            state.update(status='failed', elapsed_seconds=runtime.elapsed_seconds,
+                         error=str(storage_error), inflight={})
+            store.save()
+            _save_failure(destination, dict(status='failed', phase=state.get('phase', 'done'),
+                                          elapsed_seconds=runtime.elapsed_seconds,
+                                          error=str(storage_error)), state=state)
+            raise TaskError(str(storage_error)) from storage_error
         state.update(status='cancelled' if isinstance(error,TaskCancelled) else 'validation_incomplete',
                      elapsed_seconds=runtime.elapsed_seconds, error=str(error), inflight={})
         store.save()
@@ -754,6 +766,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
         _save_failure(destination, result, state=state)
         return result
     except Exception as error:
+        store.discard_unsaved_reports()
         state.update(status='failed', elapsed_seconds=runtime.elapsed_seconds, error=str(error), inflight={})
         store.save()
         failure = dict(status='failed', phase=state.get('phase', 'done'),
@@ -976,6 +989,11 @@ def resume_task(output_root, **kwargs):
             except (ValueError, OSError) as error:
                 raise TaskError(str(error)) from error
             used = float(state.get('elapsed_seconds',0))
+            if state.get('native'):
+                character = parse_character((destination / 'input.simc').read_text(encoding='utf-8-sig'))
+                character = replace(character, spec_id=state['native']['identity']['spec_id'],
+                                    race=state['native']['identity']['race'])
+                store.recover_reports(character, simulation_config)
             if state.get('status') == 'running':
                 penalty = max((max(0, r['allowance'] - max(0,used-r['start']))
                                for r in state.get('inflight',{}).values()),default=0)

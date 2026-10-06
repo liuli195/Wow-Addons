@@ -92,6 +92,11 @@ def _report_columns(value):
 
 def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
     """Persist normal report columns; sampled action traces follow the diagnostic switch."""
+    return write('batches', key, [prepare_batch(row, diagnostic_logging=diagnostic_logging)])
+
+
+def prepare_batch(row: dict, *, diagnostic_logging=False) -> dict:
+    """Normalize a complete report before bounded group publication."""
     if not diagnostic_logging:
         report = row['report']
         players = [dict(player, collected_data={name: value for name, value
@@ -99,7 +104,7 @@ def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
                     if name not in {'action_sequence', 'action_sequence_precombat'}})
                    for player in report['sim']['players']]
         row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
-    return write('batches', key, [dict(row, report=_report_columns(row['report']))])
+    return dict(row, report=_report_columns(row['report']))
 
 def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -> int:
     if not events:
@@ -114,7 +119,7 @@ def query(sql: str, parameters=None):
     return _api()["query"](DATA_ROOT, sql, parameters)
 
 
-def one(table: str, field: str, value):
+def one(table: str, field: str, value, *, group_key=None):
     """Read at most two matching rows, returning a named record if unique."""
     if table not in {"runs", "candidates", "batches"} or field not in {
         "run_id", "candidate_key", "candidate_data_key", "batch_key"
@@ -123,8 +128,14 @@ def one(table: str, field: str, value):
     api = _api()
     stored_key = {"runs": "run_id", "candidates": "candidate_data_key", "batches": "batch_key"}
     try:
-        cursor = (api["read_key"](DATA_ROOT, table, value) if field == stored_key[table]
-                  else query(f"SELECT * FROM {table} WHERE {field} = ?", [value]))
+        try:
+            cursor = (api["read_key"](DATA_ROOT, table, group_key, filters={field: value}) if group_key else
+                      api["read_key"](DATA_ROOT, table, value) if field == stored_key[table]
+                      else query(f"SELECT * FROM {table} WHERE {field} = ?", [value]))
+        except api["MissingKeyError"]:
+            if group_key or table != 'batches':
+                raise
+            cursor = query(f"SELECT * FROM {table} WHERE {field} = ? LIMIT 2", [value])
         with cursor:
             columns = [column[0] for column in cursor.description]
             rows = cursor.fetchmany(2)

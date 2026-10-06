@@ -1598,11 +1598,11 @@ class SearchAndValidationTests(TestCase):
                     self.assertTrue(paused.wait(5), "search never reached its second batch")
                     deadline = time.monotonic() + 5
                     observed = read_task(destination)
-                    while (observed.get("phase") != "search" or not observed.get("completed_batches")) and time.monotonic() < deadline:
+                    while observed.get("phase") != "search" and time.monotonic() < deadline:
                         time.sleep(0.01)
                         observed = read_task(destination)
                     self.assertEqual(observed.get("phase"), "search")
-                    self.assertGreater(observed.get("completed_batches", 0), 0)
+                    self.assertEqual(observed.get("completed_batches", 0), 0)
                     with self.assertRaisesRegex(TaskError, "正在运行"):
                         resume_task(destination)
                     cancel_task(handle)
@@ -1613,6 +1613,7 @@ class SearchAndValidationTests(TestCase):
                 self.assertTrue(handle.done)
                 cancelled = read_task(destination, include_search_records=True)
                 self.assertEqual(cancelled["status"], "cancelled")
+                self.assertGreater(cancelled['completed_batches'], 0)
                 resumed = run_task(destination/"input.simc",destination,resume=True)
             self.assertEqual(resumed['search']['records'][0]['key'], cancelled['search']['records'][0]['key'])
             self.assertGreater(resumed["elapsed_seconds"], cancelled["elapsed_seconds"])
@@ -1640,7 +1641,11 @@ class SearchAndValidationTests(TestCase):
                 saved = result_store.one('batches', 'batch_key', row['data_key'])
                 saved['report']['sim']['players'][0]['collected_data']['dps']['mean'] = 1.0
                 saved['report']['sim']['statistics']['raid_dps']['mean'] = 1.0
-                result_store.write('batches', row['data_key'], [saved])
+                group = saved.get('storage_group_key') or row['data_key']
+                records = list(result_store.iter_rows(
+                    'SELECT * FROM batches WHERE storage_group_key = ?', [group]))
+                result_store.write('batches', group, [saved if item['batch_key'] == row['data_key']
+                                                     else item for item in records])
                 resumed=run_task(source,Path(directory)/'second',search_config=config)
                 self.assertGreater(resumed['search']['records'][0]['batches'][0]['dps'],1)
                 self.assertFalse(resumed['search']['records'][0]['batches'][0].get('cached',False))
@@ -1668,7 +1673,8 @@ class SearchAndValidationTests(TestCase):
                 first = run_task(source, Path(directory) / 'first', search_config=config)
                 batch_key = first['search']['records'][0]['batches'][0]['data_key']
                 # Fault injection only: mimic a damaged Parquet shard behind the read-only API.
-                shard = result_store.DATA_ROOT / 'batches' / f'{batch_key}.parquet'
+                saved = result_store.one('batches', 'batch_key', batch_key)
+                shard = result_store.DATA_ROOT / 'batches' / f"{saved['storage_group_key']}.parquet"
                 shard.write_bytes(b'corrupt parquet')
                 second = run_task(source, Path(directory) / 'second', search_config=config)
 
@@ -1694,10 +1700,10 @@ class SearchAndValidationTests(TestCase):
                     with self.subTest(failure=failure):
                         cancelled = threading.Event()
 
-                        def read(table, field, value):
+                        def read(table, field, value, **kwargs):
                             if table == 'batches' and failure == 'unavailable':
                                 raise result_store.DataReadError('storage unavailable')
-                            result = original(table, field, value)
+                            result = original(table, field, value, **kwargs)
                             if table == 'batches':
                                 cancelled.set()
                             return result

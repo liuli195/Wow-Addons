@@ -739,6 +739,36 @@ def _parent_positions(program, capabilities, positions):
     return bound
 
 
+def _score_variance(report, character):
+    from engine import damage_statistics, CandidateError
+    variance = damage_statistics(report, character).get('variance')
+    if type(variance) not in (int, float) or not math.isfinite(variance) or variance < 0:
+        raise CandidateError('伤害方差无效')
+    return variance
+
+
+def _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config):
+    from engine import check_report
+    request = cached['request']
+    report = saved['report'] if saved is not None else None
+    identities = dict(batch_key=key, condition_key=request['condition'],
+                      candidate_key=request['behavior_identity'], purpose=request['purpose'],
+                      program_identity=json.dumps(request['program'], ensure_ascii=False,
+                                                  sort_keys=True, separators=(',', ':')),
+                      seed=request['seed'], input_seed=request['input_seed'],
+                      iterations=request['iterations'], batch_index=index, scenario=scenario,
+                      stats_version=request['stats'], times=request['times'], trace=request['trace'])
+    if (not isinstance(report, dict) or any(saved.get(field) != value for field, value in identities.items())
+            or (saved.get('reset_events') or []) != [
+                dict(ms=ms, kind=kind) for ms, kind in request['reset_events']]):
+        raise ValueError('缓存报告或请求身份缺失')
+    summary = check_report(report, character, request['iterations'], simulation_config=simulation_config)
+    if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
+            or _score_variance(report, character) != cached['variance']
+            or any(saved[field] != cached[field] for field in ('dps', 'samples', 'variance'))):
+        raise ValueError('缓存摘要不符')
+
+
 class TaskStore:
     """任务检查点与成功批次；锁保护心跳与主线程共用的事务。"""
     def __init__(self, destination):
@@ -753,6 +783,7 @@ class TaskStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS shared.reusable (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS batches (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL)')
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.state = json.loads(row[0]) if row else {}
@@ -762,14 +793,116 @@ class TaskStore:
         self.state_write_count = 0
         self.lua_compiler_starts = 0
         self.verified_batches = {}
+        self.report_buffer = []
+        self.safe_state = _json(self.state)
+        self.persisted_batches = self.db.execute(
+            "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
         self.db.commit()
 
     def save(self):
         with self.lock, self.db:
-            self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
+            if not self.report_buffer:
+                self.safe_state = _json(self.state)
+                self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (self.safe_state,))
+                if self.state.get('config', {}).get('diagnostic_logging', False):
+                    self.state_write_count += 1
+            self._save_progress()
+
+    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None):
+        from result_store import prepare_batch
+        with self.lock:
+            if replace_group:
+                self.flush_reports()
+            self.report_buffer.append((key, row, prepare_batch(
+                stored, diagnostic_logging=diagnostic_logging)))
+            self.verified_batches[key] = row
+            self.state['completed_batches'] += 1
+            if replace_group or len(self.report_buffer) >= 12:
+                self.flush_reports(replace_group=replace_group)
+
+    def flush_reports(self, *, replace_group=None):
+        from result_store import write, _api, DATA_ROOT
+        with self.lock:
+            if not self.report_buffer:
+                return
+            number = self.state.get('next_report_group', 0)
+            group = replace_group or self.state['run_id'] + '_g' + str(number)
+            retained = []
+            if replace_group:
+                api = _api()
+                try:
+                    with api['read_key'](DATA_ROOT, 'batches', group) as cursor:
+                        names = [column[0] for column in cursor.description]
+                        replaced = {key for key, _, _ in self.report_buffer}
+                        retained = [record for values in cursor.fetchall()
+                                    if (record := dict(zip(names, values)))['batch_key'] not in replaced]
+                except (api['MissingKeyError'], api['CorruptDataError']):
+                    pass
+            metadata = [(key, dict(row, storage_group_key=group,
+                                   batch_index=stored['batch_index'], scenario=stored['scenario']))
+                        for key, row, stored in self.report_buffer]
+            with self.db:
+                self.db.execute('INSERT OR REPLACE INTO report_intents VALUES (?,?)',
+                                (group, _json(dict(number=number, rows=metadata))))
+            write('batches', group, retained + [dict(stored, storage_group_key=group)
+                                     for _, _, stored in self.report_buffer])
+            self._commit_report_group(group, number, metadata)
+            for key, row, _ in self.report_buffer:
+                row['storage_group_key'] = group
+                (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
+            self.report_buffer.clear()
+
+    def _commit_report_group(self, group, number, metadata):
+        with self.lock, self.db:
+            for key, row in metadata:
+                self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(row)))
+                if row['request']['purpose'] != 'final':
+                    self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, _json(row)))
+                self.verified_batches[key] = row
+            self.state['completed_batches'] = self.db.execute(
+                "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
+            self.persisted_batches = self.state['completed_batches']
+            self.state['next_report_group'] = max(number + 1, self.state.get('next_report_group', 0))
+            self.db.execute('DELETE FROM report_intents WHERE key=?', (group,))
+            self.safe_state = _json(self.state)
+            self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (self.safe_state,))
             if self.state.get('config', {}).get('diagnostic_logging', False):
                 self.state_write_count += 1
             self._save_progress()
+
+    def recover_reports(self, character, simulation_config):
+        from result_store import _api, DATA_ROOT
+        api = _api()
+        for group, payload in self.db.execute('SELECT key,value FROM report_intents').fetchall():
+            intent = json.loads(payload)
+            try:
+                with api['read_key'](DATA_ROOT, 'batches', group) as cursor:
+                    names = [column[0] for column in cursor.description]
+                    fetched = [dict(zip(names, values)) for values in cursor.fetchall()]
+                    records = {row['batch_key']: row for row in fetched}
+            except api['MissingKeyError']:
+                with self.db:
+                    self.db.execute('DELETE FROM report_intents WHERE key=?', (group,))
+                continue
+            if len(records) != len(fetched) or not {key for key, _ in intent['rows']} <= set(records):
+                raise ValueError('已发布报告组与恢复身份不符')
+            for key, row in intent['rows']:
+                _validate_saved_batch(records[key], key, row, character,
+                                      row['batch_index'], row['scenario'], simulation_config)
+            self._commit_report_group(group, intent['number'], intent['rows'])
+            for key, _ in intent['rows']:
+                (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
+
+    def discard_unsaved_reports(self):
+        with self.lock:
+            elapsed = self.state.get('elapsed_seconds', 0)
+            for key, _, _ in self.report_buffer:
+                self.verified_batches.pop(key, None)
+            if self.report_buffer:
+                self.state.clear()
+                self.state.update(json.loads(self.safe_state))
+                self.state.update(elapsed_seconds=elapsed, inflight={})
+                self.report_buffer.clear()
 
     def _save_progress(self):
         self.db.execute('INSERT OR REPLACE INTO runtime_progress VALUES (1,?,?,?)',
@@ -786,6 +919,7 @@ class TaskStore:
                      ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
                       'batch_requests', 'batch_cache_hits', 'native_batch_starts',
                       'canonicalized_duplicates', 'error')}
+            brief['completed_batches'] = self.persisted_batches
             if not self.state.get('config', {}).get('diagnostic_logging', False):
                 for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):
                     brief.pop(key, None)
@@ -827,12 +961,15 @@ class TaskStore:
             if value.get('status')=='success' and value['request']['purpose']!='final':
                 self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
             self.state['completed_batches'] = self.db.execute(
-                "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
+                "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0] + len(self.report_buffer)
+            self.persisted_batches = self.state['completed_batches'] - len(self.report_buffer)
             if counter is not None and self.state.get('config', {}).get('diagnostic_logging', False):
                 self.state[counter] = self.state.get(counter, 0) + 1
-            self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json(self.state),))
-            if self.state.get('config', {}).get('diagnostic_logging', False):
-                self.state_write_count += 1
+            if not self.report_buffer:
+                self.safe_state = _json(self.state)
+                self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (self.safe_state,))
+                if self.state.get('config', {}).get('diagnostic_logging', False):
+                    self.state_write_count += 1
             self._save_progress()
             if verified and value.get('status') == 'success':
                 self.verified_batches[key] = value
@@ -1295,10 +1432,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return prepare(program)['identity']
 
     def score_variance(report):
-        variance = damage_statistics(report, character).get('variance')
-        if type(variance) not in (int, float) or not math.isfinite(variance) or variance < 0:
-            raise CandidateError('伤害方差无效')
-        return variance
+        return _score_variance(report, character)
 
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False):
         runtime.check()
@@ -1331,7 +1465,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         if cached and cached['status'] == 'success':
             from result_store import one as read_record, DataReadError, InvalidRecordError
             try:
-                saved = (read_record('batches', 'batch_key', key)
+                saved = (read_record('batches', 'batch_key', key, **(
+                    {'group_key': cached['storage_group_key']} if cached.get('storage_group_key') else {}))
                          if cached['request'] == request and cached['data_key'] == key else None)
             except InvalidRecordError:
                 saved = None
@@ -1340,31 +1475,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 raise
             runtime.check()
             try:
-                report = saved['report'] if saved is not None else None
-                if (cached['request'] != request or not isinstance(report, dict)
-                        or saved['batch_key'] != key
-                        or saved['condition_key'] != request['condition']
-                        or saved['candidate_key'] != request['behavior_identity']
-                        or saved['purpose'] != request['purpose']
-                        or saved.get('program_identity') != program_identity
-                        or saved['seed'] != request['seed']
-                        or saved['input_seed'] != request['input_seed']
-                        or saved['iterations'] != request['iterations']
-                        or saved.get('batch_index') != index
-                        or saved.get('scenario') != scenario
-                        or saved.get('stats_version') != request['stats']
-                        or saved['times'] != request['times']
-                        or saved['trace'] != request['trace']
-                        or (saved.get('reset_events') or []) != [
-                            dict(ms=ms, kind=kind) for ms, kind in request['reset_events']]):
-                    raise ValueError('缓存报告或请求身份缺失')
-                summary = check_report(report, character, iterations,
-                                       simulation_config=simulation_config)
-                if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
-                        or score_variance(report) != cached['variance']
-                        or saved['dps'] != cached['dps'] or saved['samples'] != cached['samples']
-                        or saved['variance'] != cached['variance']):
-                    raise ValueError('缓存摘要不符')
+                if cached['request'] != request:
+                    raise ValueError('缓存请求身份不符')
+                _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config)
             except (BudgetExceeded, TaskCancelled):
                 raise
             except (ValueError, KeyError, TypeError, RuntimeError):
@@ -1421,14 +1534,15 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if request['reset_events']:
                 stored['reset_events'] = [dict(ms=ms, kind=kind)
                                           for ms, kind in request['reset_events']]
-            write_batch(key, stored, diagnostic_logging=config['diagnostic_logging'])
-            center_stored = True
             if trace and config['diagnostic_logging']:
                 write_traces(key, state['run_id'], result['trace'], batch_key=key)
             with store.lock:
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
-                store.put_batch(key, row, verified=True)
+                store.stage_report(key, row, stored, diagnostic_logging=config['diagnostic_logging'],
+                                   replace_group=(cached.get('storage_group_key') or key)
+                                   if cached and cached['status'] == 'success' else None)
+                center_stored = not any(k == key for k, _, _ in store.report_buffer)
             return row
         except (BudgetExceeded, TaskCancelled):
             raise
@@ -1844,6 +1958,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 with store.lock:
                     observability['summary']['position_observation_incomplete'] = True
                 break
+    store.flush_reports()
     chosen = best
     result = dict(status='completed', phase='done',
                   search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
