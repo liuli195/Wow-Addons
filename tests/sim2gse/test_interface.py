@@ -1700,7 +1700,7 @@ class InterfaceTests(unittest.TestCase):
                                          "macro": "/targetenemy [noharm][dead]\n/cast 77575"}]}],
         }])
         created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
+            "profile": sample_profile(), "mode": "import", "gse": imported, "target_count": 5,
             "sequence_name": "THIRD_PARTY", "version": 1,
             "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
         })
@@ -1715,6 +1715,9 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["selected_sequence"], "THIRD_PARTY")
         self.assertGreater(state["dps"], 0)
         self.assertFalse(state["result_ready"])
+        destination, _ = self.server.tasks[created["task_id"]]
+        from task import read_task
+        self.assertEqual(read_task(destination)["simulation_config"]["target_count"], 5)
 
     def test_import_gcd_pause_uses_upstream_integer_click_count(self) -> None:
         imported = gse_fixture(["GCD_PAUSE", {
@@ -2870,7 +2873,7 @@ class InterfaceTests(unittest.TestCase):
             "canonicalized_duplicates": 4,
         })
 
-    def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300):
+    def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300, target_count=1):
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
@@ -2884,11 +2887,15 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  const browser=await chromium.launch({channel:'msedge',headless:true});
  try{
   const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
-  const page=await context.newPage(); let state;
+  const page=await context.newPage(); let state, submitted;
+  page.on('request',request=>{if(request.url().endsWith('/api/tasks')&&request.method()==='POST')submitted=request.postDataJSON();});
   page.on('response',async response=>{if(response.url().includes('/api/tasks/')&&response.request().method()==='GET')state=await response.json();});
   await page.goto(input.url);
   assert.equal(await page.locator('#interval').inputValue(),'300');
+  assert.equal(await page.locator('#targetCount').inputValue(),'1');
+  assert.deepEqual(await page.locator('#targetCount option').evaluateAll(options=>options.map(o=>o.value)),['1','5']);
   await page.locator('#interval').fill(String(input.interval_ms));
+  await page.locator('#targetCount').selectOption(String(input.target_count));
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   await page.locator('#start').click();
   assert.match(await page.locator('#error').innerText(),/请先粘贴/);
@@ -2905,24 +2912,28 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.locator('#profile').fill(input.profile);await page.locator('#start').click();
   await disconnected;await page.waitForTimeout(700);
   assert.equal(await page.locator('#start').isDisabled(),true,'瞬时断连不能结束后台任务');
+  assert.equal(await page.locator('#targetCount').isDisabled(),true);
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:35000});
   assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
   const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
   assert.equal(state.input_interval_ms,input.interval_ms);
+  assert.equal(submitted.target_count,input.target_count);
+  assert.equal(await page.locator("#targetCount").isDisabled(),false);
   assert.equal(text,state.candidate_text);assert.equal(state.evidence_status,'search_result');
   assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
   await page.locator('#copy').click();
   assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
   assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
-  await page.locator('#profile').fill(input.profile+'\n# changed');
+  if(input.target_count===1) await page.locator('#profile').fill(input.profile+'\n# changed');
+  else await page.locator('#targetCount').selectOption('1');
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   assert.equal(await page.locator('#result').inputValue(),'');
   console.log(JSON.stringify({candidate:text}));
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or sample_profile(),interval_ms=interval_ms)),
+        result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or sample_profile(),interval_ms=interval_ms,target_count=target_count)),
             text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self._decode_candidate(json.loads(result.stdout)['candidate'], expected_spec)
@@ -2959,6 +2970,13 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.native_reference = result['native_reference']
         self.controlled = result['controlled_simulation']
 
+    def test_invalid_target_count_is_rejected_before_creating_task(self):
+        for value in (2, True, "5"):
+            with self.subTest(value=value), self.assertRaises(HTTPError) as raised:
+                self._json_request("POST", "/api/tasks", {"profile": sample_profile(), "target_count": value})
+            self.assertEqual(raised.exception.code, 400)
+        self.assertEqual(self.server.tasks, {})
+
     def test_invalid_interval_is_rejected_before_creating_task(self):
         for value in (0, 49, 2001, True, 180.5, "180"):
             with self.subTest(value=value), self.assertRaises(HTTPError) as raised:
@@ -2983,10 +3001,11 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
 
     def test_browser_uses_adjustable_input_interval(self):
         with _fast_search_boundary():
-            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180)
+            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
         result = read_task(destination, include_search_records=True)
+        self.assertEqual(result['simulation_config']['target_count'], 5)
         for row in result['search']['records'][0]['batches']:
             self.assertEqual(row['request']['times'], list(range(0, 180000, 180)))
         scenarios = result['final']['scenarios']

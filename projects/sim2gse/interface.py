@@ -10,6 +10,7 @@ import threading
 from urllib.parse import urlsplit
 import uuid
 
+from simulation_config import config_for as simulation_config_for
 from task import TaskError, cancel_task, parse_character, read_task, start_task
 
 
@@ -168,6 +169,9 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         interval = value.get("input_interval_ms", 300)
         if type(interval) is not int or not 50 <= interval <= 2000:
             raise TaskError("按键间隔必须为 50 至 2000 毫秒的整数")
+        target_count = value.get("target_count", 1)
+        if type(target_count) is not int or target_count not in (1, 5):
+            raise TaskError("目标数量必须为 1 或 5")
         observation_mode = value.get("search_observability", "off")
         diagnostic_logging = value.get("diagnostic_logging", False)
         if type(diagnostic_logging) is not bool:
@@ -175,6 +179,8 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
+        options["simulation_config"] = simulation_config_for(dict(
+            options.get("simulation_config") or {}, target_count=target_count))
         options['search_config'] = dict(
             options.get('search_config') or {}, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
