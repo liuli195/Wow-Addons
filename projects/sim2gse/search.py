@@ -1571,7 +1571,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def score_variance(report):
         return _score_variance(report, character)
 
-    def batch(program, purpose, index, iterations, scenario='nominal', trace=False):
+    def batch(program, purpose, index, iterations, scenario='nominal', trace=False, *, prepared_candidate=None):
         runtime.check()
         seed_offset = {'search': 0, 'validation': 100000, 'final': 200000}[purpose]
         # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
@@ -1579,7 +1579,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         seed = config['random_seed'] + seed_offset + index + DEFAULT_SCENARIOS.index(scenario) * 1000 + nonce
         input_seed = seed + 500000
         times = input_times(scenario, input_seed, config["input_interval_ms"])
-        compiled = candidate(program)
+        compiled = prepared_candidate if prepared_candidate is not None else candidate(program)
         behavior_id = candidate_key(program)
         request = dict(condition=condition_key, program=compiled_identity(compiled), purpose=purpose,
                         behavior_identity=behavior_id,
@@ -1719,12 +1719,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     rows[side].append(future.result())
         return rows
 
-    def append_score(program, rows, index):
+    def score_batch(program, index, prepared_candidate=None):
         target = config['batch_targets'][index]
         previous = config['batch_targets'][index - 1] if index else 0
         row = batch(program, 'search', index, target - previous,
-                    trace=(config['diagnostic_logging'] and not state['archive'] and index == 0))
-        rows.append(dict(row, target=target))
+                    trace=(config['diagnostic_logging'] and not state['archive'] and index == 0),
+                    prepared_candidate=prepared_candidate)
+        return dict(row, target=target)
+
+    def append_score(program, rows, index):
+        rows.append(score_batch(program, index))
 
     def screen_round():
         pending = state['pending']
@@ -1732,15 +1736,37 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             return
         for index in range(len(config['batch_targets'])):
             active = [work for work in pending if not work.get('screened_out') and not work.get('score_error')]
-            for work in active:
-                rows = work.setdefault('score_batches', [])
-                try:
-                    if len(rows) <= index:
-                        append_score(work['program'], rows, index)
-                        store.save()
-                except CandidateError as error:
-                    work['score_error'] = str(error)
-                    store.save()
+            missing = [work for work in active if len(work.setdefault('score_batches', [])) <= index]
+            with ThreadPoolExecutor(max_workers=config['max_processes']) as pool:
+                for start in range(0, len(missing), config['max_processes']):
+                    ready = []
+                    # 只准备即将派发的候选，编译和共享候选状态始终由主线程处理。
+                    for work in missing[start:start + config['max_processes']]:
+                        runtime.check()
+                        try:
+                            ready.append((work, candidate(work['program'])))
+                        except CandidateError as error:
+                            work['score_error'] = str(error)
+                            store.save()
+                    futures = [(work, pool.submit(score_batch, work['program'], index, compiled))
+                               for work, compiled in ready]
+                    stopped = None
+                    for work, future in futures:
+                        try:
+                            row = future.result()
+                            with store.lock:
+                                work['score_batches'].append(row)
+                                store.save()
+                        except CandidateError as error:
+                            with store.lock:
+                                work['score_error'] = str(error)
+                                store.save()
+                        except BaseException as error:
+                            # 即使一项停止，也消费另一项完整成绩，供原顺序恢复使用。
+                            if stopped is None:
+                                stopped = error
+                    if stopped is not None:
+                        raise stopped
             active = [work for work in active if not work.get('score_error')]
             if not active:
                 break

@@ -157,6 +157,95 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_same_layer_scores_overlap_but_results_keep_candidate_order(self):
+        import threading
+        import search
+        import sequence
+        import program
+
+        entered = threading.Event()
+        overlap = []
+        finished = []
+        compile_threads = []
+        original_compile = program.compile_program
+        def compile_program(*args, **kwargs):
+            compile_threads.append(threading.current_thread().name)
+            return original_compile(*args, **kwargs)
+        def evaluate(profile, candidate, folder, **kwargs):
+            action = candidate['blocks'][0][0]['simc_action']
+            if len(candidate['blocks']) == 1 and kwargs['iterations'] == 32:
+                if action == 'death_coil':
+                    overlap.append(entered.wait(0.5))
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            if action in ('death_coil', 'scourge_strike') and kwargs['iterations'] == 32:
+                finished.append(action)
+                if action == 'scourge_strike':
+                    entered.set()
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            children = iter(([["death_coil"]], [["scourge_strike"]]))
+            config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+                          batch_targets=(32,), iterations=2, validation_batches=2, max_processes=2)
+            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
+                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)), \
+                    patch.object(program, 'compile_program', side_effect=compile_program):
+                result = run_task(source, Path(directory) / 'task', search_config=config)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(overlap, [True])
+        self.assertEqual(finished, ['scourge_strike', 'death_coil'])
+        self.assertEqual([row['program'] for row in result['search']['records']],
+                         [[["outbreak"]], [["death_coil"]], [["scourge_strike"]]])
+        self.assertTrue(all(name == threading.current_thread().name for name in compile_threads))
+
+    def test_cancelled_parallel_layer_keeps_other_complete_score_and_stops_dispatch(self):
+        import threading
+        import collections
+        import search
+        import sequence
+        from runtime import TaskCancelled
+
+        cancellation = threading.Event()
+        second_complete = threading.Event()
+        interrupted = [False]
+        calls = []
+        def evaluate(profile, candidate, folder, **kwargs):
+            actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
+            calls.append((actions, kwargs['iterations'], kwargs['seed']))
+            if actions == ('death_coil',) and kwargs['iterations'] == 32 and not interrupted[0]:
+                if not second_complete.wait(2):
+                    raise AssertionError('第二候选没有并行完成')
+                interrupted[0] = True
+                cancellation.set()
+                raise TaskCancelled('test interruption')
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            if actions == ('scourge_strike',) and kwargs['iterations'] == 32:
+                second_complete.set()
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+            children = iter(([["death_coil"]], [["scourge_strike"]], [["dark_transformation"]]))
+            config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=3,
+                          batch_targets=(32,), iterations=2, validation_batches=2, max_processes=2)
+            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
+                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)):
+                stopped = run_task(source, destination, search_config=config, cancel_event=cancellation)
+                self.assertEqual(stopped['status'], 'cancelled')
+                self.assertNotIn(('dark_transformation',), [actions for actions, _, _ in calls])
+                resumed = resume_task(destination)
+            self.assertEqual(resumed['status'], 'completed')
+            counts = collections.Counter(calls)
+            self.assertEqual(counts[(('scourge_strike',), 32, 20260912)], 1)
+            self.assertEqual(counts[(('death_coil',), 32, 20260912)], 2)
+            self.assertEqual(counts[(('dark_transformation',), 32, 20260912)], 1)
+
     def test_resume_after_route_promotion_during_global_challenge_keeps_valid_winners(self):
         import threading
         import collections
