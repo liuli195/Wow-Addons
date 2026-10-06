@@ -46,7 +46,8 @@ def _fast_search_config() -> dict:
 def _read_state(destination: Path) -> bytes:
     database = sqlite3.connect(destination / "task.sqlite3")
     try:
-        return database.execute("SELECT value FROM state").fetchone()[0].encode("utf-8")
+        from search import TaskStore
+        return json.dumps(TaskStore.load_state(database), ensure_ascii=False).encode("utf-8")
     finally:
         database.close()
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
 from contextlib import contextmanager
 import os
 import threading
@@ -748,6 +747,16 @@ def _score_variance(report, character):
     return variance
 
 
+def _checkpoint_copy(value):
+    if isinstance(value, dict):
+        return {key: _checkpoint_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_checkpoint_copy(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_checkpoint_copy(item) for item in value)
+    return value
+
+
 def _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config):
     from engine import check_report
     request = cached['request']
@@ -851,7 +860,7 @@ class TaskStore:
                 payload = _json(value)
                 size = len(payload.encode('utf-8'))
                 self.db.execute('INSERT OR REPLACE INTO state_fields VALUES (?,?)', (key, payload))
-                self.saved_fields[key] = (deepcopy(value), size)
+                self.saved_fields[key] = (_checkpoint_copy(value), size)
                 written += size
         current_archive = {record['key']: (ordinal, record)
                            for ordinal, record in enumerate(self.state.get('archive', []))}
@@ -866,7 +875,7 @@ class TaskStore:
                 payload = _json(record)
                 size = len(payload.encode('utf-8'))
                 self.db.execute('INSERT OR REPLACE INTO state_archive VALUES (?,?,?)', (key, ordinal, payload))
-                self.saved_archive[key] = (ordinal, deepcopy(record), size)
+                self.saved_archive[key] = (ordinal, _checkpoint_copy(record), size)
                 written += size
         if self.state.get('config', {}).get('diagnostic_logging', False):
             self.state_write_count += 1
