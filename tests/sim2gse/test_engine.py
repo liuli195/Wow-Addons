@@ -12,6 +12,26 @@ from engine import _profile_with_import_queries, identity, inspect, reference  #
 
 
 class ImportQueryProfileTests(unittest.TestCase):
+    def test_run_writes_only_requested_report_and_keeps_default_for_other_calls(self):
+        import engine
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        for options, expected in (((), ['native.json']),
+                                  (('json2=native.pending.json',), ['native.pending.json'])):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                def execute(command, *_args, **_kwargs):
+                    for option in command:
+                        if option.startswith('json2='):
+                            (folder / option.split('=', 1)[1]).write_text('complete report')
+                    return SimpleNamespace(returncode=0, stdout=b'ok', stderr=b'', elapsed_seconds=0.01)
+                with patch.object(engine, 'identity', return_value=(Path('simc.exe'), {})), \
+                        patch.object(engine, 'run_command', side_effect=execute):
+                    engine.run(folder / 'input.simc', folder, options=options)
+                self.assertEqual(sorted(path.name for path in folder.glob('*.json')
+                                        if path.name != 'invocation.json'), expected)
+
     def test_unknown_engine_mode_is_rejected_before_filesystem_lookup(self):
         with self.assertRaisesRegex(ValueError, "未知引擎模式"):
             identity("unknown")

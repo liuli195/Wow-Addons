@@ -66,9 +66,11 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     simulation_config = config_for(simulation_config)
     executable, manifest = identity(mode, runtime)
     folder.mkdir(parents=True, exist_ok=True)
+    options = tuple(options)
+    reports = [] if any(option.startswith('json2=') for option in options) else ['json2=native.json']
     command = [str(executable), os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
                'iterations=100', 'max_time=180',
-               'json2=native.json',
+               *reports,
                'output=' + ('native.txt' if getattr(runtime, 'diagnostic_logging', True) else os.devnull),
                *options]
     try:
