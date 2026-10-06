@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import runpy
+from contextlib import contextmanager
+import hashlib
+import json
+import msvcrt
+import os
+import re
 from pathlib import Path
 import threading
+import time
 
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
@@ -34,6 +41,88 @@ RUN_SCHEMA = dict(
 )
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
+_PUBLICATION_LOCK = threading.RLock()
+
+
+class ReportLocations:
+    """Small shared location journal; complete reports remain in the logical table."""
+    def __init__(self, root):
+        self.root = Path(root)
+        self.path = self.root / '.report-locations.jsonl'
+        self.entries = {}
+        self.groups = set()
+        self.offset = 0
+
+    @contextmanager
+    def locked(self):
+        with _PUBLICATION_LOCK, (self.root / '.report-publish.lock').open('a+b') as lease:
+            if lease.tell() == 0:
+                lease.write(b'0')
+                lease.flush()
+            deadline = time.monotonic() + 30
+            while True:
+                lease.seek(0)
+                try:
+                    msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise DataReadError('等待报告保存锁超时')
+                    time.sleep(.05)
+            try:
+                self.refresh()
+                yield self
+            finally:
+                lease.seek(0)
+                msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+
+    def refresh(self):
+        if not self.path.exists():
+            if self.offset or self._unindexed_groups():
+                raise DataReadError('报告位置清单缺失，已有报告组不能重新发布')
+            return
+        with self.path.open('rb') as stream:
+            if stream.seek(0, os.SEEK_END) < self.offset:
+                raise DataReadError('报告位置清单被截短')
+            stream.seek(self.offset)
+            for line in stream:
+                if not line.endswith(b'\n'):
+                    break  # An unfinished reservation cannot precede publication.
+                try:
+                    record = json.loads(line)
+                    payload = dict(group=record['group'], keys=record['keys'])
+                    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+                    if (not isinstance(payload['group'], str) or not isinstance(payload['keys'], list)
+                            or not all(isinstance(key, str) for key in payload['keys'])
+                            or hashlib.sha256(encoded).hexdigest() != record['sha256']):
+                        raise ValueError('位置清单校验不符')
+                except (ValueError, KeyError, TypeError) as error:
+                    raise DataReadError('报告位置清单损坏') from error
+                self.entries.update((key, payload['group']) for key in payload['keys'])
+                self.groups.add(payload['group'])
+                self.offset += len(line)
+        if self._unindexed_groups():
+            raise DataReadError('报告位置清单不完整，已有报告组不能重新发布')
+
+    def _unindexed_groups(self):
+        return any(path.stem not in self.groups
+                   for path in (self.root / 'batches').glob('*_g*.parquet')
+                   if re.search(r'_g\d+$', path.stem))
+
+    def reserve(self, group, keys):
+        payload = dict(group=group, keys=list(keys))
+        encoded = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+        record = dict(payload, sha256=hashlib.sha256(encoded).hexdigest())
+        line = (json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n').encode()
+        with self.path.open('a+b') as stream:
+            stream.truncate(self.offset)
+            stream.seek(self.offset)
+            stream.write(line)
+            stream.flush()
+            os.fsync(stream.fileno())
+        self.offset += len(line)
+        self.entries.update((key, group) for key in keys)
+        self.groups.add(group)
 
 
 class DataReadError(RuntimeError):
@@ -92,6 +181,11 @@ def _report_columns(value):
 
 def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
     """Persist normal report columns; sampled action traces follow the diagnostic switch."""
+    return write('batches', key, [prepare_batch(row, diagnostic_logging=diagnostic_logging)])
+
+
+def prepare_batch(row: dict, *, diagnostic_logging=False) -> dict:
+    """Normalize a complete report before bounded group publication."""
     if not diagnostic_logging:
         report = row['report']
         players = [dict(player, collected_data={name: value for name, value
@@ -99,7 +193,7 @@ def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
                     if name not in {'action_sequence', 'action_sequence_precombat'}})
                    for player in report['sim']['players']]
         row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
-    return write('batches', key, [dict(row, report=_report_columns(row['report']))])
+    return dict(row, report=_report_columns(row['report']))
 
 def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -> int:
     if not events:
@@ -114,7 +208,7 @@ def query(sql: str, parameters=None):
     return _api()["query"](DATA_ROOT, sql, parameters)
 
 
-def one(table: str, field: str, value):
+def one(table: str, field: str, value, *, group_key=None):
     """Read at most two matching rows, returning a named record if unique."""
     if table not in {"runs", "candidates", "batches"} or field not in {
         "run_id", "candidate_key", "candidate_data_key", "batch_key"
@@ -123,8 +217,17 @@ def one(table: str, field: str, value):
     api = _api()
     stored_key = {"runs": "run_id", "candidates": "candidate_data_key", "batches": "batch_key"}
     try:
-        cursor = (api["read_key"](DATA_ROOT, table, value) if field == stored_key[table]
-                  else query(f"SELECT * FROM {table} WHERE {field} = ?", [value]))
+        if table == 'batches' and group_key is None and (DATA_ROOT / '.report-locations.jsonl').exists():
+            with ReportLocations(DATA_ROOT).locked() as locations:
+                group_key = locations.entries.get(value)
+        try:
+            cursor = (api["read_key"](DATA_ROOT, table, group_key, filters={field: value}) if group_key else
+                      api["read_key"](DATA_ROOT, table, value) if field == stored_key[table]
+                      else query(f"SELECT * FROM {table} WHERE {field} = ?", [value]))
+        except api["MissingKeyError"]:
+            if group_key or table != 'batches':
+                raise
+            cursor = query(f"SELECT * FROM {table} WHERE {field} = ? LIMIT 2", [value])
         with cursor:
             columns = [column[0] for column in cursor.description]
             rows = cursor.fetchmany(2)

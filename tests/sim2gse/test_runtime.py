@@ -11,6 +11,27 @@ import runtime
 
 
 class RuntimeTests(TestCase):
+    def test_completed_process_returns_without_waiting_for_poll_interval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stdout, stderr = Path(directory) / 'stdout.tmp', Path(directory) / 'stderr.tmp'
+            stdout.write_bytes(b'complete')
+            stderr.write_bytes(b'')
+            clock = [0.0]
+            def wait(timeout):
+                clock[0] = max(clock[0], 0.001)
+                return 0
+            process = SimpleNamespace(stdout_path=stdout, stderr_path=stderr,
+                                      poll=lambda: 0 if clock[0] >= 0.001 else None,
+                                      wait=wait, terminate=lambda: None, close=lambda: None)
+            with patch.object(runtime.time, 'monotonic', side_effect=lambda: clock[0]), \
+                    patch.object(runtime.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+                    patch.object(runtime, '_create_process', return_value=process):
+                result = runtime.run_command(['simc'], directory, timeout_seconds=1)
+            self.assertEqual(result.stdout, b'complete')
+            self.assertEqual(result.returncode, 0)
+            self.assertAlmostEqual(result.elapsed_seconds, 0.001)
+            self.assertFalse(stdout.exists())
+
     def test_redirect_cleanup_retries_only_transient_windows_sharing_violation(self):
         for target, failures, winerror, expected_calls in (("stdout", 2, 32, 3), ("stderr", 2, 32, 3),
                                                           ("stdout", 20, 32, 11), ("stdout", 1, 5, 1),

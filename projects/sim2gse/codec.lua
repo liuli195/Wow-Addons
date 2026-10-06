@@ -55,6 +55,10 @@ if mode == "checksum" then
     print("CHECKSUM\t" .. assert(GSE.ComputeSequenceChecksum(sequence)))
     return
 end
+if mode == "checked" then
+    sequence.MetaData.Checksum = assert(GSE.ComputeSequenceChecksum(sequence))
+    print("CHECKSUM\t" .. sequence.MetaData.Checksum)
+end
 assert(GSE.VerifySequenceChecksum(sequence) == true, "checksum failed")
 local imported
 GSE.PerformMergeAction = function(operation, classid, name, value)

@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
-from search import initial_programs, mutate
+from search import initial_programs, mutate, TaskStore
 
 
 def _fast_capabilities():
@@ -125,7 +125,7 @@ def _fast_initialization(*, real_engine=False):
     def compiler(command, *args, **kwargs):
         if kwargs.get("on_start") is not None:
             kwargs["on_start"]()
-        output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+        output = b"CHECKSUM\ttest\nPASS\ttest\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
     def check_report(report, character, iterations, **kwargs):
@@ -157,6 +157,133 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_default_task_stops_initial_sampling_at_256_and_keeps_512_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            for label, override, expected_requests, expected_samples in (
+                ('default', {}, [32, 96, 128], 253),
+                ('explicit-512', {'batch_targets': (32, 128, 512)}, [32, 96, 384], 509),
+            ):
+                with self.subTest(label=label), _fast_search_boundary():
+                    result = run_task(source, Path(directory) / label,
+                                      search_config=dict(candidate_limit=1, **override))
+                    self.assertEqual(result['status'], 'completed')
+                    batches = result['search']['records'][0]['batches']
+                    self.assertEqual([row['request']['iterations'] for row in batches], expected_requests)
+                    self.assertEqual(sum(row['samples'] for row in batches), expected_samples)
+                    self.assertEqual(result['config']['validation_batches'], 4)
+                    self.assertEqual(result['config']['no_improvement_rounds'], 5)
+                    self.assertEqual(result['config']['total_budget_seconds'], 600)
+
+    def test_task_promotion_and_saved_summary_share_one_comparison(self):
+        import search
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            config = dict(total_budget_seconds=60, candidate_limit=2, batch_targets=(2,),
+                          iterations=2, validation_batches=2, max_processes=2)
+            with _fast_search_boundary(), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]], [["death_coil"]]]), \
+                    patch.object(search, 'paired_ci', wraps=search.paired_ci) as intervals:
+                result = run_task(source, Path(directory) / 'task', search_config=config)
+            comparisons = [row[key]['comparison'] for row in result['search']['records']
+                           for key in ('validation', 'global_validation') if key in row]
+        self.assertEqual(result['status'], 'completed')
+        self.assertGreater(len(comparisons), 0)
+        self.assertEqual(intervals.call_count, len(comparisons))
+        self.assertTrue(all(row['status'] == 'improvement_confirmed' for row in comparisons))
+        self.assertEqual(result['search']['records'][-1]['key'], result['selected_candidate_key'])
+
+    def test_same_layer_scores_overlap_but_results_keep_candidate_order(self):
+        import threading
+        import search
+        import sequence
+        import program
+
+        entered = threading.Event()
+        overlap = []
+        finished = []
+        compile_threads = []
+        original_compile = program.compile_program
+        def compile_program(*args, **kwargs):
+            compile_threads.append(threading.current_thread().name)
+            return original_compile(*args, **kwargs)
+        def evaluate(profile, candidate, folder, **kwargs):
+            action = candidate['blocks'][0][0]['simc_action']
+            if len(candidate['blocks']) == 1 and kwargs['iterations'] == 32:
+                if action == 'death_coil':
+                    overlap.append(entered.wait(0.5))
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            if action in ('death_coil', 'scourge_strike') and kwargs['iterations'] == 32:
+                finished.append(action)
+                if action == 'scourge_strike':
+                    entered.set()
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            children = iter(([["death_coil"]], [["scourge_strike"]]))
+            config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+                          batch_targets=(32,), iterations=2, validation_batches=2, max_processes=2)
+            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
+                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)), \
+                    patch.object(program, 'compile_program', side_effect=compile_program):
+                result = run_task(source, Path(directory) / 'task', search_config=config)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(overlap, [True])
+        self.assertEqual(finished, ['scourge_strike', 'death_coil'])
+        self.assertEqual([row['program'] for row in result['search']['records']],
+                         [[["outbreak"]], [["death_coil"]], [["scourge_strike"]]])
+        self.assertTrue(all(name == threading.current_thread().name for name in compile_threads))
+
+    def test_cancelled_parallel_layer_keeps_other_complete_score_and_stops_dispatch(self):
+        import threading
+        import collections
+        import search
+        import sequence
+        from runtime import TaskCancelled
+
+        cancellation = threading.Event()
+        second_complete = threading.Event()
+        interrupted = [False]
+        calls = []
+        def evaluate(profile, candidate, folder, **kwargs):
+            actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
+            calls.append((actions, kwargs['iterations'], kwargs['seed']))
+            if actions == ('death_coil',) and kwargs['iterations'] == 32 and not interrupted[0]:
+                if not second_complete.wait(2):
+                    raise AssertionError('第二候选没有并行完成')
+                interrupted[0] = True
+                cancellation.set()
+                raise TaskCancelled('test interruption')
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            if actions == ('scourge_strike',) and kwargs['iterations'] == 32:
+                second_complete.set()
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+            children = iter(([["death_coil"]], [["scourge_strike"]], [["dark_transformation"]]))
+            config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=3,
+                          batch_targets=(32,), iterations=2, validation_batches=2, max_processes=2)
+            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
+                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)):
+                stopped = run_task(source, destination, search_config=config, cancel_event=cancellation)
+                self.assertEqual(stopped['status'], 'cancelled')
+                self.assertNotIn(('dark_transformation',), [actions for actions, _, _ in calls])
+                resumed = resume_task(destination)
+            self.assertEqual(resumed['status'], 'completed')
+            counts = collections.Counter(calls)
+            self.assertEqual(counts[(('scourge_strike',), 32, 20260912)], 1)
+            self.assertEqual(counts[(('death_coil',), 32, 20260912)], 2)
+            self.assertEqual(counts[(('dark_transformation',), 32, 20260912)], 1)
+
     def test_resume_after_route_promotion_during_global_challenge_keeps_valid_winners(self):
         import threading
         import collections
@@ -589,8 +716,7 @@ class SearchAndValidationTests(TestCase):
 
             database = sqlite3.connect(destination / "task.sqlite3")
             try:
-                state = json.loads(database.execute(
-                    "SELECT value FROM state WHERE id=1").fetchone()[0])
+                state = TaskStore.load_state(database)
                 state["elapsed_seconds"] = config["total_budget_seconds"]
                 state["status"] = "interrupted"
                 database.execute("UPDATE state SET value=? WHERE id=1",
@@ -770,7 +896,7 @@ class SearchAndValidationTests(TestCase):
             compiler_calls.append((command[-1], str(kwargs.get("output_dir"))))
             if kwargs.get("on_start") is not None:
                 kwargs["on_start"]()
-            output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+            output = b"CHECKSUM\ttest\nPASS\ttest\n"
             return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
         def evaluate(profile, candidate, folder, **kwargs):
@@ -802,7 +928,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
         matching_compiles = [mode for mode, folder in compiler_calls
                              if folder.endswith(matching_records[0]["key"])]
-        self.assertEqual(matching_compiles, ["checksum", "compile"])
+        self.assertEqual(len(matching_compiles), 1)
 
     def test_run_task_does_not_save_full_state_for_batch_counters(self):
         import search
@@ -851,7 +977,7 @@ class SearchAndValidationTests(TestCase):
         self.assertNotIn("events", diagnostics)
         self.assertGreaterEqual(persisted["task_state_writes"], diagnostics["task_state_writes"])
         self.assertEqual(persisted["lua_compiler_starts"],
-                         persisted["candidate_compilations"] * 2)
+                         persisted["candidate_compilations"])
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-full-diagnostics-") as directory:
             source = Path(directory) / "role.simc"
@@ -886,8 +1012,7 @@ class SearchAndValidationTests(TestCase):
                     result = run_task(source, destination, search_config=options)
                 database = sqlite3.connect(destination / "task.sqlite3")
                 try:
-                    state = json.loads(database.execute(
-                        "SELECT value FROM state WHERE id=1").fetchone()[0])
+                    state = TaskStore.load_state(database)
                 finally:
                     database.close()
                 return result, state.get("rng"), state.get("condition")
@@ -1068,8 +1193,7 @@ class SearchAndValidationTests(TestCase):
                 run_task(source, destination, search_config=config)
             result_before = json.loads((destination / "result.json").read_text(encoding="utf-8"))
             with sqlite3.connect(destination / "task.sqlite3") as database:
-                state = json.loads(database.execute(
-                    "SELECT value FROM state WHERE id=1").fetchone()[0])
+                state = TaskStore.load_state(database)
                 state["behavior_identity_version"] = "obsolete-version"
                 state["elapsed_seconds"] = config["total_budget_seconds"]
                 database.execute("UPDATE state SET value=? WHERE id=1",
@@ -1598,11 +1722,11 @@ class SearchAndValidationTests(TestCase):
                     self.assertTrue(paused.wait(5), "search never reached its second batch")
                     deadline = time.monotonic() + 5
                     observed = read_task(destination)
-                    while (observed.get("phase") != "search" or not observed.get("completed_batches")) and time.monotonic() < deadline:
+                    while observed.get("phase") != "search" and time.monotonic() < deadline:
                         time.sleep(0.01)
                         observed = read_task(destination)
                     self.assertEqual(observed.get("phase"), "search")
-                    self.assertGreater(observed.get("completed_batches", 0), 0)
+                    self.assertEqual(observed.get("completed_batches", 0), 0)
                     with self.assertRaisesRegex(TaskError, "正在运行"):
                         resume_task(destination)
                     cancel_task(handle)
@@ -1613,6 +1737,7 @@ class SearchAndValidationTests(TestCase):
                 self.assertTrue(handle.done)
                 cancelled = read_task(destination, include_search_records=True)
                 self.assertEqual(cancelled["status"], "cancelled")
+                self.assertGreater(cancelled['completed_batches'], 0)
                 resumed = run_task(destination/"input.simc",destination,resume=True)
             self.assertEqual(resumed['search']['records'][0]['key'], cancelled['search']['records'][0]['key'])
             self.assertGreater(resumed["elapsed_seconds"], cancelled["elapsed_seconds"])
@@ -1640,7 +1765,11 @@ class SearchAndValidationTests(TestCase):
                 saved = result_store.one('batches', 'batch_key', row['data_key'])
                 saved['report']['sim']['players'][0]['collected_data']['dps']['mean'] = 1.0
                 saved['report']['sim']['statistics']['raid_dps']['mean'] = 1.0
-                result_store.write('batches', row['data_key'], [saved])
+                group = saved.get('storage_group_key') or row['data_key']
+                records = list(result_store.iter_rows(
+                    'SELECT * FROM batches WHERE storage_group_key = ?', [group]))
+                result_store.write('batches', group, [saved if item['batch_key'] == row['data_key']
+                                                     else item for item in records])
                 resumed=run_task(source,Path(directory)/'second',search_config=config)
                 self.assertGreater(resumed['search']['records'][0]['batches'][0]['dps'],1)
                 self.assertFalse(resumed['search']['records'][0]['batches'][0].get('cached',False))
@@ -1668,7 +1797,8 @@ class SearchAndValidationTests(TestCase):
                 first = run_task(source, Path(directory) / 'first', search_config=config)
                 batch_key = first['search']['records'][0]['batches'][0]['data_key']
                 # Fault injection only: mimic a damaged Parquet shard behind the read-only API.
-                shard = result_store.DATA_ROOT / 'batches' / f'{batch_key}.parquet'
+                saved = result_store.one('batches', 'batch_key', batch_key)
+                shard = result_store.DATA_ROOT / 'batches' / f"{saved['storage_group_key']}.parquet"
                 shard.write_bytes(b'corrupt parquet')
                 second = run_task(source, Path(directory) / 'second', search_config=config)
 
@@ -1694,10 +1824,10 @@ class SearchAndValidationTests(TestCase):
                     with self.subTest(failure=failure):
                         cancelled = threading.Event()
 
-                        def read(table, field, value):
+                        def read(table, field, value, **kwargs):
                             if table == 'batches' and failure == 'unavailable':
                                 raise result_store.DataReadError('storage unavailable')
-                            result = original(table, field, value)
+                            result = original(table, field, value, **kwargs)
                             if table == 'batches':
                                 cancelled.set()
                             return result
@@ -1754,7 +1884,7 @@ class SearchAndValidationTests(TestCase):
                 run_task(source, destination, search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2))
                 before = read_task(destination)
                 with closing(sqlite3.connect(destination / 'task.sqlite3')) as database:
-                    state = json.loads(database.execute('SELECT value FROM state WHERE id=1').fetchone()[0])
+                    state = TaskStore.load_state(database)
                     state.pop('rules')
                     database.execute('UPDATE state SET value=? WHERE id=1', (json.dumps(state),))
                     database.commit()
@@ -2080,7 +2210,7 @@ class SearchAndValidationTests(TestCase):
                     final_iterations=2,scenarios=('nominal',)))
             database=sqlite3.connect(destination/'task.sqlite3')
             try:
-                state=json.loads(database.execute('SELECT value FROM state').fetchone()[0])
+                state=TaskStore.load_state(database)
                 state.update(status='running',phase='final',elapsed_seconds=9,inflight={'batch':dict(start=9,allowance=1)})
                 database.execute('UPDATE state SET value=?',(json.dumps(state),));database.commit()
             finally:database.close()

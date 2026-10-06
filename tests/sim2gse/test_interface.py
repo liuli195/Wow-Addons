@@ -1759,6 +1759,342 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("99999999", state["error"])
         self.assertNotIn("dps", state)
 
+    def test_search_publishes_grouped_complete_reports_through_task_service(self) -> None:
+        import result_store
+
+        self.server.task_options = {"search_config": {
+            "total_budget_seconds": 20, "search_budget_seconds": 8,
+            "candidate_limit": 1, "round_candidate_limit": 1,
+            "batch_targets": tuple(range(2, 30, 2)), "validation_batches": 1,
+            "final_batches": 1, "iterations": 2, "final_iterations": 2,
+            "scenarios": ("nominal",), "max_processes": 1,
+        }}
+        with _fast_search_boundary():
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            deadline = time.monotonic() + 30
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+        self.assertEqual(state["status"], "completed", state)
+        self.assertTrue(state["result_ready"])
+        with result_store.query(
+            "SELECT storage_group_key, count(*) FROM batches "
+            "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
+        ) as cursor:
+            groups = cursor.fetchall()
+        self.assertGreater(sum(row[1] for row in groups), 12)
+        self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
+        self.assertEqual(len(groups), (sum(row[1] for row in groups) + 11) // 12)
+        with result_store.query(
+            "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
+            "WHERE purpose IN ('search', 'validation', 'final')"
+        ) as cursor:
+            reports = cursor.fetchall()
+        self.assertEqual(len(reports), sum(row[1] for row in groups))
+        self.assertEqual(len({key for key, _ in reports}), len(reports))
+        self.assertTrue(all(score > 0 for _, score in reports))
+
+    def test_task_checkpoints_write_less_than_repeated_complete_history(self) -> None:
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=3,
+            round_candidate_limit=1, batch_targets=(2, 4, 8), validation_batches=1,
+            final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1, diagnostic_logging=True, diagnostics='full')}
+        with _fast_search_boundary():
+            created = self._json_request('POST', '/api/tasks', {
+                'profile': sample_profile(), 'diagnostic_logging': True})
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created['task_id'], deadline)
+                if state['status'] in {'completed', 'failed'}:
+                    break
+                time.sleep(0.02)
+        self.assertEqual(state['status'], 'completed', state)
+        _, handle = self.server.tasks[created['task_id']]
+        handle.join(5)
+        diagnostic = json.loads((handle.output_root / 'diagnostics.json').read_text(encoding='utf-8'))
+        self.assertGreater(diagnostic['task_state_bytes'], 0)
+        self.assertLess(diagnostic['task_state_bytes'], diagnostic['task_state_full_value_bytes'])
+        # Restore an old-format checkpoint without changing its request identities.
+        import sqlite3
+        import sequence
+        from search import TaskStore
+        from task import resume_task
+        with sqlite3.connect(handle.output_root / 'task.sqlite3') as database:
+            checkpoint = TaskStore.load_state(database)
+            database.execute('UPDATE state SET value=? WHERE id=1', (json.dumps(checkpoint),))
+        database.close()
+        with _fast_search_boundary(), patch.object(
+                sequence, 'evaluate', side_effect=AssertionError('saved results must be reused')):
+            resumed = resume_task(handle.output_root)
+        self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual(resumed['completed_batches'], checkpoint['completed_batches'])
+
+    def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
+        import result_store
+        import sequence
+        from task import resume_task
+
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
+        original_write = result_store.write
+        interrupted = False
+        evaluated = []
+
+        def publish_then_interrupt(table, key, rows, **kwargs):
+            nonlocal interrupted
+            result = original_write(table, key, rows, **kwargs)
+            if table == 'batches' and len(rows) == 12 and not interrupted:
+                interrupted = True
+                raise OSError('published group before registration')
+            return result
+
+        def evaluate(*args, **kwargs):
+            evaluated.append(Path(args[2]).name)
+            return _fast_evaluate(*args, **kwargs)
+
+        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+            with patch.object(result_store, 'write', side_effect=publish_then_interrupt):
+                created = self._json_request('POST', '/api/tasks', {
+                    'profile': sample_profile(), 'diagnostic_logging': True})
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    state = self._task_state_request(created['task_id'], deadline)
+                    if state['status'] == 'failed':
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(state['status'], 'failed', state)
+                self.assertIn('published group before registration', state['error'])
+            _, handle = self.server.tasks[created['task_id']]
+            handle.join(5)
+            resumed = resume_task(handle.output_root)
+        self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
+        self.assertTrue(interrupted)
+        self.assertEqual(len(evaluated), len(set(evaluated)))
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_unregistered_corrupt_group_can_be_recomputed_on_resume(self) -> None:
+        import result_store
+        from task import resume_task
+
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        original_write = result_store.write
+        damaged = False
+
+        def publish_then_damage(table, key, rows, **kwargs):
+            nonlocal damaged
+            result = original_write(table, key, rows, **kwargs)
+            if table == 'batches' and len(rows) == 12 and not damaged:
+                damaged = True
+                (result_store.DATA_ROOT / table / (key + '.parquet')).write_bytes(b'corrupt')
+                raise OSError('damaged before registration')
+            return result
+
+        with _fast_search_boundary():
+            with patch.object(result_store, 'write', side_effect=publish_then_damage):
+                created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    state = self._task_state_request(created['task_id'], deadline)
+                    if state['status'] == 'failed':
+                        break
+                    time.sleep(.02)
+                self.assertEqual(state['status'], 'failed', state)
+            _, handle = self.server.tasks[created['task_id']]
+            handle.join(5)
+            resumed = resume_task(handle.output_root)
+        self.assertTrue(damaged)
+        self.assertEqual(resumed['status'], 'completed')
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_resume_after_partial_group_commit_uses_unused_group_number(self) -> None:
+        import sqlite3
+        import shutil
+        import result_store
+        import sequence
+        from search import TaskStore
+        from task import resume_task
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
+        original_stage = TaskStore.stage_report
+        original_commit = TaskStore._commit_report_group
+        snapshot = Path(self.directory.name) / 'partial-commit.sqlite3'
+        interrupted = False
+        evaluated = []
+
+        def evaluate(*args, **kwargs):
+            evaluated.append(Path(args[2]).name)
+            return _fast_evaluate(*args, **kwargs)
+
+        def seed_legacy_last_report(store, key, row, stored, **kwargs):
+            if len(store.report_buffer) == 11 and not interrupted:
+                result_store.write_batch(key, stored,
+                                         diagnostic_logging=kwargs.get('diagnostic_logging', False))
+            return original_stage(store, key, row, stored, **kwargs)
+
+        def interrupt_after_commit(store, *args, **kwargs):
+            nonlocal interrupted
+            original_commit(store, *args, **kwargs)
+            if not kwargs.get('checkpoint', True) and not interrupted:
+                interrupted = True
+                with sqlite3.connect(snapshot) as target:
+                    store.db.backup(target)
+                target.close()
+                raise OSError('stop after partial group commit')
+
+        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+            with patch.object(TaskStore, 'stage_report', seed_legacy_last_report), patch.object(
+                    TaskStore, '_commit_report_group', interrupt_after_commit):
+                created = self._json_request('POST', '/api/tasks', {
+                    'profile': sample_profile(), 'diagnostic_logging': True})
+                _, handle = self.server.tasks[created['task_id']]
+                handle.join(30)
+                self.assertTrue(interrupted)
+                self.assertIsNotNone(handle.error)
+            # Restore the exact durable task image at the stop, before error handling.
+            shutil.copyfile(snapshot, handle.output_root / 'task.sqlite3')
+            resumed = resume_task(handle.output_root)
+        self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(set(keys)), 14)
+
+    def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
+        self._assert_simultaneous_identical_tasks()
+
+    def test_simultaneous_tasks_with_different_parents_share_report_locations(self) -> None:
+        self._assert_simultaneous_identical_tasks(different_parent=True)
+
+    def test_lost_report_locations_reject_duplicate_publication(self) -> None:
+        import result_store
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        original_url = self.url
+        with _fast_search_boundary():
+            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+            _, handle = self.server.tasks[created['task_id']]
+            handle.join(30)
+            self.assertIsNone(handle.error)
+            journal = result_store.DATA_ROOT / '.report-locations.jsonl'
+            original = journal.read_bytes()
+            for damage in ('missing', 'truncated'):
+                with self.subTest(damage=damage):
+                    journal.write_bytes(original)
+                    if damage == 'missing':
+                        journal.unlink()
+                    else:
+                        journal.write_bytes(original.splitlines(keepends=True)[0])
+                    server = create_server(Path(self.directory.name) / damage, port=0,
+                                           task_options=self.server.task_options)
+                    thread = threading.Thread(target=server.serve_forever,
+                                              kwargs={'poll_interval': .01}, daemon=True)
+                    thread.start()
+                    try:
+                        self.url = f'http://127.0.0.1:{server.server_port}/'
+                        created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                        _, second = server.tasks[created['task_id']]
+                        second.join(30)
+                        state = self._json_request('GET', '/api/tasks/' + created['task_id'])
+                        self.assertEqual(state['status'], 'failed', state)
+                        self.assertIn('报告位置清单', state['error'])
+                    finally:
+                        self.url = original_url
+                        server.shutdown(); server.server_close(); thread.join(2)
+                    with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'") as cursor:
+                        keys = [row[0] for row in cursor.fetchall()]
+                    self.assertEqual(len(keys), 14)
+                    self.assertEqual(len(set(keys)), 14)
+            journal.write_bytes(original)
+
+    def _assert_simultaneous_identical_tasks(self, *, different_parent=False) -> None:
+        import result_store
+        import sequence
+
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        first_reports = threading.Barrier(2)
+        started = set()
+        started_lock = threading.Lock()
+
+        def evaluate(*args, **kwargs):
+            destination = Path(args[2]).parents[1]
+            with started_lock:
+                first = destination not in started
+                started.add(destination)
+            if first:
+                first_reports.wait(5)
+            return _fast_evaluate(*args, **kwargs)
+
+        second_server = second_thread = None
+        original_url = self.url
+        urls = [original_url, original_url]
+        if different_parent:
+            second_server = create_server(Path(self.directory.name) / '另一任务目录', port=0,
+                                          task_options=self.server.task_options)
+            second_thread = threading.Thread(target=second_server.serve_forever,
+                                             kwargs={'poll_interval': .01}, daemon=True)
+            second_thread.start()
+            urls[1] = f'http://127.0.0.1:{second_server.server_port}/'
+        try:
+            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+                created = []
+                for url in urls:
+                    self.url = url
+                    created.append((url, self._json_request('POST', '/api/tasks', {'profile': sample_profile()})))
+                deadline = time.monotonic() + 30
+                for url, task in created:
+                    self.url = url
+                    while time.monotonic() < deadline:
+                        state = self._task_state_request(task['task_id'], deadline)
+                        if state['status'] in {'completed', 'failed'}:
+                            break
+                        time.sleep(.02)
+                    self.assertEqual(state['status'], 'completed', state)
+        finally:
+            self.url = original_url
+            if second_server is not None:
+                from task import cancel_task
+                for _, handle in second_server.tasks.values():
+                    if not handle.done:
+                        cancel_task(handle)
+                        handle.join(5)
+                second_server.shutdown()
+                second_server.server_close()
+                second_thread.join(2)
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
+
     def test_real_task_reaches_candidate_through_the_same_public_service(self) -> None:
         self.server.task_options = {
             "search_config": {
@@ -1797,16 +2133,18 @@ class InterfaceTests(unittest.TestCase):
 
     def test_finished_task_error_is_not_hidden_by_a_completed_result(self):
         import task
-        locking = task.msvcrt.locking
-        def fail_unlock(fd, mode, size):
-            if mode == task.msvcrt.LK_UNLCK:
-                raise OSError("synthetic task lock release failure")
-            return locking(fd, mode, size)
+        from contextlib import contextmanager
+        original_lease = task._task_lease
+        @contextmanager
+        def fail_unlock(destination):
+            with original_lease(destination):
+                yield
+            raise OSError("synthetic task lock release failure")
         self.server.task_options = {"search_config": dict(
             total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
             batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
             final_iterations=2, scenarios=("nominal",), max_processes=1)}
-        with _fast_search_boundary(), patch.object(task.msvcrt, "locking", side_effect=fail_unlock):
+        with _fast_search_boundary(), patch.object(task, "_task_lease", side_effect=fail_unlock):
             created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:

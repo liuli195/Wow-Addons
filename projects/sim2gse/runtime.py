@@ -417,7 +417,11 @@ def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | 
             code = process.poll()
             if code is not None:
                 break
-            time.sleep(min(0.05, allowed - elapsed))
+            # 程序退出时立即唤醒；最长仍每50毫秒检查取消与共享预算。
+            try:
+                process.wait(min(0.05, allowed - elapsed, runtime.remaining_seconds))
+            except ProcessTimeout:
+                pass
         stdout = process.stdout_path.read_bytes() if process.stdout_path.exists() else b""
         stderr = process.stderr_path.read_bytes() if process.stderr_path.exists() else b""
         return ProcessResult(code, stdout, stderr, time.monotonic() - started)
