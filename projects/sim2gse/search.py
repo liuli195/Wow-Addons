@@ -1990,8 +1990,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                             if observability:
                                 add_stage_time(work, 'promotion_check',
                                               time.perf_counter() - promotion_started)
-                        ci=paired_ci([r['dps'] for r in left],[r['dps'] for r in right])
-                        current['validation']=dict(comparison=summarize_pairs(left,right),candidate=left,control=right)
+                        comparison = summarize_pairs(left, right)
+                        ci = comparison['ci95']
+                        current['validation']=dict(comparison=comparison,candidate=left,control=right)
                         route_promoted = bool(ci and ci[0] > 0)
                         if observability:
                             if work['start']:
@@ -2015,8 +2016,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                     if observability:
                                         add_stage_time(work, 'global_check',
                                                       time.perf_counter() - global_started)
-                                ci=paired_ci([r['dps'] for r in left],[r['dps'] for r in right])
-                                current['global_validation']=dict(comparison=summarize_pairs(left,right),candidate=left,control=right)
+                                comparison = summarize_pairs(left, right)
+                                ci = comparison['ci95']
+                                current['global_validation']=dict(comparison=comparison,candidate=left,control=right)
                                 global_promoted = bool(ci and ci[0] > 0)
                                 if observability:
                                     mark_promotion(work, 'global', promoted=global_promoted)

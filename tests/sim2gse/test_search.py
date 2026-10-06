@@ -157,6 +157,25 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_task_promotion_and_saved_summary_share_one_comparison(self):
+        import search
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            config = dict(total_budget_seconds=60, candidate_limit=2, batch_targets=(2,),
+                          iterations=2, validation_batches=2, max_processes=2)
+            with _fast_search_boundary(), \
+                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]], [["death_coil"]]]), \
+                    patch.object(search, 'paired_ci', wraps=search.paired_ci) as intervals:
+                result = run_task(source, Path(directory) / 'task', search_config=config)
+            comparisons = [row[key]['comparison'] for row in result['search']['records']
+                           for key in ('validation', 'global_validation') if key in row]
+        self.assertEqual(result['status'], 'completed')
+        self.assertGreater(len(comparisons), 0)
+        self.assertEqual(intervals.call_count, len(comparisons))
+        self.assertTrue(all(row['status'] == 'improvement_confirmed' for row in comparisons))
+        self.assertEqual(result['search']['records'][-1]['key'], result['selected_candidate_key'])
+
     def test_same_layer_scores_overlap_but_results_keep_candidate_order(self):
         import threading
         import search
