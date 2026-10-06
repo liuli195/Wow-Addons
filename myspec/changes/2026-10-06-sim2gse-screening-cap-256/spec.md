@@ -1,6 +1,6 @@
 # 默认搜索加测上限256与完整对比
 
-Status（状态）: ready-for-agent
+Status（状态）: completed（实施验收完成，等待门禁二交付）
 
 ## Problem Statement（问题）
 
