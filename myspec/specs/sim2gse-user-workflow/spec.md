@@ -116,3 +116,57 @@
 
 - **WHEN** 任务在进入批次、冷读取或核验后、返回已核验结果前观察到取消或累计预算耗尽
 - **THEN** 任务按原有取消或预算规则停止，保留恢复所需的已完成成绩，不将其登记为坏缓存
+### Requirement: Sim2GSE saves bounded groups of complete search reports
+
+系统 MUST 将搜索产生的完整报告每十二份保存为一组，缓冲数量有界；正常结束、正常取消和预算停止 MUST 保存不足十二份的尾组。普通单次模拟不等待搜索报告分组。报告字段、数值、嵌套结构和类型，以及既有诊断、样本、随机条件、评分、编译和导出行为 MUST 保持原规则，不增加长期完整报告副本。
+
+#### Scenario: Search completes a group and a tail
+
+- **WHEN** 搜索完成十二份有效报告，随后又完成不足十二份并正常停止
+- **THEN** 完整组和尾组均可靠保存，每份报告可按原有逻辑身份和字段查询；尾组保存不启动额外模拟或重置预算
+
+#### Scenario: Ordinary simulation completes
+
+- **WHEN** 普通单次模拟产生有效完整报告
+- **THEN** 报告直接保存，不等待其他搜索报告凑组
+### Requirement: Sim2GSE resumes only reliably saved complete report results
+
+系统 MUST 区分本轮未保存成绩与可靠保存结果，未保存成绩不能成为恢复任务的有效赢家、归档或成功历史。强制结束后允许重算未保存组；此前已保存结果、有效赢家、累计预算和请求计数 MUST 保留，已保存报告继续按完整身份、成绩及统计核验。相同请求从不同任务目录并发执行后，共享逻辑表中 MUST 不产生重复批次记录。调用方不需要文件路径、文件名或调优参数，既有单条、多条、字段及通用逻辑表查询保持可用。
+
+#### Scenario: Abrupt stop occurs before a group is saved
+
+- **WHEN** 任务强制结束时当前组尚未可靠保存
+- **THEN** 恢复只接受此前可靠保存的结果，允许重算未保存组，不借用只有摘要而缺少完整报告的成绩
+
+#### Scenario: Reports are published before task registration finishes
+
+- **WHEN** 完整报告已发布但任务登记尚未完成时发生中断，包括多组中的部分提交
+- **THEN** 恢复核验已发布报告后复用有效结果，不重复逻辑记录，不丢失或重复累计计数，不错误覆盖此前成功组
+
+#### Scenario: Concurrent tasks use the same request
+
+- **WHEN** 不同任务目录同时计算或保存相同请求
+- **THEN** 完成后共享批次表每个请求只有一条逻辑记录，各任务仍能核验和读取完整结果
+
+#### Scenario: Publication identity information is unavailable
+
+- **WHEN** 判断已保存组所需的身份信息丢失、截短或损坏，无法确定安全发布位置
+- **THEN** 任务明确报告故障，保留已保存数据，不继续发布重复或覆盖已有成功报告
+### Requirement: Sim2GSE saves changed task state without rewriting unchanged history
+
+系统 MUST 自动只保存任务中实际变化的字段和归档记录，避免小变化反复重写全部历史，不要求调用方选择保存参数。进度、正常取消、累计预算、请求及样本计数、有效报告登记和恢复结果 MUST 保持一致；旧格式任务仍可在原有源码与规则身份检查通过后读取和恢复，不能为兼容而绕过身份检查。
+
+#### Scenario: A task changes a small field or an archive entry
+
+- **WHEN** 任务更新、增加或删除部分字段或归档记录
+- **THEN** 变化可靠保存，未变化历史不被整份重写，重新读取所得状态与完整状态一致
+
+#### Scenario: An existing task resumes
+
+- **WHEN** 旧格式任务通过原有源码及规则身份检查并恢复
+- **THEN** 任务继续使用原有累计预算和可靠保存结果，进度、取消及导出行为保持兼容
+
+#### Scenario: Saving state fails
+
+- **WHEN** 状态或报告保存失败
+- **THEN** 任务明确报告故障，保留此前可靠保存结果和可恢复状态，不把未完成保存登记为成功
