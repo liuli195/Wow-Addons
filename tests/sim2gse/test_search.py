@@ -125,7 +125,7 @@ def _fast_initialization(*, real_engine=False):
     def compiler(command, *args, **kwargs):
         if kwargs.get("on_start") is not None:
             kwargs["on_start"]()
-        output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+        output = b"CHECKSUM\ttest\nPASS\ttest\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
     def check_report(report, character, iterations, **kwargs):
@@ -858,7 +858,7 @@ class SearchAndValidationTests(TestCase):
             compiler_calls.append((command[-1], str(kwargs.get("output_dir"))))
             if kwargs.get("on_start") is not None:
                 kwargs["on_start"]()
-            output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+            output = b"CHECKSUM\ttest\nPASS\ttest\n"
             return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
         def evaluate(profile, candidate, folder, **kwargs):
@@ -890,7 +890,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
         matching_compiles = [mode for mode, folder in compiler_calls
                              if folder.endswith(matching_records[0]["key"])]
-        self.assertEqual(matching_compiles, ["checksum", "compile"])
+        self.assertEqual(len(matching_compiles), 1)
 
     def test_run_task_does_not_save_full_state_for_batch_counters(self):
         import search
@@ -939,7 +939,7 @@ class SearchAndValidationTests(TestCase):
         self.assertNotIn("events", diagnostics)
         self.assertGreaterEqual(persisted["task_state_writes"], diagnostics["task_state_writes"])
         self.assertEqual(persisted["lua_compiler_starts"],
-                         persisted["candidate_compilations"] * 2)
+                         persisted["candidate_compilations"])
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-full-diagnostics-") as directory:
             source = Path(directory) / "role.simc"

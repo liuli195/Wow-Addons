@@ -218,13 +218,14 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
             raise ValueError('上游编译校验失败: ' + log[-2000:])
         return log
 
-    sequence['MetaData']['Checksum'] = next(row.split('\t')[1] for row in compile('checksum').splitlines()
+    log = compile('checked')
+    sequence['MetaData']['Checksum'] = next(row.split('\t')[1] for row in log.splitlines()
                                             if row.startswith('CHECKSUM\t'))
     encoded = cbor2.dumps(wire_value(payload))
     text = '!GSE3!' + base64.b64encode(zlib.compress(encoded, wbits=-15)).decode('ascii')
     if cbor2.loads(zlib.decompress(base64.b64decode(text[6:], validate=True), -15)) != wire_value(payload):
         raise ValueError('编码往返改变了序列')
-    if 'PASS\t' not in compile('compile'):
+    if 'PASS\t' not in log:
         raise ValueError('上游编译校验没有成功记录')
     return dict(text=text, blocks=blocks, compiled_steps=steps,
                 precombat_count=sum(bool(block) and all(c.get('condition') == 'nocombat' for c in block)

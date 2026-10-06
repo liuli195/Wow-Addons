@@ -63,7 +63,7 @@ class CharacterExportTests(unittest.TestCase):
         original = codec.run_command
         def fake(command, *args, **kwargs):
             commands.append(command)
-            output = b"CHECKSUM\ttest\n" if command[-1] == "checksum" else b"PASS\ttest\n"
+            output = b"CHECKSUM\ttest\nPASS\ttest\n"
             return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
         codec.run_command = fake
         try:
