@@ -8,6 +8,7 @@ import hashlib
 import json
 import msvcrt
 import os
+import re
 from pathlib import Path
 import threading
 import time
@@ -49,6 +50,7 @@ class ReportLocations:
         self.root = Path(root)
         self.path = self.root / '.report-locations.jsonl'
         self.entries = {}
+        self.groups = set()
         self.offset = 0
 
     @contextmanager
@@ -76,13 +78,12 @@ class ReportLocations:
 
     def refresh(self):
         if not self.path.exists():
-            self.entries.clear()
-            self.offset = 0
+            if self.offset or self._unindexed_groups():
+                raise DataReadError('报告位置清单缺失，已有报告组不能重新发布')
             return
         with self.path.open('rb') as stream:
             if stream.seek(0, os.SEEK_END) < self.offset:
-                self.entries.clear()
-                self.offset = 0
+                raise DataReadError('报告位置清单被截短')
             stream.seek(self.offset)
             for line in stream:
                 if not line.endswith(b'\n'):
@@ -98,7 +99,15 @@ class ReportLocations:
                 except (ValueError, KeyError, TypeError) as error:
                     raise DataReadError('报告位置清单损坏') from error
                 self.entries.update((key, payload['group']) for key in payload['keys'])
+                self.groups.add(payload['group'])
                 self.offset += len(line)
+        if self._unindexed_groups():
+            raise DataReadError('报告位置清单不完整，已有报告组不能重新发布')
+
+    def _unindexed_groups(self):
+        return any(path.stem not in self.groups
+                   for path in (self.root / 'batches').glob('*_g*.parquet')
+                   if re.search(r'_g\d+$', path.stem))
 
     def reserve(self, group, keys):
         payload = dict(group=group, keys=list(keys))
@@ -113,6 +122,7 @@ class ReportLocations:
             os.fsync(stream.fileno())
         self.offset += len(line)
         self.entries.update((key, group) for key in keys)
+        self.groups.add(group)
 
 
 class DataReadError(RuntimeError):

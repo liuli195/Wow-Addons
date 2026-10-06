@@ -1924,11 +1924,104 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(len(keys), 14)
         self.assertEqual(len(keys), len(set(keys)))
 
+    def test_resume_after_partial_group_commit_uses_unused_group_number(self) -> None:
+        import sqlite3
+        import shutil
+        import result_store
+        from search import TaskStore
+        from task import resume_task
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        original_stage = TaskStore.stage_report
+        original_commit = TaskStore._commit_report_group
+        snapshot = Path(self.directory.name) / 'partial-commit.sqlite3'
+        interrupted = False
+
+        def seed_legacy_last_report(store, key, row, stored, **kwargs):
+            if len(store.report_buffer) == 11 and not interrupted:
+                result_store.write_batch(key, stored,
+                                         diagnostic_logging=kwargs.get('diagnostic_logging', False))
+            return original_stage(store, key, row, stored, **kwargs)
+
+        def interrupt_after_commit(store, *args, **kwargs):
+            nonlocal interrupted
+            original_commit(store, *args, **kwargs)
+            if not kwargs.get('checkpoint', True) and not interrupted:
+                interrupted = True
+                with sqlite3.connect(snapshot) as target:
+                    store.db.backup(target)
+                target.close()
+                raise OSError('stop after partial group commit')
+
+        with _fast_search_boundary():
+            with patch.object(TaskStore, 'stage_report', seed_legacy_last_report), patch.object(
+                    TaskStore, '_commit_report_group', interrupt_after_commit):
+                created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                _, handle = self.server.tasks[created['task_id']]
+                handle.join(30)
+                self.assertTrue(interrupted)
+                self.assertIsNotNone(handle.error)
+            # Restore the exact durable task image at the stop, before error handling.
+            shutil.copyfile(snapshot, handle.output_root / 'task.sqlite3')
+            resumed = resume_task(handle.output_root)
+        self.assertEqual(resumed['status'], 'completed')
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(set(keys)), 14)
+
     def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
         self._assert_simultaneous_identical_tasks()
 
     def test_simultaneous_tasks_with_different_parents_share_report_locations(self) -> None:
         self._assert_simultaneous_identical_tasks(different_parent=True)
+
+    def test_lost_report_locations_reject_duplicate_publication(self) -> None:
+        import result_store
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        original_url = self.url
+        with _fast_search_boundary():
+            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+            _, handle = self.server.tasks[created['task_id']]
+            handle.join(30)
+            self.assertIsNone(handle.error)
+            journal = result_store.DATA_ROOT / '.report-locations.jsonl'
+            original = journal.read_bytes()
+            for damage in ('missing', 'truncated'):
+                with self.subTest(damage=damage):
+                    journal.write_bytes(original)
+                    if damage == 'missing':
+                        journal.unlink()
+                    else:
+                        journal.write_bytes(original.splitlines(keepends=True)[0])
+                    server = create_server(Path(self.directory.name) / damage, port=0,
+                                           task_options=self.server.task_options)
+                    thread = threading.Thread(target=server.serve_forever,
+                                              kwargs={'poll_interval': .01}, daemon=True)
+                    thread.start()
+                    try:
+                        self.url = f'http://127.0.0.1:{server.server_port}/'
+                        created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                        _, second = server.tasks[created['task_id']]
+                        second.join(30)
+                        state = self._json_request('GET', '/api/tasks/' + created['task_id'])
+                        self.assertEqual(state['status'], 'failed', state)
+                        self.assertIn('报告位置清单', state['error'])
+                    finally:
+                        self.url = original_url
+                        server.shutdown(); server.server_close(); thread.join(2)
+                    with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'") as cursor:
+                        keys = [row[0] for row in cursor.fetchall()]
+                    self.assertEqual(len(keys), 14)
+                    self.assertEqual(len(set(keys)), 14)
+            journal.write_bytes(original)
 
     def _assert_simultaneous_identical_tasks(self, *, different_parent=False) -> None:
         import result_store

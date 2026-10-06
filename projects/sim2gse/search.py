@@ -911,7 +911,12 @@ class TaskStore:
         with self.lock, self.report_locations.locked() as locations:
             api = _api()
             number = self.state.get('next_report_group', 0)
-            new_group = self.state['run_id'] + '_g' + str(number)
+            prefix = self.state['run_id'] + '_g'
+            # Reservations are durable before publication, including partial commits.
+            number = max(number, max((int(group[len(prefix):]) + 1
+                                     for group in locations.groups
+                                     if group.startswith(prefix) and group[len(prefix):].isdigit()), default=0))
+            new_group = prefix + str(number)
             plans = {}
             for key, row, stored in self.report_buffer:
                 group = replace_group or locations.entries.get(key)
