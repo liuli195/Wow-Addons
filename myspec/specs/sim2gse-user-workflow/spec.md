@@ -170,3 +170,17 @@
 
 - **WHEN** 状态或报告保存失败
 - **THEN** 任务明确报告故障，保留此前可靠保存结果和可恢复状态，不把未完成保存登记为成功
+### Requirement: Sim2GSE consumes the project connection established by the installed storage skill
+
+Sim2GSE（模拟搜索工具）MUST 使用代理通过已安装数据中心随包入口建立的项目共用连接，沿用既有逻辑表读写接口与共享数据根，不固定用户级旧技能链接、开发源码目录或客户端缓存版本。正常运行无需用户提供技能位置或额外定位程序；一个进程只加载一次实现，来源更新后重新启动生效。缺连接或依赖 MUST 在模拟启动前明确失败，不能静默改用过期来源。
+
+#### Scenario: The old user skill link is absent
+
+- **WHEN** 项目已从实际安装技能接入且旧用户技能链接不存在
+- **THEN** 搜索及其他已对接命令通过同一项目入口成功读写原共享数据，原格式、查询、缓存、预算与恢复规则保持
+
+#### Scenario: The project connection is unavailable or updated
+
+- **WHEN** 项目连接缺失、失效或其来源已更新
+- **THEN** 缺失或失效时模拟前明确提示接入，不能自动猜测其他安装来源
+- **THEN** 新来源由代理通过随包更新入口核对并连接，已运行工具重启后使用新实现
