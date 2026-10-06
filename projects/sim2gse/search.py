@@ -22,6 +22,7 @@ from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 
 SEARCH_ALGORITHM = "multi-start-local-adaptive-v2"
 STATS_VERSION = "paired-bootstrap-v1"
+_TASK_COUNTERS = ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates')
 SCREENING_ERROR_MULTIPLIER = 1.96
 DEFAULT_SCENARIOS = ("nominal", "jitter", "slow", "pause", "phase")
 DEFAULT_CONFIG = {
@@ -813,6 +814,8 @@ class TaskStore:
         self.lua_compiler_starts = 0
         self.verified_batches = {}
         self.report_buffer = []
+        from result_store import DATA_ROOT, ReportLocations
+        self.report_locations = ReportLocations(DATA_ROOT)
         self.persisted_batches = self.db.execute(
             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
         self.db.commit()
@@ -905,34 +908,66 @@ class TaskStore:
         with self.lock:
             if not self.report_buffer:
                 return
+        with self.lock, self.report_locations.locked() as locations:
+            api = _api()
             number = self.state.get('next_report_group', 0)
-            group = replace_group or self.state['run_id'] + '_g' + str(number)
-            retained = []
-            if replace_group:
-                api = _api()
+            new_group = self.state['run_id'] + '_g' + str(number)
+            plans = {}
+            for key, row, stored in self.report_buffer:
+                group = replace_group or locations.entries.get(key)
+                target = group or key  # Legacy reports use their original logical key.
+                existing = None
                 try:
-                    with api['read_key'](DATA_ROOT, 'batches', group) as cursor:
+                    with api['read_key'](DATA_ROOT, 'batches', target, filters={'batch_key': key}) as cursor:
                         names = [column[0] for column in cursor.description]
-                        replaced = {key for key, _, _ in self.report_buffer}
-                        retained = [record for values in cursor.fetchall()
-                                    if (record := dict(zip(names, values)))['batch_key'] not in replaced]
-                except (api['MissingKeyError'], api['CorruptDataError']):
-                    pass
-            metadata = [(key, dict(row, storage_group_key=group,
-                                   batch_index=stored['batch_index'], scenario=stored['scenario']))
-                        for key, row, stored in self.report_buffer]
-            with self.db:
-                self.db.execute('INSERT OR REPLACE INTO report_intents VALUES (?,?)',
-                                (group, _json(dict(number=number, rows=metadata))))
-            write('batches', group, retained + [dict(stored, storage_group_key=group)
-                                     for _, _, stored in self.report_buffer])
-            self._commit_report_group(group, number, metadata)
+                        matches = cursor.fetchmany(2)
+                        if len(matches) == 1:
+                            existing = dict(zip(names, matches[0]))
+                    group = target
+                except api['MissingKeyError']:
+                    group = group or new_group
+                except api['CorruptDataError']:
+                    group = target
+                valid = False
+                if existing is not None:
+                    try:
+                        _validate_saved_batch(existing, key, row, self.character,
+                                              stored['batch_index'], stored['scenario'], self.simulation_config)
+                        valid = True
+                    except (ValueError, KeyError, TypeError, RuntimeError):
+                        pass
+                plan = plans.setdefault(group, dict(metadata=[], replacements={}))
+                plan['metadata'].append((key, dict(row, storage_group_key=group,
+                                                  batch_index=stored['batch_index'], scenario=stored['scenario'])))
+                if not valid:
+                    plan['replacements'][key] = dict(stored, storage_group_key=group)
+            for position, (group, plan) in enumerate(plans.items()):
+                metadata = plan['metadata']
+                with self.db:
+                    self.db.execute('INSERT OR REPLACE INTO report_intents VALUES (?,?)',
+                                    (group, _json(dict(number=number, rows=metadata,
+                                                      counters={key: self.state.get(key, 0) for key in _TASK_COUNTERS}))))
+                locations.reserve(group, [key for key, _ in metadata])
+                if plan['replacements']:
+                    retained = {}
+                    try:
+                        with api['read_key'](DATA_ROOT, 'batches', group) as cursor:
+                            names = [column[0] for column in cursor.description]
+                            retained = {record['batch_key']: record for values in cursor.fetchall()
+                                        if (record := dict(zip(names, values)))}
+                    except (api['MissingKeyError'], api['CorruptDataError']):
+                        pass
+                    retained.update(plan['replacements'])
+                    if len(retained) > 12:
+                        raise ValueError('报告组超过十二份')
+                    write('batches', group, list(retained.values()))
+                self._commit_report_group(group, number, metadata, checkpoint=position == len(plans) - 1)
             for key, row, _ in self.report_buffer:
-                row['storage_group_key'] = group
+                row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
                 (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
             self.report_buffer.clear()
 
-    def _commit_report_group(self, group, number, metadata):
+    def _commit_report_group(self, group, number, metadata, *, checkpoint=True):
         with self.lock, self._transaction():
             for key, row in metadata:
                 self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(row)))
@@ -944,7 +979,8 @@ class TaskStore:
             self.persisted_batches = self.state['completed_batches']
             self.state['next_report_group'] = max(number + 1, self.state.get('next_report_group', 0))
             self.db.execute('DELETE FROM report_intents WHERE key=?', (group,))
-            self._persist_state()
+            if checkpoint:
+                self._persist_state()
             self._save_progress()
 
     def recover_reports(self, character, simulation_config):
@@ -952,33 +988,48 @@ class TaskStore:
         api = _api()
         for group, payload in self.db.execute('SELECT key,value FROM report_intents').fetchall():
             intent = json.loads(payload)
+            with self.lock:
+                for key, value in intent.get('counters', {}).items():
+                    if key in _TASK_COUNTERS:
+                        self.state[key] = max(self.state.get(key, 0), value)
+            invalid = False
             try:
                 with api['read_key'](DATA_ROOT, 'batches', group) as cursor:
                     names = [column[0] for column in cursor.description]
                     fetched = [dict(zip(names, values)) for values in cursor.fetchall()]
                     records = {row['batch_key']: row for row in fetched}
-            except api['MissingKeyError']:
-                with self.db:
+            except (api['MissingKeyError'], api['CorruptDataError']):
+                invalid = True
+            else:
+                try:
+                    if len(records) != len(fetched) or not {key for key, _ in intent['rows']} <= set(records):
+                        raise ValueError('已发布报告组与恢复身份不符')
+                    for key, row in intent['rows']:
+                        _validate_saved_batch(records[key], key, row, character,
+                                              row['batch_index'], row['scenario'], simulation_config)
+                except (ValueError, KeyError, TypeError, RuntimeError):
+                    invalid = True
+            if invalid:
+                with self.lock, self._transaction():
                     self.db.execute('DELETE FROM report_intents WHERE key=?', (group,))
+                    self.state['next_report_group'] = max(intent['number'] + 1, self.state.get('next_report_group', 0))
+                    self._persist_state()
                 continue
-            if len(records) != len(fetched) or not {key for key, _ in intent['rows']} <= set(records):
-                raise ValueError('已发布报告组与恢复身份不符')
-            for key, row in intent['rows']:
-                _validate_saved_batch(records[key], key, row, character,
-                                      row['batch_index'], row['scenario'], simulation_config)
             self._commit_report_group(group, intent['number'], intent['rows'])
             for key, _ in intent['rows']:
                 (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
 
     def discard_unsaved_reports(self):
         with self.lock:
-            elapsed = self.state.get('elapsed_seconds', 0)
+            progress = {key: self.state[key] for key in ('elapsed_seconds', 'next_report_group', *_TASK_COUNTERS)
+                        if key in self.state}
             for key, _, _ in self.report_buffer:
                 self.verified_batches.pop(key, None)
             if self.report_buffer:
                 self.state.clear()
                 self.state.update(self.load_state(self.db))
-                self.state.update(elapsed_seconds=elapsed, inflight={})
+                self.state.update(progress, inflight={})
+                self.state['completed_batches'] = self.persisted_batches
                 self.report_buffer.clear()
 
     def _save_progress(self):
@@ -1106,6 +1157,8 @@ def _tuple(value):
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None):
+    store.character = character
+    store.simulation_config = simulation_config
     from engine import check_report, player_report, damage_statistics, CandidateError
     from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity

@@ -1842,7 +1842,7 @@ class InterfaceTests(unittest.TestCase):
             total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
             round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
             validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
+            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
         original_write = result_store.write
         interrupted = False
         evaluated = []
@@ -1861,7 +1861,8 @@ class InterfaceTests(unittest.TestCase):
 
         with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
             with patch.object(result_store, 'write', side_effect=publish_then_interrupt):
-                created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                created = self._json_request('POST', '/api/tasks', {
+                    'profile': sample_profile(), 'diagnostic_logging': True})
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     state = self._task_state_request(created['task_id'], deadline)
@@ -1874,12 +1875,124 @@ class InterfaceTests(unittest.TestCase):
             handle.join(5)
             resumed = resume_task(handle.output_root)
         self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
         self.assertEqual(len(evaluated), len(set(evaluated)))
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
         self.assertEqual(len(keys), len(set(keys)))
+
+    def test_unregistered_corrupt_group_can_be_recomputed_on_resume(self) -> None:
+        import result_store
+        from task import resume_task
+
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        original_write = result_store.write
+        damaged = False
+
+        def publish_then_damage(table, key, rows, **kwargs):
+            nonlocal damaged
+            result = original_write(table, key, rows, **kwargs)
+            if table == 'batches' and len(rows) == 12 and not damaged:
+                damaged = True
+                (result_store.DATA_ROOT / table / (key + '.parquet')).write_bytes(b'corrupt')
+                raise OSError('damaged before registration')
+            return result
+
+        with _fast_search_boundary():
+            with patch.object(result_store, 'write', side_effect=publish_then_damage):
+                created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    state = self._task_state_request(created['task_id'], deadline)
+                    if state['status'] == 'failed':
+                        break
+                    time.sleep(.02)
+                self.assertEqual(state['status'], 'failed', state)
+            _, handle = self.server.tasks[created['task_id']]
+            handle.join(5)
+            resumed = resume_task(handle.output_root)
+        self.assertTrue(damaged)
+        self.assertEqual(resumed['status'], 'completed')
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
+        self._assert_simultaneous_identical_tasks()
+
+    def test_simultaneous_tasks_with_different_parents_share_report_locations(self) -> None:
+        self._assert_simultaneous_identical_tasks(different_parent=True)
+
+    def _assert_simultaneous_identical_tasks(self, *, different_parent=False) -> None:
+        import result_store
+        import sequence
+
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
+            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
+            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1)}
+        first_reports = threading.Barrier(2)
+        started = set()
+        started_lock = threading.Lock()
+
+        def evaluate(*args, **kwargs):
+            destination = Path(args[2]).parents[1]
+            with started_lock:
+                first = destination not in started
+                started.add(destination)
+            if first:
+                first_reports.wait(5)
+            return _fast_evaluate(*args, **kwargs)
+
+        second_server = second_thread = None
+        original_url = self.url
+        urls = [original_url, original_url]
+        if different_parent:
+            second_server = create_server(Path(self.directory.name) / '另一任务目录', port=0,
+                                          task_options=self.server.task_options)
+            second_thread = threading.Thread(target=second_server.serve_forever,
+                                             kwargs={'poll_interval': .01}, daemon=True)
+            second_thread.start()
+            urls[1] = f'http://127.0.0.1:{second_server.server_port}/'
+        try:
+            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+                created = []
+                for url in urls:
+                    self.url = url
+                    created.append((url, self._json_request('POST', '/api/tasks', {'profile': sample_profile()})))
+                deadline = time.monotonic() + 30
+                for url, task in created:
+                    self.url = url
+                    while time.monotonic() < deadline:
+                        state = self._task_state_request(task['task_id'], deadline)
+                        if state['status'] in {'completed', 'failed'}:
+                            break
+                        time.sleep(.02)
+                    self.assertEqual(state['status'], 'completed', state)
+        finally:
+            self.url = original_url
+            if second_server is not None:
+                from task import cancel_task
+                for _, handle in second_server.tasks.values():
+                    if not handle.done:
+                        cancel_task(handle)
+                        handle.join(5)
+                second_server.shutdown()
+                second_server.server_close()
+                second_thread.join(2)
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+            keys = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(len(keys), 14)
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
 
     def test_real_task_reaches_candidate_through_the_same_public_service(self) -> None:
         self.server.task_options = {
@@ -1919,16 +2032,18 @@ class InterfaceTests(unittest.TestCase):
 
     def test_finished_task_error_is_not_hidden_by_a_completed_result(self):
         import task
-        locking = task.msvcrt.locking
-        def fail_unlock(fd, mode, size):
-            if mode == task.msvcrt.LK_UNLCK:
-                raise OSError("synthetic task lock release failure")
-            return locking(fd, mode, size)
+        from contextlib import contextmanager
+        original_lease = task._task_lease
+        @contextmanager
+        def fail_unlock(destination):
+            with original_lease(destination):
+                yield
+            raise OSError("synthetic task lock release failure")
         self.server.task_options = {"search_config": dict(
             total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
             batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
             final_iterations=2, scenarios=("nominal",), max_processes=1)}
-        with _fast_search_boundary(), patch.object(task.msvcrt, "locking", side_effect=fail_unlock):
+        with _fast_search_boundary(), patch.object(task, "_task_lease", side_effect=fail_unlock):
             created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:

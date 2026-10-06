@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import runpy
+from contextlib import contextmanager
+import hashlib
+import json
+import msvcrt
+import os
 from pathlib import Path
 import threading
+import time
 
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
@@ -34,6 +40,79 @@ RUN_SCHEMA = dict(
 )
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
+_PUBLICATION_LOCK = threading.RLock()
+
+
+class ReportLocations:
+    """Small shared location journal; complete reports remain in the logical table."""
+    def __init__(self, root):
+        self.root = Path(root)
+        self.path = self.root / '.report-locations.jsonl'
+        self.entries = {}
+        self.offset = 0
+
+    @contextmanager
+    def locked(self):
+        with _PUBLICATION_LOCK, (self.root / '.report-publish.lock').open('a+b') as lease:
+            if lease.tell() == 0:
+                lease.write(b'0')
+                lease.flush()
+            deadline = time.monotonic() + 30
+            while True:
+                lease.seek(0)
+                try:
+                    msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise DataReadError('等待报告保存锁超时')
+                    time.sleep(.05)
+            try:
+                self.refresh()
+                yield self
+            finally:
+                lease.seek(0)
+                msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+
+    def refresh(self):
+        if not self.path.exists():
+            self.entries.clear()
+            self.offset = 0
+            return
+        with self.path.open('rb') as stream:
+            if stream.seek(0, os.SEEK_END) < self.offset:
+                self.entries.clear()
+                self.offset = 0
+            stream.seek(self.offset)
+            for line in stream:
+                if not line.endswith(b'\n'):
+                    break  # An unfinished reservation cannot precede publication.
+                try:
+                    record = json.loads(line)
+                    payload = dict(group=record['group'], keys=record['keys'])
+                    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+                    if (not isinstance(payload['group'], str) or not isinstance(payload['keys'], list)
+                            or not all(isinstance(key, str) for key in payload['keys'])
+                            or hashlib.sha256(encoded).hexdigest() != record['sha256']):
+                        raise ValueError('位置清单校验不符')
+                except (ValueError, KeyError, TypeError) as error:
+                    raise DataReadError('报告位置清单损坏') from error
+                self.entries.update((key, payload['group']) for key in payload['keys'])
+                self.offset += len(line)
+
+    def reserve(self, group, keys):
+        payload = dict(group=group, keys=list(keys))
+        encoded = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+        record = dict(payload, sha256=hashlib.sha256(encoded).hexdigest())
+        line = (json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n').encode()
+        with self.path.open('a+b') as stream:
+            stream.truncate(self.offset)
+            stream.seek(self.offset)
+            stream.write(line)
+            stream.flush()
+            os.fsync(stream.fileno())
+        self.offset += len(line)
+        self.entries.update((key, group) for key in keys)
 
 
 class DataReadError(RuntimeError):
@@ -128,6 +207,9 @@ def one(table: str, field: str, value, *, group_key=None):
     api = _api()
     stored_key = {"runs": "run_id", "candidates": "candidate_data_key", "batches": "batch_key"}
     try:
+        if table == 'batches' and group_key is None and (DATA_ROOT / '.report-locations.jsonl').exists():
+            with ReportLocations(DATA_ROOT).locked() as locations:
+                group_key = locations.entries.get(value)
         try:
             cursor = (api["read_key"](DATA_ROOT, table, group_key, filters={field: value}) if group_key else
                       api["read_key"](DATA_ROOT, table, value) if field == stored_key[table]

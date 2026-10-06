@@ -1037,6 +1037,7 @@ def read_task(output_root, *, include_search_records=False, include_reports=Fals
 def _read_task(output_root, *, include_search_records=False, include_reports=False):
     destination = Path(output_root).resolve()
     progress_path = destination / 'progress.json'
+    progress = None
     if progress_path.is_file():
         try:
             progress = json.loads(progress_path.read_text(encoding='utf-8'))
