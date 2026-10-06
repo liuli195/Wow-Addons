@@ -9,10 +9,8 @@ import sys
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
-def test_connected_consumer_reads_writes_without_old_user_installation(tmp_path):
-    source = Path(os.environ.get("DATA_STORE_TEST_SKILL",
-                                str(REPOSITORY / ".local/skills/data-store")))
-    assert (source / "scripts/project_binding.py").is_file(), "请先接入项目或提供测试安装副本"
+def test_connected_consumer_reads_writes_without_old_user_installation(tmp_path, installed_data_store):
+    source = installed_data_store
     installed = tmp_path / "installed"
     shutil.copytree(source, installed, ignore=shutil.ignore_patterns("__pycache__"))
     project = tmp_path / "project"
