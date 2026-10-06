@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
-from search import initial_programs, mutate
+from search import initial_programs, mutate, TaskStore
 
 
 def _fast_capabilities():
@@ -589,8 +589,7 @@ class SearchAndValidationTests(TestCase):
 
             database = sqlite3.connect(destination / "task.sqlite3")
             try:
-                state = json.loads(database.execute(
-                    "SELECT value FROM state WHERE id=1").fetchone()[0])
+                state = TaskStore.load_state(database)
                 state["elapsed_seconds"] = config["total_budget_seconds"]
                 state["status"] = "interrupted"
                 database.execute("UPDATE state SET value=? WHERE id=1",
@@ -886,8 +885,7 @@ class SearchAndValidationTests(TestCase):
                     result = run_task(source, destination, search_config=options)
                 database = sqlite3.connect(destination / "task.sqlite3")
                 try:
-                    state = json.loads(database.execute(
-                        "SELECT value FROM state WHERE id=1").fetchone()[0])
+                    state = TaskStore.load_state(database)
                 finally:
                     database.close()
                 return result, state.get("rng"), state.get("condition")
@@ -1068,8 +1066,7 @@ class SearchAndValidationTests(TestCase):
                 run_task(source, destination, search_config=config)
             result_before = json.loads((destination / "result.json").read_text(encoding="utf-8"))
             with sqlite3.connect(destination / "task.sqlite3") as database:
-                state = json.loads(database.execute(
-                    "SELECT value FROM state WHERE id=1").fetchone()[0])
+                state = TaskStore.load_state(database)
                 state["behavior_identity_version"] = "obsolete-version"
                 state["elapsed_seconds"] = config["total_budget_seconds"]
                 database.execute("UPDATE state SET value=? WHERE id=1",
@@ -1760,7 +1757,7 @@ class SearchAndValidationTests(TestCase):
                 run_task(source, destination, search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2))
                 before = read_task(destination)
                 with closing(sqlite3.connect(destination / 'task.sqlite3')) as database:
-                    state = json.loads(database.execute('SELECT value FROM state WHERE id=1').fetchone()[0])
+                    state = TaskStore.load_state(database)
                     state.pop('rules')
                     database.execute('UPDATE state SET value=? WHERE id=1', (json.dumps(state),))
                     database.commit()
@@ -2086,7 +2083,7 @@ class SearchAndValidationTests(TestCase):
                     final_iterations=2,scenarios=('nominal',)))
             database=sqlite3.connect(destination/'task.sqlite3')
             try:
-                state=json.loads(database.execute('SELECT value FROM state').fetchone()[0])
+                state=TaskStore.load_state(database)
                 state.update(status='running',phase='final',elapsed_seconds=9,inflight={'batch':dict(start=9,allowance=1)})
                 database.execute('UPDATE state SET value=?',(json.dumps(state),));database.commit()
             finally:database.close()

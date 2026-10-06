@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from contextlib import contextmanager
 import os
 import threading
@@ -782,30 +783,100 @@ class TaskStore:
         self.db.execute('PRAGMA shared.synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS shared.reusable (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS state_fields (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS state_archive (key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS batches (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL)')
+        self.state = self.load_state(self.db)
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
-        self.state = json.loads(row[0]) if row else {}
+        self.incremental_ready = bool(row and json.loads(row[0]) == {'storage_format': 2})
+        self.saved_fields = {key: (json.loads(value), len(value.encode('utf-8')))
+                             for key, value in self.db.execute('SELECT key,value FROM state_fields')} if self.incremental_ready else {}
+        self.saved_archive = {key: (ordinal, json.loads(value), len(value.encode('utf-8')))
+                              for key, ordinal, value in self.db.execute('SELECT key,ordinal,value FROM state_archive')} if self.incremental_ready else {}
         progress = self.db.execute('SELECT elapsed,status,inflight FROM runtime_progress WHERE id=1').fetchone()
         if progress and progress[0] >= self.state.get('elapsed_seconds', 0):
             self.state.update(elapsed_seconds=progress[0], status=progress[1], inflight=json.loads(progress[2]))
         self.state_write_count = 0
+        self.state_bytes = 0
+        self.full_state_value_bytes = 0
         self.lua_compiler_starts = 0
         self.verified_batches = {}
         self.report_buffer = []
-        self.safe_state = _json(self.state)
         self.persisted_batches = self.db.execute(
             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
         self.db.commit()
 
+    @staticmethod
+    def load_state(database):
+        row = database.execute('SELECT value FROM state WHERE id=1').fetchone()
+        if not row:
+            return {}
+        value = json.loads(row[0])
+        if value != {'storage_format': 2}:
+            return value
+        state = {key: json.loads(payload) for key, payload in database.execute('SELECT key,value FROM state_fields')}
+        state['archive'] = [json.loads(payload) for (payload,) in
+                            database.execute('SELECT value FROM state_archive ORDER BY ordinal')]
+        return state
+
+    @contextmanager
+    def _transaction(self):
+        fields, archive, ready = self.saved_fields.copy(), self.saved_archive.copy(), self.incremental_ready
+        counts = self.state_write_count, self.state_bytes, self.full_state_value_bytes, self.persisted_batches
+        try:
+            with self.db:
+                yield
+        except BaseException:
+            self.saved_fields, self.saved_archive, self.incremental_ready = fields, archive, ready
+            self.state_write_count, self.state_bytes, self.full_state_value_bytes, self.persisted_batches = counts
+            raise
+
+    def _persist_state(self):
+        written = 0
+        if not self.incremental_ready:
+            self.db.execute('DELETE FROM state_fields')
+            self.db.execute('DELETE FROM state_archive')
+            self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json({'storage_format': 2}),))
+            self.incremental_ready = True
+        current_fields = set(self.state) - {'archive'}
+        for key in self.saved_fields.keys() - current_fields:
+            self.db.execute('DELETE FROM state_fields WHERE key=?', (key,))
+            del self.saved_fields[key]
+        for key in current_fields:
+            value = self.state[key]
+            previous = self.saved_fields.get(key)
+            if previous is None or previous[0] != value:
+                payload = _json(value)
+                size = len(payload.encode('utf-8'))
+                self.db.execute('INSERT OR REPLACE INTO state_fields VALUES (?,?)', (key, payload))
+                self.saved_fields[key] = (deepcopy(value), size)
+                written += size
+        current_archive = {record['key']: (ordinal, record)
+                           for ordinal, record in enumerate(self.state.get('archive', []))}
+        if len(current_archive) != len(self.state.get('archive', [])):
+            raise ValueError('任务归档包含重复候选')
+        for key in self.saved_archive.keys() - current_archive.keys():
+            self.db.execute('DELETE FROM state_archive WHERE key=?', (key,))
+            del self.saved_archive[key]
+        for key, (ordinal, record) in current_archive.items():
+            previous = self.saved_archive.get(key)
+            if previous is None or previous[:2] != (ordinal, record):
+                payload = _json(record)
+                size = len(payload.encode('utf-8'))
+                self.db.execute('INSERT OR REPLACE INTO state_archive VALUES (?,?,?)', (key, ordinal, payload))
+                self.saved_archive[key] = (ordinal, deepcopy(record), size)
+                written += size
+        if self.state.get('config', {}).get('diagnostic_logging', False):
+            self.state_write_count += 1
+            self.state_bytes += written
+            self.full_state_value_bytes += sum(value[1] for value in self.saved_fields.values()) + sum(value[2] for value in self.saved_archive.values())
+
     def save(self):
-        with self.lock, self.db:
+        with self.lock, self._transaction():
             if not self.report_buffer:
-                self.safe_state = _json(self.state)
-                self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (self.safe_state,))
-                if self.state.get('config', {}).get('diagnostic_logging', False):
-                    self.state_write_count += 1
+                self._persist_state()
             self._save_progress()
 
     def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None):
@@ -853,7 +924,7 @@ class TaskStore:
             self.report_buffer.clear()
 
     def _commit_report_group(self, group, number, metadata):
-        with self.lock, self.db:
+        with self.lock, self._transaction():
             for key, row in metadata:
                 self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(row)))
                 if row['request']['purpose'] != 'final':
@@ -864,10 +935,7 @@ class TaskStore:
             self.persisted_batches = self.state['completed_batches']
             self.state['next_report_group'] = max(number + 1, self.state.get('next_report_group', 0))
             self.db.execute('DELETE FROM report_intents WHERE key=?', (group,))
-            self.safe_state = _json(self.state)
-            self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (self.safe_state,))
-            if self.state.get('config', {}).get('diagnostic_logging', False):
-                self.state_write_count += 1
+            self._persist_state()
             self._save_progress()
 
     def recover_reports(self, character, simulation_config):
@@ -900,7 +968,7 @@ class TaskStore:
                 self.verified_batches.pop(key, None)
             if self.report_buffer:
                 self.state.clear()
-                self.state.update(json.loads(self.safe_state))
+                self.state.update(self.load_state(self.db))
                 self.state.update(elapsed_seconds=elapsed, inflight={})
                 self.report_buffer.clear()
 
@@ -955,7 +1023,7 @@ class TaskStore:
             return None
 
     def put_batch(self, key, value, *, counter=None, verified=False):
-        with self.lock, self.db:
+        with self.lock, self._transaction():
             self.verified_batches.pop(key, None)
             self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
             if value.get('status')=='success' and value['request']['purpose']!='final':
@@ -966,10 +1034,7 @@ class TaskStore:
             if counter is not None and self.state.get('config', {}).get('diagnostic_logging', False):
                 self.state[counter] = self.state.get(counter, 0) + 1
             if not self.report_buffer:
-                self.safe_state = _json(self.state)
-                self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (self.safe_state,))
-                if self.state.get('config', {}).get('diagnostic_logging', False):
-                    self.state_write_count += 1
+                self._persist_state()
             self._save_progress()
             if verified and value.get('status') == 'success':
                 self.verified_batches[key] = value
@@ -1004,6 +1069,8 @@ class TaskStore:
         if getattr(self, 'diagnostics_mode', 'off') != 'off':
             diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
                                task_state_writes=self.state_write_count,
+                               task_state_bytes=self.state_bytes,
+                               task_state_full_value_bytes=self.full_state_value_bytes,
                                lua_compiler_starts=self.lua_compiler_starts)
             (self.destination / 'diagnostics.json').write_text(
                 _json(diagnostics), encoding='utf-8')

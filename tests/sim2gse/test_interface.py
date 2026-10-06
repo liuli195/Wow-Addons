@@ -1797,6 +1797,42 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(len({key for key, _ in reports}), len(reports))
         self.assertTrue(all(score > 0 for _, score in reports))
 
+    def test_task_checkpoints_write_less_than_repeated_complete_history(self) -> None:
+        self.server.task_options = {'search_config': dict(
+            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=3,
+            round_candidate_limit=1, batch_targets=(2, 4, 8), validation_batches=1,
+            final_batches=1, iterations=2, final_iterations=2,
+            scenarios=('nominal',), max_processes=1, diagnostic_logging=True, diagnostics='full')}
+        with _fast_search_boundary():
+            created = self._json_request('POST', '/api/tasks', {
+                'profile': sample_profile(), 'diagnostic_logging': True})
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created['task_id'], deadline)
+                if state['status'] in {'completed', 'failed'}:
+                    break
+                time.sleep(0.02)
+        self.assertEqual(state['status'], 'completed', state)
+        _, handle = self.server.tasks[created['task_id']]
+        handle.join(5)
+        diagnostic = json.loads((handle.output_root / 'diagnostics.json').read_text(encoding='utf-8'))
+        self.assertGreater(diagnostic['task_state_bytes'], 0)
+        self.assertLess(diagnostic['task_state_bytes'], diagnostic['task_state_full_value_bytes'])
+        # Restore an old-format checkpoint without changing its request identities.
+        import sqlite3
+        import sequence
+        from search import TaskStore
+        from task import resume_task
+        with sqlite3.connect(handle.output_root / 'task.sqlite3') as database:
+            checkpoint = TaskStore.load_state(database)
+            database.execute('UPDATE state SET value=? WHERE id=1', (json.dumps(checkpoint),))
+        database.close()
+        with _fast_search_boundary(), patch.object(
+                sequence, 'evaluate', side_effect=AssertionError('saved results must be reused')):
+            resumed = resume_task(handle.output_root)
+        self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual(resumed['completed_batches'], checkpoint['completed_batches'])
+
     def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
         import result_store
         import sequence
