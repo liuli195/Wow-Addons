@@ -1893,6 +1893,7 @@ class SearchAndValidationTests(TestCase):
                 self.assertEqual(read_task(destination), before)
 
     def test_task_hard_exit_preserves_checkpoint_and_cleans_owned_engine(self):
+        import os
         import ctypes
         from ctypes import wintypes
         import subprocess
@@ -1936,11 +1937,13 @@ class SearchAndValidationTests(TestCase):
                         batch_targets=(2,),validation_batches=1,final_batches=2,iterations=2,
                         final_iterations=32,max_processes=2)
             import result_store
-            code=("import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
+            code=("import sys,json,runpy;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
                   "import result_store;result_store.DATA_ROOT=Path(sys.argv[5]);"
+                  "result_store._SKILL_API=runpy.run_path(sys.argv[6]);"
                   "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))")
             process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),
-                                      str(source),str(destination),json.dumps(config),str(result_store.DATA_ROOT)])
+                                      str(source),str(destination),json.dumps(config),str(result_store.DATA_ROOT),
+                                      str(Path(os.environ['DATA_STORE_TEST_SKILL'])/'scripts/data_store.py')])
             held=owner=None
             try:
                 deadline=time.monotonic()+45

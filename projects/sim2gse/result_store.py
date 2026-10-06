@@ -134,7 +134,7 @@ class InvalidRecordError(DataReadError):
 
 
 def _skill_root() -> Path:
-    return Path.home() / ".agents" / "skills" / "data-store"
+    return Path(__file__).resolve().parents[2] / ".local" / "skills" / "data-store"
 
 
 def _api():
@@ -145,7 +145,7 @@ def _api():
                 script = _skill_root() / "scripts" / "data_store.py"
                 if not script.is_file():
                     raise RuntimeError(
-                        "未找到已安装的 data-store 技能，请检查 ~/.agents/skills/data-store 联接"
+                        "数据中心尚未接入本项目，请从已安装技能入口运行 project_binding.py connect --project <仓库>"
                     )
                 functions = runpy.run_path(str(script))
                 required = ("write", "query", "read_key", "MissingKeyError", "CorruptDataError")

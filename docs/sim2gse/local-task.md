@@ -28,7 +28,7 @@
 .venv/Scripts/python.exe scripts/dev/sim2gse/task.py '角色文件.simc' --output '.local/sim2gse/新任务'
 ```
 
-产品代码位于 `projects/sim2gse/`，命令入口与界面共用 `run_task`（执行任务）。首先按技能仓库现有安装命令把 `data-store`（数据存储）技能联接到用户级 `~/.agents/skills/data-store`，Claude Code 同样使用该源码技能的目录联接；再为当前 `.venv` 安装 `projects/sim2gse/requirements.txt`。消费端只通过安装目录加载运行脚本，不引用技能源码仓库路径。 用户级核心独立更新后，需失效 `.build-and-verify/cache/` 中 `id` 为 `verify.sim2gse` 的可重建缓存，再运行固定基线快速验证并确认该项实际执行；本仓库的缓存不会自动感知外部技能源码变化。
+产品代码位于 `projects/sim2gse/`，命令入口与界面共用 `run_task`（执行任务）。先安装市场中的 `data-store`（数据存储）插件，让代理从实际技能入口执行 `python <skill>/scripts/project_binding.py connect --project <仓库>`；再为当前 `.venv` 安装 `projects/sim2gse/requirements.txt`。所有工具与独立命令共用仓库内 `.local/skills/data-store`，不再依赖用户级旧技能联接。升级或切来源后由代理从新入口运行随包 `update`（更新连接）命令，核对旧来源并重启已运行工具；正常读写在同一进程中加载一次，不逐次定位。核心独立更新后，需失效 `.build-and-verify/cache/` 中 `id` 为 `verify.sim2gse` 的可重建缓存，再运行固定基线快速验证并确认该项实际执行；本仓库的缓存不会自动感知外部技能源码变化。
 
 全部任务的持久结果共用本仓库根目录 `data/`，排除于 Git。`runs`、`candidates`、`batches`、`traces` 是稳定逻辑表，数据以 Parquet 内部 Zstd 保存，直接通过安装技能的 DuckDB 查询接口读取。普通原生报告保留有类型嵌套数据，详细轨迹仅随诊断开关保存。
 
