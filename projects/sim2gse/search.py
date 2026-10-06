@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "candidate_limit": 1000,
     "round_candidate_limit": 16,
     "no_improvement_rounds": 5,
-    "batch_targets": (32, 128, 512),
+    "batch_targets": (32, 128, 256),
     "validation_batches": 4,
     "final_batches": 20,
     "iterations": 100,

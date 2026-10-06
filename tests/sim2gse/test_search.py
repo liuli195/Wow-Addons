@@ -157,6 +157,25 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_default_task_stops_initial_sampling_at_256_and_keeps_512_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            for label, override, expected_requests, expected_samples in (
+                ('default', {}, [32, 96, 128], 253),
+                ('explicit-512', {'batch_targets': (32, 128, 512)}, [32, 96, 384], 509),
+            ):
+                with self.subTest(label=label), _fast_search_boundary():
+                    result = run_task(source, Path(directory) / label,
+                                      search_config=dict(candidate_limit=1, **override))
+                    self.assertEqual(result['status'], 'completed')
+                    batches = result['search']['records'][0]['batches']
+                    self.assertEqual([row['request']['iterations'] for row in batches], expected_requests)
+                    self.assertEqual(sum(row['samples'] for row in batches), expected_samples)
+                    self.assertEqual(result['config']['validation_batches'], 4)
+                    self.assertEqual(result['config']['no_improvement_rounds'], 5)
+                    self.assertEqual(result['config']['total_budget_seconds'], 600)
+
     def test_task_promotion_and_saved_summary_share_one_comparison(self):
         import search
         with tempfile.TemporaryDirectory() as directory:
