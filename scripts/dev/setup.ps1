@@ -11,12 +11,16 @@ if (-not $Pr) {
 New-Item -ItemType Directory -Force .tools/downloads | Out-Null
 
 function Get-Artifact($spec, $path) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        Invoke-WebRequest -Uri $spec.url -OutFile $path
+    if ((Test-Path -LiteralPath $path) -and
+        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $spec.sha256) { return }
+    $cached = "$path.$($spec.sha256)"
+    if (-not (Test-Path -LiteralPath $cached)) {
+        Invoke-WebRequest -Uri $spec.url -OutFile $cached
     }
-    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $spec.sha256) {
-        throw "下载校验失败：$path；保留文件供调查。"
+    if ((Get-FileHash -LiteralPath $cached -Algorithm SHA256).Hash -ne $spec.sha256) {
+        throw "下载校验失败：$cached；保留文件供调查。"
     }
+    Copy-Item -LiteralPath $cached -Destination $path -Force
 }
 
 Get-Artifact $versions.luals '.tools/downloads/luals.zip'
@@ -45,8 +49,11 @@ if (-not $Pr) {
     }
     Sync-Repository '.tools/sim2gse-upstream/simc' $simc
 }
-if (-not (Test-Path '.tools/luals/bin/lua-language-server.exe')) {
+if (-not (Test-Path '.tools/luals/bin/lua-language-server.exe') -or
+    -not (Test-Path '.tools/luals/.artifact.sha256') -or
+    (Get-Content '.tools/luals/.artifact.sha256' -Raw).Trim() -ne $versions.luals.sha256) {
     Expand-Archive .tools/downloads/luals.zip .tools/luals -Force
+    Set-Content '.tools/luals/.artifact.sha256' $versions.luals.sha256
 }
 if (-not (Test-Path '.tools/lua-5.1.5/src/lua.c')) {
     tar -xzf .tools/downloads/lua.tar.gz -C .tools

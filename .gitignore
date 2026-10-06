@@ -28,3 +28,7 @@ Desktop.ini
 
 # 工具运行产物：自测报告默认写系统临时目录；此处兜底，防止误写进技能目录
 /.agents/skills/wow-addon-test/reports/
+
+# Linux worktree dependency symlinks (directory-only patterns do not match links)
+/.venv
+/node_modules
