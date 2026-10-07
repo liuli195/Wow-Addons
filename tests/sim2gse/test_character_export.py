@@ -225,7 +225,7 @@ class CharacterExportTests(unittest.TestCase):
             self.assertEqual(read_task(output_path)['candidate']['text'], result['candidate']['text'])
             capabilities = result['capabilities']
             self.assertEqual(capabilities['scope'], 'default_apl_player_actions')
-            self.assertEqual(capabilities['coverage'], 'all_instantiated_combat_apl_actions')
+            self.assertEqual(capabilities['coverage'], 'combat_apl_buttons_with_baseline_forms')
             full_spell_ids = {a['spell_id'] for a in capabilities['actions'] if a['kind']=='spell'}
             self.assertTrue({43265, 207317} <= full_spell_ids)
             spell_ids = {a['spell_id'] for a in capabilities['baseline_actions'] if a['kind']=='spell'}
