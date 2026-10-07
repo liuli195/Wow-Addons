@@ -58,32 +58,25 @@ class SimulationConfigTests(unittest.TestCase):
             config = load_config(Path(directory) / "missing.toml")
 
         self.assertEqual(config, DEFAULT_CONFIG)
+        self.assertTrue(config["enable_omnium_talents"])
         self.assertEqual(
             engine_options(config),
-            [
-                "enemy=Damage_Dummy",
-                "level=90",
-                "armor_coefficient=4531.03",
-                "desired_targets=1",
-            ],
+            ["desired_targets=1"],
         )
 
     def test_partial_config_inherits_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             path.write_text(
-                '[simulation]\ntarget_name = "Raid_Boss"\ntarget_count = 3\n'
+                '[simulation]\ntarget_count = 3\n'
                 'enable_omnium_talents = true\n',
                 encoding="utf-8",
             )
 
             config = load_config(path)
 
-        self.assertEqual(config["target_name"], "Raid_Boss")
         self.assertEqual(config["target_count"], 3)
         self.assertTrue(config["enable_omnium_talents"])
-        self.assertEqual(config["target_level"], DEFAULT_CONFIG["target_level"])
-        self.assertEqual(config["armor_coefficient"], DEFAULT_CONFIG["armor_coefficient"])
 
     def test_invalid_config_is_rejected(self) -> None:
         cases = (
@@ -105,7 +98,7 @@ class SimulationConfigTests(unittest.TestCase):
         config = config_for({"target_count": 2})
 
         self.assertEqual(config["target_count"], 2)
-        self.assertEqual(config["target_name"], DEFAULT_CONFIG["target_name"])
+        self.assertTrue(config["enable_omnium_talents"])
         self.assertEqual(config_for()["target_count"], DEFAULT_CONFIG["target_count"])
 
     def test_task_entry_removes_only_valid_omnium_line_when_disabled(self) -> None:
@@ -142,7 +135,7 @@ class SimulationConfigTests(unittest.TestCase):
             self.assertEqual(state["input_original_sha256"], profile["input_original_sha256"])
             self.assertEqual(state["input_effective_sha256"], profile["input_effective_sha256"])
 
-    def test_task_entry_preserves_omnium_line_when_enabled(self) -> None:
+    def test_task_entry_preserves_omnium_line_by_default(self) -> None:
         from task import run_task
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
@@ -155,7 +148,7 @@ class SimulationConfigTests(unittest.TestCase):
             source.write_bytes(original)
             with _fast_search_boundary():
                 run_task(source, destination, search_config=_fast_search_config(),
-                         simulation_config=config_for({"enable_omnium_talents": True}))
+                         simulation_config=config_for())
 
             self.assertEqual((destination / "input.original.simc").read_bytes(), original)
             self.assertEqual((destination / "input.simc").read_bytes(), original)
@@ -185,9 +178,6 @@ class SimulationConfigTests(unittest.TestCase):
         import engine
 
         config = config_for({
-            "target_name": "Raid_Boss",
-            "target_level": 91,
-            "armor_coefficient": 5000,
             "target_count": 3,
         })
         commands = []
@@ -254,7 +244,7 @@ class SimulationConfigTests(unittest.TestCase):
     def test_controlled_sequence_passes_the_effective_config_to_the_engine(self) -> None:
         import sequence
 
-        config = config_for({"target_name": "Raid_Boss", "target_count": 2})
+        config = config_for({"target_count": 2})
         observed = []
         report = {
             "sim": {
@@ -293,7 +283,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_name": "Raid_Boss", "target_count": 2})
+        simulation = config_for({"target_count": 2})
         search = _fast_search_config()
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
@@ -328,7 +318,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_name": "Raid_Boss", "target_count": 2})
+        simulation = config_for({"target_count": 2})
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
@@ -345,7 +335,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_name": "Raid_Boss", "target_count": 2})
+        simulation = config_for({"target_count": 2})
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
@@ -373,7 +363,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_name": "Raid_Boss", "target_count": 2})
+        simulation = config_for({"target_count": 2})
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
@@ -403,10 +393,10 @@ class SimulationConfigTests(unittest.TestCase):
                     finally:
                         path.write_bytes(original)
 
-    def test_http_task_entry_passes_the_startup_snapshot(self) -> None:
+    def test_http_target_selection_keeps_startup_options_isolated(self) -> None:
         import interface
 
-        simulation = config_for({"target_name": "Raid_Boss", "target_count": 2})
+        simulation = config_for({"target_count": 2, "enable_omnium_talents": False})
         from test_character_export import sample_profile
 
         with tempfile.TemporaryDirectory() as directory:
@@ -418,18 +408,22 @@ class SimulationConfigTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                payload = json.dumps({"profile": sample_profile()}).encode("utf-8")
-                request = Request(
-                    f"http://127.0.0.1:{server.server_port}/api/tasks",
-                    data=payload,
-                    method="POST",
-                    headers={"Content-Type": "application/json"},
-                )
-                with patch.object(interface, "start_task",
-                                  return_value=SimpleNamespace(done=True, error=None)) as start:
-                    with urlopen(request, timeout=3) as response:
-                        self.assertEqual(response.status, 202)
-                    self.assertEqual(start.call_args.kwargs["simulation_config"], simulation)
+                for selection in ({"target_count": 5}, {}, {"target_count": 1}):
+                    with self.subTest(selection=selection):
+                        payload = json.dumps({"profile": sample_profile(), **selection}).encode("utf-8")
+                        request = Request(
+                            f"http://127.0.0.1:{server.server_port}/api/tasks",
+                            data=payload, method="POST",
+                            headers={"Content-Type": "application/json"},
+                        )
+                        with patch.object(interface, "start_task",
+                                          return_value=SimpleNamespace(done=True, error=None)) as start:
+                            with urlopen(request, timeout=3) as response:
+                                self.assertEqual(response.status, 202)
+                            self.assertEqual(start.call_args.kwargs["simulation_config"],
+                                             dict(simulation, target_count=selection.get("target_count", 1)))
+                        self.assertEqual(server.task_options["simulation_config"], simulation)
+                        self.assertEqual(simulation["target_count"], 2)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -438,7 +432,7 @@ class SimulationConfigTests(unittest.TestCase):
     def test_command_line_task_entry_loads_config_for_new_and_resume(self) -> None:
         import task
 
-        simulation = config_for({"target_name": "Raid_Boss"})
+        simulation = config_for({"enable_omnium_talents": False})
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / "role.simc"
             output_path = Path(directory) / "task"
@@ -460,7 +454,7 @@ class SimulationConfigTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(module)
-        config = config_for({"target_name": "Raid_Boss"})
+        config = config_for({"enable_omnium_talents": False})
         with patch.object(module, "load_config", return_value=config), \
                 patch.object(module, "serve") as serve, \
                 patch.object(sys, "argv", [str(script), "--port", "0"]):
