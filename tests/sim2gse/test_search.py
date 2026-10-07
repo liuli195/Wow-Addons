@@ -19,6 +19,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
+from test_engine import apl_pool_reference
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
 from search import initial_programs, mutate, TaskStore
 
@@ -67,8 +68,12 @@ def _fast_inspect(reference, folder, *, include_item=True):
 def _fast_report(character, score, samples):
     player = {
         "name": character.name, "sim2gse_class": character.class_name, "level": character.level,
+        "sim2gse_class_id": 6, "sim2gse_spec": character.spec,
+        "role": character.fields.get('role', 'attack'),
         "sim2gse_spec_id": character.spec_id or 252, "race": character.race,
         "talents": character.fields["talents"], "sim2gse_resource": "runic_power",
+        "gear": {{'shoulder': 'shoulders', 'wrist': 'wrists'}.get(slot, slot):
+                 {'encoded_item': item.raw} for slot, item in character.equipment.items()},
         "collected_data": {"dps": {"mean": score, "count": samples, "variance": 0}, "fight_length": {"mean": 180},
                            "resource_overflowed": {"runic_power": {"mean": 0}}},
     }
@@ -157,6 +162,54 @@ def _fast_search_boundary():
 
 
 class SearchAndValidationTests(TestCase):
+    def test_task_uses_full_apl_pool_without_changing_baseline_starts(self):
+        import engine
+        import sequence
+        native = apl_pool_reference()
+        real_reference, real_inspect = engine.reference, engine.inspect
+        real_check_report = engine.check_report
+
+        def native_process(command, folder, **kwargs):
+            profile = Path(folder) / command[1]
+            from task import parse_character
+            character = parse_character(profile.read_text(encoding='utf-8'))
+            iterations = int(next(value.split('=', 1)[1] for value in reversed(command)
+                                  if value.startswith('iterations=')))
+            report = _fast_report(character, 100.0, max(1, iterations - 1))
+            player = report['sim']['players'][0]
+            player.update(sim2gse_actions_protocol=1, sim2gse_actions=native['executed_actions'],
+                          sim2gse_apl_actions_protocol=1, sim2gse_apl_actions=native['apl_actions'],
+                          sim2gse_items=[], sim2gse_precombat_actions=[])
+            player['collected_data'].update(action_sequence=native['action_sequence'],
+                                             action_sequence_precombat=[])
+            report_name = next(value.split('=', 1)[1] for value in command if value.startswith('json2='))
+            (Path(folder) / report_name).write_text(json.dumps(report), encoding='utf-8')
+            return SimpleNamespace(returncode=0, stdout=b'', stderr=b'', elapsed_seconds=0.01)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            with _fast_initialization(), \
+                    patch.object(engine, 'reference', side_effect=real_reference), \
+                    patch.object(engine, 'inspect', side_effect=real_inspect), \
+                    patch.object(engine, 'check_report', side_effect=real_check_report), \
+                    patch.object(engine, 'run_command', side_effect=native_process), \
+                    patch.object(sequence, 'evaluate', side_effect=_fast_evaluate):
+                result = run_task(source, Path(directory) / 'search', search_config=dict(
+                    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
+                single = run_task(source, Path(directory) / 'single', mode='single')
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual([row['simc_action'] for row in result['capabilities']['actions']],
+                         ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
+        self.assertEqual(initial_programs(result['capabilities'], native), [
+            [['outbreak'], ['death_coil'], ['scourge_strike']],
+            [['outbreak'], ['outbreak'], ['death_coil']],
+            [['outbreak'], ['death_coil'], ['outbreak'], ['death_coil']],
+            [['scourge_strike'], ['death_coil'], ['outbreak']],
+        ])
+        self.assertEqual([[row['simc_action'] for row in block] for block in single['candidate']['blocks']],
+                         [['outbreak'], ['death_coil'], ['scourge_strike']])
+
     def test_default_task_stops_initial_sampling_at_256_and_keeps_512_override(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'

@@ -11,7 +11,35 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 from engine import _profile_with_import_queries, identity, inspect, reference  # noqa: E402
 
 
+def apl_pool_reference():
+    """固定协议样例：单目标未执行群体动作，仍是当前角色合法按钮。"""
+    def spell(name, spell_id, **flags):
+        return dict(name=name, signature=name, player_owned=True, background=False,
+                    quiet=False, passive=False, type='spell', precombat=False,
+                    data_id=spell_id, data_valid=True, base_spell_id=spell_id,
+                    gcd_ms=1500, harmful=True, action_initialized=True, available=True,
+                    **flags)
+
+    baseline = [spell('outbreak', 77575), spell('death_coil', 47541),
+                spell('scourge_strike', 55090)]
+    pool = [*baseline, spell('death_and_decay', 43265), spell('epidemic', 207317)]
+    return dict(actions_protocol=1, apl_actions_protocol=1, active_items=[],
+                executed_actions=baseline, apl_actions=pool,
+                action_sequence=[dict(name='outbreak'), dict(name='death_coil'),
+                                 dict(name='outbreak'), dict(name='scourge_strike', queue_failed=True)],
+                precombat_sequence=[], precombat_definitions=[])
+
+
 class ImportQueryProfileTests(unittest.TestCase):
+    def test_apl_pool_keeps_unexecuted_buttons_and_the_compact_baseline_catalogue(self):
+        native = apl_pool_reference()
+        with tempfile.TemporaryDirectory() as directory:
+            capabilities = inspect(native, Path(directory))
+        self.assertEqual([action['simc_action'] for action in capabilities['actions']],
+                         ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
+        self.assertEqual([action['simc_action'] for action in capabilities['baseline_actions']],
+                         ['outbreak', 'death_coil', 'scourge_strike'])
+
     def test_run_writes_only_requested_report_and_keeps_default_for_other_calls(self):
         import engine
         from types import SimpleNamespace
