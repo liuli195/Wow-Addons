@@ -161,40 +161,48 @@ def _fast_search_boundary():
         yield
 
 
+@contextmanager
+def _apl_task_boundary(native=None):
+    import engine
+    import sequence
+    native = native or apl_pool_reference()
+    real_reference, real_inspect = engine.reference, engine.inspect
+    real_check_report = engine.check_report
+
+    def native_process(command, folder, **kwargs):
+        profile = Path(folder) / command[1]
+        from task import parse_character
+        character = parse_character(profile.read_text(encoding='utf-8'))
+        iterations = int(next(value.split('=', 1)[1] for value in reversed(command)
+                              if value.startswith('iterations=')))
+        report = _fast_report(character, 100.0, max(1, iterations - 1))
+        player = report['sim']['players'][0]
+        player.update(sim2gse_actions_protocol=1, sim2gse_actions=native['executed_actions'],
+                      sim2gse_apl_actions_protocol=native.get('apl_actions_protocol'),
+                      sim2gse_apl_actions=native.get('apl_actions'),
+                      sim2gse_items=[], sim2gse_precombat_actions=[])
+        player['collected_data'].update(action_sequence=native['action_sequence'],
+                                         action_sequence_precombat=[])
+        report_name = next(value.split('=', 1)[1] for value in command if value.startswith('json2='))
+        (Path(folder) / report_name).write_text(json.dumps(report), encoding='utf-8')
+        return SimpleNamespace(returncode=0, stdout=b'', stderr=b'', elapsed_seconds=0.01)
+
+    with _fast_initialization(), \
+            patch.object(engine, 'reference', side_effect=real_reference), \
+            patch.object(engine, 'inspect', side_effect=real_inspect), \
+            patch.object(engine, 'check_report', side_effect=real_check_report), \
+            patch.object(engine, 'run_command', side_effect=native_process), \
+            patch.object(sequence, 'evaluate', side_effect=_fast_evaluate):
+        yield
+
+
 class SearchAndValidationTests(TestCase):
     def test_task_uses_full_apl_pool_without_changing_baseline_starts(self):
-        import engine
-        import sequence
         native = apl_pool_reference()
-        real_reference, real_inspect = engine.reference, engine.inspect
-        real_check_report = engine.check_report
-
-        def native_process(command, folder, **kwargs):
-            profile = Path(folder) / command[1]
-            from task import parse_character
-            character = parse_character(profile.read_text(encoding='utf-8'))
-            iterations = int(next(value.split('=', 1)[1] for value in reversed(command)
-                                  if value.startswith('iterations=')))
-            report = _fast_report(character, 100.0, max(1, iterations - 1))
-            player = report['sim']['players'][0]
-            player.update(sim2gse_actions_protocol=1, sim2gse_actions=native['executed_actions'],
-                          sim2gse_apl_actions_protocol=1, sim2gse_apl_actions=native['apl_actions'],
-                          sim2gse_items=[], sim2gse_precombat_actions=[])
-            player['collected_data'].update(action_sequence=native['action_sequence'],
-                                             action_sequence_precombat=[])
-            report_name = next(value.split('=', 1)[1] for value in command if value.startswith('json2='))
-            (Path(folder) / report_name).write_text(json.dumps(report), encoding='utf-8')
-            return SimpleNamespace(returncode=0, stdout=b'', stderr=b'', elapsed_seconds=0.01)
-
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            with _fast_initialization(), \
-                    patch.object(engine, 'reference', side_effect=real_reference), \
-                    patch.object(engine, 'inspect', side_effect=real_inspect), \
-                    patch.object(engine, 'check_report', side_effect=real_check_report), \
-                    patch.object(engine, 'run_command', side_effect=native_process), \
-                    patch.object(sequence, 'evaluate', side_effect=_fast_evaluate):
+            with _apl_task_boundary(native):
                 result = run_task(source, Path(directory) / 'search', search_config=dict(
                     candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
                 single = run_task(source, Path(directory) / 'single', mode='single')
@@ -209,6 +217,59 @@ class SearchAndValidationTests(TestCase):
         ])
         self.assertEqual([[row['simc_action'] for row in block] for block in single['candidate']['blocks']],
                          [['outbreak'], ['death_coil'], ['scourge_strike']])
+
+    def test_task_mutates_unexecuted_apl_button_and_scores_exports_it(self):
+        import random
+        import search
+        from sequence import compiled_program
+
+        class EpidemicChoice(random.Random):
+            def choice(self, values):
+                if 'insert' in values:
+                    return 'insert'
+                if 'epidemic' in values:
+                    return 'epidemic'
+                return super().choice(values)
+
+            def random(self):
+                return 0.75
+
+            def randrange(self, start, *args):
+                return 1 if start == 16 and not args else super().randrange(start, *args)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            with _apl_task_boundary(), patch.object(search.random, 'Random', EpidemicChoice):
+                result = run_task(source, Path(directory) / 'search', search_config=dict(
+                    candidate_limit=5, round_candidate_limit=1, batch_targets=(2,),
+                    iterations=2, validation_batches=2))
+                ground = run_task(source, Path(directory) / 'ground', mode='single',
+                                  program=[['death_and_decay'], ['epidemic']])
+        self.assertEqual(result['status'], 'completed')
+        self.assertIn(['epidemic'], compiled_program(result['candidate']))
+        self.assertGreater(result['search_result']['dps'], 0)
+        self.assertTrue(result['candidate']['text'].startswith('!GSE3!'))
+        self.assertEqual(ground['status'], 'offline_ready')
+        self.assertEqual(compiled_program(ground['candidate']), [['death_and_decay'], ['epidemic']])
+        self.assertEqual(ground['candidate']['compiled_steps'][0],
+                         {'type': 'macro', 'macrotext': '/cast [@player] death_and_decay'})
+        self.assertGreater(ground['controlled_simulation']['summary']['dps'], 0)
+
+    def test_task_rejects_missing_apl_protocol_and_unsupported_button(self):
+        for label in ('missing_protocol', 'unsupported_button'):
+            native = apl_pool_reference()
+            if label == 'missing_protocol':
+                native.pop('apl_actions_protocol')
+                message = '完整的 APL 动作目录'
+            else:
+                native['apl_actions'][-1]['base_spell_id'] = 0
+                message = '主动能力不完整'
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / 'role.simc'
+                source.write_text(sample_profile(), encoding='utf-8')
+                with _apl_task_boundary(native), self.assertRaisesRegex(TaskError, message):
+                    run_task(source, Path(directory) / 'task', search_config=dict(candidate_limit=1))
 
     def test_default_task_stops_initial_sampling_at_256_and_keeps_512_override(self):
         with tempfile.TemporaryDirectory() as directory:
