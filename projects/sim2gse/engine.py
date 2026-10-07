@@ -94,23 +94,41 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
 
 
 def inspect(reference, folder):
-    """基准决定范围，原生标记决定身份；不枚举其他角色能力。"""
+    """完整战斗 APL 决定搜索范围，已执行目录保留原有起点。"""
     if reference.get('actions_protocol') != 1:
         raise ValueError('基准没有返回完整的原生动作标记，请重新构建')
+    if reference.get('apl_actions_protocol') != 1 or not isinstance(reference.get('apl_actions'), list):
+        raise ValueError('基准没有返回完整的 APL 动作目录，请重新构建')
     actions = {}
+    baseline_actions = {}
     precombat_actions = {}
     sources = []
     unsupported = []
+    unverified_forms = []
+    baseline_button_keys = set()
+
+    def button_key(action):
+        return (('spell', action['base_spell_id']) if action['kind'] == 'spell'
+                else ('action', action['simc_action']))
+
     items = reference['active_items']
     used_precombat = {row.get('name') for row in reference.get('precombat_sequence', [])
                       if not row.get('queue_failed')}
-    for native in [*reference['executed_actions'], *reference.get('precombat_definitions', [])]:
+    native_rows = [('baseline', row) for row in reference['executed_actions']]
+    native_rows += [('apl', row) for row in reference['apl_actions']]
+    native_rows += [('precombat', row) for row in reference.get('precombat_definitions', [])]
+    for origin, native in native_rows:
         row = dict(native)
+        row['catalogue'] = origin
         sources.append(row)
         name = row['signature'].split(',', 1)[0]
         if (not row['signature'] or not row['player_owned'] or (row['background'] and name != 'use_item') or row['quiet'] or row['passive'] or
                 row['type'] in ('call_action_list', 'action_variable', 'sequence') or name == 'use_items'):
             row['status'] = 'native_non_button'
+            continue
+        if origin == 'apl' and (row['precombat'] or row.get('action_initialized') is not True
+                                or row.get('available') is not True):
+            row['status'] = 'native_unavailable'
             continue
         if row['precombat'] and row['name'] not in used_precombat:
             row['status'] = 'native_non_button'
@@ -122,6 +140,9 @@ def inspect(reference, folder):
             options = dict(part.split('=', 1) for part in row['signature'].split(',')[1:] if '=' in part)
             matches = [item for item in items if
                        (options.get('slot') == item['slot'] or options.get('name') == item['name'])]
+            if origin == 'apl' and not matches and (options.get('slot') or options.get('name')):
+                row['status'] = 'native_unavailable'
+                continue  # 默认 APL 也声明当前未装备或只有被动效果的物品。
             if len(matches) != 1:
                 unsupported.append(f"{row['name']}: 无法确定基准使用的装备槽位")
             else:
@@ -147,16 +168,37 @@ def inspect(reference, folder):
         row['status'] = ('mapped_precombat' if row['precombat'] else 'mapped') if action else 'unsupported'
         if action:
             action['native_name'] = row['name']
+            if origin == 'apl':
+                if button_key(action) in baseline_button_keys:
+                    row['status'] = 'baseline_button_preserved'
+                    continue
+                if action['kind'] == 'spell' and action['spell_id'] != action['base_spell_id']:
+                    row['status'] = 'unverified_replacement_form'
+                    unverified_forms.append(row)
+                    continue
             target = precombat_actions if row['precombat'] else actions
             target.setdefault(row['name'] if row['precombat'] else action['simc_action'], action)
-    buttons = {}
-    for action in actions.values():
-        key = ('spell', action['base_spell_id']) if action['kind']=='spell' else ('action', action['simc_action'])
-        buttons.setdefault(key, []).append(action)
-    grouped = []
-    for variants in buttons.values():
-        primary = next((a for a in variants if a.get('spell_id') == a.get('base_spell_id')), variants[0])
-        grouped.append(dict(primary, variants=variants) if len(variants)>1 else primary)
+            if origin == 'baseline' and not row['precombat']:
+                baseline_actions.setdefault(action['simc_action'], action)
+                baseline_button_keys.add(button_key(action))
+
+    confirmed_button_keys = {button_key(action) for action in actions.values()}
+    for row in unverified_forms:
+        if ('spell', row['base_spell_id']) not in confirmed_button_keys:
+            unsupported.append(f"{row['name']}: 替换形态资格未确认，且没有已确认的基础按钮")
+
+    def group_buttons(catalogue):
+        buttons = {}
+        for action in catalogue.values():
+            buttons.setdefault(button_key(action), []).append(action)
+        grouped = []
+        for variants in buttons.values():
+            primary = next((a for a in variants if a.get('spell_id') == a.get('base_spell_id')), variants[0])
+            grouped.append(dict(primary, variants=variants) if len(variants) > 1 else primary)
+        return grouped
+
+    baseline_grouped = group_buttons(baseline_actions)
+    grouped = group_buttons(actions)
     import_actions = []
     seen_import_actions = set()
 
@@ -190,9 +232,10 @@ def inspect(reference, folder):
     precombat_program = [dict(precombat_actions[row['name']])
                          for row in reference.get('precombat_sequence', [])
                          if not row.get('queue_failed') and row.get('name') in precombat_actions]
-    result = dict(actions=grouped, precombat_actions=precombat_program, sources=sources, protocol=3,
+    result = dict(actions=grouped, baseline_actions=baseline_grouped,
+                  precombat_actions=precombat_program, sources=sources, protocol=4,
                   import_actions=import_actions,
-                  scope='baseline_executed_player_actions', coverage='all_baseline_iterations')
+                  scope='default_apl_player_actions', coverage='combat_apl_buttons_with_baseline_forms')
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'catalogue.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     if unsupported:
@@ -308,6 +351,8 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     result['precombat_sequence'] = player['collected_data'].get('action_sequence_precombat', [])
     result['actions_protocol'] = player.get('sim2gse_actions_protocol')
     result['executed_actions'] = player.get('sim2gse_actions', [])
+    result['apl_actions_protocol'] = player.get('sim2gse_apl_actions_protocol')
+    result['apl_actions'] = player.get('sim2gse_apl_actions')
     result['precombat_definitions'] = player.get('sim2gse_precombat_actions', [])
     result['active_items'] = player.get('sim2gse_items', [])
     result['import_action_candidates'] = []

@@ -12,7 +12,8 @@ from simulation_config import config_for
 
 def select(capabilities, program=None):
     available = {a['simc_action']: a for a in capabilities['actions']}
-    program = program if program is not None else [[name] for name in available]
+    program = program if program is not None else [[action['simc_action']] for action in
+                capabilities.get('baseline_actions', capabilities['actions'])]
     if not isinstance(program, list) or not 1 <= len(program) <= 128:
         raise ValueError('程序必须包含 1 至 128 个动作块')
     blocks = [[dict(action, condition='nocombat')] for action in capabilities.get('precombat_actions', [])]

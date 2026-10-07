@@ -1,0 +1,66 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -891,6 +891,63 @@
+     row[ "gcd_ms" ] = a->trigger_gcd.total_millis();
+     row[ "cast_ms" ] = a->execute_time().total_millis();
+     row[ "channeled" ] = a->channeled;
++  }
++  // Search every instantiated combat APL entry, including branches pruned from foreground lists.
++  // Existing executed-action counters and the simulation itself remain unchanged.
++  root[ "sim2gse_apl_actions_protocol" ] = 1;
++  auto apl_actions = root[ "sim2gse_apl_actions" ];
++  apl_actions.make_array();
++  for ( const auto* a : p.action_list )
++  {
++    // use_items creates background proxies with a real slot signature (patch 012).
++    const bool item_proxy = a->signature_str.find( "use_item,slot=" ) == 0;
++    if ( a->is_precombat || ( !a->action_list && !item_proxy ) )
++      continue;
++
++    const unsigned spell_id = a->data().id();
++    const unsigned base_spell_id = p.sim2gse_base_spell_id( spell_id );
++    const auto* spell_name = a->data().name_cstr();
++    const bool class_spell = p.find_class_spell( spell_name, p.specialization() )->id() == spell_id;
++    const bool specialization_spell =
++      p.find_specialization_spell( spell_id, p.specialization() )->id() == spell_id;
++    const bool racial_spell = p.find_racial_spell( spell_name )->id() == spell_id;
++    bool selected_talent = false;
++    bool unselected_talent = false;
++    for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
++    {
++      for ( const unsigned candidate_id : { spell_id, base_spell_id } )
++      {
++        const auto talent = p.find_talent_spell( tree, candidate_id, p.specialization() );
++        if ( !talent.invalid() )
++        {
++          selected_talent = selected_talent || talent.enabled();
++          unselected_talent = unselected_talent || !talent.enabled();
++        }
++      }
++    }
++    const bool special_button = a->name_str == "auto_attack" ||
++      a->signature_str.find( "use_item," ) == 0;
++
++    auto row = apl_actions.add();
++    row[ "name" ] = a->name_str;
++    row[ "id" ] = a->id;
++    row[ "data_id" ] = spell_id;
++    row[ "base_spell_id" ] = base_spell_id;
++    row[ "data_valid" ] = a->data().ok();
++    row[ "signature" ] = a->signature_str;
++    row[ "executions" ] = a->total_executions;
++    row[ "type" ] = util::action_type_string( a->type );
++    row[ "background" ] = a->background;
++    row[ "quiet" ] = a->quiet;
++    row[ "harmful" ] = a->harmful;
++    row[ "player_owned" ] = a->player == &p && !p.is_pet();
++    row[ "passive" ] = a->data().flags( SX_PASSIVE );
++    row[ "action_list" ] = a->action_list ? a->action_list->name_str : "";
++    row[ "precombat" ] = false;
++    row[ "gcd_ms" ] = a->trigger_gcd.total_millis();
++    row[ "action_initialized" ] = a->initialized;
++    row[ "available" ] = special_button || ( spell_id && a->data().is_level( p.true_level ) &&
++      !unselected_talent && ( class_spell || specialization_spell || racial_spell || selected_talent ) );
+   }
+   auto precombat_actions = root[ "sim2gse_precombat_actions" ];
+   precombat_actions.make_array();

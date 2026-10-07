@@ -11,7 +11,126 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 from engine import _profile_with_import_queries, identity, inspect, reference  # noqa: E402
 
 
+def apl_pool_reference():
+    """固定协议样例：单目标未执行群体动作，仍是当前角色合法按钮。"""
+    def spell(name, spell_id, **flags):
+        return dict(name=name, signature=name, player_owned=True, background=False,
+                    quiet=False, passive=False, type='spell', precombat=False,
+                    data_id=spell_id, data_valid=True, base_spell_id=spell_id,
+                    gcd_ms=1500, harmful=True, action_initialized=True, available=True,
+                    **flags)
+
+    baseline = [spell('outbreak', 77575), spell('death_coil', 47541),
+                spell('scourge_strike', 55090)]
+    pool = [*baseline, spell('death_and_decay', 43265), spell('epidemic', 207317)]
+    return dict(actions_protocol=1, apl_actions_protocol=1, active_items=[],
+                executed_actions=baseline, apl_actions=pool,
+                action_sequence=[dict(name='outbreak'), dict(name='death_coil'),
+                                 dict(name='outbreak'), dict(name='scourge_strike', queue_failed=True)],
+                precombat_sequence=[], precombat_definitions=[])
+
+
 class ImportQueryProfileTests(unittest.TestCase):
+    def test_apl_pool_keeps_unexecuted_buttons_and_the_compact_baseline_catalogue(self):
+        native = apl_pool_reference()
+        with tempfile.TemporaryDirectory() as directory:
+            capabilities = inspect(native, Path(directory))
+        self.assertEqual([action['simc_action'] for action in capabilities['actions']],
+                         ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
+        self.assertEqual([action['simc_action'] for action in capabilities['baseline_actions']],
+                         ['outbreak', 'death_coil', 'scourge_strike'])
+
+    def test_apl_pool_filters_native_non_buttons_and_preserves_button_variants_and_slots(self):
+        native = apl_pool_reference()
+        template = native['apl_actions'][0]
+        native['apl_actions'] += [dict(template, name=name, signature=name, **flags) for name, flags in (
+            ('pet_action', {'player_owned': False}),
+            ('derived_effect', {'background': True}),
+            ('passive_effect', {'passive': True}),
+            ('unselected_talent', {'available': False}),
+            ('uninitialized_action', {'action_initialized': False}),
+            ('precombat_only', {'precombat': True}),
+            ('call_action_list', {'type': 'call_action_list'}),
+        )]
+        # 两个形态仍映射成同一按钮；真实 use_items 代理仅使用已装备槽位。
+        native['apl_actions'] += [
+            dict(template, name='outbreak_variant', signature='outbreak_variant', data_id=100001),
+            dict(template, name='use_item_test', signature='use_item,slot=trinket1',
+                 background=True, gcd_ms=0),
+        ]
+        native['active_items'] = [dict(slot='trinket1', id=250245, name='test_item', driver_spell_id=43265)]
+        with tempfile.TemporaryDirectory() as directory:
+            capabilities = inspect(native, Path(directory))
+        self.assertEqual([action['simc_action'] for action in capabilities['actions']],
+                         ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay',
+                          'epidemic', 'use_item,slot=trinket1'])
+        self.assertEqual(capabilities['actions'][0], capabilities['baseline_actions'][0])
+        self.assertEqual(capabilities['actions'][-1]['slot'], 13)
+        self.assertEqual(len(capabilities['baseline_actions']), 3)
+
+    def test_apl_pool_rejects_missing_protocol_or_unmappable_native_button(self):
+        for label in ('missing_protocol', 'unsupported_button'):
+            native = apl_pool_reference()
+            if label == 'missing_protocol':
+                native.pop('apl_actions_protocol')
+                message = '完整的 APL 动作目录'
+            else:
+                native['apl_actions'][-1]['base_spell_id'] = 0
+                message = '主动能力不完整'
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(ValueError, message):
+                    inspect(native, Path(directory))
+
+    def test_apl_pool_ignores_unequipped_and_passive_items_but_keeps_executed_item_errors(self):
+        native = apl_pool_reference()
+        template = native['apl_actions'][0]
+        unequipped = dict(template, name='use_item_absent',
+                          signature='use_item,name=absent_trinket', background=True, gcd_ms=0)
+        native['active_items'] = [dict(slot='trinket1', id=250245, name='active_trinket', driver_spell_id=43265)]
+        native['apl_actions'] += [
+            dict(template, name='use_item_active', signature='use_item,name=active_trinket',
+                 background=True, gcd_ms=0),
+            unequipped,
+            dict(template, name='use_item_passive', signature='use_item,slot=trinket2',
+                 background=True, gcd_ms=0),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            capabilities = inspect(native, Path(directory))
+            self.assertEqual([action['simc_action'] for action in capabilities['actions'] if action['kind']=='item'],
+                             ['use_item,slot=trinket1'])
+            native['executed_actions'].append(unequipped)
+            with self.assertRaisesRegex(ValueError, '无法确定基准使用的装备槽位'):
+                inspect(native, Path(directory))
+            native['executed_actions'].pop()
+            native['apl_actions'].append(dict(template, name='unmapped_item',
+                                              signature='use_item,effect_name=unmapped', background=True))
+            with self.assertRaisesRegex(ValueError, '无法确定基准使用的装备槽位'):
+                inspect(native, Path(directory))
+
+    def test_apl_pool_preserves_baseline_button_commands_and_rejects_unconfirmed_only_forms(self):
+        from sequence import select
+        native = apl_pool_reference()
+        template = native['executed_actions'][0]
+        raging_blow = dict(template, name='raging_blow', signature='raging_blow',
+                           data_id=85288, base_spell_id=85288)
+        crushing_blow = dict(template, name='crushing_blow', signature='crushing_blow',
+                             data_id=335097, base_spell_id=85288)
+        native['apl_actions'] = [raging_blow, crushing_blow]
+        with tempfile.TemporaryDirectory() as directory:
+            for executed, expected in (([raging_blow], [['raging_blow']]),
+                                       ([crushing_blow], [['crushing_blow']]),
+                                       ([raging_blow, crushing_blow], [['raging_blow', 'crushing_blow']])):
+                with self.subTest(expected=expected):
+                    native['executed_actions'] = executed
+                    capabilities = inspect(native, Path(directory))
+                    self.assertEqual([[action['simc_action'] for action in block]
+                                      for block in select(capabilities)], expected)
+                    self.assertEqual(capabilities['actions'], capabilities['baseline_actions'])
+            native['executed_actions'] = [template]
+            native['apl_actions'] = [template, crushing_blow]
+            with self.assertRaisesRegex(ValueError, '替换形态.*未确认'):
+                inspect(native, Path(directory))
+
     def test_run_writes_only_requested_report_and_keeps_default_for_other_calls(self):
         import engine
         from types import SimpleNamespace
@@ -71,7 +190,7 @@ class ImportQueryProfileTests(unittest.TestCase):
 
     def test_import_inventory_adds_native_query_and_real_items_without_widening_search(self):
         native = dict(
-            actions_protocol=1,
+            actions_protocol=1, apl_actions_protocol=1, apl_actions=[],
             active_items=[dict(slot='trinket1', id=250245, driver_spell_id=43265, name='active trinket')],
             executed_actions=[dict(name='outbreak', signature='outbreak', player_owned=True,
                                    background=False, quiet=False, passive=False, type='spell',

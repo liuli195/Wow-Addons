@@ -141,11 +141,12 @@ def _unique_names(names, available):
 
 def initial_programs(capabilities, reference, seed=20260912):
     """从四个来源产生稳定合法的起点，而不读派生或宠物动作。"""
-    actions = [a["simc_action"] for a in capabilities["actions"]]
+    baseline_actions = capabilities.get('baseline_actions', capabilities['actions'])
+    actions = [a["simc_action"] for a in baseline_actions]
     available = set(actions)
-    by_id = {str(v['spell_id']): a['simc_action'] for a in capabilities['actions']
+    by_id = {str(v['spell_id']): a['simc_action'] for a in baseline_actions
              for v in a.get('variants', [a]) if v.get('spell_id') is not None}
-    by_name = {v.get('native_name', v['simc_action']): a['simc_action'] for a in capabilities['actions']
+    by_name = {v.get('native_name', v['simc_action']): a['simc_action'] for a in baseline_actions
                for v in a.get('variants', [a])}
     starts = []
 
@@ -154,7 +155,7 @@ def initial_programs(capabilities, reference, seed=20260912):
         if names:
             starts.append([[name] for name in names])
 
-    add(actions)  # 均匀合法的完整排列。
+    add(actions)  # 基准目录的均匀合法排列。
     frequency = []
     for row in reference.get("action_sequence", []):
         if row.get("queue_failed"):

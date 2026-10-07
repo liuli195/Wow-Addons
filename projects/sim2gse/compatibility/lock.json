@@ -182,10 +182,14 @@
     {
       "path": "projects/sim2gse/native/patches/028-import-action-lookup.patch",
       "sha256": "21fe1e7290383dcbb08576506d0c6514429400de3379f30d0b956eee1f69303a"
+    },
+    {
+      "path": "projects/sim2gse/native/patches/030-apl-action-pool.patch",
+      "sha256": "bc4f9f4d4d60e8da2553fd4133f1dd7c1e2ba2bc9364f13547b679600405a738"
     }
   ],
   "baseline_patched_files": {
-    "engine/report/json/report_json.cpp": "27ca275ad6c5cb5ece79ea3485b589ae3fd5bb7e89947fce50804c085a97324a",
+    "engine/report/json/report_json.cpp": "55a157eaf52232e5c2a61791887d0a95dbfd0f407927eabfc44be6bf883632d5",
     "engine/player/player.cpp": "01cb2c066e67efd8bd3a463c07c4362b35641fffa9d8f0c82e6e03a4d088252e",
     "engine/player/player.hpp": "1106796d2f7cfe5cfd2e1d0d229633d8d8e9a47f98534f2dacfec1491888227b",
     "engine/sim/sim.cpp": "b006a623a9e7fc5e71d14c138df2d0de9a2a19b3155079c8e0b5ffc36e075bcd"

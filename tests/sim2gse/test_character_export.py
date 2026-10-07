@@ -110,7 +110,7 @@ class CharacterExportTests(unittest.TestCase):
         from sequence import compiled_program, select
 
         native = dict(
-            actions_protocol=1,
+            actions_protocol=1, apl_actions_protocol=1, apl_actions=[],
             active_items=[],
             executed_actions=[dict(
                 name='heart_strike', signature='heart_strike', player_owned=True,
@@ -146,7 +146,7 @@ class CharacterExportTests(unittest.TestCase):
         from sequence import compiled_program, select
 
         native = dict(
-            actions_protocol=1,
+            actions_protocol=1, apl_actions_protocol=1, apl_actions=[],
             active_items=[dict(slot='trinket1', id=123, driver_spell_id=206930, name='test_item')],
             executed_actions=[dict(
                 name='heart_strike', signature='heart_strike', player_owned=True,
@@ -224,15 +224,18 @@ class CharacterExportTests(unittest.TestCase):
             from task import read_task
             self.assertEqual(read_task(output_path)['candidate']['text'], result['candidate']['text'])
             capabilities = result['capabilities']
-            self.assertEqual(capabilities['scope'], 'baseline_executed_player_actions')
-            self.assertEqual(capabilities['coverage'], 'all_baseline_iterations')
-            spell_ids = {a['spell_id'] for a in capabilities['actions'] if a['kind']=='spell'}
+            self.assertEqual(capabilities['scope'], 'default_apl_player_actions')
+            self.assertEqual(capabilities['coverage'], 'combat_apl_buttons_with_baseline_forms')
+            full_spell_ids = {a['spell_id'] for a in capabilities['actions'] if a['kind']=='spell'}
+            self.assertTrue({43265, 207317} <= full_spell_ids)
+            spell_ids = {a['spell_id'] for a in capabilities['baseline_actions'] if a['kind']=='spell'}
             self.assertTrue({42650,1233448,47541,55090} <= spell_ids)
             self.assertTrue(spell_ids.isdisjoint({47528,50977,255654,48743,221562,316239,46585}))
             self.assertEqual([a['simc_action'] for a in capabilities['precombat_actions']], ['raise_dead'])
             self.assertEqual(result['candidate']['compiled_steps'][0],
                              dict(type='macro', macrotext='/cast [nocombat] raise_dead'))
-            selected = [row for row in capabilities['sources'] if row['status']=='mapped']
+            selected = [row for row in capabilities['sources']
+                        if row['status']=='mapped' and row['catalogue']=='baseline']
             self.assertTrue(all(row['executions']>0 and row['player_owned'] and
                                 not row['background'] and not row['passive'] for row in selected))
             character = result['character']
