@@ -79,7 +79,7 @@ def _fast_report(character, score, samples):
     }
     return {"sim": {"players": [player], "targets": [{"name": "Damage_Dummy", "level": 90}],
                     "statistics": {"raid_dps": {"mean": score, "count": samples}},
-                    "options": {"dbc": {"Live": {"build_level": 69587, "version_used": "Live"}}}}}
+                    "options": {"dbc": {"Live": {"build_level": 69587}, "version_used": "Live"}}}}
 
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
