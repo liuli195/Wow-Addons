@@ -135,6 +135,121 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     assert any(row['status'] == 'failed' for row in rows)
 
 
+def test_normal_search_keeps_four_original_starts_and_reads_one_legal_snapshot(tmp_path, monkeypatch):
+    from test_character_export import sample_profile
+    from test_search import _fast_search_boundary
+    from task import run_task
+    from unittest.mock import patch
+    import result_store
+
+    template = tmp_path / 'role.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    engines = {mode: dict(mode=mode, upstream_commit='test', build_options=[])
+               for mode in ('baseline', 'controlled')}
+    accepted = [
+        ['outbreak'], ['death_coil'], ['scourge_strike'], ['dark_transformation'], ['outbreak']]
+    additional = [accepted,
+                  [['scourge_strike'], ['dark_transformation'], ['outbreak'], ['death_coil'], ['scourge_strike']],
+                  [['death_coil'], ['dark_transformation'], ['scourge_strike'], ['outbreak'], ['death_coil']],
+                  [['dark_transformation'], ['scourge_strike'], ['death_coil'], ['outbreak'], ['dark_transformation']],
+                  [['outbreak'], ['scourge_strike'], ['dark_transformation'], ['death_coil'], ['outbreak']]]
+    changed_after_start = [['death_coil'], ['outbreak'], ['death_coil'], ['outbreak'], ['death_coil']]
+    rows = [
+        *[dict(candidate_id=f'valid-{index}', condition='condition', class_name='deathknight', spec='unholy',
+               targets=1, program=program, family='community', score=100. - index,
+               scores=[100. - index] * 3, template_sha256='template', engines=engines)
+          for index, program in enumerate(additional)],
+        dict(candidate_id='illegal', condition='condition', class_name='deathknight', spec='unholy',
+             targets=1, program=[['not_a_character_action']], family='community', score=99.,
+             scores=[99., 99., 99.], template_sha256='template', engines=engines),
+        dict(candidate_id='oversized', condition='condition', class_name='deathknight', spec='unholy',
+             targets=1, program=[['outbreak'] * 40], family='community', score=98.5,
+             scores=[98.5, 98.5, 98.5], template_sha256='template', engines=engines),
+        dict(candidate_id='wrong-targets', condition='condition', class_name='deathknight', spec='unholy',
+             targets=5, program=changed_after_start, family='community', score=98.,
+             scores=[98., 98., 98.], template_sha256='template', engines=engines),
+    ]
+    result_store.write('seed_selected', 'deathknight-unholy-1', rows,
+                       schema=__import__('seed_training').SELECTED_SCHEMA)
+    real_read = result_store.read_records
+    selected_reads = []
+
+    def changing_snapshot(table, key):
+        if table == 'seed_selected':
+            selected_reads.append((table, key))
+            return rows if len(selected_reads) == 1 else [dict(rows[0], program=changed_after_start)]
+        return real_read(table, key)
+
+    config = dict(total_budget_seconds=60, search_budget_seconds=10, candidate_limit=8,
+                  round_candidate_limit=1, batch_targets=(2,), validation_batches=2,
+                  final_batches=1, iterations=2, final_iterations=2,
+                  scenarios=('nominal',), max_processes=1)
+    with _fast_search_boundary(), patch.object(result_store, 'read_records', side_effect=changing_snapshot):
+        result = run_task(template, tmp_path / 'normal-search', search_config=config)
+
+    assert result['status'] == 'completed'
+    starts = result['search']['starts']
+    assert len(starts) == 8
+    assert starts[-4:] == additional[:4]
+    assert additional[4] not in starts
+    assert changed_after_start not in starts
+    assert [['outbreak'] * 40] not in starts
+    assert len(selected_reads) == 1
+
+
+def test_training_entry_rejects_an_active_foreground_search(tmp_path, monkeypatch):
+    from seed_activity import foreground_search
+    import seed_training
+
+    calls = []
+    template = tmp_path / 'standard.simc'
+    template.write_text('unused by the training stub', encoding='utf-8')
+    monkeypatch.setattr(seed_training, '_run_training',
+                        lambda *args, **kwargs: calls.append((args, kwargs)))
+    with foreground_search():
+        result = seed_training.main(['--project', str(tmp_path), 'run', '--template', str(template),
+                                     '--targets', '1', '--workspace', str(tmp_path / 'work')])
+
+    assert result == 2
+    assert calls == []
+
+
+def test_foreground_search_does_not_wait_for_training_and_stops_it(tmp_path):
+    import os
+    import subprocess
+    import sys
+    import time
+    from seed_activity import training_activity
+    import seed_activity
+
+    root = str(tmp_path)
+    module_dir = str(Path(seed_activity.__file__).parent)
+    code = '\n'.join((
+        'import sys,time',
+        'sys.path.insert(0, ' + repr(module_dir) + ')',
+        'import result_store',
+        'result_store.bind_project(' + repr(root) + ')',
+        'from seed_activity import foreground_search',
+        'with foreground_search():',
+        '    time.sleep(0.3)',
+    ))
+    environment = os.environ.copy()
+    started = time.monotonic()
+    with training_activity(poll_seconds=0.01) as cancel_event:
+        child = subprocess.Popen([sys.executable, '-c', code], cwd=str(Path(seed_activity.__file__).parents[2]),
+                                 env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            _, error = child.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.communicate()
+            raise AssertionError('普通搜索被训练等待')
+        assert child.returncode == 0, error.decode(errors='replace')
+        assert time.monotonic() - started < 2
+        assert cancel_event.wait(0.3)
+
+
 def test_missing_project_and_unreadable_center_are_not_silently_empty(tmp_path, monkeypatch):
     from seed_training import main
     import result_store

@@ -613,12 +613,87 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     return result
 
 
-def _rule_hashes():
+def _rule_hashes(*, relative_to=None):
+    """Hash all task rules; training may use portable keys without changing task identity."""
     from codec import SOURCE, LUA
     sources = [*Path(__file__).parent.glob('*.py'),
                *Path(__file__).with_name('compatibility').glob('*.json'),
                Path(__file__).with_name('codec.lua'), LUA, *sorted(SOURCE.rglob('*.lua'))]
-    return {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
+    if relative_to is None:
+        return {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
+    root = Path(relative_to).resolve()
+    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sources}
+
+
+def _seed_programs(starts, snapshot, *, character, targets, engines,
+                   capabilities, runtime):
+    """Append selected programs after role mapping and shared export checks."""
+    if not snapshot:
+        return starts
+    from program import canonicalize_search_program
+    from codec import load_targeting, prepare_block, prepare_castsequence
+
+    def check_program(program, target_masks):
+        for node in program['nodes']:
+            if node['kind'] == 'Action':
+                commands = node['commands']
+                if (len(commands) == 1 and commands[0].get('kind') == 'castsequence'):
+                    prepare_castsequence(commands[0])
+                else:
+                    prepare_block(commands, target_masks)
+            elif node['kind'] == 'Loop':
+                for child in node['body']:
+                    prepare_block(child['commands'], target_masks)
+            elif node['kind'] != 'Pause':
+                raise ValueError('搜索节点无法导出')
+
+    identities = set()
+    for program in starts:
+        try:
+            identities.add(canonicalize_search_program(program, capabilities)['identity'])
+        except (TypeError, ValueError, KeyError):
+            continue
+
+    target_masks = None
+    added = []
+    for row in snapshot:
+        if len(added) >= 4:
+            break
+        if (not isinstance(row, dict) or row.get('class_name') != character.class_name
+                or row.get('spec') != character.spec or row.get('targets') != targets):
+            continue
+        row_engines = row.get('engines')
+        if isinstance(row_engines, str):
+            try:
+                row_engines = json.loads(row_engines)
+            except ValueError:
+                continue
+        if row_engines != engines:
+            continue
+        program = row.get('program')
+        if isinstance(program, str):
+            try:
+                program = json.loads(program)
+            except ValueError:
+                continue
+        try:
+            canonical = canonicalize_search_program(program, capabilities)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if canonical['identity'] in identities:
+            continue
+        if target_masks is None:
+            target_masks = load_targeting(runtime=runtime)['target_masks']
+        try:
+            check_program(canonical['program'], target_masks)
+        except (TypeError, ValueError, KeyError):
+            continue
+        # The normal optimizer compiles and identity-checks this start during its
+        # first score, avoiding a duplicate Lua compiler launch at task startup.
+        identities.add(canonical['identity'])
+        added.append(program)
+    return starts + added
 
 
 def _run_optimize(destination, character, *, config, runtime, simulation_config):
@@ -677,6 +752,11 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                          simulation_options=engine_options(simulation_config))
             state.setdefault('phase', 'initialize')
             if state['phase'] == 'initialize':
+                if 'seed_selected_snapshot' not in state:
+                    from result_store import read_records
+                    scope = f"{character.class_name}-{character.spec}-{simulation_config['target_count']}"
+                    state['seed_selected_snapshot'] = read_records('seed_selected', scope)
+                    store.save()
                 # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
@@ -709,7 +789,11 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                     _discard_native_exchange(destination / 'reference',
                                              keep_valid=reference_valid and not reference_stored)
                 capabilities = inspect(native, destination/'capabilities')
-                state['starts'] = initial_programs(capabilities, native, config['random_seed'])
+                starts = initial_programs(capabilities, native, config['random_seed'])
+                state['starts'] = _seed_programs(
+                    starts, state['seed_selected_snapshot'], character=character,
+                    targets=simulation_config['target_count'], engines=identities,
+                    capabilities=capabilities, runtime=runtime)
                 if not config['diagnostic_logging']:
                     native.pop('action_sequence', None)
                     native.pop('precombat_sequence', None)
@@ -797,7 +881,7 @@ def _task_lease(destination):
             msvcrt.locking(lock.fileno(),msvcrt.LK_UNLCK,1)
 
 
-def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
+def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
              version=None, gse_context=None) -> dict:
@@ -892,6 +976,25 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
             return state
 
 
+def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
+             mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
+             resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
+             version=None, gse_context=None) -> dict:
+    if mode != 'optimize' or _lease:
+        return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
+                         search_config=search_config, simulation_config=simulation_config,
+                         cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
+                         gse_text=gse_text, sequence_name=sequence_name, version=version,
+                         gse_context=gse_context)
+    from seed_activity import foreground_search
+    with foreground_search():
+        return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
+                         search_config=search_config, simulation_config=simulation_config,
+                         cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
+                         gse_text=gse_text, sequence_name=sequence_name, version=version,
+                         gse_context=gse_context)
+
+
 class TaskHandle:
     def __init__(self, thread, runtime, destination):
         self.thread = thread
@@ -949,7 +1052,7 @@ def cancel_task(task):
     return read_task(handle.output_root) if (handle.output_root / "result.json").exists() else {"status": "stopping"}
 
 
-def resume_task(output_root, **kwargs):
+def _resume_task(output_root, **kwargs):
     destination = Path(output_root).resolve()
     simulation_config = simulation_config_for(kwargs.pop("simulation_config", None))
     from result_store import ensure_available
@@ -1023,6 +1126,12 @@ def resume_task(output_root, **kwargs):
         runtime.phase_limit=runtime.budget_seconds
         return run_task(destination/'input.simc', destination, resume=True, _runtime=runtime, _lease=True,
                         search_config=config, simulation_config=simulation_config, **kwargs)
+
+
+def resume_task(output_root, **kwargs):
+    from seed_activity import foreground_search
+    with foreground_search():
+        return _resume_task(output_root, **kwargs)
 
 
 def read_task(output_root, *, include_search_records=False, include_reports=False):

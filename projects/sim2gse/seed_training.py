@@ -10,7 +10,6 @@ import math
 import msvcrt
 from pathlib import Path
 import sys
-import time
 import uuid
 
 import result_store
@@ -161,16 +160,20 @@ def history_candidates(character):
     return rows
 
 
-def retest(profile, program, character, capabilities, native, folder, simulation_config):
+def retest(profile, program, character, capabilities, native, folder, simulation_config, *, runtime=None):
     from program import from_search_program, compile_program
     from sequence import evaluate
+    runtime = runtime or TaskRuntime(600)
+    runtime.check()
     compiled = compile_program(from_search_program(program, capabilities), folder / 'export',
-                               identity=native['identity'], capabilities=capabilities)
+                               identity=native['identity'], runtime=runtime, capabilities=capabilities)
     scores = []
     for seed in RETEST_SEEDS:
+        runtime.check()
         result = evaluate(profile, compiled, folder / str(seed), character=character, iterations=128,
                           seed=seed, trace=False, input_times=list(range(0, 180000, 300)),
-                          simulation_config=simulation_config)
+                          simulation_config=simulation_config, runtime=runtime)
+        runtime.check()
         summary = result['summary']
         if summary['samples'] < 2 or not math.isfinite(summary['dps']) or summary['dps'] <= 0:
             raise ValueError('复测没有完整有效成绩')
@@ -217,10 +220,16 @@ def publish_records(processed, selected, *, condition, character, targets, templ
     return list(unique.values())[:4]
 
 
-def run_training(template, targets, workspace):
+def _check_cancelled(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise TaskCancelled('任务已取消')
+
+
+def _run_training(template, targets, workspace, *, cancel_event=None):
     from engine import identity, reference, inspect, ROOT, COMMON
-    from program import from_search_program, compile_program, canonicalize_search_program
-    initialization_started = time.monotonic()
+    from program import canonicalize_search_program
+    from task import _rule_hashes
+    _check_cancelled(cancel_event)
     text = template.read_text(encoding='utf-8')
     character = template_character(text)
     scope = f'{character.class_name}-{character.spec}-{targets}'
@@ -228,8 +237,7 @@ def run_training(template, targets, workspace):
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
     template_sha = hashlib.sha256(text.encode()).hexdigest()
-    rules = {name: hashlib.sha256((ROOT / 'projects/sim2gse' / name).read_bytes()).hexdigest()
-             for name in ('program.py', 'search.py', 'sequence.py', 'seed_training.py')}
+    rules = _rule_hashes(relative_to=ROOT)
     condition = digest(dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
                             config=config, simulation=simulation_config, retest=RETEST_SEEDS,
                             effective_options=COMMON, rules=rules))
@@ -239,14 +247,17 @@ def run_training(template, targets, workspace):
     completed = {row['candidate_id'] for row in processed
                  if row['condition'] == condition and row['status'] in ('completed', 'rejected')}
     candidates = result_store.read_records('seed_candidates', 'registry') + history_candidates(character)
+    _check_cancelled(cancel_event)
     candidates = [row for row in candidates if row.get('semantic') != 'unsupported' and
                   row['class_name'] == character.class_name and
                   row['spec'] == character.spec and row['candidate_id'] not in completed]
     if not candidates:
         status = 'unchanged'
+        _check_cancelled(cancel_event)
         if not any(row['condition'] == condition and row['status'] == 'failed' for row in processed):
             restored = publish_records(processed, selected, condition=condition, character=character,
                                        targets=targets, template_sha=template_sha, engines=engines)
+            _check_cancelled(cancel_event)
             if restored and digest(restored) != digest(selected):
                 result_store.write('seed_selected', scope, restored, schema=SELECTED_SCHEMA)
                 status = 'restored'
@@ -259,17 +270,20 @@ def run_training(template, targets, workspace):
     identity_file.write_text(condition, encoding='ascii')
     profile = batch / 'standard.simc'
     profile.write_text(text, encoding='utf-8')
-    native = reference(profile, batch / 'reference', character, iterations=100,
+    setup_runtime = TaskRuntime(600, cancel_event=cancel_event)
+    setup_runtime.check()
+    native = reference(profile, batch / 'reference', character, runtime=setup_runtime, iterations=100,
                        simulation_config=simulation_config)
+    setup_runtime.check()
     character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
     capabilities = inspect(native, batch / 'capabilities')
+    _check_cancelled(cancel_event)
     reference_path = batch / 'reference/native.json'
     reference_key = digest(dict(condition=condition, purpose='seed_reference'))
     result_store.write_batch(reference_key, dict(batch_key=reference_key, run_id=condition,
         purpose='seed_reference', dps=native['dps'], samples=native['samples'],
         report=json.loads(reference_path.read_text(encoding='utf-8'))))
     reference_path.unlink()
-    initialization_seconds = time.monotonic() - initialization_started
     known = {row['candidate_id'] for row in candidates}
     processed = [row for row in processed if not (row['candidate_id'] in known and row['condition'] == condition)]
     seen = {}
@@ -277,6 +291,7 @@ def run_training(template, targets, workspace):
         if row['condition'] == condition and row['status'] == 'completed':
             seen[canonicalize_search_program(decode(row['initial_program']), capabilities)['identity']] = row['candidate_id']
     for row in candidates:
+        _check_cancelled(cancel_event)
         row['program'], row['core'] = decode(row['program']), decode(row['core'])
         folder = batch / row['candidate_id'][:12]
         folder.mkdir(exist_ok=True)
@@ -286,6 +301,7 @@ def run_training(template, targets, workspace):
                       initial_scores=[], comparison={}, task_path=str(folder), native_batch_starts=0,
                       batch_requests=0, cache_hits=0)
         store = None
+        cancelled = False
         try:
             prepared = canonicalize_search_program(row['program'], capabilities)
             key = prepared['identity']
@@ -293,8 +309,6 @@ def run_training(template, targets, workspace):
                 record.update(status='rejected', error='相同行为候选: ' + seen[key])
             else:
                 seen[key] = row['candidate_id']
-                compile_program(from_search_program(row['program'], capabilities), folder / 'initial-export',
-                                identity=native['identity'], capabilities=capabilities)
                 store = TaskStore(folder)
                 saved_condition = store.state.get('training_condition')
                 if saved_condition and saved_condition != condition:
@@ -306,7 +320,8 @@ def run_training(template, targets, workspace):
                                    run_id=store.state.get('run_id', uuid.uuid4().hex),
                                    starts=store.state.get('starts', [row['program']]))
                 used = store.state.get('elapsed_seconds', 0)
-                runtime = TaskRuntime(600, used_seconds=min(600, used + initialization_seconds))
+                runtime = TaskRuntime(600, used_seconds=min(600, used),
+                                      cancel_event=cancel_event)
                 with store.active(runtime):
                     result = optimize(profile=profile, character=character, capabilities=capabilities,
                                       reference=native, destination=folder, runtime=runtime, config=config,
@@ -324,15 +339,18 @@ def run_training(template, targets, workspace):
                 if store.state.get('training_complete_rounds', 0) != 5:
                     raise ValueError('预算或其他停止条件使五轮未完成，保留进度待检查')
                 record['initial_scores'] = retest(profile, row['program'], character, capabilities,
-                                                 native, folder / 'retest-initial', simulation_config)
+                                                 native, folder / 'retest-initial', simulation_config,
+                                                 runtime=TaskRuntime(600, cancel_event=cancel_event))
                 record['scores'] = retest(profile, program, character, capabilities, native,
-                                         folder / 'retest-final', simulation_config)
+                                         folder / 'retest-final', simulation_config,
+                                         runtime=TaskRuntime(600, cancel_event=cancel_event))
                 record['comparison'] = summarize_pairs(
                     [{'dps': value} for value in record['scores']],
                     [{'dps': value} for value in record['initial_scores']])
                 record['status'] = 'completed'
         except (ValueError, BudgetExceeded, TaskCancelled) as error:
             record['error'] = str(error)
+            cancelled = isinstance(error, TaskCancelled)
             if isinstance(error, ValueError) and store is None:
                 record['status'] = 'rejected'
         finally:
@@ -343,13 +361,26 @@ def run_training(template, targets, workspace):
             for name in ('initial_program', 'program', 'comparison'):
                 item[name] = decode(item[name])
         result_store.write('seed_processed', scope, processed, schema=PROCESSED_SCHEMA)
+        if cancelled:
+            break
+        _check_cancelled(cancel_event)
+    if cancel_event is not None and cancel_event.is_set():
+        raise TaskCancelled('任务已取消；进度已保存，旧入选库保持不变')
     if any(item['status'] == 'failed' for item in processed if item['condition'] == condition):
         raise ValueError('存在未完成候选，旧入选库保持不变；使用list --state processed检查')
     selected = publish_records(processed, selected, condition=condition, character=character,
                                targets=targets, template_sha=template_sha, engines=engines)
+    _check_cancelled(cancel_event)
     if selected:
+        _check_cancelled(cancel_event)
         result_store.write('seed_selected', scope, selected, schema=SELECTED_SCHEMA)
     return dict(status='completed', processed=len(candidates), selected=len(selected), targets=targets)
+
+
+def run_training(template, targets, workspace):
+    from seed_activity import training_activity
+    with training_activity() as cancel_event:
+        return _run_training(template, targets, workspace, cancel_event=cancel_event)
 
 
 def main(argv=None):
@@ -376,8 +407,12 @@ def main(argv=None):
         if args.command == 'register':
             output = register(args.input)
         elif args.command == 'run':
+            from seed_activity import training_activity
             with writer_lock():
-                output = [run_training(args.template, targets, args.workspace) for targets in dict.fromkeys(args.targets)]
+                with training_activity() as cancel_event:
+                    output = [_run_training(args.template, targets, args.workspace,
+                                            cancel_event=cancel_event)
+                              for targets in dict.fromkeys(args.targets)]
         elif args.state in ('pending', 'unsupported'):
             output = [row for row in result_store.read_records('seed_candidates', 'registry')
                       if (row['semantic'] == 'unsupported') == (args.state == 'unsupported')]
