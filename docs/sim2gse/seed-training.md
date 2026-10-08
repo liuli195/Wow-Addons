@@ -4,7 +4,7 @@
 
 ## 登记
 
-清洗件是一个对象，包含label（名称）、class_name（职业）、spec（专精）、source（来源）、original（原件文本）、instructions（使用说明）、semantic（语义状态）、changes（清洗说明列表）、family（结构家族）、core（核心分组片段）和program（搜索程序）。semantic使用preserved（语义保留）或rewritten（明确改写）。不能表达的材料不要伪造为可模拟程序。
+清洗件是一个对象，包含label（名称）、class_name（职业）、spec（专精）、source（来源）、original（原件文本）、instructions（使用说明）、semantic（语义状态）、changes（清洗说明列表）、family（结构家族）、core（核心分组片段）和program（搜索程序）。semantic使用preserved（语义保留）、rewritten（明确改写）或unsupported（当前不可表达）。不可表达材料同样登记原件和原因，程序必须为空列表，不参与训练；通过list --state unsupported（查看不可表达材料）读取。
 
 示例：
 

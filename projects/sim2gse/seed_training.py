@@ -63,13 +63,16 @@ def register(path):
     for key in ('label', 'class_name', 'spec', 'source', 'original', 'instructions', 'family'):
         if not isinstance(row[key], str) or not row[key].strip():
             raise ValueError('清洗件字段不能为空: ' + key)
-    if row['semantic'] not in ('preserved', 'rewritten'):
-        raise ValueError('仅可登记语义保留或明确改写的可模拟清洗件')
+    if row['semantic'] not in ('preserved', 'rewritten', 'unsupported'):
+        raise ValueError('清洗件语义状态无效')
     if (not isinstance(row['changes'], list) or
             any(not isinstance(item, str) for item in row['changes']) or
-            not isinstance(row['program'], list) or not row['program'] or
+            not isinstance(row['program'], list) or
+            (row['semantic'] != 'unsupported' and not row['program']) or
             not isinstance(row['core'], list)):
         raise ValueError('清洗记录、核心或程序格式无效')
+    if row['semantic'] == 'unsupported' and (row['program'] or not row['changes']):
+        raise ValueError('不可表达材料必须保存原因且不得伪造程序')
     row['candidate_id'] = digest(row)
     with writer_lock():
         rows = result_store.read_records('seed_candidates', 'registry')
@@ -236,7 +239,8 @@ def run_training(template, targets, workspace):
     completed = {row['candidate_id'] for row in processed
                  if row['condition'] == condition and row['status'] in ('completed', 'rejected')}
     candidates = result_store.read_records('seed_candidates', 'registry') + history_candidates(character)
-    candidates = [row for row in candidates if row['class_name'] == character.class_name and
+    candidates = [row for row in candidates if row.get('semantic') != 'unsupported' and
+                  row['class_name'] == character.class_name and
                   row['spec'] == character.spec and row['candidate_id'] not in completed]
     if not candidates:
         status = 'unchanged'
@@ -350,12 +354,12 @@ def run_training(template, targets, workspace):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='人工清洗件登记与起点预训练')
-    parser.add_argument('--project', type=Path, help='已接入的共享数据中心所属项目')
+    parser.add_argument('--project', type=Path, required=True, help='已接入的共享数据中心所属项目')
     commands = parser.add_subparsers(dest='command', required=True)
     registration = commands.add_parser('register', help='登记人工清洗件')
     registration.add_argument('input', type=Path)
     listing = commands.add_parser('list', help='读取中心中的起点记录')
-    listing.add_argument('--state', choices=('pending', 'selected', 'processed'), default='pending')
+    listing.add_argument('--state', choices=('pending', 'selected', 'processed', 'unsupported'), default='pending')
     listing.add_argument('--targets', type=int, choices=(1, 5), default=1)
     listing.add_argument('--class-name', default='deathknight')
     listing.add_argument('--spec', default='unholy')
@@ -367,16 +371,16 @@ def main(argv=None):
                           '.local/sim2gse/seed-training')
     args = parser.parse_args(argv)
     try:
-        if args.project:
-            result_store.bind_project(args.project)
+        result_store.bind_project(args.project)
         result_store.ensure_available()
         if args.command == 'register':
             output = register(args.input)
         elif args.command == 'run':
             with writer_lock():
                 output = [run_training(args.template, targets, args.workspace) for targets in dict.fromkeys(args.targets)]
-        elif args.state == 'pending':
-            output = result_store.read_records('seed_candidates', 'registry')
+        elif args.state in ('pending', 'unsupported'):
+            output = [row for row in result_store.read_records('seed_candidates', 'registry')
+                      if (row['semantic'] == 'unsupported') == (args.state == 'unsupported')]
         else:
             output = result_store.read_records('seed_' + args.state,
                                               f'{args.class_name}-{args.spec}-{args.targets}')
