@@ -171,9 +171,9 @@ def from_search_program(program, capabilities):
         elif isinstance(segment, dict) and segment.get("kind") == "CastSequence":
             members = segment.get("members")
             reset = segment.get("reset")
-            if (not isinstance(members, list) or not 2 <= len(members) <= 4
+            if (not isinstance(members, list) or not 2 <= len(members) <= 32
                     or any(not isinstance(member, str) or not member for member in members)):
-                raise ValueError(f"segments[{segment_index}]: 搜索 /castsequence 必须包含 2 至 4 个技能成员")
+                raise ValueError(f"segments[{segment_index}]: 搜索 /castsequence 必须包含 2 至 32 个技能成员")
             segments.append(("CastSequence", list(members), reset))
         else:
             raise ValueError(f"segments[{segment_index}]: 搜索程序包含不支持的节点")

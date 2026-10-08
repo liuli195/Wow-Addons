@@ -33,6 +33,39 @@ def imported_sequence(name, actions):
 
 
 class SequenceSimulationTests(unittest.TestCase):
+    def test_long_search_castsequence_compiles_and_runs_with_member_limits(self):
+        from program import compile_program, from_search_program
+
+        source, character, native, capabilities = self.prepared
+        members = ['death_and_decay', 'putrefy', 'dark_transformation',
+                   'army_of_the_dead', 'death_and_decay', 'putrefy', 'dark_transformation']
+        program = from_search_program([
+            {'kind': 'CastSequence', 'members': members,
+             'reset': {'timeout_seconds': None, 'flags': ['combat']}},
+            ['festering_strike'], ['scourge_strike'], ['death_coil'],
+        ], capabilities)
+        with tempfile.TemporaryDirectory(prefix='long-search-castsequence-') as directory:
+            root = Path(directory)
+            candidate = compile_program(program, root / 'export', identity=native['identity'],
+                                        capabilities=capabilities)
+            result = evaluate(source, candidate, root / 'controlled', character=character,
+                              iterations=1, input_times=list(range(0, 180000, 300)))
+            self.assertTrue(result['consistent'])
+            self.assertEqual(result['castsequences'][0]['members'], members)
+            self.assertTrue(any(event['event'] == 'native_execute'
+                                and event['sequence_member'] == 6 for event in result['trace']))
+            upper = from_search_program([
+                {'kind': 'CastSequence', 'members': ['outbreak'] * 32, 'reset': None},
+            ], capabilities)
+            with self.assertRaisesRegex(ValueError, '255'):
+                compile_program(upper, root / 'too-long', identity=native['identity'],
+                                capabilities=capabilities)
+        for count in (1, 33):
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, '2 至 32'):
+                from_search_program([
+                    {'kind': 'CastSequence', 'members': ['outbreak'] * count, 'reset': None},
+                ], capabilities)
+
     def test_castsequence_timeout_refreshes_on_repeated_use(self):
         from program import compile_program, from_search_program
 
