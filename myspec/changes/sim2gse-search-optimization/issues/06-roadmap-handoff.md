@@ -6,7 +6,7 @@ Status（状态）: open
 Assignee（领取者）: unassigned
 Mode（方式）: AFK（代理独立执行）
 Parent（所属地图）: [Sim2GSE 搜索器长期优化地图](../spec.md)
-Blocked by（前置事项）: [实施第四阶段自适应变异、热启动与可选预训练](05a-adaptive-warm-start-implementation.md)
+Blocked by（前置事项）: [实施第四阶段后续候选生成与停滞处理](05a-adaptive-warm-start-implementation.md)
 
 ## Question（问题）
 
