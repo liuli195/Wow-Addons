@@ -1,7 +1,7 @@
 # 03：已有全量材料人工清洗与批量筛选评审
 
-Status（状态）：ready-for-agent。
-Blocked by（阻塞任务）：02：正常搜索读取与ABC完整验收。
+Status（状态）：in-progress（02已验收，开始逐份清洗及同中心筛选）。
+Blocked by（阻塞任务）：无；02完整验收通过。
 
 ## 交付行为
 
