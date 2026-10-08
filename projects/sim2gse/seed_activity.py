@@ -15,11 +15,11 @@ class ActivityConflict(RuntimeError):
 
 
 def _activity_directory():
-    from result_store import DATA_ROOT
+    import result_store
 
-    root = Path(DATA_ROOT)
-    if not root.is_dir():
-        raise ActivityConflict('既有数据中心不可用，无法协调搜索与起点整理')
+    result_store.ensure_available()
+    root = Path(result_store.DATA_ROOT)
+    root.mkdir(parents=True, exist_ok=True)
     directory = root / '.seed-activity'
     directory.mkdir(exist_ok=True)
     return directory

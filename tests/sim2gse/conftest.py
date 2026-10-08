@@ -34,8 +34,6 @@ def installed_data_store_api(installed_data_store):
 def isolated_result_center(tmp_path, monkeypatch, installed_data_store_api, installed_data_store):
     import result_store
     monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'data')
-    # A freshly connected test center has an existing empty root for activity markers.
-    result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
     # Business tests use the real package copy; connection tests launch clean processes.
     monkeypatch.setattr(result_store, '_SKILL_API', installed_data_store_api)
     monkeypatch.setenv('DATA_STORE_TEST_SKILL', str(installed_data_store))

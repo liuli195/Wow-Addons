@@ -265,3 +265,46 @@ def test_missing_project_and_unreadable_center_are_not_silently_empty(tmp_path, 
         return api
     monkeypatch.setattr(runpy, 'run_path', unreadable_loader)
     assert command(tmp_path, ['list']) == 2
+
+
+def test_unconnected_public_search_does_not_create_data_root(tmp_path, monkeypatch):
+    from test_character_export import sample_profile
+    from task import run_task
+    import result_store
+
+    data_root = tmp_path / 'unconnected' / 'data'
+    monkeypatch.setattr(result_store, 'DATA_ROOT', data_root)
+    monkeypatch.setattr(result_store, '_BOUND_PROJECT', None)
+    monkeypatch.setattr(result_store, '_SKILL_API', None)
+    monkeypatch.setattr(result_store, '_skill_root', lambda: tmp_path / 'missing-skill')
+    template = tmp_path / 'role.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='数据中心尚未接入本项目'):
+        run_task(template, tmp_path / 'unconnected-task')
+
+    assert not data_root.exists()
+
+
+def test_connected_public_search_creates_data_root_on_first_run(tmp_path, monkeypatch):
+    from test_character_export import sample_profile
+    from test_search import _fast_search_boundary
+    from task import run_task
+    import result_store
+
+    data_root = tmp_path / 'first-run-center' / 'data'
+    monkeypatch.setattr(result_store, 'DATA_ROOT', data_root)
+    template = tmp_path / 'role.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    config = dict(total_budget_seconds=60, search_budget_seconds=10, candidate_limit=2,
+                  round_candidate_limit=1, batch_targets=(2,), validation_batches=2,
+                  final_batches=1, iterations=2, final_iterations=2,
+                  scenarios=('nominal',), max_processes=1)
+
+    assert not data_root.exists()
+    with _fast_search_boundary():
+        result = run_task(template, tmp_path / 'first-run-task', search_config=config)
+
+    assert result['status'] == 'completed'
+    assert data_root.is_dir()
+    assert (data_root / '.seed-activity').is_dir()
