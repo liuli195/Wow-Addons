@@ -14,41 +14,41 @@
 
 |序号|成员|状态/结构家族|实际取用内容|明确变化|
 |---:|---|---|---|---|
-|1|SCG_UNH_AOE v1 Default|待编译候选<br>`flat-expanded-priority-repeat`（优先循环展开为固定点击顺序后循环）|展开表中的普通技能点击顺序；剔除不映射的辅助/物品动作。|source_tokens展开为22个位置；Repeat/interval转成普通按键顺序，不保留原时间语义。 out_of_bounds_insertions=3；采用已存展开表，不声称与GSE运行时完全等价。|
-|2|SCG_UNH_ST v1 Default|待编译候选<br>`flat-expanded-priority-repeat`（优先循环展开为固定点击顺序后循环）|展开表中的普通技能点击顺序；剔除不映射的辅助/物品动作。|source_tokens展开为17个位置；Repeat/interval转成普通按键顺序，不保留原时间语义。 out_of_bounds_insertions=3；采用已存展开表，不声称与GSE运行时完全等价。|
-|3|Orb_UDK_ST-3.7 v1 Mythic+ w/semi|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及死亡缠绕、腐化、灵魂收割填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|4|Orb_UDK_ST-3.7 v2 Mythic+ w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|5|Orb_UDK_ST-3.7 v3 PvP w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|6|Orb_UDK_AoE-3.7 v1 Mythic+ w/semi|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|7|Orb_UDK_AoE-3.7 v2 Mythic+ w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|8|Orb_UDK_AoE-3.7 v3 PvP w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|9|Orb_UDK_AoE-3.0 v1 Mythic+ w/semi|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|10|Orb_UDK_AoE-3.0 v2 Mythic+ w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|11|Orb_UDK_AoE-3.0 v3 PvP w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|12|Orb_UDK_ST-3.0 v1 Mythic+ w/semi|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|13|Orb_UDK_ST-3.0 v2 Mythic+ w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
-|14|Orb_UDK_ST-3.0 v3 PvP w/auto|待编译候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|1|SCG_UNH_AOE v1 Default|已编译改写候选<br>`flat-expanded-priority-repeat`（优先循环展开为固定点击顺序后循环）|展开表中的普通技能点击顺序；剔除不映射的辅助/物品动作。|source_tokens展开为22个位置；Repeat/interval转成普通按键顺序，不保留原时间语义。 out_of_bounds_insertions=3；采用已存展开表，不声称与GSE运行时完全等价。|
+|2|SCG_UNH_ST v1 Default|已编译改写候选<br>`flat-expanded-priority-repeat`（优先循环展开为固定点击顺序后循环）|展开表中的普通技能点击顺序；剔除不映射的辅助/物品动作。|source_tokens展开为17个位置；Repeat/interval转成普通按键顺序，不保留原时间语义。 out_of_bounds_insertions=3；采用已存展开表，不声称与GSE运行时完全等价。|
+|3|Orb_UDK_ST-3.7 v1 Mythic+ w/semi|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及死亡缠绕、腐化、灵魂收割填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|4|Orb_UDK_ST-3.7 v2 Mythic+ w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|5|Orb_UDK_ST-3.7 v3 PvP w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|6|Orb_UDK_AoE-3.7 v1 Mythic+ w/semi|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|7|Orb_UDK_AoE-3.7 v2 Mythic+ w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|8|Orb_UDK_AoE-3.7 v3 PvP w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|9|Orb_UDK_AoE-3.0 v1 Mythic+ w/semi|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|10|Orb_UDK_AoE-3.0 v2 Mythic+ w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|11|Orb_UDK_AoE-3.0 v3 PvP w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条AOE内层施法序列及腐化填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|12|Orb_UDK_ST-3.0 v1 Mythic+ w/semi|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|13|Orb_UDK_ST-3.0 v2 Mythic+ w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
+|14|Orb_UDK_ST-3.0 v3 PvP w/auto|已编译改写候选<br>`embedded-castsequence-plus-fillers`（一条内层施法序列加普通填充按键）|一条ST内层施法序列及普通填充。|所选CastSequence保留成功施放才推进；GSE外层前进/失败/重置调度未完整复现。 @player/@cursor/目标条件改用当前固定敌方模型，不能据此验证游戏中的地面落点。|
 |15|SBA_UNHOLY v1|保留原件，不生成候选<br>`assistedbutton-conditional`（按条件选技能的辅助按钮，当前不能表达）|AssistedButton（辅助按钮）和条件当前不能表达。|SBA_UNHOLY.Macros[1].Actions[4] -> 原件完整保留；当前搜索入口不支持AssistedButton及其条件，未猜测成普通技能序列。 SBA_UNHOLY.Macros[1].Actions[5] -> 原件完整保留；当前搜索入口不支持AssistedButton及其条件，未猜测成普通技能序列。|
-|16|SheHulks_UNSing_-_1_Button v1|待编译候选<br>`one-button-sequential-cycle`（单按键按顺序逐步循环）|一圈单体Sequential（顺序执行）正文。|SheHulks_UNSing_-_1_Button.Macros[1].Actions[2] -> 删除：选敌、开始攻击、宠物或停止宏控制不属于当前技能循环模拟。 移除Raise Dead、饰品13/14、反魔法护罩及nochanneling门控；原count只取一圈顺序正文。|
-|17|SheHulks_UNMult_-_1_Button v1|待编译候选<br>`one-button-sequential-cycle`（单按键按顺序逐步循环）|一圈群体Sequential（顺序执行）正文。|SheHulks_UNMult_-_1_Button.Macros[1].Actions[2] -> 删除：选敌、开始攻击、宠物或停止宏控制不属于当前技能循环模拟。 移除Raise Dead、饰品13/14、反魔法护罩及nochanneling门控；原count只取一圈顺序正文。|
-|18|EA_UDK_v0.2 v1 Default|待编译候选<br>`paired-independent-castsequences`（两条独立推进的施法序列加普通填充按键）|EA人工整理件B：7成员与4成员两条独立施法序列，加两个普通填充键。|改成四个外层按键：保留Actions[4]七成员、Actions[2]/Actions[6][2]四成员的顺序及重置。 删除ReversePriority、定期插入/重复、其它独立CastSequence、修饰键/null、宠物、饰品及地面定位；不是原宏完整复现。|
-|19|MOB_UDK_ST v1 Default|待编译候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|MOB人工整理件A：爆发前缀+34步三角递增循环。|采用已审过的MOB-derived37：Outbreak、Army、Dark Transformation前缀+34步三角循环；三个前缀取自合法动作池，不声称原件自动施放。 删除Actions[1]饰品、宠物、选敌/攻击与停止宏；Priority外层改为固定顺序。|
-|20|MOB_UDK_MYTH_AOE v1 Default|待编译候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|6步逐层增长重复两轮，再接4步尾段；与MOB-ST及SOL同属一个结构家族。|按预先生成的source_tokens顺序取每次点击的无修饰键普通分支；去掉宠物准备与饰品13/14，Priority/Sequential外层展平。 源@player死亡凋零使用当前固定敌方模型，不等同原游戏地面落点。|
+|16|SheHulks_UNSing_-_1_Button v1|已编译改写候选<br>`one-button-sequential-cycle`（单按键按顺序逐步循环）|一圈单体Sequential（顺序执行）正文。|SheHulks_UNSing_-_1_Button.Macros[1].Actions[2] -> 删除：选敌、开始攻击、宠物或停止宏控制不属于当前技能循环模拟。 移除Raise Dead、饰品13/14、反魔法护罩及nochanneling门控；原count只取一圈顺序正文。|
+|17|SheHulks_UNMult_-_1_Button v1|已编译改写候选<br>`one-button-sequential-cycle`（单按键按顺序逐步循环）|一圈群体Sequential（顺序执行）正文。|SheHulks_UNMult_-_1_Button.Macros[1].Actions[2] -> 删除：选敌、开始攻击、宠物或停止宏控制不属于当前技能循环模拟。 移除Raise Dead、饰品13/14、反魔法护罩及nochanneling门控；原count只取一圈顺序正文。|
+|18|EA_UDK_v0.2 v1 Default|已编译改写候选<br>`paired-independent-castsequences`（两条独立推进的施法序列加普通填充按键）|EA人工整理件B：7成员与4成员两条独立施法序列，加两个普通填充键。|改成四个外层按键：保留Actions[4]七成员、Actions[2]/Actions[6][2]四成员的顺序及重置。 删除ReversePriority、定期插入/重复、其它独立CastSequence、修饰键/null、宠物、饰品及地面定位；不是原宏完整复现。|
+|19|MOB_UDK_ST v1 Default|已编译改写候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|MOB人工整理件A：爆发前缀+34步三角递增循环。|采用已审过的MOB-derived37：Outbreak、Army、Dark Transformation前缀+34步三角循环；三个前缀取自合法动作池，不声称原件自动施放。 删除Actions[1]饰品、宠物、选敌/攻击与停止宏；Priority外层改为固定顺序。|
+|20|MOB_UDK_MYTH_AOE v1 Default|已编译改写候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|6步逐层增长重复两轮，再接4步尾段；与MOB-ST及SOL同属一个结构家族。|按预先生成的source_tokens顺序取每次点击的无修饰键普通分支；去掉宠物准备与饰品13/14，Priority/Sequential外层展平。 源@player死亡凋零使用当前固定敌方模型，不等同原游戏地面落点。|
 |21|Main_Spam_UDK v1|保留原件，不生成候选<br>`same-key-builder-spender-pair`（同一按键块含两个GCD动作，当前入口不能表达）|同一按键块含脓疮打击+天灾打击两个GCD，入口拒绝；不拆成两个键。|Main_Spam_UDK.Versions[1].Actions[1][4] -> 保留原件但不生成程序：Main_Spam同一个GSE Action含脓疮打击和天灾打击两个GCD；搜索入口拒绝同块多GCD，拆成两键会改推进语义。 Main_Spam_UDK.Versions[1].Actions[1][5] -> 保留原件但不生成程序：Main_Spam同一个GSE Action含脓疮打击和天灾打击两个GCD；搜索入口拒绝同块多GCD，拆成两键会改推进语义。|
 |22|Burst_Cooldowns_UDK v1|保留原件，不生成候选<br>`burst-only-action-set`（独立爆发键含普通输出，不构成主循环）|Kim独立爆发键含冷却与普通输出；作者要求在需要爆发时持续按，不是一次性冷却按钮。|Burst_Cooldowns_UDK.Versions[1].Actions[1][5] -> 保留原件但不作为起点：这是独立爆发键，但含腐化、死亡缠绕等普通输出；作者要求需要爆发时持续按，不是一次按下就结束的纯冷却键。 Burst_Cooldowns_UDK.Versions[1].Actions[1][6] -> 保留原件但不作为起点：这是独立爆发键，但含腐化、死亡缠绕等普通输出；作者要求需要爆发时持续按，不是一次按下就结束的纯冷却键。|
 |23|Main_Spam_UDK v1|保留原件，不生成候选<br>`same-key-builder-spender-pair`（同一按键块含两个GCD动作，当前入口不能表达）|同一按键块含脓疮打击+天灾打击两个GCD，入口拒绝；不拆成两个键。|Main_Spam_UDK.Versions[1].Actions[1][4] -> 保留原件但不生成程序：Main_Spam同一个GSE Action含脓疮打击和天灾打击两个GCD；搜索入口拒绝同块多GCD，拆成两键会改推进语义。 Main_Spam_UDK.Versions[1].Actions[1][5] -> 保留原件但不生成程序：Main_Spam同一个GSE Action含脓疮打击和天灾打击两个GCD；搜索入口拒绝同块多GCD，拆成两键会改推进语义。|
 |24|Burst_Cooldowns_UDK v1|保留原件，不生成候选<br>`burst-only-action-set`（独立爆发键含普通输出，不构成主循环）|Kim V1.1独立爆发键含冷却与普通输出；作者要求在需要爆发时持续按，不是一次性冷却按钮。|Burst_Cooldowns_UDK.Versions[1].Actions[1][5] -> 保留原件但不作为起点：这是独立爆发键，但含腐化、死亡缠绕等普通输出；作者要求需要爆发时持续按，不是一次按下就结束的纯冷却键。 Burst_Cooldowns_UDK.Versions[1].Actions[1][6] -> 保留原件但不作为起点：这是独立爆发键，但含腐化、死亡缠绕等普通输出；作者要求需要爆发时持续按，不是一次按下就结束的纯冷却键。|
-|25|unholydk_ST v1|待编译候选<br>`flat-cooldown-led-cycle`（冷却动作前置的展开顺序循环）|单体普通技能展开顺序。|改写保留：取无修饰键普通分支作为展开顺序第22次点击；重复位置依source_tokens保留。 移除选敌/开始攻击；展开普通技能顺序作为新循环，不保留原GSE分段和间隔。|
-|26|unholydk_m+ v1|待编译候选<br>`mod-free-priority-expansion`（移除修饰键分支后的优先循环展开）|无修饰键的普通分支展开；一次56点击顺序。|保留source_tokens对应的无修饰键末级技能分支，删去ctrl/shift手动爆发和channel门控；Priority/Repeat展平为一次56步顺序。 源@player死亡凋零使用固定敌方模型，目标位置语义有变化。|
-|27|unholydk_m+ v1|待编译候选<br>`long-sequential-body-compressed`（长顺序主体仅取一圈）|999次循环中取一次完整13步正文。|原999次循环只取一次13步正文，作为候选新循环；循环次数被压缩，不宣称原件等价。 删除首个选敌/攻击宏。|
-|28|unholydk_m+ v1|待编译候选<br>`long-body-with-manual-burst-slots-removed`（删去手动爆发位置后的顺序主体）|取正文11个普通动作，移除两个只由Alt控制的爆发位置。|原13个位置中的Army与Dark Transformation仅有alt手动键分支，删除两格，周期由13步缩短为11步。 999次循环压缩为一次正文，删除选敌/攻击宏。|
-|29|FLIP_UH_AOE_V4 v1 AOE V4 - RP Drain + Cursor DnD|待编译候选<br>`interleaved-epidemic-and-spender`（资源生成与消耗技能交错；此族包含单体和群体成员，单体成员不含Epidemic（群体消耗技能），英文旧代号不表示每件都含Epidemic）|FLIP群体普通施法展开，首步Outbreak（疾病爆发）改成普通动作。|删除宠物、mod:shift、目标条件、target/combat重置与null；固定点击间隔。 @cursor/@player死亡凋零改为当前固定敌方模型。|
-|30|FLIP_UH_ST_V3 v1 ST V3 - Controlled Outbreak|待编译候选<br>`interleaved-epidemic-and-spender`（资源生成与消耗技能交错；此族包含单体和群体成员，单体成员不含Epidemic（群体消耗技能），英文旧代号不表示每件都含Epidemic）|FLIP单体普通施法展开，首步Outbreak（疾病爆发）改成普通动作；本件含Death Coil（死亡缠绕），不含Epidemic（群体消耗技能）。|删除宠物、mod:shift、目标条件、target/combat重置与null；固定点击间隔。 @cursor/@player死亡凋零改为当前固定敌方模型。|
-|31|SOL_UDK_Aoe v1 Rider|待编译候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|Rider（天启骑士）无修饰键普通分支；两轮三角增长后接尾段。|把Priority循环依source_tokens展开。 源@player死亡凋零按固定敌方模型执行，目标位置变化。|
-|32|SOL_UDK_Aoe v2 San'layn|待编译候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|San’layn（血裔）无修饰键普通分支；两轮三角增长后接尾段。|源@player死亡凋零按固定敌方模型执行，目标位置变化。 原件中San’layn专属Putrefy修饰键分支未进入候选。|
-|33|SOL_UDK_ST v1 Rider|待编译候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|Rider（天启骑士）无修饰键普通分支；两轮三角增长后接尾段。|把Priority循环依source_tokens展开。 源@player死亡凋零按固定敌方模型执行，目标位置变化。|
-|34|SOL_UDK_ST v2 San'layn|待编译候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|San’layn（血裔）无修饰键普通分支；两轮三角增长后接尾段。|源@player死亡凋零按固定敌方模型执行，目标位置变化。 原件中San’layn专属Putrefy修饰键分支未进入候选。|
-|35|EA_UDK_v0.2 v1 Default|待编译候选<br>`paired-independent-castsequences`（两条独立推进的施法序列加普通填充按键）|EA人工整理件B：7成员与4成员两条独立施法序列，加两个普通填充键。|改成四个外层按键：保留Actions[4]七成员、Actions[2]/Actions[6][2]四成员的顺序及重置。 删除ReversePriority、定期插入/重复、其它独立CastSequence、修饰键/null、宠物、饰品及地面定位；不是原宏完整复现。|
+|25|unholydk_ST v1|已编译改写候选<br>`flat-cooldown-led-cycle`（冷却动作前置的展开顺序循环）|单体普通技能展开顺序。|改写保留：取无修饰键普通分支作为展开顺序第22次点击；重复位置依source_tokens保留。 移除选敌/开始攻击；展开普通技能顺序作为新循环，不保留原GSE分段和间隔。|
+|26|unholydk_m+ v1|已编译改写候选<br>`mod-free-priority-expansion`（移除修饰键分支后的优先循环展开）|无修饰键的普通分支展开；一次56点击顺序。|保留source_tokens对应的无修饰键末级技能分支，删去ctrl/shift手动爆发和channel门控；Priority/Repeat展平为一次56步顺序。 源@player死亡凋零使用固定敌方模型，目标位置语义有变化。|
+|27|unholydk_m+ v1|已编译改写候选<br>`long-sequential-body-compressed`（长顺序主体仅取一圈）|999次循环中取一次完整13步正文。|原999次循环只取一次13步正文，作为候选新循环；循环次数被压缩，不宣称原件等价。 删除首个选敌/攻击宏。|
+|28|unholydk_m+ v1|已编译改写候选<br>`long-body-with-manual-burst-slots-removed`（删去手动爆发位置后的顺序主体）|取正文11个普通动作，移除两个只由Alt控制的爆发位置。|原13个位置中的Army与Dark Transformation仅有alt手动键分支，删除两格，周期由13步缩短为11步。 999次循环压缩为一次正文，删除选敌/攻击宏。|
+|29|FLIP_UH_AOE_V4 v1 AOE V4 - RP Drain + Cursor DnD|已编译改写候选<br>`interleaved-epidemic-and-spender`（资源生成与消耗技能交错；此族包含单体和群体成员，单体成员不含Epidemic（群体消耗技能），英文旧代号不表示每件都含Epidemic）|FLIP群体普通施法展开，首步Outbreak（疾病爆发）改成普通动作。|删除宠物、mod:shift、目标条件、target/combat重置与null；固定点击间隔。 @cursor/@player死亡凋零改为当前固定敌方模型。|
+|30|FLIP_UH_ST_V3 v1 ST V3 - Controlled Outbreak|已编译改写候选<br>`interleaved-epidemic-and-spender`（资源生成与消耗技能交错；此族包含单体和群体成员，单体成员不含Epidemic（群体消耗技能），英文旧代号不表示每件都含Epidemic）|FLIP单体普通施法展开，首步Outbreak（疾病爆发）改成普通动作；本件含Death Coil（死亡缠绕），不含Epidemic（群体消耗技能）。|删除宠物、mod:shift、目标条件、target/combat重置与null；固定点击间隔。 @cursor/@player死亡凋零改为当前固定敌方模型。|
+|31|SOL_UDK_Aoe v1 Rider|已编译改写候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|Rider（天启骑士）无修饰键普通分支；两轮三角增长后接尾段。|把Priority循环依source_tokens展开。 源@player死亡凋零按固定敌方模型执行，目标位置变化。|
+|32|SOL_UDK_Aoe v2 San'layn|已编译改写候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|San’layn（血裔）无修饰键普通分支；两轮三角增长后接尾段。|源@player死亡凋零按固定敌方模型执行，目标位置变化。 原件中San’layn专属Putrefy修饰键分支未进入候选。|
+|33|SOL_UDK_ST v1 Rider|已编译改写候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|Rider（天启骑士）无修饰键普通分支；两轮三角增长后接尾段。|把Priority循环依source_tokens展开。 源@player死亡凋零按固定敌方模型执行，目标位置变化。|
+|34|SOL_UDK_ST v2 San'layn|已编译改写候选<br>`triangle-growth-with-two-pass-and-tail`（三角递增顺序重复两轮后接固定尾段）|San’layn（血裔）无修饰键普通分支；两轮三角增长后接尾段。|源@player死亡凋零按固定敌方模型执行，目标位置变化。 原件中San’layn专属Putrefy修饰键分支未进入候选。|
+|35|EA_UDK_v0.2 v1 Default|已编译改写候选<br>`paired-independent-castsequences`（两条独立推进的施法序列加普通填充按键）|EA人工整理件B：7成员与4成员两条独立施法序列，加两个普通填充键。|改成四个外层按键：保留Actions[4]七成员、Actions[2]/Actions[6][2]四成员的顺序及重置。 删除ReversePriority、定期插入/重复、其它独立CastSequence、修饰键/null、宠物、饰品及地面定位；不是原宏完整复现。|
 ### 作者整套方案的按键说明与来源
 
 以下说明来自本地 `report.md`、`structure-analysis.md` 和保存的主题内容，描述作者原方案。上表和清洗件的 `program` 字段描述本次整理件。导入署名与论坛主题作者不同的情况已分别写明。
@@ -99,11 +99,11 @@ Orbalisk（奥巴里斯克）成员只取实际内层 `/castsequence`（施法�
 
 |新六步候选|整理动作顺序|来源重叠角色数|来源位置数|状态|
 |---:|---|---:|---:|---|
-|1|death_coil → scourge_strike → festering_strike → festering_strike → death_coil → scourge_strike|8|8|新构造，待循环回绕检查|
-|2|scourge_strike → festering_strike → festering_strike → death_coil → scourge_strike → scourge_strike|8|8|新构造，待循环回绕检查|
-|3|scourge_strike → scourge_strike → death_coil → death_coil → scourge_strike → festering_strike|7|7|新构造，待循环回绕检查|
-|4|festering_strike → festering_strike → death_coil → scourge_strike → scourge_strike → death_coil|7|7|新构造，待循环回绕检查|
-|5|scourge_strike → death_coil → death_coil → scourge_strike → festering_strike → festering_strike|6|6|新构造，待循环回绕检查|
+|1|death_coil → scourge_strike → festering_strike → festering_strike → death_coil → scourge_strike|8|8|新构造，已通过两次外层回绕检查|
+|2|scourge_strike → festering_strike → festering_strike → death_coil → scourge_strike → scourge_strike|8|8|新构造，已通过两次外层回绕检查|
+|3|scourge_strike → scourge_strike → death_coil → death_coil → scourge_strike → festering_strike|7|7|新构造，已通过两次外层回绕检查|
+|4|festering_strike → festering_strike → death_coil → scourge_strike → scourge_strike → death_coil|7|7|新构造，已通过两次外层回绕检查|
+|5|scourge_strike → death_coil → death_coil → scourge_strike → festering_strike → festering_strike|6|6|新构造，已通过两次外层回绕检查|
 
 ## GearInsight插件数据
 
@@ -152,7 +152,7 @@ Orbalisk（奥巴里斯克）成员只取实际内层 `/castsequence`（施法�
 
 ## 后续验收边界
 
-82件已通过公开登记入口写入主仓库既有共享数据中心。单体和五目标各按模拟器身份去重为52种程序，全部实际编译成功；每种运行3次迭代，均观察到前两次外层循环回绕及150秒后的继续施放。共104次真实模拟、22份重复来源关联；轨迹和完整模拟记录保存在同一共享中心，检查摘要位于隔离工作树 `.local/tests/seed-training/full/audit-summary.json`。这仅证明改写候选可运行，不能证明原宏等价或内层冷却序列在180秒内完成两次循环。五轮训练、三随机条件复测与反馈结果见下表。
+82件已通过公开登记入口写入主仓库既有共享数据中心。单体和五目标各按模拟器身份去重为52种程序，全部实际编译成功；每种请求3次迭代、得到2份有效统计样本，均观察到前两次外层循环回绕及150秒后的继续施放。共104次真实模拟、22份重复来源关联；轨迹和完整模拟记录保存在同一共享中心，检查摘要位于隔离工作树 `.local/tests/seed-training/full/audit-summary.json`。这仅证明改写候选可运行，不能证明原宏等价或内层冷却序列在180秒内完成两次循环。五轮训练、三随机条件复测与反馈结果见下表。
 
 路径说明：本稿准备的材料在隔离工作树 `.local/tests/seed-training/full/materials/`；真实原始采集目录位于主仓库 `.local/sim2gse/`。这份准备稿不代替原作者许可或模拟结果。
 
