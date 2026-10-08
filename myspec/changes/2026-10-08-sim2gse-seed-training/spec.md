@@ -1,6 +1,6 @@
 # 人工启动的起点整理与预训练
 
-Status（状态）：ready-for-agent（需求准备，等待完整开发门禁一确认）。
+Status（状态）：in-progress（门禁一已确认，按票据串行实施）。
 
 ## Problem Statement（问题）
 
