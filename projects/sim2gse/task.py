@@ -382,7 +382,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         if isinstance(data_key, str):
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                           'canonicalized_duplicates')
+                           'canonicalized_duplicates', 'no_improvement_round_limit')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
                              for row in record.get('batches', [])

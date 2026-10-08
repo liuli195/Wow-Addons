@@ -1833,10 +1833,17 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         state.get('training_complete_rounds', 0) >= training_round_limit):
                     state['stop_reason'] = 'training_round_limit'
                     break
-                if state['no_improvement'] >= config['no_improvement_rounds']:
+                if all(chain.get('stalled') for chain in state['chains']):
+                    state['stop_reason'] = 'space_stalled'
+                    break
+                no_improvement_limit = (len(state['chains']) if training_round_limit is None
+                                        else config['no_improvement_rounds'])
+                if state['no_improvement'] >= no_improvement_limit:
                     state['stop_reason']='no_improvement'
                     break
-                lane_index=state['rounds']%len(state['chains'])
+                lane_index = state.get('next_chain_index', 0)
+                while state['chains'][lane_index].get('stalled'):
+                    lane_index = (lane_index + 1) % len(state['chains'])
                 lane=state['chains'][lane_index]
                 base = next(r for r in state['archive'] if r['key'] == lane['best'])
                 diagnostic=batch(base['program'],'search',99,2,trace=True)
@@ -1918,10 +1925,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     generated.append(work)
                 commit_mutation_observations(generation_observations)
                 if not generated:
-                    state['stop_reason'] = 'space_stalled'
+                    lane['stalled'] = True
+                    state.update(next_chain_index=(lane_index + 1) % len(state['chains']),
+                                 rng=rng.getstate())
                     store.save()
-                    break
+                    continue
                 state['pending'] = generated
+                state['next_chain_index'] = (lane_index + 1) % len(state['chains'])
                 state['round_improved'] = False
                 state['full_round'] = len(generated)==config['round_candidate_limit']
                 state['rng'] = rng.getstate()
@@ -2139,7 +2149,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                   search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
                               candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
                               errors=state.get('errors', []),
-                              partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason')),
+                              partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason'),
+                              no_improvement_round_limit=(len(state['chains']) if training_round_limit is None
+                                                          else config['no_improvement_rounds'])),
                   validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
                   candidate=candidate(chosen['program']), independent_validation_complete=False,
                   improvement='search_result',
