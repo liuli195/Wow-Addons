@@ -2281,8 +2281,11 @@ class SearchAndValidationTests(TestCase):
         import sequence
 
         def equal_damage(profile, candidate, folder, **kwargs):
+            nonlocal diagnostic_rounds
+            if kwargs.get('trace'):
+                diagnostic_rounds += 1
             result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            damage = 200.0 if improve and result['blocks'] not in starts else 100.0
+            damage = 200.0 if improve and diagnostic_rounds >= 3 and result['blocks'] not in starts else 100.0
             result['summary']['dps'] = damage
             result['report']['sim']['statistics']['raid_dps']['mean'] = damage
             result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
@@ -2291,6 +2294,7 @@ class SearchAndValidationTests(TestCase):
 
         for count, improve in ((4, False), (8, False), (4, True)):
             with self.subTest(starts=count, improves=improve), tempfile.TemporaryDirectory() as directory:
+                diagnostic_rounds = 0
                 source = Path(directory) / 'role.simc'
                 source.write_text(sample_profile(), encoding='utf-8')
                 names = ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')
@@ -2306,10 +2310,10 @@ class SearchAndValidationTests(TestCase):
                     saved = read_task(Path(directory) / 'task')
                 self.assertEqual(result['status'], 'completed')
                 self.assertEqual(result['search']['stop_reason'], 'no_improvement')
-                self.assertEqual(result['search']['rounds'], count + int(improve))
+                self.assertEqual(result['search']['rounds'], count + 3 * int(improve))
                 self.assertEqual(len(result['search']['chains']), count)
                 self.assertEqual([chain['rounds'] for chain in result['search']['chains']],
-                                 [1 + int(improve)] + [1] * (count - 1))
+                                 [1 + int(improve)] * 3 + [1] * (count - 3))
                 self.assertEqual(result['search_result']['dps'], 200.0 if improve else 100.0)
                 self.assertEqual(result['search']['no_improvement_round_limit'], count)
                 self.assertEqual(saved['search']['no_improvement_round_limit'], count)
