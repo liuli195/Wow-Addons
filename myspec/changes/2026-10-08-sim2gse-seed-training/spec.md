@@ -58,3 +58,5 @@ Status（状态）：in-progress（门禁一已确认，按票据串行实施）
 同一工作树 D:\My Project\Wow Addons\.local\worktrees\sim2gse-apl-action-pool；干净起始提交8fd77fc2398ea085667cdacc72b13af038bc03b2，当前codex/sim2gse-abc-seed-probe。拟在同一工作树新建codex/sim2gse-seed-training。主仓库main（主干）保持不动。架构调查已实际使用代码架构技能，核对标准模板、数据表、点读、单任务锁和轮次限制。领域词义在本变更定义，正式领域文档待交付门禁。
 
 门禁一前仅准备需求和票据。用户已确认整体方案；按开发技能仍需展示完整分支、实施与审查组合后确认，才能改生产代码或登记生产数据。
+
+当前实施位置：同一隔离工作树，codex/sim2gse-seed-training分支；01、02、03的实施及数据验收完成，正在最后独立文档审查与Windows统一快速验证。正式规格尚未应用，尚无本次PR；主仓库旧产物保持原状，安全同步本次已验证构建产物和身份清单须纳入第二门禁明确授权。
