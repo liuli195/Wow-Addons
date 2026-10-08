@@ -28,7 +28,7 @@ SELECTED_SCHEMA = dict(candidate_id='VARCHAR', condition='VARCHAR', class_name='
     spec='VARCHAR', targets='UBIGINT', program='JSON', family='VARCHAR', score='DOUBLE',
     scores='DOUBLE[]', template_sha256='VARCHAR', engines='JSON')
 RETEST_SEEDS = (20261008, 20261009, 20261010)
-TRAINING_VERSION = 'seed-training-v1'
+TRAINING_VERSION = 'seed-training-v2'
 
 
 def decode(value):
@@ -233,7 +233,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
     text = template.read_text(encoding='utf-8')
     character = template_character(text)
     scope = f'{character.class_name}-{character.spec}-{targets}'
-    config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary'})
+    config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
+                         'no_improvement_rounds': 2})
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
     template_sha = hashlib.sha256(text.encode()).hexdigest()
@@ -288,8 +289,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
     processed = [row for row in processed if not (row['candidate_id'] in known and row['condition'] == condition)]
     seen = {}
     for row in processed:
-        if (row['condition'] == condition and row['status'] == 'completed' and
-                row['rounds'] == 5):
+        if row['condition'] == condition and row['status'] == 'completed':
             for field in ('initial_program', 'program'):
                 identity = canonicalize_search_program(decode(row[field]), capabilities)['identity']
                 seen.setdefault(identity, row['candidate_id'])
@@ -329,7 +329,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
                     result = optimize(profile=profile, character=character, capabilities=capabilities,
                                       reference=native, destination=folder, runtime=runtime, config=config,
                                       condition_key=condition, store=store, simulation_config=simulation_config,
-                                      training_round_limit=5)
+                                      training=True)
                 best = next(item for item in result['search']['records']
                             if item['key'] == result['selected_candidate_key'])
                 program = best['program']
@@ -339,8 +339,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
                               native_batch_starts=store.state.get('native_batch_starts', 0),
                               cache_hits=store.state.get('batch_cache_hits', 0),
                               batch_requests=store.state.get('batch_requests', 0))
-                if store.state.get('training_complete_rounds', 0) != 5:
-                    raise ValueError('预算或其他停止条件使五轮未完成，保留进度待检查')
+                if record['stop_reason'] not in ('no_improvement', 'space_stalled'):
+                    raise ValueError('预算或其他上限使训练未收敛，保留进度待检查')
                 record['initial_scores'] = retest(profile, row['program'], character, capabilities,
                                                  native, folder / 'retest-initial', simulation_config,
                                                  runtime=TaskRuntime(600, cancel_event=cancel_event))
@@ -359,7 +359,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
         finally:
             if store:
                 store.close()
-        if record['status'] == 'completed' and record['rounds'] == 5:
+        if record['status'] == 'completed':
             identity = canonicalize_search_program(decode(record['program']), capabilities)['identity']
             seen.setdefault(identity, row['candidate_id'])
         processed.append(record)
@@ -400,7 +400,7 @@ def main(argv=None):
     listing.add_argument('--targets', type=int, choices=(1, 5), default=1)
     listing.add_argument('--class-name', default='deathknight')
     listing.add_argument('--spec', default='unholy')
-    training = commands.add_parser('run', help='独立五轮训练、复测与更新')
+    training = commands.add_parser('run', help='独立训练至连续两轮无改善、复测与更新')
     training.add_argument('--template', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.tools/sim2gse/product/baseline/profiles/MID2/MID2_Death_Knight_Unholy.simc')
     training.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])

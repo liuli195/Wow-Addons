@@ -1165,10 +1165,7 @@ def _tuple(value):
 
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
-             config, condition_key, store, simulation_config=None, training_round_limit=None):
-    if training_round_limit is not None and (
-            type(training_round_limit) is not int or not 1 <= training_round_limit <= 5):
-        raise ValueError('训练完整轮次上限必须为1至5')
+             config, condition_key, store, simulation_config=None, training=False):
     store.character = character
     store.simulation_config = simulation_config
     from engine import check_report, player_report, damage_statistics, CandidateError
@@ -1829,15 +1826,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         while len(state['evaluated_keys']) < config['candidate_limit'] or state['pending']:
             runtime.check()
             if not state['pending']:
-                if (training_round_limit is not None and
-                        state.get('training_complete_rounds', 0) >= training_round_limit):
-                    state['stop_reason'] = 'training_round_limit'
-                    break
                 if all(chain.get('stalled') for chain in state['chains']):
                     state['stop_reason'] = 'space_stalled'
                     break
-                no_improvement_limit = (len(state['chains']) if training_round_limit is None
-                                        else config['no_improvement_rounds'])
+                no_improvement_limit = (config['no_improvement_rounds'] if training
+                                        else len(state['chains']))
                 if state['no_improvement'] >= no_improvement_limit:
                     state['stop_reason']='no_improvement'
                     break
@@ -2056,10 +2049,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if not state['pending'] and not work['start']:
                 state['rounds'] += 1
                 state['chains'][work['lane']]['rounds']+=1
-                if state['full_round']:
-                    if training_round_limit is not None:
-                        state['training_complete_rounds'] = state.get('training_complete_rounds', 0) + 1
-                    state['no_improvement'] = 0 if state.get('round_improved') else state['no_improvement']+1
+                if state.get('round_improved'):
+                    state['no_improvement'] = 0
+                elif state['full_round']:
+                    state['no_improvement'] += 1
             store.save()
         state.setdefault('stop_reason', 'candidate_limit')
 
@@ -2150,8 +2143,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                               candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
                               errors=state.get('errors', []),
                               partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason'),
-                              no_improvement_round_limit=(len(state['chains']) if training_round_limit is None
-                                                          else config['no_improvement_rounds'])),
+                              no_improvement_round_limit=(config['no_improvement_rounds'] if training
+                                                          else len(state['chains']))),
                   validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
                   candidate=candidate(chosen['program']), independent_validation_complete=False,
                   improvement='search_result',

@@ -3,6 +3,27 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import sqlite3
+from contextlib import contextmanager
+
+
+@contextmanager
+def training_boundary(damage_for=lambda candidate: 100.):
+    from test_search import _fast_search_boundary, _fast_evaluate
+    from unittest.mock import patch
+    import sequence
+
+    def evaluate(profile, candidate, folder, **kwargs):
+        result = _fast_evaluate(profile, candidate, folder, **kwargs)
+        damage = damage_for(candidate)
+        result['summary']['dps'] = damage
+        result['report']['sim']['statistics']['raid_dps']['mean'] = damage
+        result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
+        Path(folder, 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+        return result
+
+    with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+        yield
 
 import pytest
 
@@ -48,10 +69,9 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     assert len(json.loads(capsys.readouterr().out.splitlines()[-1])) == 1
 
 
-def test_training_command_publishes_five_rounds_and_reuses_completed_work(tmp_path, capsys):
+def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed_work(tmp_path, capsys):
     from seed_training import main
     from test_character_export import sample_profile
-    from test_search import _fast_search_boundary
     from unittest.mock import patch
     import sequence
     import result_store
@@ -70,19 +90,119 @@ def test_training_command_publishes_five_rounds_and_reuses_completed_work(tmp_pa
         if table == 'seed_selected':
             raise PermissionError('发布目标暂时不可写')
         return real_write(table, key, rows, **kwargs)
-    with _fast_search_boundary(), patch.object(result_store, 'write', side_effect=failing_publish):
+    with training_boundary(), patch.object(result_store, 'write', side_effect=failing_publish):
         assert command(tmp_path, args) == 2
     assert not result_store.read_records('seed_selected', 'deathknight-unholy-1')
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     assert len(processed) == 1
-    assert processed[0]['rounds'] == 5
-    assert processed[0]['stop_reason'] == 'training_round_limit'
-    with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+    assert processed[0]['rounds'] == 2
+    assert processed[0]['stop_reason'] == 'no_improvement'
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
         assert command(tmp_path, args) == 0
     assert command(tmp_path, ['list', '--state', 'selected', '--targets', '1']) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])
-    with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
         assert command(tmp_path, args) == 0
+
+
+@pytest.mark.parametrize('partial_improvement', [False, True])
+def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_path, partial_improvement):
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    import random
+    import result_store
+    import search
+
+    source = tmp_path / 'candidate.json'
+    source.write_text(json.dumps(dict(label='improving', class_name='deathknight', spec='unholy',
+        source='constructed-test', original='three actions', instructions='repeat',
+        semantic='preserved', changes=[], family='plain', core=[['outbreak']],
+        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    proposals = {}
+    scores = {}
+
+    class NoFallbackShuffle(random.Random):
+        def randrange(self, *args, **kwargs):
+            return 1 if args == (16,) else super().randrange(*args, **kwargs)
+
+    def growing_program(parent, *args, **kwargs):
+        size = len(parent) + 4
+        positions = [(a, b) for a in range(size) for b in range(size) if a != b]
+        key = json.dumps(parent, sort_keys=True)
+        index = proposals.get(key, 0)
+        round_index = sum(proposals.values()) // 16
+        proposals[key] = index + 1
+        if partial_improvement and len(parent) == 3 and index >= 24:
+            return None
+        a, b = positions[index % len(positions)]
+        program = [['outbreak'] for _ in range(size)]
+        program[a], program[b] = ['death_coil'], ['scourge_strike']
+        if partial_improvement:
+            score = 103. if len(parent) == 3 and index < 16 else 107.
+        else:
+            score = (103., 107., 107., 111., 113., 113., 113.)[round_index]
+        scores[json.dumps(program)] = score
+        return program
+
+    def damage_for(candidate):
+        program = [[action['simc_action'] for action in block] for block in candidate['blocks']]
+        return scores.get(json.dumps(program), 103.)
+
+    with training_boundary(damage_for), \
+            patch.object(search, 'mutate', side_effect=growing_program), \
+            patch.object(search.random, 'Random', NoFallbackShuffle):
+        assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+                                  '--workspace', str(tmp_path / 'work')]) == 0
+    completed = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
+    assert completed['status'] == 'completed'
+    assert completed['rounds'] == (4 if partial_improvement else 7)
+    assert completed['stop_reason'] == 'no_improvement'
+    assert completed['scores'] == [107. if partial_improvement else 113.] * 3
+    with sqlite3.connect('file:' + Path(completed['task_path'], 'task.sqlite3').as_posix() + '?mode=ro',
+                         uri=True) as database:
+        state = search.TaskStore.load_state(database)
+    assert state['no_improvement'] == 2
+    assert len(state['chains']) == 1
+
+
+def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(tmp_path):
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    from runtime import BudgetExceeded
+    import result_store
+    import sequence
+    from test_search import _fast_evaluate
+
+    source = tmp_path / 'candidate.json'
+    source.write_text(json.dumps(dict(label='budget', class_name='deathknight', spec='unholy',
+        source='constructed-test', original='three actions', instructions='repeat',
+        semantic='preserved', changes=[], family='plain', core=[['outbreak']],
+        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    with training_boundary():
+        assert command(tmp_path, args) == 0
+    previous = result_store.read_records('seed_selected', 'deathknight-unholy-1')
+    assert previous
+    template.write_text(sample_profile() + '\n# changed template\n', encoding='utf-8')
+    def budget_on_first_round(*args, **kwargs):
+        if kwargs.get('trace') and kwargs.get('iterations') == 2:
+            raise BudgetExceeded('训练预算耗尽')
+        return _fast_evaluate(*args, **kwargs)
+
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=budget_on_first_round):
+        assert command(tmp_path, args) == 2
+    assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == previous
+    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    failed = next(row for row in processed if row['status'] == 'failed')
+    assert failed['stop_reason'] == 'search_deadline'
+    assert '未收敛' in failed['error']
+    assert Path(failed['task_path'], 'task.sqlite3').exists()
 
 
 def test_unexpressible_material_is_retained_but_not_trained(tmp_path, capsys):
@@ -101,7 +221,6 @@ def test_unexpressible_material_is_retained_but_not_trained(tmp_path, capsys):
 
 def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_path, capsys):
     from test_character_export import sample_profile
-    from test_search import _fast_search_boundary
     from unittest.mock import patch
     import sequence
     import result_store
@@ -121,13 +240,13 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    with _fast_search_boundary():
+    with training_boundary():
         assert command(tmp_path, args) == 0
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     first = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
     assert json.loads(first['initial_program']) == [['outbreak'], ['death_coil'], ['scourge_strike']]
     template.write_text(sample_profile() + '\n# new template revision\n', encoding='utf-8')
-    with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=ValueError('新条件重新计算')):
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=ValueError('新条件重新计算')):
         assert command(tmp_path, args) == 2
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     rows = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -137,7 +256,6 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
 
 def test_training_skips_history_matching_completed_final_and_keeps_new_history(tmp_path, capsys):
     from test_character_export import sample_profile
-    from test_search import _fast_search_boundary
     import result_store
 
     source = tmp_path / 'candidate.json'
@@ -149,7 +267,7 @@ def test_training_skips_history_matching_completed_final_and_keeps_new_history(t
     template.write_text(sample_profile(), encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    with _fast_search_boundary():
+    with training_boundary():
         assert command(tmp_path, args) == 0
 
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
@@ -157,7 +275,7 @@ def test_training_skips_history_matching_completed_final_and_keeps_new_history(t
     completed = next(row for row in existing if row['status'] == 'completed')
     initial = json.loads(completed['initial_program'])
     final = json.loads(completed['program'])
-    assert completed['rounds'] == 5
+    assert completed['rounds'] == 2
 
     alternatives = [
         [['scourge_strike'], ['outbreak'], ['death_coil']],
@@ -199,7 +317,7 @@ def test_training_skips_history_matching_completed_final_and_keeps_new_history(t
             run_id=run_id, candidate_key=run_id, candidate_data_key=data_key, source='search',
             program=shared_program(program))], schema=result_store.CANDIDATE_SCHEMA)
 
-    with _fast_search_boundary():
+    with training_boundary():
         assert command(tmp_path, args) == 0
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     processed = json.loads(capsys.readouterr().out.splitlines()[-1])
