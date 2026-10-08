@@ -288,8 +288,11 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
     processed = [row for row in processed if not (row['candidate_id'] in known and row['condition'] == condition)]
     seen = {}
     for row in processed:
-        if row['condition'] == condition and row['status'] == 'completed':
-            seen[canonicalize_search_program(decode(row['initial_program']), capabilities)['identity']] = row['candidate_id']
+        if (row['condition'] == condition and row['status'] == 'completed' and
+                row['rounds'] == 5):
+            for field in ('initial_program', 'program'):
+                identity = canonicalize_search_program(decode(row[field]), capabilities)['identity']
+                seen.setdefault(identity, row['candidate_id'])
     for row in candidates:
         _check_cancelled(cancel_event)
         row['program'], row['core'] = decode(row['program']), decode(row['core'])
@@ -356,6 +359,9 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
         finally:
             if store:
                 store.close()
+        if record['status'] == 'completed' and record['rounds'] == 5:
+            identity = canonicalize_search_program(decode(record['program']), capabilities)['identity']
+            seen.setdefault(identity, row['candidate_id'])
         processed.append(record)
         for item in processed:
             for name in ('initial_program', 'program', 'comparison'):

@@ -135,6 +135,84 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     assert any(row['status'] == 'failed' for row in rows)
 
 
+def test_training_skips_history_matching_completed_final_and_keeps_new_history(tmp_path, capsys):
+    from test_character_export import sample_profile
+    from test_search import _fast_search_boundary
+    import result_store
+
+    source = tmp_path / 'candidate.json'
+    source.write_text(json.dumps(dict(label='training seed', class_name='deathknight', spec='unholy',
+        source='constructed-test', original='three ordered actions', instructions='repeat',
+        semantic='rewritten', changes=['use a short test program'], family='test-seed', core=[['outbreak']],
+        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    with _fast_search_boundary():
+        assert command(tmp_path, args) == 0
+
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    existing = json.loads(capsys.readouterr().out.splitlines()[-1])
+    completed = next(row for row in existing if row['status'] == 'completed')
+    initial = json.loads(completed['initial_program'])
+    final = json.loads(completed['program'])
+    assert completed['rounds'] == 5
+
+    alternatives = [
+        [['scourge_strike'], ['outbreak'], ['death_coil']],
+        [['death_coil'], ['scourge_strike'], ['outbreak']],
+        [['outbreak', 'death_coil'], ['scourge_strike']],
+    ]
+    distinct = next(program for program in alternatives if program not in (initial, final))
+
+    def shared_program(program):
+        nodes = []
+        for segment in program:
+            if isinstance(segment, list):
+                nodes.append(dict(kind='Action', commands=[
+                    dict(kind='spell', simc_action=action) for action in segment]))
+            elif isinstance(segment, dict) and segment.get('kind') == 'CastSequence':
+                nodes.append(dict(kind='Action', commands=[dict(
+                    kind='castsequence', members=segment['members'], reset=segment.get('reset'))]))
+            elif isinstance(segment, dict) and segment.get('kind') == 'Loop':
+                nodes.append(dict(kind='Loop', step_function='Sequential', count=segment['count'],
+                    body=[dict(kind='Action', commands=[dict(kind='spell', simc_action=action)
+                           for action in block]) for block in segment['blocks']]))
+            elif isinstance(segment, dict) and segment.get('kind') == 'WaitClicks':
+                nodes.append(dict(kind='Pause', duration_ms=None, clicks=segment['clicks']))
+            else:
+                raise AssertionError(f'训练产物有未覆盖的搜索结构: {segment!r}')
+        return dict(adapter='search', metadata={}, nodes=nodes)
+
+    history = [
+        ('history-final', final),
+        ('history-new', distinct),
+    ]
+    for run_id, program in history:
+        data_key = run_id + '-candidate'
+        result_store.write('runs', run_id, [dict(dict.fromkeys(result_store.RUN_SCHEMA),
+            run_id=run_id, status='completed',
+            profile={'identity': {'class': 'deathknight', 'spec': 'unholy'}},
+            candidate_data_key=data_key, search_dps=90.)], schema=result_store.RUN_SCHEMA)
+        result_store.write('candidates', data_key, [dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA),
+            run_id=run_id, candidate_key=run_id, candidate_data_key=data_key, source='search',
+            program=shared_program(program))], schema=result_store.CANDIDATE_SCHEMA)
+
+    with _fast_search_boundary():
+        assert command(tmp_path, args) == 0
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    processed = json.loads(capsys.readouterr().out.splitlines()[-1])
+    history_rows = [row for row in processed if row['family'] == 'history-search']
+    duplicate = next(row for row in history_rows if json.loads(row['initial_program']) == final)
+    new_candidate = next(row for row in history_rows if json.loads(row['initial_program']) == distinct)
+    assert duplicate['status'] == 'rejected'
+    assert '相同行为候选:' in duplicate['error']
+    assert new_candidate['status'] == 'completed'
+    assert result_store.read_records('runs', 'history-final')
+    assert result_store.read_records('candidates', 'history-final-candidate')
+
+
 def test_normal_search_keeps_four_original_starts_and_reads_one_legal_snapshot(tmp_path, monkeypatch):
     from test_character_export import sample_profile
     from test_search import _fast_search_boundary
