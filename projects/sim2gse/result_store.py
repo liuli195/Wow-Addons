@@ -42,6 +42,7 @@ RUN_SCHEMA = dict(
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
 _PUBLICATION_LOCK = threading.RLock()
+_BOUND_PROJECT = None
 
 
 class ReportLocations:
@@ -134,7 +135,18 @@ class InvalidRecordError(DataReadError):
 
 
 def _skill_root() -> Path:
-    return Path(__file__).resolve().parents[2] / ".local" / "skills" / "data-store"
+    return (_BOUND_PROJECT or Path(__file__).resolve().parents[2]) / ".local" / "skills" / "data-store"
+
+
+def bind_project(project):
+    """Use an explicitly chosen, already connected project center; never create another."""
+    global DATA_ROOT, _BOUND_PROJECT, _SKILL_API
+    project = Path(project).resolve()
+    if not (project / 'data').is_dir() or not (
+            project / '.local/skills/data-store/scripts/data_store.py').is_file():
+        raise ValueError('指定项目缺少既有数据中心或数据存储接入')
+    DATA_ROOT, _BOUND_PROJECT, _SKILL_API = project / 'data', project, None
+    ensure_available()
 
 
 def _api():
@@ -206,6 +218,21 @@ def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -
 def query(sql: str, parameters=None):
     """Return the installed skill's DuckDB cursor for bounded reads."""
     return _api()["query"](DATA_ROOT, sql, parameters)
+
+
+def read_records(table: str, key: str):
+    """Point-read a caller-defined record group; only a missing key is empty."""
+    api = _api()
+    try:
+        with api['read_key'](DATA_ROOT, table, key) as cursor:
+            columns = [column[0] for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    except api['MissingKeyError']:
+        return []
+    except api['CorruptDataError'] as error:
+        raise InvalidRecordError('数据中心目标记录损坏') from error
+    except Exception as error:
+        raise DataReadError(f'数据中心记录不可读: {error}') from error
 
 
 def one(table: str, field: str, value, *, group_key=None):

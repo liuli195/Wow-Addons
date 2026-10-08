@@ -2275,6 +2275,104 @@ class SearchAndValidationTests(TestCase):
                 with self.assertRaisesRegex(TaskError,'原生引擎失败'):
                     run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=2))
 
+    def test_normal_search_no_improvement_limit_matches_valid_start_count(self):
+        import itertools
+        import search
+        import sequence
+
+        def equal_damage(profile, candidate, folder, **kwargs):
+            nonlocal diagnostic_rounds
+            if kwargs.get('trace'):
+                diagnostic_rounds += 1
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            damage = 200.0 if improve and diagnostic_rounds >= 3 and result['blocks'] not in starts else 100.0
+            result['summary']['dps'] = damage
+            result['report']['sim']['statistics']['raid_dps']['mean'] = damage
+            result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
+            (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+            return result
+
+        for count, improve in ((4, False), (8, False), (4, True)):
+            with self.subTest(starts=count, improves=improve), tempfile.TemporaryDirectory() as directory:
+                diagnostic_rounds = 0
+                source = Path(directory) / 'role.simc'
+                source.write_text(sample_profile(), encoding='utf-8')
+                names = ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')
+                starts = [[[name] for name in order]
+                          for order in itertools.islice(itertools.permutations(names), count)]
+                inputs = starts + [starts[0], [['missing_action']]]
+                with _fast_search_boundary(), \
+                        patch.object(search, 'initial_programs', return_value=inputs), \
+                        patch.object(sequence, 'evaluate', side_effect=equal_damage):
+                    result = run_task(source, Path(directory) / 'task', search_config=dict(
+                        candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
+                        iterations=2, validation_batches=2))
+                    saved = read_task(Path(directory) / 'task')
+                self.assertEqual(result['status'], 'completed')
+                self.assertEqual(result['search']['stop_reason'], 'no_improvement')
+                self.assertEqual(result['search']['rounds'], count + 3 * int(improve))
+                self.assertEqual(len(result['search']['chains']), count)
+                self.assertEqual([chain['rounds'] for chain in result['search']['chains']],
+                                 [1 + int(improve)] * 3 + [1] * (count - 3))
+                self.assertEqual(result['search_result']['dps'], 200.0 if improve else 100.0)
+                self.assertEqual(result['search']['no_improvement_round_limit'], count)
+                self.assertEqual(saved['search']['no_improvement_round_limit'], count)
+
+    def test_search_skips_exhausted_path_and_stops_only_after_all_paths_exhausted(self):
+        import random
+        import search
+        import sequence
+        import threading
+
+        starts = [[['outbreak']], [['death_coil']], [['scourge_strike']], [['dark_transformation']]]
+        cancellation = threading.Event()
+        diagnostic_calls = []
+
+        def cancel_after_first_path_is_skipped(profile, candidate, folder, **kwargs):
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            actions = [action['simc_action'] for block in candidate['blocks'] for action in block]
+            if kwargs.get('trace') and actions == ['death_coil']:
+                diagnostic_calls.append(actions)
+                cancellation.set()
+            return result
+
+        class NoFallbackShuffle(random.Random):
+            def randrange(self, start, *args):
+                return 1 if start == 16 and not args else super().randrange(start, *args)
+
+        def one_proposal_per_remaining_path(program, *args, **kwargs):
+            for index, initial in enumerate(starts[1:], 1):
+                if program == initial:
+                    return initial + [['outbreak']] * index
+            return program
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            with _fast_search_boundary(), \
+                    patch.object(search, 'initial_programs', return_value=starts), \
+                    patch.object(search, 'mutate', side_effect=one_proposal_per_remaining_path), \
+                    patch.object(search.random, 'Random', NoFallbackShuffle), \
+                    patch.object(sequence, 'evaluate', side_effect=cancel_after_first_path_is_skipped):
+                cancelled = run_task(source, Path(directory) / 'task', cancel_event=cancellation,
+                    search_config=dict(
+                    candidate_limit=32, round_candidate_limit=1, batch_targets=(2,),
+                    iterations=2, validation_batches=2))
+                self.assertEqual(cancelled['status'], 'cancelled')
+                self.assertTrue(cancelled['search']['chains'][0]['stalled'])
+                self.assertEqual(cancelled['search']['rounds'], 0)
+                result = resume_task(Path(directory) / 'task')
+                saved = read_task(Path(directory) / 'task')
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['search']['stop_reason'], 'space_stalled')
+            self.assertEqual(result['search']['rounds'], 3)
+            self.assertEqual([chain['rounds'] for chain in result['search']['chains']], [0, 1, 1, 1])
+            self.assertTrue(all(chain['stalled'] for chain in result['search']['chains']))
+            self.assertEqual(saved['search']['chains'], result['search']['chains'])
+            self.assertEqual(result['search']['no_improvement_round_limit'], 4)
+            self.assertEqual(len(diagnostic_calls), 1)
+            self.assertGreaterEqual(result['elapsed_seconds'], cancelled['elapsed_seconds'])
+
     def test_multiple_local_chains_use_their_own_observed_feedback(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-local-search-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')

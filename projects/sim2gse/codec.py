@@ -13,6 +13,87 @@ SOURCE = ROOT / '.tools/sim2gse-research/gse-f225d4c'
 LUA = ROOT / '.tools/lua-5.1.5/src/lua.exe'
 
 
+def load_targeting(runtime=None):
+    """Load the locked client targeting data used by both checks and export."""
+    if runtime is not None:
+        runtime.check()
+    lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    for path, expected_hash in lock['gse_sources'].items():
+        if runtime is not None:
+            runtime.check()
+        source = (SOURCE / path).read_bytes().replace(b'\r\n', b'\n')
+        if hashlib.sha256(source).hexdigest() != expected_hash:
+            raise ValueError('固定上游编译器源码已变化')
+    target_source = lock['client_targeting']
+    target_path = ROOT / target_source['path']
+    if runtime is not None:
+        runtime.check()
+    if hashlib.sha256(target_path.read_bytes()).hexdigest() != target_source['sha256']:
+        raise ValueError('客户端目标数据与兼容锁不符')
+    return json.loads(target_path.read_text(encoding='utf-8'))
+
+
+def _is_ground(command, target_masks):
+    spell = command.get('spell_id') if command['kind'] == 'spell' else command.get('driver_spell_id')
+    return bool(target_masks.get(str(spell), 0) & 64)
+
+
+def prepare_block(block, target_masks):
+    """Prepare one action block with the same rules used by full export."""
+    if not block:
+        raise ValueError('动作块不能为空')
+    if len(block) > 1 or any(_is_ground(command, target_masks) or command.get('condition') for command in block):
+        lines, translated = [], []
+        for command in block:
+            if command['kind'] == 'spell':
+                conditions = [*(['@player'] if _is_ground(command, target_masks) else []),
+                              *([command['condition']] if command.get('condition') else [])]
+                prefix = '/cast ' + (f"[{','.join(conditions)}] " if conditions else '')
+                lines.append(prefix + str(command['spell_id']))
+                translated.append(prefix + command['name'])
+            elif command['kind'] == 'item':
+                conditions = [*(['@player'] if _is_ground(command, target_masks) else []),
+                              *([command['condition']] if command.get('condition') else [])]
+                lines.append('/use ' + (f"[{','.join(conditions)}] " if conditions else '') + str(command['slot']))
+                translated.append(lines[-1])
+            elif command['kind'] == 'start_attack':
+                lines.append('/startattack')
+                translated.append(lines[-1])
+            else:
+                raise ValueError('无法导出的同块动作')
+        macro = '\n'.join(lines)
+        macrotext = '\n'.join(translated)
+        if max(len(macro.encode('utf-8')), len(macrotext.encode('utf-8'))) > 255:
+            raise ValueError('同块宏文本超过 255 字节')
+        return dict(Type='Action', type='macro', macro=macro), dict(type='macro', macrotext=macrotext)
+    command = block[0]
+    if command['kind'] == 'spell':
+        action = dict(type='spell', spell=command['spell_id'])
+        step = dict(action)
+    elif command['kind'] == 'item':
+        action = dict(type='item', item=command['slot'])
+        step = dict(action)
+    elif command['kind'] == 'start_attack':
+        action = dict(type='macro', macro='/startattack')
+        step = dict(type='macro', macrotext='/startattack')
+    else:
+        raise ValueError('无法导出的动作')
+    return dict(Type='Action', **action), step
+
+
+def prepare_castsequence(command):
+    """Prepare one castsequence block with the same limit used by full export."""
+    if (not isinstance(command, dict) or command.get('kind') != 'castsequence'
+            or not isinstance(command.get('macro'), str)
+            or not isinstance(command.get('macrotext'), str)):
+        raise ValueError('搜索 /castsequence 定义无效')
+    macro = command['macro']
+    macrotext = command['macrotext']
+    if max(len(macro.encode('utf-8')), len(macrotext.encode('utf-8'))) > 255:
+        raise ValueError('/castsequence 宏文本超过 255 字节')
+    return dict(Type='Action', type='macro', macro=macro), dict(type='macro', macrotext=macrotext)
+
+
 def wire_value(value):
     """游戏 Lua 字符串对应 CBOR 字节串，包含表的字符串键。"""
     if isinstance(value, str):
@@ -39,77 +120,12 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
     """同一动作块产生编码对象和编译断言，不改变块顺序。"""
     runtime = runtime or TaskRuntime()
     runtime.check()
-    lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
-    for path, expected_hash in lock['gse_sources'].items():
-        runtime.check()
-        source = (SOURCE / path).read_bytes().replace(b'\r\n', b'\n')
-        if hashlib.sha256(source).hexdigest() != expected_hash:
-            raise ValueError('固定上游编译器源码已变化')
-    target_source = lock['client_targeting']
-    target_path = ROOT / target_source['path']
-    if hashlib.sha256(target_path.read_bytes()).hexdigest() != target_source['sha256']:
-        raise ValueError('客户端目标数据与兼容锁不符')
-    targeting = json.loads(target_path.read_text(encoding='utf-8'))
-    def ground(command):
-        spell = command.get('spell_id') if command['kind'] == 'spell' else command.get('driver_spell_id')
-        return bool(targeting['target_masks'].get(str(spell), 0) & 64)
-    def encode_block(block):
-        if not block:
-            raise ValueError('动作块不能为空')
-        if len(block) > 1 or any(ground(c) or c.get('condition') for c in block):
-            lines, translated = [], []
-            for command in block:
-                if command['kind'] == 'spell':
-                    conditions = [*(['@player'] if ground(command) else []),
-                                  *([command['condition']] if command.get('condition') else [])]
-                    prefix = '/cast ' + (f"[{','.join(conditions)}] " if conditions else '')
-                    lines.append(prefix + str(command['spell_id']))
-                    translated.append(prefix + command['name'])
-                elif command['kind'] == 'item':
-                    conditions = [*(['@player'] if ground(command) else []),
-                                  *([command['condition']] if command.get('condition') else [])]
-                    lines.append('/use ' + (f"[{','.join(conditions)}] " if conditions else '') + str(command['slot']))
-                    translated.append(lines[-1])
-                elif command['kind'] == 'start_attack':
-                    lines.append('/startattack')
-                    translated.append(lines[-1])
-                else:
-                    raise ValueError('无法导出的同块动作')
-            macro = '\n'.join(lines)
-            if max(len(macro.encode('utf-8')), len('\n'.join(translated).encode('utf-8'))) > 255:
-                raise ValueError('同块宏文本超过 255 字节')
-            return dict(Type='Action', type='macro', macro=macro), \
-                dict(type='macro', macrotext='\n'.join(translated))
-        command = block[0]
-        if command['kind'] == 'spell':
-            action = dict(type='spell', spell=command['spell_id'])
-            step = dict(action)
-        elif command['kind'] == 'item':
-            action = dict(type='item', item=command['slot'])
-            step = dict(action)
-        elif command['kind'] == 'start_attack':
-            action = dict(type='macro', macro='/startattack')
-            step = dict(type='macro', macrotext='/startattack')
-        else:
-            raise ValueError('无法导出的动作')
-        return dict(Type='Action', **action), step
-
-    def encode_castsequence(command):
-        if (not isinstance(command, dict) or command.get('kind') != 'castsequence'
-                or not isinstance(command.get('macro'), str)
-                or not isinstance(command.get('macrotext'), str)):
-            raise ValueError('搜索 /castsequence 定义无效')
-        macro = command['macro']
-        macrotext = command['macrotext']
-        if max(len(macro.encode('utf-8')), len(macrotext.encode('utf-8'))) > 255:
-            raise ValueError('/castsequence 宏文本超过 255 字节')
-        return dict(Type='Action', type='macro', macro=macro), \
-            dict(type='macro', macrotext=macrotext)
-
+    targeting = load_targeting(runtime=runtime)
+    target_masks = targeting['target_masks']
     actions, steps, upstream_steps = [], [], []
     if program is None:
         for index, block in enumerate(blocks, 1):
-            action, step = encode_block(block)
+            action, step = prepare_block(block, target_masks)
             actions.append(action)
             steps.append(step)
             upstream_steps.append(dict(step, blockPath=str(index)))
@@ -129,9 +145,9 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
                 if (isinstance(commands, list) and len(commands) == 1
                         and isinstance(commands[0], dict)
                         and commands[0].get('kind') == 'castsequence'):
-                    action, step = encode_castsequence(commands[0])
+                    action, step = prepare_castsequence(commands[0])
                 else:
-                    action, step = encode_block(commands)
+                    action, step = prepare_block(commands, target_masks)
                 actions.append(action)
                 steps.append(step)
                 upstream_steps.append(dict(step, blockPath=source.get('gse_path', str(index))))
@@ -149,7 +165,7 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
                 for child_index, child in enumerate(body, 1):
                     if child.get('kind') != 'Action' or not isinstance(child.get('source'), dict):
                         raise ValueError('搜索 Loop 只支持有来源位置的动作块')
-                    action, step = encode_block(child.get('commands'))
+                    action, step = prepare_block(child.get('commands'), target_masks)
                     loop[child_index] = action
                     body_steps.append((step, child['source'].get(
                         'gse_path', f"{source.get('gse_path', index)}.{child_index}")))

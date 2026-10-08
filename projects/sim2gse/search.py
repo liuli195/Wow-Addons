@@ -1165,7 +1165,7 @@ def _tuple(value):
 
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
-             config, condition_key, store, simulation_config=None):
+             config, condition_key, store, simulation_config=None, training=False):
     store.character = character
     store.simulation_config = simulation_config
     from engine import check_report, player_report, damage_statistics, CandidateError
@@ -1826,10 +1826,17 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         while len(state['evaluated_keys']) < config['candidate_limit'] or state['pending']:
             runtime.check()
             if not state['pending']:
-                if state['no_improvement'] >= config['no_improvement_rounds']:
+                if all(chain.get('stalled') for chain in state['chains']):
+                    state['stop_reason'] = 'space_stalled'
+                    break
+                no_improvement_limit = (config['no_improvement_rounds'] if training
+                                        else len(state['chains']))
+                if state['no_improvement'] >= no_improvement_limit:
                     state['stop_reason']='no_improvement'
                     break
-                lane_index=state['rounds']%len(state['chains'])
+                lane_index = state.get('next_chain_index', 0)
+                while state['chains'][lane_index].get('stalled'):
+                    lane_index = (lane_index + 1) % len(state['chains'])
                 lane=state['chains'][lane_index]
                 base = next(r for r in state['archive'] if r['key'] == lane['best'])
                 diagnostic=batch(base['program'],'search',99,2,trace=True)
@@ -1911,10 +1918,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     generated.append(work)
                 commit_mutation_observations(generation_observations)
                 if not generated:
-                    state['stop_reason'] = 'space_stalled'
+                    lane['stalled'] = True
+                    state.update(next_chain_index=(lane_index + 1) % len(state['chains']),
+                                 rng=rng.getstate())
                     store.save()
-                    break
+                    continue
                 state['pending'] = generated
+                state['next_chain_index'] = (lane_index + 1) % len(state['chains'])
                 state['round_improved'] = False
                 state['full_round'] = len(generated)==config['round_candidate_limit']
                 state['rng'] = rng.getstate()
@@ -2039,8 +2049,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if not state['pending'] and not work['start']:
                 state['rounds'] += 1
                 state['chains'][work['lane']]['rounds']+=1
-                if state['full_round']:
-                    state['no_improvement'] = 0 if state.get('round_improved') else state['no_improvement']+1
+                if state.get('round_improved'):
+                    state['no_improvement'] = 0
+                elif state['full_round']:
+                    state['no_improvement'] += 1
             store.save()
         state.setdefault('stop_reason', 'candidate_limit')
 
@@ -2130,7 +2142,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                   search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
                               candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
                               errors=state.get('errors', []),
-                              partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason')),
+                              partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason'),
+                              no_improvement_round_limit=(config['no_improvement_rounds'] if training
+                                                          else len(state['chains']))),
                   validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
                   candidate=candidate(chosen['program']), independent_validation_complete=False,
                   improvement='search_result',
