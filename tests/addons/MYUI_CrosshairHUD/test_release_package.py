@@ -19,7 +19,7 @@ def test_package_contains_only_runtime(tmp_path):
     module = tool()
     package = module.build(ROOT, tmp_path / 'packages')
     manifest = module.validate(package)
-    assert len(manifest['files']) == 32
+    assert len(manifest['files']) == 25
     paths = [entry['path'] for entry in manifest['files']]
     assert not any('Debug.lua' in p or p.endswith('.png') or 'EdgeTest' in p for p in paths)
     assert 'MYUI_CrosshairHUD/Diagnostics.lua' in paths

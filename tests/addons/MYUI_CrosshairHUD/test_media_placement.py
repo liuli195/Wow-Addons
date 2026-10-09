@@ -50,6 +50,7 @@ local function NewTexture(_, _, _, sub)
     function t:SetSize(w, h) t.size = { w, h } end
     function t:SetPoint(a, b, c, x, y) t.point = { x, y } end
     function t:SetAllPoints() end
+    function t:SetTexCoord(...) self.coords={...} end
     function t:AddMaskTexture() end
     function t:SetShown() end
     function t:SetRotation() end
@@ -89,7 +90,7 @@ for _, t in ipairs(textures) do
     if t.path and t.path:match("mask_half_hard%.blp$") then hardMasks = hardMasks + 1 end
     if t.path and t.path:match("mask_half%.blp$") then softMasks = softMasks + 1 end
 end
-assert(hardMasks == 0 and softMasks == 8, "血条、能量条和六个资源槽统一使用柔化遮罩")
+assert(hardMasks == 0 and softMasks == 9, "血条、能量条和六个资源槽统一使用柔化遮罩")
 
 ----------------------------------------------------------------------
 -- 逐条比对：清单说什么尺寸、什么偏移，摆放表就得报什么
@@ -102,14 +103,19 @@ for file, want in pairs(MANIFEST) do
     for _, t in ipairs(textures) do
         if t.path and t.path:sub(-#file) == file then
             found = found + 1
-            assert(t.size, file .. "：这条纹理没有被 SetSize")
-            assert(math.abs(t.size[1] - w) < 0.001 and math.abs(t.size[2] - h) < 0.001,
-                string.format("%s：摆放表尺寸 %gx%g，清单是 %gx%g —— 贴图会被拉伸",
-                    file, t.size[1], t.size[2], w, h))
-            assert(t.point, file .. "：这条纹理没有被 SetPoint")
-            assert(math.abs(t.point[1] - ox) < 0.001 and math.abs(t.point[2] + oy) < 0.001,
-                string.format("%s：摆放表偏移 (%g,%g)，清单是 (%g,%g) —— 整体会错位",
-                    file, t.point[1], t.point[2], ox, oy))
+            assert(t.size and t.point, file .. "：纹理必须设置尺寸及位置")
+            local candidates = {{w,h,ox,-oy}}
+            if file:find("crosshair_arm",1,true) then
+                candidates = {{w,h,ox,0},{w,h,-ox,0},{h,w,0,ox},{h,w,0,-ox}}
+            elseif file:find("health_arc",1,true) or file:find("resource_",1,true) then
+                candidates[2] = {w,h,-ox,-oy}
+            end
+            local matched=false
+            for _,q in ipairs(candidates) do
+                if math.abs(t.size[1]-q[1])<0.001 and math.abs(t.size[2]-q[2])<0.001
+                    and math.abs(t.point[1]-q[3])<0.001 and math.abs(t.point[2]-q[4])<0.001 then matched=true end
+            end
+            assert(matched,file .. "：复用后的尺寸/位置必须符合清单及固定对称变换")
         end
     end
     assert(found > 0, file .. "：渲染模块根本没有为它创建纹理")

@@ -88,7 +88,7 @@
 - **THEN** 层数仍由游戏绑定到新条，不把受限值打印到报告
 ### Requirement: The master switch and per-element switches control visibility
 
-系统 MUST 提供总开关、四个基础元素开关以及凝固之血和灵打消耗刻度的独立开关。总开关关闭时整个 HUD MUST 隐藏，相关配置（含阴影、可见性和三个齿轮）MUST 置灰不可操作，MUST NOT 残留可拖动的空框。单项开关关闭时该项 MUST 隐藏，其控件和齿轮 MUST 禁用；重新打开 MUST 恢复可操作状态，MUST NOT 自动打开齿轮弹窗。
+系统 MUST 提供总开关、四个基础元素开关以及凝固之血、沸点和灵打消耗刻度的独立开关。总开关关闭时整个 HUD MUST 隐藏，相关配置（含阴影、可见性和三个齿轮）MUST 置灰不可操作，MUST NOT 残留可拖动的空框。单项开关关闭时该项 MUST 隐藏，其外观控件和已有齿轮 MUST 禁用；该项启用开关 MUST NOT 因自身关闭而禁用，仍可重新开启。启用开关仅受总开关和功能资格控制；重新打开 MUST 恢复可操作状态，MUST NOT 自动打开齿轮弹窗。
 
 #### Scenario: Master off
 
@@ -97,8 +97,8 @@
 
 #### Scenario: Feature off and on
 
-- **WHEN** 关闭后重新开启凝固之血或灵打消耗刻度
-- **THEN** 该项按开关隐藏或恢复，自己的齿轮同步禁用或启用，但弹窗不会自动打开
+- **WHEN** 关闭后重新开启凝固之血、沸点或灵打消耗刻度
+- **THEN** 该项按开关隐藏或恢复，外观控件和已有齿轮同步禁用或启用，启用开关仍可重新开启，弹窗不会自动打开
 ### Requirement: The whole HUD scales proportionally within a fixed range
 
 系统 MUST 支持以 0.5–2.0 倍整体等比缩放 HUD。配置页的缩放滑块与解锁模式里的宽度／高度 MUST 读写同一个值，MUST NOT 两处各存一份，也 MUST NOT 允许超出该范围的值生效。
@@ -114,7 +114,7 @@
 - **THEN** 配置页的缩放滑块回读同一个值
 ### Requirement: Each element's fill colour, background colour and opacity are configurable
 
-系统 MUST 让各组成项独立配置填充颜色与透明度；血条、能量条、职业资源和凝固之血 MUST 另有独立背景颜色与透明度，准星和灵打刻度没有背景。修改 MUST 立即生效，不影响其他项；颜色及其透明度 MUST 同格显示，填充和背景的透明度互相独立。对应开关或总开关关闭时相关控件 MUST 禁用。
+系统 MUST 让各组成项独立配置填充颜色与透明度；血条、能量条、职业资源、凝固之血和沸点 MUST 另有独立背景颜色与透明度，准星和灵打刻度没有背景。修改 MUST 立即生效，不影响其他项；颜色及其透明度 MUST 同格显示，填充和背景的透明度互相独立。对应开关或总开关关闭时相关控件 MUST 禁用。
 
 #### Scenario: Independent appearance
 
@@ -127,7 +127,7 @@
 - **THEN** 该项外观控件置灰不可操作
 ### Requirement: Fill colour can follow the EllesmereUI palette but background colour cannot
 
-四个基础元素的填充色 MUST 可选自定义或 EllesmereUI 的来源配色：生命值和准星用职业色、能量条用能量色、职业资源用资源色。来源不可用时 MUST 回落到该项自定义色，不退回暴雪色表或显示成黑块。背景 MUST 只有自定义颜色；凝固之血和灵打刻度填充也 MUST 只有自定义颜色，不提供职业色选择。
+四个基础元素的填充色 MUST 可选自定义或 EllesmereUI 的来源配色：生命值和准星用职业色、能量条用能量色、职业资源用资源色。来源不可用时 MUST 回落到该项自定义色，不退回暴雪色表或显示成黑块。背景 MUST 只有自定义颜色；凝固之血、沸点和灵打刻度填充也 MUST 只有自定义颜色，不提供职业色选择。
 
 #### Scenario: Source palette
 
@@ -141,7 +141,7 @@
 
 #### Scenario: Custom only
 
-- **WHEN** 查看背景、凝固之血或灵打刻度颜色配置
+- **WHEN** 查看背景、凝固之血、沸点或灵打刻度颜色配置
 - **THEN** 只有自定义颜色，不显示来源色选项
 ### Requirement: Palette swatches are selectable but not editable
 
@@ -158,12 +158,12 @@
 - **THEN** 填充色的来源保持原样
 ### Requirement: The configuration page lives in the EllesmereUI MYUI group
 
-系统 MUST 在 EllesmereUI 设置面板的 MYUI 分组下提供“准星HUD”配置页，保留该行右侧电源按钮，复用现有标准控件。页面 MUST 包含常规、生命值条、能量条、职业资源条、准星、凝固之血和灵打消耗刻度分组，MUST NOT 为新增功能另建设置菜单。
+系统 MUST 在 EllesmereUI 设置面板的 MYUI 分组下提供“准星HUD”配置页，保留该行右侧电源按钮，复用现有标准控件。页面 MUST 包含常规、生命值条、能量条、职业资源条、准星、凝固之血监控条、沸点循环监控条和灵打消耗刻度分组，MUST NOT 为新增功能另建设置菜单。
 
 #### Scenario: Open options
 
 - **WHEN** 玩家从 MYUI 分组打开准星HUD
-- **THEN** 同一配置页列出上述七组设置
+- **THEN** 同一配置页列出上述八组设置
 
 #### Scenario: Global search
 
@@ -298,17 +298,17 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 这三类采用同一柔化规格；凝固之血原生填充单独核对
 ### Requirement: User-facing text names no specific class
 
-基础元素界面文案 MUST 使用生命值条、能量条、职业资源条、准星等名称。新增职业相关功能的说明 MAY 明确适用职业；凝固之血配置在非死亡骑士时 MUST 置灰，MUST NOT 为保持旧的无职业文案而省略禁用原因。
+基础元素界面文案 MUST 使用生命值条、能量条、职业资源条、准星等名称。新增职业相关功能的说明 MAY 明确适用职业；凝固之血和沸点配置在非鲜血死亡骑士专精时 MUST 置灰，MUST NOT 为保持旧的无职业文案而省略禁用原因。
 
 #### Scenario: Read basic labels
 
 - **WHEN** 查看基础元素设置
 - **THEN** 保留原有通用名称
 
-#### Scenario: Non death knight settings
+#### Scenario: Ineligible specialization settings
 
-- **WHEN** 非死亡骑士查看凝固之血设置
-- **THEN** 设置置灰，说明清楚告知该设置仅供死亡骑士使用
+- **WHEN** 非鲜血死亡骑士专精查看凝固之血或沸点设置
+- **THEN** 设置置灰，说明清楚告知该设置仅供鲜血死亡骑士使用，不检查是否已点选天赋
 ### Requirement: Visibility conditions decide when the HUD appears
 
 系统 MUST 遵循 EllesmereUI 共享可见性系统给出的判定，决定**整条**准星 HUD 是否出现——判定针对整条 HUD，各元素的取舍由元素开关负责，两者是相互独立的两个维度。可选条件 MUST 覆盖该共享系统提供的全部条件（从不、总是、战斗中、脱战、团队、队伍、单人、御空术空中、非御空术空中、御空术坐骑、副本、住宅、骑乘中、目标、敌对目标、休息中、载具），MUST 支持「全部满足／任一满足」两种匹配模式，并 MUST 支持「显示」与「隐藏」两条通道。MUST NOT 提供鼠标悬停条件：共享悬停机制会在光标进入时对元素打开鼠标交互，与《The HUD never intercepts mouse input》相抵触。系统 MUST 在设置面板的常规分区提供一行可见性控件，MUST 紧随总开关之后，且 MUST 与其他配置项一样以「每行两项」的方式参与排布。总开关关闭时，该控件 MUST 置灰不可操作。当共享系统的接口不可用或返回值不可识别时，HUD MUST 保持可见，MUST NOT 因此消失。
@@ -365,7 +365,7 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** HUD 保持可见且不报错
 ### Requirement: Every element carries a soft shadow beneath its base image
 
-四个原有基础元素 MUST 在底图之下保留轮廓外围的柔和阴影。主体覆盖区域 MUST 透明，背景调为透明后阴影 MUST NOT 成为一整块背景。阴影 MUST 不随填充比例变化，MUST 与对应元素一起缩放、受整体图层控制且不拦截鼠标。凝固之血和灵打消耗刻度 MUST NOT 绘制阴影。
+四个原有基础元素 MUST 在底图之下保留轮廓外围的柔和阴影。主体覆盖区域 MUST 透明，背景调为透明后阴影 MUST NOT 成为一整块背景。阴影 MUST 不随填充比例变化，MUST 与对应元素一起缩放、受整体图层控制且不拦截鼠标。凝固之血、沸点和灵打消耗刻度 MUST NOT 绘制阴影。
 
 #### Scenario: Transparent background
 
@@ -379,8 +379,8 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 #### Scenario: Additional features
 
-- **WHEN** 凝固之血条或灵打刻度显示
-- **THEN** 新增两项没有阴影
+- **WHEN** 凝固之血条、沸点细弧或灵打刻度显示
+- **THEN** 新增三项没有阴影
 ### Requirement: Shadow colour and opacity are one global setting
 
 所有原有阴影 MUST 共用一处自定义颜色和浓淡设置，不提供独立阴影配置。浓淡 MUST 可在 0–100% 调整，默认 MUST 为黑色、80%。设为 0 MUST 隐藏阴影但不改变主体。总开关关闭时阴影控件 MUST 禁用且不允许写入设置。
@@ -432,11 +432,11 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 两条弧恢复跟随生命值与能量的变化，且全程不报错
 ### Requirement: Coagulated Blood displays raw stacks independently of the default buff viewer
 
-凝固之血条 MUST 仅显示玩家自身法术 463730 的原始增益层数，不换算预计回血量。它 MUST 有独立开关；关闭或没有该增益时背景和填充全部隐藏。开启时 MUST 不按专精限制，且 MUST 不依赖暴雪默认增益监控是否开启，不显示额外增益图标。最大显示层数 MUST 可配置，默认100；达到或超过该量程显示满条，该值 MUST NOT 被称为技能真实上限。临时绑定失败 MUST 隐藏新条并自动重试恢复，不要求用户修改配置或重载。
+凝固之血条 MUST 仅显示玩家自身法术 463730 的原始增益层数，不换算预计回血量。它 MUST 有独立开关；关闭或没有该增益时背景和填充全部隐藏。开启时 MUST 仅在鲜血死亡骑士专精250可用，不检查是否点选天赋，且 MUST 不依赖暴雪默认增益监控是否开启，不显示额外增益图标。最大显示层数 MUST 可配置，默认100；达到或超过该量程显示满条，该值 MUST NOT 被称为技能真实上限。临时绑定失败 MUST 隐藏新条并自动重试恢复，不要求用户修改配置或重载。
 
 #### Scenario: Viewer disabled
 
-- **WHEN** 关闭暴雪默认增益监控，同时开启新条且身上存在463730
+- **WHEN** 鲜血死亡骑士关闭暴雪默认增益监控，同时开启新条且身上存在463730
 - **THEN** 独立新条仍按游戏管理的层数显示
 
 #### Scenario: No buff or disabled
@@ -486,7 +486,7 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 隐藏刻度，恢复后重新显示，不猜测位置
 ### Requirement: New installations use the confirmed HUD defaults without replacing saved settings
 
-新安装 MUST 默认位置居中、可见性总是显示且没有隐藏条件；整体缩放0.8、图层中、所有组成项开启。血条默认职业色、能量条默认能量色、职业资源默认资源色，准星及新增两项默认白色，填充浓淡100%。基础条背景 MUST 为深灰#313131、100%，凝固之血背景0%；阴影黑色80%、最大显示层数100、刻度粗细2。已有设置 MUST 保留，升级只补缺失默认项，不覆盖用户的位置、可见性或配色。
+新安装 MUST 默认位置居中、可见性总是显示且没有隐藏条件；整体缩放0.8、图层中、所有组成项开启。血条默认职业色、能量条默认能量色、职业资源默认资源色，准星、凝固之血及灵打消耗刻度默认白色，填充浓淡100%；沸点默认开启，填充为自定义 RGB(0.77,0.12,0.23)、100%，背景为相同RGB、0%。基础条背景 MUST 为深灰#313131、100%，凝固之血及沸点背景0%；阴影黑色80%、最大显示层数100、刻度粗细2。已有设置 MUST 保留，升级只补缺失默认项，不覆盖用户的位置、可见性或配色。
 
 #### Scenario: Fresh installation
 
@@ -512,7 +512,7 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 相应齿轮禁用，说明准确且不串用另一个功能的说明
 ### Requirement: The standard material workflow preserves source exports and verifies game outputs
 
-仓库素材生产流程 MUST 保留设计原图与10倍透明导出图，并从导出图统一生成游戏成品及缩小图层。新增准星HUD素材 MUST 进入同一生产和检查流程，不临时替换原有组件参数。正式游戏素材 MUST 使用支持完整缩小图层的BLP格式，长宽各为2的幂，白色可染色模板与独立透明度保持一致；核对用PNG与源图 MUST 留在仓库，不随正式包部署。
+仓库素材生产流程 MUST 保留设计原图与10倍透明导出图，并从导出图或现有核对PNG统一生成游戏成品及缩小图层。新增准星HUD素材 MUST 进入同一生产和检查流程，MUST 保持已确认主体尺寸、间距、透明度和整体缩放。主体 MAY 从已保留PNG裁出；原有阴影已扁平时 MAY 重建同风格的外围阴影，但 MUST 保留主体覆盖处透明和独立点影，并在实际游戏中核对观感，MUST NOT 宣称逐像素无损。正式游戏素材 MUST 使用支持完整缩小图层的BLP格式，长宽各为2的幂，白色可染色模板与独立透明度保持一致；核对用PNG与源图 MUST 留在仓库，不随正式包部署。
 
 #### Scenario: Add new media
 
@@ -541,3 +541,85 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 - **WHEN** 包校验失败、备份核对失败或目标位于个人设置目录
 - **THEN** 停止部署，不清理现有游戏文件
+### Requirement: Blood-only fine arc qualification does not depend on selected talents
+
+凝固之血和沸点 MUST 仅在鲜血死亡骑士专精250可用；资格 MUST 与用户启用开关分离，MUST NOT 判断玩家是否点选对应天赋。其他专精 MUST 隐藏这两项并禁用其配置，保留已存开关、颜色及凝固之血量程。切换专精时 MUST 同步刷新HUD与当前配置页；切回鲜血专精后 MUST 恢复用户原设置。
+
+#### Scenario: Eligible without selected talents
+
+- **WHEN** 鲜血死亡骑士未点选对应天赋而查看这两项配置
+- **THEN** 两项仍按鲜血专精资格允许配置，实际无增益或无有效消费信号时对应弧线隐藏
+
+#### Scenario: Switch away and back
+
+- **WHEN** 玩家从鲜血专精切到其他专精，再切回鲜血
+- **THEN** 两项及配置先隐藏或置灰，切回后配置页与HUD同时刷新且原设置保留
+
+#### Scenario: Disabled eligible feature
+
+- **WHEN** 总开关开启、玩家具备鲜血资格且关闭任一细弧的启用开关
+- **THEN** 该项外观控件禁用，但启用开关仍能重新打开该项
+### Requirement: Boiling Point Echo predicts a three-second arc after paired consumption signals
+
+沸点 MUST 在能量条外侧显示与凝固之血对应的右侧半粗细弧，仅表示根据玩家信号预测的三秒窗口，MUST NOT 被描述为读取到真实回声施法或增益到期。法术50842的发光出现 MUST 只表示收到触发；只有玩家法术50842施放成功与该法术发光消失的时间差不超过0.30秒时，才 MUST 推断一次强化消费并从该次施放时刻起算三秒。两种信号顺序 MUST 都可配对，每个有效配对 MUST 只消费一次。其他单位、其他法术、超窗或不可读受限信号 MUST NOT 启动或改变窗口，MUST NOT 对不可读负载做普通比较、运算或输出。配置 MUST 只有启用、填充和背景三项，颜色与透明度分别可自定义，MUST NOT 提供职业配色或最大层数控件。
+
+#### Scenario: Glow appears without consumption
+
+- **WHEN** 只收到50842发光出现，没有有效的玩家施放成功与发光消失配对
+- **THEN** 记录触发但不新建三秒倒计时
+
+#### Scenario: Cast and glow disappearance pair in either order
+
+- **WHEN** 玩家50842施放成功与50842发光消失按任一顺序到达，时间差不超过0.30秒
+- **THEN** 新窗口截止于施放时刻加三秒，按剩余时间比例显示右侧细弧
+
+#### Scenario: Invalid or restricted signal
+
+- **WHEN** 单位或法术不匹配、配对相差超过0.30秒或负载不可读
+- **THEN** 不据此启动或改变预测窗口，基础资源显示不受影响且不输出受限值
+### Requirement: Boiling Point Echo advances pending procs without resetting an active round
+
+已有沸点窗口期间的新触发 MUST 只记录为一次待续轮标记，MUST NOT 重置当前剩余时间。当前轮到期且有待续标记时 MUST 从旧截止时刻追加三秒并清除该标记，MUST NOT 从迟到的刷新时刻重新起算，也 MUST NOT 按重复触发数量排队。新的有效玩家手动消费配对 MUST 重新设置为该次施放时刻加三秒，并清除旧待续标记。没有待续标记而到期时，背景和填充 MUST 全部隐藏。关闭总开关或沸点开关、切换专精时 MUST 清除预测状态；重载后 MUST 从空状态开始，MUST NOT 猜测历史触发或消费。
+
+#### Scenario: Pending proc continues at the old deadline
+
+- **WHEN** 三秒窗口期间收到新触发，而未发生新的有效手动消费配对
+- **THEN** 当前剩余时间不变，到期从旧截止时刻续三秒并清除待续标记
+
+#### Scenario: A new confirmed manual consumption supersedes pending state
+
+- **WHEN** 首次消费在10秒、新触发在11秒、第二次有效手动消费在11.5秒
+- **THEN** 截止改为14.5秒且旧待续标记清除，不凭旧标记显示到16秒
+
+#### Scenario: No pending proc at expiry
+
+- **WHEN** 窗口到期且无待续标记
+- **THEN** 背景与填充全部隐藏，不自行续轮
+
+#### Scenario: State resets
+
+- **WHEN** 玩家关闭总开关或沸点开关、切换专精或重载界面
+- **THEN** 预测状态清空，之后重新启用不恢复猜测的历史窗口
+### Requirement: Reused media preserves existing fills and the assembled crosshair
+
+正式HUD素材 MUST 仅包含当前被引用的15种BLP成品。左右主弧及其阴影 MUST 共用对应主体轮廓，六个符文及其阴影 MUST 按三对对称轮廓复用；右侧纹理镜像后，满、半、空状态及原有填充方向 MUST 保持不变，MUST NOT 将填充遮罩随纹理镜像。左右细弧 MUST 共用居中轮廓且与HUD圆心重合；右细弧只镜像纹理，凝固之血的原生受限层数显示 MUST 保持不变。准星 MUST 由臂、臂影、点、点影四张源图组成四臂、四臂影与各一次中心点、点影；线与线影 MUST 以相同90度方向旋转，中心两层 MUST 各只显示一次。四张源图尺寸 MUST 分别为256×64、512×256、64×64和256×256，并保持八像素每设计单位、已确认间距、独立阴影层级、染色与整体缩放。
+
+#### Scenario: Symmetric fill states
+
+- **WHEN** 比较左右主弧与各对符文的满、半、空状态
+- **THEN** 对称主体正确复用，填充比例和方向与既有行为一致
+
+#### Scenario: Centred fine arcs
+
+- **WHEN** 观察左右细弧或受限场景的凝固之血层数显示
+- **THEN** 两侧围绕同一HUD圆心，右侧镜像且左侧仍由游戏原生管理层数
+
+#### Scenario: Assembled crosshair and shadow
+
+- **WHEN** 显示、染色或缩放准星
+- **THEN** 四臂及四臂影同步保持方向，中心点与点影各一次且跟随准星
+
+#### Scenario: Runtime media inventory
+
+- **WHEN** 检查正式包的HUD素材
+- **THEN** 仅有15种被引用的完整缩小层BLP，不携带已删除的重复主弧、符文或旧准星成品

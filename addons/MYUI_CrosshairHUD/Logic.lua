@@ -31,6 +31,7 @@ Logic.ARCS = {
     health = { start = 99,  span = 102, endMargin = Logic.MASK_END_MARGIN },
     power  = { start = 339, span = 102, reverse = true, endMargin = Logic.MASK_END_MARGIN },
     coagulatedBlood = { start = 99, span = 102, radius = 57.9, stroke = 3.9 },
+    boilingPoint = { start = 339, span = 102, reverse = true, radius = 57.9, stroke = 3.9 },
 }
 
 -- 只接收 Core 已核实可读的普通数字；量程不是增益的真实上限。

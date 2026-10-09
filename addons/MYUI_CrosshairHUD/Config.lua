@@ -62,6 +62,11 @@ Config.DEFAULTS = {
             fill = { 1, 1, 1 }, fillAlpha = 1,
             bg = { 0.1921568627450981, 0.1921568627450981, 0.1921568627450981 }, bgAlpha = 0,
         },
+        boilingPoint = {
+            enabled = true,
+            fill = { 0.77, 0.12, 0.23 }, fillAlpha = 1,
+            bg = { 0.77, 0.12, 0.23 }, bgAlpha = 0,
+        },
         health = {
             enabled = true,
             fillMode = "class",     -- 职业配色
@@ -97,12 +102,13 @@ Config.DEFAULTS = {
 }
 
 -- 元素在页面上与状态表里的固定顺序
-Config.ELEMENT_ORDER = { "health", "power", "runes", "crosshair", "coagulatedBlood", "deathStrike" }
+Config.ELEMENT_ORDER = { "health", "power", "runes", "crosshair", "coagulatedBlood", "boilingPoint", "deathStrike" }
 
 -- 界面上的元素名（稳定键仍是 health／power／runes，只换显示名）
 Config.ELEMENT_LABELS = {
     health = "生命值条", power = "能量条", runes = "职业资源条", crosshair = "准星",
-    coagulatedBlood = "凝固之血",
+    coagulatedBlood = "凝固之血监控条",
+    boilingPoint = "沸点循环监控条",
     deathStrike = "灵打消耗刻度",
 }
 
@@ -196,6 +202,23 @@ local function PlayerClass()
         if ok then return file end
     end
     return nil
+end
+
+-- 功能资格与个人开关分开；不查询天赋点选，也不覆盖保存设置。
+function Config.Available(key)
+    if key ~= "coagulatedBlood" and key ~= "boilingPoint" then return true end
+    local ok, eligible = pcall(function()
+        if PlayerClass() ~= "DEATHKNIGHT" then return false end
+        local api = _G.C_SpecializationInfo
+        local index = api.GetSpecialization()
+        local detector = _G.issecretvalue
+        if detector and detector(index) then return false end
+        if not index then return false end
+        local id = api.GetSpecializationInfo(index)
+        if detector and detector(id) then return false end
+        return id == 250
+    end)
+    return ok and eligible == true
 end
 
 -- 职业色**只认 EUI 的接口**。职业色／能量色／职业资源色都由 EUI 统一管理，
@@ -323,8 +346,10 @@ function Config.CellPlan(elementKey)
             source = Config.SourceFor(elementKey, "bg"),
         }
     end
-    if elementKey == "coagulatedBlood" then
+    if elementKey == "coagulatedBlood" or elementKey == "boilingPoint" then
         plan[2].modeKey = nil
+    end
+    if elementKey == "coagulatedBlood" then
         plan[1].gear = { { kind = "slider", text = "最大显示层数", key = "maxStacks",
             min = 1, max = 1000, step = 1,
             tooltip = "仅控制显示量程，不是增益真实上限。" } }
@@ -381,7 +406,7 @@ end
 function Config.Grayed(key)
     local cfg = Config.Get()
     if cfg.enabled == false then return true end
-    if key == "coagulatedBlood" and PlayerClass() ~= "DEATHKNIGHT" then return true end
+    if not Config.Available(key) then return true end
     return cfg.elements[key].enabled == false
 end
 
@@ -507,8 +532,11 @@ function Config.BuildPage(_, parent, yOffset)
     local function CellSlot(element, cell, grayed, key)
         if cell.kind == "toggle" then
             return { type = "toggle", text = cell.text,
+                tooltip = (key == "coagulatedBlood" or key == "boilingPoint")
+                    and "仅鲜血死亡骑士可用；不检查天赋，切换专精会保留设置。" or nil,
                 getValue = function() return element[cell.key] ~= false end,
                 setValue = function(value)
+                    if Config.Get().enabled == false or not Config.Available(key) then return end
                     element[cell.key] = value
                     refresh()
                     if EUI.RefreshPage then EUI:RefreshPage() end
@@ -516,7 +544,7 @@ function Config.BuildPage(_, parent, yOffset)
                 -- 总开关关掉时子开关置灰不可点
                 disabled = function()
                     return Config.Get().enabled == false
-                        or (key == "coagulatedBlood" and PlayerClass() ~= "DEATHKNIGHT")
+                        or not Config.Available(key)
                 end }
         end
         if cell.kind == "slider" then
@@ -654,8 +682,8 @@ function Config.BuildPage(_, parent, yOffset)
             tip = "调整准星HUD的图层和整体大小。"
         end
         local function DisabledTip()
-            if key == "coagulatedBlood" and PlayerClass() ~= "DEATHKNIGHT" then
-                return "凝固之血设置只能由死亡骑士使用。"
+            if not Config.Available(key) then
+                return "这个设置只能由鲜血死亡骑士使用。"
             end
             if Config.Get().enabled == false then
                 return "先打开“启用准星HUD”，才能调整" .. (key and Config.ELEMENT_LABELS[key] or "图层和整体大小") .. "。"
