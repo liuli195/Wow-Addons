@@ -53,7 +53,7 @@ def check_scene(scene, ready):
     targets = scene['targets']
     scope = f'deathknight-unholy-{targets}-burst'
     run = one('runs', scene['run_id'], ['run_id', 'status', 'engines', 'condition_key',
-              'simulation_config', 'batch_keys', 'burst'])
+              'simulation_config', 'config', 'batch_keys', 'burst'])
     require(decode(run['engines']) == ready['engines'], '页面引擎身份过期')
     require(len(scene['processed']) == 3 and len(set(scene['processed'])) == 3,
             '每场必须指定两类合法材料及一类拒绝材料')
@@ -99,11 +99,14 @@ def check_scene(scene, ready):
     require(len({row['family'] for row in completed.values()}) == 2, '成功材料须属于两类')
     require(bool(scene['selected']), '缺少指定入选记录')
     selected = []
-    for candidate_id in scene['selected']:
+    for locator in scene['selected']:
+        candidate_id = locator['candidate_id']
+        family = locator['family']
         require(candidate_id in completed, '入选材料不属于本次成功训练')
         row = one('seed_selected', scope,
                   ['candidate_id', 'condition', 'class_name', 'spec', 'targets', 'program',
-                   'scores', 'template_sha256', 'engines'], {'candidate_id': candidate_id})
+                   'scores', 'template_sha256', 'engines', 'family'],
+                  {'candidate_id': candidate_id, 'family': family})
         require(decode(row['engines']) == ready['engines'], '入选引擎身份过期')
         require(row['condition'] == scene['training_condition'] and row['targets'] == targets and
                 row['class_name'] == 'deathknight' and row['spec'] == 'unholy' and
@@ -113,12 +116,12 @@ def check_scene(scene, ready):
                     for program, scores in [('program', 'scores'), ('initial_program', 'initial_scores')]),
                 '入选程序与独立复测不一致')
         selected.append(row)
-    require(run['status'] == 'offline_ready' and
+    require(run['status'] in ('completed', 'offline_ready') and
             decode(run['simulation_config'])['target_count'] == targets, '页面任务未完成或目标数不一致')
     require(decode(run['burst'])['definition_id'] == ready['burst_definition_id'], '页面爆发定义过期')
-    state = checkpoint(scene['page_task'], ['run_id', 'engines', 'condition', 'capabilities',
+    state = checkpoint(scene['page_task'], ['run_id', 'engines', 'condition', 'capabilities', 'phase',
                        'seed_selected_snapshot', 'starts'])
-    require(state['run_id'] == run['run_id'] and state['engines'] == ready['engines'] and
+    require(state['phase'] == 'done' and state['run_id'] == run['run_id'] and state['engines'] == ready['engines'] and
             state['condition'] == run['condition_key'], '页面记录与检查点不一致')
     require(bool(scene['batches']), '缺少页面重新评分批次')
     scored = set()
@@ -133,16 +136,18 @@ def check_scene(scene, ready):
             connection.close()
         require(group == locator['group'], '批次存储组与任务记录不一致')
         row = one('batches', group, ['batch_key', 'run_id', 'condition_key',
-                  'candidate_key', 'program_identity', 'purpose', 'dps', 'samples'],
+                  'candidate_key', 'program_identity', 'purpose', 'dps', 'samples', 'requested_iterations'],
                   {'batch_key': locator['key']})
         require(row['batch_key'] in run['batch_keys'] and row['run_id'] == run['run_id'] and
                 row['condition_key'] == run['condition_key'] and row['purpose'] == 'search' and
-                row['samples'] >= 2 and math.isfinite(row['dps']) and row['dps'] > 0,
+                row['requested_iterations'] in decode(run['config'])['batch_targets'] and
+                row['samples'] == max(1, row['requested_iterations'] - 1) and
+                math.isfinite(row['dps']) and row['dps'] > 0,
                 '页面批次缺少有效的新条件评分')
         scored.add((row['candidate_key'], json.dumps(decode(row['program_identity']), sort_keys=True)))
     for row in selected:
         frozen = [item for item in state['seed_selected_snapshot']
-                  if item['candidate_id'] == row['candidate_id']]
+                  if item['candidate_id'] == row['candidate_id'] and item['family'] == row['family']]
         require(len(frozen) == 1 and all(
                     (decode(frozen[0][key]) == decode(value) if key in ('program', 'engines')
                      else frozen[0][key] == value)
