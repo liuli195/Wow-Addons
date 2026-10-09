@@ -33,6 +33,8 @@ def verify_upstream(upstream, lock):
 
 def main():
     lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    if lock.get('build_protocol') != 2:
+        raise ValueError('不支持的引擎构建协议')
     upstream = ROOT / '.tools/sim2gse-upstream/simc'
     commit = verify_upstream(upstream, lock)
     archive = ROOT / '.local/sim2gse/build/upstream.zip'

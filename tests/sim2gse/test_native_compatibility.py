@@ -16,6 +16,17 @@ from test_character_export import sample_profile
 
 
 class NativeIdentityTests(unittest.TestCase):
+    def test_unknown_build_protocol_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+            lock['build_protocol'] = 99
+            target = root / 'projects/sim2gse/compatibility/lock.json'
+            target.parent.mkdir(parents=True)
+            target.write_text(json.dumps(lock), encoding='utf-8')
+            with patch.object(engine, 'ROOT', root), self.assertRaisesRegex(ValueError, '构建协议'):
+                engine.identity('baseline')
+
     def test_changed_own_source_rejects_previously_built_engine(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -73,6 +84,17 @@ def combat_report(value):
     return value
 
 
+def battle_report(report):
+    """只扣除构建时间与实际运行耗时；保留目标、全场效果和战斗汇总。"""
+    result = combat_report(report)
+    for key in ('build_date', 'build_time', 'timestamp'):
+        result.pop(key, None)
+    for key in ('elapsed_cpu_seconds', 'elapsed_time_seconds', 'init_time_seconds',
+                'merge_time_seconds', 'analyze_time_seconds'):
+        result['sim']['statistics'].pop(key, None)
+    return result
+
+
 class NativeComparisonTests(unittest.TestCase):
     def test_original_baseline_and_disabled_controller_keep_native_combat(self):
         manifest = json.loads((ROOT / '.local/sim2gse/build/original/build.json').read_text())
@@ -107,6 +129,6 @@ class NativeComparisonTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
                     reports = [json.loads((scene / mode / 'native.json').read_text(encoding='utf-8'))
                                for mode in ('original', 'baseline', 'disabled')]
-                    players = [combat_report(report['sim']['players']) for report in reports]
-                    self.assertEqual(players[0], players[1])
-                    self.assertEqual(players[1], players[2])
+                    combat = [battle_report(report) for report in reports]
+                    self.assertEqual(combat[0], combat[1])
+                    self.assertEqual(combat[1], combat[2])

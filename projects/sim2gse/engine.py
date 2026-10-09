@@ -32,22 +32,22 @@ def identity(mode, runtime=None):
         if mode in runtime.identities:
             return runtime.identities[mode]
     lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    if lock.get('build_protocol') != 2:
+        raise ValueError('不支持的引擎构建协议，请重新构建')
     manifest = json.loads((ROOT / '.local/sim2gse/build' / mode / 'build.json').read_text())
     sources = own_sources(ROOT, lock, mode)
     if manifest.get('sources', []) != sources:
         raise ValueError('自有源码清单与受检引擎不符')
-    executable = ROOT / '.tools/sim2gse/product' / mode / 'engine/simc.exe'
-    if lock.get('build_protocol') == 2:
-        expected_identity = build_identity(lock, mode, manifest.get('compiler_sha256'))
-        if any(manifest.get(key) != value for key, value in expected_identity.items()):
-            raise ValueError('独立引擎构建清单不符，请重新构建')
-        if manifest.get('identity_sha256') != identity_digest(expected_identity):
-            raise ValueError('独立引擎构建身份不符，请重新构建')
-        executable = ROOT / '.local/sim2gse/build' / mode / 'simc.exe'
-        if manifest.get('executable') != executable.relative_to(ROOT).as_posix():
-            raise ValueError('独立引擎产物路径不符')
-        if manifest.get('command', [])[1:] != ['-j4', *lock['build_options']]:
-            raise ValueError('独立引擎编译命令不符')
+    expected_identity = build_identity(lock, mode, manifest.get('compiler_sha256'))
+    if any(manifest.get(key) != value for key, value in expected_identity.items()):
+        raise ValueError('独立引擎构建清单不符，请重新构建')
+    if manifest.get('identity_sha256') != identity_digest(expected_identity):
+        raise ValueError('独立引擎构建身份不符，请重新构建')
+    executable = ROOT / '.local/sim2gse/build' / mode / 'simc.exe'
+    if manifest.get('executable') != executable.relative_to(ROOT).as_posix():
+        raise ValueError('独立引擎产物路径不符')
+    if manifest.get('command', [])[1:] != ['-j4', *lock['build_options']]:
+        raise ValueError('独立引擎编译命令不符')
     if (manifest['exit_code'] or manifest['upstream_commit'] != lock['upstream_commit'] or
             manifest['upstream_tree'] != lock['upstream_tree'] or
             manifest['build_options'] != lock['build_options'] or
