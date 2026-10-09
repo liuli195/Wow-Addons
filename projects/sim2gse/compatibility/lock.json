@@ -26,7 +26,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "cd28be37a1cde71b8c0271c257a584f3b48afe2cfe32f63a0fb5356ac3522ec2"
+      "sha256": "a9dfd88ab67b538a5d279131524c0123ef8f108f9c38e4efbeb875713c49d4fb"
     },
     {
       "path": "projects/sim2gse/native/src/controller.cpp",
@@ -34,7 +34,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "fe8ee716151300f77ccd43a95b4a4ab92a7058b76c3c053da5226e1c559d6923"
+      "sha256": "92e6dd154291c7ca2295b41850dae1d1f0290bc8efd662956a996212a1314a43"
     }
   ],
   "upstream_commit": "b845947a34429874433d8e9362326894650dd20a",
@@ -54,7 +54,7 @@
     },
     {
       "path": "projects/sim2gse/native/hooks/040-control-connections.patch",
-      "sha256": "5312fd9cb5d16816995a0f6e69c9843e284a14c79ffeb603140328eb13bd9ee2"
+      "sha256": "ac23bafb24b96ff579de20e37034b3507a97948d81ec065f8c68280fe8899315"
     },
     {
       "path": "projects/sim2gse/native/hooks/050-death-knight-guards.patch",
@@ -92,7 +92,7 @@
     "GSE/API/translator.lua": "14480c4647cf269fd3852998f6ed09311af75455209188bac2971cb23b8e429c"
   },
   "patched_files": {
-    "engine/player/player.cpp": "d962c4a961fcada8d80cd876d289bb28a1ee3301234f8fefd5d070f66147da71",
+    "engine/player/player.cpp": "427fa96c5f3cd943e98e4dc860f4ab06e985d2f964120510f39dd64746647507",
     "engine/player/player.hpp": "d54ce59dc0442acf863e43e128e9b6796057c39e3e901b0b70d46ed51faa729f",
     "engine/action/action.cpp": "d126ae448739933be9c660882e5f5d9cb418bb42278f0eae1cf20c5aeb8cfaea",
     "engine/action/action.hpp": "ac201ff2dfaf3aa57206568b86cc4a4c25f9bf80c1547ce2a8879760dff0bb76",

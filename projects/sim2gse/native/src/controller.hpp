@@ -104,7 +104,8 @@ private:
   void sim2gse_init();
   void sim2gse_reset_castsequence( unsigned );
   void sim2gse_castsequence_update();
-  void sim2gse_record( const char*, action_t*, unsigned );
+  void handle_event( const char*, action_t*, unsigned );
+  void write_trace( const char*, action_t*, unsigned, int, int, bool ) const;
   void sim2gse_dispatch_action( action_t*, unsigned );
   void sim2gse_tick();
 };

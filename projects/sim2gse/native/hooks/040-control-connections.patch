@@ -363,7 +363,7 @@
                sequence_add( action, action->target );
  
              action->execute();
-+          sim2gse_control.precombat( *action, sim2gse::precombat_phase::after );
++            sim2gse_control.precombat( *action, sim2gse::precombat_phase::after );
              first_cast = false;
            }
            else
