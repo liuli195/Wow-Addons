@@ -1,6 +1,6 @@
 # 06：阶段2：核实客户端并升级对应源码
 
-Status（状态）: draft（未开始实施）
+Status（状态）: in-progress（实施中）
 Triage（分拣）: needs-info（升级目标待核实）
 Blocked by（前置）: 05；实际客户端与候选数据版本核实
 
@@ -37,3 +37,4 @@ Blocked by（前置）: 05；实际客户端与候选数据版本核实
 - [ ] 跨版本行为按冻结公共契约验收，合理原生规则变化逐项解释；不要求伤害、精确时刻或搜索路径相同。
 
 新规则见 ../upgrade-regression-acceptance.md。
+
