@@ -612,7 +612,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     if use_burst:
         from burst import load, prepare, combined_inputs
         definition = load(native['identity']['spec_id'])
-        burst_program = from_action_blocks(prepare(definition, character, capabilities, native['identity']))
+        effective_character = parse_character(_read_utf8(destination / 'input.simc', description='任务输入副本')[1])
+        burst_program = from_action_blocks(prepare(definition, effective_character, capabilities, native['identity']))
         burst_program['metadata'].update(purpose='burst', instructions=definition['instructions'])
         burst_candidate = compile_program(burst_program, destination / 'burst-export',
                                           identity=native['identity'], runtime=runtime)
@@ -621,9 +622,11 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
         burst_result = dict(definition_id=definition['definition_id'], plan=definition['plan'],
                             interval_ms=interval_ms, candidate=burst_candidate,
                             instructions=definition['instructions'])
+    burst_options = (dict(input_sources=input_sources, burst_candidate=burst_candidate)
+                     if burst_candidate is not None else {})
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
-                          input_times=times, input_sources=input_sources, burst_candidate=burst_candidate, runtime=runtime,
-                          simulation_config=simulation_config)
+                          input_times=times, runtime=runtime,
+                          simulation_config=simulation_config, **burst_options)
     controlled_candidate_key = candidate.get('identity') or digest(candidate.get('program') or {})
     controlled_key = digest(dict(run_id=run_id, purpose='controlled',
                                  candidate_key=controlled_candidate_key, phase_ms=phase_ms,

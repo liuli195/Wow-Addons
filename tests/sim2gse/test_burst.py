@@ -205,6 +205,22 @@ def test_public_task_runs_loop_and_burst_on_one_native_player(tmp_path):
     assert restored['burst']['candidate']['text'] == result['burst']['candidate']['text']
 
 
+def test_public_dual_task_rejects_burst_review_for_disabled_extra_talents(tmp_path):
+    import burst
+    definition, raw = reviewed_fixture()
+    raw += '\nomnium_talents=1:1\n'
+    definition['talent_hashes'] = [burst.talent_hash(task.parse_character(raw))]
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    original = profile.read_bytes()
+    with pytest.raises(task.TaskError, match='不适用此爆发定义'):
+        task.run_task(profile, tmp_path / 'omnium-off', mode='single', use_burst=True,
+                      program=[['outbreak'], ['festering_strike']],
+                      simulation_config={'enable_omnium_talents': False})
+    assert profile.read_bytes() == original
+
+
 
 def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
     import burst
