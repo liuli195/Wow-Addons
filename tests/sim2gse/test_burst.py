@@ -168,3 +168,98 @@ def test_public_burst_uses_effective_talents_when_extra_talents_are_disabled(tmp
     assert profile.read_bytes() == original
     effective = (tmp_path / 'omnium-off/input.effective.simc').read_text(encoding='utf-8')
     assert 'omnium_talents=' not in effective
+
+
+def test_public_task_runs_loop_and_burst_on_one_native_player(tmp_path):
+    import burst
+    definition, raw = reviewed_fixture()
+    published = burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    result = task.run_task(profile, tmp_path / 'dual', mode='single', use_burst=True,
+                           program=[['outbreak'], ['festering_strike'], ['scourge_strike'], ['death_coil']],
+                           search_config={'input_interval_ms': 200, 'diagnostic_logging': True})
+    assert result['burst']['definition_id'] == published['definition_id']
+    simulation = result['controlled_simulation']
+    assert simulation['consistent']
+    assert len(simulation['report']['sim']['players']) == 1
+    inputs = [event for event in simulation['trace'] if event['event'] == 'input' and event['battle'] == 0]
+    first_burst = [event for event in inputs if 3000 <= event['ms'] < 4000]
+    assert [event['ms'] for event in first_burst] == [3000, 3200, 3400, 3600, 3800]
+    assert all(event['source'] == 'burst' for event in first_burst)
+    assert [event['source_step'] for event in first_burst] == [0, 1, 0, 1, 0]
+    assert [event['source_origin'] for event in first_burst] == [1, 2, 3, 4, 5]
+    assert all(event['source'] == 'loop' for event in inputs if event['ms'] == 4000)
+    before = next(event for event in inputs if event['ms'] == 2800)
+    after = next(event for event in inputs if event['ms'] == 4000)
+    assert after['source_origin'] == before['source_origin'] + 1
+    # This fixture exports one precombat click followed by four loop blocks.
+    assert before['source_step'] == 4
+    assert after['source_step'] == 0
+    second = next(event for event in inputs if event['ms'] == 48000)
+    assert second['source'] == 'burst'
+    assert second['source_step'] == 1
+    from task import read_task
+    restored = read_task(tmp_path / 'dual', include_reports=True)
+    assert restored['burst']['definition_id'] == published['definition_id']
+    assert restored['burst']['candidate']['text'] == result['burst']['candidate']['text']
+
+
+
+def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
+    import burst
+    from program import from_search_program, compile_program
+    from sequence import evaluate
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    prepared = task.precheck_burst(profile, tmp_path / 'prepared')
+    program = from_search_program([
+        dict(kind='CastSequence', members=['outbreak', 'festering_strike'],
+             reset=dict(timeout_seconds=None, flags=['combat'])),
+        ['death_coil'],
+    ], prepared['capabilities'])
+    loop = compile_program(program, tmp_path / 'loop-export', identity=prepared['native_reference']['identity'])
+    times, sources = burst.combined_inputs(list(range(0, 180000, 200)), definition, 200)
+    simulation = evaluate(profile, loop, tmp_path / 'controlled', character=task.parse_character(raw),
+                          iterations=2, input_times=times, input_sources=sources,
+                          burst_candidate=prepared['candidate'])
+    assert simulation['consistent']
+    assert len(simulation['report']['sim']['players']) == 1
+    events = simulation['trace']
+    assert any(event['event'] == 'native_execute' and event['source'] == 'burst' for event in events)
+    assert any(event['event'] == 'native_execute' and event['source'] == 'loop'
+               and event['sequence_member'] == 1 for event in events)
+    assert all(event['source'] == 'loop' for event in events if event['sequence_member'] >= 0)
+
+
+def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
+    import burst
+    from program import from_action_blocks, compile_program
+    from sequence import evaluate, select
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    prepared = task.precheck_burst(profile, tmp_path / 'prepared')
+    loop = compile_program(from_action_blocks(select(prepared['capabilities'],
+                           [['dark_transformation'], ['death_coil']])),
+                           tmp_path / 'loop-export', identity=prepared['native_reference']['identity'])
+    times, sources = burst.combined_inputs(list(range(0, 180000, 200)), definition, 200)
+    simulation = evaluate(profile, loop, tmp_path / 'controlled', character=task.parse_character(raw),
+                          iterations=2, input_times=times, input_sources=sources,
+                          burst_candidate=prepared['candidate'])
+    for battle in (0, 1):
+        events = [event for event in simulation['trace'] if event['battle'] == battle]
+        assert any(event['event'] == 'native_execute' and event['source'] == 'loop'
+                   and event['action'] == 'dark_transformation' and event['ms'] < 3000 for event in events)
+        assert any(event['event'] == 'dispatch_failed' and event['source'] == 'burst'
+                   and event['action'] == 'dark_transformation' and event['ms'] == 3200
+                   and event['cooldown_ms'] > 0 for event in events)
+        first = next(event for event in events if event['event'] == 'input' and event['ms'] == 3000)
+        assert (first['source'], first['source_origin'], first['source_step']) == ('burst', 1, 0)
+    quiet = evaluate(profile, loop, tmp_path / 'quiet', character=task.parse_character(raw),
+                     iterations=2, trace=False, input_times=times, input_sources=sources,
+                     burst_candidate=prepared['candidate'])
+    assert quiet['consistent'] and not quiet['trace']

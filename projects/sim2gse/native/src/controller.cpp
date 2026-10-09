@@ -10,6 +10,8 @@ void controller_t::register_options( player_t& owner )
   owner.add_option( opt_string("sim2gse_castsequences", sim2gse_castsequences) );
   owner.add_option( opt_string("sim2gse_castsequence_events", sim2gse_castsequence_events) );
   owner.add_option( opt_string("sim2gse_times", sim2gse_times) );
+  owner.add_option( opt_string("sim2gse_sources", input_sources_text_) );
+  owner.add_option( opt_uint("sim2gse_burst_offset", burst_offset_, 0, 4096) );
   owner.add_option( opt_string("sim2gse_gcd_states", sim2gse_gcd_states) );
   owner.add_option( opt_string("sim2gse_failed_actions", sim2gse_failed_actions) );
   owner.add_option( opt_string("sim2gse_failure_events", sim2gse_failure_events) );
@@ -74,6 +76,37 @@ void controller_t::initialize_times()
       throw std::runtime_error("sim2gse failure event precedes its input or exceeds combat");
     sim2gse_observed_failure_events.emplace_back(at, from, fields[2]);
   }
+}
+
+void controller_t::initialize_sources()
+{
+  if (input_sources_text_.empty())
+  {
+    if (burst_offset_) throw std::runtime_error("burst offset requires input sources");
+    return;
+  }
+  const auto sources = util::string_split(input_sources_text_, "/");
+  if (sources.size() != input_times_.size() || !burst_offset_ || burst_offset_ >= sim2gse_blocks.size())
+    throw std::runtime_error("invalid sim2gse input source configuration");
+  unsigned loop = 0, burst = 0;
+  for (const auto& source : sources)
+  {
+    if (source != "loop" && source != "burst")
+      throw std::runtime_error("unknown sim2gse input source");
+    const bool is_burst = source == "burst";
+    auto& position = is_burst ? burst : loop;
+    const auto offset = is_burst ? burst_offset_ : 0u;
+    const auto count = is_burst ? sim2gse_blocks.size() - burst_offset_ : burst_offset_;
+    input_steps_.push_back(offset + position % count);
+    source_origins_.push_back(++position);
+    burst_inputs_.push_back(is_burst);
+  }
+}
+
+unsigned controller_t::step_for_origin( unsigned origin ) const
+{
+  if (!input_steps_.empty()) return input_steps_.at(origin - 1);
+  return (origin - 1) % sim2gse_blocks.size();
 }
 
 void controller_t::reset( player_t& owner )
@@ -448,6 +481,7 @@ void controller_t::sim2gse_init()
   }
   if ( sim2gse_blocks.empty() || sim2gse_blocks.size() > 128 )
     throw std::runtime_error("invalid sim2gse sequence length");
+  initialize_sources();
   for (const auto& [step, members] : sim2gse_castsequence_members)
     if (step >= sim2gse_blocks.size())
       throw std::runtime_error("sim2gse castsequence step out of range");
@@ -499,7 +533,7 @@ void controller_t::handle_event(const char* event, action_t* a, unsigned origin)
   int sequence_member = -1;
   if (origin)
   {
-    const auto step = static_cast<unsigned>((origin - 1) % sim2gse_blocks.size());
+    const auto step = step_for_origin(origin);
     const auto sequence = sim2gse_castsequence_members.find(step);
     if (sequence != sim2gse_castsequence_members.end())
     {
@@ -521,13 +555,13 @@ void controller_t::handle_event(const char* event, action_t* a, unsigned origin)
     }
   }
   const bool direct = origin && a &&
-    std::find(sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].begin(),
-              sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end(), a) !=
-    sim2gse_blocks[(origin - 1) % sim2gse_blocks.size()].end();
+    std::find(sim2gse_blocks[step_for_origin(origin)].begin(),
+              sim2gse_blocks[step_for_origin(origin)].end(), a) !=
+    sim2gse_blocks[step_for_origin(origin)].end();
   if (native_execute && direct)
   {
     sim2gse_executed_actions.emplace(origin, a);
-    const auto step = static_cast<unsigned>((origin - 1) % sim2gse_blocks.size());
+    const auto step = step_for_origin(origin);
     const auto sequence = sim2gse_castsequence_members.find(step);
     if (sequence != sim2gse_castsequence_members.end() && sequence_pending_success)
     {
@@ -546,11 +580,14 @@ void controller_t::write_trace( const char* event, action_t* a, unsigned origin,
   if ( !sim2gse_trace ) return;
   if ( (std::string(event) == "native_execute" || std::string(event) == "native_interrupt") && !direct )
     event = "native_derived";
-  owner_->sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", owner_->sim->current_time().total_millis(),
-      event, origin, origin ? static_cast<int>((origin - 1) % sim2gse_blocks.size()) : -1, a ? a->name_str : "-", owner_->gcd_ready.total_millis(),
+  const auto source = input_steps_.empty() ? std::string() : fmt::format("\t{}\t{}",
+      origin ? (burst_inputs_.at(origin - 1) ? "burst" : "loop") : "-",
+      origin ? source_origins_.at(origin - 1) : 0);
+  owner_->sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}", owner_->sim->current_time().total_millis(),
+      event, origin, origin ? static_cast<int>(step_for_origin(origin)) : -1, a ? a->name_str : "-", owner_->gcd_ready.total_millis(),
       owner_->resources.current[owner_->primary_resource()], owner_->health_percentage(), a ? a->cooldown->remains().total_millis() : 0,
       owner_->sim->current_iteration, a ? a->signature_str : "-", a ? a->execute_time().total_millis() : 0,
-      sequence_step, sequence_member);
+      sequence_step, sequence_member, source);
 }
 
 void controller_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
@@ -584,6 +621,7 @@ void controller_t::sim2gse_tick()
 {
   if ( owner_->is_sleeping() || owner_->sim->event_mgr.canceled ) return;
   const unsigned origin = ++input_;
+  if (!input_steps_.empty()) sim2gse_step = step_for_origin(origin);
   handle_event("input", nullptr, origin);
   if ( origin == 1 && sim2gse_blocks[sim2gse_step].empty() )
   {

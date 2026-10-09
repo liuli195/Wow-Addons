@@ -133,3 +133,14 @@ def input_times(definition, interval_ms=None):
     if len(times) > 4096:
         raise ValueError('爆发输入次数超过限制')
     return times
+
+
+def combined_inputs(loop_times, definition, interval_ms):
+    """爆发窗口不发循环输入；窗口后续原循环位置，不补同刻点击。"""
+    plan = definition['plan']
+    windows = list(range(plan['start_ms'], 180000, plan['repeat_ms']))
+    loop = [at for at in loop_times if not any(start <= at < start + plan['window_ms'] for start in windows)]
+    rows = sorted([(at, 'loop') for at in loop] + [(at, 'burst') for at in input_times(definition, interval_ms)])
+    if len(rows) > 4096 or any(a[0] == b[0] for a, b in zip(rows, rows[1:])):
+        raise ValueError('双来源按键时间重复或超过限制')
+    return [row[0] for row in rows], [row[1] for row in rows]

@@ -35,6 +35,10 @@ public:
 private:
   player_t* owner_ = nullptr;
   std::vector<timespan_t> input_times_;
+  std::string input_sources_text_;
+  unsigned burst_offset_ = 0;
+  std::vector<unsigned> input_steps_, source_origins_;
+  std::vector<bool> burst_inputs_;
   unsigned input_ = 0;
   std::string sim2gse_steps;
   std::string sim2gse_castsequences;
@@ -92,6 +96,8 @@ private:
 
 
   void initialize_times();
+  void initialize_sources();
+  unsigned step_for_origin( unsigned ) const;
   void schedule_first_input();
   void schedule_next();
   bool matches_input_time( timespan_t, unsigned ) const;

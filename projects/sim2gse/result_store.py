@@ -22,6 +22,7 @@ CANDIDATE_SCHEMA = dict(
     game_validation="VARCHAR",
 )
 RUN_SCHEMA = dict(
+    burst="JSON",
     run_id="VARCHAR", status="VARCHAR", phase="VARCHAR", profile="JSON",
     identity="JSON", input_original="VARCHAR", input_effective="VARCHAR",
     config="JSON", simulation_config="JSON", engines="JSON", condition_key="VARCHAR",

@@ -369,6 +369,10 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     run_id = profile.get('run_id')
     if not isinstance(run_id, str) or not run_id:
         raise TaskError('任务缺少结果中心身份')
+    burst_record = dict(result.get('burst') or (state or {}).get('burst') or {})
+    burst_candidate = burst_record.pop('candidate', None)
+    if burst_candidate is not None:
+        burst_record['candidate_key'], burst_record['candidate_data_key'] = _store_candidate(run_id, burst_candidate)
     candidate = result.get('candidate')
     candidate_key = (candidate.get('identity') if isinstance(candidate, dict) else None)
     candidate_key = (candidate_key or result.get('locked_candidate_key')
@@ -428,6 +432,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     effective = _read_utf8(destination / 'input.simc', description='任务输入副本')[1]
     record = dict(
         run_id=run_id, status=result.get('status', 'failed'), phase=result.get('phase', 'done'),
+        burst=burst_record or None,
         profile=profile, identity=profile.get('identity', {}),
         input_original=original, input_effective=effective,
         config=result.get('config') or (state or {}).get('config', {}),
@@ -543,7 +548,7 @@ def _prepare_task(input_path, output_root, *, resume=False, simulation_config=No
 
 
 def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
-                simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False):
+                simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False, use_burst=False):
     from engine import inspect, reference, damage_statistics
     from sequence import select, evaluate
     from program import compile_program, from_action_blocks
@@ -600,15 +605,35 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
                                 destination / "export", identity=native['identity'], runtime=runtime,
                                 capabilities=capabilities, context=gse_context)
+    burst_result = None
+    burst_candidate = None
+    input_sources = None
+    times = list(range(phase_ms, 180000, interval_ms))
+    if use_burst:
+        from burst import load, prepare, combined_inputs
+        definition = load(native['identity']['spec_id'])
+        burst_program = from_action_blocks(prepare(definition, character, capabilities, native['identity']))
+        burst_program['metadata'].update(purpose='burst', instructions=definition['instructions'])
+        burst_candidate = compile_program(burst_program, destination / 'burst-export',
+                                          identity=native['identity'], runtime=runtime)
+        burst_candidate['source'] = 'burst'
+        times, input_sources = combined_inputs(times, definition, interval_ms)
+        burst_result = dict(definition_id=definition['definition_id'], plan=definition['plan'],
+                            interval_ms=interval_ms, candidate=burst_candidate,
+                            instructions=definition['instructions'])
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
-                          input_times=list(range(phase_ms, 180000, interval_ms)), runtime=runtime,
+                          input_times=times, input_sources=input_sources, burst_candidate=burst_candidate, runtime=runtime,
                           simulation_config=simulation_config)
     controlled_candidate_key = candidate.get('identity') or digest(candidate.get('program') or {})
     controlled_key = digest(dict(run_id=run_id, purpose='controlled',
                                  candidate_key=controlled_candidate_key, phase_ms=phase_ms,
                                  interval_ms=interval_ms,
                                  input_sha256=json.loads((destination / 'profile.json').read_text(encoding='utf-8'))['input_effective_sha256'],
-                                 simulation_config=simulation_config))
+                                 simulation_config=simulation_config,
+                                 **(dict(burst_definition_id=burst_result['definition_id'],
+                                         burst_program=burst_candidate['compiled_program'],
+                                         burst_plan=burst_result['plan'], input_sources=input_sources)
+                                    if burst_result else {})))
     controlled_damage = damage_statistics(controlled['report'], character)
     controlled_stored = False
     try:
@@ -632,6 +657,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
         discard_diagnostic_files(destination / 'controlled')
     controlled['data_key'] = controlled_key
     candidate["simulation"] = "passed_native_model"
+    if burst_candidate is not None:
+        burst_candidate['simulation'] = 'passed_native_model'
     result = {
         "status": "completed" if gse_program is not None else "offline_ready",
         "phase": "done" if gse_program is not None else "single",
@@ -647,6 +674,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
         "simulation_config": simulation_config,
         "engines": {mode: entry[1] for mode, entry in runtime.identities.items()},
     }
+    if burst_result is not None:
+        result['burst'] = burst_result
     return result
 
 
@@ -921,8 +950,14 @@ def _task_lease(destination):
 def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None) -> dict:
+             version=None, gse_context=None, use_burst=False) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
+    if type(use_burst) is not bool:
+        raise TaskError('爆发开关必须为布尔值')
+    if use_burst and mode == 'optimize':
+        raise TaskError('独立爆发尚未接入优化任务，请先使用单次评估')
+    if use_burst and (search_config is None or isinstance(search_config, dict) and 'input_interval_ms' not in search_config):
+        search_config = dict(search_config or {}, input_interval_ms=200)
     if resume and not _lease:
         if mode!='optimize':
             raise TaskError('单次评估不支持恢复')
@@ -976,7 +1011,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
                 result = _run_single(path, destination, character, program=program, phase_ms=phase_ms,
                                      runtime=runtime, interval_ms=config["input_interval_ms"],
                                      simulation_config=simulation_config, gse_program=gse_program,
-                                     gse_context=gse_context, diagnostic_logging=config["diagnostic_logging"])
+                                     gse_context=gse_context, diagnostic_logging=config["diagnostic_logging"],
+                                     use_burst=use_burst)
                 result['config'] = config
                 result['elapsed_seconds'] = runtime.elapsed_seconds
                 pointer = _store_run(destination, result)
@@ -1016,20 +1052,20 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None) -> dict:
+             version=None, gse_context=None, use_burst=False) -> dict:
     if mode != 'optimize' or _lease:
         return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
                          search_config=search_config, simulation_config=simulation_config,
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context)
+                         gse_context=gse_context, use_burst=use_burst)
     from seed_activity import foreground_search
     with foreground_search():
         return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
                          search_config=search_config, simulation_config=simulation_config,
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context)
+                         gse_context=gse_context, use_burst=use_burst)
 
 
 class TaskHandle:
@@ -1242,6 +1278,15 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         error=saved['error'], output_root=destination)
     if saved['search_observability']:
         task_result['search_observability'] = decode(saved['search_observability'])
+    if saved.get('burst'):
+        burst_record = decode(saved['burst'])
+        row = read_record('candidates', 'candidate_data_key', burst_record['candidate_data_key'])
+        if row is None:
+            raise TaskError('结果中心的爆发导出候选缺失')
+        burst_record['candidate'] = dict(identity=row['candidate_key'], program=decode(row['program']),
+                                          text=row['export_text'], simulation=row['simulation'],
+                                          game_validation=row['game_validation'])
+        task_result['burst'] = burst_record
     if saved['search_dps'] is not None:
         task_result['search_result'] = dict(
             dps=saved['search_dps'], samples=saved['search_samples'],
