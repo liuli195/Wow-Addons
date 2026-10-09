@@ -382,7 +382,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     raise ValueError('训练恢复条件不一致')
                 if store.state.get('training_candidate_id', row['candidate_id']) != row['candidate_id']:
                     raise ValueError('训练候选目录短标识碰撞')
-                store.state.update(training_condition=condition, config=config,
+                store.state.update(training_condition=condition, config=config, capabilities=capabilities,
                                    training_candidate_id=row['candidate_id'],
                                    run_id=store.state.get('run_id', uuid.uuid4().hex),
                                    starts=store.state.get('starts', [row['program']]),
