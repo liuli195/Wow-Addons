@@ -27,3 +27,6 @@
 ## 实施记录
 
 01—03已完成各票双轴及阶段1最终审查，详细报告见ticket01-review.md、ticket02-review.md、ticket03-review.md和stage1-final-review.md。每次实际审查记录固定提交范围，发生修复后更新待审完成提交并覆盖修复差异；审查通过必须对应最后实际代码。未观察到的检查不得写通过。
+
+04—07已完成各票双轴及阶段2最终审查；详见ticket04—07-review.md与stage2-final-review.md。阶段2完整范围ff3076a...c7d5012，实际GPT-6-A、中、严格只读，允许进入08。
+
