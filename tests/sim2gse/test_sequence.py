@@ -818,11 +818,14 @@ class SequenceSimulationTests(unittest.TestCase):
             run(source, Path(directory) / 'disabled', 'controlled')
             original = json.loads((Path(self.directory.name) / 'default/reference/native.json').read_text(encoding='utf-8'))
             disabled = json.loads((Path(directory) / 'disabled/native.json').read_text(encoding='utf-8'))
-            # 完整 APL 目录是仅基准的报告元数据；其余战斗内容仍逐值比较。
-            baseline_metadata = {'sim2gse_apl_actions_protocol', 'sim2gse_apl_actions'}
+            # 目录与跳过清单属于报告元数据；两端其余战斗内容仍逐值比较。
+            baseline_metadata = {'sim2gse_apl_actions_protocol', 'sim2gse_apl_actions',
+                                 'sim2gse_skipped_commands'}
             original_players = [{key: value for key, value in player.items() if key not in baseline_metadata}
                                 for player in original['sim']['players']]
-            self.assertEqual(original_players, disabled['sim']['players'])
+            disabled_players = [{key: value for key, value in player.items() if key not in baseline_metadata}
+                                for player in disabled['sim']['players']]
+            self.assertEqual(original_players, disabled_players)
             altered = copy.deepcopy(candidate)
             altered['compiled_steps'][altered['precombat_count']]['spell'] = 999999
             with self.assertRaises((ValueError, KeyError)):

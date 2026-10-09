@@ -73,6 +73,7 @@ REPORT_METADATA = {
     'sim2gse_resource', 'sim2gse_actions_protocol', 'sim2gse_actions',
     'sim2gse_apl_actions_protocol', 'sim2gse_apl_actions', 'sim2gse_precombat_actions',
     'sim2gse_items', 'sim2gse_actor_index', 'sim2gse_actor_name', 'sim2gse_owner_type',
+    'sim2gse_availability_protocol', 'sim2gse_unavailable_actions', 'sim2gse_skipped_commands',
 }
 
 
