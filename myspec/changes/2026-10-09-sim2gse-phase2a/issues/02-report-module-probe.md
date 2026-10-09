@@ -1,6 +1,6 @@
 # 02：阶段1：抽取报告模块并证明行为不变
 
-Status（状态）: draft（未开始实施）
+Status（状态）: in-progress（实施中）
 Triage（分拣）: ready-for-agent（需求已整理，等待前置与开发门禁）
 Blocked by（前置）: 01
 
