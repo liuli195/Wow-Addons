@@ -1,8 +1,8 @@
 # 10：搜索不含爆发技能的循环并隔离历史成绩
 
-Status（状态）: draft（扩大范围后的票据，未开始实施）
-Triage（分拣）: ready-for-agent（需求已整理，等待前置与开发门禁）
-Blocked by（前置）: 09；扩大范围后的开发门禁；前置票验收通过
+Status（状态）: in-progress（09已通过，主代理串行实施）
+Triage（分拣）: ready（已批准的动态排除要求）
+Blocked by（前置）: 无；09及开发门禁已通过
 
 ## 交付行为
 
