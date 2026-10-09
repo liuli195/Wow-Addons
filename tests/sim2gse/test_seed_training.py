@@ -14,6 +14,8 @@ def training_boundary(damage_for=lambda candidate: 100.):
     import sequence
 
     def evaluate(profile, candidate, folder, **kwargs):
+        kwargs.pop('input_sources', None)
+        kwargs.pop('burst_candidate', None)
         result = _fast_evaluate(profile, candidate, folder, **kwargs)
         damage = damage_for(candidate)
         result['summary']['dps'] = damage
@@ -587,3 +589,109 @@ def test_connected_public_search_creates_data_root_on_first_run(tmp_path, monkey
     assert result['status'] == 'completed'
     assert data_root.is_dir()
     assert (data_root / '.seed-activity').is_dir()
+
+
+@pytest.mark.parametrize('case', ['structured', 'history-only', 'changed-definition', 'empty', 'single-member', 'unknown', 'invalid-block', 'invalid-program'])
+def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(tmp_path, capsys, monkeypatch, case):
+    import burst
+    import engine
+    import result_store
+    import seed_training
+    from test_character_export import sample_profile
+
+    definition = json.loads(Path('projects/sim2gse/burst/unholy.json').read_text(encoding='utf-8'))
+    reset = dict(timeout_seconds=3, flags=['target'])
+    original = [
+        ['army_of_the_dead'], ['dark_transformation', 'use_item,slot=trinket1', 'use_item,slot=trinket2', 'potion'],
+        dict(kind='Loop', count=3, blocks=[['army_of_the_dead'], ['dark_transformation']]),
+        dict(kind='CastSequence', members=['army_of_the_dead', 'dark_transformation'], reset=reset),
+        dict(kind='Loop', count=2, blocks=[['army_of_the_dead'], ['outbreak'], ['outbreak'],
+                                         ['dark_transformation'], ['scourge_strike']]),
+        dict(kind='WaitClicks', clicks=2),
+        dict(kind='CastSequence', members=['death_coil', 'army_of_the_dead', 'scourge_strike',
+                                           'dark_transformation', 'death_coil'], reset=reset),
+        ['death_coil']]
+    expected = [dict(kind='Loop', count=2, blocks=[['outbreak'], ['outbreak'], ['scourge_strike']]),
+                dict(kind='WaitClicks', clicks=2),
+                dict(kind='CastSequence', members=['death_coil', 'scourge_strike', 'death_coil'], reset=reset),
+                ['death_coil']]
+    errors = {'empty': '没有可训练的普通循环', 'single-member': '仅剩一个成员', 'unknown': '不支持的动作', 'invalid-block': '1 至 16 个命令', 'invalid-program': '超过 128 个顶层节点'}
+    if case == 'changed-definition':
+        definition['version'] += '-test-coil'
+        definition['blocks'] = [[dict(kind='spell', simc_action='death_coil', name='死亡缠绕', spell_id=1002)]]
+        definition['excluded_spell_ids'] = [1002]
+        original = [['death_coil'], ['dark_transformation'], ['outbreak']]
+        expected = [['dark_transformation'], ['outbreak']]
+    elif case == 'empty':
+        original = [dict(kind='Loop', count=3, blocks=[['army_of_the_dead'], ['dark_transformation']]),
+                    dict(kind='WaitClicks', clicks=2)]
+    elif case == 'single-member':
+        original = [dict(kind='CastSequence', members=['army_of_the_dead', 'death_coil'], reset=reset)]
+    elif case == 'unknown':
+        original = [['army_of_the_dead'], ['not_a_real_action']]
+    elif case == 'invalid-block':
+        original = [['army_of_the_dead'] * 16 + ['death_coil']]
+    elif case == 'invalid-program':
+        original = [['death_coil']] * 128 + [dict(kind='CastSequence')]
+    burst.publish(definition)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    source = tmp_path / 'material.json'
+    source.write_text(json.dumps(dict(label=case, class_name='deathknight', spec='unholy', source='constructed-test',
+        original='original fixture', instructions='repeat', semantic='preserved', changes=[], family='source-family',
+        core=[['army_of_the_dead']] if case == 'structured' else [], program=original)), encoding='utf-8')
+    if case != 'history-only':
+        assert seed_training.main(['--project', str(tmp_path), 'register', str(source)]) == 0
+    source_before = result_store.read_records('seed_candidates', 'registry')
+    result_store.write('runs', 'historical-source', [dict(dict.fromkeys(result_store.RUN_SCHEMA),
+        run_id='historical-source', status='completed', profile={'identity': {'class': 'deathknight', 'spec': 'unholy'}},
+        candidate_data_key='historical-program', search_dps=90.)], schema=result_store.RUN_SCHEMA)
+    result_store.write('candidates', 'historical-program', [dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA),
+        run_id='historical-source', candidate_key='historical-key', candidate_data_key='historical-program',
+        source='search', program=original)], schema=result_store.CANDIDATE_SCHEMA)
+    history_before = result_store.read_records('candidates', 'historical-program')
+    args = ['--project', str(tmp_path), 'run', '--template', str(template), '--targets', '1',
+            '--workspace', str(tmp_path / 'work')]
+    with training_boundary():
+        inspect = engine.inspect
+        def full_catalogue(*args, **kwargs):
+            capabilities = inspect(*args, **kwargs)
+            capabilities['actions'].append(dict(kind='item', slot=14, item_id=250228,
+                simc_action='use_item,slot=trinket2', name='使用trinket2', gcd_ms=0))
+            return capabilities
+        monkeypatch.setattr(engine, 'inspect', full_catalogue)
+        reference = engine.reference
+        def burst_reference(*args, **kwargs):
+            native = reference(*args, **kwargs)
+            native['identity']['data_version'] = definition['data_version']
+            return native
+        monkeypatch.setattr(engine, 'reference', burst_reference)
+        assert seed_training.main(args) == 0
+    assert seed_training.main(['--project', str(tmp_path), 'list', '--state', 'processed']) == 0
+    records = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert len(records) == (1 if case == 'history-only' else 2)
+    if case in errors:
+        assert all(row['status'] == 'rejected' and errors[case] in row['error'] for row in records)
+        if case not in ('invalid-block', 'invalid-program'):
+            for row in records:
+                adaptation = json.loads(row['comparison'])['adaptation']
+                assert adaptation['original_program'] == original and adaptation['removed']
+    else:
+        assert any(row['status'] == 'completed' for row in records), records
+        completed = next(row for row in records if row['status'] == 'completed')
+        assert json.loads(completed['initial_program']) == expected
+        adaptation = json.loads(completed['comparison'])['adaptation']
+        assert adaptation['original_program'] == original and adaptation['removed']
+        if case != 'history-only':
+            assert any(row['status'] == 'rejected' and '相同行为候选' in row['error'] for row in records)
+        if case == 'structured':
+            assert adaptation['initial_core_retained'] is False
+            assert seed_training.main(['--project', str(tmp_path), 'list', '--state', 'selected']) == 0
+            assert all(row['family'] == 'history-search' for row in json.loads(capsys.readouterr().out))
+        with training_boundary(), monkeypatch.context() as guarded:
+            guarded.setattr(engine, 'reference', burst_reference)
+            guarded.setattr(engine, 'inspect', full_catalogue)
+            assert seed_training.main(args) == 0
+            assert json.loads(capsys.readouterr().out)[0]['processed'] == 0
+    assert result_store.read_records('seed_candidates', 'registry') == source_before
+    assert result_store.read_records('candidates', 'historical-program') == history_before
