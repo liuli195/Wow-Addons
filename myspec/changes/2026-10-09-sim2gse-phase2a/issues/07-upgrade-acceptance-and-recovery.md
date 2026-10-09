@@ -1,6 +1,6 @@
 # 07：阶段2：新版产物验收与回退
 
-Status（状态）: draft（未开始实施）
+Status（状态）: in-progress（实施中）
 Triage（分拣）: ready-for-agent（需求已整理，等待前置与开发门禁）
 Blocked by（前置）: 06
 
@@ -38,3 +38,4 @@ Blocked by（前置）: 06
 - [ ] 可验证的旧记录复用、缺失才补跑；不得额外跑旧新架构各一次完整升级或两轮600秒收益搜索。
 
 新规则见 ../upgrade-regression-acceptance.md。
+
