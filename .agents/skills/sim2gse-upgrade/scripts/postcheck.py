@@ -71,7 +71,7 @@ def check_scene(scene, ready):
         require(row['status'] == 'completed' and row['stop_reason'] in ('no_improvement', 'space_stalled'),
                 '训练没有正式收敛')
         require(valid_scores(row['scores']) and valid_scores(row['initial_scores']), '独立复测成绩缺项')
-        state = checkpoint(row['task_path'], ['config', 'training_condition',
+        state = checkpoint(row['task_path'], ['config', 'training_condition', 'capabilities',
                            'training_candidate_id', 'burst'])
         current_condition = training_condition(ready['template_sha256'], ready['engines'],
             state['config'], {'target_count': targets, 'enable_omnium_talents': True},
@@ -83,10 +83,17 @@ def check_scene(scene, ready):
         for name, scores in [('retest-initial', row['initial_scores']), ('retest-final', row['scores'])]:
             for seed, score in zip(RETEST_SEEDS, scores):
                 key = digest(dict(folder=str(Path(row['task_path']) / name), seed=seed))
-                batch = one('batches', key, ['purpose', 'seed', 'samples', 'dps'])
+                batch = one('batches', key, ['purpose', 'seed', 'samples', 'dps',
+                            'engines', 'condition_key', 'program_identity', 'requested_iterations'])
+                program = decode(row['initial_program' if name == 'retest-initial' else 'program'])
+                canonical = canonicalize_search_program(program, state['capabilities'])
                 require(batch['purpose'] == 'seed_retest' and batch['seed'] == seed and
                         batch['samples'] == 127 and batch['dps'] == score,
                         '独立复测真实批次、128轮规模或成绩不一致')
+                require(decode(batch['engines']) == ready['engines'] and
+                        batch['condition_key'] == row['condition'] and
+                        decode(batch['program_identity']) == canonical['form'] and
+                        batch['requested_iterations'] == 128, '独立复测引擎、条件或程序身份不一致')
         completed[candidate_id] = row
     require(len(completed) == 2 and rejected == 1, '缺少两类成功材料或拒绝材料')
     require(len({row['family'] for row in completed.values()}) == 2, '成功材料须属于两类')

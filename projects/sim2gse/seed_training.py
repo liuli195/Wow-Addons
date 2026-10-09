@@ -160,9 +160,10 @@ def history_candidates(character):
     return rows
 
 
-def retest(profile, program, character, capabilities, native, folder, simulation_config, *, runtime=None, burst_context=None):
+def retest(profile, program, character, capabilities, native, folder, simulation_config, *,
+           engines, condition, runtime=None, burst_context=None):
     from program import from_search_program, compile_program
-    from sequence import evaluate
+    from sequence import evaluate, compiled_identity
     runtime = runtime or TaskRuntime(600)
     runtime.check()
     compiled = compile_program(from_search_program(program, capabilities), folder / 'export',
@@ -188,6 +189,8 @@ def retest(profile, program, character, capabilities, native, folder, simulation
         result_store.write_batch(digest(dict(folder=str(folder), seed=seed)), dict(
             batch_key=digest(dict(folder=str(folder), seed=seed)), run_id=folder.parent.name,
             purpose='seed_retest', seed=seed, samples=summary['samples'], dps=summary['dps'],
+            requested_iterations=128, engines=engines, condition_key=condition,
+            program_identity=compiled_identity(compiled),
             report=result['report']))
         (folder / str(seed) / 'native.json').unlink(missing_ok=True)
     return scores
@@ -249,12 +252,31 @@ def training_condition(template_sha, engines, config, simulation_config, *, burs
                           if burst_context else {})))
 
 
-def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False):
+def selected_materials(candidate_ids):
+    """只读取明确登记的材料，错误编号在启动计算前拒绝。"""
+    rows = []
+    for candidate_id in dict.fromkeys(candidate_ids):
+        matches = result_store.read_records('seed_candidates', 'registry',
+                                            filters={'candidate_id': candidate_id})
+        if len(matches) != 1:
+            raise ValueError('训练材料不存在或不唯一: ' + candidate_id)
+        if matches[0].get('semantic') == 'unsupported':
+            raise ValueError('不可表达材料不能用于训练: ' + candidate_id)
+        rows.append(matches[0])
+    if not rows:
+        raise ValueError('至少指定一个训练材料')
+    return rows
+
+
+def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None):
     from engine import identity, reference, prepare_loop
     from program import canonicalize_search_program
     _check_cancelled(cancel_event)
     text = template.read_text(encoding='utf-8')
     character = template_character(text)
+    if materials is not None and any(row['class_name'] != character.class_name or
+                                     row['spec'] != character.spec for row in materials):
+        raise ValueError('训练材料与标准角色职业或专精不一致')
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
     config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
                          'no_improvement_rounds': 2})
@@ -284,7 +306,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 if row['condition'] == condition]
     completed = {row['candidate_id'] for row in processed
                  if row['condition'] == condition and row['status'] in ('completed', 'rejected')}
-    candidates = result_store.read_records('seed_candidates', 'registry') + history_candidates(character)
+    candidates = (materials if materials is not None else
+                  result_store.read_records('seed_candidates', 'registry') + history_candidates(character))
     _check_cancelled(cancel_event)
     candidates = [row for row in candidates if row.get('semantic') != 'unsupported' and
                   row['class_name'] == character.class_name and
@@ -385,9 +408,11 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     raise ValueError('预算或其他上限使训练未收敛，保留进度待检查')
                 record['initial_scores'] = retest(profile, row['program'], character, capabilities,
                                                  native, folder / 'retest-initial', simulation_config,
+                                                 engines=engines, condition=condition,
                                                  runtime=TaskRuntime(600, cancel_event=cancel_event), burst_context=burst_context)
                 record['scores'] = retest(profile, program, character, capabilities, native,
                                          folder / 'retest-final', simulation_config,
+                                         engines=engines, condition=condition,
                                          runtime=TaskRuntime(600, cancel_event=cancel_event), burst_context=burst_context)
                 record['comparison'] = summarize_pairs(
                     [{'dps': value} for value in record['scores']],
@@ -462,6 +487,7 @@ def main(argv=None):
     training = commands.add_parser('run', help='独立训练至连续两轮无改善、复测与更新')
     training.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
     training.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
+    training.add_argument('--candidate-id', action='append', help='只训练指定登记材料；可重复传入，默认全部')
     training.add_argument('--workspace', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.local/sim2gse/seed-training')
     checking = commands.add_parser('check', help='只读核对训练模板、引擎与审核适用性，不启动计算')
@@ -480,12 +506,15 @@ def main(argv=None):
         elif args.command == 'check':
             output = check_training(args.template, use_burst=args.use_burst)
         elif args.command == 'run':
+            material_options = ({'materials': selected_materials(args.candidate_id)}
+                                if args.candidate_id else {})
             ready = check_training(args.template, use_burst=args.use_burst)
             from seed_activity import training_activity
             with writer_lock():
                 with training_activity() as cancel_event:
                     output = [_run_training(Path(ready['template']), targets, args.workspace,
-                                            cancel_event=cancel_event, use_burst=args.use_burst)
+                                            cancel_event=cancel_event, use_burst=args.use_burst,
+                                            **material_options)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state in ('pending', 'unsupported'):
             output = [row for row in result_store.read_records('seed_candidates', 'registry')

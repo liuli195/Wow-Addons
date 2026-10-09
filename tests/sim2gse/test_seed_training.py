@@ -60,6 +60,19 @@ def test_training_check_locates_current_template_without_starting_compute(tmp_pa
     assert not (tmp_path / 'work').exists()
 
 
+def test_training_unknown_material_is_rejected_before_compute(tmp_path, capsys, monkeypatch):
+    from seed_training import main
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('错误材料编号不能启动计算')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), 'run', '--candidate-id', 'missing-material',
+                 '--workspace', str(tmp_path / 'work')]) == 2
+    assert '训练材料不存在' in capsys.readouterr().err
+    assert not (tmp_path / 'work').exists()
+
+
 @pytest.mark.parametrize('entry', ['check', 'run'])
 def test_training_entry_refuses_missing_definition_before_starting_compute(tmp_path, capsys, monkeypatch, entry):
     from seed_training import main
@@ -148,7 +161,13 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile() + '\nactions=auto_attack\n', encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    selected_id = result_store.read_records('seed_candidates', 'registry')[0]['candidate_id']
+    other = json.loads(source.read_text(encoding='utf-8'))
+    other['label'] = 'not selected for this run'
+    source.write_text(json.dumps(other), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+            '--candidate-id', selected_id]
     real_write = result_store.write
     def failing_publish(table, key, rows, **kwargs):
         if table == 'seed_selected':
