@@ -2873,11 +2873,17 @@ class InterfaceTests(unittest.TestCase):
             "canonicalized_duplicates": 4,
         })
 
-    def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=300, target_count=1):
+    def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=200, target_count=1):
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
             scenarios=('nominal','jitter','slow','pause','phase') if interval_ms != 300 else ('nominal',),max_processes=1)}
+        from test_burst import reviewed_fixture
+        import burst
+        definition, reviewed_profile = reviewed_fixture()
+        import result_store
+        result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+        burst.publish(definition)
         env=os.environ.copy()
         env.setdefault('NODE_PATH',str(Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'))
         script=r'''
@@ -2891,7 +2897,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   page.on('request',request=>{if(request.url().endsWith('/api/tasks')&&request.method()==='POST')submitted=request.postDataJSON();});
   page.on('response',async response=>{if(response.url().includes('/api/tasks/')&&response.request().method()==='GET')state=await response.json();});
   await page.goto(input.url);
-  assert.equal(await page.locator('#interval').inputValue(),'300');
+  assert.equal(await page.locator('#interval').inputValue(),'200');
   assert.equal(await page.locator('#targetCount').inputValue(),'1');
   assert.deepEqual(await page.locator('#targetCount option').evaluateAll(options=>options.map(o=>o.value)),['1','5']);
   await page.locator('#interval').fill(String(input.interval_ms));
@@ -2918,10 +2924,13 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
   const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
   assert.equal(state.input_interval_ms,input.interval_ms);
-  assert.equal(submitted.target_count,input.target_count);
+  assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
   assert.equal(await page.locator("#targetCount").isDisabled(),false);
-  assert.equal(text,state.candidate_text);assert.equal(state.evidence_status,'search_result');
+  assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
   assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
+  assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
+  await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
+  await page.reload();await page.waitForFunction(()=>!document.querySelector('#start').disabled);assert.equal(await page.locator('#result').inputValue(),text);
   await page.locator('#copy').click();
   assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
   assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
@@ -2933,7 +2942,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or sample_profile(),interval_ms=interval_ms,target_count=target_count)),
+        result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or reviewed_profile,interval_ms=interval_ms,target_count=target_count)),
             text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self._decode_candidate(json.loads(result.stdout)['candidate'], expected_spec)
@@ -3000,14 +3009,13 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(self.server.tasks, {})
 
     def test_browser_uses_adjustable_input_interval(self):
-        with _fast_search_boundary():
-            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
+        self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
-        result = read_task(destination, include_search_records=True)
+        result = read_task(destination / 'aoe', include_search_records=True)
         self.assertEqual(result['simulation_config']['target_count'], 5)
-        for row in result['search']['records'][0]['batches']:
-            self.assertEqual(row['request']['times'], list(range(0, 180000, 180)))
+        self.assertEqual(result['config']['input_interval_ms'], 180)
+        self.assertTrue(result['burst']['definition_id'])
         scenarios = result['final']['scenarios']
         self.assertEqual(scenarios, {})
 
@@ -3170,7 +3178,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             if Path(destination).name == 'result.json':
                 time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
             return original(source, destination)
-        with _fast_search_boundary(), patch.object(os, 'replace', side_effect=delayed_result):
+        with patch.object(os, 'replace', side_effect=delayed_result):
             self.test_browser_computes_copies_and_clears_real_candidate()
 
     def test_browser_survives_transient_windows_report_sharing_conflicts(self):
@@ -3190,7 +3198,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             except PermissionError as error:
                 conflicts.append(error.winerror)
                 raise
-        with _fast_search_boundary(), patch.object(os,'replace',side_effect=sharing_conflict):
+        with patch.object(os,'replace',side_effect=sharing_conflict):
             self.test_browser_computes_copies_and_clears_real_candidate()
         self.assertEqual(failures,{'progress.json','result.json'})
         for reader in readers:reader.join()

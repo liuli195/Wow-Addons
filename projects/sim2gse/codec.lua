@@ -50,6 +50,35 @@ local function same(a, b)
     return true
 end
 assert(same(payload, expected.payload), "CBOR object or numeric-key mismatch")
+if mode == "collection" then
+    assert(payload.type == "COLLECTION", "collection type missing")
+    local imported = {}
+    GSE.PerformMergeAction = function(operation, classid, name, value)
+        assert(operation == "REPLACE" and classid == expected.identity.class_id)
+        assert(expected.members[name] and not imported[name], "unexpected collection member")
+        imported[name] = value
+    end
+    GSE.GUICall = function(name) error("unexpected import dialog: " .. name) end
+    GSE.SendMessage = function() end
+    GSE.ImportSerialisedSequence(payload, true)
+    local count = 0
+    for name, member in pairs(expected.members) do
+        local value = assert(imported[name], "collection import missing member")
+        assert(value.MetaData.Name == name and value.MetaData.Help == member.help)
+        assert(GSE.VerifySequenceChecksum(value) == true, "collection checksum failed")
+        local compiled = GSE.CompileTemplate(value.Versions[1])
+        assert(#compiled == #member.steps, "collection compiled length mismatch")
+        for index, step in ipairs(compiled) do
+            assert(same({type=step.type, spell=step.spell, macrotext=step.macrotext,
+                         item=step.item, blockPath=step.blockPath}, member.steps[index]),
+                   "collection compiled behavior changed")
+        end
+        count = count + 1
+    end
+    assert(count == 3, "collection must import three sequences")
+    print("PASS\tcollection_import_compile")
+    return
+end
 local sequence = payload.type == "COLLECTION" and payload.payload.Sequences[expected.name] or payload[2]
 if mode == "checksum" then
     print("CHECKSUM\t" .. assert(GSE.ComputeSequenceChecksum(sequence)))

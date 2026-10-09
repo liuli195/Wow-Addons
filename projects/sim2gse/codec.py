@@ -202,7 +202,8 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
     if not 1 <= len(actions) <= 128:
         raise ValueError('动作块数量必须在 1 至 128 之间')
     name_basis = blocks if program is None else actions
-    name = ('S2G_BURST_' if purpose == 'burst' else 'S2G_') + hashlib.sha256(cbor2.dumps(name_basis)).hexdigest()[:12].upper()
+    prefix = {'burst': 'S2G_BURST_', 'single_target': 'S2G_ST_', 'aoe': 'S2G_AOE_'}.get(purpose, 'S2G_')
+    name = prefix + hashlib.sha256(cbor2.dumps(name_basis)).hexdigest()[:12].upper()
     sequence = dict(MetaData=dict(Name=name, SpecID=identity['spec_id'], GSEVersion=3332,
                                  Help='地面技能在角色脚下释放，目标须在范围内；目标数据 '+targeting['client_build']+'，模拟数据 '+identity.get('data_version', '未提供')+'。游戏效果尚待验证。'),
                     Default=1, Versions=[dict(Actions=actions, InbuiltVariables={})])
@@ -258,3 +259,48 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
                 simulation='not_run', game_validation='not_run',
                 targeting_build=targeting['client_build'], ground_location='player',
                 encoding='raw_deflate_cbor_bytes_client_vector', upstream_compilation='passed_with_client_boundary_stubs')
+
+
+def collection(candidates, folder, *, identity, runtime=None):
+    """按真实集合格式编码，再经原上游导入和编译全部成员。"""
+    from gse_import import decode_import
+    runtime = runtime or TaskRuntime()
+    load_targeting(runtime=runtime)
+    sequences, members, spells = {}, {}, {}
+    for candidate in candidates:
+        decoded = decode_import(candidate['text'])['sequences']
+        if len(decoded) != 1:
+            raise ValueError('集合成员必须是独立序列')
+        name, sequence = next(iter(decoded.items()))
+        if name in sequences:
+            raise ValueError('集合成员名称重复')
+        sequences[name] = sequence
+        clicks = candidate['compiled_program']['clicks']
+        members[name] = dict(help=sequence['MetaData']['Help'], steps=[
+            dict(step, blockPath=click['source'].get('gse_path', str(index + 1)))
+            for index, (step, click) in enumerate(zip(candidate['compiled_steps'], clicks))])
+        spells.update({command['spell_id']: command['name'] for block in candidate['blocks']
+                       for command in block if command['kind'] == 'spell'})
+    if len(sequences) != 3:
+        raise ValueError('集合必须包含三个独立序列')
+    payload = dict(type='COLLECTION', payload=dict(Sequences=sequences, Variables={}, Macros={}, ElementCount=3))
+    encoded = cbor2.dumps(wire_value(payload))
+    text = '!GSE3!' + base64.b64encode(zlib.compress(encoded, wbits=-15)).decode('ascii')
+    if decode_import(text)['sequences'] != sequences:
+        raise ValueError('集合编码往返改变了成员')
+    staging_root = ROOT / '.local/sim2gse/codec'
+    staging_root.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='collection-', dir=staging_root) as temporary:
+        staging = Path(temporary)
+        (staging / 'input.cbor').write_bytes(encoded)
+        (staging / 'expected.lua').write_text('return ' + lua_literal(
+            dict(payload=payload, members=members, spells=spells, identity=identity)), encoding='utf-8')
+        relative = lambda path: path.relative_to(ROOT).as_posix()
+        proc = run_command([str(LUA), relative(Path(__file__).with_suffix('.lua')), relative(SOURCE),
+                            relative(staging / 'input.cbor'), relative(staging / 'expected.lua'), 'collection'],
+                           ROOT, timeout_seconds=20, runtime=runtime, output_dir=folder)
+    log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
+    if proc.returncode or 'PASS\tcollection_import_compile' not in log:
+        raise ValueError('上游集合导入编译校验失败: ' + log[-1000:])
+    return text

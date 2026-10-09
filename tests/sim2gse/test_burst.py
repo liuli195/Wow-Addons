@@ -421,3 +421,145 @@ def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, 
     burst.publish(revised)
     with pytest.raises(task.TaskError, match='爆发定义已变化'):
         task.resume_task(output)
+
+
+def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path):
+    import burst
+    import threading
+    import time
+    from interface import create_server
+    from urllib.request import Request, urlopen
+    from gse_import import decode_import
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    try:
+        request = Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
+                          {'Content-Type': 'application/json'})
+        with urlopen(request) as response:
+            started = json.load(response)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            with urlopen(base + '/api/tasks/' + started['task_id']) as response:
+                state = json.load(response)
+            if state['status'] in ('completed', 'failed', 'partial', 'cancelled'):
+                break
+            time.sleep(0.05)
+        assert state['status'] == 'completed', state
+        assert [scene['target_count'] for scene in state['scenes']] == [1, 5]
+        assert all(scene['total_budget_seconds'] == 600 for scene in state['scenes'])
+        assert len({scene['input_sha256'] for scene in state['scenes']}) == 1
+        assert set(state['exports']) == {'single_target', 'aoe', 'burst'}
+        names = [decode_import(value)['sequences'] for value in state['exports'].values()]
+        assert len(set(name for member in names for name in member)) == 3
+        collection = decode_import(state['collection_text'])
+        assert collection['payload']['type'] == 'COLLECTION'
+        assert set(collection['sequences']) == {name for member in names for name in member}
+        assert state['collection_ready']
+        with urlopen(base + '/api/tasks/' + started['task_id']) as response:
+            assert json.load(response)['exports'] == state['exports']
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(3)
+
+
+@pytest.mark.parametrize('fault', ['aoe', 'collection', 'registration', 'cancel', 'preparation'])
+def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_path, monkeypatch, fault):
+    import burst
+    import dual_task
+    import codec
+    import threading
+    from interface import create_server
+    from urllib.request import Request, urlopen
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'frozen.simc'
+    profile.write_text(raw, encoding='utf-8')
+    destination = tmp_path / 'dual'
+    calls, interrupted = [], []
+    original_run, original_collection, original_save = task.run_task, codec.collection, dual_task._save
+
+    def run(*args, **kwargs):
+        purpose = Path(args[1]).name
+        calls.append(purpose)
+        if fault == 'aoe' and purpose == 'aoe' and not interrupted:
+            interrupted.append(True)
+            raise task.TaskError('injected second scene interruption')
+        if fault == 'preparation' and purpose == 'single_target' and not interrupted:
+            interrupted.append(True)
+            Path(args[1]).mkdir()
+            (Path(args[1]) / 'preserved.txt').write_text('preparation evidence')
+            raise task.TaskError('injected before durable child state')
+        return original_run(*args, **kwargs)
+
+    def collect(*args, **kwargs):
+        if fault == 'collection' and not interrupted:
+            interrupted.append(True)
+            raise task.TaskError('injected packaging interruption')
+        return original_collection(*args, **kwargs)
+
+    def save(row):
+        if fault == 'registration' and row['single_target_status'] == 'completed' and not interrupted:
+            interrupted.append(True)
+            raise task.TaskError('injected parent registration interruption')
+        if (fault == 'cancel' and row['single_target_export'] and row['burst_export']
+                and row['aoe_status'] == 'pending' and not interrupted):
+            interrupted.append(True)
+            threading.Thread(target=lambda: urlopen(Request(
+                base + '/api/tasks/' + task_id + '/cancel', method='POST')).close(), daemon=True).start()
+            assert server.tasks[task_id][1].cancel_event.wait(5)
+        return original_save(row)
+
+    monkeypatch.setattr(task, 'run_task', run)
+    monkeypatch.setattr(codec, 'collection', collect)
+    monkeypatch.setattr(dual_task, '_save', save)
+    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    request = Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
+                      {'Content-Type': 'application/json'})
+    with urlopen(request) as response:
+        task_id = json.load(response)['task_id']
+    destination, handle = server.tasks[task_id]
+    def public_read():
+        with urlopen(base + '/api/tasks/' + task_id) as response:
+            return json.load(response)
+    handle.join(30)
+    assert handle.done and handle.error is None
+    state = public_read()
+    assert interrupted and state['status'] in ('partial', 'cancelled', 'failed'), state
+    assert not state['collection_ready']
+    if fault == 'collection':
+        assert len(state['exports']) == 3
+    if fault == 'cancel':
+        assert calls == ['single_target'] and state['scenes'][1]['status'] == 'pending'
+        assert set(state['exports']) == {'single_target', 'burst'}
+    with urlopen(Request(base + '/api/tasks/' + task_id + '/resume', method='POST')) as response:
+        assert response.status == 202
+    recovered = server.tasks[task_id][1]
+    recovered.join(30)
+    assert recovered.done and recovered.error is None
+    restored = public_read()
+    assert restored['status'] == 'completed', (restored, dual_task._load(destination)['error'])
+    assert restored['collection_ready'] and len(restored['exports']) == 3
+    assert calls.count('single_target') == 1
+    assert definition['instructions'] == restored['burst_instructions']
+    if fault == 'preparation':
+        assert (destination / 'single_target/preserved.txt').read_text() == 'preparation evidence'
+        assert any(name.startswith('s-') for name in calls)
+    original = (destination / 'input.original.simc').read_bytes()
+    (destination / 'input.original.simc').write_bytes(original + b'\n# changed')
+    from urllib.error import HTTPError
+    with pytest.raises(HTTPError) as raised:
+        urlopen(Request(base + '/api/tasks/' + task_id + '/resume', method='POST'))
+    assert '冻结输入已变化' in json.load(raised.value)['error']
+    server.shutdown()
+    server.server_close()
+    thread.join(3)
