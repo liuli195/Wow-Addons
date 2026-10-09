@@ -88,6 +88,7 @@ return function(ctx)
         function t:SetSize(w, h) self.width, self.height = w, h end
         function t:SetPoint(...) self.anchor = { ... } end
         function t:SetAllPoints(...) self.allPoints = true end
+        function t:SetTexCoord(...) self.coords = { ... } end
         function t:SetShown(v) self.shown = not not v end
         function t:SetVertexColor(...) self.color = { ... } end
         function t:AddMaskTexture(m) self.mask = m end

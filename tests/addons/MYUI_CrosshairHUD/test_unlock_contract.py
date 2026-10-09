@@ -42,6 +42,7 @@ local function NewTexture()
     function t:SetSize() end
     function t:SetPoint() end
     function t:SetAllPoints() end
+    function t:SetTexCoord(...) self.coords={...} end
     function t:AddMaskTexture() end
     function t:SetShown() end
     function t:SetVertexColor() end

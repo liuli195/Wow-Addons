@@ -72,11 +72,10 @@ Elements.DESIGN_SIZE = SQUARE
 -- 所以这里的数字跟 `assets/CrosshairHUDMedia/manifest.json` 的 displaySize 必须一致，
 -- 由 test_media_placement.py 守着（它从清单生成期望值，不是把这张表抄一遍）。
 local PLACEMENT = {
-    crosshair = { file = "crosshair",   w = 128, h = 128, ox = 0,   oy = 0 },
     health    = { file = "health_arc",  w = 128, h = 128, ox = -32, oy = 16 },
-    power     = { file = "power_arc",   w = 128, h = 128, ox = 32,  oy = 16 },
-    coagulatedBlood = { file = "coagulated_blood_arc", w = 128, h = 128,
-        ox = -32, oy = 16, shadowSub = -2 },
+    power     = { file = "health_arc",  w = 128, h = 128, ox = 32,  oy = 16, mirror = true },
+    coagulatedBlood = { file = "coagulated_blood_fill", w = 128, h = 128, ox = 0, oy = 0 },
+    boilingPoint = { file = "coagulated_blood_fill", w = 128, h = 128, ox = 0, oy = 0 },
 }
 
 -- 资源格 1 与 6 的画布本来就是 2 的幂（32 单位 = 256 像素），不需要补边。
@@ -174,6 +173,12 @@ local function BuildFillable(key, spec)
     local mask = NewMask()
     fill:AddMaskTexture(mask)
 
+    if spec.mirror then
+        shadow:SetTexCoord(1, 0, 0, 1)
+        bg:SetTexCoord(1, 0, 0, 1)
+        fill:SetTexCoord(1, 0, 0, 1)
+    end
+
     parts[key] = { shadow = shadow, bg = bg, fill = fill, mask = mask }
     placements[key] = spec
     PlaceLayers(parts[key], spec)
@@ -210,6 +215,13 @@ function Elements.Create()
     }
     placements.coagulatedBlood = bloodSpec
     Place(parts.coagulatedBlood.bg, bloodSpec)
+    local echo = { bg = NewTexture(SUB_BG, "coagulated_blood_fill"),
+        fill = NewTexture(SUB_FILL, "coagulated_blood_fill"), mask = NewMask() }
+    echo.bg:SetTexCoord(1, 0, 0, 1)
+    echo.fill:SetTexCoord(1, 0, 0, 1)
+    echo.fill:AddMaskTexture(echo.mask)
+    parts.boilingPoint, placements.boilingPoint = echo, PLACEMENT.boilingPoint
+    PlaceLayers(echo, PLACEMENT.boilingPoint)
     parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker")
     SmoothTexture(parts.deathStrike, "death_strike_marker", "CLAMPTOBLACKADDITIVE")
     parts.deathStrike:SetShown(false)
@@ -218,21 +230,40 @@ function Elements.Create()
     placements.runes = {}
     for i = 1, Logic.PIPS.count do
         local spec = PIP_PLACEMENT[i]
-        local entry = { file = "resource_0" .. i, w = spec.w, h = spec.h,
-                        ox = spec.ox, oy = spec.oy }
+        local entry = { file = "resource_0" .. math.min(i, 7 - i), w = spec.w, h = spec.h,
+                        ox = spec.ox, oy = spec.oy, mirror = i > 3 }
         BuildFillable("rune" .. i, entry)
         parts.runes[i] = parts["rune" .. i]
         placements.runes[i] = entry
     end
 
-    -- 与其它元素同一个形状：部件表里按图层名取。准星没有 bg/fill（它是线不是块），
-    -- 所以只有 shadow 与 art 两层——层名统一，别在别处另起一个叫法。
-    parts.crosshair = {
-        shadow = NewTexture(SUB_SHADOW, PLACEMENT.crosshair.file .. SHADOW_SUFFIX),
-        art = NewTexture(SUB_CROSSHAIR, PLACEMENT.crosshair.file),
+    -- 四臂/臂影同步固定旋转，中心点及其影各一次；不引入图集或旋转框架。
+    parts.crosshair, placements.crosshair = {}, {}
+    local uv = {
+        { 0,0, 0,1, 1,0, 1,1 }, { 0,1, 1,1, 0,0, 1,0 },
+        { 1,1, 1,0, 0,1, 0,0 }, { 1,0, 0,0, 1,1, 0,1 },
     }
-    placements.crosshair = PLACEMENT.crosshair
-    PlaceLayers(parts.crosshair, PLACEMENT.crosshair)
+    local centers = { {15.5,0}, {0,15.5}, {-15.5,0}, {0,-15.5} }
+    for i = 1, 4 do
+        local vertical = i % 2 == 0
+        local part = { art = NewTexture(SUB_CROSSHAIR, "crosshair_arm"),
+            shadow = NewTexture(SUB_SHADOW, "crosshair_arm_shadow") }
+        local spec = { ox = centers[i][1], oy = centers[i][2],
+            w = vertical and 8 or 32, h = vertical and 32 or 8 }
+        local shadow = { ox = spec.ox, oy = spec.oy,
+            w = vertical and 32 or 64, h = vertical and 64 or 32 }
+        part.art:SetTexCoord(unpack(uv[i]))
+        part.shadow:SetTexCoord(unpack(uv[i]))
+        parts.crosshair[i], placements.crosshair[i] = part, { art = spec, shadow = shadow }
+        Place(part.art, spec); Place(part.shadow, shadow)
+    end
+    local point = { art = NewTexture(SUB_CROSSHAIR, "crosshair_point"),
+        shadow = NewTexture(SUB_SHADOW, "crosshair_point_shadow") }
+    parts.crosshair[5] = point
+    placements.crosshair[5] = { art = { w = 8, h = 8, ox = 0, oy = 0 },
+        shadow = { w = 32, h = 32, ox = 0, oy = 0 } }
+    Place(point.art, placements.crosshair[5].art)
+    Place(point.shadow, placements.crosshair[5].shadow)
 
     return frame
 end
@@ -262,10 +293,14 @@ function Elements.SetScale(scale)
     PlaceLayers(parts.health, placements.health)
     PlaceLayers(parts.power, placements.power)
     Place(parts.coagulatedBlood.bg, placements.coagulatedBlood)
+    PlaceLayers(parts.boilingPoint, placements.boilingPoint)
     for i = 1, Logic.PIPS.count do
         PlaceLayers(parts.runes[i], placements.runes[i])
     end
-    PlaceLayers(parts.crosshair, placements.crosshair)
+    for i, part in ipairs(parts.crosshair) do
+        Place(part.art, placements.crosshair[i].art)
+        Place(part.shadow, placements.crosshair[i].shadow)
+    end
     ApplyMarker(markerState)
 end
 
@@ -361,6 +396,7 @@ function Elements.Apply(state)
     else
         ApplyFillable(parts.coagulatedBlood, blood)
     end
+    ApplyFillable(parts.boilingPoint, state.boilingPoint or { visible = false })
     ApplyMarker(state.deathStrike)
 
     for i = 1, Logic.PIPS.count do
@@ -372,15 +408,17 @@ function Elements.Apply(state)
 
     local ch = state.crosshair
     if ch then
-        parts.crosshair.art:SetShown(ch.visible ~= false)
-        parts.crosshair.shadow:SetShown(ch.visible ~= false)
-        pcall(function()
-            local fc = ch.fillColor
-            parts.crosshair.art:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
-        end)
-        pcall(function()
-            local sc = ch.shadowColor
-            parts.crosshair.shadow:SetVertexColor(sc[1], sc[2], sc[3], ch.shadowAlpha or 1)
-        end)
+        for _, part in ipairs(parts.crosshair) do
+            part.art:SetShown(ch.visible ~= false)
+            part.shadow:SetShown(ch.visible ~= false)
+            pcall(function()
+                local fc = ch.fillColor
+                part.art:SetVertexColor(fc[1], fc[2], fc[3], ch.fillAlpha or 1)
+            end)
+            pcall(function()
+                local sc = ch.shadowColor
+                part.shadow:SetVertexColor(sc[1], sc[2], sc[3], ch.shadowAlpha or 1)
+            end)
+        end
     end
 end

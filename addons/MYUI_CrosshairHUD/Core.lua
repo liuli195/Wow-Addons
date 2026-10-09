@@ -291,6 +291,7 @@ end
 local function UpdateBloodAura()
     last.bloodPresent, last.bloodStacks, last.hasBloodStacks = false, nil, false
     last.bloodScanStatus = "开关关闭"
+    if not Config.Available("coagulatedBlood") then return end
     if NS.NativeBlood then
         last.bloodScanStatus = "原生容器直接管理；插件不读取层数"
         return
@@ -351,6 +352,78 @@ local function UpdateDKFeatures()
     UpdateDeathStrike()
 end
 
+-- 沸点是配对信号推断，不读取实际回声或历史。复用已有刷新节奏。
+-- BoilingPointEcho (MIT) 的 cast/HIDE 相关性思路；不复制独立图标与计时框架。
+--[[
+MIT License
+
+Copyright (c) 2026 Wan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+]]
+local boiling = {}
+local function ClearBoiling()
+    boiling.proc, boiling.pending, boiling.cast, boiling.hide, boiling.deadline = nil, nil, nil, nil, nil
+end
+
+local function BoilingFraction()
+    local cfg = Config.Get()
+    if cfg.enabled == false or cfg.elements.boilingPoint.enabled == false
+        or not Config.Available("boilingPoint") then
+        ClearBoiling()
+        return nil
+    end
+    local now = GetTime()
+    if boiling.deadline and now >= boiling.deadline then
+        if boiling.pending then
+            boiling.deadline = boiling.deadline + 3
+            boiling.pending, boiling.proc = nil, nil
+        end
+        if now >= boiling.deadline then ClearBoiling() end
+    end
+    if boiling.deadline then return Logic.DisplayFraction(boiling.deadline - now, 3) end
+end
+
+local function BoilingEvent(event, unit, _, spellID)
+    BoilingFraction()
+    local cfg = Config.Get()
+    if cfg.enabled == false or cfg.elements.boilingPoint.enabled == false
+        or not Config.Available("boilingPoint") then return end
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+        if Unreadable(unit) or unit ~= "player" or MaybeNumber(spellID) ~= 50842 then return end
+        boiling.cast = GetTime()
+    else
+        if MaybeNumber(unit) ~= 50842 then return end
+        if event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" then
+            boiling.proc = true
+            if boiling.deadline then boiling.pending = true end
+            return
+        end
+        boiling.hide = GetTime()
+    end
+    if boiling.cast and boiling.hide and math.abs(boiling.cast - boiling.hide) <= 0.30 + 1e-9 then
+        -- SHOW 不重置当前轮；确认再次手动消耗时按新施法时刻起算，取消旧待续标记。
+        boiling.deadline = boiling.cast + 3
+        boiling.cast, boiling.hide, boiling.proc, boiling.pending = nil, nil, nil, nil
+    end
+end
+
 --------------------------------------------------------------------------
 -- 显示状态表
 --------------------------------------------------------------------------
@@ -402,10 +475,16 @@ local function BuildState()
     state.power = ElementState(elements.power, last.powerRotation, last.hasPowerArc)
     local blood = elements.coagulatedBlood
     state.coagulatedBlood = ElementState(blood, nil, false)
-    state.coagulatedBlood.visible = blood.enabled ~= false and (NS.NativeBlood ~= nil or last.bloodPresent == true)
+    state.coagulatedBlood.visible = Config.Available("coagulatedBlood")
+        and blood.enabled ~= false and (NS.NativeBlood ~= nil or last.bloodPresent == true)
     state.coagulatedBlood.stacks = last.bloodStacks
     state.coagulatedBlood.hasStacks = last.hasBloodStacks == true
     state.coagulatedBlood.maxStacks = blood.maxStacks
+    local fraction = BoilingFraction()
+    local arc = Logic.ARCS.boilingPoint
+    state.boilingPoint = ElementState(elements.boilingPoint,
+        fraction and Logic.MaskAngle(arc.start, arc.span, fraction, arc.reverse), fraction ~= nil)
+    state.boilingPoint.visible = fraction ~= nil
     if NS.Debug then NS.Debug.ApplyProbe(state) end
     local marker = elements.deathStrike
     state.deathStrike = { visible = marker.enabled ~= false and last.costMarker ~= nil,
@@ -536,6 +615,7 @@ for _, event in ipairs({
     -- 没有单位令牌。用 RegisterUnitEvent 注册会在加载期直接报
     -- "Attempt to register unknown event"，整个文件从此不再执行。
     "RUNE_POWER_UPDATE",
+    "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW", "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",
 }) do
     events:RegisterEvent(event)
 end
@@ -543,14 +623,25 @@ for _, event in ipairs({
     "UNIT_HEALTH", "UNIT_MAXHEALTH",
     "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER",
     "UNIT_AURA",
+    "UNIT_SPELLCAST_SUCCEEDED",
 }) do
     events:RegisterUnitEvent(event, "player")
 end
 
 local talentPending = false
 
-local function OnEvent(_, event)
-    if event == "UNIT_AURA" then
+local function OnEvent(_, event, ...)
+    if event == "PLAYER_SPECIALIZATION_CHANGED" or event == "ACTIVE_TALENT_GROUP_CHANGED" then
+        ClearBoiling()
+        Core.UpdateReadings()
+        Refresh()
+        local EUI = rawget(_G, "EllesmereUI")
+        if EUI and EUI.RefreshPage then EUI:RefreshPage() end
+    elseif event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" or event == "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE"
+        or event == "UNIT_SPELLCAST_SUCCEEDED" then
+        BoilingEvent(event, ...)
+        Refresh()
+    elseif event == "UNIT_AURA" then
         UpdateDKFeatures()
         Refresh()
     elseif event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
@@ -657,6 +748,7 @@ Core.ApplyScaleAndStrata = ApplyScaleAndStrata
 function Core.ApplyConfig()
     ApplyScaleAndStrata()
     UpdateDKFeatures()
+    BoilingFraction()
     Refresh()
 end
 

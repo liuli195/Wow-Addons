@@ -81,7 +81,7 @@ def build_marker(out_dir):
 
 def build_blood_fill(manifest, out_dir):
     """只平移原始像素，使径向填充画布的圆心与准星圆心重合。"""
-    asset = next(a for a in manifest["assets"] if a["file"] == "coagulated_blood_arc.png")
+    asset = manifest["coagulatedBloodSource"]["texture"]
     scale = manifest["exportScale"]
     offset = tuple(round(v * scale) for v in asset["centerOffset"])
     with Image.open(SRC / "Textures" / asset["file"]) as source:

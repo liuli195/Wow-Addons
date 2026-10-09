@@ -80,6 +80,28 @@ def test_white_material_preserves_alpha_and_rectangular_chain(tmp_path):
         write_white_blp(Image.new('RGBA', (4, 2), 'red'), path)
 
 
+def test_reused_material_build_keeps_four_crosshair_sources_and_centered_fine_arc(tmp_path):
+    build(tmp_path)
+    names = {p.stem for p in tmp_path.glob('*.blp')}
+    assert len(names) == 15
+    assert {n for n in names if n.startswith('crosshair')} == {
+        'crosshair_arm', 'crosshair_arm_shadow', 'crosshair_point', 'crosshair_point_shadow'}
+    assert not names.intersection({'power_arc', 'power_arc_shadow', 'resource_04', 'resource_05',
+                                   'resource_06', 'coagulated_blood_arc', 'crosshair'})
+    for name, size in {'crosshair_arm': (256, 64), 'crosshair_arm_shadow': (512, 256),
+                       'crosshair_point': (64, 64), 'crosshair_point_shadow': (256, 256)}.items():
+        with Image.open(tmp_path / f'{name}.png') as image:
+            assert image.size == size
+        assert read_levels(tmp_path / f'{name}.blp')[-1].shape == (1, 1)
+    with Image.open(ROOT / 'assets/CrosshairHUDMedia/Textures/crosshair.png') as source:
+        with Image.open(tmp_path / 'crosshair_arm.png') as arm:
+            assert np.array_equal(np.asarray(arm.crop((57, 21, 199, 43)).getchannel('A')),
+                                  np.asarray(source.crop((565, 501, 707, 523)).getchannel('A')))
+        with Image.open(tmp_path / 'crosshair_point.png') as point:
+            assert np.array_equal(np.asarray(point.crop((9, 9, 55, 55)).getchannel('A')),
+                                  np.asarray(source.crop((489, 489, 535, 535)).getchannel('A')))
+
+
 def test_invalid_source_does_not_remove_existing_materials(tmp_path, monkeypatch):
     import build_crosshair_media
     from white_blp import MATERIAL_POLICY

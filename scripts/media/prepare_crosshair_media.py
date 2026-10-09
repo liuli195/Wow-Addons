@@ -101,6 +101,38 @@ def prepare(source, name, want_size, is_shadow, hollow_shadow=False):
     return Image.fromarray(data, mode="RGBA")
 
 
+def prepare_crosshair_parts(source, out):
+    """从保留的原 PNG 裁主体，四张小图保持原尺寸；阴影按同风格重建。
+
+    原影已经扁平，不能无损分开；三层 source-over（透明度叠加）用成品像素
+    半径 3/8/20 的 1.5 倍候选，待实机观感校准，不冒称逐像素一致。
+    """
+    original, _ = pad_to_pot(prepare(source, "crosshair", (560, 560), False))
+    for name, box, size, shadow_size in (
+        ("crosshair_arm", (565, 501, 707, 523), (256, 64), (512, 256)),
+        ("crosshair_point", (489, 489, 535, 535), (64, 64), (256, 256)),
+    ):
+        shape = original.crop(box).getchannel("A")
+        alpha = Image.new("L", size)
+        alpha.paste(shape, ((size[0] - shape.width) // 2, (size[1] - shape.height) // 2))
+        art = Image.new("RGBA", size, (255, 255, 255, 0))
+        art.putalpha(alpha)
+        art.save(out / f"{name}.png")
+        coverage = Image.new("L", shadow_size)
+        coverage.paste(shape, ((shadow_size[0] - shape.width) // 2,
+                               (shadow_size[1] - shape.height) // 2))
+        combined = np.zeros((shadow_size[1], shadow_size[0]), dtype=np.float64)
+        for radius, weight in ((4.5, 1), (12, 0.85), (30, 0.65)):
+            layer = np.asarray(coverage.filter(ImageFilter.GaussianBlur(radius))) * weight / 255
+            combined = 1 - (1 - combined) * (1 - layer)
+        shadow = normalize_peak(np.rint(combined * 255).astype(np.uint8))
+        core = np.asarray(coverage.filter(ImageFilter.MinFilter(5))).astype(np.uint32)
+        shadow = ((shadow.astype(np.uint32) * (255 - core) + 127) // 255).astype(np.uint8)
+        image = Image.new("RGBA", shadow_size, (255, 255, 255, 0))
+        image.putalpha(Image.fromarray(shadow))
+        image.save(out / f"{name}_shadow.png")
+
+
 def main():
     parser = argparse.ArgumentParser(description="把 Figma 高倍导出加工成成品纹理")
     parser.add_argument("source", nargs="?", default=str(SRC / "Exports"),
@@ -119,10 +151,15 @@ def main():
     manifest = load_manifest()
     # 密度缺省从清单读，别在这儿另写一份——三个兄弟脚本都读清单，只有这里写死就会分叉
     scale = args.scale if args.scale is not None else manifest["exportScale"]
+    if scale != 8:
+        raise ValueError("当前四张准星裁图按已确认的8像素/设计单位生产")
+    prepare_crosshair_parts(source, out)
 
     placement = {}
     for asset in manifest["assets"]:
         name = asset["file"][:-4]                       # 去掉 .png
+        if name.startswith("crosshair_"):
+            continue
         is_shadow = name.endswith(SHADOW_SUFFIX)
         # **用 contentSize（补边前的画布），不是 displaySize（补边后的画布）**。
         # Figma 那边导出的是前者，补边是本脚本之后才做的。搞混了这条核对就永远对不上。
