@@ -1,0 +1,79 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -4,6 +4,7 @@
+ // ==========================================================================
+ 
+ #include "interfaces/sc_js.hpp"
++#include "sim2gse/catalogue.hpp"
+ #include "rapidjson/document.h"
+ #include "rapidjson/filewritestream.h"
+ #include "rapidjson/prettywriter.h"
+@@ -305,6 +306,7 @@
+ 
+     // find action for this stat
+     action_t* a = nullptr;
++    sim2gse::write_damage_owner( node, *s );
+     for ( const auto& action : s->action_list )
+     {
+       if ( ( a = action )->id > 1 )
+@@ -857,6 +859,9 @@
+ 
+   collected_data_to_json( root[ "collected_data" ], report_configuration, p );
+ 
++  // Expose existing whole-run counters and native identity; no simulation decisions change.
++  sim2gse::write_player_report( root, p, true );
++
+   if ( p.sim->report_details != 0 )
+   {
+     buffs_to_json( root[ "buffs" ], p );
+@@ -889,6 +894,50 @@
+ 
+   JsonOutput custom = root[ "custom" ];
+   p.output_json_report( custom );
++  if ( !p.sim2gse_import_actions.empty() )
++  {
++    auto import_actions = root[ "sim2gse_import_actions" ];
++    import_actions.make_array();
++    for ( const auto& candidate : p.sim2gse_import_actions )
++    {
++      const unsigned spell_id = candidate.first;
++      const action_t* action = candidate.second;
++      const unsigned native_spell_id = action->data().id();
++      const auto* action_spell_name = action->data().name_cstr();
++      const bool class_spell = p.find_class_spell( action_spell_name, p.specialization() )->id() == native_spell_id;
++      const bool specialization_spell =
++        p.find_specialization_spell( native_spell_id, p.specialization() )->id() == native_spell_id;
++      const bool racial_spell = p.find_racial_spell( action_spell_name )->id() == native_spell_id;
++      bool selected_talent = false;
++      for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
++      {
++        for ( const unsigned candidate_id : { spell_id, native_spell_id } )
++        {
++          const auto talent = p.find_talent_spell( tree, candidate_id, p.specialization() );
++          selected_talent = selected_talent || ( !talent.invalid() && talent.enabled() );
++        }
++      }
++
++      auto row = import_actions.add();
++      row[ "kind" ] = "spell";
++      row[ "spell_id" ] = spell_id;
++      row[ "native_spell_id" ] = native_spell_id;
++      row[ "name" ] = action->name_str;
++      row[ "simc_action" ] = action->name_str;
++      row[ "gcd_ms" ] = action->trigger_gcd.total_millis();
++      row[ "data_valid" ] = action->data().ok() && action->data().is_level( p.true_level );
++      row[ "available" ] = class_spell || specialization_spell || racial_spell || selected_talent;
++      row[ "class_spell" ] = class_spell;
++      row[ "specialization_spell" ] = specialization_spell;
++      row[ "racial_spell" ] = racial_spell;
++      row[ "selected_talent" ] = selected_talent;
++      row[ "background" ] = action->background;
++      row[ "passive" ] = action->data().flags( SX_PASSIVE );
++      row[ "quiet" ] = action->quiet;
++      row[ "action_initialized" ] = action->initialized;
++      row[ "owner_pet_count" ] = p.pet_list.size();
++    }
++  }
+ }
+ 
+ void to_json( JsonOutput& arr, const raid_event_t& event )

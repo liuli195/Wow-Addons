@@ -135,6 +135,16 @@ class NativeComparisonTests(unittest.TestCase):
 
 
 class NativeCatalogueTests(unittest.TestCase):
+    def test_product_builds_use_the_final_hooks_without_the_historical_chain(self):
+        for mode in ('baseline', 'controlled'):
+            with self.subTest(mode=mode):
+                _, manifest = engine.identity(mode)
+                self.assertTrue(manifest['patches'])
+                self.assertTrue(all(
+                    Path(entry['path']).parent.as_posix() == 'projects/sim2gse/native/hooks'
+                    for entry in manifest['patches']),
+                    '产品仍依赖累计历史补丁链，尚未切换最终连接补丁')
+
     def test_reference_catalogue_is_backed_by_the_shared_checked_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

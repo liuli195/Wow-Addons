@@ -25,112 +25,24 @@
   "upstream_tree": "a76e304d4b409e475ebec43177728d2489da6142",
   "patches": [
     {
-      "path": "projects/sim2gse/native/patches/001-controller.patch",
-      "sha256": "e15a178a08ab3eba7a5fbc27c1b4df03172f2d8fcfe12879db1c02ffe0cba63a"
+      "path": "projects/sim2gse/native/hooks/010-native-catalogue-query-and-item-adapters.patch",
+      "sha256": "daa23bd5dbbf7cee3cf8452205acf31cfde2719f4c2e26ba92b3f6acf5c59fde"
     },
     {
-      "path": "projects/sim2gse/native/patches/003-death-strike-guards.patch",
-      "sha256": "52b8444e85ec0cd54bde6c2b6bc3007e03d968da5afbdc1a354df77e1409b824"
+      "path": "projects/sim2gse/native/hooks/020-report-connections.patch",
+      "sha256": "435ca9f26077db9e9d5d8cded912c1bb60134a01c518b681fdc009546c21161f"
     },
     {
-      "path": "projects/sim2gse/native/patches/004-input-timeline.patch",
-      "sha256": "ed4cb82ca31738a1af58b99e982a51cf9fc3a1c4a42b44baac712611fa950831"
+      "path": "projects/sim2gse/native/hooks/030-own-module-build.patch",
+      "sha256": "1c2c05d441431cb460b6ff585d4870dd45fae17e38431f182687146dbc329a66"
     },
     {
-      "path": "projects/sim2gse/native/patches/005-resolved-program.patch",
-      "sha256": "26888e67f722fb64c1e8f2aa72c3458fd287afdd7f6762ed9397e43795163de3"
+      "path": "projects/sim2gse/native/hooks/040-temporary-legacy-controller.patch",
+      "sha256": "e25ad46a33122307831f7c25770e2bc6f9414ed7606cadcf522ca4642336f454"
     },
     {
-      "path": "projects/sim2gse/native/patches/006-trace-origin.patch",
-      "sha256": "913cc5989f3028d5e96810bee68b246bc15fd8484b92448d180d24f498ecff57"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/007-baseline-actions.patch",
-      "sha256": "c989bb7d09909f9b5dab6b801bdc45d43d6a097fd4a0ae1acc74bbc430bc6d9a"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/008-native-identity.patch",
-      "sha256": "80f228eb791b6b1150cccd287e568b2933acd0429894b52829823978b7cac160"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/009-unrestricted-player.patch",
-      "sha256": "bb8d7ddfdb5fa9a128400131192f0b3ebbf59dd521e870f3b39b6f134ae62689"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/010-preserve-sequence-list.patch",
-      "sha256": "2e3b4b3f2c375ade5776974ad0ba5f3dea98eed75fda8b1acf1e13e768251e4e"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/011-native-casting.patch",
-      "sha256": "33ed3da8ee25e99f36bc65c3f03a6d9d88f3c6a14bad881781e0990ff62ac6b9"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/012-observe-item-proxies.patch",
-      "sha256": "b5bd676e22a97d9a95cb87217d692214a3c7a40d02109c033cf6781a1970cee9"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/013-derived-action-trace.patch",
-      "sha256": "68268c7eca37595a3e0c33113e2a3312988459a1084e007bfb96f9870e70d23a"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/014-controlled-button-identity.patch",
-      "sha256": "8740f4de10b03cf60adf843df1ca2aded88aac56d9f4b7465ad819f6b4315464"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/015-native-button-blocks.patch",
-      "sha256": "4724b7d67cb9d5baae4d9746b39548fcf4bfade337b52456b8210f21644d563d"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/016-native-cast-interrupt.patch",
-      "sha256": "d636cd1415fc43d311a326a425ce2b4598cf8023fe51608f72e7209551cf8e04"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/017-native-button-data.patch",
-      "sha256": "2ae93cc80d4299c4660ace76c39a9466f68b5c7ce1de990bdeb7e6bd7e4d95bc"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/018-controlled-button-data.patch",
-      "sha256": "251feb5826c387a55faeeb8e43eb7860c7f846f7b65c1344f2d051af0f85fe27"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/019-item-targeting-identity.patch",
-      "sha256": "634ddbce76c414a884fb6b79e97186063daad0085e0a1f21f20d5020feae9cf3"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/020-precombat-actions-report.patch",
-      "sha256": "ab7f45807bf26ba04f8947c63410486aea53e016e8342af49aac06f29f2711b6"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/021-precombat-noop-blocks.patch",
-      "sha256": "390ec83ee72c291fcc501e4fdaeae7489df7f0e12a7cb3d6ac9dbbc9b901f69f"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/022-native-input-queue.patch",
-      "sha256": "7d007f2074f41b8b6c3e89b09d298d6bcdc73e601dd089cd574c8aaac6b156d5"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/023-damage-source-owner.patch",
-      "sha256": "5b2b5e0efb248394a0a406ab54cb5175a35587a976e62449cdd2feb09e574e3d"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/024-control-queue-commit.patch",
-      "sha256": "d6696376912352a0bfb65ea86ad2986a30d5154303378007a44ff2b8a42b4ca6"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/025-same-timestamp-failure-order.patch",
-      "sha256": "c088a730fd4081226c1b0a10dce8945c5bde48f6b7d142b66946b82fa188ef8b"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/026-explicit-timed-feedback-mode.patch",
-      "sha256": "f6a4a952c7e90e260f9b09b1430882f834d9e5084d8ef862761afb4bf2a0e506"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/029-castsequence-runtime.patch",
-      "sha256": "3232febd1ee6ca9aa8ee06daf5556b77e604383c9d55a8c54e42e6de6824397c"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/031-catalogue-module-controlled.patch",
-      "sha256": "a00e2eb6b147634309a121cdeac4b28173b824a1f8555b91fae1596274c36f78"
+      "path": "projects/sim2gse/native/hooks/050-death-knight-guards.patch",
+      "sha256": "d9a25bdbf2102ce015b9f86d7c1dd5f2d9243e8ccae43c785ea4eee7666b6410"
     }
   ],
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
@@ -174,48 +86,16 @@
   },
   "baseline_patches": [
     {
-      "path": "projects/sim2gse/native/patches/007-baseline-actions.patch",
-      "sha256": "c989bb7d09909f9b5dab6b801bdc45d43d6a097fd4a0ae1acc74bbc430bc6d9a"
+      "path": "projects/sim2gse/native/hooks/010-native-catalogue-query-and-item-adapters.patch",
+      "sha256": "daa23bd5dbbf7cee3cf8452205acf31cfde2719f4c2e26ba92b3f6acf5c59fde"
     },
     {
-      "path": "projects/sim2gse/native/patches/008-native-identity.patch",
-      "sha256": "80f228eb791b6b1150cccd287e568b2933acd0429894b52829823978b7cac160"
+      "path": "projects/sim2gse/native/hooks/020-report-connections.patch",
+      "sha256": "435ca9f26077db9e9d5d8cded912c1bb60134a01c518b681fdc009546c21161f"
     },
     {
-      "path": "projects/sim2gse/native/patches/012-observe-item-proxies.patch",
-      "sha256": "b5bd676e22a97d9a95cb87217d692214a3c7a40d02109c033cf6781a1970cee9"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/014-native-button-identity.patch",
-      "sha256": "c63df2a1aaa962764258f749f750a90912dce7ca61e8e145f27ac85bad8ea8f1"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/017-native-button-data.patch",
-      "sha256": "2ae93cc80d4299c4660ace76c39a9466f68b5c7ce1de990bdeb7e6bd7e4d95bc"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/019-item-targeting-identity.patch",
-      "sha256": "634ddbce76c414a884fb6b79e97186063daad0085e0a1f21f20d5020feae9cf3"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/020-precombat-actions-report.patch",
-      "sha256": "ab7f45807bf26ba04f8947c63410486aea53e016e8342af49aac06f29f2711b6"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/023-damage-source-owner.patch",
-      "sha256": "5b2b5e0efb248394a0a406ab54cb5175a35587a976e62449cdd2feb09e574e3d"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/028-import-action-lookup.patch",
-      "sha256": "21fe1e7290383dcbb08576506d0c6514429400de3379f30d0b956eee1f69303a"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/030-apl-action-pool.patch",
-      "sha256": "bc4f9f4d4d60e8da2553fd4133f1dd7c1e2ba2bc9364f13547b679600405a738"
-    },
-    {
-      "path": "projects/sim2gse/native/patches/031-catalogue-module-baseline.patch",
-      "sha256": "733605912d7ea74517a04d060d7f672bb41c795defa5bbeeb74bc8630d34f392"
+      "path": "projects/sim2gse/native/hooks/030-own-module-build.patch",
+      "sha256": "1c2c05d441431cb460b6ff585d4870dd45fae17e38431f182687146dbc329a66"
     }
   ],
   "baseline_patched_files": {

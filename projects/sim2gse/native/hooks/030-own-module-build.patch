@@ -1,0 +1,10 @@
+--- a/engine/Makefile
++++ b/engine/Makefile
+@@ -196,6 +196,7 @@
+ 
+ include ../source_files/engine_make
+ include ../source_files/engine_main_make
++SRC += sim2gse$(PATHSEP)catalogue.cpp sim2gse$(PATHSEP)catalogue.hpp
+ 
+ ifneq (,${GIT})
+   OPTS_INTERNAL += -DSC_GIT_REV="\"$(shell ${GIT} rev-parse --short HEAD)\""
