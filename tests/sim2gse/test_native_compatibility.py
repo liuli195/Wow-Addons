@@ -135,6 +135,21 @@ class NativeComparisonTests(unittest.TestCase):
 
 
 class NativeCatalogueTests(unittest.TestCase):
+    def test_reference_uses_the_confirmed_live_client_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            profile = folder / 'sample.simc'
+            profile.write_text(sample_profile(), encoding='utf-8')
+            native = engine.reference(profile, folder / 'reference',
+                                      parse_character(sample_profile()), iterations=2)
+            capabilities = engine.inspect(native, folder / 'capabilities')
+            report = json.loads((folder / 'reference/native.json').read_text(encoding='utf-8'))
+            dbc = report['sim']['options']['dbc']
+            self.assertEqual(dbc['version_used'], 'Live')
+            self.assertEqual(dbc['Live']['build_level'], 69933,
+                             '角色目录仍使用旧客户端数据，未适配已核实的正式客户端')
+            self.assertTrue(capabilities['actions'])
+
     def test_product_builds_use_the_final_hooks_without_the_historical_chain(self):
         for mode in ('baseline', 'controlled'):
             with self.subTest(mode=mode):

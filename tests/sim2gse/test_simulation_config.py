@@ -232,7 +232,7 @@ class SimulationConfigTests(unittest.TestCase):
                 "players": [player],
                 "targets": [{}, {}],
                 "statistics": {"raid_dps": {"mean": 100.0, "count": 99}},
-                "options": {"dbc": {"Live": {"build_level": 69587}, "version_used": "Live"}},
+                "options": {"dbc": {"Live": {"build_level": 69587, "wow_version": "12.1.0.69587"}, "version_used": "Live"}},
             }
         }
 

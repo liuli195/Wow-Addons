@@ -118,7 +118,7 @@
        // Release assigned pre_execute_state, since we are not calling action->execute() (that does
        // it automatically)
        if ( action->pre_execute_state )
-@@ -2184,7 +2200,7 @@
+@@ -2193,7 +2209,7 @@
        }
        else
        {
@@ -127,7 +127,7 @@
        }
      }
    }
-@@ -2274,7 +2290,7 @@
+@@ -2283,7 +2299,7 @@
        player->schedule_cwc_ready( timespan_t::zero() );
      }
  
@@ -136,7 +136,7 @@
      {
        if ( player->spell_queue_event )
          event_t::cancel( player->spell_queue_event );
-@@ -2631,7 +2647,7 @@
+@@ -2640,7 +2656,7 @@
  bool action_t::ready()
  {
    // Check conditions that do NOT pertain to the target before cycle_targets
@@ -145,7 +145,7 @@
      return false;
  
    if ( internal_cooldown->down() )
-@@ -3070,6 +3086,10 @@
+@@ -3079,6 +3095,10 @@
  
  void action_t::cancel()
  {
@@ -156,7 +156,7 @@
    sim->print_debug( "{} {} is canceled", *player, *this );
  
    if ( channeled )
-@@ -3107,6 +3127,10 @@
+@@ -3116,6 +3136,10 @@
  
  void action_t::interrupt_action()
  {
@@ -167,7 +167,7 @@
    sim->print_debug( "{} {} is interrupted", *player, *this );
  
    if ( player->executing == this )
-@@ -5085,9 +5109,10 @@
+@@ -5094,9 +5118,10 @@
    else
    {
      execute_type et = debug_cast<queued_action_execute_event_t*>( queue_event )->type;
@@ -429,7 +429,7 @@
    {
      // Committed to a strict sequence of actions, just perform them instead of a priority list
      action = strict_sequence;
-@@ -13304,8 +13200,6 @@
+@@ -13308,8 +13204,6 @@
    }
  
    action_list_str      = source->action_list_str;
@@ -438,7 +438,7 @@
    alist_map            = source->alist_map;
    use_apl              = source->use_apl;
    apl_variable_map     = source->apl_variable_map;
-@@ -13356,8 +13250,6 @@
+@@ -13360,8 +13254,6 @@
    add_option( opt_int( "level", true_level, 1, MAX_LEVEL ) );
    add_option( opt_bool( "ready_trigger", ready_type ) );
    add_option( opt_func( "role", parse_role_string ) );
@@ -447,7 +447,7 @@
    add_option( opt_string( "target", target_str ) );
    add_option( opt_float( "skill", base.skill, 0, 1.0 ) );
    add_option( opt_float( "distance", base.distance, 5, std::numeric_limits<double>::max() ) );
-@@ -13381,6 +13273,7 @@
+@@ -13385,6 +13277,7 @@
    add_option( opt_func( "brain_lag", parse_brain_lag ) );
    add_option( opt_func( "brain_lag_stddev", parse_brain_lag_stddev ) );
    add_option( opt_timespan( "cooldown_tolerance", cooldown_tolerance_ ) );
@@ -455,7 +455,7 @@
    add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );
    add_option( opt_timespan( "spell_queue_window", spell_queue_window ) );
    add_option( opt_bool( "scale_player", scale_player ) );
-@@ -14312,6 +14205,7 @@
+@@ -14316,6 +14209,7 @@
                                     execute_type                  et,
                                     const action_t*               context )
  {
@@ -501,7 +501,7 @@
    std::string choose_action_list;
    std::string action_list_skip;
    std::string modify_action;
-@@ -1156,7 +1156,6 @@
+@@ -1158,7 +1158,6 @@
    virtual void init_assessors();
    virtual void init_background_actions();
    virtual void create_actions();
@@ -573,7 +573,7 @@
  void to_json( JsonOutput& arr, const raid_event_t& event )
 --- a/engine/sim/sim.cpp
 +++ b/engine/sim/sim.cpp
-@@ -2985,10 +2985,7 @@
+@@ -2987,10 +2987,7 @@
    // quiet and skip action creation.
    register_actor_initializer( INIT_ACTOR_CREATE_ACTIONS, []( player_t* p ) {
      if ( p->validate_actor() )

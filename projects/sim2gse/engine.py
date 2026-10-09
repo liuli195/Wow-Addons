@@ -16,7 +16,7 @@ class CandidateError(ValueError):
 ROOT = Path(__file__).resolve().parents[2]
 # 可接受的原生报告构建号。历史报告在其对应版本上依然有效，客户端升级时追加新编号，
 # 不删除旧编号；清单之外的版本仍照旧拒绝。
-ACCEPTED_BUILD_LEVELS = (69587, 69814)
+ACCEPTED_BUILD_LEVELS = (69587, 69814, 69933)
 COMMON = ['item_db_source=local', 'threads=1', 'seed=20260912', 'target_error=0',
           'fixed_time=1', 'vary_combat_length=0', 'fight_style=Patchwerk',
           'optimal_raid=0', 'potion=disabled', 'flask=disabled', 'food=disabled',
@@ -315,7 +315,8 @@ def check_report(report, character, iterations, *, simulation_config=None):
         raise ValueError('原生参考数值或实际样本数无效')
     return dict(dps=mean, metric=metric, personal_dps=data['dps']['mean'], samples=count, seconds=180, metadata_only=metadata_only, notices=report.get('logs', []),
                 identity=dict(class_id=player['sim2gse_class_id'], spec_id=player['sim2gse_spec_id'],
-                              spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource']))
+                              spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource'],
+                              data_version=sim['options']['dbc']['Live']['wow_version']))
 
 
 def _profile_with_import_queries(profile, folder, spell_ids, spell_names=()):

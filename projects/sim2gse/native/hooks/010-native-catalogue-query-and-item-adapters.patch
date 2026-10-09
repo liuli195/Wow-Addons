@@ -143,7 +143,7 @@
  void player_t::init_finished()
  {
    // Add dynamic cooldowns first before action_t::init_finished so actions can adjust their behavior accordingly if
-@@ -10266,6 +10395,7 @@
+@@ -10271,6 +10400,7 @@
        if ( action->ready() && action->target_ready( target ) )
        {
          action->set_target( target );
@@ -151,16 +151,16 @@
          action->execute();
          break;
        }
-@@ -10476,6 +10606,8 @@
+@@ -10481,6 +10611,8 @@
        }
  
        auto use_action = new use_item_t( player, std::string( "slot=" ) + item.slot_name() );
 +      use_action->signature_str = std::string("use_item,slot=") + item.slot_name();
 +      use_action->is_precombat = is_precombat;
        use_action->option.if_expr_str = option.if_expr_str;
-       use_actions.push_back( use_action );
- 
-@@ -13172,6 +13304,8 @@
+       use_action->action_list = action_list;
+       // The use_item action is not triggered by the actor (through the APL), so background it
+@@ -13176,6 +13308,8 @@
    }
  
    action_list_str      = source->action_list_str;
@@ -169,7 +169,7 @@
    alist_map            = source->alist_map;
    use_apl              = source->use_apl;
    apl_variable_map     = source->apl_variable_map;
-@@ -13222,6 +13356,8 @@
+@@ -13226,6 +13360,8 @@
    add_option( opt_int( "level", true_level, 1, MAX_LEVEL ) );
    add_option( opt_bool( "ready_trigger", ready_type ) );
    add_option( opt_func( "role", parse_role_string ) );
@@ -207,7 +207,7 @@
    std::string choose_action_list;
    std::string action_list_skip;
    std::string modify_action;
-@@ -1150,6 +1156,7 @@
+@@ -1152,6 +1158,7 @@
    virtual void init_assessors();
    virtual void init_background_actions();
    virtual void create_actions();
@@ -217,7 +217,7 @@
    virtual void add_precombat_buff_state( buff_t* buff, int stacks, double value, timespan_t duration );
 --- a/engine/sim/sim.cpp
 +++ b/engine/sim/sim.cpp
-@@ -2985,7 +2985,10 @@
+@@ -2987,7 +2987,10 @@
    // quiet and skip action creation.
    register_actor_initializer( INIT_ACTOR_CREATE_ACTIONS, []( player_t* p ) {
      if ( p->validate_actor() )

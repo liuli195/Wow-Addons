@@ -79,7 +79,7 @@ def _fast_report(character, score, samples):
     }
     return {"sim": {"players": [player], "targets": [{"name": "Damage_Dummy", "level": 90}],
                     "statistics": {"raid_dps": {"mean": score, "count": samples}},
-                    "options": {"dbc": {"Live": {"build_level": 69587}, "version_used": "Live"}}}}
+                    "options": {"dbc": {"Live": {"build_level": 69587, "wow_version": "12.1.0.69587"}, "version_used": "Live"}}}}
 
 
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
@@ -1671,10 +1671,10 @@ class SearchAndValidationTests(TestCase):
                                          "fight_length": {"mean": 180}}}
             return {"sim": {"players": [player], "targets": [{}],
                             "statistics": {"raid_dps": {"mean": 100.0, "count": 99}},
-                            "options": {"dbc": {"Live": {"build_level": build_level},
+                            "options": {"dbc": {"Live": {"build_level": build_level, "wow_version": f"12.1.0.{build_level}"},
                                                 "version_used": version_used}}}}
 
-        for build in (69587, 69814):
+        for build in (69587, 69814, 69933):
             engine.check_report(report(build), character(), 100)
         # 校验强度不变：清单外的版本照旧拒绝。
         for build in (69999, 0):

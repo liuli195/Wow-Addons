@@ -1,6 +1,6 @@
 --- a/engine/class_modules/sc_death_knight.cpp
 +++ b/engine/class_modules/sc_death_knight.cpp
-@@ -9976,7 +9976,7 @@
+@@ -9998,7 +9998,7 @@
    {
      double m = death_knight_heal_t::action_multiplier();
  
@@ -9,7 +9,7 @@
  
      return m;
    }
-@@ -9985,7 +9985,7 @@
+@@ -10007,7 +10007,7 @@
    {
      trigger_blood_shield( state );
  
@@ -18,7 +18,7 @@
  
      death_knight_heal_t::impact( state );
  
-@@ -10088,7 +10088,7 @@
+@@ -10110,7 +10110,7 @@
    {
      death_knight_melee_attack_t::impact( state );
  
@@ -27,7 +27,7 @@
    }
  
    void execute() override
-@@ -10105,7 +10105,7 @@
+@@ -10127,7 +10127,7 @@
        heal->execute();
      }
  

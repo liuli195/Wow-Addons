@@ -197,7 +197,7 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
     name_basis = blocks if program is None else actions
     name = 'S2G_' + hashlib.sha256(cbor2.dumps(name_basis)).hexdigest()[:12].upper()
     sequence = dict(MetaData=dict(Name=name, SpecID=identity['spec_id'], GSEVersion=3332,
-                                 Help='地面技能在角色脚下释放，目标须在范围内；目标数据 '+targeting['client_build']+'，模拟数据 12.1.0.69587。游戏效果尚待验证。'),
+                                 Help='地面技能在角色脚下释放，目标须在范围内；目标数据 '+targeting['client_build']+'，模拟数据 '+identity.get('data_version', '未提供')+'。游戏效果尚待验证。'),
                     Default=1, Versions=[dict(Actions=actions, InbuiltVariables={})])
     payload = [name, sequence]
     expected = dict(name=name, help=sequence['MetaData']['Help'], steps=upstream_steps, identity=identity,
