@@ -1,7 +1,7 @@
 # 01：阶段1：构建身份与三方原生对照
 
 Status（状态）: done（已完成）
-Triage（分拣）: ready-for-agent（需求已整理，等待前置与开发门禁）
+Triage（分拣）: ready-for-agent（需求明确；实施验收完成，不再领取）
 Blocked by（前置）: 无前置票；开发门禁已确认
 
 ## 交付行为

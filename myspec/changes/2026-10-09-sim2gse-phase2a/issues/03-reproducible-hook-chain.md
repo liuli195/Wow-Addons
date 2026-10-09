@@ -1,8 +1,8 @@
 # 03：阶段1：目录接入和最终连接链
 
 Status（状态）: done（已完成）
-Triage（分拣）: ready-for-agent（需求已整理，等待前置与开发门禁）
-Blocked by（前置）: 02
+Triage（分拣）: ready-for-agent（需求明确；实施验收完成，不再领取）
+Blocked by（前置）: 无；原前置02均已完成验收
 
 ## 交付行为
 
