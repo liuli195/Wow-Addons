@@ -152,3 +152,19 @@ def test_public_burst_reports_a_missing_storage_center(tmp_path):
     profile.write_text(sample_profile(), encoding='utf-8')
     with pytest.raises(result_store.DataReadError, match='记录不可读'):
         task.precheck_burst(profile, tmp_path / 'storage-error')
+
+
+def test_public_burst_uses_effective_talents_when_extra_talents_are_disabled(tmp_path):
+    import burst
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    # Disabled input must be removed before native initialization and review matching.
+    original = (raw + 'omnium_talents=1:1\n').encode('utf-8')
+    profile = tmp_path / 'character.simc'
+    profile.write_bytes(original)
+    result = task.precheck_burst(profile, tmp_path / 'omnium-off',
+                                simulation_config={'enable_omnium_talents': False})
+    assert result['simulation']['consistent']
+    assert profile.read_bytes() == original
+    effective = (tmp_path / 'omnium-off/input.effective.simc').read_text(encoding='utf-8')
+    assert 'omnium_talents=' not in effective

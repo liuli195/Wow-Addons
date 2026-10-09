@@ -166,12 +166,20 @@ def precheck_burst(input_path, output_root, *, runtime=None, simulation_config=N
     from engine import reference, inspect
     from program import compile_program, from_action_blocks
     from sequence import evaluate
-    character = parse_character(Path(input_path).read_text(encoding='utf-8'))
+    original_bytes, raw_text = _read_utf8(Path(input_path), description='角色输入')
+    simulation_config = simulation_config_for(simulation_config)
+    effective_bytes = _effective_input_bytes(original_bytes, raw_text, simulation_config)
+    character = parse_character(effective_bytes.decode('utf-8'))
     runtime = runtime or TaskRuntime()
     folder = Path(output_root)
-    native = reference(input_path, folder / 'reference', character, iterations=iterations,
-                       runtime=runtime, simulation_config=simulation_config)
+    effective_profile = folder / 'input.effective.simc'
+    if effective_profile.resolve() == Path(input_path).resolve():
+        raise TaskError('爆发预检查输出不能覆盖原始角色输入')
+    folder.mkdir(parents=True, exist_ok=True)
+    effective_profile.write_bytes(effective_bytes)
     try:
+        native = reference(effective_profile, folder / 'reference', character, iterations=iterations,
+                           runtime=runtime, simulation_config=simulation_config)
         definition = load(native['identity']['spec_id'])
         capabilities = inspect(native, folder / 'capabilities')
         blocks = prepare(definition, character, capabilities, native['identity'])
@@ -179,7 +187,7 @@ def precheck_burst(input_path, output_root, *, runtime=None, simulation_config=N
         program['metadata']['purpose'] = 'burst'
         program['metadata']['instructions'] = definition['instructions']
         candidate = compile_program(program, folder / 'export', identity=native['identity'], runtime=runtime)
-        simulation = evaluate(input_path, candidate, folder / 'controlled', character=character,
+        simulation = evaluate(effective_profile, candidate, folder / 'controlled', character=character,
                               iterations=iterations, runtime=runtime, simulation_config=simulation_config,
                               input_times=input_times(definition), failed_actions=failed_actions)
     except ValueError as error:
