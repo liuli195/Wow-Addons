@@ -45,6 +45,7 @@ local function NewTexture(_, _, _, sub)
     function t:SetSize() end
     function t:SetPoint() end
     function t:SetAllPoints() end
+    function t:SetTexCoord(...) self.coords={...} end
     function t:AddMaskTexture() t.masked = true end
     function t:SetShown(v) t.shown = v end
     function t:SetRotation() end
@@ -217,7 +218,7 @@ resourceThrows = false
 --   出口函数（页面据此建不建第二个色块）、数据模型（有没有 bgMode）、渲染取值。
 ----------------------------------------------------------------------
 local order = Config.ELEMENT_ORDER
-assert(#order == 6, "两项新显示也必须遵循独立自定义背景规则")
+assert(#order == 7, "两项新显示也必须遵循独立自定义背景规则")
 assert(Config.SourceFor("coagulatedBlood", "fill") == nil)
 assert(Config.SourceFor("deathStrike", "fill") == nil)
 
@@ -404,9 +405,9 @@ Elements.Apply({
                   shadowColor = { 0.2, 0.1, 0.05 }, shadowAlpha = 0.35 },
 })
 
-local function FindShadow(fragment)
+local function FindShadow(fragment,mirrored)
     for _, t in ipairs(textures) do
-        if t.path and t.path:find(fragment, 1, true) then return t end
+        if t.path and t.path:find(fragment, 1, true) and (not mirrored or (t.coords and t.coords[1]==1)) then return t end
     end
 end
 
@@ -423,7 +424,7 @@ Near(healthShadow.vertex[4], 0.7, "阴影浓淡是它自己的一个值，不与
 assert(healthShadow.masked == nil, "阴影层不挂遮罩——它包住整条弧，不随填充比例变化")
 
 -- 颜色确实会被用上（不是写死黑）
-local crosshairShadow = FindShadow("crosshair_shadow")
+local crosshairShadow = FindShadow("crosshair_arm_shadow")
 assert(crosshairShadow, "准星也要有一层自己的阴影纹理")
 assert(crosshairShadow.vertex, "准星的阴影层要收到顶点色")
 Near(crosshairShadow.vertex[1], 0.2, "阴影颜色跟着配置走，不是写死的黑")
@@ -446,7 +447,7 @@ Near(liveShadow.vertex[4], 0.8, "新安装阴影透明度为80%")
 
 Core.demo = true
 Core.Refresh()
-local demoShadow = FindShadow("crosshair_shadow")
+local demoShadow = FindShadow("crosshair_arm_shadow")
 assert(demoShadow and demoShadow.vertex,
     "假数据模式下准星阴影没收到顶点色——DemoState 漏了阴影字段")
 Core.demo = false
@@ -494,12 +495,12 @@ Near(hs.vertex[2], 0.5, "阴影颜色 G")
 Near(hs.vertex[3], 0.75, "阴影颜色 B")
 Near(hs.vertex[4], 0.4, "阴影浓淡跟着全局设置走")
 
-local ps = FindShadow("power_arc_shadow")
+local ps = FindShadow("health_arc_shadow",true)
 assert(ps and ps.vertex, "能量条的阴影层要收到顶点色")
 Near(ps.vertex[1], 0.25, "一处设置管住所有元素：能量条阴影同色")
 Near(ps.vertex[4], 0.4, "一处设置管住所有元素：能量条阴影同浓淡")
 
-local cs = FindShadow("crosshair_shadow")
+local cs = FindShadow("crosshair_arm_shadow")
 assert(cs and cs.vertex, "准星的阴影层要收到顶点色")
 Near(cs.vertex[4], 0.4, "准星走的是同一个全局值")
 

@@ -11,6 +11,7 @@ HARNESS = r'''
 local dir = assert(arg[1])
 local frames, textures, lines, tickers = {}, {}, {}, {}
 local aura, fee, maximum, playerClass = { applications = 75 }, 35, 100, "DEATHKNIGHT"
+local playerSpec, now, pageRefreshes = 250, 10, 0
 local secret = setmetatable({}, { __index = function() error("secret read") end })
 local detectorThrows, auraThrows, feeThrows = false, false, false
 local feeEntries
@@ -19,7 +20,11 @@ function issecretvalue(v)
     return rawequal(v, secret)
 end
 function UnitClass() return "死亡骑士", playerClass end
-function GetTime() return 10 end
+function GetTime() return now end
+C_SpecializationInfo = {
+    GetSpecialization = function() return 1 end,
+    GetSpecializationInfo = function() return playerSpec end,
+}
 function GetRuneCooldown() return 0, 0, true end
 function UnitPowerMax() return maximum end
 function UnitHealthPercent(_, _, curve) return curve:Evaluate(1) end
@@ -132,21 +137,25 @@ function EllesmereUI.BuildInlineCog(region,opts)
         rows[section][r.label]={getValue=r.get,setValue=r.set,disabled=r.disabled}
     end
 end
-function EllesmereUI:RefreshPage() for _, fn in ipairs(gearRefresh) do fn() end end
+function EllesmereUI:RefreshPage()
+    pageRefreshes=pageRefreshes+1
+    for _, fn in ipairs(gearRefresh) do fn() end
+end
 for _, name in ipairs({"Logic","Elements","Config","Debug","Core"}) do
     assert(loadfile(dir.."/"..name..".lua"))()
 end
 local NS = MYUI_CHH
-local function Event(e)
-    for _,f in ipairs(frames) do if f.events[e] then f.scripts.OnEvent(f,e,"player") end end
+local function Event(e,a,b,c)
+    if a==nil then a="player" end
+    for _,f in ipairs(frames) do if f.events[e] then f.scripts.OnEvent(f,e,a,b,c) end end
 end
 local function Tick() for _,fn in ipairs(tickers) do fn() end end
 local function Page()
     rows={};gears={};gearRefresh={};EllesmereUI._modules.MYUI_CrosshairHUD.buildPage(nil,{},0)
 end
-local function Layer(file,sub)
+local function Layer(file,sub,x)
     for _,t in ipairs(textures) do
-        if t.path and t.path:sub(-#file)==file and (sub==nil or t.sub==sub) then return t end
+        if t.path and t.path:sub(-#file)==file and (sub==nil or t.sub==sub) and (x==nil or t.x==x) then return t end
     end
 end
 local function Marker()
@@ -207,6 +216,135 @@ Near(start[2], -49.1 * math.sin(angle))
     ''')
 
 
+def test_blood_specialization_switch_hides_controls_and_preserves_settings():
+    run_scenario(r'''
+local cfg=NS.Config.Get()
+local controls=rows["凝固之血"]
+local fill=assert(Layer("coagulated_blood_fill.blp",1))
+assert(fill.shown and not controls["启用"].disabled())
+controls["启用"].setValue(false)
+assert(not controls["启用"].disabled(),"disabled element must remain re-enableable")
+controls["启用"].setValue(true)
+cfg.elements.coagulatedBlood.fill={0.2,0.3,0.4}
+local oldRefresh=pageRefreshes
+playerSpec=251;Event("PLAYER_SPECIALIZATION_CHANGED")
+assert(not fill.shown,"frost specialization must hide blood feature")
+assert(pageRefreshes>oldRefresh,"specialization event must refresh open settings")
+for _,control in pairs(controls) do assert(control.disabled()) end
+controls["启用"].setValue(false)
+assert(cfg.elements.coagulatedBlood.enabled,"ineligible callbacks must preserve saved toggle")
+playerSpec=250;Event("PLAYER_SPECIALIZATION_CHANGED")
+assert(fill.shown and not controls["启用"].disabled())
+Near(fill.color[1],0.2);Near(fill.color[2],0.3);Near(fill.color[3],0.4)
+playerSpec=secret;Event("PLAYER_SPECIALIZATION_CHANGED")
+assert(not fill.shown and controls["启用"].disabled())
+playerSpec=250;Event("PLAYER_SPECIALIZATION_CHANGED")
+assert(fill.shown)
+''')
+
+
+def test_boiling_point_pair_countdown_chain_and_clearing_through_events():
+    run_scenario(r'''
+local controls=assert(rows["沸点"],"boiling point must use the existing settings page")
+local cfg=NS.Config.Get().elements.boilingPoint
+assert(cfg.enabled and cfg.fillMode==nil and cfg.maxStacks==nil)
+Near(cfg.fill[1],0.77);Near(cfg.fill[2],0.12);Near(cfg.fill[3],0.23)
+assert(cfg.fillAlpha==1 and cfg.bgAlpha==0 and cfg.bg[1]==0.77)
+assert(#NS.Config.CellPlan("boilingPoint")==3 and not gears["沸点"])
+local function Echo()
+    for _,t in ipairs(textures) do
+        if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then return t end
+    end
+end
+local fill=assert(Echo(),"right-side fine arc must reuse the centered material")
+assert(not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(not fill.shown,"proc alone must not start the 3-second echo")
+Event("UNIT_SPELLCAST_SUCCEEDED","player","cast1",50842)
+now=10.2;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+assert(fill.shown and fill.mask,"paired cast/HIDE must display the right fine arc")
+local initial=fill.mask.rotation
+now=11.5;Tick();local halfway=fill.mask.rotation
+assert(initial~=halfway,"time must advance the displayed fill")
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(fill.mask.rotation==halfway,"new proc must not reset this countdown")
+    now=13.4;Tick();assert(fill.shown,"pending proc must continue at the old deadline")
+now=16;Tick();assert(not fill.shown,"a round without new proc must hide on expiry")
+-- Opposite event order, unrelated units/spells, and a cast outside the pairing window.
+now=20;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=20.2;Event("UNIT_SPELLCAST_SUCCEEDED","target","x",50842)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","x",999)
+assert(not fill.shown)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","cast2",50842);assert(fill.shown)
+now=23.2;Tick();assert(not fill.shown)
+now=30;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","cast3",50842)
+now=30.31;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+assert(not fill.shown,"unpaired signals must not start an echo")
+now=40;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",secret)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","x",secret)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",secret);assert(not fill.shown)
+now=50;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","cast4",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(fill.shown)
+controls["启用"].setValue(false);assert(not fill.shown and not controls["启用"].disabled())
+controls["启用"].setValue(true);Tick();assert(not fill.shown,"re-enable must not guess history")
+now=60;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","cast5",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(fill.shown)
+playerSpec=251;Event("PLAYER_SPECIALIZATION_CHANGED")
+assert(not fill.shown and controls["启用"].disabled())
+playerSpec=250;Event("PLAYER_SPECIALIZATION_CHANGED");assert(not fill.shown)
+-- A new confirmed manual consumption replaces the pending automatic round.
+now=70;Event("UNIT_SPELLCAST_SUCCEEDED","player","cast6",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=71;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+now=71.5;Event("UNIT_SPELLCAST_SUCCEEDED","player","cast7",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=73.2;Tick();assert(fill.shown)
+now=74.5;Tick();assert(not fill.shown,"second manual consumption must expire at its cast+3")
+''')
+
+
+def test_reused_shapes_and_four_source_crosshair_preserve_rendered_layout():
+    run_scenario(r'''
+local arms,armShadows,dots,dotShadows=0,0,0,0
+for _,t in ipairs(textures) do
+    if t.path then
+        if t.path:find("crosshair_arm.blp",1,true) then
+            arms=arms+1;assert(t.coords and #t.coords==8,"arms need fixed UV rotations")
+        elseif t.path:find("crosshair_arm_shadow.blp",1,true) then
+            armShadows=armShadows+1;assert(t.coords and #t.coords==8)
+        elseif t.path:find("crosshair_point.blp",1,true) then dots=dots+1
+        elseif t.path:find("crosshair_point_shadow.blp",1,true) then dotShadows=dotShadows+1 end
+        assert(not t.path:find("power_arc.blp",1,true),"power must reuse the health shape")
+        assert(not t.path:find("resource_04",1,true) and not t.path:find("resource_05",1,true)
+            and not t.path:find("resource_06",1,true),"right runes must reuse the three left shapes")
+    end
+end
+assert(arms==4 and armShadows==4 and dots==1 and dotShadows==1,"four sources, ten instances")
+local power
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("health_arc.blp",1,true) and t.x==32 and t.sub==1 then power=t end
+end
+assert(power and power.coords[1]==1 and power.coords[2]==0,"right shape alone must mirror")
+assert(power.mask and power.mask.coords==nil,"fill mask must retain its original orientation")
+local arm,shadow
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("crosshair_arm.blp",1,true) then arm=t end
+    if t.path and t.path:find("crosshair_arm_shadow.blp",1,true) then shadow=t end
+end
+for i=1,8 do assert(arm.coords[i]==shadow.coords[i],"arm and shadow rotations must match") end
+rows["准星"]["启用"].setValue(false)
+for _,t in ipairs(textures) do if t.path and t.path:find("crosshair_",1,true) then assert(not t.shown) end end
+rows["准星"]["启用"].setValue(true)
+rows["常规"]["HUD 缩放"].setValue(2)
+    Near(arm.x,0);Near(arm.y,31)
+Near(arm.w,16);Near(arm.h,64)
+''')
+
+
 def test_settings_gears_write_live_controls_and_preserve_existing_settings():
     run_scenario(r'''
 local count=0;for _ in pairs(gears) do count=count+1 end
@@ -260,7 +398,7 @@ assert(gears["凝固之血"].disabledTooltip():find("死亡骑士",1,true))
 def test_aura_controls_and_visibility_through_login_events_and_settings():
     run_scenario(r'''
 local controls=assert(rows["凝固之血"],"existing settings page must include blood aura")
-local bg=assert(Layer("coagulated_blood_arc.blp",0),"aura background required")
+local bg=assert(Layer("coagulated_blood_fill.blp",0),"aura background required")
 local fill=assert(Layer("coagulated_blood_fill.blp",1),"aura fill required")
 assert(not Layer("coagulated_blood_arc_shadow.blp"),"blood shadow must not be created")
 assert(bg.shown and fill.shown)
@@ -315,13 +453,13 @@ SlashCmdList.MYUICHH("demo");assert(not line.shown)
 
 def test_unreadable_values_hide_only_new_data_and_recover():
     run_scenario(r'''
-local bg=Layer("coagulated_blood_arc.blp",0)
+local bg=Layer("coagulated_blood_fill.blp",0)
 local fill=Layer("coagulated_blood_fill.blp",1)
 assert(not Layer("coagulated_blood_arc_shadow.blp"))
 local line=Marker()
 aura={applications=secret};fee=secret;Tick()
 assert(bg.shown and fill.shown and not line.shown)
-assert(Layer("health_arc.blp",1).shown and Layer("power_arc.blp",1).shown)
+assert(Layer("health_arc.blp",1).shown and Layer("health_arc.blp",1,32).shown)
 aura=secret;maximum=secret;Event("UNIT_AURA")
 assert(not bg.shown and not fill.shown and not line.shown)
 aura={applications=300};fee=0;maximum=100;Tick()
@@ -341,7 +479,7 @@ detectorThrows=false;Tick();assert(bg.shown and line.shown)
 
 def test_independent_alpha_shared_shadow_and_saved_settings():
     run_scenario(r'''
-local bg=Layer("coagulated_blood_arc.blp",0)
+local bg=Layer("coagulated_blood_fill.blp",0)
 local fill=Layer("coagulated_blood_fill.blp",1)
 assert(not Layer("coagulated_blood_arc_shadow.blp"))
 rows["凝固之血"]["条背景"].setValue(40)
@@ -434,7 +572,7 @@ rows["常规"]["HUD 缩放"].setValue(2)
 assert(NS.Elements.scale==2)
 assert(bar.texture.radialStart==nil and bar.texture.radialEnd==nil)
 aura={};Tick()
-assert(not bar.shown and Layer("coagulated_blood_arc.blp",0).shown)
+assert(not bar.shown and Layer("coagulated_blood_fill.blp",0).shown)
 local original=bar.SetValue
 function bar:SetValue() error("engine rejected value") end
 aura={applications=secret};Tick();assert(not bar.shown)
@@ -472,7 +610,7 @@ def test_shapes_preserve_original_pixel_alignment_defaults():
 local fill=assert(Layer("coagulated_blood_fill.blp",1))
 assert(fill.filter=="TRILINEAR")
 assert(fill.snap==nil and fill.bias==nil,"new fill must preserve original alignment defaults")
-for _,file in ipairs({"health_arc.blp","power_arc.blp","coagulated_blood_arc.blp"}) do
+for _,file in ipairs({"health_arc.blp","health_arc.blp","coagulated_blood_fill.blp"}) do
     local t=assert(Layer(file));assert(t.filter=="TRILINEAR" and t.snap==nil and t.bias==nil)
 end
 for _,scale in ipairs({0.5,1,2}) do

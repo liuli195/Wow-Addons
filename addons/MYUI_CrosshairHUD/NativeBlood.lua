@@ -53,7 +53,7 @@ local function Build(st)
             button:EnableMouse(false)
             button:SetShown(false)
             button:SetFrameLevel(math.max(0, NS.Elements.frame:GetFrameLevel() - 1))
-            local bg = Texture(button, "coagulated_blood_arc", 0, -32, -16)
+            local bg = Texture(button, "coagulated_blood_fill", 0)
             local bc = st.bgColor
             bg:SetVertexColor(bc[1], bc[2], bc[3], st.bgAlpha)
             local bar = _G.CreateFrame("StatusBar", nil, button)

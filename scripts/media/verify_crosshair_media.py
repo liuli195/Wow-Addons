@@ -50,7 +50,7 @@ DESIGN_CENTER = 128       # 设计稿坐标系里的圆环中心
 ARC_STROKE = 7.8          # 设计稿定稿的条宽（设计单位）：两条弧是线宽，资源格是半径跨度
 BLOOD_ARC_STROKE = 3.9   # 凝固之血半粗条，不降低原有素材标准
 ARC_STROKE_TOL = 0.3
-CROSSHAIR_NAME = "crosshair.png"   # 准星是线不是弧，不适用弧线线宽
+CROSSHAIR_NAME = "crosshair_point.png"   # 单独核对中心定位点
 # 中心定位点：设计稿上是准星圆心处一个直径 10 预览单位（＝5 设计稿单位）的实心白点。
 # 检查半径只是"有没有点"的粗查；**直径另有一条断言，画大画小都算偏离设计稿**。
 DOT_CHECK_RADIUS = 4
@@ -175,7 +175,7 @@ def measure_radial_span_units(image, asset, scale):
 def verify_arc_stroke(asset, scale):
     name = asset["file"]
     # 准星是线不是弧；阴影是被**模糊过**的，本来就比形状宽，两者都不适用这条
-    if name == CROSSHAIR_NAME or name.endswith(SHADOW_SUFFIX + ".png"):
+    if name.startswith("crosshair_") or name.endswith(SHADOW_SUFFIX + ".png"):
         return
     image = load(MEDIA / name)
     if image is None:
@@ -416,6 +416,11 @@ def main():
         shadow = load(MEDIA / name)
         shape = load(MEDIA / name.replace("_shadow.png", ".png"))
         if shadow is not None and shape is not None:
+            if shadow.shape != shape.shape:
+                canvas = np.zeros_like(shadow)
+                oy, ox = (shadow.shape[0] - shape.shape[0]) // 2, (shadow.shape[1] - shape.shape[1]) // 2
+                canvas[oy:oy + shape.shape[0], ox:ox + shape.shape[1]] = shape
+                shape = canvas
             core = np.asarray(Image.fromarray(shape[:, :, 3].astype(np.uint8)).filter(
                 ImageFilter.MinFilter(5))) == 255
             check(np.all(shadow[:, :, 3][core] == 0),
@@ -431,7 +436,7 @@ def main():
         verify_drag_box(asset, scale)
     verify_mask()
     verify_texture("coagulated_blood_fill.png", (1024, 1024))
-    source = load(MEDIA / "coagulated_blood_arc.png")
+    source = load(ASSETS / "Textures" / "coagulated_blood_arc.png")
     fill = load(MEDIA / "coagulated_blood_fill.png")
     if source is not None and fill is not None:
         expected = np.full_like(source, 255)

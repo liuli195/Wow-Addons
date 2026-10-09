@@ -11,41 +11,79 @@
   "format": "PNG RGBA",
   "assets": [
     {
-      "file": "crosshair.png",
+      "file": "crosshair_arm.png",
       "pixelSize": [
-        1024,
-        1024
+        256,
+        64
       ],
       "displaySize": [
-        128,
-        128
+        32,
+        8
       ],
       "centerOffset": [
-        0,
+        15.5,
         0
       ],
       "contentSize": [
-        70,
-        70
+        32,
+        8
       ]
     },
     {
-      "file": "crosshair_shadow.png",
+      "file": "crosshair_arm_shadow.png",
       "pixelSize": [
-        1024,
-        1024
+        512,
+        256
       ],
       "displaySize": [
-        128,
-        128
+        64,
+        32
+      ],
+      "centerOffset": [
+        15.5,
+        0
+      ],
+      "contentSize": [
+        64,
+        32
+      ]
+    },
+    {
+      "file": "crosshair_point.png",
+      "pixelSize": [
+        64,
+        64
+      ],
+      "displaySize": [
+        8,
+        8
       ],
       "centerOffset": [
         0,
         0
       ],
       "contentSize": [
-        70,
-        70
+        8,
+        8
+      ]
+    },
+    {
+      "file": "crosshair_point_shadow.png",
+      "pixelSize": [
+        256,
+        256
+      ],
+      "displaySize": [
+        32,
+        32
+      ],
+      "centerOffset": [
+        0,
+        0
+      ],
+      "contentSize": [
+        32,
+        32
       ]
     },
     {
@@ -79,44 +117,6 @@
       ],
       "centerOffset": [
         -32,
-        16
-      ],
-      "contentSize": [
-        70,
-        128
-      ]
-    },
-    {
-      "file": "power_arc.png",
-      "pixelSize": [
-        1024,
-        1024
-      ],
-      "displaySize": [
-        128,
-        128
-      ],
-      "centerOffset": [
-        32,
-        16
-      ],
-      "contentSize": [
-        70,
-        128
-      ]
-    },
-    {
-      "file": "power_arc_shadow.png",
-      "pixelSize": [
-        1024,
-        1024
-      ],
-      "displaySize": [
-        128,
-        128
-      ],
-      "centerOffset": [
-        32,
         16
       ],
       "contentSize": [
@@ -237,122 +237,15 @@
         34,
         32
       ]
-    },
-    {
-      "file": "resource_04.png",
-      "pixelSize": [
-        512,
-        256
-      ],
-      "displaySize": [
-        64,
-        32
-      ],
-      "centerOffset": [
-        8,
-        -53
-      ],
-      "contentSize": [
-        34,
-        32
-      ]
-    },
-    {
-      "file": "resource_04_shadow.png",
-      "pixelSize": [
-        512,
-        256
-      ],
-      "displaySize": [
-        64,
-        32
-      ],
-      "centerOffset": [
-        8,
-        -53
-      ],
-      "contentSize": [
-        34,
-        32
-      ]
-    },
-    {
-      "file": "resource_05.png",
-      "pixelSize": [
-        512,
-        256
-      ],
-      "displaySize": [
-        64,
-        32
-      ],
-      "centerOffset": [
-        24,
-        -48
-      ],
-      "contentSize": [
-        33,
-        32
-      ]
-    },
-    {
-      "file": "resource_05_shadow.png",
-      "pixelSize": [
-        512,
-        256
-      ],
-      "displaySize": [
-        64,
-        32
-      ],
-      "centerOffset": [
-        24,
-        -48
-      ],
-      "contentSize": [
-        33,
-        32
-      ]
-    },
-    {
-      "file": "resource_06.png",
-      "pixelSize": [
-        256,
-        256
-      ],
-      "displaySize": [
-        32,
-        32
-      ],
-      "centerOffset": [
-        38,
-        -38
-      ],
-      "contentSize": [
-        32,
-        32
-      ]
-    },
-    {
-      "file": "resource_06_shadow.png",
-      "pixelSize": [
-        256,
-        256
-      ],
-      "displaySize": [
-        32,
-        32
-      ],
-      "centerOffset": [
-        38,
-        -38
-      ],
-      "contentSize": [
-        32,
-        32
-      ]
-    },
-    {
+    }
+  ],
+  "coagulatedBloodSource": {
+    "fileKey": "MmqiPxtGUmYBYtxd5SHgAI",
+    "shapeNode": "124:399",
+    "shadowNode": "124:401",
+    "exportScale": 10,
+    "shadowUsedInGame": false,
+    "texture": {
       "file": "coagulated_blood_arc.png",
       "pixelSize": [
         1024,
@@ -371,13 +264,6 @@
         128
       ]
     }
-  ],
-  "coagulatedBloodSource": {
-    "fileKey": "MmqiPxtGUmYBYtxd5SHgAI",
-    "shapeNode": "124:399",
-    "shadowNode": "124:401",
-    "exportScale": 10,
-    "shadowUsedInGame": false
   },
   "coagulatedBloodGeometry": {
     "radius": 57.9,
@@ -386,15 +272,12 @@
     "span": 102
   },
   "hollowShadows": [
-    "crosshair_shadow.png",
+    "crosshair_arm_shadow.png",
+    "crosshair_point_shadow.png",
     "health_arc_shadow.png",
-    "power_arc_shadow.png",
     "resource_01_shadow.png",
     "resource_02_shadow.png",
-    "resource_03_shadow.png",
-    "resource_04_shadow.png",
-    "resource_05_shadow.png",
-    "resource_06_shadow.png"
+    "resource_03_shadow.png"
   ],
   "gameMaterial": {
     "format": "BLP2",
