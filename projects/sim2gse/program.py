@@ -320,6 +320,9 @@ def canonical_behavior_key(form):
 def canonicalize_search_program(search_program, capabilities):
     """映射角色动作后返回行为身份、标准点击计划及保留来源的程序树。"""
     mapped = from_search_program(search_program, capabilities)
+    if capabilities.get('burst_exclusions') is not None:
+        from burst import check_loop
+        check_loop(mapped, capabilities)
     expanded = _search_expanded_nodes(mapped)
     clicks = []
     castsequences = []
@@ -434,6 +437,9 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
     """经同一 Program 接口编译；适配器只负责各来源的编码和上游校验。"""
     if not isinstance(program, dict) or not isinstance(program.get("nodes"), list):
         raise ValueError("序列程序结构无效")
+    if capabilities is not None and capabilities.get('burst_exclusions') is not None:
+        from burst import check_loop
+        check_loop(program, capabilities)
     if program.get("adapter") == "gse_import":
         from gse_import import compile_import
 

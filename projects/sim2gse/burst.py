@@ -144,3 +144,67 @@ def combined_inputs(loop_times, definition, interval_ms):
     if len(rows) > 4096 or any(a[0] == b[0] for a, b in zip(rows, rows[1:])):
         raise ValueError('双来源按键时间重复或超过限制')
     return [row[0] for row in rows], [row[1] for row in rows]
+
+
+def search_capabilities(capabilities, blocks):
+    """排除实际审核块里的按钮及其替换形态，不改原生伤害目录。"""
+    policy = dict(spell_ids=[], actions=[], slots=[], item_ids=[])
+    for block in blocks:
+        for command in block:
+            policy['actions'].append(command['simc_action'])
+            if command['kind'] == 'spell':
+                for variant in [command, *command.get('variants', [])]:
+                    policy['spell_ids'].extend(value for value in
+                        (variant.get('spell_id'), variant.get('base_spell_id')) if value)
+            elif command['kind'] == 'item':
+                policy['slots'].append(command['slot'])
+                if command.get('item_id'):
+                    policy['item_ids'].append(command['item_id'])
+    policy = {key: sorted(set(values)) for key, values in policy.items()}
+    filtered = copy.deepcopy(capabilities)
+    filtered['burst_exclusions'] = policy
+    for key in ('actions', 'baseline_actions', 'precombat_actions'):
+        if key in filtered:
+            filtered[key] = [action for action in filtered[key] if not _excluded(action, policy)]
+    if not filtered['actions']:
+        raise ValueError('爆发排除后没有可搜索的循环动作')
+    return filtered
+
+
+def _excluded(command, policy):
+    variants = [command, *command.get('variants', [])]
+    return any(value.get('simc_action') in policy['actions']
+               or value.get('spell_id') in policy['spell_ids']
+               or value.get('base_spell_id') in policy['spell_ids']
+               or value.get('kind') == 'item' and (
+                   value.get('slot') in policy['slots'] or value.get('item_id') in policy['item_ids'])
+               for value in variants)
+
+
+def check_loop(program, capabilities):
+    """编译前递归核对循环树；含排除动作则拒绝整条，不局部删除。"""
+    policy = capabilities.get('burst_exclusions')
+    if policy is None:
+        return
+    def visit(nodes):
+        for node in nodes:
+            if node.get('kind') == 'Loop':
+                visit(node['body'])
+            for command in node.get('commands', []):
+                commands = ([action for action in command.get('actions', [])
+                             if action.get('simc_action') in command.get('members', [])]
+                            if command.get('kind') == 'castsequence' else [command])
+                if any(_excluded(action, policy) for action in commands):
+                    raise ValueError('普通循环包含当前爆发宏的动作，整条候选不可使用')
+    visit(program['nodes'])
+
+
+def compile_context(definition, character, capabilities, native_identity, folder, runtime):
+    from program import from_action_blocks, compile_program
+    blocks = prepare(definition, character, capabilities, native_identity)
+    program = from_action_blocks(blocks)
+    program['metadata'].update(purpose='burst', instructions=definition['instructions'])
+    candidate = compile_program(program, folder, identity=native_identity, runtime=runtime)
+    candidate['source'] = 'burst'
+    return dict(definition_id=definition['definition_id'], plan=definition['plan'],
+                candidate=candidate, instructions=definition['instructions'])

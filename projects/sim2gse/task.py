@@ -602,7 +602,7 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     if not diagnostic_logging:
         native.pop('action_sequence', None)
         native.pop('precombat_sequence', None)
-    candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
+    candidate = None if use_burst else compile_program(gse_program or from_action_blocks(select(capabilities, program)),
                                 destination / "export", identity=native['identity'], runtime=runtime,
                                 capabilities=capabilities, context=gse_context)
     burst_result = None
@@ -610,18 +610,18 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     input_sources = None
     times = list(range(phase_ms, 180000, interval_ms))
     if use_burst:
-        from burst import load, prepare, combined_inputs
+        from burst import load, compile_context, combined_inputs, search_capabilities
         definition = load(native['identity']['spec_id'])
         effective_character = parse_character(_read_utf8(destination / 'input.simc', description='任务输入副本')[1])
-        burst_program = from_action_blocks(prepare(definition, effective_character, capabilities, native['identity']))
-        burst_program['metadata'].update(purpose='burst', instructions=definition['instructions'])
-        burst_candidate = compile_program(burst_program, destination / 'burst-export',
-                                          identity=native['identity'], runtime=runtime)
-        burst_candidate['source'] = 'burst'
+        context = compile_context(definition, effective_character, capabilities, native['identity'],
+                                  destination / 'burst-export', runtime)
+        burst_candidate = context['candidate']
+        capabilities = search_capabilities(capabilities, burst_candidate['blocks'])
+        candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
+                                    destination / 'export', identity=native['identity'], runtime=runtime,
+                                    capabilities=capabilities, context=gse_context)
         times, input_sources = combined_inputs(times, definition, interval_ms)
-        burst_result = dict(definition_id=definition['definition_id'], plan=definition['plan'],
-                            interval_ms=interval_ms, candidate=burst_candidate,
-                            instructions=definition['instructions'])
+        burst_result = dict(context, interval_ms=interval_ms)
     burst_options = (dict(input_sources=input_sources, burst_candidate=burst_candidate)
                      if burst_candidate is not None else {})
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
@@ -765,7 +765,7 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
     return starts + added
 
 
-def _run_optimize(destination, character, *, config, runtime, simulation_config):
+def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False):
     from engine import identity, inspect, reference, damage_statistics, COMMON
     from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
@@ -813,10 +813,22 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                                     options=[*COMMON, *engine_options(simulation_config)],
                                     config=condition_config, simulation_config=simulation_config,
                                     cbor2=version('cbor2'),
-                                    rules=rules))
+                                    rules=rules, **(dict(task_category='burst_free_loop') if use_burst else {})))
+            base_condition = condition
+            if use_burst and state.get('burst'):
+                from burst import load, prepare
+                current = load(state['native']['identity']['spec_id'])
+                if current['definition_id'] != state['burst']['definition_id']:
+                    raise TaskError('恢复任务的爆发定义已变化，请创建新任务')
+                effective_character = parse_character(effective_bytes.decode('utf-8'))
+                blocks = prepare(current, effective_character, state['all_capabilities'], state['native']['identity'])
+                if blocks != state['burst']['candidate']['blocks']:
+                    raise TaskError('恢复任务的爆发程序不符，请创建新任务')
+                condition = digest(dict(base=base_condition, burst=state['burst']))
             if state.get('condition') and state['condition'] != condition:
                 raise TaskError('恢复任务的版本、配置或角色身份已变化，请创建新任务')
             state.update(condition=condition, config=config, rules=rules, engines=identities,
+                         use_burst=use_burst,
                          simulation_config=simulation_config,
                          simulation_options=engine_options(simulation_config))
             state.setdefault('phase', 'initialize')
@@ -824,6 +836,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                 if 'seed_selected_snapshot' not in state:
                     from result_store import read_records
                     scope = f"{character.class_name}-{character.spec}-{simulation_config['target_count']}"
+                    if use_burst:
+                        scope += '-burst'
                     state['seed_selected_snapshot'] = read_records('seed_selected', scope)
                     store.save()
                 # 初始化辅助进程也登记崩溃时最多单批的保守额度。
@@ -858,11 +872,25 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                     _discard_native_exchange(destination / 'reference',
                                              keep_valid=reference_valid and not reference_stored)
                 capabilities = inspect(native, destination/'capabilities')
+                if use_burst:
+                    from burst import load, compile_context, search_capabilities
+                    effective_character = parse_character(effective_bytes.decode('utf-8'))
+                    context = compile_context(load(native['identity']['spec_id']), effective_character, capabilities,
+                                              native['identity'], destination/'burst-export', runtime)
+                    context['interval_ms'] = config['input_interval_ms']
+                    state['all_capabilities'] = capabilities
+                    state['native'] = native
+                    state['burst'] = context
+                    condition = digest(dict(base=base_condition, burst=context))
+                    state['condition'] = condition
+                    capabilities = search_capabilities(capabilities, context['candidate']['blocks'])
                 starts = initial_programs(capabilities, native, config['random_seed'])
                 state['starts'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
                     targets=simulation_config['target_count'], engines=identities,
                     capabilities=capabilities, runtime=runtime)
+                if not state['starts']:
+                    raise TaskError('当前爆发排除条件下没有有效搜索起点')
                 if not config['diagnostic_logging']:
                     native.pop('action_sequence', None)
                     native.pop('precombat_sequence', None)
@@ -886,6 +914,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config)
                               character=character, output_root=destination,capabilities=state['capabilities'],
                               profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
                               reference_data_key=state.get('reference_data_key'))
+            if state.get('burst'):
+                result['burst'] = dict(state['burst'], candidate=dict(
+                    state['burst']['candidate'], simulation='passed_native_model'))
             result['elapsed_seconds'] = runtime.elapsed_seconds
             pointer = _store_run(destination, result, state=state)
             _write_json(destination/'result.json', pointer, atomic=True)
@@ -957,8 +988,6 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
-    if use_burst and mode == 'optimize':
-        raise TaskError('独立爆发尚未接入优化任务，请先使用单次评估')
     if use_burst and (search_config is None or isinstance(search_config, dict) and 'input_interval_ms' not in search_config):
         search_config = dict(search_config or {}, input_interval_ms=200)
     if resume and not _lease:
@@ -1041,7 +1070,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
                 raise TaskError(message) from error
         try:
             return _run_optimize(destination, character, config=config, runtime=runtime,
-                                 simulation_config=simulation_config)
+                                 simulation_config=simulation_config, use_burst=use_burst)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _save_failure(destination, state)
@@ -1146,6 +1175,15 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination)
         try:
             state = store.state
+            saved_burst_mode = state.get('use_burst', False)
+            if 'use_burst' in kwargs and kwargs['use_burst'] != saved_burst_mode:
+                raise TaskError('恢复任务的爆发模式发生变化，请创建新任务')
+            kwargs['use_burst'] = saved_burst_mode
+            if state.get('burst'):
+                from burst import load
+                current = load(state['native']['identity']['spec_id'])
+                if current['definition_id'] != state['burst']['definition_id']:
+                    raise TaskError('恢复任务的爆发定义已变化，请创建新任务')
             try:
                 verify_behavior_identity_state(state)
             except ValueError as error:

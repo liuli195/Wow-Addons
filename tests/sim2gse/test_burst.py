@@ -279,3 +279,116 @@ def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
                      iterations=2, trace=False, input_times=times, input_sources=sources,
                      burst_candidate=prepared['candidate'])
     assert quiet['consistent'] and not quiet['trace']
+
+
+def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path):
+    import burst
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    config = dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+                  validation_batches=2, final_batches=1, final_iterations=2,
+                  scenarios=('nominal',), diagnostic_logging=True)
+    result = task.run_task(profile, tmp_path / 'search', use_burst=True, search_config=config)
+    names = {action['simc_action'] for action in result['capabilities']['actions']}
+    assert not names.intersection({'army_of_the_dead', 'dark_transformation', 'potion',
+                                  'use_item,slot=trinket1', 'use_item,slot=trinket2'})
+    assert result['burst']['definition_id']
+    saved = task.read_task(tmp_path / 'search', include_search_records=True)
+    assert saved['burst']['candidate']['text'] == result['burst']['candidate']['text']
+    resumed = task.resume_task(tmp_path / 'search')
+    assert resumed['burst']['definition_id'] == result['burst']['definition_id']
+    # An independently reviewed definition containing only Outbreak changes the
+    # exclusion scope: the former burst buttons must become available again.
+    revised = copy.deepcopy(definition)
+    revised['version'] += '-outbreak'
+    revised['blocks'] = [[dict(kind='spell', simc_action='outbreak', name='爆发测试技能',
+                              spell_id=77575, slot=None, item_id=None)]]
+    revised['excluded_spell_ids'] = [77575]
+    burst.publish(revised)
+    changed = task.run_task(profile, tmp_path / 'changed', use_burst=True, search_config=config)
+    changed_names = {action['simc_action'] for action in changed['capabilities']['actions']}
+    assert 'outbreak' not in changed_names
+    assert {'army_of_the_dead', 'dark_transformation', 'use_item,slot=trinket1',
+            'use_item,slot=trinket2'} <= changed_names
+    assert changed['burst']['definition_id'] != result['burst']['definition_id']
+    with pytest.raises(task.TaskError, match='爆发定义已变化'):
+        task.resume_task(tmp_path / 'search')
+
+
+def test_reviewed_burst_training_rejects_entire_nested_seed_and_preserves_old_training(tmp_path):
+    import burst
+    import result_store
+    import seed_training
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    candidate = dict(candidate_id='nested-old', class_name='deathknight', spec='unholy',
+                     label='nested', source='constructed-test', original='reviewed fixture',
+                     instructions='repeat', semantic='preserved', changes=[], family='nested',
+                     core=[['outbreak']], program=[dict(kind='Loop', count=2,
+                        blocks=[['outbreak'], ['army_of_the_dead']])])
+    result_store.write('seed_candidates', 'registry', [candidate], schema=seed_training.CANDIDATE_SCHEMA)
+    legacy = dict(candidate_id='old-selected', condition='old', class_name='deathknight',
+                  spec='unholy', targets=1, program=[['army_of_the_dead']], family='old',
+                  score=1., scores=[1.], template_sha256='old', engines={})
+    result_store.write('seed_selected', 'deathknight-unholy-1', [legacy], schema=seed_training.SELECTED_SCHEMA)
+    before = result_store.read_records('seed_selected', 'deathknight-unholy-1')
+    outcome = seed_training.run_training(profile, 1, tmp_path / 'training', use_burst=True)
+    assert outcome['status'] == 'completed'
+    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
+    assert len(processed) == 1 and processed[0]['status'] == 'rejected'
+    assert json.loads(processed[0]['initial_program']) == candidate['program']
+    assert not result_store.read_records('seed_selected', 'deathknight-unholy-1-burst')
+    assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
+
+
+@pytest.mark.parametrize('program', [
+    [['army_of_the_dead']],
+    [['dark_transformation']],
+    [['use_item,slot=trinket1']],
+    [['use_item,slot=trinket2']],
+])
+def test_public_single_task_refuses_burst_content_in_ordinary_sequence(tmp_path, program):
+    import burst
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    with pytest.raises(task.TaskError, match='不支持的动作|爆发宏的动作'):
+        task.run_task(profile, tmp_path / 'single', mode='single', use_burst=True, program=program)
+
+
+def test_public_search_skips_entire_forbidden_history_structure(tmp_path):
+    import burst
+    import result_store
+    import seed_training
+    from engine import identity
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    forbidden = [dict(kind='CastSequence', members=['outbreak', 'army_of_the_dead'],
+                      reset=dict(timeout_seconds=None, flags=[]))]
+    safe = [dict(kind='Loop', count=2, blocks=[['outbreak'], ['death_coil']]),
+            dict(kind='WaitClicks', clicks=2)]
+    rows = [dict(candidate_id=key, condition='historical', class_name='deathknight', spec='unholy',
+                 targets=1, program=program, family=key, score=99999., scores=[99999.],
+                 template_sha256='historical', engines=engines)
+            for key, program in [('forbidden', forbidden), ('safe', safe)]]
+    result_store.write('seed_selected', 'deathknight-unholy-1-burst', rows,
+                       schema=seed_training.SELECTED_SCHEMA)
+    result = task.run_task(profile, tmp_path / 'history', use_burst=True,
+                           search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+                                              validation_batches=2, diagnostic_logging=True))
+    starts = result['search']['starts']
+    assert safe in starts and forbidden not in starts
+    assert [['outbreak']] not in starts  # No partial deletion of the rejected structure.
+    assert result['search_result']['dps'] != 99999.
+    for record in result['search']['records']:
+        names = {command['simc_action'] for block in record['candidate']['blocks'] for command in block}
+        assert not names.intersection({'army_of_the_dead', 'dark_transformation',
+                                       'use_item,slot=trinket1', 'use_item,slot=trinket2'})
