@@ -798,6 +798,20 @@ class SequenceSimulationTests(unittest.TestCase):
                       {entry['path'] for entry in manifest['sources']},
                       '输入时间和每轮重置尚未由独立控制源码提供')
 
+    def test_complete_controller_runs_without_the_temporary_legacy_hook(self):
+        from engine import identity
+
+        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
+        with tempfile.TemporaryDirectory() as directory:
+            result = evaluate(source, candidate, Path(directory), character=character,
+                              iterations=2, input_times=[0, 300, 600, 900], trace=False)
+        self.assertTrue(result['consistent'])
+        self.assertEqual(result['trace'], [])
+        _, manifest = identity('controlled')
+        self.assertFalse(any('temporary-legacy-controller' in entry['path']
+                             for entry in manifest['patches']),
+                         '构建仍使用暂存旧控制补丁，尚未采用完整独立控制模块')
+
     def test_disabled_controller_matches_original(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate, source, character = self.candidate(self.prepared, [['outbreak']])
