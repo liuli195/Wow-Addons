@@ -599,6 +599,7 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
     import seed_training
     from test_character_export import sample_profile
 
+    entrypoints = (engine.reference, engine.inspect)
     definition = json.loads(Path('projects/sim2gse/burst/unholy.json').read_text(encoding='utf-8'))
     reset = dict(timeout_seconds=3, flags=['target'])
     original = [
@@ -652,20 +653,20 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
     history_before = result_store.read_records('candidates', 'historical-program')
     args = ['--project', str(tmp_path), 'run', '--template', str(template), '--targets', '1',
             '--workspace', str(tmp_path / 'work')]
-    with training_boundary():
+    with training_boundary(), monkeypatch.context() as guarded:
         inspect = engine.inspect
         def full_catalogue(*args, **kwargs):
             capabilities = inspect(*args, **kwargs)
             capabilities['actions'].append(dict(kind='item', slot=14, item_id=250228,
                 simc_action='use_item,slot=trinket2', name='使用trinket2', gcd_ms=0))
             return capabilities
-        monkeypatch.setattr(engine, 'inspect', full_catalogue)
+        guarded.setattr(engine, 'inspect', full_catalogue)
         reference = engine.reference
         def burst_reference(*args, **kwargs):
             native = reference(*args, **kwargs)
             native['identity']['data_version'] = definition['data_version']
             return native
-        monkeypatch.setattr(engine, 'reference', burst_reference)
+        guarded.setattr(engine, 'reference', burst_reference)
         assert seed_training.main(args) == 0
     assert seed_training.main(['--project', str(tmp_path), 'list', '--state', 'processed']) == 0
     records = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -695,3 +696,5 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
             assert json.loads(capsys.readouterr().out)[0]['processed'] == 0
     assert result_store.read_records('seed_candidates', 'registry') == source_before
     assert result_store.read_records('candidates', 'historical-program') == history_before
+    monkeypatch.undo()
+    assert (engine.reference, engine.inspect) == entrypoints
