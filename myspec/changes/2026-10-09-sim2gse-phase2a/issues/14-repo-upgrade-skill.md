@@ -1,6 +1,6 @@
 # 14：本仓库两端升级技能与轻量核验
 
-Status（状态）: blocked（代码、轻量验证及双轴通过；两端实调受模型/余额阻塞）
+Status（状态）: done（代码、轻量验证及双轴通过；用户确认两端实调不阻塞15票）
 Triage（分拣）: ready-for-agent
 Blocked by（前置）: 13的共用准备入口完成验收
 
@@ -27,3 +27,5 @@ Blocked by（前置）: 13的共用准备入口完成验收
 2026-10-10实施：020a953→a835fa9新增仓库技能真身、两个只读脚本、Claude目录联接忽略及字段点读；a835fa9→7b75e01修复普通字符串比较及完整复测127有效样本校验，并共用训练条件计算。GPT-6.1-Sol高规范/需求双轴复核通过。25相关检查通过；固定全局基线37组统一验证通过，预算未改。直接前检查返回ready；后核验实际点读12票旧页面任务并以退出2拒绝“页面引擎身份过期”。证据在`.local/sim2gse/phase2a-regression/ticket14-{related-repair,verify-repaired,real-precheck,real-old-rejection-repaired}.log`。
 
 2026-10-10外部阻塞：两端均实际启动命令行调用。Claude初始化的skills/slash_commands列表含sim2gse-upgrade，但执行前返回402 Insufficient Balance；Codex账号返回当前gpt-6.1-sol模型不支持并退出1。原始日志为`ticket14-{codex,claude}-client.jsonl`。没有修改账号配置、付费、换供应商或绕过验收。目录联接和发现列表不算实调通过，14票暂不验收，严格串行的15票不启动；恢复客户端可用状态后从两端实调步骤继续。新版训练成功链及游戏验收仍未运行。
+
+2026-10-10最新指示：用户确认审查完成后进入15票。上述两端真实调用保留未完成事实，不再作为15票前置阻塞；不得改写为实调通过。第14票代码及修复双轴均通过，最终统一验证37组通过，记录`ticket14-closeout-verify.log`。
