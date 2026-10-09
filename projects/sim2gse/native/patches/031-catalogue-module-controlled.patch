@@ -1,0 +1,140 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -4,6 +4,7 @@
+ // ==========================================================================
+ 
+ #include "interfaces/sc_js.hpp"
++#include "sim2gse/catalogue.hpp"
+ #include "rapidjson/document.h"
+ #include "rapidjson/filewritestream.h"
+ #include "rapidjson/prettywriter.h"
+@@ -305,9 +306,7 @@
+ 
+     // find action for this stat
+     action_t* a = nullptr;
+-    node[ "sim2gse_actor_index" ] = s->player->actor_index;
+-    node[ "sim2gse_actor_name" ] = s->player->name_str;
+-    node[ "sim2gse_owner_type" ] = s->player->is_pet() ? "owned_unit" : "player";
++    sim2gse::write_damage_owner( node, *s );
+     for ( const auto& action : s->action_list )
+     {
+       if ( ( a = action )->id > 1 )
+@@ -861,75 +860,7 @@
+   collected_data_to_json( root[ "collected_data" ], report_configuration, p );
+ 
+   // Expose existing whole-run counters and native identity; no simulation decisions change.
+-  root[ "sim2gse_class" ] = util::player_type_string( p.type );
+-  root[ "sim2gse_class_id" ] = util::class_id( p.type );
+-  root[ "sim2gse_spec_id" ] = static_cast<unsigned>( p.specialization() );
+-  root[ "sim2gse_spec" ] = dbc::specialization_string( p.specialization() );
+-  root[ "sim2gse_resource" ] = util::resource_type_string( p.primary_resource() );
+-  root[ "sim2gse_actions_protocol" ] = 1;
+-  auto actions = root[ "sim2gse_actions" ];
+-  actions.make_array();
+-  for ( const auto* a : p.action_list )
+-  {
+-    if ( !a->total_executions ) continue;
+-    auto row = actions.add();
+-    row[ "name" ] = a->name_str;
+-    row[ "id" ] = a->id;
+-    row[ "data_id" ] = a->data().id();
+-    row[ "base_spell_id" ] = p.sim2gse_base_spell_id( a->data().id() );
+-    row[ "data_valid" ] = a->data().ok();
+-    row[ "signature" ] = a->signature_str;
+-    row[ "executions" ] = a->total_executions;
+-    row[ "type" ] = util::action_type_string( a->type );
+-    row[ "background" ] = a->background;
+-    row[ "quiet" ] = a->quiet;
+-    row[ "harmful" ] = a->harmful;
+-    row[ "player_owned" ] = a->player == &p && !p.is_pet();
+-    row[ "passive" ] = a->data().flags( SX_PASSIVE );
+-    row[ "action_list" ] = a->action_list ? a->action_list->name_str : "";
+-    row[ "precombat" ] = a->is_precombat;
+-    row[ "gcd_ms" ] = a->trigger_gcd.total_millis();
+-    row[ "cast_ms" ] = a->execute_time().total_millis();
+-    row[ "channeled" ] = a->channeled;
+-  }
+-  auto precombat_actions = root[ "sim2gse_precombat_actions" ];
+-  precombat_actions.make_array();
+-  for ( const auto* a : p.precombat_action_list )
+-  {
+-    auto row = precombat_actions.add();
+-    row[ "name" ] = a->name_str;
+-    row[ "id" ] = a->id;
+-    row[ "data_id" ] = a->data().id();
+-    row[ "base_spell_id" ] = p.sim2gse_base_spell_id( a->data().id() );
+-    row[ "data_valid" ] = a->data().ok();
+-    row[ "signature" ] = a->signature_str;
+-    row[ "executions" ] = a->total_executions;
+-    row[ "type" ] = util::action_type_string( a->type );
+-    row[ "background" ] = a->background;
+-    row[ "quiet" ] = a->quiet;
+-    row[ "harmful" ] = a->harmful;
+-    row[ "player_owned" ] = a->player == &p && !p.is_pet();
+-    row[ "passive" ] = a->data().flags( SX_PASSIVE );
+-    row[ "action_list" ] = a->action_list ? a->action_list->name_str : "";
+-    row[ "precombat" ] = true;
+-    row[ "gcd_ms" ] = a->trigger_gcd.total_millis();
+-    row[ "cast_ms" ] = a->execute_time().total_millis();
+-    row[ "channeled" ] = a->channeled;
+-  }
+-  auto items = root[ "sim2gse_items" ];
+-  items.make_array();
+-  for ( const auto& item : p.items )
+-  {
+-    const auto* effect = item.special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE );
+-    if ( !effect ) continue;
+-    auto row = items.add();
+-    row[ "slot" ] = item.slot_name();
+-    row[ "id" ] = item.parsed.data.id;
+-    row[ "driver_spell_id" ] = effect->driver()->id();
+-    row[ "name" ] = item.name_str;
+-    row[ "channeled" ] = ( effect->execute_action && effect->execute_action->channeled ) ||
+-      effect->driver()->flags( SX_CHANNELED ) || effect->driver()->flags( SX_CHANNELED_2 );
+-  }
++  sim2gse::write_player_report( root, p, false );
+ 
+   if ( p.sim->report_details != 0 )
+   {
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -3,6 +3,7 @@
+ // Send questions to natehieter@gmail.com
+ // ==========================================================================
+ #include "player.hpp"
++#include "sim2gse/catalogue.hpp"
+ 
+ #include "action/action.hpp"
+ #include "action/action_callback.hpp"
+@@ -5054,20 +5055,7 @@
+ 
+ unsigned player_t::sim2gse_base_spell_id( unsigned id ) const
+ {
+-  std::set<unsigned> seen;
+-  while (id && seen.insert(id).second)
+-  {
+-    unsigned base = id;
+-    for (const auto* buff : buff_list)
+-      for (const auto& effect : buff->data().effects())
+-        if (effect.type() == E_APPLY_AURA &&
+-            (effect.subtype() == A_OVERRIDE_ACTION_SPELL || effect.subtype() == A_OVERRIDE_ACTION_SPELL_TRIGGERED) &&
+-            effect.base_value() == id && effect.misc_value1() > 0)
+-          base = static_cast<unsigned>(effect.misc_value1());
+-    if (base == id) return id;
+-    id = base;
+-  }
+-  return 0;
++  return sim2gse::base_spell_id( *this, id );
+ }
+ 
+ void player_t::init_finished()
+--- a/engine/Makefile
++++ b/engine/Makefile
+@@ -196,6 +196,7 @@
+ 
+ include ../source_files/engine_make
+ include ../source_files/engine_main_make
++SRC += sim2gse$(PATHSEP)catalogue.cpp sim2gse$(PATHSEP)catalogue.hpp
+ 
+ ifneq (,${GIT})
+   OPTS_INTERNAL += -DSC_GIT_REV="\"$(shell ${GIT} rev-parse --short HEAD)\""

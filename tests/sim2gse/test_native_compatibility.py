@@ -132,3 +132,21 @@ class NativeComparisonTests(unittest.TestCase):
                     combat = [battle_report(report) for report in reports]
                     self.assertEqual(combat[0], combat[1])
                     self.assertEqual(combat[1], combat[2])
+
+
+class NativeCatalogueTests(unittest.TestCase):
+    def test_reference_catalogue_is_backed_by_the_shared_checked_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            profile = folder / 'sample.simc'
+            profile.write_text(sample_profile(), encoding='utf-8')
+            native = engine.reference(profile, folder / 'reference', parse_character(sample_profile()), iterations=2)
+            capabilities = engine.inspect(native, folder / 'capabilities')
+            self.assertTrue(capabilities['actions'])
+            for mode in ('baseline', 'controlled'):
+                _, manifest = engine.identity(mode)
+                self.assertTrue({
+                    'projects/sim2gse/native/src/catalogue.hpp',
+                    'projects/sim2gse/native/src/catalogue.cpp',
+                }.issubset({entry['path'] for entry in manifest['sources']}),
+                    '报告和目录尚未由共用、受身份校验的源码提供')
