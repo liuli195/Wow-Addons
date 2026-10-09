@@ -1,5 +1,7 @@
 {
   "protocol": 1,
+  "build_protocol": 2,
+  "sources": [],
   "upstream_commit": "b845947a34429874433d8e9362326894650dd20a",
   "upstream_tree": "a76e304d4b409e475ebec43177728d2489da6142",
   "patches": [

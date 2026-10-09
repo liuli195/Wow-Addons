@@ -6,8 +6,11 @@ import os
 import subprocess
 import sys
 import zipfile
+import shutil
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'projects/sim2gse'))
+from native_build import own_sources, build_identity, identity_digest, source_directory
 
 
 def digest(path):
@@ -34,7 +37,7 @@ def main():
     commit = verify_upstream(upstream, lock)
     archive = ROOT / '.local/sim2gse/build/upstream.zip'
     archive.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(['git', 'archive', '--format=zip', '--prefix=simc/', f'--output={archive}', commit],
+    subprocess.run(['git', '-c', 'core.autocrlf=false', 'archive', '--format=zip', '--prefix=simc/', f'--output={archive}', commit],
                    cwd=upstream, check=True)
     env = os.environ.copy()
     msys2 = Path(env.get('MSYS2_LOCATION', 'C:/msys64'))
@@ -42,13 +45,14 @@ def main():
     env['PATH'] = str(toolchain) + os.pathsep + env['PATH']
     env['GIT_CEILING_DIRECTORIES'] = str(ROOT / '.tools/sim2gse')
     tool = toolchain / 'mingw32-make.exe'
-    for mode in ('baseline', 'controlled'):
-        source = ROOT / '.tools/sim2gse/product' / mode
+    compiler = digest(toolchain / 'g++.exe')
+    for mode in ('original', 'baseline', 'controlled'):
+        sources = own_sources(ROOT, lock, mode)
+        identity = build_identity(lock, mode, compiler)
+        source = source_directory(ROOT, identity)
         output = ROOT / '.local/sim2gse/build' / mode
         output.mkdir(parents=True, exist_ok=True)
-        patches = lock['patches'] if mode == 'controlled' else lock['baseline_patches']
-        identity = dict(upstream_commit=lock['upstream_commit'], upstream_tree=lock['upstream_tree'], patches=patches,
-                        build_options=lock['build_options'])
+        patches = identity['patches']
         marker = source / 'source-identity.json'
         if not marker.exists():
             if source.exists() and any(source.iterdir()):
@@ -72,6 +76,10 @@ def main():
                 patch_bytes = path.read_bytes().replace(b'\r\n', b'\n')
                 subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', '--check', '-'], input=patch_bytes, cwd=source, check=True, env=env)
                 subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', '-'], input=patch_bytes, cwd=source, check=True, env=env)
+            for entry in sources:
+                target = source / entry['destination']
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / entry['path']).read_bytes().replace(b'\r\n', b'\n'))
             marker.write_text(json.dumps(identity, indent=2), encoding='utf-8')
         if json.loads(marker.read_text()) != identity:
             raise ValueError(f'源码身份已变化，需要新的独立构建目录: {source}')
@@ -82,18 +90,24 @@ def main():
                     continue
                 key = relative.as_posix()
                 patched = (lock.get('baseline_patched_files', {}) if mode == 'baseline' else
-                           lock.get('patched_files', {}))
+                           lock.get('patched_files', {}) if mode == 'controlled' else {})
                 expected = patched.get(key)
                 expected = expected or hashlib.sha256(zipped.read(entry)).hexdigest()
                 if digest(source / relative) != expected:
                     raise ValueError(f'源码与固定归档/补丁不符: {key}')
+        for entry in sources:
+            if patch_digest(source / entry['destination']) != entry['sha256']:
+                raise ValueError('复制的自有源码与兼容锁不符')
         command = [str(tool), '-j4', *lock['build_options']]
         with (output / 'build.log').open('w') as log:
             result = subprocess.run(command, cwd=source / 'engine', env=env, stdout=log, stderr=subprocess.STDOUT)
         manifest = dict(identity, exit_code=result.returncode, command=command,
-                        compiler_sha256=digest(toolchain / 'g++.exe'))
+                        identity_sha256=identity_digest(identity),
+                        executable=(output / 'simc.exe').relative_to(ROOT).as_posix())
         if not result.returncode:
             manifest['binary_sha256'] = digest(source / 'engine/simc.exe')
+            shutil.copy2(source / 'engine/simc.exe', output / 'simc.pending.exe')
+            (output / 'simc.pending.exe').replace(output / 'simc.exe')
         (output / 'build.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         print(f'{mode}: exit={result.returncode}', flush=True)
         if result.returncode:
