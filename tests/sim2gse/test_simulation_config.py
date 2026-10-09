@@ -232,7 +232,7 @@ class SimulationConfigTests(unittest.TestCase):
                 "players": [player],
                 "targets": [{}, {}],
                 "statistics": {"raid_dps": {"mean": 100.0, "count": 99}},
-                "options": {"dbc": {"Live": {"build_level": 69587}, "version_used": "Live"}},
+                "options": {"dbc": {"Live": {"build_level": 69587, "wow_version": "12.1.0.69587"}, "version_used": "Live"}},
             }
         }
 
@@ -248,7 +248,8 @@ class SimulationConfigTests(unittest.TestCase):
         observed = []
         report = {
             "sim": {
-                "players": [{}, {}],
+                "players": [{"name": "test", "sim2gse_class": "mage",
+                             "sim2gse_skipped_commands": []}, {"name": "other"}],
                 "targets": [{}, {}],
                 "statistics": {"raid_dps": {"mean": 100.0, "count": 1}},
             }
@@ -273,7 +274,7 @@ class SimulationConfigTests(unittest.TestCase):
             with patch.object(sequence, "run", side_effect=fake_run), \
                     patch.object(sequence, "check_report", return_value={"dps": 100.0, "samples": 1}):
                 sequence.evaluate(profile, candidate, Path(directory) / "run",
-                                  character=SimpleNamespace(), trace=False,
+                                  character=SimpleNamespace(name="test", class_name="mage"), trace=False,
                                   simulation_config=config)
 
         self.assertEqual(observed, [config])

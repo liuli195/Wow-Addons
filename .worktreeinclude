@@ -1,5 +1,5 @@
 # Codex managed worktrees: minimum shared local dependencies for full repository validation.
-# Task outputs/evidence remain isolated except the two Sim2GSE build identity inputs below.
+# Task outputs/evidence remain isolated except Sim2GSE verification binaries and identities.
 .venv/
 .tools/lua-5.1.5/
 .tools/luals/
@@ -12,3 +12,7 @@
 .tools/sim2gse/product/controlled/engine/simc.exe
 .local/sim2gse/build/baseline/build.json
 .local/sim2gse/build/controlled/build.json
+.local/sim2gse/build/original/build.json
+.local/sim2gse/build/original/simc.exe
+.local/sim2gse/build/baseline/simc.exe
+.local/sim2gse/build/controlled/simc.exe

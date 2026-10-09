@@ -28,12 +28,19 @@
 
 ```powershell
 .venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" register "清洗件.json"
+.venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" check
 .venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" run
 .venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" list --state selected --targets 1
 .venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" list --state processed --targets 5
 ```
 
-默认依次处理1和5目标；`--targets 1`可以只处理单体。默认模板来自锁定引擎配套邪恶角色。完整模板供真实模拟使用，身份解析副本不参与伤害模拟。实际沿用项目原生参数，包括关闭消耗品；模板、引擎、规则和实际参数均进入处理身份，不与外部默认报告成绩混排。
+专项验收可在`run`命令重复传入`--candidate-id <已登记材料编号>`，只处理这些明确材料，避免全量训练。默认仍读取全部待处理材料及历史起点。错误、不可表达或角色不匹配的编号在真实计算前拒绝；每件600秒预算、连续两轮无改善及三种子128轮独立复测不变。新复测批次保存引擎、条件及程序身份摘要，升级核验只读摘要即可核对来源。
+
+默认依次处理1和5目标；`--targets 1`可以只处理单体。默认模板从当前受检构建定位，不读取历史产品目录。完整模板供真实模拟使用，身份解析副本不参与伤害模拟。模板、引擎、规则和实际参数均进入处理身份，不与外部默认报告成绩混排。
+
+先运行check（只读检查），它核对文件、引擎身份与本专精的审核定义，不启动模拟、不替代实际引擎核验。run（运行）和list（查询）默认使用独立爆发模式。爆发宏按专精固定，不按角色天赋或装备调整；训练、页面正式模拟和独立复测都由受控引擎跳过明确未学的技能、被动饰品和空槽，保留完整宏及按键位置。冷却、资源限制仍由引擎判断；未知或无法模拟的动作报错。普通循环仍排除完整爆发宏的内容。需要历史无爆发模式时，对run、check或list显式加`--legacy`（历史模式）；只有该模式保留关闭消耗品的历史规则。`--template`（角色文件）明确指定外部模板，完整内容保存并纳入本次条件。
+
+本次入口修改不等于全库新版训练完成。小规模真实训练到页面的验收独立运行，不进入每次仓库测试；之后需要整库新版成果时再分批处理原材料。
 
 每个候选独立搜索，连续两个完整轮次没有确认改善才停止；有确认改善就清零，因此可以超过五轮。每轮最多16候选、每个候选600秒搜索上限和候选总上限保持。无法产生新合法候选也正常结束；预算、候选上限或取消提前结束不算训练收敛，不更新入选库。之后以三个固定独立随机条件复测，成绩代表只在可信提升时替换；不同家族可保留复测过的初始结构，最多4个新增代表。日志起手不自动认定为循环，清洗者需确认核心与回绕含义。
 

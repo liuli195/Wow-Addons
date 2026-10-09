@@ -60,7 +60,7 @@ def main():
         for node in ast.walk(build_source)
         if isinstance(node, ast.For) and isinstance(node.target, ast.Name) and node.target.id == 'mode'
     ]
-    assert build_modes == [('baseline', 'controlled')], '默认构建只准备基准与受控引擎'
+    assert build_modes == [('original', 'baseline', 'controlled')], '默认构建包含未修改原版验证产物和两种产品引擎'
     local_checks = []
     for check in config['verify']['checks']:
         command = str(check['command']).replace('\\', '/')

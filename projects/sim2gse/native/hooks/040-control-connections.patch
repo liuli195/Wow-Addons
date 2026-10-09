@@ -1,0 +1,594 @@
+--- a/engine/Makefile
++++ b/engine/Makefile
+@@ -197,6 +197,7 @@
+ include ../source_files/engine_make
+ include ../source_files/engine_main_make
+ SRC += sim2gse$(PATHSEP)catalogue.cpp sim2gse$(PATHSEP)catalogue.hpp
++SRC += sim2gse$(PATHSEP)controller.cpp sim2gse$(PATHSEP)controller.hpp
+ 
+ ifneq (,${GIT})
+   OPTS_INTERNAL += -DSC_GIT_REV="\"$(shell ${GIT} rev-parse --short HEAD)\""
+--- a/engine/action/action.cpp
++++ b/engine/action/action.cpp
+@@ -44,7 +44,7 @@
+  * (instead of going through schedule_execute processing), and parts of our execution chain where
+  * relevant (e.g., line cooldown, stats tracking, gcd triggering for cast while casting).
+  */
+-void do_execute( action_t* action, execute_type type )
++void do_execute( action_t* action, execute_type type, unsigned sim2gse_origin )
+ {
+   // Schedule off gcd or cast while casting ready event before the action executes.
+   // This prevents the action from scheduling ready events with non-zero delay
+@@ -62,6 +62,8 @@
+   // If this is the case, we shouldn't continue with attempting to execute it
+   if ( !action->target_ready( action->target ) )
+   {
++    if (action->player->sim2gse_control.enabled())
++      action->player->sim2gse_control.notify("dispatch_failed", action, sim2gse_origin);
+     action->sim->print_debug( "{} skipping queued do_execute for {} due to failing target_ready() check", *action->player, *action );
+   }
+   else
+@@ -81,6 +83,8 @@
+       action->player->sequence_add( action, action->target );
+     }
+ 
++    if (action->player->sim2gse_control.enabled())
++      action->player->sim2gse_control.notify(action->is_precombat ? "native_precombat" : "native_execute", action, sim2gse_origin);
+     action->execute();
+     action->line_cooldown->start();
+ 
+@@ -98,9 +102,11 @@
+ {
+   action_t* action;
+   execute_type type;
+-
+-  queued_action_execute_event_t( action_t* a, timespan_t t, execute_type type_ )
+-    : event_t( *a->sim, t ), action( a ), type( type_ )
++  unsigned sim2gse_origin;
++
++  queued_action_execute_event_t( action_t* a, timespan_t t, execute_type type_, unsigned origin = 0 )
++    : event_t( *a->sim, t ), action( a ), type( type_ ),
++      sim2gse_origin(origin ? origin : a->player->sim2gse_control.origin())
+   { }
+ 
+   const char* name() const override
+@@ -124,7 +130,7 @@
+     if ( action->cooldown->charges > 1 && action->cooldown->current_charge == 0 && action->cooldown->recharge_event &&
+          action->cooldown->recharge_event->remains() == timespan_t::zero() )
+     {
+-      action->queue_event = make_event<queued_action_execute_event_t>( sim(), action, timespan_t::zero(), type );
++      action->queue_event = make_event<queued_action_execute_event_t>( sim(), action, timespan_t::zero(), type, sim2gse_origin );
+       // Note, processing ends here
+       return;
+     }
+@@ -134,6 +140,8 @@
+       player_t* actor = action->player;
+       if ( !action->ready() || !action->target_ready( action->target ) )
+       {
++        if (actor->sim2gse_control.enabled())
++          actor->sim2gse_control.notify("dispatch_failed", action, sim2gse_origin);
+         if ( action->starved_proc )
+         {
+           action->starved_proc->occur();
+@@ -169,13 +177,15 @@
+       }
+       else
+       {
++        const auto previous_origin = actor->sim2gse_control.exchange_origin( sim2gse_origin );
+         action->schedule_execute();
++        actor->sim2gse_control.exchange_origin( previous_origin );
+       }
+     }
+     // Other execute types are specialized, and need separate handling
+     else
+     {
+-      do_execute( action, type );
++      do_execute( action, type, sim2gse_origin );
+     }
+   }
+ };
+@@ -187,12 +197,14 @@
+   action_t* action;
+   action_state_t* execute_state;
+   bool has_cast_time;
++  unsigned sim2gse_origin;
+ 
+   action_execute_event_t( action_t* a, timespan_t time_to_execute, action_state_t* state = nullptr )
+     : player_event_t( *a->player, time_to_execute ),
+       action( a ),
+       execute_state( state ),
+-      has_cast_time( time_to_execute > timespan_t::zero() )
++      has_cast_time( time_to_execute > timespan_t::zero() ),
++      sim2gse_origin(a->player->sim2gse_control.origin())
+   {
+     if ( sim().debug )
+     {
+@@ -264,10 +276,14 @@
+       // Action target must follow any potential pre-execute-state target if it differs from the
+       // current (default) target of the action.
+       action->set_target( target );
++      if (p()->sim2gse_control.enabled() && !action->background)
++        p()->sim2gse_control.notify(action->is_precombat ? "native_precombat" : "native_execute", action, sim2gse_origin);
+       action->execute();
+     }
+     else
+     {
++      if (p()->sim2gse_control.enabled() && !action->background)
++        p()->sim2gse_control.notify("dispatch_failed", action, sim2gse_origin);
+       // Release assigned pre_execute_state, since we are not calling action->execute() (that does
+       // it automatically)
+       if ( action->pre_execute_state )
+@@ -2193,7 +2209,7 @@
+       }
+       else
+       {
+-        do_execute( this, et );
++        do_execute( this, et, player->sim2gse_control.origin() );
+       }
+     }
+   }
+@@ -2283,7 +2299,7 @@
+       player->schedule_cwc_ready( timespan_t::zero() );
+     }
+ 
+-    if ( player->enable_spell_queue && time_to_execute > player->spell_queue_window )
++    if ( !player->sim2gse_control.enabled() && player->enable_spell_queue && time_to_execute > player->spell_queue_window )
+     {
+       if ( player->spell_queue_event )
+         event_t::cancel( player->spell_queue_event );
+@@ -2640,7 +2656,7 @@
+ bool action_t::ready()
+ {
+   // Check conditions that do NOT pertain to the target before cycle_targets
+-  if ( !cooldown->is_ready() )
++  if ( !sim2gse_ignore_cooldown_ready && !cooldown->is_ready() )
+     return false;
+ 
+   if ( internal_cooldown->down() )
+@@ -3079,6 +3095,10 @@
+ 
+ void action_t::cancel()
+ {
++  if ( player->sim2gse_control.enabled() && player->executing == this && execute_event )
++    player->sim2gse_control.notify("native_interrupt", this,
++      debug_cast<action_execute_event_t*>(execute_event)->sim2gse_origin);
++
+   sim->print_debug( "{} {} is canceled", *player, *this );
+ 
+   if ( channeled )
+@@ -3116,6 +3136,10 @@
+ 
+ void action_t::interrupt_action()
+ {
++  if ( player->sim2gse_control.enabled() && player->executing == this && execute_event )
++    player->sim2gse_control.notify("native_interrupt", this,
++      debug_cast<action_execute_event_t*>(execute_event)->sim2gse_origin);
++
+   sim->print_debug( "{} {} is interrupted", *player, *this );
+ 
+   if ( player->executing == this )
+@@ -5094,9 +5118,10 @@
+   else
+   {
+     execute_type et = debug_cast<queued_action_execute_event_t*>( queue_event )->type;
++    unsigned origin = debug_cast<queued_action_execute_event_t*>( queue_event )->sim2gse_origin;
+ 
+     event_t::cancel( queue_event );
+-    queue_event = make_event<queued_action_execute_event_t>( *sim, this, new_queue_delay, et );
++    queue_event = make_event<queued_action_execute_event_t>( *sim, this, new_queue_delay, et, origin );
+   }
+ }
+ rng::rng_t& action_t::rng()
+--- a/engine/action/action.hpp
++++ b/engine/action/action.hpp
+@@ -181,6 +181,9 @@
+   /// True if the action can be queued while it is already casting.
+   bool cooldown_allow_casting_success;
+ 
++  /// Sim2GSE queue probe: preserve every readiness condition except the primary cooldown.
++  bool sim2gse_ignore_cooldown_ready = false;
++
+   /// False if channeled action does not reschedule autoattacks, used on abilities such as bladestorm.
+   bool interrupt_auto_attack;
+ 
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -1,4 +1,4 @@
+-﻿// ==========================================================================
++// ==========================================================================
+ // Dedmonwakeen's Raid DPS/TPS Simulator.
+ // Send questions to natehieter@gmail.com
+ // ==========================================================================
+@@ -4138,6 +4138,8 @@
+ 
+ void player_t::create_actions()
+ {
++  const auto* sequence_list = find_action_priority_list("sim2gse");
++  const std::string sequence_actions = sequence_list ? sequence_list->action_list_str : "";
+   if( is_player() && !is_enemy() && !is_pet() )
+     consumable::create_consumeable_actions( this );
+ 
+@@ -4160,6 +4162,9 @@
+       std::throw_with_nested( sc_initialization_error( "Invalid action list" ) );
+     }
+   }
++
++  if (sim2gse_control.enabled())
++    get_action_priority_list("sim2gse")->action_list_str = sequence_actions;
+ 
+   std::string modify_action_options;
+ 
+@@ -4214,3 +4219,6 @@
+     for ( auto& action_priority : apl->action_list )
+     {
++      if ( apl->name_str == "sim2gse" && sim2gse_control.enabled() &&
++           !sim2gse_control.unavailable_reason( action_priority.action_ ).empty() )
++        continue;
+       std::string& action_str = action_priority.action_;
+@@ -4494,131 +4502,9 @@
+   return sim2gse::base_spell_id( *this, id );
+ }
+ 
+-void player_t::create_import_action_probes()
+-{
+-  sim2gse_import_actions.clear();
+-  if ( is_pet() )
+-    return;
+-
+-  std::set<unsigned> requested_spell_ids;
+-  for ( const auto& id_text : util::string_split( sim2gse_action_ids, "," ) )
+-  {
+-    int parsed_id = 0;
+-    try
+-    {
+-      parsed_id = util::to_int( id_text );
+-    }
+-    catch ( const std::exception& )
+-    {
+-      continue;
+-    }
+-    if ( parsed_id > 0 )
+-      requested_spell_ids.insert( static_cast<unsigned>( parsed_id ) );
+-  }
+-
+-  auto hex_value = []( char value ) {
+-    if ( value >= '0' && value <= '9' ) return value - '0';
+-    if ( value >= 'a' && value <= 'f' ) return value - 'a' + 10;
+-    if ( value >= 'A' && value <= 'F' ) return value - 'A' + 10;
+-    return -1;
+-  };
+-  for ( const auto& encoded_name : util::string_split( sim2gse_action_names_hex, "," ) )
+-  {
+-    if ( encoded_name.empty() || encoded_name.size() > 256 || encoded_name.size() % 2 != 0 )
+-      continue;
+-    std::string name;
+-    bool valid = true;
+-    for ( size_t i = 0; i < encoded_name.size(); i += 2 )
+-    {
+-      const int high = hex_value( encoded_name[ i ] );
+-      const int low = hex_value( encoded_name[ i + 1 ] );
+-      if ( high < 0 || low < 0 )
+-      {
+-        valid = false;
+-        break;
+-      }
+-      const char decoded = static_cast<char>( ( high << 4 ) | low );
+-      if ( decoded == '\0' || static_cast<unsigned char>( decoded ) < 32 ||
+-           static_cast<unsigned char>( decoded ) == 127 )
+-      {
+-        valid = false;
+-        break;
+-      }
+-      name.push_back( decoded );
+-    }
+-    if ( !valid || name.empty() )
+-      continue;
+-    const auto* spell = find_spell( name, specialization() );
+-    if ( spell->ok() && spell->is_level( true_level ) )
+-      requested_spell_ids.insert( spell->id() );
+-  }
+-
+-  for ( const unsigned spell_id : requested_spell_ids )
+-  {
+-    for ( const auto& action_name : action_names_from_spell_id( spell_id ) )
+-    {
+-      action_t* action = nullptr;
+-      auto existing = range::find_if( action_list, [ this, &action_name ]( const action_t* candidate ) {
+-        return candidate->player == this && candidate->name_str == action_name && !candidate->background;
+-      } );
+-      if ( existing != action_list.end() )
+-      {
+-        action = *existing;
+-      }
+-      else
+-      {
+-        try
+-        {
+-          action = create_action( action_name, "" );
+-        }
+-        catch ( const std::exception& )
+-        {
+-          continue;
+-        }
+-      }
+-      if ( !action || action->player != this || action->background || action->quiet ||
+-           !action->data().ok() || !action->data().is_level( true_level ) ||
+-           action->data().flags( SX_PASSIVE ) )
+-        continue;
+-
+-      const unsigned native_spell_id = action->data().id();
+-      bool selected_talent = false;
+-      bool unselected_talent = false;
+-      for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
+-      {
+-        for ( const unsigned candidate_id : { spell_id, native_spell_id } )
+-        {
+-          const auto talent = find_talent_spell( tree, candidate_id, specialization() );
+-          if ( !talent.invalid() )
+-          {
+-            selected_talent = selected_talent || talent.enabled();
+-            unselected_talent = unselected_talent || !talent.enabled();
+-          }
+-        }
+-      }
+-      if ( unselected_talent )
+-        continue;
+-
+-      const auto* action_spell_name = action->data().name_cstr();
+-      const bool class_spell = find_class_spell( action_spell_name, specialization() )->id() == native_spell_id;
+-      const bool specialization_spell =
+-        find_specialization_spell( native_spell_id, specialization() )->id() == native_spell_id;
+-      const bool racial_spell = find_racial_spell( action_spell_name )->id() == native_spell_id;
+-      if ( !class_spell && !specialization_spell && !racial_spell && !selected_talent )
+-        continue;
+-
+-      const bool duplicate = range::find_if( sim2gse_import_actions,
+-        [ spell_id, action ]( const auto& candidate ) {
+-          return candidate.first == spell_id && candidate.second == action;
+-        } ) != sim2gse_import_actions.end();
+-      if ( !duplicate )
+-        sim2gse_import_actions.emplace_back( spell_id, action );
+-    }
+-  }
+-}
+-
+ void player_t::init_finished()
+ {
++  sim2gse_control.initialize( *this );
+   // Add dynamic cooldowns first before action_t::init_finished so actions can adjust their behavior accordingly if
+   // necessary.
+   range::for_each( cooldown_list, [ this ]( cooldown_t* c ) {
+@@ -6283,6 +6166,7 @@
+     {
+       if ( action->action_ready() )
+       {
++        sim2gse_control.precombat( *action, sim2gse::precombat_phase::before );
+         if ( action->harmful )
+         {
+           if ( first_cast )
+@@ -6291,6 +6175,7 @@
+               sequence_add( action, action->target );
+ 
+             action->execute();
++            sim2gse_control.precombat( *action, sim2gse::precombat_phase::after );
+             first_cast = false;
+           }
+           else
+@@ -6304,6 +6189,7 @@
+             sequence_add( action, action->target );
+ 
+           action->execute();
++          sim2gse_control.precombat( *action, sim2gse::precombat_phase::after );
+         }
+       }
+       if ( in_combat && ( action->channeled || action->travel_time() == timespan_t::zero() ) )
+@@ -6311,6 +6197,8 @@
+     }
+   }
+   first_cast = false;
++
++  sim2gse_control.start( *this );
+ 
+   sim->print_debug( "Combat begins for {}.", *this );
+ 
+@@ -6745,6 +6633,7 @@
+  */
+ void player_t::reset()
+ {
++  sim2gse_control.reset( *this );
+   sim->print_debug( "Resetting {}.", *this );
+ 
+   last_cast = timespan_t::zero();
+@@ -6918,6 +6807,7 @@
+ 
+ void player_t::schedule_off_gcd_ready( timespan_t delta_time )
+ {
++  if (sim2gse_control.enabled()) return;
+   if ( delta_time < 0_ms )
+     delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
+ 
+@@ -6967,6 +6857,7 @@
+ 
+ void player_t::schedule_cwc_ready( timespan_t delta_time )
+ {
++  if (sim2gse_control.enabled()) return;
+   if ( delta_time < 0_ms )
+     delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
+ 
+@@ -7054,6 +6945,8 @@
+   queueing      = nullptr;
+   channeling    = nullptr;
+   action_queued = false;
++
++  if (sim2gse_control.enabled()) return;
+ 
+   started_waiting = timespan_t::min();
+ 
+@@ -7489,7 +7382,10 @@
+   if (resource_regeneration == regen_type::DYNAMIC)
+     do_dynamic_regen();
+ 
+-  if ( strict_sequence )
++  const auto controlled_selection = sim2gse_control.select();
++  if ( controlled_selection.kind != sim2gse::selection_kind::uncontrolled )
++    action = controlled_selection.action;
++  else if ( strict_sequence )
+   {
+     // Committed to a strict sequence of actions, just perform them instead of a priority list
+     action = strict_sequence;
+@@ -13308,8 +13204,6 @@
+   }
+ 
+   action_list_str      = source->action_list_str;
+-  sim2gse_action_ids   = source->sim2gse_action_ids;
+-  sim2gse_action_names_hex = source->sim2gse_action_names_hex;
+   alist_map            = source->alist_map;
+   use_apl              = source->use_apl;
+   apl_variable_map     = source->apl_variable_map;
+@@ -13360,8 +13254,6 @@
+   add_option( opt_int( "level", true_level, 1, MAX_LEVEL ) );
+   add_option( opt_bool( "ready_trigger", ready_type ) );
+   add_option( opt_func( "role", parse_role_string ) );
+-  add_option( opt_string( "sim2gse_action_ids", sim2gse_action_ids ) );
+-  add_option( opt_string( "sim2gse_action_names_hex", sim2gse_action_names_hex ) );
+   add_option( opt_string( "target", target_str ) );
+   add_option( opt_float( "skill", base.skill, 0, 1.0 ) );
+   add_option( opt_float( "distance", base.distance, 5, std::numeric_limits<double>::max() ) );
+@@ -13385,6 +13277,7 @@
+   add_option( opt_func( "brain_lag", parse_brain_lag ) );
+   add_option( opt_func( "brain_lag_stddev", parse_brain_lag_stddev ) );
+   add_option( opt_timespan( "cooldown_tolerance", cooldown_tolerance_ ) );
++  sim2gse_control.register_options( *this );
+   add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );
+   add_option( opt_timespan( "spell_queue_window", spell_queue_window ) );
+   add_option( opt_bool( "scale_player", scale_player ) );
+@@ -14316,6 +14209,7 @@
+                                    execute_type                  et,
+                                    const action_t*               context )
+ {
++  if (sim2gse_control.enabled()) throw std::runtime_error("hidden sim2gse APL scan");
+   // Mark this action list as visited with the APL internal id
+   visited_apls_ |= list.internal_id_mask;
+ 
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -6,6 +6,7 @@
+ #pragma once
+ 
+ #include "config.hpp"
++#include "sim2gse/controller.hpp"
+ 
+ #include "actor.hpp"
+ #include "assessor.hpp"
+@@ -30,7 +31,7 @@
+ 
+ #include <map>
+ #include <set>
+-#include <utility>
++#include <tuple>
+ #include <unordered_map>
+ 
+ struct absorb_buff_t;
+@@ -209,6 +210,8 @@
+   unsigned sim2gse_base_spell_id( unsigned id ) const;
+ 
+   // Spell Queue
++  sim2gse::controller_t sim2gse_control;
++
+   bool enable_spell_queue;
+   timespan_t spell_queue_window;
+ 
+@@ -359,9 +362,6 @@
+   /// Actions that have an action-specific dynamic targeting
+   std::set<action_t*> dynamic_target_action_list;
+   std::string action_list_str;
+-  std::string sim2gse_action_ids;
+-  std::string sim2gse_action_names_hex;
+-  std::vector<std::pair<unsigned, action_t*>> sim2gse_import_actions;
+   std::string choose_action_list;
+   std::string action_list_skip;
+   std::string modify_action;
+@@ -1158,7 +1158,6 @@
+   virtual void init_assessors();
+   virtual void init_background_actions();
+   virtual void create_actions();
+-  void create_import_action_probes();
+   virtual void init_actions();
+   virtual void init_finished();
+   virtual void add_precombat_buff_state( buff_t* buff, int stacks, double value, timespan_t duration );
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -860,7 +860,8 @@
+   collected_data_to_json( root[ "collected_data" ], report_configuration, p );
+ 
+   // Expose existing whole-run counters and native identity; no simulation decisions change.
+-  sim2gse::write_player_report( root, p, true );
++  sim2gse::write_player_report( root, p, false );
++  p.sim2gse_control.write_report( root );
+ 
+   if ( p.sim->report_details != 0 )
+   {
+@@ -894,50 +894,6 @@
+ 
+   JsonOutput custom = root[ "custom" ];
+   p.output_json_report( custom );
+-  if ( !p.sim2gse_import_actions.empty() )
+-  {
+-    auto import_actions = root[ "sim2gse_import_actions" ];
+-    import_actions.make_array();
+-    for ( const auto& candidate : p.sim2gse_import_actions )
+-    {
+-      const unsigned spell_id = candidate.first;
+-      const action_t* action = candidate.second;
+-      const unsigned native_spell_id = action->data().id();
+-      const auto* action_spell_name = action->data().name_cstr();
+-      const bool class_spell = p.find_class_spell( action_spell_name, p.specialization() )->id() == native_spell_id;
+-      const bool specialization_spell =
+-        p.find_specialization_spell( native_spell_id, p.specialization() )->id() == native_spell_id;
+-      const bool racial_spell = p.find_racial_spell( action_spell_name )->id() == native_spell_id;
+-      bool selected_talent = false;
+-      for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
+-      {
+-        for ( const unsigned candidate_id : { spell_id, native_spell_id } )
+-        {
+-          const auto talent = p.find_talent_spell( tree, candidate_id, p.specialization() );
+-          selected_talent = selected_talent || ( !talent.invalid() && talent.enabled() );
+-        }
+-      }
+-
+-      auto row = import_actions.add();
+-      row[ "kind" ] = "spell";
+-      row[ "spell_id" ] = spell_id;
+-      row[ "native_spell_id" ] = native_spell_id;
+-      row[ "name" ] = action->name_str;
+-      row[ "simc_action" ] = action->name_str;
+-      row[ "gcd_ms" ] = action->trigger_gcd.total_millis();
+-      row[ "data_valid" ] = action->data().ok() && action->data().is_level( p.true_level );
+-      row[ "available" ] = class_spell || specialization_spell || racial_spell || selected_talent;
+-      row[ "class_spell" ] = class_spell;
+-      row[ "specialization_spell" ] = specialization_spell;
+-      row[ "racial_spell" ] = racial_spell;
+-      row[ "selected_talent" ] = selected_talent;
+-      row[ "background" ] = action->background;
+-      row[ "passive" ] = action->data().flags( SX_PASSIVE );
+-      row[ "quiet" ] = action->quiet;
+-      row[ "action_initialized" ] = action->initialized;
+-      row[ "owner_pet_count" ] = p.pet_list.size();
+-    }
+-  }
+ }
+ 
+ void to_json( JsonOutput& arr, const raid_event_t& event )
+--- a/engine/sim/sim.cpp
++++ b/engine/sim/sim.cpp
+@@ -2987,10 +2987,7 @@
+   // quiet and skip action creation.
+   register_actor_initializer( INIT_ACTOR_CREATE_ACTIONS, []( player_t* p ) {
+     if ( p->validate_actor() )
+-    {
+       p->create_actions();
+-      p->create_import_action_probes();
+-    }
+ #ifdef NDEBUG
+     else
+       p->quiet = true;

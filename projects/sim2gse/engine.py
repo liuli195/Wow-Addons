@@ -7,6 +7,7 @@ import os
 from runtime import replace_file
 from runtime import BudgetExceeded, ProcessTimeout, TaskCancelled, TaskRuntime, run_command
 from simulation_config import config_for, engine_options
+from native_build import own_sources, build_identity, identity_digest
 
 class CandidateError(ValueError):
     """单个合法候选没有有效伤害或单批超时；不代表原生兼容性正常。"""
@@ -15,7 +16,7 @@ class CandidateError(ValueError):
 ROOT = Path(__file__).resolve().parents[2]
 # 可接受的原生报告构建号。历史报告在其对应版本上依然有效，客户端升级时追加新编号，
 # 不删除旧编号；清单之外的版本仍照旧拒绝。
-ACCEPTED_BUILD_LEVELS = (69587, 69814)
+ACCEPTED_BUILD_LEVELS = (69587, 69814, 69933)
 COMMON = ['item_db_source=local', 'threads=1', 'seed=20260912', 'target_error=0',
           'fixed_time=1', 'vary_combat_length=0', 'fight_style=Patchwerk',
           'optimal_raid=0', 'potion=disabled', 'flask=disabled', 'food=disabled',
@@ -31,8 +32,22 @@ def identity(mode, runtime=None):
         if mode in runtime.identities:
             return runtime.identities[mode]
     lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    if lock.get('build_protocol') != 2:
+        raise ValueError('不支持的引擎构建协议，请重新构建')
     manifest = json.loads((ROOT / '.local/sim2gse/build' / mode / 'build.json').read_text())
-    executable = ROOT / '.tools/sim2gse/product' / mode / 'engine/simc.exe'
+    sources = own_sources(ROOT, lock, mode)
+    if manifest.get('sources', []) != sources:
+        raise ValueError('自有源码清单与受检引擎不符')
+    expected_identity = build_identity(lock, mode, manifest.get('compiler_sha256'))
+    if any(manifest.get(key) != value for key, value in expected_identity.items()):
+        raise ValueError('独立引擎构建清单不符，请重新构建')
+    if manifest.get('identity_sha256') != identity_digest(expected_identity):
+        raise ValueError('独立引擎构建身份不符，请重新构建')
+    executable = ROOT / '.local/sim2gse/build' / mode / 'simc.exe'
+    if manifest.get('executable') != executable.relative_to(ROOT).as_posix():
+        raise ValueError('独立引擎产物路径不符')
+    if manifest.get('command', [])[1:] != ['-j4', *lock['build_options']]:
+        raise ValueError('独立引擎编译命令不符')
     if (manifest['exit_code'] or manifest['upstream_commit'] != lock['upstream_commit'] or
             manifest['upstream_tree'] != lock['upstream_tree'] or
             manifest['build_options'] != lock['build_options'] or
@@ -58,6 +73,39 @@ def discard_diagnostic_files(folder):
     """仅清理本次模拟目录内已知的临时诊断产物，不删除输入和成功报告。"""
     for name in ('native.txt', 'process.log', 'invocation.json'):
         (Path(folder) / name).unlink(missing_ok=True)
+
+
+def training_template():
+    """从受检构建定位本项目固定标准角色，不使用历史产品目录。"""
+    from native_build import source_directory
+    _, manifest = identity('baseline')
+    lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    expected = build_identity(lock, 'baseline', manifest['compiler_sha256'])
+    source = source_directory(ROOT, expected)
+    marker = source / 'source-identity.json'
+    if not marker.is_file() or json.loads(marker.read_text()) != expected:
+        raise ValueError('标准角色所属源码身份不符，请重新构建')
+    template = source / 'profiles/MID2/MID2_Death_Knight_Unholy.simc'
+    if not template.is_file():
+        raise ValueError('当前受检引擎缺少标准训练角色，请重新构建')
+    return template
+
+
+def prepare_loop(native, character, folder, runtime, *, definition=None, interval_ms=300):
+    """页面、训练及复测共用的原生目录和审核爆发准备。"""
+    from dataclasses import replace
+    folder = Path(folder)
+    all_capabilities = inspect(native, folder / 'capabilities')
+    if definition is None:
+        return all_capabilities, all_capabilities, None
+    from burst import compile_context, input_times, search_capabilities
+    character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
+    # 在编译与过滤前核对同一角色、版本及按法，不由各入口自行拼装。
+    input_times(definition, interval_ms)
+    context = compile_context(definition, character, all_capabilities, native['identity'],
+                              folder / 'burst-export', runtime)
+    context['interval_ms'] = interval_ms
+    return all_capabilities, search_capabilities(all_capabilities, context['candidate']['blocks']), context
 
 
 def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30,
@@ -235,6 +283,7 @@ def inspect(reference, folder):
     result = dict(actions=grouped, baseline_actions=baseline_grouped,
                   precombat_actions=precombat_program, sources=sources, protocol=4,
                   import_actions=import_actions,
+                  unavailable_actions=reference.get('unavailable_actions', []),
                   scope='default_apl_player_actions', coverage='combat_apl_buttons_with_baseline_forms')
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'catalogue.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -300,7 +349,8 @@ def check_report(report, character, iterations, *, simulation_config=None):
         raise ValueError('原生参考数值或实际样本数无效')
     return dict(dps=mean, metric=metric, personal_dps=data['dps']['mean'], samples=count, seconds=180, metadata_only=metadata_only, notices=report.get('logs', []),
                 identity=dict(class_id=player['sim2gse_class_id'], spec_id=player['sim2gse_spec_id'],
-                              spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource']))
+                              spec=player['sim2gse_spec'], race=player['race'], role=player['role'], resource=player['sim2gse_resource'],
+                              data_version=sim['options']['dbc']['Live']['wow_version']))
 
 
 def _profile_with_import_queries(profile, folder, spell_ids, spell_names=()):
@@ -355,6 +405,7 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     result['apl_actions'] = player.get('sim2gse_apl_actions')
     result['precombat_definitions'] = player.get('sim2gse_precombat_actions', [])
     result['active_items'] = player.get('sim2gse_items', [])
+    result['unavailable_actions'] = player.get('sim2gse_unavailable_actions', [])
     result['import_action_candidates'] = []
     if import_spell_ids or import_spell_names:
         probe_folder = folder / 'import_action_probe'
@@ -366,4 +417,5 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
             raise ValueError('原生动作查询报告缺失或不是有效 JSON') from error
         probe_player = player_report(probe_report, character)
         result['import_action_candidates'] = probe_player.get('sim2gse_import_actions', [])
+        result['unavailable_actions'] = probe_player.get('sim2gse_unavailable_actions', [])
     return result

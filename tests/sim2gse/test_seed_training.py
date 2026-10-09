@@ -39,7 +39,84 @@ def training_center(tmp_path, installed_data_store, monkeypatch):
 
 def command(tmp_path, args):
     from seed_training import main
+    # These existing cases exercise the explicitly retained legacy training mode.
+    if args[0] in ('run', 'list') and '--use-burst' not in args:
+        args = [*args, '--legacy']
     return main(['--project', str(tmp_path), *args])
+
+
+def test_training_check_locates_current_template_without_starting_compute(tmp_path, capsys, monkeypatch):
+    from seed_training import main
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('只读训练检查不能启动计算进程')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), 'check', '--legacy']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'ready'
+    assert '/.tools/sim2gse/build/baseline/' in result['template'].replace('\\', '/')
+    assert result['engines']['baseline']['upstream_commit'] == result['engines']['controlled']['upstream_commit']
+    assert not (tmp_path / 'work').exists()
+
+
+def test_training_unknown_material_is_rejected_before_compute(tmp_path, capsys, monkeypatch):
+    from seed_training import main
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('错误材料编号不能启动计算')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), 'run', '--candidate-id', 'missing-material',
+                 '--workspace', str(tmp_path / 'work')]) == 2
+    assert '训练材料不存在' in capsys.readouterr().err
+    assert not (tmp_path / 'work').exists()
+
+
+@pytest.mark.parametrize('entry', ['check', 'run'])
+def test_training_entry_refuses_missing_definition_before_starting_compute(tmp_path, capsys, monkeypatch, entry):
+    from seed_training import main
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('缺少审核定义时不能启动计算进程')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), entry,
+                 *(['--workspace', str(tmp_path / 'work')] if entry == 'run' else [])]) == 2
+    assert '已审核' in capsys.readouterr().err
+
+
+def test_training_check_uses_fixed_specialization_burst_for_standard_talents(tmp_path, capsys, monkeypatch):
+    import burst
+    import result_store
+    from seed_training import main
+
+    result_store.bind_project(tmp_path)
+    definition = json.loads(Path('projects/sim2gse/burst/unholy.json').read_text(encoding='utf-8'))
+    published = burst.publish(definition)
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('只读检查不能启动计算')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), 'check']) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['burst_definition_id'] == published['definition_id']
+    assert output['talent_sha256'] == '25290264e714733e77e73c453363fa128792bfd219bece3854d5e6193b4e50da'
+
+
+def test_training_list_defaults_to_burst_and_preserves_legacy_results(tmp_path, capsys):
+    from seed_training import main, SELECTED_SCHEMA
+    import result_store
+
+    row = dict(candidate_id='legacy-only', condition='fixture', class_name='deathknight', spec='unholy',
+               targets=1, program=[['death_coil']], family='fixture', score=1., scores=[1.],
+               template_sha256='fixture', engines={})
+    result_store.write('seed_selected', 'deathknight-unholy-1', [row], schema=SELECTED_SCHEMA)
+    assert main(['--project', str(tmp_path), 'list', '--state', 'selected']) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert main(['--project', str(tmp_path), 'list', '--state', 'selected', '--legacy']) == 0
+    assert json.loads(capsys.readouterr().out)[0]['candidate_id'] == 'legacy-only'
 
 
 def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenance(tmp_path, capsys):
@@ -84,7 +161,13 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile() + '\nactions=auto_attack\n', encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    selected_id = result_store.read_records('seed_candidates', 'registry')[0]['candidate_id']
+    other = json.loads(source.read_text(encoding='utf-8'))
+    other['label'] = 'not selected for this run'
+    source.write_text(json.dumps(other), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+            '--candidate-id', selected_id]
     real_write = result_store.write
     def failing_publish(table, key, rows, **kwargs):
         if table == 'seed_selected':

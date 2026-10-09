@@ -781,17 +781,51 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertEqual(first['input_times'], list(range(150, 180000, 300)))
         self.assertEqual({e['battle'] for e in inputs if e['origin'] == 1}, {0, 1})
 
+    def test_independent_lifecycle_keeps_irregular_inputs_across_battles(self):
+        from engine import identity
+
+        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
+        times = [150, 550, 1000, 1400]
+        with tempfile.TemporaryDirectory() as directory:
+            result = evaluate(source, candidate, Path(directory), character=character,
+                              iterations=3, input_times=times)
+        inputs = [event for event in result['trace'] if event['event'] == 'input']
+        for battle in (0, 1, 2):
+            self.assertEqual([(event['ms'], event['origin']) for event in inputs
+                              if event['battle'] == battle], list(zip(times, range(1, 5))))
+        _, manifest = identity('controlled')
+        self.assertIn('projects/sim2gse/native/src/controller.cpp',
+                      {entry['path'] for entry in manifest['sources']},
+                      '输入时间和每轮重置尚未由独立控制源码提供')
+
+    def test_complete_controller_runs_without_the_temporary_legacy_hook(self):
+        from engine import identity
+
+        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
+        with tempfile.TemporaryDirectory() as directory:
+            result = evaluate(source, candidate, Path(directory), character=character,
+                              iterations=2, input_times=[0, 300, 600, 900], trace=False)
+        self.assertTrue(result['consistent'])
+        self.assertEqual(result['trace'], [])
+        _, manifest = identity('controlled')
+        self.assertFalse(any('temporary-legacy-controller' in entry['path']
+                             for entry in manifest['patches']),
+                         '构建仍使用暂存旧控制补丁，尚未采用完整独立控制模块')
+
     def test_disabled_controller_matches_original(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate, source, character = self.candidate(self.prepared, [['outbreak']])
             run(source, Path(directory) / 'disabled', 'controlled')
             original = json.loads((Path(self.directory.name) / 'default/reference/native.json').read_text(encoding='utf-8'))
             disabled = json.loads((Path(directory) / 'disabled/native.json').read_text(encoding='utf-8'))
-            # 完整 APL 目录是仅基准的报告元数据；其余战斗内容仍逐值比较。
-            baseline_metadata = {'sim2gse_apl_actions_protocol', 'sim2gse_apl_actions'}
+            # 目录与跳过清单属于报告元数据；两端其余战斗内容仍逐值比较。
+            baseline_metadata = {'sim2gse_apl_actions_protocol', 'sim2gse_apl_actions',
+                                 'sim2gse_skipped_commands'}
             original_players = [{key: value for key, value in player.items() if key not in baseline_metadata}
                                 for player in original['sim']['players']]
-            self.assertEqual(original_players, disabled['sim']['players'])
+            disabled_players = [{key: value for key, value in player.items() if key not in baseline_metadata}
+                                for player in disabled['sim']['players']]
+            self.assertEqual(original_players, disabled_players)
             altered = copy.deepcopy(candidate)
             altered['compiled_steps'][altered['precombat_count']]['spell'] = 999999
             with self.assertRaises((ValueError, KeyError)):

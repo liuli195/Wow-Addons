@@ -35,6 +35,18 @@ def sample_profile() -> str:
 
 
 class CharacterExportTests(unittest.TestCase):
+    def test_export_help_uses_the_frozen_simulation_data_version(self):
+        import codec
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = codec.export(
+                [[dict(kind='spell', spell_id=47541, name='death_coil', simc_action='death_coil')]],
+                Path(directory) / 'export',
+                identity=dict(spec_id=252, class_id=6, data_version='12.1.0.69933'))
+            import base64, zlib, cbor2
+            payload = cbor2.loads(zlib.decompress(base64.b64decode(result['text'][6:]), -15))
+            self.assertIn('模拟数据 12.1.0.69933', payload[1][b'MetaData'][b'Help'].decode())
+
     def test_public_commands_reject_retired_data_options(self):
         for entry in ("task.py", "interface.py"):
             command = REPOSITORY / "scripts/dev/sim2gse" / entry

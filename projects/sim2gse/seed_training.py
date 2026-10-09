@@ -160,19 +160,27 @@ def history_candidates(character):
     return rows
 
 
-def retest(profile, program, character, capabilities, native, folder, simulation_config, *, runtime=None):
+def retest(profile, program, character, capabilities, native, folder, simulation_config, *,
+           engines, condition, runtime=None, burst_context=None):
     from program import from_search_program, compile_program
-    from sequence import evaluate
+    from sequence import evaluate, compiled_identity
     runtime = runtime or TaskRuntime(600)
     runtime.check()
     compiled = compile_program(from_search_program(program, capabilities), folder / 'export',
                                identity=native['identity'], runtime=runtime, capabilities=capabilities)
     scores = []
+    interval_ms = burst_context['interval_ms'] if burst_context else 300
+    times = list(range(0, 180000, interval_ms))
+    burst_options = {}
+    if burst_context is not None:
+        from burst import combined_inputs
+        times, sources = combined_inputs(times, burst_context, interval_ms)
+        burst_options = dict(input_sources=sources, burst_candidate=burst_context['candidate'])
     for seed in RETEST_SEEDS:
         runtime.check()
         result = evaluate(profile, compiled, folder / str(seed), character=character, iterations=128,
-                          seed=seed, trace=False, input_times=list(range(0, 180000, 300)),
-                          simulation_config=simulation_config, runtime=runtime)
+                          seed=seed, trace=False, input_times=times,
+                          simulation_config=simulation_config, runtime=runtime, **burst_options)
         runtime.check()
         summary = result['summary']
         if summary['samples'] < 2 or not math.isfinite(summary['dps']) or summary['dps'] <= 0:
@@ -181,6 +189,8 @@ def retest(profile, program, character, capabilities, native, folder, simulation
         result_store.write_batch(digest(dict(folder=str(folder), seed=seed)), dict(
             batch_key=digest(dict(folder=str(folder), seed=seed)), run_id=folder.parent.name,
             purpose='seed_retest', seed=seed, samples=summary['samples'], dps=summary['dps'],
+            requested_iterations=128, engines=engines, condition_key=condition,
+            program_identity=compiled_identity(compiled),
             report=result['report']))
         (folder / str(seed) / 'native.json').unlink(missing_ok=True)
     return scores
@@ -193,7 +203,7 @@ def retains_core(program, core):
     return any(program[index:index + len(core)] == core for index in range(len(program)))
 
 
-def publish_records(processed, selected, *, condition, character, targets, template_sha, engines):
+def publish_records(processed, selected, *, condition, character, targets, template_sha, engines, capabilities=None):
     """Rebuild from committed outcomes so a failed final publish is retryable."""
     options = []
     for row in processed:
@@ -203,6 +213,9 @@ def publish_records(processed, selected, *, condition, character, targets, templ
         for program, scores, family in (
                 (decode(row['program']), row['scores'], final_family),
                 (decode(row['initial_program']), row['initial_scores'], row['family'])):
+            if capabilities is not None:
+                from program import canonicalize_search_program
+                canonicalize_search_program(program, capabilities)
             options.append(dict(candidate_id=row['candidate_id'], condition=condition,
                                 class_name=character.class_name, spec=character.spec, targets=targets,
                                 program=program, family=family, score=sum(scores) / len(scores),
@@ -216,6 +229,9 @@ def publish_records(processed, selected, *, condition, character, targets, templ
     unique = {}
     for item in sorted(selected, key=lambda item: (-item['score'], item['candidate_id'])):
         item['program'], item['engines'] = decode(item['program']), decode(item['engines'])
+        if capabilities is not None:
+            from program import canonicalize_search_program
+            canonicalize_search_program(item['program'], capabilities)
         unique.setdefault(digest(item['program']), item)
     return list(unique.values())[:4]
 
@@ -225,29 +241,73 @@ def _check_cancelled(cancel_event):
         raise TaskCancelled('任务已取消')
 
 
-def _run_training(template, targets, workspace, *, cancel_event=None):
-    from engine import identity, reference, inspect, ROOT, COMMON
-    from program import canonicalize_search_program
+def training_condition(template_sha, engines, config, simulation_config, *, burst_context=None):
+    """训练与升级核验共用的条件计算；不启动计算、不读取历史。"""
+    from engine import ROOT, COMMON
     from task import _rule_hashes
+    return digest(dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
+                       config=config, simulation=simulation_config, retest=RETEST_SEEDS,
+                       effective_options=COMMON, rules=_rule_hashes(relative_to=ROOT),
+                       **(dict(task_category='burst_free_training', burst=burst_context)
+                          if burst_context else {})))
+
+
+def selected_materials(candidate_ids):
+    """只读取明确登记的材料，错误编号在启动计算前拒绝。"""
+    rows = []
+    for candidate_id in dict.fromkeys(candidate_ids):
+        matches = result_store.read_records('seed_candidates', 'registry',
+                                            filters={'candidate_id': candidate_id})
+        if len(matches) != 1:
+            raise ValueError('训练材料不存在或不唯一: ' + candidate_id)
+        if matches[0].get('semantic') == 'unsupported':
+            raise ValueError('不可表达材料不能用于训练: ' + candidate_id)
+        rows.append(matches[0])
+    if not rows:
+        raise ValueError('至少指定一个训练材料')
+    return rows
+
+
+def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None):
+    from engine import identity, reference, prepare_loop
+    from program import canonicalize_search_program
     _check_cancelled(cancel_event)
     text = template.read_text(encoding='utf-8')
     character = template_character(text)
-    scope = f'{character.class_name}-{character.spec}-{targets}'
+    if materials is not None and any(row['class_name'] != character.class_name or
+                                     row['spec'] != character.spec for row in materials):
+        raise ValueError('训练材料与标准角色职业或专精不一致')
+    scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
     config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
                          'no_improvement_rounds': 2})
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    burst_context = None
+    capabilities = None
+    if use_burst:
+        from burst import select_definition
+        definition = select_definition(character)
+        config = config_for(dict(config, input_interval_ms=200))
+        setup = workspace.resolve() / 'burst-setup' / uuid.uuid4().hex
+        setup.mkdir(parents=True)
+        setup_profile = setup / 'standard.simc'
+        setup_profile.write_text(text, encoding='utf-8')
+        setup_runtime = TaskRuntime(600, cancel_event=cancel_event)
+        native = reference(setup_profile, setup / 'reference', character, runtime=setup_runtime,
+                           iterations=100, simulation_config=simulation_config)
+        character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
+        _, capabilities, burst_context = prepare_loop(native, character, setup, setup_runtime,
+                                                      definition=definition, interval_ms=config['input_interval_ms'])
     template_sha = hashlib.sha256(text.encode()).hexdigest()
-    rules = _rule_hashes(relative_to=ROOT)
-    condition = digest(dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
-                            config=config, simulation=simulation_config, retest=RETEST_SEEDS,
-                            effective_options=COMMON, rules=rules))
+    condition = training_condition(template_sha, engines, config, simulation_config,
+                                   burst_context=burst_context)
     processed = result_store.read_records('seed_processed', scope)
     selected = [row for row in result_store.read_records('seed_selected', scope)
                 if row['condition'] == condition]
     completed = {row['candidate_id'] for row in processed
                  if row['condition'] == condition and row['status'] in ('completed', 'rejected')}
-    candidates = result_store.read_records('seed_candidates', 'registry') + history_candidates(character)
+    candidates = (materials if materials is not None else
+                  result_store.read_records('seed_candidates', 'registry') + history_candidates(character))
     _check_cancelled(cancel_event)
     candidates = [row for row in candidates if row.get('semantic') != 'unsupported' and
                   row['class_name'] == character.class_name and
@@ -257,7 +317,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
         _check_cancelled(cancel_event)
         if not any(row['condition'] == condition and row['status'] == 'failed' for row in processed):
             restored = publish_records(processed, selected, condition=condition, character=character,
-                                       targets=targets, template_sha=template_sha, engines=engines)
+                                       targets=targets, template_sha=template_sha, engines=engines, capabilities=capabilities)
             _check_cancelled(cancel_event)
             if restored and digest(restored) != digest(selected):
                 result_store.write('seed_selected', scope, restored, schema=SELECTED_SCHEMA)
@@ -273,11 +333,15 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
     profile.write_text(text, encoding='utf-8')
     setup_runtime = TaskRuntime(600, cancel_event=cancel_event)
     setup_runtime.check()
-    native = reference(profile, batch / 'reference', character, runtime=setup_runtime, iterations=100,
-                       simulation_config=simulation_config)
+    if not use_burst:
+        native = reference(profile, batch / 'reference', character, runtime=setup_runtime, iterations=100,
+                           simulation_config=simulation_config)
+        character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
+        _, capabilities, _ = prepare_loop(native, character, batch, setup_runtime)
+    else:
+        (batch / 'reference').mkdir(exist_ok=True)
+        (batch / 'reference/native.json').write_bytes((setup / 'reference/native.json').read_bytes())
     setup_runtime.check()
-    character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-    capabilities = inspect(native, batch / 'capabilities')
     _check_cancelled(cancel_event)
     reference_path = batch / 'reference/native.json'
     reference_key = digest(dict(condition=condition, purpose='seed_reference'))
@@ -318,10 +382,11 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
                     raise ValueError('训练恢复条件不一致')
                 if store.state.get('training_candidate_id', row['candidate_id']) != row['candidate_id']:
                     raise ValueError('训练候选目录短标识碰撞')
-                store.state.update(training_condition=condition, config=config,
+                store.state.update(training_condition=condition, config=config, capabilities=capabilities,
                                    training_candidate_id=row['candidate_id'],
                                    run_id=store.state.get('run_id', uuid.uuid4().hex),
-                                   starts=store.state.get('starts', [row['program']]))
+                                   starts=store.state.get('starts', [row['program']]),
+                                   **(dict(burst=burst_context) if burst_context else {}))
                 used = store.state.get('elapsed_seconds', 0)
                 runtime = TaskRuntime(600, used_seconds=min(600, used),
                                       cancel_event=cancel_event)
@@ -343,10 +408,12 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
                     raise ValueError('预算或其他上限使训练未收敛，保留进度待检查')
                 record['initial_scores'] = retest(profile, row['program'], character, capabilities,
                                                  native, folder / 'retest-initial', simulation_config,
-                                                 runtime=TaskRuntime(600, cancel_event=cancel_event))
+                                                 engines=engines, condition=condition,
+                                                 runtime=TaskRuntime(600, cancel_event=cancel_event), burst_context=burst_context)
                 record['scores'] = retest(profile, program, character, capabilities, native,
                                          folder / 'retest-final', simulation_config,
-                                         runtime=TaskRuntime(600, cancel_event=cancel_event))
+                                         engines=engines, condition=condition,
+                                         runtime=TaskRuntime(600, cancel_event=cancel_event), burst_context=burst_context)
                 record['comparison'] = summarize_pairs(
                     [{'dps': value} for value in record['scores']],
                     [{'dps': value} for value in record['initial_scores']])
@@ -375,7 +442,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
     if any(item['status'] == 'failed' for item in processed if item['condition'] == condition):
         raise ValueError('存在未完成候选，旧入选库保持不变；使用list --state processed检查')
     selected = publish_records(processed, selected, condition=condition, character=character,
-                               targets=targets, template_sha=template_sha, engines=engines)
+                               targets=targets, template_sha=template_sha, engines=engines, capabilities=capabilities)
     _check_cancelled(cancel_event)
     if selected:
         _check_cancelled(cancel_event)
@@ -383,10 +450,27 @@ def _run_training(template, targets, workspace, *, cancel_event=None):
     return dict(status='completed', processed=len(candidates), selected=len(selected), targets=targets)
 
 
-def run_training(template, targets, workspace):
+def run_training(template, targets, workspace, *, use_burst=False):
     from seed_activity import training_activity
     with training_activity() as cancel_event:
-        return _run_training(template, targets, workspace, cancel_event=cancel_event)
+        return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst)
+
+
+def check_training(template=None, *, use_burst=True):
+    """只读确认实际模板、受检引擎及审核定义，不创建模拟或训练目录。"""
+    from engine import identity, training_template
+    from burst import select_definition, talent_hash
+    path = Path(template).resolve() if template is not None else training_template()
+    if not path.is_file():
+        raise ValueError('标准训练角色文件不存在: ' + str(path))
+    text = path.read_text(encoding='utf-8')
+    character = template_character(text)
+    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    definition = select_definition(character) if use_burst else None
+    return dict(status='ready', template=str(path), template_source='explicit' if template else 'current_build',
+                template_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                talent_sha256=talent_hash(character), engines=engines, use_burst=use_burst,
+                burst_definition_id=definition['definition_id'] if definition else None)
 
 
 def main(argv=None):
@@ -401,30 +485,44 @@ def main(argv=None):
     listing.add_argument('--class-name', default='deathknight')
     listing.add_argument('--spec', default='unholy')
     training = commands.add_parser('run', help='独立训练至连续两轮无改善、复测与更新')
-    training.add_argument('--template', type=Path, default=Path(__file__).resolve().parents[2] /
-                          '.tools/sim2gse/product/baseline/profiles/MID2/MID2_Death_Knight_Unholy.simc')
+    training.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
     training.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
+    training.add_argument('--candidate-id', action='append', help='只训练指定登记材料；可重复传入，默认全部')
     training.add_argument('--workspace', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.local/sim2gse/seed-training')
+    checking = commands.add_parser('check', help='只读核对训练模板、引擎与审核适用性，不启动计算')
+    checking.add_argument('--template', type=Path)
+    for command_parser in (training, checking, listing):
+        mode = command_parser.add_mutually_exclusive_group()
+        mode.add_argument('--use-burst', dest='use_burst', action='store_true', help='独立爆发模式（默认）')
+        mode.add_argument('--legacy', dest='use_burst', action='store_false', help='显式查看或运行历史无爆发模式')
+        command_parser.set_defaults(use_burst=True)
     args = parser.parse_args(argv)
     try:
         result_store.bind_project(args.project)
         result_store.ensure_available()
         if args.command == 'register':
             output = register(args.input)
+        elif args.command == 'check':
+            output = check_training(args.template, use_burst=args.use_burst)
         elif args.command == 'run':
+            material_options = ({'materials': selected_materials(args.candidate_id)}
+                                if args.candidate_id else {})
+            ready = check_training(args.template, use_burst=args.use_burst)
             from seed_activity import training_activity
             with writer_lock():
                 with training_activity() as cancel_event:
-                    output = [_run_training(args.template, targets, args.workspace,
-                                            cancel_event=cancel_event)
+                    output = [_run_training(Path(ready['template']), targets, args.workspace,
+                                            cancel_event=cancel_event, use_burst=args.use_burst,
+                                            **material_options)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state in ('pending', 'unsupported'):
             output = [row for row in result_store.read_records('seed_candidates', 'registry')
                       if (row['semantic'] == 'unsupported') == (args.state == 'unsupported')]
         else:
             output = result_store.read_records('seed_' + args.state,
-                                              f'{args.class_name}-{args.spec}-{args.targets}')
+                                              f'{args.class_name}-{args.spec}-{args.targets}' +
+                                              ('-burst' if args.use_burst else ''))
         print(json.dumps(output, ensure_ascii=False))
         return 0
     except (ValueError, OSError, RuntimeError) as error:

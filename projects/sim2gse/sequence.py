@@ -81,6 +81,7 @@ def _search_compiled_blocks(candidate):
     spells = {str(a['spell_id']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'}
     spells.update({a['name']: a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'})
     items = {str(a['slot']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'item'}
+    potions = {a['name']: a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'potion'}
     blocks = []
     for step in candidate['compiled_steps']:
         if step['type'] == 'spell':
@@ -98,6 +99,8 @@ def _search_compiled_blocks(candidate):
                     block.append(spells[re.sub(r'^\[[^]]+\] ', '', line[6:])])
                 elif re.fullmatch(r'/use (?:\[[^]]+\] )?(13|14)', line):
                     block.append(items[line.split()[-1]])
+                elif line.startswith('/use ') and line[5:] in potions:
+                    block.append(potions[line[5:]])
                 elif line.startswith('/castsequence '):
                     from macro_interpreter import parse_castsequence
                     actions = [action for candidate_block in candidate['blocks'] for action in candidate_block]
@@ -116,10 +119,19 @@ def _search_compiled_blocks(candidate):
 def evaluate(profile, candidate, folder, *, character, iterations=100, seed=20260912, trace=True,
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
              failure_events=None, reset_events=None,
-             runtime=None, simulation_config=None, on_native_start=None):
+             runtime=None, simulation_config=None, on_native_start=None,
+             burst_candidate=None, input_sources=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
+    all_commands = candidate['blocks'] + (burst_candidate['blocks'] if burst_candidate is not None else [])
+    for block in all_commands:
+        for command in block:
+            if command['kind'] == 'potion' and (
+                    command.get('potion') != 'potion_of_recklessness'
+                    or command.get('item_id') != 241289 or command.get('name') != '鲁莽药水'
+                    or command.get('simc_action') != 'potion'):
+                raise ValueError('药水定义与受测原生消耗品不一致')
     if mode != 'controlled':
         raise ValueError('原版引擎不兼容受控序列')
     input_times = list(range(0, 180000, 300)) if input_times is None else input_times
@@ -157,6 +169,23 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 for event in reset_events)):
         raise ValueError('/castsequence Reset 事件必须使用有效时刻和类型；修饰键须对应点击')
     blocks = compiled_program(candidate)
+    burst_offset = len(blocks)
+    if (burst_candidate is None) != (input_sources is None):
+        raise ValueError('独立爆发序列与输入来源必须同时提供')
+    if burst_candidate is not None:
+        if (not isinstance(input_sources, list) or len(input_sources) != len(input_times)
+                or any(source not in ('loop', 'burst') for source in input_sources)):
+            raise ValueError('双来源输入必须与时刻一一对应')
+        blocks += compiled_program(burst_candidate)
+    source_origins, expected_steps = [], []
+    source_counts = dict(loop=0, burst=0)
+    for origin in range(len(input_times)):
+        source = input_sources[origin] if input_sources is not None else 'loop'
+        offset = burst_offset if source == 'burst' else 0
+        count = len(blocks) - burst_offset if source == 'burst' else burst_offset
+        expected_steps.append(offset + source_counts[source] % count)
+        source_counts[source] += 1
+        source_origins.append(source_counts[source])
     precombat_count = candidate.get('precombat_count', 0)
     if not 0 <= precombat_count < len(blocks):
         raise ValueError('战前动作块数量无效')
@@ -176,7 +205,10 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                  'sim2gse_timed_feedback=1\n'
                  + 'sim2gse_failure_events=' + '/'.join(f'{ms},{origin},{action}'
                                                      for ms, origin, action in failure_events) + '\n')
-    castsequences = candidate.get('compiled_program', {}).get('castsequences', [])
+    castsequences = list(candidate.get('compiled_program', {}).get('castsequences', []))
+    if burst_candidate is not None:
+        castsequences += [dict(row, step=row['step'] + burst_offset)
+                          for row in burst_candidate.get('compiled_program', {}).get('castsequences', [])]
     castsequence_option = ''
     if castsequences:
         rows = []
@@ -210,20 +242,37 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
     generated.write_text(Path(profile).read_text(encoding='utf-8') + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
+                         + ('sim2gse_optional_spells=' + ','.join(value for value in sorted({
+                             str(command['spell_id']) + ':' + command['simc_action']
+                             for block in all_commands for command in block
+                             if command.get('native_check_required') and command['kind'] == 'spell'})) + '\n'
+                            if any(command.get('native_check_required') for block in all_commands
+                                   for command in block) else '')
                          + f'sim2gse_steps={indices}\nsim2gse_trace={int(trace)}\n'
                          + castsequence_option
                          + ('' if not reset_events else 'sim2gse_castsequence_events=' +
                             '/'.join(f'{ms},{kind}' for ms, kind in reset_events) + '\n')
                          + 'sim2gse_times=' + '/'.join(map(str, input_times)) + '\n'
+                         + ('' if input_sources is None else
+                            f'sim2gse_burst_offset={burst_offset}\n'
+                            + 'sim2gse_sources=' + '/'.join(input_sources) + '\n')
                          + feedback, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
     start_callback = {'on_start': on_native_start} if on_native_start is not None else {}
     log = run(generated, folder, mode,
               [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json',
+               *(['potion=potion_of_recklessness', 'override.allow_potions=1']
+                 if any(c['kind'] == 'potion' for b in all_commands for c in b) else []),
                'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', True) else os.devnull)], runtime=runtime,
               simulation_config=simulation_config, **start_callback)
     native_blocks = []
+    skipped_commands = []
     for line in log.splitlines():
+        if line.startswith('S2GSKIP\t'):
+            _, block, position, signature, reason = line.split('\t')
+            skipped_commands.append(dict(step=int(block), position=int(position),
+                                         simc_action=signature, reason=reason))
+            continue
         if not line.startswith('S2GBLOCK\t'):
             continue
         _, block, position, signature = line.split('\t')
@@ -238,12 +287,26 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         native_blocks[block].append(signature)
     if native_blocks != runtime_blocks:
         raise ValueError('原生实际解析的动作块与编译结果不一致')
+    skipped_positions = set()
+    for row in skipped_commands:
+        step, position = row['step'], row['position']
+        if (not 0 <= step < len(runtime_blocks) or not 0 <= position < len(runtime_blocks[step])
+                or row['simc_action'] != runtime_blocks[step][position]
+                or row['reason'] not in {'empty_slot', 'passive_item', 'unselected_talent'}
+                or (step, position) in skipped_positions):
+            raise ValueError('原生跳过命令的身份或原因不一致')
+        skipped_positions.add((step, position))
+    effective_blocks = [[name for position, name in enumerate(block)
+                         if (step, position) not in skipped_positions]
+                        for step, block in enumerate(runtime_blocks)]
     try:
         pending_report = json.loads(pending_report.read_text(encoding='utf-8'))
     except (OSError, ValueError) as error:
         raise ValueError('原生报告缺失或不是有效 JSON') from error
     # 只有完整解析成功的报告才进入正式名称；任务恢复时不会把半份文件当成成功批次。
     report = pending_report
+    if player_report(report, character).get('sim2gse_skipped_commands', []) != skipped_commands:
+        raise ValueError('原生报告与跳过日志不一致')
     measured = (report['sim']['statistics']['raid_dps'] if len(report['sim']['players']) > 1
                 else player_report(report, character)['collected_data']['dps'])
     if measured['mean'] == 0:
@@ -254,12 +317,22 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         for line in (folder / 'native.txt').read_text(encoding='utf-8').splitlines():
             if 'S2GSE\t' not in line:
                 continue
+            fields = line.split('S2GSE\t', 1)[1].split('\t')
+            if len(fields) != (16 if input_sources is not None else 14):
+                raise ValueError('原生来源轨迹字段数量不一致')
             (ms, event, origin, step, action, gcd, rp, health, cooldown, battle, signature,
-             cast_ms, sequence_step, sequence_member) = line.split('S2GSE\t', 1)[1].split('\t')
+             cast_ms, sequence_step, sequence_member) = fields[:14]
             events.append(dict(ms=float(ms), event=event, origin=int(origin), step=int(step), action=action,
                                gcd=float(gcd), rp=float(rp), health=float(health), cooldown_ms=float(cooldown),
                                battle=int(battle), signature=signature, cast_ms=float(cast_ms),
                                sequence_step=int(sequence_step), sequence_member=int(sequence_member)))
+            if input_sources is not None:
+                events[-1].update(source=fields[14], source_origin=int(fields[15]),
+                                  source_step=int(step) - (burst_offset if fields[14] == 'burst' else 0))
+                if int(origin) and (not 1 <= int(origin) <= len(input_times)
+                        or fields[14] != input_sources[int(origin) - 1]
+                        or int(fields[15]) != source_origins[int(origin) - 1]):
+                    raise ValueError('原生输入来源或来源局部编号不一致')
     if trace:
         inputs = [e for e in events if e['event'] == 'input']
         executed = [e for e in events if e['event'] == 'native_execute']
@@ -270,12 +343,12 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         if not inputs or inputs[0]['ms'] != input_times[0] or (not executed and not rolled_back):
             raise ValueError('缺少原生输入或执行轨迹')
         if any(e['origin'] < 1 or e['origin'] > len(input_times) or e['ms'] != input_times[e['origin'] - 1]
-               or e['step'] != (e['origin'] - 1) % len(blocks) for e in inputs):
+               or e['step'] != expected_steps[e['origin'] - 1] for e in inputs):
             raise ValueError('原生输入轨迹的时刻、起点或步进不一致')
         dispatches = [e for e in events if e['event'] == 'dispatch']
         if any(not 1 <= e['origin'] <= len(input_times)
-               or e['step'] != (e['origin'] - 1) % len(blocks)
-               or e['signature'] not in runtime_blocks[e['step']]
+               or e['step'] != expected_steps[e['origin'] - 1]
+               or e['signature'] not in effective_blocks[e['step']]
                for e in dispatches + executed + interrupted):
             raise ValueError('原生动作不属于来源输入对应的编译块')
         by_step = {row['step']: row['members'] for row in castsequences}
@@ -305,6 +378,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             raise ValueError('原生派发与实际执行轨迹不一致')
     replace_file(folder / 'native.pending.json', folder / 'native.json')
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
+                skipped_commands=skipped_commands, effective_blocks=effective_blocks,
+                input_sources=input_sources, burst_offset=(burst_offset if input_sources is not None else None),
                 gcd_states=gcd_states, failed_actions=failed_actions,
                 failure_events=failure_events, consistent=True,
                 reset_events=reset_events,

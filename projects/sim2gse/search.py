@@ -473,6 +473,7 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
 
 
 def feedback_from_trace(trace, available=(), overflow=False, aliases=None):
+    trace = [event for event in trace if event.get('source', 'loop') == 'loop']
     from collections import Counter
     attempts,successes=Counter(),Counter()
     observed=set()
@@ -607,6 +608,7 @@ def _export_search_observability(value, *, include_details=True):
 
 
 def _position_observations(candidate, candidate_identity, trace):
+    trace = [event for event in trace if event.get('source', 'loop') == 'loop']
     from collections import Counter
     from sequence import compiled_program
 
@@ -1502,6 +1504,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     if state.get('rng'):
         rng.setstate(_tuple(state['rng']))
     candidates = {}
+    burst_context = state.get('burst')
+    def planned_inputs(times):
+        if burst_context is None:
+            return times, {}
+        from burst import combined_inputs
+        times, sources = combined_inputs(times, burst_context, config['input_interval_ms'])
+        return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources)
     prepared = {}
     candidate_compilations = 0
     diagnostic_events = []
@@ -1536,6 +1545,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     compiled = compile_program(canonical['program'],
                                                destination / 'exports' / key,
                                                identity=reference['identity'], runtime=runtime,
+                                               capabilities=capabilities,
                                                on_lua_start=store.note_lua_start)
                     if config['diagnostic_logging']:
                         candidate_compilations += 1
@@ -1580,6 +1590,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         seed = config['random_seed'] + seed_offset + index + DEFAULT_SCENARIOS.index(scenario) * 1000 + nonce
         input_seed = seed + 500000
         times = input_times(scenario, input_seed, config["input_interval_ms"])
+        times, burst_options = planned_inputs(times)
         compiled = prepared_candidate if prepared_candidate is not None else candidate(program)
         behavior_id = candidate_key(program)
         request = dict(condition=condition_key, program=compiled_identity(compiled), purpose=purpose,
@@ -1587,6 +1598,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         seed=seed, input_seed=input_seed, iterations=iterations, times=times,
                         stats=STATS_VERSION, trace=trace,
                         reset_events=[list(row) for row in config['reset_events']])
+        if burst_context is not None:
+            request['burst'] = dict(definition_id=burst_context['definition_id'],
+                                    program=compiled_identity(burst_context['candidate']),
+                                    plan=burst_context['plan'], interval_ms=config['input_interval_ms'],
+                                    sources=burst_options['input_sources'])
         key = digest(request)
         program_identity = json.dumps(request['program'], ensure_ascii=False,
                                       sort_keys=True, separators=(',', ':'))
@@ -1646,7 +1662,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     state['native_batch_starts'] = state.get('native_batch_starts', 0) + 1
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
-                              simulation_config=simulation_config, on_native_start=native_started, **kwargs)
+                              simulation_config=simulation_config, on_native_start=native_started,
+                              **burst_options, **kwargs)
             variance = score_variance(result['report'])
             report_valid = True
             row = dict(status='success', request=request, dps=result['summary']['dps'],
@@ -2101,14 +2118,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 seed = config['random_seed'] + 100000
                 observation_kwargs = ({'reset_events': list(config['reset_events'])}
                                       if config['reset_events'] else {})
+                observation_times, observation_burst = planned_inputs(
+                    input_times('nominal', seed + 500000, config['input_interval_ms']))
                 traced = evaluate(
                     profile, compiled,
                     destination / 'observability' / f"{work['observation_id']}-{comparison}-{job_index}",
                     character=character, iterations=2, seed=seed,
-                    input_times=input_times('nominal', seed + 500000,
-                                            config['input_interval_ms']),
+                    input_times=observation_times,
                     trace=True, runtime=observation_runtime,
                     simulation_config=simulation_config,
+                    **observation_burst,
                     **observation_kwargs,
                 )
                 trace_key = digest(dict(run_id=state['run_id'], event_id=work['observation_id'],

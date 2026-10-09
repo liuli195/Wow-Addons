@@ -6,6 +6,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+from result_store import DataReadError
 import threading
 from urllib.parse import urlsplit
 import uuid
@@ -150,23 +151,26 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 if action == "cancel":
                     self._change_task(task_id)
                     return
+                if action == 'resume':
+                    self._resume_task(task_id)
+                    return
             raise TaskError("接口不存在")
         except TaskError as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": _friendly_error(error)})
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, DataReadError) as error:
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": _friendly_error(error)})
 
     def _create_task(self) -> None:
         value = self._body()
         mode = value.get("mode", "optimize")
-        if mode not in ("optimize", "import"):
+        if mode not in ("optimize", "import", "dual"):
             raise TaskError("任务模式无效")
         profile = value.get("profile")
         if not isinstance(profile, str) or not profile.strip():
             raise TaskError("请先粘贴角色导出字符串")
         if len(profile.encode("utf-8")) > MAX_PROFILE_BYTES:
             raise TaskError("角色资料过大")
-        interval = value.get("input_interval_ms", 300)
+        interval = value.get("input_interval_ms", 200 if mode == 'dual' else 300)
         if type(interval) is not int or not 50 <= interval <= 2000:
             raise TaskError("按键间隔必须为 50 至 2000 毫秒的整数")
         target_count = value.get("target_count", 1)
@@ -222,7 +226,12 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         input_path, destination = self.server.task_paths(task_id)
         input_path.write_text(profile, encoding="utf-8", newline="")
         try:
-            handle = start_task(input_path, destination, **options)
+            if mode == 'dual':
+                from dual_task import start
+                handle = start(input_path, destination, search_config=options['search_config'],
+                               simulation_config=options['simulation_config'])
+            else:
+                handle = start_task(input_path, destination, **options)
         except BaseException:
             input_path.unlink(missing_ok=True)
             raise
@@ -235,8 +244,19 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         try:
             if handle is not None and handle.done and handle.error is not None:
                 raise TaskError(str(handle.error))
+            if (destination / 'dual.json').exists():
+                from dual_task import read
+                state = read(destination, active=not handle.done if handle else None)
+                if state.get('error'):
+                    state['error'] = _friendly_error(TaskError(state['error']))
+                return state
             return _public_state(read_task(destination, include_reports=False), destination)
-        except TaskError as error:
+        except (TaskError, DataReadError) as error:
+            if isinstance(error, DataReadError) or '共享存储' in str(error):
+                active = handle is not None and not handle.done
+                return dict(status='running' if active else 'failed', phase='storage_unavailable',
+                            result_ready=False, recoverable=not active, storage_unavailable=True,
+                            error='共享存储暂时不可读取，正在重试；计算可能仍在继续。')
             if handle is not None and not handle.done:
                 return _starting_state()
             if handle is not None and handle.error is not None:
@@ -244,7 +264,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                     "status": "failed",
                     "phase": "done",
                     "progress": 0.0,
-                    "elapsed_seconds": getattr(handle.runtime, "elapsed_seconds", 0.0),
+                    "elapsed_seconds": getattr(getattr(handle, "runtime", None), "elapsed_seconds", 0.0),
                     "completed_batches": 0,
                     "result_ready": False,
                     "error": _friendly_error(handle.error),
@@ -255,8 +275,26 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         _, destination = self.server.task_paths(task_id)
         with self.server.tasks_lock:
             entry = self.server.tasks.get(task_id)
+        if (destination / 'dual.json').exists():
+            from dual_task import cancel, cancel_saved
+            state = cancel(entry[1]) if entry else cancel_saved(destination)
+            self._send_json(HTTPStatus.OK, state)
+            return
         state = cancel_task(entry[1] if entry else destination)
         self._send_json(HTTPStatus.OK, _public_state(state, destination))
+
+    def _resume_task(self, task_id):
+        _, destination = self.server.task_paths(task_id)
+        with self.server.tasks_lock:
+            entry = self.server.tasks.get(task_id)
+            if entry and not entry[1].done:
+                raise TaskError('任务仍在运行')
+            if not (destination / 'dual.json').exists():
+                raise TaskError('此入口只恢复双场任务')
+            from dual_task import resume
+            handle = resume(destination)
+            self.server.tasks[task_id] = (destination, handle)
+        self._send_json(HTTPStatus.ACCEPTED, dict(task_id=task_id, status='starting'))
 
 
 def _starting_state() -> dict:

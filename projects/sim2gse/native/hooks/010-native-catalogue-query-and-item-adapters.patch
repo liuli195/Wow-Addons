@@ -1,0 +1,230 @@
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -3,6 +3,7 @@
+ // Send questions to natehieter@gmail.com
+ // ==========================================================================
+ #include "player.hpp"
++#include "sim2gse/catalogue.hpp"
+ 
+ #include "action/action.hpp"
+ #include "action/action_callback.hpp"
+@@ -4488,6 +4489,134 @@
+   } );
+ }
+ 
++unsigned player_t::sim2gse_base_spell_id( unsigned id ) const
++{
++  return sim2gse::base_spell_id( *this, id );
++}
++
++void player_t::create_import_action_probes()
++{
++  sim2gse_import_actions.clear();
++  if ( is_pet() )
++    return;
++
++  std::set<unsigned> requested_spell_ids;
++  for ( const auto& id_text : util::string_split( sim2gse_action_ids, "," ) )
++  {
++    int parsed_id = 0;
++    try
++    {
++      parsed_id = util::to_int( id_text );
++    }
++    catch ( const std::exception& )
++    {
++      continue;
++    }
++    if ( parsed_id > 0 )
++      requested_spell_ids.insert( static_cast<unsigned>( parsed_id ) );
++  }
++
++  auto hex_value = []( char value ) {
++    if ( value >= '0' && value <= '9' ) return value - '0';
++    if ( value >= 'a' && value <= 'f' ) return value - 'a' + 10;
++    if ( value >= 'A' && value <= 'F' ) return value - 'A' + 10;
++    return -1;
++  };
++  for ( const auto& encoded_name : util::string_split( sim2gse_action_names_hex, "," ) )
++  {
++    if ( encoded_name.empty() || encoded_name.size() > 256 || encoded_name.size() % 2 != 0 )
++      continue;
++    std::string name;
++    bool valid = true;
++    for ( size_t i = 0; i < encoded_name.size(); i += 2 )
++    {
++      const int high = hex_value( encoded_name[ i ] );
++      const int low = hex_value( encoded_name[ i + 1 ] );
++      if ( high < 0 || low < 0 )
++      {
++        valid = false;
++        break;
++      }
++      const char decoded = static_cast<char>( ( high << 4 ) | low );
++      if ( decoded == '\0' || static_cast<unsigned char>( decoded ) < 32 ||
++           static_cast<unsigned char>( decoded ) == 127 )
++      {
++        valid = false;
++        break;
++      }
++      name.push_back( decoded );
++    }
++    if ( !valid || name.empty() )
++      continue;
++    const auto* spell = find_spell( name, specialization() );
++    if ( spell->ok() && spell->is_level( true_level ) )
++      requested_spell_ids.insert( spell->id() );
++  }
++
++  for ( const unsigned spell_id : requested_spell_ids )
++  {
++    for ( const auto& action_name : action_names_from_spell_id( spell_id ) )
++    {
++      action_t* action = nullptr;
++      auto existing = range::find_if( action_list, [ this, &action_name ]( const action_t* candidate ) {
++        return candidate->player == this && candidate->name_str == action_name && !candidate->background;
++      } );
++      if ( existing != action_list.end() )
++      {
++        action = *existing;
++      }
++      else
++      {
++        try
++        {
++          action = create_action( action_name, "" );
++        }
++        catch ( const std::exception& )
++        {
++          continue;
++        }
++      }
++      if ( !action || action->player != this || action->background || action->quiet ||
++           !action->data().ok() || !action->data().is_level( true_level ) ||
++           action->data().flags( SX_PASSIVE ) )
++        continue;
++
++      const unsigned native_spell_id = action->data().id();
++      bool selected_talent = false;
++      bool unselected_talent = false;
++      for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
++      {
++        for ( const unsigned candidate_id : { spell_id, native_spell_id } )
++        {
++          const auto talent = find_talent_spell( tree, candidate_id, specialization() );
++          if ( !talent.invalid() )
++          {
++            selected_talent = selected_talent || talent.enabled();
++            unselected_talent = unselected_talent || !talent.enabled();
++          }
++        }
++      }
++      if ( unselected_talent )
++        continue;
++
++      const auto* action_spell_name = action->data().name_cstr();
++      const bool class_spell = find_class_spell( action_spell_name, specialization() )->id() == native_spell_id;
++      const bool specialization_spell =
++        find_specialization_spell( native_spell_id, specialization() )->id() == native_spell_id;
++      const bool racial_spell = find_racial_spell( action_spell_name )->id() == native_spell_id;
++      if ( !class_spell && !specialization_spell && !racial_spell && !selected_talent )
++        continue;
++
++      const bool duplicate = range::find_if( sim2gse_import_actions,
++        [ spell_id, action ]( const auto& candidate ) {
++          return candidate.first == spell_id && candidate.second == action;
++        } ) != sim2gse_import_actions.end();
++      if ( !duplicate )
++        sim2gse_import_actions.emplace_back( spell_id, action );
++    }
++  }
++}
++
+ void player_t::init_finished()
+ {
+   // Add dynamic cooldowns first before action_t::init_finished so actions can adjust their behavior accordingly if
+@@ -10271,6 +10400,7 @@
+       if ( action->ready() && action->target_ready( target ) )
+       {
+         action->set_target( target );
++        ++action->total_executions; // Observe direct proxy execution, outside the foreground scheduler.
+         action->execute();
+         break;
+       }
+@@ -10481,6 +10611,8 @@
+       }
+ 
+       auto use_action = new use_item_t( player, std::string( "slot=" ) + item.slot_name() );
++      use_action->signature_str = std::string("use_item,slot=") + item.slot_name();
++      use_action->is_precombat = is_precombat;
+       use_action->option.if_expr_str = option.if_expr_str;
+       use_action->action_list = action_list;
+       // The use_item action is not triggered by the actor (through the APL), so background it
+@@ -13176,6 +13308,8 @@
+   }
+ 
+   action_list_str      = source->action_list_str;
++  sim2gse_action_ids   = source->sim2gse_action_ids;
++  sim2gse_action_names_hex = source->sim2gse_action_names_hex;
+   alist_map            = source->alist_map;
+   use_apl              = source->use_apl;
+   apl_variable_map     = source->apl_variable_map;
+@@ -13226,6 +13360,8 @@
+   add_option( opt_int( "level", true_level, 1, MAX_LEVEL ) );
+   add_option( opt_bool( "ready_trigger", ready_type ) );
+   add_option( opt_func( "role", parse_role_string ) );
++  add_option( opt_string( "sim2gse_action_ids", sim2gse_action_ids ) );
++  add_option( opt_string( "sim2gse_action_names_hex", sim2gse_action_names_hex ) );
+   add_option( opt_string( "target", target_str ) );
+   add_option( opt_float( "skill", base.skill, 0, 1.0 ) );
+   add_option( opt_float( "distance", base.distance, 5, std::numeric_limits<double>::max() ) );
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -30,6 +30,7 @@
+ 
+ #include <map>
+ #include <set>
++#include <utility>
+ #include <unordered_map>
+ 
+ struct absorb_buff_t;
+@@ -205,6 +206,8 @@
+   rng::truncated_gauss_t world_lag, brain_lag;
+   timespan_t  cooldown_tolerance_;
+ 
++  unsigned sim2gse_base_spell_id( unsigned id ) const;
++
+   // Spell Queue
+   bool enable_spell_queue;
+   timespan_t spell_queue_window;
+@@ -356,6 +359,9 @@
+   /// Actions that have an action-specific dynamic targeting
+   std::set<action_t*> dynamic_target_action_list;
+   std::string action_list_str;
++  std::string sim2gse_action_ids;
++  std::string sim2gse_action_names_hex;
++  std::vector<std::pair<unsigned, action_t*>> sim2gse_import_actions;
+   std::string choose_action_list;
+   std::string action_list_skip;
+   std::string modify_action;
+@@ -1152,6 +1158,7 @@
+   virtual void init_assessors();
+   virtual void init_background_actions();
+   virtual void create_actions();
++  void create_import_action_probes();
+   virtual void init_actions();
+   virtual void init_finished();
+   virtual void add_precombat_buff_state( buff_t* buff, int stacks, double value, timespan_t duration );
+--- a/engine/sim/sim.cpp
++++ b/engine/sim/sim.cpp
+@@ -2987,7 +2987,10 @@
+   // quiet and skip action creation.
+   register_actor_initializer( INIT_ACTOR_CREATE_ACTIONS, []( player_t* p ) {
+     if ( p->validate_actor() )
++    {
+       p->create_actions();
++      p->create_import_action_probes();
++    }
+ #ifdef NDEBUG
+     else
+       p->quiet = true;

@@ -9,9 +9,10 @@
 <main>
 <section><h2><span class="number">01</span>导入角色</h2>
 <label for="profile">角色导出字符串</label><textarea id="profile" rows="7" spellcheck="false" placeholder="在这里粘贴从 SimC（角色导出插件）复制的完整文本"></textarea>
-<p id="error" class="error" role="alert" hidden></p><label for="targetCount">目标数量（SimC 默认目标）</label><select id="targetCount"><option value="1">1 目标</option><option value="5">5 目标</option></select><label for="interval">模拟按键间隔（毫秒）</label><input id="interval" type="number" min="50" max="2000" step="1" value="300"><p class="note">地面技能在角色脚下释放；请确保目标在技能范围内。此间隔仅用于模拟。</p><button id="start">开始运行</button>
+<p id="error" class="error" role="alert" hidden></p><label for="interval">模拟按键间隔（毫秒）</label><input id="interval" type="number" min="50" max="2000" step="1" value="200"><p class="note">依次寻找单目标和5目标序列，每场最多600秒，另需读取角色和整理结果。爆发宏中的内容自动排除在普通循环之外。地面技能在角色脚下释放。</p><button id="start">开始运行</button>
 </section>
 <section><h2>导入第三方 GSE 序列并模拟 DPS（每秒伤害）</h2>
+<label for="targetCount">导入模拟的目标数量</label><select id="targetCount"><option value="1">1 目标</option><option value="5">5 目标</option></select>
 <label for="gseImport">GSE 导入字符串</label><textarea id="gseImport" rows="5" spellcheck="false" placeholder="!GSE3!…"></textarea>
 <button id="inspectImport">检查导入内容</button><p id="importInspection" class="note" role="status">先检查导入内容，再选择序列和版本。</p>
 <div id="importSelection" hidden><label for="importSequence">序列</label><select id="importSequence"></select>
@@ -22,10 +23,14 @@
 </section>
 <section><h2><span class="number">02</span>运行进度</h2>
 <p id="progressText" role="status" aria-live="polite">等待开始</p><progress id="progress" value="0" max="1" aria-label="实际任务进度"></progress><p id="progressNote" class="note">开始后，这里会展示实际任务进度。</p>
+<button id="cancel" hidden>取消运行</button><button id="resume" hidden>继续未完成的任务</button>
 </section>
 <section id="resultSection" hidden><h2><span class="number">03</span>复制结果</h2>
-<label for="result">游戏导入字符串</label><textarea id="result" rows="3" readonly></textarea>
-<button id="copy" disabled>复制字符串</button><p id="resultNote" class="note">等待运行结果</p><p id="copyStatus" class="note" role="status"></p>
+<label for="result">单目标序列</label><textarea id="result" rows="3" readonly></textarea><button id="copy" disabled>复制单目标</button>
+<div id="dualResults" hidden><label for="aoeResult">5目标序列</label><textarea id="aoeResult" rows="3" readonly></textarea><button id="copyAoe" disabled>复制5目标</button>
+<label for="burstResult">爆发序列</label><textarea id="burstResult" rows="3" readonly></textarea><button id="copyBurst" disabled>复制爆发</button>
+<p id="burstInstructions" class="note"></p><label for="collectionResult">三个序列的一次导入包</label><textarea id="collectionResult" rows="3" readonly></textarea><button id="copyCollection" disabled>复制全部三个序列</button></div>
+<p id="resultNote" class="note">等待运行结果</p><p id="copyStatus" class="note" role="status"></p>
 </section>
 </main>
 <script>
@@ -33,6 +38,9 @@ const profile=document.getElementById('profile'),start=document.getElementById('
 const error=document.getElementById('error'),progress=document.getElementById('progress'),progressText=document.getElementById('progressText'),progressNote=document.getElementById('progressNote'),resultNote=document.getElementById('resultNote'),resultSection=document.getElementById('resultSection');
 const interval=document.getElementById('interval');
 const targetCount=document.getElementById('targetCount');
+const cancelButton=document.getElementById('cancel'),resumeButton=document.getElementById('resume');
+const outputs={single_target:[result,copy],aoe:[document.getElementById('aoeResult'),document.getElementById('copyAoe')],burst:[document.getElementById('burstResult'),document.getElementById('copyBurst')]};
+const collectionResult=document.getElementById('collectionResult'),copyCollection=document.getElementById('copyCollection');
 const diagnosticLogging=document.createElement('input');
 diagnosticLogging.type='checkbox';diagnosticLogging.id='diagnosticLogging';diagnosticLogging.style.width='auto';
 const diagnosticLabel=document.createElement('label');
@@ -42,9 +50,9 @@ const gseImport=document.getElementById('gseImport'),inspectImport=document.getE
 const importInspection=document.getElementById('importInspection'),importSelection=document.getElementById('importSelection'),gcdMs=document.getElementById('gcdMs');
 interval.addEventListener('input',resetResult);
 targetCount.addEventListener('change',resetResult);
-const phases={initialize:'正在读取角色和模拟引擎',search:'正在寻找合适的序列',validation:'正在复测候选序列',final:'正在进行最终复测',complete:'计算完成',done:'计算完成'};
+const phases={storage_unavailable:'存储暂时不可读取',single_target:'正在搜索单目标',aoe:'正在搜索5目标',package:'正在整理三个序列',initialize:'正在读取角色和模拟引擎',search:'正在寻找合适的序列',validation:'正在复测候选序列',final:'正在进行最终复测',complete:'计算完成',done:'计算完成'};
 let running=false,taskId=null,timer=null,inspected=null;
-function resetResult(){resultSection.hidden=true;result.value='';copy.disabled=true;resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';importResult.hidden=true;importResult.textContent='';}
+function resetResult(){resultSection.hidden=true;for(const [field,button] of Object.values(outputs)){field.value='';button.disabled=true;}collectionResult.value='';copyCollection.disabled=true;document.getElementById('dualResults').hidden=true;resumeButton.hidden=true;localStorage.removeItem('sim2gse-task');resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';importResult.hidden=true;importResult.textContent='';}
 function showError(message){error.textContent=message;error.hidden=false;}
 function resetProgress(){progress.value=0;progressText.textContent='等待开始';progressNote.textContent='开始后，这里会展示实际任务进度。';}
 profile.addEventListener('input',()=>{error.hidden=true;resetResult();resetProgress();});
@@ -52,22 +60,32 @@ async function poll(){
  try{
   const response=await fetch('/api/tasks/'+taskId,{cache:'no-store'}),state=await response.json();
   if(!response.ok)throw new Error(state.error||'读取任务状态失败');
-  error.hidden=true;
+  error.hidden=true;if(state.storage_unavailable)showError(state.error);
   progress.value=state.progress||0;progressText.textContent=phases[state.phase]||state.phase||'正在处理';
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
+  if(state.scenes){
+   const labels={single_target:'单目标',aoe:'5目标'},statuses={pending:'等待',running:'运行中',completed:'完成'};
+   progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)).join(' · ');
+   progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。';
+   for(const [purpose,[field,button]] of Object.entries(outputs)){field.value=state.exports[purpose]||'';button.disabled=!field.value;}
+   collectionResult.value=state.collection_text||'';copyCollection.disabled=!state.collection_ready;
+   resultSection.hidden=!state.result_ready;document.getElementById('dualResults').hidden=false;
+   resultNote.textContent=state.result_note;document.getElementById('burstInstructions').textContent=state.burst_instructions||'';
+   if(['completed','partial','failed','cancelled','interrupted'].includes(state.status)){if(state.error)showError(state.error);finish();resumeButton.hidden=!state.recoverable;return;}
+  }
   if(state.status==='completed'&&state.simulation_ready){importResult.textContent=state.selected_sequence+' · 版本 '+state.selected_version+' · '+Number(state.dps).toFixed(1)+' DPS（每秒伤害）';importResult.hidden=false;finish();return;}
   if(['completed','validation_incomplete'].includes(state.status)&&state.result_ready){result.value=state.candidate_text;resultSection.hidden=false;copy.disabled=false;resultNote.textContent=state.result_note||'结果已就绪，可以复制。';finish();return;}
-  if(['failed','cancelled','validation_incomplete','budget_exhausted'].includes(state.status)){showError(state.error||'任务未完成，未生成可复制结果。');finish();return;}
+  if(['failed','cancelled','validation_incomplete','budget_exhausted'].includes(state.status)){showError(state.error||'任务未完成，未生成可复制结果。');finish();resumeButton.hidden=!state.recoverable;return;}
   timer=setTimeout(poll,500);
  }catch(e){showError('暂时无法读取进度，正在重新连接；计算可能仍在继续。');timer=setTimeout(poll,1000);}
 }
-function finish(){running=false;start.disabled=false;refreshImportSupport();profile.disabled=false;interval.disabled=false;targetCount.disabled=false;gseImport.disabled=false;start.textContent='开始运行';importStart.textContent='模拟导入序列';if(timer)clearTimeout(timer);}
+function finish(){running=false;start.disabled=false;refreshImportSupport();profile.disabled=false;interval.disabled=false;targetCount.disabled=false;gseImport.disabled=false;cancelButton.hidden=true;start.textContent='开始运行';importStart.textContent='模拟导入序列';if(timer)clearTimeout(timer);}
 start.addEventListener('click',async()=>{
  if(running)return;
  if(!profile.value.trim()){showError('请先粘贴角色导出字符串。');profile.focus();return;}
  if(!interval.checkValidity()||!interval.value){showError('按键间隔必须为 50 至 2000 毫秒的整数。');interval.focus();return;}
  running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;start.textContent='运行中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动任务';progressNote.textContent='正在等待真实任务事件。';
- try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,target_count:Number(targetCount.value),input_interval_ms:Number(interval.value),diagnostic_logging:diagnosticLogging.checked,search_observability:diagnosticLogging.checked?'full':'off'})});const state=await response.json();if(!response.ok)throw new Error(state.error||'任务启动失败');taskId=state.task_id;poll();}
+ try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,mode:'dual',input_interval_ms:Number(interval.value),diagnostic_logging:diagnosticLogging.checked,search_observability:diagnosticLogging.checked?'full':'off'})});const state=await response.json();if(!response.ok)throw new Error(state.error||'任务启动失败');taskId=state.task_id;localStorage.setItem('sim2gse-task',taskId);cancelButton.hidden=false;poll();}
  catch(e){showError(e.message||'任务启动失败。');finish();}
 });
 function refreshImportSupport(){const entry=inspected?.sequences.find(item=>item.name===importSequence.value);const selected=entry?.version_support?.find(item=>item.version===Number(importVersion.value));const preflightPassed=selected?.simulation_preflight_passed===true;importStart.disabled=running||!preflightPassed;if(!inspected||!entry||!selected)return;const summary='已解析 '+inspected.sequences.length+' 条序列；语法：'+(inspected.syntax.join('、')||'无')+'。';const status=selected.support_status==='requires_character_validation'?'语法和版本预检通过；角色技能和物品映射尚未核对，启动时会验证，未匹配则不会返回 DPS。':'当前序列不能模拟：'+(selected.support_reason||'固定版本不支持。');importInspection.textContent=summary+status;}
@@ -82,5 +100,9 @@ importStart.addEventListener('click',async()=>{if(running||!inspected)return;con
  catch(e){showError(e.message||'导入模拟启动失败');finish();}
 });
 copy.addEventListener('click',async()=>{if(!result.value.trim())return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(result.value);status.textContent='已复制。';}catch{result.focus();result.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
+for(const [field,button] of [outputs.aoe,outputs.burst,[collectionResult,copyCollection]])button.addEventListener('click',async()=>{if(!field.value)return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(field.value);status.textContent='已复制。';}catch{field.focus();field.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
+cancelButton.addEventListener('click',async()=>{cancelButton.disabled=true;try{const response=await fetch('/api/tasks/'+taskId+'/cancel',{method:'POST'});if(!response.ok)throw new Error();}catch{showError('取消请求未送达，请重试。');}finally{cancelButton.disabled=false;}});
+resumeButton.addEventListener('click',async()=>{if(running)return;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;try{const response=await fetch('/api/tasks/'+taskId+'/resume',{method:'POST'}),state=await response.json();if(!response.ok)throw new Error(state.error||'任务不能继续');running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;poll();}catch(e){showError(e.message);finish();resumeButton.hidden=false;}});
+const savedTask=localStorage.getItem('sim2gse-task');if(savedTask){taskId=savedTask;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;cancelButton.hidden=false;poll();}
 </script>
 </html>

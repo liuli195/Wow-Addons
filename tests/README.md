@@ -50,3 +50,14 @@ node tests/gear-planner/check-async.js
 旧数据管理与整仓ROI重构的历史证据位于 `docs/sim2gse/data-management-diagnostic-a75ed320.md`，不随技能复制。最新用户批准按频率、影响、重复覆盖与成本删减、合并、缩低收益规模并将纯逻辑移到内存；测试数量和样本不固定，不伪称旧1000/220/56万规模或完整交叉仍被集成验收。生产默认与真实安全边界不随测试规模改变。
 
 统一入口整套正式预算60秒，从调用准备至完成收尾连续计时；本机正式命令 `build-and-verify verify --project . --full --performance-report --execution-context local` 实际执行当前全部登记检查。固定基线快速验证单独使用 `--base`，报告命中缓存与未运行范围；Linux定向、Lua5.4诊断或有效缓存不能冒充Windows固定Lua5.1/引擎完整验收。旧并行候选的测量保留在历史证据中，不作为移除数据工具后当前配置的最优性证明。
+
+
+### 双场页面真实角色验收
+
+`manual_interface.py`（真实浏览器验收）接受`--profile`（固定角色文件）和`--data-project`（已有数据中心项目）；不创建第二个生产数据中心。`--smoke`（小规模完整链）仅减少候选及样本，每场预算仍600秒，默认完整搜索设置不变。
+
+```powershell
+.venv/Scripts/python.exe tests/sim2gse/manual_interface.py --profile '固定角色.simc' --data-project '已有数据中心项目' --smoke --output '.local/tests/双场验收'
+```
+
+检查页面双场搜索、三个独立导出、原生集合导入编译、剪贴板、修改输入清旧显示和共享存储重读，保存实际用时及截图。此检查依赖已审核的适用爆发定义和私人角色；不加入远端检查，不把缩小样本或离线验证当成完整优化、最终独立复测或游戏验收。服务进程退出、存储故障和部分结果恢复已由统一自动发现的页面检查覆盖。
