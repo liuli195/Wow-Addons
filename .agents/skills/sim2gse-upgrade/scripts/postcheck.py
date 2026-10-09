@@ -49,9 +49,7 @@ def valid_scores(values):
 def check_scene(scene, ready):
     from program import canonicalize_search_program
     from search import digest
-    from task import _rule_hashes
-    from engine import COMMON, ROOT
-    from seed_training import RETEST_SEEDS, TRAINING_VERSION, search_program
+    from seed_training import RETEST_SEEDS, search_program, training_condition
     targets = scene['targets']
     scope = f'deathknight-unholy-{targets}-burst'
     run = one('runs', scene['run_id'], ['run_id', 'status', 'engines', 'condition_key',
@@ -75,11 +73,9 @@ def check_scene(scene, ready):
         require(valid_scores(row['scores']) and valid_scores(row['initial_scores']), '独立复测成绩缺项')
         state = checkpoint(row['task_path'], ['config', 'training_condition',
                            'training_candidate_id', 'burst'])
-        current_condition = digest(dict(version=TRAINING_VERSION, template=ready['template_sha256'],
-            engines=ready['engines'], config=state['config'],
-            simulation={'target_count': targets, 'enable_omnium_talents': True},
-            retest=RETEST_SEEDS, effective_options=COMMON, rules=_rule_hashes(relative_to=ROOT),
-            task_category='burst_free_training', burst=state['burst']))
+        current_condition = training_condition(ready['template_sha256'], ready['engines'],
+            state['config'], {'target_count': targets, 'enable_omnium_talents': True},
+            burst_context=state['burst'])
         require(row['condition'] == current_condition, '训练引擎身份或条件过期')
         require(state['training_condition'] == row['condition'] and
                 state['training_candidate_id'] == candidate_id, '训练记录与检查点不一致')
@@ -89,7 +85,8 @@ def check_scene(scene, ready):
                 key = digest(dict(folder=str(Path(row['task_path']) / name), seed=seed))
                 batch = one('batches', key, ['purpose', 'seed', 'samples', 'dps'])
                 require(batch['purpose'] == 'seed_retest' and batch['seed'] == seed and
-                        batch['samples'] >= 2 and batch['dps'] == score, '独立复测真实批次缺失或不一致')
+                        batch['samples'] == 127 and batch['dps'] == score,
+                        '独立复测真实批次、128轮规模或成绩不一致')
         completed[candidate_id] = row
     require(len(completed) == 2 and rejected == 1, '缺少两类成功材料或拒绝材料')
     require(len({row['family'] for row in completed.values()}) == 2, '成功材料须属于两类')
@@ -139,7 +136,9 @@ def check_scene(scene, ready):
     for row in selected:
         frozen = [item for item in state['seed_selected_snapshot']
                   if item['candidate_id'] == row['candidate_id']]
-        require(len(frozen) == 1 and all(decode(frozen[0][key]) == decode(value)
+        require(len(frozen) == 1 and all(
+                    (decode(frozen[0][key]) == decode(value) if key in ('program', 'engines')
+                     else frozen[0][key] == value)
                     for key, value in row.items()), '页面未冻结本次入选记录')
         canonical = canonicalize_search_program(decode(row['program']), state['capabilities'])
         candidate_key = canonical['identity']
@@ -165,6 +164,7 @@ def main():
     try:
         index = json.loads(args.evidence.read_text(encoding='utf-8'))
         require(isinstance(index, dict) and isinstance(index.get('scenes'), list) and
+                all(isinstance(scene, dict) for scene in index['scenes']) and
                 sorted(scene.get('targets', 0) for scene in index['scenes']) == [1, 5],
                 '证据索引必须包含单目标及五目标')
         prepare(args.project, args.data_project)

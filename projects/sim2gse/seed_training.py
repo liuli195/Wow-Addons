@@ -238,10 +238,20 @@ def _check_cancelled(cancel_event):
         raise TaskCancelled('任务已取消')
 
 
-def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False):
-    from engine import identity, reference, prepare_loop, ROOT, COMMON
-    from program import canonicalize_search_program
+def training_condition(template_sha, engines, config, simulation_config, *, burst_context=None):
+    """训练与升级核验共用的条件计算；不启动计算、不读取历史。"""
+    from engine import ROOT, COMMON
     from task import _rule_hashes
+    return digest(dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
+                       config=config, simulation=simulation_config, retest=RETEST_SEEDS,
+                       effective_options=COMMON, rules=_rule_hashes(relative_to=ROOT),
+                       **(dict(task_category='burst_free_training', burst=burst_context)
+                          if burst_context else {})))
+
+
+def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False):
+    from engine import identity, reference, prepare_loop
+    from program import canonicalize_search_program
     _check_cancelled(cancel_event)
     text = template.read_text(encoding='utf-8')
     character = template_character(text)
@@ -267,11 +277,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         _, capabilities, burst_context = prepare_loop(native, character, setup, setup_runtime,
                                                       definition=definition, interval_ms=config['input_interval_ms'])
     template_sha = hashlib.sha256(text.encode()).hexdigest()
-    rules = _rule_hashes(relative_to=ROOT)
-    condition = digest(dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
-                            config=config, simulation=simulation_config, retest=RETEST_SEEDS,
-                            effective_options=COMMON, rules=rules,
-                            **(dict(task_category='burst_free_training', burst=burst_context) if use_burst else {})))
+    condition = training_condition(template_sha, engines, config, simulation_config,
+                                   burst_context=burst_context)
     processed = result_store.read_records('seed_processed', scope)
     selected = [row for row in result_store.read_records('seed_selected', scope)
                 if row['condition'] == condition]
