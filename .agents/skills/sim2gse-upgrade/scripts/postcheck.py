@@ -13,6 +13,10 @@ def decode(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def search_batch_sizes(targets):
+    return {end - start for start, end in zip([0, *targets], targets)}
+
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -140,7 +144,7 @@ def check_scene(scene, ready):
                   {'batch_key': locator['key']})
         require(row['batch_key'] in run['batch_keys'] and row['run_id'] == run['run_id'] and
                 row['condition_key'] == run['condition_key'] and row['purpose'] == 'search' and
-                row['requested_iterations'] in decode(run['config'])['batch_targets'] and
+                row['requested_iterations'] in search_batch_sizes(decode(run['config'])['batch_targets']) and
                 row['samples'] == max(1, row['requested_iterations'] - 1) and
                 math.isfinite(row['dps']) and row['dps'] > 0,
                 '页面批次缺少有效的新条件评分')

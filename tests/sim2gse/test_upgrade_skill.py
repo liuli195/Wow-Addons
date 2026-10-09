@@ -1,5 +1,6 @@
 """仓库升级入口的轻量公开命令检查，不启动模拟或训练。"""
 import json
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,15 @@ SCRIPTS = ROOT / '.agents/skills/sim2gse-upgrade/scripts'
 
 
 class UpgradeSkillTests(unittest.TestCase):
+    def test_page_batch_sizes_follow_cumulative_targets(self):
+        sys.path.insert(0, str(SCRIPTS))
+        try:
+            module = runpy.run_path(str(SCRIPTS / 'postcheck.py'))
+            self.assertEqual(module['search_batch_sizes']([32, 128, 256]), {32, 96, 128})
+            self.assertEqual(module['search_batch_sizes']([2]), {2})
+        finally:
+            sys.path.remove(str(SCRIPTS))
+
     def test_postcheck_rejects_incomplete_index_before_loading_project(self):
         with tempfile.TemporaryDirectory() as directory:
             index = Path(directory) / 'index.json'
