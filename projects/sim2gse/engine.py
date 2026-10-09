@@ -283,6 +283,7 @@ def inspect(reference, folder):
     result = dict(actions=grouped, baseline_actions=baseline_grouped,
                   precombat_actions=precombat_program, sources=sources, protocol=4,
                   import_actions=import_actions,
+                  unavailable_actions=reference.get('unavailable_actions', []),
                   scope='default_apl_player_actions', coverage='combat_apl_buttons_with_baseline_forms')
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'catalogue.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -404,6 +405,7 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     result['apl_actions'] = player.get('sim2gse_apl_actions')
     result['precombat_definitions'] = player.get('sim2gse_precombat_actions', [])
     result['active_items'] = player.get('sim2gse_items', [])
+    result['unavailable_actions'] = player.get('sim2gse_unavailable_actions', [])
     result['import_action_candidates'] = []
     if import_spell_ids or import_spell_names:
         probe_folder = folder / 'import_action_probe'
@@ -415,4 +417,5 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
             raise ValueError('原生动作查询报告缺失或不是有效 JSON') from error
         probe_player = player_report(probe_report, character)
         result['import_action_candidates'] = probe_player.get('sim2gse_import_actions', [])
+        result['unavailable_actions'] = probe_player.get('sim2gse_unavailable_actions', [])
     return result

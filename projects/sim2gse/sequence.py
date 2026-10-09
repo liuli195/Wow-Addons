@@ -242,6 +242,12 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
     generated.write_text(Path(profile).read_text(encoding='utf-8') + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
+                         + ('sim2gse_optional_spells=' + ','.join(value for value in sorted({
+                             str(command['spell_id']) + ':' + command['simc_action']
+                             for block in all_commands for command in block
+                             if command.get('native_check_required') and command['kind'] == 'spell'})) + '\n'
+                            if any(command.get('native_check_required') for block in all_commands
+                                   for command in block) else '')
                          + f'sim2gse_steps={indices}\nsim2gse_trace={int(trace)}\n'
                          + castsequence_option
                          + ('' if not reset_events else 'sim2gse_castsequence_events=' +
@@ -260,7 +266,13 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', True) else os.devnull)], runtime=runtime,
               simulation_config=simulation_config, **start_callback)
     native_blocks = []
+    skipped_commands = []
     for line in log.splitlines():
+        if line.startswith('S2GSKIP\t'):
+            _, block, position, signature, reason = line.split('\t')
+            skipped_commands.append(dict(step=int(block), position=int(position),
+                                         simc_action=signature, reason=reason))
+            continue
         if not line.startswith('S2GBLOCK\t'):
             continue
         _, block, position, signature = line.split('\t')
@@ -275,12 +287,26 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         native_blocks[block].append(signature)
     if native_blocks != runtime_blocks:
         raise ValueError('原生实际解析的动作块与编译结果不一致')
+    skipped_positions = set()
+    for row in skipped_commands:
+        step, position = row['step'], row['position']
+        if (not 0 <= step < len(runtime_blocks) or not 0 <= position < len(runtime_blocks[step])
+                or row['simc_action'] != runtime_blocks[step][position]
+                or row['reason'] not in {'empty_slot', 'passive_item', 'unselected_talent'}
+                or (step, position) in skipped_positions):
+            raise ValueError('原生跳过命令的身份或原因不一致')
+        skipped_positions.add((step, position))
+    effective_blocks = [[name for position, name in enumerate(block)
+                         if (step, position) not in skipped_positions]
+                        for step, block in enumerate(runtime_blocks)]
     try:
         pending_report = json.loads(pending_report.read_text(encoding='utf-8'))
     except (OSError, ValueError) as error:
         raise ValueError('原生报告缺失或不是有效 JSON') from error
     # 只有完整解析成功的报告才进入正式名称；任务恢复时不会把半份文件当成成功批次。
     report = pending_report
+    if player_report(report, character).get('sim2gse_skipped_commands', []) != skipped_commands:
+        raise ValueError('原生报告与跳过日志不一致')
     measured = (report['sim']['statistics']['raid_dps'] if len(report['sim']['players']) > 1
                 else player_report(report, character)['collected_data']['dps'])
     if measured['mean'] == 0:
@@ -322,7 +348,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         dispatches = [e for e in events if e['event'] == 'dispatch']
         if any(not 1 <= e['origin'] <= len(input_times)
                or e['step'] != expected_steps[e['origin'] - 1]
-               or e['signature'] not in runtime_blocks[e['step']]
+               or e['signature'] not in effective_blocks[e['step']]
                for e in dispatches + executed + interrupted):
             raise ValueError('原生动作不属于来源输入对应的编译块')
         by_step = {row['step']: row['members'] for row in castsequences}
@@ -352,6 +378,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             raise ValueError('原生派发与实际执行轨迹不一致')
     replace_file(folder / 'native.pending.json', folder / 'native.json')
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
+                skipped_commands=skipped_commands, effective_blocks=effective_blocks,
                 input_sources=input_sources, burst_offset=(burst_offset if input_sources is not None else None),
                 gcd_states=gcd_states, failed_actions=failed_actions,
                 failure_events=failure_events, consistent=True,

@@ -2,10 +2,11 @@
   "protocol": 1,
   "spec_id": 252,
   "class_key": "deathknight",
-  "version": "2026-10-09-2",
+  "spec_key": "unholy",
+  "version": "2026-10-10-1",
   "data_version": "12.1.0.69933",
   "reviewer": "user",
-  "reviewed_at": "2026-10-09",
+  "reviewed_at": "2026-10-10",
   "status": "reviewed",
   "sources": [
     "https://www.method.gg/guides/unholy-death-knight/playstyle-and-rotation"
@@ -73,6 +74,6 @@
     "pause_loop": true,
     "preserve_position": true
   },
-  "applicability": "首版限当前已审核天赋；动作不可模拟时明确报告不适用，不删动作。",
+  "applicability": "按邪恶专精固定宏；明确未学技能、被动饰品或空槽时跳过，保留完整导出及按键位置；未知模拟动作报错。天赋摘要仅保留历史来源，不限制适用角色。",
   "instructions": "第3、48、93、138秒切到爆发键按1秒，默认间隔200毫秒；满1秒后继续原循环位置。按键位置跨窗口保留。"
 }

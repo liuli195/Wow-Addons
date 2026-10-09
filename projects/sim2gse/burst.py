@@ -21,7 +21,7 @@ def validate(definition):
     if (not isinstance(definition, dict) or definition.get('protocol') != 1
             or definition.get('status') != 'reviewed'
             or not all(isinstance(definition.get(key), str) and definition[key]
-                       for key in ('version', 'class_key', 'data_version', 'reviewer', 'reviewed_at',
+                       for key in ('version', 'class_key', 'spec_key', 'data_version', 'reviewer', 'reviewed_at',
                                    'instructions', 'applicability'))
             or type(definition.get('spec_id')) is not int or definition['spec_id'] <= 0):
         raise ValueError('爆发定义未审核或记录格式无效')
@@ -104,10 +104,10 @@ def select_definition(character):
     matches = []
     for row in ids:
         rows = read_records('burst_definitions', f"current_{row['spec_id']}")
-        if rows and talent_hash(character) in rows[0].get('talent_hashes', []):
+        if rows and rows[0].get('spec_key') == character.spec:
             matches.append(load(row['spec_id']))
     if len(matches) != 1:
-        raise ValueError('当前角色天赋没有唯一适用的已审核爆发定义')
+        raise ValueError('当前角色专精没有唯一适用的已审核爆发定义')
     return matches[0]
 
 
@@ -116,9 +116,9 @@ def prepare(definition, character, capabilities, native_identity):
     validate(definition)
     if (character.class_name != definition['class_key']
             or native_identity['spec_id'] != definition['spec_id']
-            or native_identity.get('data_version') != definition['data_version']
-            or talent_hash(character) not in definition['talent_hashes']):
-        raise ValueError('当前角色、天赋或模拟版本不适用此爆发定义')
+            or character.spec != definition['spec_key']
+            or native_identity.get('data_version') != definition['data_version']):
+        raise ValueError('当前角色专精或模拟版本不适用此爆发定义')
     blocks = []
     for block in definition['blocks']:
         commands = []
@@ -131,9 +131,26 @@ def prepare(definition, character, capabilities, native_identity):
                             and action['spell_id'] == requested['spell_id'])
                            or (action['kind'] == 'item' and requested['kind'] == 'item'
                                and action['slot'] == requested['slot'])]
-                if len(matches) != 1:
-                    raise ValueError('爆发动作不适用当前角色: ' + requested['name'])
-                command = dict(matches[0], name=requested['name'])
+                if not matches and requested['kind'] == 'spell':
+                    matches = [action for action in capabilities.get('import_actions', [])
+                               if action['kind'] == 'spell' and action['spell_id'] == requested['spell_id']]
+                if len(matches) == 1:
+                    command = dict(matches[0], name=requested['name'])
+                elif not matches:
+                    unavailable = [row for row in capabilities.get('unavailable_actions', [])
+                                   if row.get('kind') == requested['kind'] and
+                                   (row.get('spell_id') == requested['spell_id'] if requested['kind'] == 'spell'
+                                    else row.get('slot') == requested['slot'])]
+                    if requested['kind'] == 'spell' and not unavailable:
+                        # Native initialization must prove absence from the real talent tree.
+                        command = dict(requested, native_check_required=True, gcd_ms=0)
+                    elif len(unavailable) != 1 or unavailable[0].get('reason') not in {
+                            'empty_slot', 'passive_item', 'unselected_talent'}:
+                        raise ValueError('爆发动作无法确认可用性: ' + requested['name'])
+                    else:
+                        command = dict(requested, unavailable=unavailable[0]['reason'], gcd_ms=0)
+                else:
+                    raise ValueError('爆发动作映射不唯一: ' + requested['name'])
             commands.append(command)
         if len({c.get('base_spell_id', c['simc_action']) for c in commands if c.get('gcd_ms', 0) > 0}) > 1:
             raise ValueError('爆发同块包含多个公共冷却动作，需要分别按键')

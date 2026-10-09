@@ -9,7 +9,7 @@
         "baseline",
         "controlled"
       ],
-      "sha256": "a2c18cd603169ba0486a68fcb397a3ceef2644240e624182a682d0bf6dc51146"
+      "sha256": "4b3af0e375a15446a5fd4e9ce0c688c3e3f1a6586483c2614858c01b4b16d449"
     },
     {
       "path": "projects/sim2gse/native/src/catalogue.cpp",
@@ -18,7 +18,7 @@
         "baseline",
         "controlled"
       ],
-      "sha256": "8541d6cb53d03930ab5608cc66e938cae3520b00d626631df42d8406e61d618e"
+      "sha256": "0e586487c28125e2dace51496f38adbfb7a485e7ca2c32033eeb85c3b435a395"
     },
     {
       "path": "projects/sim2gse/native/src/controller.hpp",
@@ -26,7 +26,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "6dedbdbf21104e7f1762ea6c58c7e761074243b12dbe208f8758c6ad0a9071ff"
+      "sha256": "004e246addbf9b1585294c01f380ed3d1f1045f19b8f71da733a01c10926bd9e"
     },
     {
       "path": "projects/sim2gse/native/src/controller.cpp",
@@ -34,7 +34,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "e0ef5750873b6b7f93976bcd906837a9b71a4ba19afefdffc844e45c677b1cb3"
+      "sha256": "6a1728924fac034d662ec7265d05d3c9b9eb7844b6ef0c6664c5c794556fcbd5"
     }
   ],
   "upstream_commit": "eed909156d8eccbfca0f284cc271c080949d6a20",
@@ -54,7 +54,7 @@
     },
     {
       "path": "projects/sim2gse/native/hooks/040-control-connections.patch",
-      "sha256": "125c2ce88fc80201ab7604a7547dd92f86e304691e5cd81d161bf9b43573fe34"
+      "sha256": "b30a2330b43de026fe0301728b137c626ed1f5b90e031335a8deb01a83c2081d"
     },
     {
       "path": "projects/sim2gse/native/hooks/050-death-knight-guards.patch",
@@ -92,12 +92,12 @@
     "GSE/API/translator.lua": "14480c4647cf269fd3852998f6ed09311af75455209188bac2971cb23b8e429c"
   },
   "patched_files": {
-    "engine/player/player.cpp": "14678a75d976995e836f58415373fc563d608bf889b42cec1afa15e4ad40b91a",
+    "engine/player/player.cpp": "16c7361bd8c1a0c66f4cf03c2706efd68a9a09a0fa8c453b6533bcc96e9c9349",
     "engine/player/player.hpp": "b95c18dd0cf9f90cec0dbeedafb53022f92cca8a2cd48c0287125d3ca2a72092",
     "engine/action/action.cpp": "00327162529c56aee58ebc2e898a670c0adf0f9ad950f8f34bb3b09cdccbd540",
     "engine/action/action.hpp": "ac201ff2dfaf3aa57206568b86cc4a4c25f9bf80c1547ce2a8879760dff0bb76",
     "engine/class_modules/sc_death_knight.cpp": "0028295dd0623d725b10bf837fb850e22358c3768d869a4ce60424c56ce28222",
-    "engine/report/json/report_json.cpp": "d881068c4f5fb0ab84a318ba591123a4ec0b712f7a6cebd26bc9e4802e81495c",
+    "engine/report/json/report_json.cpp": "641a4f7aefc98766ccfb98b5688fccbff5d6ba9169223fb68f74ec875fe8d5c9",
     "engine/Makefile": "d36e92017d3c4877c6a716a3fba18e0336a269a8ea6ee10979ad78573448fed9"
   },
   "baseline_patches": [

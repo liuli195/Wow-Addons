@@ -2,7 +2,7 @@
 
 Status（状态）: planned（补充门禁已确认；等待前置票）
 Triage（分拣）: ready-for-agent
-Blocked by（前置）: 13、14及标准角色爆发审核通过
+Blocked by（前置）: 13、14验收通过（固定专精爆发规则已由用户确认）
 
 ## 交付行为及验收
 

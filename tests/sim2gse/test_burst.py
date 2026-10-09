@@ -69,7 +69,7 @@ def test_public_burst_precheck_roundtrip_and_real_potion(tmp_path):
     assert behavior_key(displayed) == behavior_key(result['candidate'])
 
 
-def test_public_burst_rejects_draft_corruption_and_unreviewed_talents(tmp_path):
+def test_public_burst_rejects_draft_corruption_but_accepts_other_talents(tmp_path):
     import burst
     import result_store
     definition, raw = reviewed_fixture()
@@ -90,8 +90,8 @@ def test_public_burst_rejects_draft_corruption_and_unreviewed_talents(tmp_path):
     unreviewed['version'] = 'test-other-talents'
     unreviewed['talent_hashes'] = ['0' * 64]
     burst.publish(unreviewed)
-    with pytest.raises(task.TaskError, match='不适用'):
-        task.precheck_burst(profile, tmp_path / 'talents')
+    result = task.precheck_burst(profile, tmp_path / 'talents')
+    assert result['definition']['version'] == 'test-other-talents'
 
 
 def test_public_burst_storage_failure_keeps_the_previous_version(tmp_path, monkeypatch):
@@ -135,14 +135,59 @@ def test_public_burst_can_retry_a_denied_potion_without_consuming_it(tmp_path):
     assert denied[0]['cooldown_ms'] == 0
 
 
-def test_public_burst_reports_unavailable_trinket_without_dropping_it(tmp_path):
+@pytest.mark.parametrize('empty_slot', [False, True])
+def test_public_burst_skips_passive_trinkets_without_changing_the_macro(tmp_path, empty_slot):
     import burst
     definition, _ = reviewed_fixture()
     burst.publish(definition)
     profile = tmp_path / 'character.simc'
-    profile.write_text(sample_profile(), encoding='utf-8')
-    with pytest.raises(task.TaskError, match='不适用当前角色: 饰品13'):
-        task.precheck_burst(profile, tmp_path / 'passive-trinkets')
+    raw = sample_profile()
+    if empty_slot:
+        raw = raw.replace('trinket2=,id=250228\n', '')
+    profile.write_text(raw, encoding='utf-8')
+    result = task.precheck_burst(profile, tmp_path / 'passive-trinkets')
+    assert result['candidate']['compiled_steps'][1]['macrotext'] == (
+        '/use 鲁莽药水\n/use 13\n/use 14\n/cast 黑暗突变')
+    assert {row['simc_action'] for row in result['simulation']['skipped_commands']} == {
+        'use_item,slot=trinket1', 'use_item,slot=trinket2'}
+    assert result['simulation']['effective_blocks'][1] == ['potion', 'dark_transformation']
+    assert len(result['simulation']['input_times']) == 20
+    assert any(row['reason'] == ('empty_slot' if empty_slot else 'passive_item')
+               and row['simc_action'] == 'use_item,slot=trinket2'
+               for row in result['simulation']['skipped_commands'])
+
+
+def test_public_burst_native_skips_an_unlearned_skill_and_preserves_its_block(tmp_path):
+    import burst
+    from engine import training_template
+    from seed_training import template_character
+    definition, _ = reviewed_fixture()
+    definition['blocks'][0] = [dict(definition['blocks'][0][0], name='吸血打击',
+                                   spell_id=433895, simc_action='vampiric_strike')]
+    definition['excluded_spell_ids'].append(433895)
+    burst.publish(definition)
+    profile = tmp_path / 'standard.simc'
+    profile.write_text(template_character(training_template().read_text(encoding='utf-8')).raw_text,
+                       encoding='utf-8')
+    result = task.precheck_burst(profile, tmp_path / 'unlearned')
+    skipped = result['simulation']['skipped_commands']
+    assert any(row['simc_action'] == 'vampiric_strike' and row['reason'] == 'unselected_talent'
+               and row['step'] == 0 for row in skipped)
+    assert result['simulation']['effective_blocks'][0] == []
+    assert result['candidate']['compiled_steps'][0]['spell'] == 433895
+    assert [row['step'] for row in result['simulation']['trace'] if row['event'] == 'input'] == [0, 1] * 10
+
+
+def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path):
+    import burst
+    definition, raw = reviewed_fixture()
+    definition['blocks'][0][0]['spell_id'] = 999999
+    definition['excluded_spell_ids'].append(999999)
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    with pytest.raises(task.TaskError, match='optional spell identity does not match action'):
+        task.precheck_burst(profile, tmp_path / 'wrong-identity')
 
 
 def test_public_burst_reports_a_missing_storage_center(tmp_path):
@@ -205,7 +250,7 @@ def test_public_task_runs_loop_and_burst_on_one_native_player(tmp_path):
     assert restored['burst']['candidate']['text'] == result['burst']['candidate']['text']
 
 
-def test_public_dual_task_rejects_burst_review_for_disabled_extra_talents(tmp_path):
+def test_public_dual_task_uses_fixed_burst_with_disabled_extra_talents(tmp_path):
     import burst
     definition, raw = reviewed_fixture()
     raw += '\nomnium_talents=1:1\n'
@@ -214,10 +259,10 @@ def test_public_dual_task_rejects_burst_review_for_disabled_extra_talents(tmp_pa
     profile = tmp_path / 'character.simc'
     profile.write_text(raw, encoding='utf-8')
     original = profile.read_bytes()
-    with pytest.raises(task.TaskError, match='不适用此爆发定义'):
-        task.run_task(profile, tmp_path / 'omnium-off', mode='single', use_burst=True,
-                      program=[['outbreak'], ['festering_strike']],
-                      simulation_config={'enable_omnium_talents': False})
+    result = task.run_task(profile, tmp_path / 'omnium-off', mode='single', use_burst=True,
+                           program=[['outbreak'], ['festering_strike']],
+                           simulation_config={'enable_omnium_talents': False})
+    assert result['status'] == 'offline_ready'
     assert profile.read_bytes() == original
 
 

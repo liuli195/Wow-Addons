@@ -1,4 +1,5 @@
 #include "controller.hpp"
+#include "catalogue.hpp"
 #include "simulationcraft.hpp"
 
 namespace sim2gse
@@ -7,6 +8,7 @@ void controller_t::register_options( player_t& owner )
 {
   owner_ = &owner;
   owner.add_option( opt_string("sim2gse_steps", sim2gse_steps) );
+  owner.add_option( opt_string("sim2gse_optional_spells", optional_spell_ids_) );
   owner.add_option( opt_string("sim2gse_castsequences", sim2gse_castsequences) );
   owner.add_option( opt_string("sim2gse_castsequence_events", sim2gse_castsequence_events) );
   owner.add_option( opt_string("sim2gse_times", sim2gse_times) );
@@ -378,6 +380,38 @@ void controller_t::sim2gse_arm_queue()
   });
 }
 
+std::string controller_t::unavailable_reason( const std::string& signature ) const
+{
+  std::vector<unsigned> ids;
+  for ( const auto& text : util::string_split( optional_spell_ids_, "," ) )
+  {
+    const auto fields = util::string_split( text, ":" );
+    if ( fields.size() != 2 ) throw std::runtime_error("invalid optional spell identity");
+    const int id = util::to_int( fields[0] );
+    if ( id <= 0 ) throw std::runtime_error("invalid optional spell identity");
+    const auto names = owner_->action_names_from_spell_id( static_cast<unsigned>( id ) );
+    if ( range::find( names, fields[1] ) == names.end() )
+      throw std::runtime_error("optional spell identity does not match action: " + text);
+    if ( fields[1] == signature ) ids.push_back( static_cast<unsigned>( id ) );
+  }
+  return sim2gse::unavailable_reason( *owner_, signature, ids );
+}
+
+void controller_t::write_report( js::JsonOutput root ) const
+{
+  auto rows = root[ "sim2gse_skipped_commands" ];
+  rows.make_array();
+  for ( const auto& [step, commands] : skipped_commands_ )
+    for ( const auto& [position, action, reason] : commands )
+    {
+      auto row = rows.add();
+      row[ "step" ] = step;
+      row[ "position" ] = position;
+      row[ "simc_action" ] = action;
+      row[ "reason" ] = reason;
+    }
+}
+
 void controller_t::sim2gse_init()
 {
   if ( sim2gse_steps.empty() ) return;
@@ -387,10 +421,21 @@ void controller_t::sim2gse_init()
   if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
     throw std::runtime_error("sim2gse prototype window must be 0..400ms");
   auto* list = owner_->find_action_priority_list("sim2gse");
-  if ( !list || list->foreground_action_list.empty() )
+  if ( !list || list->action_list.empty() )
     throw std::runtime_error("sim2gse prototype requires actions.sim2gse");
-  if (list->foreground_action_list.size() != list->action_list.size())
-    throw std::runtime_error("sim2gse action removed by native initialization");
+  std::vector<action_t*> resolved_actions;
+  std::vector<std::string> skipped_reasons;
+  for ( const auto& entry : list->action_list )
+  {
+    const auto reason = unavailable_reason( entry.action_ );
+    const auto found = range::find_if( list->foreground_action_list, [&entry]( const action_t* action ) {
+      return action->signature_str == entry.action_;
+    } );
+    if ( reason.empty() && found == list->foreground_action_list.end() )
+      throw std::runtime_error("sim2gse action unavailable without evidence: " + entry.action_);
+    resolved_actions.push_back( reason.empty() ? *found : nullptr );
+    skipped_reasons.push_back( reason );
+  }
   if (!sim2gse_castsequences.empty())
   {
     for (auto definition : util::string_split(sim2gse_castsequences, "/"))
@@ -427,9 +472,10 @@ void controller_t::sim2gse_init()
         if (index.empty() || index.find_first_not_of("0123456789") != std::string::npos)
           throw std::runtime_error("invalid sim2gse castsequence member");
         const auto n = std::stoul(index);
-        if (n == 0 || n > list->foreground_action_list.size())
+        if (n == 0 || n > resolved_actions.size())
           throw std::runtime_error("sim2gse castsequence member out of range");
-        auto* action = list->foreground_action_list[n - 1];
+        auto* action = resolved_actions[n - 1];
+        if ( !action ) throw std::runtime_error("unavailable castsequence member");
         if (action->background || action->type == ACTION_VARIABLE || action->name_str == "use_items" ||
             action->name_str == "call_action_list" || action->name_str == "run_action_list")
           throw std::runtime_error("unsupported sim2gse castsequence action: " + action->name_str);
@@ -457,9 +503,10 @@ void controller_t::sim2gse_init()
       if ( index.empty() || index.find_first_not_of("0123456789") != std::string::npos )
         throw std::runtime_error("invalid sim2gse action index");
       auto n = std::stoul(index);
-      if ( n == 0 || n > list->foreground_action_list.size() )
+      if ( n == 0 || n > resolved_actions.size() )
         throw std::runtime_error("sim2gse action index out of range");
-      auto* a = list->foreground_action_list[n - 1];
+      auto* a = resolved_actions[n - 1];
+      if ( !a ) continue;
       if ( a->background || !a->option.if_expr_str.empty() || !a->option.target_if_str.empty() ||
            a->type == ACTION_VARIABLE || a->name_str == "use_items" ||
            a->name_str == "call_action_list" || a->name_str == "run_action_list" )
@@ -471,12 +518,24 @@ void controller_t::sim2gse_init()
         throw std::runtime_error("prototype supports at most one GCD action per block");
       actions.push_back(a);
     }
-    if ( actions.empty() ) throw std::runtime_error("empty sim2gse block");
     const auto castsequence = sim2gse_castsequence_members.find(block_index);
     if (castsequence != sim2gse_castsequence_members.end() && actions != castsequence->second)
       throw std::runtime_error("sim2gse castsequence members do not match its block");
-    for (size_t i = 0; i < actions.size(); ++i)
-      fmt::print("S2GBLOCK\t{}\t{}\t{}\n", sim2gse_blocks.size(), i, actions[i]->signature_str);
+    unsigned position = 0;
+    for ( const auto& index : util::string_split( block, "+" ) )
+    {
+      const auto n = std::stoul( index ) - 1;
+      fmt::print("S2GBLOCK\t{}\t{}\t{}\n", sim2gse_blocks.size(), position,
+                 list->action_list[n].action_);
+      if ( !skipped_reasons[n].empty() )
+      {
+        fmt::print("S2GSKIP\t{}\t{}\t{}\t{}\n", sim2gse_blocks.size(), position,
+                   list->action_list[n].action_, skipped_reasons[n]);
+        skipped_commands_[static_cast<unsigned>(sim2gse_blocks.size())].emplace_back(
+          position, list->action_list[n].action_, skipped_reasons[n]);
+      }
+      ++position;
+    }
     sim2gse_blocks.push_back(actions);
   }
   if ( sim2gse_blocks.empty() || sim2gse_blocks.size() > 128 )

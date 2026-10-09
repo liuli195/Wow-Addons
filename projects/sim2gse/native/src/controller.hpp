@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util/timespan.hpp"
+#include "interfaces/sc_js.hpp"
 #include <map>
 #include <set>
 #include <string>
@@ -26,6 +27,8 @@ public:
   void start( player_t& );
   void reset( player_t& );
   bool enabled() const { return !sim2gse_steps.empty(); }
+  std::string unavailable_reason( const std::string& signature ) const;
+  void write_report( js::JsonOutput root ) const;
   selection_t select();
   void notify( const char* event, action_t*, unsigned origin );
   void precombat( action_t&, precombat_phase );
@@ -41,6 +44,8 @@ private:
   std::vector<bool> burst_inputs_;
   unsigned input_ = 0;
   std::string sim2gse_steps;
+  std::string optional_spell_ids_;
+  std::map<unsigned, std::vector<std::tuple<unsigned, std::string, std::string>>> skipped_commands_;
   std::string sim2gse_castsequences;
   std::string sim2gse_castsequence_events;
   bool sim2gse_trace = false;

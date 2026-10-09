@@ -218,7 +218,14 @@
  
    std::string modify_action_options;
  
-@@ -4494,131 +4499,9 @@
+@@ -4214,3 +4219,6 @@
+     for ( auto& action_priority : apl->action_list )
+     {
++      if ( apl->name_str == "sim2gse" && sim2gse_control.enabled() &&
++           !sim2gse_control.unavailable_reason( action_priority.action_ ).empty() )
++        continue;
+       std::string& action_str = action_priority.action_;
+@@ -4494,131 +4502,9 @@
    return sim2gse::base_spell_id( *this, id );
  }
  
@@ -511,12 +518,13 @@
    virtual void add_precombat_buff_state( buff_t* buff, int stacks, double value, timespan_t duration );
 --- a/engine/report/json/report_json.cpp
 +++ b/engine/report/json/report_json.cpp
-@@ -860,7 +860,7 @@
+@@ -860,7 +860,8 @@
    collected_data_to_json( root[ "collected_data" ], report_configuration, p );
  
    // Expose existing whole-run counters and native identity; no simulation decisions change.
 -  sim2gse::write_player_report( root, p, true );
 +  sim2gse::write_player_report( root, p, false );
++  p.sim2gse_control.write_report( root );
  
    if ( p.sim->report_details != 0 )
    {

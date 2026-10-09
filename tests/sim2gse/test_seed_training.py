@@ -60,15 +60,36 @@ def test_training_check_locates_current_template_without_starting_compute(tmp_pa
     assert not (tmp_path / 'work').exists()
 
 
-def test_training_check_refuses_missing_review_before_starting_compute(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize('entry', ['check', 'run'])
+def test_training_entry_refuses_missing_definition_before_starting_compute(tmp_path, capsys, monkeypatch, entry):
     from seed_training import main
 
     def forbidden_process(*args, **kwargs):
-        raise AssertionError('未审核角色不能启动计算进程')
+        raise AssertionError('缺少审核定义时不能启动计算进程')
 
     monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
-    assert main(['--project', str(tmp_path), 'check']) == 2
+    assert main(['--project', str(tmp_path), entry,
+                 *(['--workspace', str(tmp_path / 'work')] if entry == 'run' else [])]) == 2
     assert '已审核' in capsys.readouterr().err
+
+
+def test_training_check_uses_fixed_specialization_burst_for_standard_talents(tmp_path, capsys, monkeypatch):
+    import burst
+    import result_store
+    from seed_training import main
+
+    result_store.bind_project(tmp_path)
+    definition = json.loads(Path('projects/sim2gse/burst/unholy.json').read_text(encoding='utf-8'))
+    published = burst.publish(definition)
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('只读检查不能启动计算')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), 'check']) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['burst_definition_id'] == published['definition_id']
+    assert output['talent_sha256'] == '25290264e714733e77e73c453363fa128792bfd219bece3854d5e6193b4e50da'
 
 
 def test_training_list_defaults_to_burst_and_preserves_legacy_results(tmp_path, capsys):

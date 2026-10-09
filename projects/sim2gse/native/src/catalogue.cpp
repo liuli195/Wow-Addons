@@ -5,6 +5,51 @@
 
 namespace sim2gse
 {
+std::string unavailable_reason( const player_t& p, const std::string& signature,
+                                const std::vector<unsigned>& spell_ids )
+{
+  for ( const auto& item : p.items )
+  {
+    if ( ( item.slot != SLOT_TRINKET_1 && item.slot != SLOT_TRINKET_2 ) ||
+         signature != std::string( "use_item,slot=" ) + item.slot_name() ) continue;
+    if ( item.special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE ) ||
+         range::any_of( item.parsed.data.effects, []( const auto& entry ) {
+           return entry.spell_id && entry.type == ITEM_SPELLTRIGGER_ON_USE;
+         } ) ) return {};
+    if ( !item.active() ) return "empty_slot";
+    return item.parsed.data.id ? "passive_item" : std::string();
+  }
+  for ( const unsigned id : spell_ids )
+  {
+    const auto names = p.action_names_from_spell_id( id );
+    if ( range::find( names, signature ) == names.end() ) continue;
+    bool selected = false, unselected = false;
+    for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
+    {
+      auto talent = p.find_talent_spell( tree, id, p.specialization() );
+      if ( talent.invalid() )
+      {
+        const trait_data_t* match = nullptr;
+        bool ambiguous = false;
+        for ( const auto& trait : trait_data_t::data( util::class_id( p.type ), tree, p.is_ptr() ) )
+        {
+          if ( std::string( trait.name ) != p.find_spell( id )->name_cstr() ||
+               range::find( trait.id_spec, static_cast<unsigned>( p.specialization() ) ) == trait.id_spec.end() )
+            continue;
+          if ( match ) { ambiguous = true; break; }
+          match = &trait;
+        }
+        if ( match && !ambiguous ) talent = p.find_talent_spell( match->id_trait_node_entry );
+      }
+      if ( talent.invalid() ) continue;
+      selected = selected || talent.enabled();
+      unselected = unselected || !talent.enabled();
+    }
+    if ( unselected && !selected ) return "unselected_talent";
+  }
+  return {};
+}
+
 unsigned base_spell_id( const player_t& p, unsigned id )
 {
   std::set<unsigned> seen;
@@ -153,6 +198,22 @@ void write_player_report( js::JsonOutput root, const player_t& p, bool include_a
     row[ "name" ] = item.name_str;
     row[ "channeled" ] = ( effect->execute_action && effect->execute_action->channeled ) ||
       effect->driver()->flags( SX_CHANNELED ) || effect->driver()->flags( SX_CHANNELED_2 );
+  }
+
+  // Report evidence of permanent unavailability separately from runtime readiness.
+  root[ "sim2gse_availability_protocol" ] = 1;
+  auto unavailable = root[ "sim2gse_unavailable_actions" ];
+  unavailable.make_array();
+  for ( const auto& item : p.items )
+  {
+    if ( item.slot != SLOT_TRINKET_1 && item.slot != SLOT_TRINKET_2 ) continue;
+    const auto reason = unavailable_reason( p, std::string( "use_item,slot=" ) + item.slot_name() );
+    if ( reason.empty() ) continue;
+    auto row = unavailable.add();
+    row[ "kind" ] = "item";
+    row[ "slot" ] = item.slot == SLOT_TRINKET_1 ? 13 : 14;
+    row[ "item_id" ] = item.parsed.data.id;
+    row[ "reason" ] = reason;
   }
 
 }
