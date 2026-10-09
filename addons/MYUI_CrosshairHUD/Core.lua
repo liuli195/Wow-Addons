@@ -635,7 +635,7 @@ local function OnEvent(_, event, ...)
         ClearBoiling()
         Core.UpdateReadings()
         Refresh()
-        local EUI = _G.EllesmereUI
+        local EUI = rawget(_G, "EllesmereUI")
         if EUI and EUI.RefreshPage then EUI:RefreshPage() end
     elseif event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" or event == "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE"
         or event == "UNIT_SPELLCAST_SUCCEEDED" then
