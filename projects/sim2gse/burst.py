@@ -93,6 +93,24 @@ def load(spec_id):
     return row
 
 
+def select_definition(character):
+    """原生初始化前选定审核记录；随后仍核验原生专精编号。"""
+    from result_store import query, iter_rows
+    with query("SELECT table_name FROM information_schema.tables WHERE table_name='burst_definitions'") as cursor:
+        if not cursor.fetchone():
+            raise ValueError('此专精没有已审核的爆发定义')
+    ids = iter_rows('SELECT DISTINCT spec_id FROM burst_definitions WHERE class_key = ?',
+                    [character.class_name])
+    matches = []
+    for row in ids:
+        rows = read_records('burst_definitions', f"current_{row['spec_id']}")
+        if rows and talent_hash(character) in rows[0].get('talent_hashes', []):
+            matches.append(load(row['spec_id']))
+    if len(matches) != 1:
+        raise ValueError('当前角色天赋没有唯一适用的已审核爆发定义')
+    return matches[0]
+
+
 def prepare(definition, character, capabilities, native_identity):
     """按真实角色目录解析审核命令，不删除缺失动作。"""
     validate(definition)

@@ -392,3 +392,32 @@ def test_public_search_skips_entire_forbidden_history_structure(tmp_path):
         names = {command['simc_action'] for block in record['candidate']['blocks'] for command in block}
         assert not names.intersection({'army_of_the_dead', 'dark_transformation',
                                        'use_item,slot=trinket1', 'use_item,slot=trinket2'})
+
+
+@pytest.mark.parametrize('recover_first', [False, True])
+def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, recover_first):
+    import burst
+    import time
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    output = tmp_path / 'cancel-initialize'
+    handle = task.start_task(profile, output, use_burst=True,
+                             search_config=dict(iterations=512, candidate_limit=1, batch_targets=(2,)))
+    deadline = time.monotonic() + 20
+    while not (output / 'reference').exists() and not handle.done and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert (output / 'reference').exists() and not handle.done
+    task.cancel_task(handle)
+    handle.join(10)
+    assert handle.done and handle.error is None
+    if recover_first:
+        recovered = task.resume_task(output)
+        assert recovered['burst']['definition_id']
+    revised = copy.deepcopy(definition)
+    revised['version'] += '-new-plan'
+    revised['plan']['start_ms'] = 4000
+    burst.publish(revised)
+    with pytest.raises(task.TaskError, match='爆发定义已变化'):
+        task.resume_task(output)

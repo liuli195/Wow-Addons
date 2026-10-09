@@ -602,9 +602,6 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     if not diagnostic_logging:
         native.pop('action_sequence', None)
         native.pop('precombat_sequence', None)
-    candidate = None if use_burst else compile_program(gse_program or from_action_blocks(select(capabilities, program)),
-                                destination / "export", identity=native['identity'], runtime=runtime,
-                                capabilities=capabilities, context=gse_context)
     burst_result = None
     burst_candidate = None
     input_sources = None
@@ -617,11 +614,11 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
                                   destination / 'burst-export', runtime)
         burst_candidate = context['candidate']
         capabilities = search_capabilities(capabilities, burst_candidate['blocks'])
-        candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
-                                    destination / 'export', identity=native['identity'], runtime=runtime,
-                                    capabilities=capabilities, context=gse_context)
         times, input_sources = combined_inputs(times, definition, interval_ms)
         burst_result = dict(context, interval_ms=interval_ms)
+    candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
+                                destination / 'export', identity=native['identity'], runtime=runtime,
+                                capabilities=capabilities, context=gse_context)
     burst_options = (dict(input_sources=input_sources, burst_candidate=burst_candidate)
                      if burst_candidate is not None else {})
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
@@ -801,6 +798,20 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                      input_effective_sha256=input_effective_sha256)
         state.setdefault('phase','initialize')
         with store.active(runtime):
+            definition = None
+            if use_burst:
+                from burst import load, select_definition
+                if state.get('burst_definition_id'):
+                    definition = load(state['burst_spec_id'])
+                    if definition['definition_id'] != state['burst_definition_id']:
+                        raise TaskError('恢复任务的爆发定义已变化，请创建新任务')
+                else:
+                    definition = select_definition(parse_character(effective_bytes.decode('utf-8')))
+                from program import BEHAVIOR_IDENTITY_VERSION
+                state.update(use_burst=True, burst_definition_id=definition['definition_id'],
+                             burst_spec_id=definition['spec_id'],
+                             behavior_identity_version=BEHAVIOR_IDENTITY_VERSION)
+                store.save()
             # 恢复核验先于任何模拟；程序及规则变化必须新建任务。
             identities = {mode: identity(mode, runtime)[1] for mode in ('baseline', 'controlled')}
             rules = _rule_hashes()
@@ -813,7 +824,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                                     options=[*COMMON, *engine_options(simulation_config)],
                                     config=condition_config, simulation_config=simulation_config,
                                     cbor2=version('cbor2'),
-                                    rules=rules, **(dict(task_category='burst_free_loop') if use_burst else {})))
+                                    rules=rules, **(dict(task_category='burst_free_loop',
+                                                        burst_definition_id=definition['definition_id'])
+                                                   if use_burst else {})))
             base_condition = condition
             if use_burst and state.get('burst'):
                 from burst import load, prepare
@@ -875,7 +888,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 if use_burst:
                     from burst import load, compile_context, search_capabilities
                     effective_character = parse_character(effective_bytes.decode('utf-8'))
-                    context = compile_context(load(native['identity']['spec_id']), effective_character, capabilities,
+                    context = compile_context(definition, effective_character, capabilities,
                                               native['identity'], destination/'burst-export', runtime)
                     context['interval_ms'] = config['input_interval_ms']
                     state['all_capabilities'] = capabilities
@@ -1179,6 +1192,11 @@ def _resume_task(output_root, **kwargs):
             if 'use_burst' in kwargs and kwargs['use_burst'] != saved_burst_mode:
                 raise TaskError('恢复任务的爆发模式发生变化，请创建新任务')
             kwargs['use_burst'] = saved_burst_mode
+            if state.get('burst_definition_id'):
+                from burst import load
+                current = load(state['burst_spec_id'])
+                if current['definition_id'] != state['burst_definition_id']:
+                    raise TaskError('恢复任务的爆发定义已变化，请创建新任务')
             if state.get('burst'):
                 from burst import load
                 current = load(state['native']['identity']['spec_id'])
