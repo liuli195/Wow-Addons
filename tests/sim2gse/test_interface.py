@@ -3095,7 +3095,6 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         import manual_interface
         import runtime
         from runtime import TaskCancelled, TaskRuntime
-        original_read=Path.read_text
         original_create=runtime._kernel32.CreateProcessW
         held=[];node_ids=[];watch_errors=[]
         created=threading.Event();task_runtime=TaskRuntime(30)
@@ -3148,15 +3147,13 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             except BaseException as error:
                 watch_errors.append(error)
             finally:task_runtime.cancel()
-        def profile_input(path,*args,**kwargs):
-            if path.name=='unholy-20260912-0240.simc':return sample_profile()
-            return original_read(path,*args,**kwargs)
         destination=Path(self.directory.name)/'取消 界面'
+        profile=Path(self.directory.name)/'sample.simc'
+        profile.write_text(sample_profile(),encoding='utf-8')
         watcher=threading.Thread(target=cancel_after_edge,daemon=True)
         try:
             watcher.start()
-            with patch.object(sys,'argv',['manual_interface.py','--output',str(destination)]), \
-                 patch.object(Path,'read_text',profile_input), \
+            with patch.object(sys,'argv',['manual_interface.py','--output',str(destination),'--profile',str(profile)]), \
                  patch.object(manual_interface,'TaskRuntime',return_value=task_runtime), \
                  patch.object(runtime._kernel32,'CreateProcessW',side_effect=create_process):
                 with self.assertRaises(TaskCancelled):manual_interface.main()

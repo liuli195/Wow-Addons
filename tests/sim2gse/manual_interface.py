@@ -19,12 +19,21 @@ from dual_task import cancel as cancel_task, read as read_task
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output',type=Path)
+    parser.add_argument('--profile',type=Path,help='固定角色文件；不修改原文件')
+    parser.add_argument('--data-project',type=Path,help='明确使用已有数据中心所在项目')
+    parser.add_argument('--smoke',action='store_true',help='每场600秒预算，缩小候选和样本进行完整链冒烟')
     args=parser.parse_args()
     output=(args.output or ROOT/'.local/tests'/('界面验收 中文 空格 '+uuid.uuid4().hex[:10])).resolve()
     output.mkdir(parents=True,exist_ok=False)
-    source=ROOT/'.local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc'
+    source=args.profile or ROOT/'.local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc'
+    original=source.read_bytes()
+    if args.data_project:
+        import result_store
+        result_store.bind_project(args.data_project)
     profile=source.read_text(encoding='utf-8')
-    server=create_server(output)
+    options=dict(search_config=dict(candidate_limit=5,round_candidate_limit=1,batch_targets=(2,),
+        iterations=2,validation_batches=2)) if args.smoke else None
+    server=create_server(output,task_options=options)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     url=f'http://127.0.0.1:{server.server_port}/'
     print(url,flush=True)
@@ -74,8 +83,50 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
         assert text==browser['state']['exports']['single_target']
         assert (task/'input.original.simc').read_bytes()==profile.encode('utf-8')
         assert len(result['exports'])==3 and result['collection_ready']
+        assert source.read_bytes()==original
+        from task import read_task as read_single
+        from search import TaskStore
+        from burst import check_loop
+        import result_store
+        from gse_import import decode_import
+        members=decode_import(result['collection_text'])['sequences']
+        assert len(members)==3
+        source_counts=[]
+        for purpose, targets in [('single_target',1),('aoe',5)]:
+            child=read_single(task/purpose,include_reports=False)
+            assert child['simulation_config']['target_count']==targets
+            assert child['burst']['definition_id']==result['definition_id']
+            store=TaskStore(task/purpose)
+            try:
+                check_loop(child['candidate']['program'],store.state['capabilities'])
+                assert store.state['burst']['candidate']['compiled_steps']
+                batch=json.loads(store.db.execute(
+                    "SELECT value FROM batches WHERE json_extract(value,'$.status')='success' LIMIT 1").fetchone()[0])
+                request=batch['request']
+                assert request['burst']['definition_id']==result['definition_id']
+                assert set(request['burst']['sources'])=={'loop','burst'}
+                assert len(request['burst']['sources'])==len(request['times'])
+                native=result_store.one('batches','batch_key',batch['data_key'],group_key=batch['storage_group_key'])
+                report=native['report']
+                report=json.loads(report) if isinstance(report,str) else report
+                assert len(report['sim']['players'])==1
+            finally:
+                store.close()
+            source_counts.append(dict(purpose=purpose,target_count=targets,
+                                      candidates=child['search']['candidate_count'],
+                                      loop_exclusion_checked=True,same_actor_burst_checked=True))
+        import dual_task
+        parent=dual_task._load(task)
+        for purpose in ('single_target','aoe','burst'):
+            records=result_store.read_records('sequence_exports',parent[purpose+'_export'])
+            assert records[0]['text']==result['exports'][purpose]
+            assert records[0]['simulation']=='passed_native_model'
+            assert records[0]['game_validation']=='not_run'
+
         evidence=dict(status=result['status'],elapsed_seconds=result['elapsed_seconds'],wall_seconds=time.monotonic()-started,
-            scenes=result['scenes'],packaging_seconds=result['packaging_seconds'],independently_tested=False,
+            scenes=result['scenes'],preparation_seconds=result['preparation_seconds'],packaging_seconds=result['packaging_seconds'],
+            smoke=args.smoke,source_counts=source_counts,input_unchanged=True,three_members=True,
+            saved_results_reread=True,independently_tested=False,
             clipboard_matches=True,input_change_clears=True,candidate_sha256=hashlib.sha256(text.encode()).hexdigest(),game_validation='not_run')
         (output/'acceptance.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
         print(json.dumps(evidence,ensure_ascii=False,indent=2))
