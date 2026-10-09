@@ -71,11 +71,11 @@ async function poll(){
    collectionResult.value=state.collection_text||'';copyCollection.disabled=!state.collection_ready;
    resultSection.hidden=!state.result_ready;document.getElementById('dualResults').hidden=false;
    resultNote.textContent=state.result_note;document.getElementById('burstInstructions').textContent=state.burst_instructions||'';
-   if(['completed','partial','failed','cancelled'].includes(state.status)){if(state.error)showError(state.error);finish();resumeButton.hidden=state.status==='completed';return;}
+   if(['completed','partial','failed','cancelled','interrupted'].includes(state.status)){if(state.error)showError(state.error);finish();resumeButton.hidden=!state.recoverable;return;}
   }
   if(state.status==='completed'&&state.simulation_ready){importResult.textContent=state.selected_sequence+' · 版本 '+state.selected_version+' · '+Number(state.dps).toFixed(1)+' DPS（每秒伤害）';importResult.hidden=false;finish();return;}
   if(['completed','validation_incomplete'].includes(state.status)&&state.result_ready){result.value=state.candidate_text;resultSection.hidden=false;copy.disabled=false;resultNote.textContent=state.result_note||'结果已就绪，可以复制。';finish();return;}
-  if(['failed','cancelled','validation_incomplete','budget_exhausted'].includes(state.status)){showError(state.error||'任务未完成，未生成可复制结果。');finish();return;}
+  if(['failed','cancelled','validation_incomplete','budget_exhausted'].includes(state.status)){showError(state.error||'任务未完成，未生成可复制结果。');finish();resumeButton.hidden=!state.recoverable;return;}
   timer=setTimeout(poll,500);
  }catch(e){showError('暂时无法读取进度，正在重新连接；计算可能仍在继续。');timer=setTimeout(poll,1000);}
 }
@@ -102,7 +102,7 @@ importStart.addEventListener('click',async()=>{if(running||!inspected)return;con
 copy.addEventListener('click',async()=>{if(!result.value.trim())return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(result.value);status.textContent='已复制。';}catch{result.focus();result.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
 for(const [field,button] of [outputs.aoe,outputs.burst,[collectionResult,copyCollection]])button.addEventListener('click',async()=>{if(!field.value)return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(field.value);status.textContent='已复制。';}catch{field.focus();field.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
 cancelButton.addEventListener('click',async()=>{cancelButton.disabled=true;try{const response=await fetch('/api/tasks/'+taskId+'/cancel',{method:'POST'});if(!response.ok)throw new Error();}catch{showError('取消请求未送达，请重试。');}finally{cancelButton.disabled=false;}});
-resumeButton.addEventListener('click',async()=>{try{const response=await fetch('/api/tasks/'+taskId+'/resume',{method:'POST'}),state=await response.json();if(!response.ok)throw new Error(state.error||'任务不能继续');running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;poll();}catch(e){showError(e.message);}});
+resumeButton.addEventListener('click',async()=>{if(running)return;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;try{const response=await fetch('/api/tasks/'+taskId+'/resume',{method:'POST'}),state=await response.json();if(!response.ok)throw new Error(state.error||'任务不能继续');running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;poll();}catch(e){showError(e.message);finish();resumeButton.hidden=false;}});
 const savedTask=localStorage.getItem('sim2gse-task');if(savedTask){taskId=savedTask;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;cancelButton.hidden=false;poll();}
 </script>
 </html>

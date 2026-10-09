@@ -6,6 +6,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+from result_store import DataReadError
 import threading
 from urllib.parse import urlsplit
 import uuid
@@ -156,7 +157,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             raise TaskError("接口不存在")
         except TaskError as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": _friendly_error(error)})
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, DataReadError) as error:
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": _friendly_error(error)})
 
     def _create_task(self) -> None:
@@ -245,12 +246,15 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 raise TaskError(str(handle.error))
             if (destination / 'dual.json').exists():
                 from dual_task import read
-                state = read(destination)
+                state = read(destination, active=not handle.done if handle else None)
                 if state.get('error'):
                     state['error'] = _friendly_error(TaskError(state['error']))
                 return state
             return _public_state(read_task(destination, include_reports=False), destination)
-        except TaskError as error:
+        except (TaskError, DataReadError) as error:
+            if isinstance(error, DataReadError) or '共享存储' in str(error):
+                return dict(status='failed', phase='done', result_ready=False, recoverable=True,
+                            error='共享存储不可读取，请恢复存储后重新读取或继续任务。')
             if handle is not None and not handle.done:
                 return _starting_state()
             if handle is not None and handle.error is not None:
@@ -270,8 +274,8 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         with self.server.tasks_lock:
             entry = self.server.tasks.get(task_id)
         if (destination / 'dual.json').exists():
-            from dual_task import cancel, read
-            state = cancel(entry[1]) if entry else read(destination)
+            from dual_task import cancel, cancel_saved
+            state = cancel(entry[1]) if entry else cancel_saved(destination)
             self._send_json(HTTPStatus.OK, state)
             return
         state = cancel_task(entry[1] if entry else destination)

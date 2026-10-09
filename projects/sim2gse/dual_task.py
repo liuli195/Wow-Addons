@@ -30,13 +30,18 @@ def _decode(value):
 
 
 def _save(row):
-    result_store.write('dual_tasks', row['parent_id'], [row], schema=PARENT_SCHEMA)
+    try:
+        result_store.write('dual_tasks', row['parent_id'], [row], schema=PARENT_SCHEMA)
+    except Exception as error:
+        raise task.TaskError('共享存储写入失败，请恢复存储后继续任务') from error
 
 
 def _load(destination):
     try:
         pointer = json.loads((destination / 'dual.json').read_text(encoding='utf-8'))
         rows = result_store.read_records('dual_tasks', pointer['parent_id'])
+    except result_store.DataReadError as error:
+        raise task.TaskError('共享存储不可读取，请恢复存储后重新读取任务') from error
     except (OSError, ValueError, KeyError) as error:
         raise task.TaskError('双场任务记录不可读取') from error
     if len(rows) != 1 or rows[0]['parent_id'] != pointer['parent_id']:
@@ -241,13 +246,36 @@ def _launch(destination):
 
 def resume(destination):
     destination = Path(destination).resolve()
-    _verify(_load(destination), destination)
+    with task._task_lease(destination):
+        _verify(_load(destination), destination)
     return _launch(destination)
 
 
-def read(destination):
+def _is_running(destination):
+    try:
+        with task._task_lease(destination):
+            return False
+    except task.TaskError:
+        return True
+
+
+def cancel_saved(destination):
+    destination = Path(destination).resolve()
+    with task._task_lease(destination):
+        row = _load(destination)
+        if row['status'] in ('starting', 'running', 'stopping'):
+            row.update(status='cancelled', error='执行进程已退出，已保留完成结果')
+            _save(row)
+    return read(destination)
+
+
+def read(destination, *, active=None):
     destination = Path(destination).resolve()
     row = _load(destination)
+    recoverable = row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
+    if row['status'] in ('starting', 'running', 'stopping') and not (active if active is not None else _is_running(destination)):
+        row.update(status='interrupted', error='执行进程已退出，可以继续未完成的任务')
+        recoverable = True
     scenes, exports = [], {}
     elapsed, completed, active_progress = 0., 0, 0.
     for purpose, targets in SCENES:
@@ -277,7 +305,7 @@ def read(destination):
                 raise task.TaskError('双场导出记录缺失或身份不符')
             exports[purpose] = records[0]['text']
     return dict(status=row['status'], phase=row['phase'], error=row['error'], scenes=scenes,
-                exports=exports, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),
+                exports=exports, recoverable=recoverable, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),
                 result_ready=bool(exports), input_interval_ms=row['config']['input_interval_ms'],
                 progress=1. if row['status'] == 'completed' else (completed + active_progress) / 2,
                 elapsed_seconds=elapsed + row['preparation_seconds'] + row['packaging_seconds'],

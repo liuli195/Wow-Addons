@@ -563,3 +563,121 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_
     server.shutdown()
     server.server_close()
     thread.join(3)
+
+
+def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
+    import burst
+    import result_store
+    import threading
+    from interface import create_server
+    from urllib.request import Request, urlopen
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    try:
+        with urlopen(Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
+                             {'Content-Type': 'application/json'})) as response:
+            task_id = json.load(response)['task_id']
+        server.tasks[task_id][1].join(30)
+        assert server.tasks[task_id][1].done
+        moved = result_store.DATA_ROOT.with_name('temporarily-unavailable')
+        result_store.DATA_ROOT.rename(moved)
+        try:
+            with urlopen(base + '/api/tasks/' + task_id) as response:
+                state = json.load(response)
+            assert state['status'] == 'failed' and state['recoverable']
+            assert '存储' in state['error'] and not state['result_ready']
+        finally:
+            moved.rename(result_store.DATA_ROOT)
+        with urlopen(base + '/api/tasks/' + task_id) as response:
+            restored = json.load(response)
+        assert restored['status'] == 'completed' and restored['collection_ready']
+    finally:
+        server.shutdown();server.server_close();thread.join(3)
+
+
+def test_restarted_page_recovers_parent_after_real_process_exit(tmp_path, installed_data_store):
+    import result_store
+    import threading
+    import sys
+    import time
+    from interface import create_server
+    from urllib.request import Request, urlopen
+    from runtime import TaskRuntime, TaskCancelled, run_command
+    source = tmp_path / 'server.py'
+    page_root = tmp_path / 'p'
+    ready = tmp_path / 'ready.json'
+    code = f"""
+import sys, runpy, json
+from pathlib import Path
+sys.path.insert(0, {str(Path(task.__file__).parent)!r})
+import result_store
+result_store.DATA_ROOT = Path({str(result_store.DATA_ROOT)!r})
+result_store._SKILL_API = runpy.run_path({str(installed_data_store / 'scripts/data_store.py')!r})
+from interface import create_server
+server = create_server(Path({str(page_root)!r}), task_options=dict(search_config=dict(
+    candidate_limit=1, batch_targets=(2,), iterations=512, validation_batches=2)))
+Path({str(ready)!r}).write_text(json.dumps(dict(port=server.server_port)))
+server.serve_forever()
+"""
+    source.write_text(code, encoding='utf-8')
+    import burst
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    runtime = TaskRuntime(40)
+    stopped = []
+    def serve():
+        try:
+            run_command([sys.executable, str(source)], Path(task.__file__).parents[2],
+                        runtime=runtime, timeout_seconds=40, output_dir=tmp_path / 'process')
+        except TaskCancelled:
+            stopped.append(True)
+    process_thread = threading.Thread(target=serve, daemon=True)
+    process_thread.start()
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert ready.exists()
+    base = 'http://127.0.0.1:' + str(json.loads(ready.read_text())['port'])
+    with urlopen(Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
+                         {'Content-Type': 'application/json'})) as response:
+        task_id = json.load(response)['task_id']
+    destination = page_root / 'tasks' / task_id
+    while not (destination / 'single_target/reference').exists() and time.monotonic() < deadline:
+        time.sleep(.001)
+    assert (destination / 'single_target/reference').exists()
+    runtime.cancel();process_thread.join(10)
+    assert stopped and not process_thread.is_alive()
+    server = create_server(page_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    try:
+        with urlopen(base + '/api/tasks/' + task_id) as response:
+            state = json.load(response)
+        assert state['status'] == 'interrupted' and state['recoverable'], state
+        import subprocess, os
+        script = r'''const {chromium}=require('playwright'),assert=require('node:assert/strict');
+(async()=>{const input=JSON.parse(process.argv[1]);const browser=await chromium.launch({channel:'msedge',headless:true});
+try{const page=await browser.newPage();await page.goto(input.base);
+await page.evaluate(id=>localStorage.setItem('sim2gse-task',id),input.id);await page.reload();
+await page.waitForFunction(()=>!document.querySelector('#resume').hidden);
+assert.equal(await page.locator('#start').isDisabled(),false);await page.locator('#resume').click();
+assert.equal(await page.locator('#start').isDisabled(),true);
+await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:45000});
+assert.match(await page.locator('#collectionResult').inputValue(),/^!GSE3!/);
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});'''
+        browser = subprocess.run(['node','-e',script,json.dumps(dict(base=base,id=task_id))],
+                                 capture_output=True,text=True,encoding='utf-8',env=os.environ.copy(),timeout=60)
+        assert browser.returncode == 0, browser.stdout + browser.stderr
+        server.tasks[task_id][1].join(30)
+        assert server.tasks[task_id][1].done
+        with urlopen(base + '/api/tasks/' + task_id) as response:
+            restored = json.load(response)
+        assert restored['status'] == 'completed' and restored['collection_ready'], restored
+    finally:
+        server.shutdown();server.server_close();thread.join(3)
