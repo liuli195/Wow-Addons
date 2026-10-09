@@ -447,8 +447,10 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
             and node["commands"][0].get("kind") == "castsequence")
            for node in program["nodes"]):
         candidate = export(blocks, folder, identity=identity, runtime=runtime, program=program,
-                           on_lua_start=on_lua_start)
+                           on_lua_start=on_lua_start, purpose=program['metadata'].get('purpose'),
+                           instructions=program['metadata'].get('instructions'))
     else:
         candidate = export(blocks, folder, identity=identity, runtime=runtime,
-                           on_lua_start=on_lua_start)
+                           on_lua_start=on_lua_start, purpose=program['metadata'].get('purpose'),
+                           instructions=program['metadata'].get('instructions'))
     return _with_compiled_program(candidate, program, _search_clicks(candidate, program))

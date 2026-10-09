@@ -56,6 +56,9 @@ def prepare_block(block, target_masks):
                               *([command['condition']] if command.get('condition') else [])]
                 lines.append('/use ' + (f"[{','.join(conditions)}] " if conditions else '') + str(command['slot']))
                 translated.append(lines[-1])
+            elif command['kind'] == 'potion':
+                lines.append('/use ' + command['name'])
+                translated.append(lines[-1])
             elif command['kind'] == 'start_attack':
                 lines.append('/startattack')
                 translated.append(lines[-1])
@@ -73,6 +76,9 @@ def prepare_block(block, target_masks):
     elif command['kind'] == 'item':
         action = dict(type='item', item=command['slot'])
         step = dict(action)
+    elif command['kind'] == 'potion':
+        action = dict(type='macro', macro='/use ' + command['name'])
+        step = dict(type='macro', macrotext=action['macro'])
     elif command['kind'] == 'start_attack':
         action = dict(type='macro', macro='/startattack')
         step = dict(type='macro', macrotext='/startattack')
@@ -116,7 +122,8 @@ def lua_literal(value):
     return '{' + ','.join(f'[{lua_literal(k)}]={lua_literal(v)}' for k, v in items) + '}'
 
 
-def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start=None):
+def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start=None, purpose=None,
+           instructions=None):
     """同一动作块产生编码对象和编译断言，不改变块顺序。"""
     runtime = runtime or TaskRuntime()
     runtime.check()
@@ -195,11 +202,13 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
     if not 1 <= len(actions) <= 128:
         raise ValueError('动作块数量必须在 1 至 128 之间')
     name_basis = blocks if program is None else actions
-    name = 'S2G_' + hashlib.sha256(cbor2.dumps(name_basis)).hexdigest()[:12].upper()
+    name = ('S2G_BURST_' if purpose == 'burst' else 'S2G_') + hashlib.sha256(cbor2.dumps(name_basis)).hexdigest()[:12].upper()
     sequence = dict(MetaData=dict(Name=name, SpecID=identity['spec_id'], GSEVersion=3332,
                                  Help='地面技能在角色脚下释放，目标须在范围内；目标数据 '+targeting['client_build']+'，模拟数据 '+identity.get('data_version', '未提供')+'。游戏效果尚待验证。'),
                     Default=1, Versions=[dict(Actions=actions, InbuiltVariables={})])
     payload = [name, sequence]
+    if purpose == 'burst' and instructions:
+        sequence['MetaData']['Help'] += '\n爆发按法：' + instructions
     expected = dict(name=name, help=sequence['MetaData']['Help'], steps=upstream_steps, identity=identity,
                     spells={c['spell_id']: c['name'] for b in blocks for c in b if c['kind'] == 'spell'})
     folder.mkdir(parents=True, exist_ok=True)
@@ -243,7 +252,7 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
         raise ValueError('编码往返改变了序列')
     if 'PASS\t' not in log:
         raise ValueError('上游编译校验没有成功记录')
-    return dict(text=text, blocks=blocks, compiled_steps=steps,
+    return dict(text=text, name=name, blocks=blocks, compiled_steps=steps,
                 precombat_count=sum(bool(block) and all(c.get('condition') == 'nocombat' for c in block)
                                     for block in blocks),
                 simulation='not_run', game_validation='not_run',

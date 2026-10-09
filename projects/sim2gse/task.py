@@ -159,6 +159,35 @@ def _validate_item_value(slot: str, value: str, line_number: int) -> None:
         raise TaskError(f'第 {line_number} 行 {slot} 缺少物品编号')
 
 
+def precheck_burst(input_path, output_root, *, runtime=None, simulation_config=None, iterations=1,
+                   failed_actions=None):
+    """公开爆发预检查入口；未审核内容不得进入普通任务。"""
+    from burst import load, prepare, input_times
+    from engine import reference, inspect
+    from program import compile_program, from_action_blocks
+    from sequence import evaluate
+    character = parse_character(Path(input_path).read_text(encoding='utf-8'))
+    runtime = runtime or TaskRuntime()
+    folder = Path(output_root)
+    native = reference(input_path, folder / 'reference', character, iterations=iterations,
+                       runtime=runtime, simulation_config=simulation_config)
+    try:
+        definition = load(native['identity']['spec_id'])
+        capabilities = inspect(native, folder / 'capabilities')
+        blocks = prepare(definition, character, capabilities, native['identity'])
+        program = from_action_blocks(blocks)
+        program['metadata']['purpose'] = 'burst'
+        program['metadata']['instructions'] = definition['instructions']
+        candidate = compile_program(program, folder / 'export', identity=native['identity'], runtime=runtime)
+        simulation = evaluate(input_path, candidate, folder / 'controlled', character=character,
+                              iterations=iterations, runtime=runtime, simulation_config=simulation_config,
+                              input_times=input_times(definition), failed_actions=failed_actions)
+    except ValueError as error:
+        raise TaskError(str(error)) from error
+    return dict(definition=definition, candidate=candidate, simulation=simulation,
+                native_reference=native, capabilities=capabilities)
+
+
 def parse_character(raw_text: str) -> Character:
     """严格解析单角色 SimC（SimulationCraft）文本并保留原始内容。"""
 

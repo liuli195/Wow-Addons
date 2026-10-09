@@ -1,0 +1,78 @@
+{
+  "protocol": 1,
+  "spec_id": 252,
+  "class_key": "deathknight",
+  "version": "2026-10-09-2",
+  "data_version": "12.1.0.69933",
+  "reviewer": "user",
+  "reviewed_at": "2026-10-09",
+  "status": "reviewed",
+  "sources": [
+    "https://www.method.gg/guides/unholy-death-knight/playstyle-and-rotation"
+  ],
+  "talent_hashes": [
+    "e9de68f8063298bdf74ff30777008084008585888115ef915845b44ad75ad8fa"
+  ],
+  "potion": "potion_of_recklessness",
+  "excluded_spell_ids": [
+    42650,
+    1233448,
+    1271967
+  ],
+  "blocks": [
+    [
+      {
+        "kind": "spell",
+        "simc_action": "army_of_the_dead",
+        "name": "亡者大军",
+        "spell_id": 42650,
+        "slot": null,
+        "item_id": null
+      }
+    ],
+    [
+      {
+        "kind": "potion",
+        "simc_action": "potion",
+        "name": "鲁莽药水",
+        "spell_id": null,
+        "slot": null,
+        "item_id": 241289
+      },
+      {
+        "kind": "item",
+        "simc_action": "use_item,slot=trinket1",
+        "name": "饰品13",
+        "spell_id": null,
+        "slot": 13,
+        "item_id": null
+      },
+      {
+        "kind": "item",
+        "simc_action": "use_item,slot=trinket2",
+        "name": "饰品14",
+        "spell_id": null,
+        "slot": 14,
+        "item_id": null
+      },
+      {
+        "kind": "spell",
+        "simc_action": "dark_transformation",
+        "name": "黑暗突变",
+        "spell_id": 1233448,
+        "slot": null,
+        "item_id": null
+      }
+    ]
+  ],
+  "plan": {
+    "start_ms": 3000,
+    "repeat_ms": 45000,
+    "window_ms": 1000,
+    "interval_ms": 200,
+    "pause_loop": true,
+    "preserve_position": true
+  },
+  "applicability": "首版限当前已审核天赋；动作不可模拟时明确报告不适用，不删动作。",
+  "instructions": "第3、48、93、138秒切到爆发键按1秒，默认间隔200毫秒；满1秒后继续原循环位置。按键位置跨窗口保留。"
+}

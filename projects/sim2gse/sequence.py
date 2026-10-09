@@ -81,6 +81,7 @@ def _search_compiled_blocks(candidate):
     spells = {str(a['spell_id']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'}
     spells.update({a['name']: a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'spell'})
     items = {str(a['slot']): a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'item'}
+    potions = {a['name']: a['simc_action'] for b in candidate['blocks'] for a in b if a['kind'] == 'potion'}
     blocks = []
     for step in candidate['compiled_steps']:
         if step['type'] == 'spell':
@@ -98,6 +99,8 @@ def _search_compiled_blocks(candidate):
                     block.append(spells[re.sub(r'^\[[^]]+\] ', '', line[6:])])
                 elif re.fullmatch(r'/use (?:\[[^]]+\] )?(13|14)', line):
                     block.append(items[line.split()[-1]])
+                elif line.startswith('/use ') and line[5:] in potions:
+                    block.append(potions[line[5:]])
                 elif line.startswith('/castsequence '):
                     from macro_interpreter import parse_castsequence
                     actions = [action for candidate_block in candidate['blocks'] for action in candidate_block]
@@ -120,6 +123,13 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
+    for block in candidate['blocks']:
+        for command in block:
+            if command['kind'] == 'potion' and (
+                    command.get('potion') != 'potion_of_recklessness'
+                    or command.get('item_id') != 241289 or command.get('name') != '鲁莽药水'
+                    or command.get('simc_action') != 'potion'):
+                raise ValueError('药水定义与受测原生消耗品不一致')
     if mode != 'controlled':
         raise ValueError('原版引擎不兼容受控序列')
     input_times = list(range(0, 180000, 300)) if input_times is None else input_times
@@ -220,6 +230,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     start_callback = {'on_start': on_native_start} if on_native_start is not None else {}
     log = run(generated, folder, mode,
               [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json',
+               *(['potion=potion_of_recklessness', 'override.allow_potions=1']
+                 if any(c['kind'] == 'potion' for b in candidate['blocks'] for c in b) else []),
                'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', True) else os.devnull)], runtime=runtime,
               simulation_config=simulation_config, **start_callback)
     native_blocks = []
