@@ -39,7 +39,50 @@ def training_center(tmp_path, installed_data_store, monkeypatch):
 
 def command(tmp_path, args):
     from seed_training import main
+    # These existing cases exercise the explicitly retained legacy training mode.
+    if args[0] in ('run', 'list') and '--use-burst' not in args:
+        args = [*args, '--legacy']
     return main(['--project', str(tmp_path), *args])
+
+
+def test_training_check_locates_current_template_without_starting_compute(tmp_path, capsys, monkeypatch):
+    from seed_training import main
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('只读训练检查不能启动计算进程')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), 'check', '--legacy']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'ready'
+    assert '/.tools/sim2gse/build/baseline/' in result['template'].replace('\\', '/')
+    assert result['engines']['baseline']['upstream_commit'] == result['engines']['controlled']['upstream_commit']
+    assert not (tmp_path / 'work').exists()
+
+
+def test_training_check_refuses_missing_review_before_starting_compute(tmp_path, capsys, monkeypatch):
+    from seed_training import main
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('未审核角色不能启动计算进程')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    assert main(['--project', str(tmp_path), 'check']) == 2
+    assert '已审核' in capsys.readouterr().err
+
+
+def test_training_list_defaults_to_burst_and_preserves_legacy_results(tmp_path, capsys):
+    from seed_training import main, SELECTED_SCHEMA
+    import result_store
+
+    row = dict(candidate_id='legacy-only', condition='fixture', class_name='deathknight', spec='unholy',
+               targets=1, program=[['death_coil']], family='fixture', score=1., scores=[1.],
+               template_sha256='fixture', engines={})
+    result_store.write('seed_selected', 'deathknight-unholy-1', [row], schema=SELECTED_SCHEMA)
+    assert main(['--project', str(tmp_path), 'list', '--state', 'selected']) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert main(['--project', str(tmp_path), 'list', '--state', 'selected', '--legacy']) == 0
+    assert json.loads(capsys.readouterr().out)[0]['candidate_id'] == 'legacy-only'
 
 
 def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenance(tmp_path, capsys):

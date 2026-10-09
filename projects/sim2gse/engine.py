@@ -75,6 +75,39 @@ def discard_diagnostic_files(folder):
         (Path(folder) / name).unlink(missing_ok=True)
 
 
+def training_template():
+    """从受检构建定位本项目固定标准角色，不使用历史产品目录。"""
+    from native_build import source_directory
+    _, manifest = identity('baseline')
+    lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
+    expected = build_identity(lock, 'baseline', manifest['compiler_sha256'])
+    source = source_directory(ROOT, expected)
+    marker = source / 'source-identity.json'
+    if not marker.is_file() or json.loads(marker.read_text()) != expected:
+        raise ValueError('标准角色所属源码身份不符，请重新构建')
+    template = source / 'profiles/MID2/MID2_Death_Knight_Unholy.simc'
+    if not template.is_file():
+        raise ValueError('当前受检引擎缺少标准训练角色，请重新构建')
+    return template
+
+
+def prepare_loop(native, character, folder, runtime, *, definition=None, interval_ms=300):
+    """页面、训练及复测共用的原生目录和审核爆发准备。"""
+    from dataclasses import replace
+    folder = Path(folder)
+    all_capabilities = inspect(native, folder / 'capabilities')
+    if definition is None:
+        return all_capabilities, all_capabilities, None
+    from burst import compile_context, input_times, search_capabilities
+    character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
+    # 在编译与过滤前核对同一角色、版本及按法，不由各入口自行拼装。
+    input_times(definition, interval_ms)
+    context = compile_context(definition, character, all_capabilities, native['identity'],
+                              folder / 'burst-export', runtime)
+    context['interval_ms'] = interval_ms
+    return all_capabilities, search_capabilities(all_capabilities, context['candidate']['blocks']), context
+
+
 def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30,
         simulation_config=None, on_start=None):
     runtime = runtime or TaskRuntime(timeout_seconds)

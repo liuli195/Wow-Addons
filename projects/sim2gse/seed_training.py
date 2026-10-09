@@ -239,7 +239,7 @@ def _check_cancelled(cancel_event):
 
 
 def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False):
-    from engine import identity, reference, inspect, ROOT, COMMON
+    from engine import identity, reference, prepare_loop, ROOT, COMMON
     from program import canonicalize_search_program
     from task import _rule_hashes
     _check_cancelled(cancel_event)
@@ -253,7 +253,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     burst_context = None
     capabilities = None
     if use_burst:
-        from burst import load, compile_context, search_capabilities
+        from burst import select_definition
+        definition = select_definition(character)
         config = config_for(dict(config, input_interval_ms=200))
         setup = workspace.resolve() / 'burst-setup' / uuid.uuid4().hex
         setup.mkdir(parents=True)
@@ -263,11 +264,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         native = reference(setup_profile, setup / 'reference', character, runtime=setup_runtime,
                            iterations=100, simulation_config=simulation_config)
         character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-        capabilities = inspect(native, setup / 'capabilities')
-        burst_context = compile_context(load(character.spec_id), character, capabilities, native['identity'],
-                                        setup / 'burst-export', setup_runtime)
-        burst_context['interval_ms'] = 200
-        capabilities = search_capabilities(capabilities, burst_context['candidate']['blocks'])
+        _, capabilities, burst_context = prepare_loop(native, character, setup, setup_runtime,
+                                                      definition=definition, interval_ms=config['input_interval_ms'])
     template_sha = hashlib.sha256(text.encode()).hexdigest()
     rules = _rule_hashes(relative_to=ROOT)
     condition = digest(dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
@@ -309,7 +307,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         native = reference(profile, batch / 'reference', character, runtime=setup_runtime, iterations=100,
                            simulation_config=simulation_config)
         character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-        capabilities = inspect(native, batch / 'capabilities')
+        _, capabilities, _ = prepare_loop(native, character, batch, setup_runtime)
     else:
         (batch / 'reference').mkdir(exist_ok=True)
         (batch / 'reference/native.json').write_bytes((setup / 'reference/native.json').read_bytes())
@@ -426,6 +424,23 @@ def run_training(template, targets, workspace, *, use_burst=False):
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst)
 
 
+def check_training(template=None, *, use_burst=True):
+    """只读确认实际模板、受检引擎及审核定义，不创建模拟或训练目录。"""
+    from engine import identity, training_template
+    from burst import select_definition, talent_hash
+    path = Path(template).resolve() if template is not None else training_template()
+    if not path.is_file():
+        raise ValueError('标准训练角色文件不存在: ' + str(path))
+    text = path.read_text(encoding='utf-8')
+    character = template_character(text)
+    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    definition = select_definition(character) if use_burst else None
+    return dict(status='ready', template=str(path), template_source='explicit' if template else 'current_build',
+                template_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                talent_sha256=talent_hash(character), engines=engines, use_burst=use_burst,
+                burst_definition_id=definition['definition_id'] if definition else None)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='人工清洗件登记与起点预训练')
     parser.add_argument('--project', type=Path, required=True, help='已接入的共享数据中心所属项目')
@@ -438,23 +453,31 @@ def main(argv=None):
     listing.add_argument('--class-name', default='deathknight')
     listing.add_argument('--spec', default='unholy')
     training = commands.add_parser('run', help='独立训练至连续两轮无改善、复测与更新')
-    training.add_argument('--template', type=Path, default=Path(__file__).resolve().parents[2] /
-                          '.tools/sim2gse/product/baseline/profiles/MID2/MID2_Death_Knight_Unholy.simc')
-    training.add_argument('--use-burst', action='store_true', help='按已审核爆发定义整理独立循环起点')
+    training.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
     training.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
     training.add_argument('--workspace', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.local/sim2gse/seed-training')
+    checking = commands.add_parser('check', help='只读核对训练模板、引擎与审核适用性，不启动计算')
+    checking.add_argument('--template', type=Path)
+    for command_parser in (training, checking, listing):
+        mode = command_parser.add_mutually_exclusive_group()
+        mode.add_argument('--use-burst', dest='use_burst', action='store_true', help='独立爆发模式（默认）')
+        mode.add_argument('--legacy', dest='use_burst', action='store_false', help='显式查看或运行历史无爆发模式')
+        command_parser.set_defaults(use_burst=True)
     args = parser.parse_args(argv)
     try:
         result_store.bind_project(args.project)
         result_store.ensure_available()
         if args.command == 'register':
             output = register(args.input)
+        elif args.command == 'check':
+            output = check_training(args.template, use_burst=args.use_burst)
         elif args.command == 'run':
+            ready = check_training(args.template, use_burst=args.use_burst)
             from seed_activity import training_activity
             with writer_lock():
                 with training_activity() as cancel_event:
-                    output = [_run_training(args.template, targets, args.workspace,
+                    output = [_run_training(Path(ready['template']), targets, args.workspace,
                                             cancel_event=cancel_event, use_burst=args.use_burst)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state in ('pending', 'unsupported'):
@@ -462,7 +485,8 @@ def main(argv=None):
                       if (row['semantic'] == 'unsupported') == (args.state == 'unsupported')]
         else:
             output = result_store.read_records('seed_' + args.state,
-                                              f'{args.class_name}-{args.spec}-{args.targets}')
+                                              f'{args.class_name}-{args.spec}-{args.targets}' +
+                                              ('-burst' if args.use_burst else ''))
         print(json.dumps(output, ensure_ascii=False))
         return 0
     except (ValueError, OSError, RuntimeError) as error:

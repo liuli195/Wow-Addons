@@ -549,7 +549,7 @@ def _prepare_task(input_path, output_root, *, resume=False, simulation_config=No
 
 def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
                 simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False, use_burst=False):
-    from engine import inspect, reference, damage_statistics
+    from engine import prepare_loop, reference, damage_statistics
     from sequence import select, evaluate
     from program import compile_program, from_action_blocks
     from gse_import import import_action_spell_ids, import_action_spell_names
@@ -598,7 +598,14 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
                  original_bytes=(destination / 'input.original.simc').read_bytes(),
                  effective_bytes=(destination / 'input.simc').read_bytes(), run_id=run_id),
     )
-    capabilities = inspect(native, destination / "capabilities")
+    definition = None
+    effective_character = character
+    if use_burst:
+        from burst import load
+        definition = load(native['identity']['spec_id'])
+        effective_character = parse_character(_read_utf8(destination / 'input.simc', description='任务输入副本')[1])
+    _, capabilities, context = prepare_loop(native, effective_character, destination, runtime,
+                                            definition=definition, interval_ms=interval_ms)
     if not diagnostic_logging:
         native.pop('action_sequence', None)
         native.pop('precombat_sequence', None)
@@ -607,13 +614,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     input_sources = None
     times = list(range(phase_ms, 180000, interval_ms))
     if use_burst:
-        from burst import load, compile_context, combined_inputs, search_capabilities
-        definition = load(native['identity']['spec_id'])
-        effective_character = parse_character(_read_utf8(destination / 'input.simc', description='任务输入副本')[1])
-        context = compile_context(definition, effective_character, capabilities, native['identity'],
-                                  destination / 'burst-export', runtime)
+        from burst import combined_inputs
         burst_candidate = context['candidate']
-        capabilities = search_capabilities(capabilities, burst_candidate['blocks'])
         times, input_sources = combined_inputs(times, definition, interval_ms)
         burst_result = dict(context, interval_ms=interval_ms)
     candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
@@ -763,7 +765,7 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
 
 
 def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False):
-    from engine import identity, inspect, reference, damage_statistics, COMMON
+    from engine import identity, prepare_loop, reference, damage_statistics, COMMON
     from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
     state = store.state
@@ -884,19 +886,16 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 finally:
                     _discard_native_exchange(destination / 'reference',
                                              keep_valid=reference_valid and not reference_stored)
-                capabilities = inspect(native, destination/'capabilities')
+                effective_character = parse_character(effective_bytes.decode('utf-8')) if use_burst else character
+                all_capabilities, capabilities, context = prepare_loop(
+                    native, effective_character, destination, runtime, definition=definition,
+                    interval_ms=config['input_interval_ms'])
                 if use_burst:
-                    from burst import load, compile_context, search_capabilities
-                    effective_character = parse_character(effective_bytes.decode('utf-8'))
-                    context = compile_context(definition, effective_character, capabilities,
-                                              native['identity'], destination/'burst-export', runtime)
-                    context['interval_ms'] = config['input_interval_ms']
-                    state['all_capabilities'] = capabilities
+                    state['all_capabilities'] = all_capabilities
                     state['native'] = native
                     state['burst'] = context
                     condition = digest(dict(base=base_condition, burst=context))
                     state['condition'] = condition
-                    capabilities = search_capabilities(capabilities, context['candidate']['blocks'])
                 starts = initial_programs(capabilities, native, config['random_seed'])
                 state['starts'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
