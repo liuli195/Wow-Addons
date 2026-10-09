@@ -1,8 +1,8 @@
 # 12：首批专精真实验收与交付准备
 
-Status（状态）: draft（扩大范围后的票据，未开始实施）
-Triage（分拣）: ready-for-agent（需求已整理，等待前置与开发门禁）
-Blocked by（前置）: 11；扩大范围后的开发门禁；前置票验收通过
+Status（状态）: in-progress（11已通过，主代理串行实施）
+Triage（分拣）: ready（前置与开发门禁均已通过）
+Blocked by（前置）: 无；11及开发门禁已通过
 
 ## 交付行为
 
