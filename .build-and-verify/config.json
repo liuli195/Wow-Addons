@@ -27,6 +27,7 @@
         "paths": [
           "projects/sim2gse/**",
           "scripts/dev/sim2gse/**",
+          ".agents/skills/sim2gse-upgrade/**",
           ".build-and-verify/config.json",
           "tests/sim2gse/**",
           "scripts/dev/requirements.txt",
@@ -36,6 +37,7 @@
         "inputs": [
           "projects/sim2gse",
           "scripts/dev/sim2gse",
+          ".agents/skills/sim2gse-upgrade",
           ".build-and-verify/config.json",
           ".local/sim2gse/build/original/simc.exe",
           ".local/sim2gse/build/baseline/simc.exe",

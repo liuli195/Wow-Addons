@@ -26,6 +26,8 @@ def test_connected_consumer_reads_writes_without_old_user_installation(tmp_path,
     program = """import json,runpy,sys
 m=runpy.run_path(sys.argv[1]);m['ensure_available']()
 assert m['write']('measurements','one',[{'score':7,'parts':[{'value':4}]}])==1
+assert m['read_records']('measurements','one',columns=['score'],filters={'score':7})==[{'score':7}]
+assert m['read_records']('measurements','one',columns=['score'],filters={'score':8})==[]
 print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM measurements'))))
 """
     result = subprocess.run([sys.executable, "-c", program, str(adapter)], env=env,

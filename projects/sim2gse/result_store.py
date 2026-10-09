@@ -221,13 +221,18 @@ def query(sql: str, parameters=None):
     return _api()["query"](DATA_ROOT, sql, parameters)
 
 
-def read_records(table: str, key: str):
+def read_records(table: str, key: str, *, columns=None, filters=None):
     """Point-read a caller-defined record group; only a missing key is empty."""
     api = _api()
     try:
-        with api['read_key'](DATA_ROOT, table, key) as cursor:
-            columns = [column[0] for column in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        options = {}
+        if columns is not None:
+            options['columns'] = columns
+        if filters is not None:
+            options['filters'] = filters
+        with api['read_key'](DATA_ROOT, table, key, **options) as cursor:
+            names = [column[0] for column in cursor.description]
+            return [dict(zip(names, row)) for row in cursor.fetchall()]
     except api['MissingKeyError']:
         return []
     except api['CorruptDataError'] as error:
