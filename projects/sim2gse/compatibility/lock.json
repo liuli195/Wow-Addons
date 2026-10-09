@@ -19,6 +19,22 @@
         "controlled"
       ],
       "sha256": "8541d6cb53d03930ab5608cc66e938cae3520b00d626631df42d8406e61d618e"
+    },
+    {
+      "path": "projects/sim2gse/native/src/controller.hpp",
+      "destination": "engine/sim2gse/controller.hpp",
+      "modes": [
+        "controlled"
+      ],
+      "sha256": "b6325eb1bf954d7824e50ef4e84a91397a3777021bd2bb325715a4fcd8ac8eb2"
+    },
+    {
+      "path": "projects/sim2gse/native/src/controller.cpp",
+      "destination": "engine/sim2gse/controller.cpp",
+      "modes": [
+        "controlled"
+      ],
+      "sha256": "cf34b14c2a97ff3a74e0dfebb684472f830fdd7376c5a46406175eaf2f9d3f80"
     }
   ],
   "upstream_commit": "b845947a34429874433d8e9362326894650dd20a",
@@ -38,7 +54,7 @@
     },
     {
       "path": "projects/sim2gse/native/hooks/040-temporary-legacy-controller.patch",
-      "sha256": "e25ad46a33122307831f7c25770e2bc6f9414ed7606cadcf522ca4642336f454"
+      "sha256": "a85ae5026dea8bf8725738cd691c225e3953d0b5b6344e2d5c93d6e00790742d"
     },
     {
       "path": "projects/sim2gse/native/hooks/050-death-knight-guards.patch",
@@ -76,13 +92,13 @@
     "GSE/API/translator.lua": "14480c4647cf269fd3852998f6ed09311af75455209188bac2971cb23b8e429c"
   },
   "patched_files": {
-    "engine/player/player.cpp": "a1e5983c379afbed2c5a2deb0fe935b41ea9e210d446b6d8d1d653fbc11fac38",
-    "engine/player/player.hpp": "3a5a31cbe5084ea5df12dbacfae006b89c1c4020f1e2244a8df36ec311a24673",
+    "engine/player/player.cpp": "6ad97cc6e1f56712559978e482b29465c54cd695fd0d957f51cb33a4128bfc9f",
+    "engine/player/player.hpp": "389bc730b251e9cb4cf57fc37c7b0c913b4fb1855f89096c15df76305926eda2",
     "engine/action/action.cpp": "d1cc58f2fa8433d14cdb51044fc19a92e080b2a671daada159504caad362f4ce",
     "engine/action/action.hpp": "ac201ff2dfaf3aa57206568b86cc4a4c25f9bf80c1547ce2a8879760dff0bb76",
     "engine/class_modules/sc_death_knight.cpp": "812db808a9e68e0c4c28c744093d4bd55606c18b87e4688c0b92f606904dcdbd",
     "engine/report/json/report_json.cpp": "d881068c4f5fb0ab84a318ba591123a4ec0b712f7a6cebd26bc9e4802e81495c",
-    "engine/Makefile": "6f32b407cc13337f9b426cc5e6ac932946b469755083451821337d386a283792"
+    "engine/Makefile": "d36e92017d3c4877c6a716a3fba18e0336a269a8ea6ee10979ad78573448fed9"
   },
   "baseline_patches": [
     {

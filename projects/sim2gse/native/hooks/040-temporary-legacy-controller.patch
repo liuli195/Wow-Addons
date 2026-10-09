@@ -1,3 +1,13 @@
+--- a/engine/Makefile
++++ b/engine/Makefile
+@@ -197,6 +197,7 @@
+ include ../source_files/engine_make
+ include ../source_files/engine_main_make
+ SRC += sim2gse$(PATHSEP)catalogue.cpp sim2gse$(PATHSEP)catalogue.hpp
++SRC += sim2gse$(PATHSEP)controller.cpp sim2gse$(PATHSEP)controller.hpp
+ 
+ ifneq (,${GIT})
+   OPTS_INTERNAL += -DSC_GIT_REV="\"$(shell ${GIT} rev-parse --short HEAD)\""
 --- a/engine/action/action.cpp
 +++ b/engine/action/action.cpp
 @@ -44,7 +44,7 @@
@@ -209,7 +219,7 @@
  
    std::string modify_action_options;
  
-@@ -4489,136 +4494,573 @@
+@@ -4489,136 +4494,523 @@
    } );
  }
  
@@ -310,54 +320,7 @@
 +void player_t::sim2gse_init()
 +{
 +  if ( sim2gse_steps.empty() ) return;
-+  for (auto value : util::string_split(sim2gse_times, "/"))
-+  {
-+    if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
-+      throw std::runtime_error("invalid sim2gse input time");
-+    auto at = timespan_t::from_millis(std::stoul(value));
-+    if (at >= sim->max_time || (!sim2gse_input_times.empty() && at <= sim2gse_input_times.back()))
-+      throw std::runtime_error("sim2gse input times must increase within combat");
-+    sim2gse_input_times.push_back(at);
-+  }
-+  if (sim2gse_input_times.size() > 4096)
-+    throw std::runtime_error("too many sim2gse input times");
-+  for (auto value : util::string_split(sim2gse_gcd_states, "/"))
-+  {
-+    if (value.empty()) continue;
-+    const auto fields = util::string_split(value, ",");
-+    if (fields.size() != 2 ||
-+        fields[0].find_first_not_of("0123456789") != std::string::npos ||
-+        fields[1].find_first_not_of("0123456789") != std::string::npos)
-+      throw std::runtime_error("invalid sim2gse GCD feedback");
-+    sim2gse_observed_gcd_states.emplace_back(
-+        timespan_t::from_millis(std::stoul(fields[0])),
-+        timespan_t::from_millis(std::stoul(fields[1])));
-+  }
-+  if (!sim2gse_observed_gcd_states.empty() &&
-+      sim2gse_observed_gcd_states.size() != sim2gse_input_times.size())
-+    throw std::runtime_error("sim2gse GCD feedback must match input times");
-+  for (auto value : util::string_split(sim2gse_failed_actions, "/"))
-+    sim2gse_observed_failed_actions.push_back(value == "-" ? "" : value);
-+  if (!sim2gse_observed_failed_actions.empty() &&
-+      sim2gse_observed_failed_actions.size() != sim2gse_input_times.size())
-+    throw std::runtime_error("sim2gse failure feedback must match input times");
-+  if (!sim2gse_failed_actions.empty() && !sim2gse_failure_events.empty())
-+    throw std::runtime_error("sim2gse failure feedback formats cannot be mixed");
-+  for (auto value : util::string_split(sim2gse_failure_events, "/"))
-+  {
-+    if (value.empty()) continue;
-+    const auto fields = util::string_split(value, ",");
-+    if (fields.size() != 3 || fields[0].empty() || fields[1].empty() || fields[2].empty() ||
-+        fields[0].find_first_not_of("0123456789") != std::string::npos ||
-+        fields[1].find_first_not_of("0123456789") != std::string::npos)
-+      throw std::runtime_error("invalid sim2gse failure event");
-+    const auto at = timespan_t::from_millis(std::stoul(fields[0]));
-+    const auto from = static_cast<unsigned>(std::stoul(fields[1]));
-+    if (at >= sim->max_time || from == 0 || from > sim2gse_input_times.size() ||
-+        at < sim2gse_input_times[from - 1])
-+      throw std::runtime_error("sim2gse failure event precedes its input or exceeds combat");
-+    sim2gse_observed_failure_events.emplace_back(at, from, fields[2]);
-+  }
++  sim2gse_control.initialize( *this );
 +  if ( is_pet() || is_enemy() || sim->threads != 1 )
 +    throw std::runtime_error("sim2gse requires one-thread player");
 +  if ( sim2gse_window < 0_ms || sim2gse_window > 400_ms )
@@ -586,7 +549,7 @@
 +void player_t::sim2gse_tick()
 +{
 +  if ( is_sleeping() || sim->event_mgr.canceled ) return;
-+  const unsigned origin = ++sim2gse_input;
++  const unsigned origin = sim2gse_control.advance_input();
 +  sim2gse_record("input", nullptr, origin);
 +  if ( origin == 1 && sim2gse_blocks[sim2gse_step].empty() )
 +  {
@@ -766,10 +729,7 @@
 +    if (button) selected_buttons.insert(button);
 +  }
 +  sim2gse_step = (sim2gse_step + 1) % sim2gse_blocks.size();
-+  if (sim2gse_input_times.empty())
-+    make_event(*sim, 300_ms, [this] { sim2gse_tick(); });
-+  else if (sim2gse_input < sim2gse_input_times.size())
-+    make_event(*sim, sim2gse_input_times[sim2gse_input] - sim->current_time(), [this] { sim2gse_tick(); });
++  sim2gse_control.schedule_next( *this );
 +}
 +
  unsigned player_t::sim2gse_base_spell_id( unsigned id ) const
@@ -906,7 +866,7 @@
    // Add dynamic cooldowns first before action_t::init_finished so actions can adjust their behavior accordingly if
    // necessary.
    range::for_each( cooldown_list, [ this ]( cooldown_t* c ) {
-@@ -6283,6 +6725,8 @@
+@@ -6283,6 +6675,8 @@
      {
        if ( action->action_ready() )
        {
@@ -915,7 +875,7 @@
          if ( action->harmful )
          {
            if ( first_cast )
-@@ -6291,6 +6735,11 @@
+@@ -6291,6 +6685,11 @@
                sequence_add( action, action->target );
  
              action->execute();
@@ -927,7 +887,7 @@
              first_cast = false;
            }
            else
-@@ -6304,6 +6753,11 @@
+@@ -6304,6 +6703,11 @@
              sequence_add( action, action->target );
  
            action->execute();
@@ -939,7 +899,7 @@
          }
        }
        if ( in_combat && ( action->channeled || action->travel_time() == timespan_t::zero() ) )
-@@ -6311,6 +6765,93 @@
+@@ -6311,6 +6715,93 @@
      }
    }
    first_cast = false;
@@ -955,7 +915,7 @@
 +            sim2gse_reset_castsequence(step);
 +      });
 +    }
-+    make_event(*sim, sim2gse_input_times.empty() ? 0_ms : sim2gse_input_times.front(), [this] { sim2gse_tick(); });
++    sim2gse_control.start( *this );
 +    for (const auto& [at, from, name] : sim2gse_observed_failure_events)
 +    {
 +      auto handle_failure = [this, from, name] {
@@ -1024,7 +984,7 @@
 +          sim2gse_record("late_negative_feedback", nullptr, from);
 +        sim2gse_record("observed_failed", matched, from);
 +      };
-+      if (at == sim2gse_input_times[from - 1])
++      if (sim2gse_control.matches_input_time( at, from ))
 +        make_event(*sim, at, [this, handle_failure] { make_event(*sim, 0_ms, handle_failure); });
 +      else
 +        make_event(*sim, at, handle_failure);
@@ -1033,39 +993,15 @@
  
    sim->print_debug( "Combat begins for {}.", *this );
  
-@@ -6745,6 +7286,31 @@
+@@ -6745,6 +7236,7 @@
   */
  void player_t::reset()
  {
-+  sim2gse_step = sim2gse_input = sim2gse_pending_origin = sim2gse_committed_origin = sim2gse_origin = 0;
-+  for (auto& [step, position] : sim2gse_castsequence_positions) position = 0;
-+  sim2gse_castsequence_pending_origins.clear();
-+  sim2gse_castsequence_origin_members.clear();
-+  sim2gse_castsequence_generations.clear();
-+  sim2gse_castsequence_origin_generations.clear();
-+  sim2gse_castsequence_last_use.clear();
-+  sim2gse_castsequence_clock_started = false;
-+  sim2gse_precombat_gcd = sim2gse_precombat_cast = sim2gse_precombat_cast_ready = 0_ms;
-+  sim2gse_client_gcd_ready = 0_ms;
-+  sim2gse_last_observed_gcd_start = sim2gse_last_observed_gcd_duration = 0_ms;
-+  sim2gse_observed_gcd_initialized = false;
-+  sim2gse_tentative_gcd_start = sim2gse_tentative_gcd_duration = sim2gse_tentative_old_gcd_start =
-+    sim2gse_tentative_old_gcd_duration = 0_ms;
-+  sim2gse_tentative_stable_reads = 0;
-+  sim2gse_tentative_gcd = false;
-+  sim2gse_waiting_confirmation = false;
-+  sim2gse_confirmed_tentative_gcd = false;
-+  sim2gse_confirmed_tentative_origin = 0;
-+  sim2gse_confirmed_tentative_action = nullptr;
-+  sim2gse_pending = sim2gse_committed = sim2gse_dispatch = nullptr;
-+  sim2gse_candidates.clear();
-+  sim2gse_executed_actions.clear();
-+  sim2gse_deferred_dispatches.clear();
-+  sim2gse_commit = sim2gse_queue = nullptr;
++  sim2gse_control.reset( *this );
    sim->print_debug( "Resetting {}.", *this );
  
    last_cast = timespan_t::zero();
-@@ -6918,6 +7484,7 @@
+@@ -6918,6 +7410,7 @@
  
  void player_t::schedule_off_gcd_ready( timespan_t delta_time )
  {
@@ -1073,7 +1009,7 @@
    if ( delta_time < 0_ms )
      delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
  
-@@ -6967,6 +7534,7 @@
+@@ -6967,6 +7460,7 @@
  
  void player_t::schedule_cwc_ready( timespan_t delta_time )
  {
@@ -1081,7 +1017,7 @@
    if ( delta_time < 0_ms )
      delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
  
-@@ -7054,6 +7622,8 @@
+@@ -7054,6 +7548,8 @@
    queueing      = nullptr;
    channeling    = nullptr;
    action_queued = false;
@@ -1090,7 +1026,7 @@
  
    started_waiting = timespan_t::min();
  
-@@ -7489,7 +8059,12 @@
+@@ -7489,7 +7985,12 @@
    if (resource_regeneration == regen_type::DYNAMIC)
      do_dynamic_regen();
  
@@ -1104,7 +1040,7 @@
    {
      // Committed to a strict sequence of actions, just perform them instead of a priority list
      action = strict_sequence;
-@@ -13304,8 +13879,6 @@
+@@ -13304,8 +13805,6 @@
    }
  
    action_list_str      = source->action_list_str;
@@ -1113,7 +1049,7 @@
    alist_map            = source->alist_map;
    use_apl              = source->use_apl;
    apl_variable_map     = source->apl_variable_map;
-@@ -13356,8 +13929,6 @@
+@@ -13356,8 +13855,6 @@
    add_option( opt_int( "level", true_level, 1, MAX_LEVEL ) );
    add_option( opt_bool( "ready_trigger", ready_type ) );
    add_option( opt_func( "role", parse_role_string ) );
@@ -1122,7 +1058,7 @@
    add_option( opt_string( "target", target_str ) );
    add_option( opt_float( "skill", base.skill, 0, 1.0 ) );
    add_option( opt_float( "distance", base.distance, 5, std::numeric_limits<double>::max() ) );
-@@ -13381,6 +13952,16 @@
+@@ -13381,6 +13878,16 @@
    add_option( opt_func( "brain_lag", parse_brain_lag ) );
    add_option( opt_func( "brain_lag_stddev", parse_brain_lag_stddev ) );
    add_option( opt_timespan( "cooldown_tolerance", cooldown_tolerance_ ) );
@@ -1139,7 +1075,7 @@
    add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );
    add_option( opt_timespan( "spell_queue_window", spell_queue_window ) );
    add_option( opt_bool( "scale_player", scale_player ) );
-@@ -14312,6 +14893,7 @@
+@@ -14312,6 +14819,7 @@
                                     execute_type                  et,
                                     const action_t*               context )
  {
@@ -1149,7 +1085,15 @@
  
 --- a/engine/player/player.hpp
 +++ b/engine/player/player.hpp
-@@ -30,7 +30,7 @@
+@@ -6,6 +6,7 @@
+ #pragma once
+ 
+ #include "config.hpp"
++#include "sim2gse/controller.hpp"
+ 
+ #include "actor.hpp"
+ #include "assessor.hpp"
+@@ -30,7 +31,7 @@
  
  #include <map>
  #include <set>
@@ -1158,11 +1102,12 @@
  #include <unordered_map>
  
  struct absorb_buff_t;
-@@ -209,6 +209,68 @@
+@@ -209,6 +210,68 @@
    unsigned sim2gse_base_spell_id( unsigned id ) const;
  
    // Spell Queue
-+  // Task-8 prototype only: isolated input state, disabled by default.
++  sim2gse::controller_t sim2gse_control;
++  // Task-8 prototype only: action state moves in the next ticket.
 +  std::string sim2gse_steps;
 +  std::string sim2gse_castsequences;
 +  std::string sim2gse_castsequence_events;
@@ -1177,7 +1122,6 @@
 +  timespan_t sim2gse_precombat_cast = 0_ms;
 +  timespan_t sim2gse_precombat_cast_ready = 0_ms;
 +  timespan_t sim2gse_client_gcd_ready = 0_ms;
-+  std::vector<timespan_t> sim2gse_input_times;
 +  std::vector<std::pair<timespan_t, timespan_t>> sim2gse_observed_gcd_states;
 +  std::vector<std::string> sim2gse_observed_failed_actions;
 +  std::vector<std::tuple<timespan_t, unsigned, std::string>> sim2gse_observed_failure_events;
@@ -1211,7 +1155,7 @@
 +  std::map<timespan_t, unsigned> sim2gse_castsequence_modifiers;
 +  bool sim2gse_castsequence_clock_started = false;
 +  std::unordered_map<action_t*, unsigned> sim2gse_button_ids;
-+  unsigned sim2gse_step = 0, sim2gse_input = 0, sim2gse_pending_origin = 0, sim2gse_committed_origin = 0, sim2gse_origin = 0;
++  unsigned sim2gse_step = 0, sim2gse_pending_origin = 0, sim2gse_committed_origin = 0, sim2gse_origin = 0;
 +  action_t* sim2gse_pending = nullptr;
 +  action_t* sim2gse_committed = nullptr;
 +  action_t* sim2gse_dispatch = nullptr;
@@ -1227,7 +1171,7 @@
    bool enable_spell_queue;
    timespan_t spell_queue_window;
  
-@@ -359,9 +421,6 @@
+@@ -359,9 +422,6 @@
    /// Actions that have an action-specific dynamic targeting
    std::set<action_t*> dynamic_target_action_list;
    std::string action_list_str;
@@ -1237,7 +1181,7 @@
    std::string choose_action_list;
    std::string action_list_skip;
    std::string modify_action;
-@@ -1156,7 +1215,6 @@
+@@ -1156,7 +1216,6 @@
    virtual void init_assessors();
    virtual void init_background_actions();
    virtual void create_actions();

@@ -781,6 +781,23 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertEqual(first['input_times'], list(range(150, 180000, 300)))
         self.assertEqual({e['battle'] for e in inputs if e['origin'] == 1}, {0, 1})
 
+    def test_independent_lifecycle_keeps_irregular_inputs_across_battles(self):
+        from engine import identity
+
+        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
+        times = [150, 550, 1000, 1400]
+        with tempfile.TemporaryDirectory() as directory:
+            result = evaluate(source, candidate, Path(directory), character=character,
+                              iterations=3, input_times=times)
+        inputs = [event for event in result['trace'] if event['event'] == 'input']
+        for battle in (0, 1, 2):
+            self.assertEqual([(event['ms'], event['origin']) for event in inputs
+                              if event['battle'] == battle], list(zip(times, range(1, 5))))
+        _, manifest = identity('controlled')
+        self.assertIn('projects/sim2gse/native/src/controller.cpp',
+                      {entry['path'] for entry in manifest['sources']},
+                      '输入时间和每轮重置尚未由独立控制源码提供')
+
     def test_disabled_controller_matches_original(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate, source, character = self.candidate(self.prepared, [['outbreak']])
