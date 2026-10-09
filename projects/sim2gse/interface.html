@@ -60,7 +60,7 @@ async function poll(){
  try{
   const response=await fetch('/api/tasks/'+taskId,{cache:'no-store'}),state=await response.json();
   if(!response.ok)throw new Error(state.error||'读取任务状态失败');
-  error.hidden=true;
+  error.hidden=true;if(state.storage_unavailable)showError(state.error);
   progress.value=state.progress||0;progressText.textContent=phases[state.phase]||state.phase||'正在处理';
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
   if(state.scenes){

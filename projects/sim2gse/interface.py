@@ -253,8 +253,10 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             return _public_state(read_task(destination, include_reports=False), destination)
         except (TaskError, DataReadError) as error:
             if isinstance(error, DataReadError) or '共享存储' in str(error):
-                return dict(status='failed', phase='done', result_ready=False, recoverable=True,
-                            error='共享存储不可读取，请恢复存储后重新读取或继续任务。')
+                active = handle is not None and not handle.done
+                return dict(status='running' if active else 'failed', phase='storage_unavailable',
+                            result_ready=False, recoverable=not active, storage_unavailable=True,
+                            error='共享存储暂时不可读取，正在重试；计算可能仍在继续。')
             if handle is not None and not handle.done:
                 return _starting_state()
             if handle is not None and handle.error is not None:
