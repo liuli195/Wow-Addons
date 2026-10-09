@@ -219,7 +219,7 @@ Near(start[2], -49.1 * math.sin(angle))
 def test_blood_specialization_switch_hides_controls_and_preserves_settings():
     run_scenario(r'''
 local cfg=NS.Config.Get()
-local controls=rows["凝固之血"]
+local controls=rows["凝固止血监控条"]
 local fill=assert(Layer("coagulated_blood_fill.blp",1))
 assert(fill.shown and not controls["启用"].disabled())
 controls["启用"].setValue(false)
@@ -245,12 +245,12 @@ assert(fill.shown)
 
 def test_boiling_point_pair_countdown_chain_and_clearing_through_events():
     run_scenario(r'''
-local controls=assert(rows["沸点"],"boiling point must use the existing settings page")
+local controls=assert(rows["沸点循环监控条"],"boiling point must use the existing settings page")
 local cfg=NS.Config.Get().elements.boilingPoint
 assert(cfg.enabled and cfg.fillMode==nil and cfg.maxStacks==nil)
 Near(cfg.fill[1],0.77);Near(cfg.fill[2],0.12);Near(cfg.fill[3],0.23)
 assert(cfg.fillAlpha==1 and cfg.bgAlpha==0 and cfg.bg[1]==0.77)
-assert(#NS.Config.CellPlan("boilingPoint")==3 and not gears["沸点"])
+assert(#NS.Config.CellPlan("boilingPoint")==3 and not gears["沸点循环监控条"])
 local function Echo()
     for _,t in ipairs(textures) do
         if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then return t end
@@ -349,15 +349,15 @@ def test_settings_gears_write_live_controls_and_preserve_existing_settings():
     run_scenario(r'''
 local count=0;for _ in pairs(gears) do count=count+1 end
 assert(count==3 and #gears["常规"].rows==2)
-assert(gears["凝固之血"].rows[1].label=="最大显示层数")
+assert(gears["凝固止血监控条"].rows[1].label=="最大显示层数")
 assert(gears["灵打消耗刻度"].rows[1].label=="粗细")
 local cfg=NS.Config.Get()
 rows["常规"]["HUD 缩放"].setValue(0.8);assert(NS.Elements.scale==0.8)
 rows["常规"]["图层"].setValue("HIGH");assert(cfg.strata=="HIGH")
-rows["凝固之血"]["最大显示层数"].setValue(100);assert(cfg.elements.coagulatedBlood.maxStacks==100)
+rows["凝固止血监控条"]["最大显示层数"].setValue(100);assert(cfg.elements.coagulatedBlood.maxStacks==100)
 rows["灵打消耗刻度"]["粗细"].setValue(2);Near(Thickness(Marker()),1.6)
-cfg.elements.coagulatedBlood.enabled=false;assert(gears["凝固之血"].disabled())
-cfg.elements.coagulatedBlood.enabled=true;playerClass="MAGE";assert(gears["凝固之血"].disabled())
+cfg.elements.coagulatedBlood.enabled=false;assert(gears["凝固止血监控条"].disabled())
+cfg.elements.coagulatedBlood.enabled=true;playerClass="MAGE";assert(gears["凝固止血监控条"].disabled())
 playerClass="DEATHKNIGHT"
 cfg.position={x=42,y=-9};cfg.visHideMounted=true;cfg.scale=1.25
 NS.Config.Load();assert(NS.Config.Get().scale==1.25)
@@ -367,7 +367,7 @@ assert(NS.Config.Get().position.x==42 and NS.Config.Get().visHideMounted==true)
 
 def test_each_gear_refreshes_with_its_toggle_and_explains_its_own_settings():
     run_scenario(r'''
-for _, sectionName in ipairs({"常规","凝固之血","灵打消耗刻度"}) do
+for _, sectionName in ipairs({"常规","凝固止血监控条","灵打消耗刻度"}) do
     local controlName=sectionName=="常规" and "启用准星HUD" or "启用"
     local toggle=rows[sectionName][controlName]
     local gear=gears[sectionName]
@@ -377,27 +377,27 @@ for _, sectionName in ipairs({"常规","凝固之血","灵打消耗刻度"}) do
     toggle.setValue(true);assert(not gear.blocked,"打开后齿轮必须立即可点: "..sectionName)
 end
 assert(gears["常规"].tip:find("图层",1,true))
-assert(gears["凝固之血"].tip:find("层",1,true))
+assert(gears["凝固止血监控条"].tip:find("层",1,true))
 assert(gears["灵打消耗刻度"].tip:find("粗细",1,true))
 assert(not gears["灵打消耗刻度"].disabledTooltip():find("凝固之血",1,true))
 rows["常规"]["启用准星HUD"].setValue(false)
-assert(gears["凝固之血"].blocked and gears["灵打消耗刻度"].blocked)
+assert(gears["凝固止血监控条"].blocked and gears["灵打消耗刻度"].blocked)
 assert(rows["常规"]["阴影"].disabled(), "总开关关闭后阴影滑杆必须置灰")
 local oldAlpha=NS.Config.Get().shadowAlpha
 rows["常规"]["阴影"].setValue(25)
 assert(NS.Config.Get().shadowAlpha==oldAlpha, "禁用时不得写入阴影透明度")
 rows["常规"]["启用准星HUD"].setValue(true)
-assert(not gears["凝固之血"].blocked and not gears["灵打消耗刻度"].blocked)
+assert(not gears["凝固止血监控条"].blocked and not gears["灵打消耗刻度"].blocked)
 assert(not rows["常规"]["阴影"].disabled(), "总开关打开后阴影滑杆必须恢复")
 playerClass="MAGE";EllesmereUI:RefreshPage()
-assert(gears["凝固之血"].blocked and not gears["灵打消耗刻度"].blocked)
-assert(gears["凝固之血"].disabledTooltip():find("死亡骑士",1,true))
+assert(gears["凝固止血监控条"].blocked and not gears["灵打消耗刻度"].blocked)
+assert(gears["凝固止血监控条"].disabledTooltip():find("死亡骑士",1,true))
 ''')
 
 
 def test_aura_controls_and_visibility_through_login_events_and_settings():
     run_scenario(r'''
-local controls=assert(rows["凝固之血"],"existing settings page must include blood aura")
+local controls=assert(rows["凝固止血监控条"],"existing settings page must include blood aura")
 local bg=assert(Layer("coagulated_blood_fill.blp",0),"aura background required")
 local fill=assert(Layer("coagulated_blood_fill.blp",1),"aura fill required")
 assert(not Layer("coagulated_blood_arc_shadow.blp"),"blood shadow must not be created")
@@ -421,7 +421,7 @@ assert(not bg.shown and not fill.shown)
 aura={applications=75};Event("UNIT_AURA")
 assert(bg.shown and fill.shown)
 playerClass="MAGE";Page()
-for _,control in pairs(rows["凝固之血"]) do assert(control.disabled()) end
+for _,control in pairs(rows["凝固止血监控条"]) do assert(control.disabled()) end
 ''')
 
 
@@ -482,8 +482,8 @@ def test_independent_alpha_shared_shadow_and_saved_settings():
 local bg=Layer("coagulated_blood_fill.blp",0)
 local fill=Layer("coagulated_blood_fill.blp",1)
 assert(not Layer("coagulated_blood_arc_shadow.blp"))
-rows["凝固之血"]["条背景"].setValue(40)
-rows["凝固之血"]["填充颜色"].setValue(25)
+rows["凝固止血监控条"]["条背景"].setValue(40)
+rows["凝固止血监控条"]["填充颜色"].setValue(25)
 rows["灵打消耗刻度"]["刻度颜色"].setValue(60)
 rows["常规"]["阴影"].setValue(30)
 Near(bg.color[4],0.4);Near(fill.color[4],0.25);Near(Marker().color[4],0.6)
@@ -550,10 +550,10 @@ Near(bar.minimum,-10.096153846154);Near(bar.maximum,509.134615384615)
 assert(bar.mode==Enum.StatusBarRenderMode.Radial)
 assert(bar.texture.radialStart==nil and bar.texture.radialEnd==nil)
 assert(bar.texture.radialReverse==false and not bar.texture.mask)
-rows["凝固之血"]["最大显示层数"].setValue(200)
+rows["凝固止血监控条"]["最大显示层数"].setValue(200)
 Near(bar.maximum,678.846153846154);assert(rawequal(bar.value,secret))
-rows["凝固之血"]["启用"].setValue(false);assert(not bar.shown)
-rows["凝固之血"]["启用"].setValue(true);assert(bar.shown)
+rows["凝固止血监控条"]["启用"].setValue(false);assert(not bar.shown)
+rows["凝固止血监控条"]["启用"].setValue(true);assert(bar.shown)
 item.auraDataCached=nil;Tick();assert(not bar.shown)
 ''')
 
@@ -655,13 +655,13 @@ SlashCmdList.MYUICHH("bloodtest 75");assert(bar.value==75)
 SlashCmdList.MYUICHH("bloodtest 0");assert(bar.value==0)
 SlashCmdList.MYUICHH("bloodtest 150");assert(bar.value==150)
 SlashCmdList.MYUICHH("bloodtest 999");assert(bar.value==150,"invalid probe must not affect rendering")
-rows["凝固之血"]["启用"].setValue(false);assert(not bar.shown)
-rows["凝固之血"]["启用"].setValue(true)
+rows["凝固止血监控条"]["启用"].setValue(false);assert(not bar.shown)
+rows["凝固止血监控条"]["启用"].setValue(true)
 SlashCmdList.MYUICHH("bloodtest off");assert(rawequal(bar.value,secret))
 aura=nil;Tick();assert(not bar.shown)
 SlashCmdList.MYUICHH("bloodtest 16");assert(bar.shown and bar.value==16)
 SlashCmdList.MYUICHH("bloodtest off");assert(not bar.shown)
-Near(rows["凝固之血"]["最大显示层数"].getValue(),150)
+Near(rows["凝固止血监控条"]["最大显示层数"].getValue(),150)
 ''')
 
 
@@ -677,7 +677,7 @@ for _,pair in ipairs({{0,97},{16,108.093333333333},{75,149},{150,201}}) do
 end
 assert(bar.texture.radialStart==nil and bar.texture.radialEnd==nil,
     "do not crop or remap the native whole-circle defaults")
-rows["凝固之血"]["最大显示层数"].setValue(200)
+rows["凝固止血监控条"]["最大显示层数"].setValue(200)
 SlashCmdList.MYUICHH("bloodtest off")
 aura={applications=100};Tick()
 Near(90+360*(bar.value-bar.minimum)/(bar.maximum-bar.minimum),149)
@@ -721,8 +721,8 @@ list={{spellId=463730,applications=10}};Event("UNIT_AURA");assert(bar.shown and 
 list={};Event("UNIT_AURA");assert(not bar.shown,"removal must clear independent fill")
 list={{spellId=secret,applications=75}};Event("UNIT_AURA");assert(not bar.shown,"restricted identity must never be guessed")
 list={{spellId=463730,applications=16}};Event("UNIT_AURA");assert(bar.shown and bar.value==16)
-rows["凝固之血"]["启用"].setValue(false);assert(not bar.shown)
-rows["凝固之血"]["启用"].setValue(true);assert(bar.shown)
+rows["凝固止血监控条"]["启用"].setValue(false);assert(not bar.shown)
+rows["凝固止血监控条"]["启用"].setValue(true);assert(bar.shown)
 C_UnitAuras.GetUnitAuras=function() error("read denied") end
 Event("UNIT_AURA");assert(not bar.shown,"failed scan must not keep stale stacks")
 SlashCmdList.MYUICHH("blood")
@@ -780,9 +780,9 @@ end
 Near(Cut(16,150),108.09333333333);Near(Cut(75,150),149);Near(Cut(150,150),201)
 NativeUpdate(nil);Tick();assert(not button.shown and bar.value==0,"native removal must hide entire aura button")
 NativeUpdate(10);Tick();assert(button.shown and bar.value==10)
-rows["凝固之血"]["启用"].setValue(false);assert(not NS.NativeBlood.host.shown)
-rows["凝固之血"]["启用"].setValue(true);assert(NS.NativeBlood.host.shown)
-rows["凝固之血"]["最大显示层数"].setValue(200);assert(nativeContainer.button.maximum==200)
+rows["凝固止血监控条"]["启用"].setValue(false);assert(not NS.NativeBlood.host.shown)
+rows["凝固止血监控条"]["启用"].setValue(true);assert(NS.NativeBlood.host.shown)
+rows["凝固止血监控条"]["最大显示层数"].setValue(200);assert(nativeContainer.button.maximum==200)
 rows["常规"]["HUD 缩放"].setValue(0.5);assert(NS.NativeBlood.host.scale==0.5)
 SlashCmdList.MYUICHH("bloodtest 10");assert(not NS.NativeBlood.host.shown)
 SlashCmdList.MYUICHH("bloodtest off");assert(NS.NativeBlood.host.shown)
@@ -803,7 +803,7 @@ CreateFrame=function(kind,...)
  end
  return base(kind,...)
 end
-rows["凝固之血"]["最大显示层数"].setValue(200)
+rows["凝固止血监控条"]["最大显示层数"].setValue(200)
 assert(not NS.NativeBlood.ready and not NS.NativeBlood.host.shown)
 fail=false
 for _=1,10 do Tick() end

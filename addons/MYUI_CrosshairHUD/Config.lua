@@ -107,8 +107,8 @@ Config.ELEMENT_ORDER = { "health", "power", "runes", "crosshair", "coagulatedBlo
 -- 界面上的元素名（稳定键仍是 health／power／runes，只换显示名）
 Config.ELEMENT_LABELS = {
     health = "生命值条", power = "能量条", runes = "职业资源条", crosshair = "准星",
-    coagulatedBlood = "凝固之血",
-    boilingPoint = "沸点",
+    coagulatedBlood = "凝固止血监控条",
+    boilingPoint = "沸点循环监控条",
     deathStrike = "灵打消耗刻度",
 }
 
