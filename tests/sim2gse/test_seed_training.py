@@ -103,6 +103,13 @@ def memory_training_center(training_center, installed_data_store_api, monkeypatc
         yield
 
 
+@pytest.fixture
+def no_training_proposals(monkeypatch):
+    import search
+    monkeypatch.setattr(search, 'mutate', lambda *args, **kwargs: None)
+    monkeypatch.setattr(search.random, 'Random', NoFallbackShuffle)
+
+
 def command(tmp_path, args):
     from seed_training import main
     # These existing cases exercise the explicitly retained legacy training mode.
@@ -1485,7 +1492,8 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
     assert (engine.reference, engine.inspect) == entrypoints
 
 
-def test_training_run_persists_history_revisions_and_keeps_explicit_scope(tmp_path, capsys, memory_training_center):
+def test_training_run_persists_history_revisions_and_keeps_explicit_scope(tmp_path, capsys,
+                                                                       memory_training_center, no_training_proposals):
     import result_store
     from test_character_export import sample_profile
 
@@ -1541,7 +1549,8 @@ def test_training_run_persists_history_revisions_and_keeps_explicit_scope(tmp_pa
     assert json.loads(capsys.readouterr().out) == before_failure
 
 
-def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, capsys, memory_training_center):
+def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, capsys, memory_training_center,
+                                                                    no_training_proposals):
     from test_character_export import sample_profile
     import result_store
     import sequence
@@ -1617,7 +1626,8 @@ def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, 
 
 
 def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(tmp_path, capsys, monkeypatch,
-                                                                             memory_training_center):
+                                                                             memory_training_center,
+                                                                             no_training_proposals):
     import burst
     import sequence
     import engine
