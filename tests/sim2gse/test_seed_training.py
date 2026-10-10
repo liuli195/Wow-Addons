@@ -1768,7 +1768,7 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     programs = [[['outbreak'], ['death_coil'], ['scourge_strike']],
                 [['death_coil'], ['scourge_strike'], ['outbreak']],
                 [['scourge_strike'], ['outbreak'], ['death_coil']],
-                [['outbreak'], ['scourge_strike'], ['death_coil'], ['outbreak']]]
+                [['outbreak'], ['scourge_strike'], ['death_coil'], ['outbreak']]][:outer + 1]
     for index, program in enumerate(programs):
         path = tmp_path / f'source-{index}.json'
         path.write_text(json.dumps(dict(label=str(index), source_id=f'parallel-{index}',
@@ -1830,13 +1830,13 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
         with patch.object(sequence, 'evaluate', side_effect=counted):
             assert command(tmp_path, args) == 0
     output = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
-    assert output['preparation']['completed_paths'] == 4 and output['preparation']['dynamic_skips'] == 0
+    assert output['preparation']['completed_paths'] == len(programs) and output['preparation']['dynamic_skips'] == 0
     assert sum(gated.values()) == outer * inner
     assert overlap == outer and peak == outer * inner
-    assert len(dispatched) == 4
+    assert len(dispatched) == len(programs)
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     records = json.loads(capsys.readouterr().out)
-    assert len(records) == 4 and all(row['status'] == 'completed' and row['rounds'] == 2 for row in records)
+    assert len(records) == len(programs) and all(row['status'] == 'completed' and row['rounds'] == 2 for row in records)
     assert all(len(row['initial_scores']) == len(row['scores']) == 3 for row in records)
     prepared = result_store.read_records('seed_prepared', output['config_key'])
     frozen = json.loads(next(row['context'] for row in prepared if row['kind'] == 'context'))['frozen_queue']
