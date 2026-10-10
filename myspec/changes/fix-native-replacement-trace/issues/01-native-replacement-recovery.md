@@ -1,0 +1,30 @@
+# 01: 恢复原生替换页面搜索
+
+**What to build:** 页面真实搜索将已接入的原生队列真实替换归到派发原按钮，严格保持完成、派生、施法序列和反馈边界；任务终态不显示遗留运行中。
+
+**Blocked by:** None (can start immediately)
+
+**Status:** completed
+
+- [x] 真实替换通过派发一致性门禁，actual和issued签名分别保留
+- [x] 执行、中断、施法序列推进和反馈使用可信同一关系，派生不清pending
+- [x] 替换映射按战斗重置、冲突拒绝、重复终结不隐匿
+- [x] 页面父终态显示失败或未完成，保留成果和检查点
+- [x] 必要公开入口红绿回归、固定基线验证、Astra独立审查与原请求本机复验分别如实记录
+
+## Comments
+根因由GPT-6 Astra读取固定上游eed909156d8eccbfca0f284cc271c080949d6a20独立确认。原请求引擎退出0，315次dispatch对应311次完成，4次缺失均为死亡骑士共享队列实际转交的替换；原实现按指针误判native_derived。修复记录实际派发原动作和真实转交链，不凭技能名、child关系或动态buff状态猜测。
+
+公开evaluate构造报告先以施法序列成员不一致失败，完整issued签名后通过；真派生、重复终结及错误签名仍拒绝，替换执行与中断使用相同消费契约。页面HTTP任务GET先显示running，修复后failed/incomplete，检查点原字节保留。Linux测试进程专用导入适配诊断3项通过，不代表Windows锁或原生验收。GPT-6 Astra已通过产品、原生公开fixture及测试精简的固定差异独立审查；未复现的理论失败组合不冒称已动态覆盖。
+
+固定上游050旧产物hash为0028295dd0623d725b10bf837fb850e22358c3768d869a4ce60424c56ce28222；应用060后为25a33fc4e08867355e7557022a783e7530159b216947b1ad80bd91bf6de73788。Windows受控引擎构建166.02秒通过，controlled identity为ff62392052621b1b84af86d3c116a1141e5fa2635af4c66372c0d3700072183d；baseline identity仍为e00df3cf4617d6117417fe392e54838d1ea9f421b1bbe3ceb6f109dcf1cb1314。固定上游版本及技能效果未改；旧任务与成果保留，修复后原资料新建任务，不伪装旧身份或自动重训。
+
+用户原失败input SHA256为816a8ccccfa2d6d2a869e20075654c3732f336a53d46d87a83a727b4cd22a287，严格同输入、最终seed20261011、2迭代、1线程、1目标重放通过：native exit0、0.281秒、315派发对应315完成；4次替换actual为blightfall，完整signature为dark_transformation，无derived补数。原输入seed20761011由原请求命令行覆盖为上述最终seed。Windows证据位于隔离工作树.local/native-replacement-validation/original-request/strict-validation.json。
+
+新增真实原生fixture使用同固定上游公开MID2 Unholy San'layn完整角色（Blightfall1、Scourging2），1项2.60秒通过，实际覆盖替换施法序列推进、trace开关战斗数据一致、按原动作拒绝迟到负反馈。此前默认Rider未选该天赋，已据独立解码和真实trace取证更正；不改产品标准角色。必要回归7项及7个子测试3.48秒通过。
+
+用户批准测试精简后，3个纯UI场景复用已有评分替身，保留真实浏览器、剪贴板、Windows文件占用与冻结配置断言；主原生端到端不改。真实进程退出恢复通过reference入口确定性等待制造中断，仍真实取得锁、保存初始化状态、取消进程并重启恢复；两场恢复参考迭代由512降为2，实际搜索评分原本即2迭代。Windows4项11.31秒全部通过，Job残留0；恢复8.89秒、发布9.81秒、输入间隔7.34秒、占用冲突6.98秒。这些并行场景耗时不能相加，前后不同调度组不当作独立基准。
+
+正式快验固定基线14ae6cae14a62895767a9f69b35bb7f89cd5e70a，验证远端ccb6c2e55120203fe7394126e01b7c242eea8b1b/tree f387bb8a7794d83c500b381675d663d1641ebdae，2026-10-10 14:00:40.128至14:01:33.765 UTC，外总53.625秒、verify.sim2gse50.66秒、pytest49.66秒，445项及136个子测试全部通过，exit0。这是单次非diagnostic的60秒预算正式fast验证，完整模式未运行；未重写的旧performance report不作为本次证据。此前18项路径过长失败已用仓内短TEMP单独全部复验通过，旧超时与诊断记录保存在.local交付证据。
+
+门禁二：用户于2026-10-10 14:07:44 UTC确认完整规格应用及现有PR流程交付、部署和本次清理。应用前核对本地e12aca7527a5128e6a8992b03ce445d771380efa/tree f387、12文件input fingerprint 8c13a25053c747bbce6cf21847f073f5737aa44c5801e74fd11461bbe609063d及完整4013字节预览SHA256 6ccdfa07d5b67efb99d533888c3a8ef1dc4cab0e2b53731866c629304d8d58f0一致；先经官方MySpec原子应用并validate-main通过，再更新本票据。PR检查、合并、同步及部署由父级协调现有流程接手；此记录不预称远端检查、main合并或游戏验收已完成。

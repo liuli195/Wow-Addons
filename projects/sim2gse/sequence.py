@@ -355,7 +355,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         if any((e['sequence_step'] != e['step'] or
                 not 0 <= e['sequence_member'] < len(by_step[e['step']]) or
                 (e['event'] in {'dispatch', 'native_execute', 'native_interrupt'} and
-                 e['action'] != by_step[e['step']][e['sequence_member']]))
+                 e['signature'] != by_step[e['step']][e['sequence_member']]))
                for e in events if e['step'] in by_step):
             raise ValueError('/castsequence 原生成员轨迹与编译定义不一致')
         expected_precombat = [block[0] for block in blocks[:precombat_count]]

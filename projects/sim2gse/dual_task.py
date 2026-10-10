@@ -281,6 +281,8 @@ def read(destination, *, active=None):
     for purpose, targets in SCENES:
         child_path = destination / row[purpose + '_path']
         status = row[purpose + '_status']
+        if status == 'running' and row['status'] in ('failed', 'interrupted', 'cancelled', 'partial'):
+            status = 'failed' if row['status'] == 'failed' else 'incomplete'
         scene = dict(purpose=purpose, target_count=targets, status=status,
                      input_sha256=row['input_sha256'], total_budget_seconds=row['config']['total_budget_seconds'],
                      elapsed_seconds=0., progress=0.)

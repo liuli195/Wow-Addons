@@ -26,7 +26,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "004e246addbf9b1585294c01f380ed3d1f1045f19b8f71da733a01c10926bd9e"
+      "sha256": "781ce0c52177bae04e1488d75690f8b0b378a9508e605924b30824e3ec0712b5"
     },
     {
       "path": "projects/sim2gse/native/src/controller.cpp",
@@ -34,7 +34,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "6a1728924fac034d662ec7265d05d3c9b9eb7844b6ef0c6664c5c794556fcbd5"
+      "sha256": "c1e0058d3e79853adcd2c72fea0b5fc8add700c180b633286cf3d6fa26a8792c"
     }
   ],
   "upstream_commit": "eed909156d8eccbfca0f284cc271c080949d6a20",
@@ -59,6 +59,10 @@
     {
       "path": "projects/sim2gse/native/hooks/050-death-knight-guards.patch",
       "sha256": "2fd119c936a3097586c3ecba55706b1c0d17f82a4328ff1c2947a4c17ebba297"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/060-native-replacement-transfer.patch",
+      "sha256": "0c0801cd723f56bcf506a750a52ec0c482e66c06701f59a0334dc26c8550f72d"
     }
   ],
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
@@ -96,7 +100,7 @@
     "engine/player/player.hpp": "b95c18dd0cf9f90cec0dbeedafb53022f92cca8a2cd48c0287125d3ca2a72092",
     "engine/action/action.cpp": "00327162529c56aee58ebc2e898a670c0adf0f9ad950f8f34bb3b09cdccbd540",
     "engine/action/action.hpp": "ac201ff2dfaf3aa57206568b86cc4a4c25f9bf80c1547ce2a8879760dff0bb76",
-    "engine/class_modules/sc_death_knight.cpp": "0028295dd0623d725b10bf837fb850e22358c3768d869a4ce60424c56ce28222",
+    "engine/class_modules/sc_death_knight.cpp": "25a33fc4e08867355e7557022a783e7530159b216947b1ad80bd91bf6de73788",
     "engine/report/json/report_json.cpp": "641a4f7aefc98766ccfb98b5688fccbff5d6ba9169223fb68f74ec875fe8d5c9",
     "engine/Makefile": "d36e92017d3c4877c6a716a3fba18e0336a269a8ea6ee10979ad78573448fed9"
   },

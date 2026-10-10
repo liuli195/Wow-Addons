@@ -669,8 +669,14 @@ import result_store
 result_store.DATA_ROOT = Path({str(result_store.DATA_ROOT)!r})
 result_store._SKILL_API = runpy.run_path({str(installed_data_store / 'scripts/data_store.py')!r})
 from interface import create_server
+import engine, threading
+# Stop at preparation without spending 512 battles to manufacture an interruption window.
+def paused_reference(profile, folder, *args, **kwargs):
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    threading.Event().wait()
+engine.reference = paused_reference
 server = create_server(Path({str(page_root)!r}), task_options=dict(search_config=dict(
-    candidate_limit=1, batch_targets=(2,), iterations=512, validation_batches=2)))
+    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
 Path({str(ready)!r}).write_text(json.dumps(dict(port=server.server_port)))
 server.serve_forever()
 """
