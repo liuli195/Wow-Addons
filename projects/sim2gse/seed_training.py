@@ -203,6 +203,62 @@ def retains_core(program, core):
     return any(program[index:index + len(core)] == core for index in range(len(program)))
 
 
+def training_program(program, capabilities, all_capabilities, burst_context):
+    """仅派生训练输入；原来源、剩余控制结构及施法序列重置不变。"""
+    from burst import _excluded
+    from program import from_search_program
+    policy = capabilities['burst_exclusions']
+    actions = [*all_capabilities['actions'],
+               *(command for block in burst_context['candidate']['blocks'] for command in block)]
+    excluded = set(policy['actions']) | {action['simc_action'] for action in actions
+                                        if _excluded(action, policy)}
+    removed = []
+
+    def keep(block, path):
+        remaining = []
+        for index, action in enumerate(block):
+            if isinstance(action, str) and action in excluded:
+                removed.append(dict(path=f'{path}[{index}]', action=action))
+            else:
+                remaining.append(action)
+        return remaining
+
+    if not isinstance(program, list) or not 1 <= len(program) <= 128:
+        return program, removed  # 原校验负责不可恢复的历史结构。
+    output = []
+    for index, segment in enumerate(program):
+        path = f'segments[{index}]'
+        if isinstance(segment, list):
+            if not 1 <= len(segment) <= 16:
+                output.append(segment)
+                continue
+            block = keep(segment, path)
+            if block:
+                output.append(block)
+        elif isinstance(segment, dict) and segment.get('kind') == 'Loop':
+            blocks, count = segment.get('blocks'), segment.get('count')
+            if (type(count) is not int or not 1 <= count <= 4096 or not isinstance(blocks, list)
+                    or not 1 <= len(blocks) <= 128
+                    or any(not isinstance(block, list) or not 1 <= len(block) <= 16 for block in blocks)):
+                output.append(segment)  # 不因删空而掩盖原控制结构错误。
+                continue
+            remaining = [keep(block, f'{path}.blocks[{block_index}]')
+                         for block_index, block in enumerate(blocks)]
+            remaining = [block for block in remaining if block]
+            if remaining:
+                output.append(dict(segment, blocks=remaining))
+        elif isinstance(segment, dict) and segment.get('kind') == 'CastSequence':
+            # 删除前用既有解析核对成员和reset，不能删除后掩盖无效定义。
+            by_name = {action['simc_action']: action for action in actions}
+            from_search_program([segment], dict(all_capabilities, actions=list(by_name.values())))
+            members = keep(segment['members'], path + '.members')
+            if members:
+                output.append(dict(segment, members=members))
+        else:
+            output.append(segment)
+    return output, removed
+
+
 def publish_records(processed, selected, *, condition, character, targets, template_sha, engines, capabilities=None):
     """Rebuild from committed outcomes so a failed final publish is retryable."""
     options = []
@@ -210,9 +266,12 @@ def publish_records(processed, selected, *, condition, character, targets, templ
         if row['condition'] != condition or row['status'] != 'completed':
             continue
         final_family = row['family'] if row['core_retained'] else 'history-search'
+        adaptation = decode(row['comparison']).get('adaptation', {})
+        initial_family = ('history-search' if adaptation.get('initial_core_retained') is False
+                          else row['family'])
         for program, scores, family in (
                 (decode(row['program']), row['scores'], final_family),
-                (decode(row['initial_program']), row['initial_scores'], row['family'])):
+                (decode(row['initial_program']), row['initial_scores'], initial_family)):
             if capabilities is not None:
                 from program import canonicalize_search_program
                 canonicalize_search_program(program, capabilities)
@@ -296,7 +355,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         native = reference(setup_profile, setup / 'reference', character, runtime=setup_runtime,
                            iterations=100, simulation_config=simulation_config)
         character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-        _, capabilities, burst_context = prepare_loop(native, character, setup, setup_runtime,
+        all_capabilities, capabilities, burst_context = prepare_loop(native, character, setup, setup_runtime,
                                                       definition=definition, interval_ms=config['input_interval_ms'])
     template_sha = hashlib.sha256(text.encode()).hexdigest()
     condition = training_condition(template_sha, engines, config, simulation_config,
@@ -370,6 +429,23 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         store = None
         cancelled = False
         try:
+            if burst_context is not None:
+                program, removed = training_program(row['program'], capabilities, all_capabilities, burst_context)
+                if removed:
+                    record['comparison']['adaptation'] = dict(original_program=row['program'], removed=removed,
+                        initial_core_retained=retains_core(program, row['core']))
+                row = dict(row, program=program)
+                record.update(initial_program=program, program=program)
+                for index, segment in enumerate(program if isinstance(program, list) else []):
+                    if (removed and isinstance(segment, dict) and segment.get('kind') == 'CastSequence'
+                            and len(segment['members']) == 1):
+                        raise ValueError(f'segments[{index}]: 去除爆发动作后 /castsequence 仅剩一个成员，不能保持现有表达')
+                if not program:
+                    raise ValueError('去除爆发动作后没有可训练的普通循环')
+                if all(isinstance(segment, dict) and segment.get('kind') == 'WaitClicks'
+                       and type(segment.get('clicks')) is int and 2 <= segment['clicks'] <= 4096
+                       for segment in program):
+                    raise ValueError('去除爆发动作后没有可训练的普通循环，仅剩空点击')
             prepared = canonicalize_search_program(row['program'], capabilities)
             key = prepared['identity']
             if key in seen:
@@ -414,9 +490,9 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                                          folder / 'retest-final', simulation_config,
                                          engines=engines, condition=condition,
                                          runtime=TaskRuntime(600, cancel_event=cancel_event), burst_context=burst_context)
-                record['comparison'] = summarize_pairs(
+                record['comparison'].update(summarize_pairs(
                     [{'dps': value} for value in record['scores']],
-                    [{'dps': value} for value in record['initial_scores']])
+                    [{'dps': value} for value in record['initial_scores']]))
                 record['status'] = 'completed'
         except (ValueError, BudgetExceeded, TaskCancelled) as error:
             record['error'] = str(error)

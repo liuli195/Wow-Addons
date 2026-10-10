@@ -362,7 +362,7 @@ def test_public_search_excludes_current_burst_content_and_changes_with_definitio
         task.resume_task(tmp_path / 'search')
 
 
-def test_reviewed_burst_training_rejects_entire_nested_seed_and_preserves_old_training(tmp_path):
+def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training(tmp_path):
     import burst
     import result_store
     import seed_training
@@ -374,7 +374,9 @@ def test_reviewed_burst_training_rejects_entire_nested_seed_and_preserves_old_tr
                      label='nested', source='constructed-test', original='reviewed fixture',
                      instructions='repeat', semantic='preserved', changes=[], family='nested',
                      core=[['outbreak']], program=[dict(kind='Loop', count=2,
-                        blocks=[['outbreak'], ['army_of_the_dead']])])
+                        blocks=[['outbreak'], ['army_of_the_dead']]),
+                        dict(kind='CastSequence', members=['army_of_the_dead', 'death_coil'],
+                             reset=dict(timeout_seconds=None, flags=[]))])
     result_store.write('seed_candidates', 'registry', [candidate], schema=seed_training.CANDIDATE_SCHEMA)
     legacy = dict(candidate_id='old-selected', condition='old', class_name='deathknight',
                   spec='unholy', targets=1, program=[['army_of_the_dead']], family='old',
@@ -385,7 +387,10 @@ def test_reviewed_burst_training_rejects_entire_nested_seed_and_preserves_old_tr
     assert outcome['status'] == 'completed'
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
     assert len(processed) == 1 and processed[0]['status'] == 'rejected'
-    assert json.loads(processed[0]['initial_program']) == candidate['program']
+    assert '仅剩一个成员' in processed[0]['error']
+    assert json.loads(processed[0]['initial_program']) == [dict(kind='Loop', count=2, blocks=[['outbreak']]),
+        dict(kind='CastSequence', members=['death_coil'], reset=dict(timeout_seconds=None, flags=[]))]
+    assert json.loads(processed[0]['comparison'])['adaptation']['original_program'] == candidate['program']
     assert not result_store.read_records('seed_selected', 'deathknight-unholy-1-burst')
     assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
 
