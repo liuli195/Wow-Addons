@@ -32,7 +32,107 @@ def imported_sequence(name, actions):
     return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(wire_value(value)), wbits=-15)).decode("ascii")
 
 
+class NativeTraceContractTests(unittest.TestCase):
+    """固定原生交换报告，检查公开评估入口的轨迹身份契约；不冒称引擎验收。"""
+
+    def test_replacement_castsequence_keeps_issued_signature_and_actual_action(self):
+        raw = sample_profile()
+        character = parse_character(raw)
+        commands = [dict(kind='spell', spell_id=63560, name='dark_transformation',
+                         simc_action='dark_transformation'),
+                    dict(kind='spell', spell_id=47541, name='death_coil', simc_action='death_coil')]
+        candidate = dict(blocks=[commands], compiled_steps=[dict(type='macro',
+            macrotext='/castsequence 63560,47541')], compiled_program=dict(
+                clicks=[dict(kind='Action', source={}, commands=['dark_transformation', 'death_coil'])],
+                castsequences=[dict(step=0, members=['dark_transformation', 'death_coil'], reset=None)]))
+        player = dict(name=character.name, sim2gse_class=character.class_name, level=character.level,
+            sim2gse_spec_id=252, sim2gse_class_id=6, sim2gse_spec='unholy', race=character.race,
+            role='attack', sim2gse_resource='runic_power', talents=character.fields['talents'],
+            gear={slot: dict(encoded_item=item.raw) for slot, item in character.equipment.items()},
+            collected_data=dict(dps=dict(mean=100., count=1), fight_length=dict(mean=180.)))
+        report = dict(sim=dict(players=[player], targets=[{}], options=dict(dbc=dict(
+            Live=dict(build_level=69933, wow_version='12.1.0.69933'), version_used='Live'))))
+        events = [
+            (0, 'input', 1, '-', '-', 0), (1, 'dispatch', 1, 'dark_transformation', 'dark_transformation', 0),
+            (2, 'native_execute', 1, 'blightfall', 'dark_transformation', 0),
+            (2, 'native_derived', 1, 'disease_effect', '', 0),
+            (2000, 'input', 2, '-', '-', 1), (2001, 'dispatch', 2, 'death_coil', 'death_coil', 1),
+            (2050, 'native_interrupt', 2, 'replacement_cast', 'death_coil', 1)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'input.simc'
+            source.write_text(raw, encoding='utf-8')
+            def native_exchange(profile, folder, *args, **kwargs):
+                (folder / 'native.pending.json').write_text(json.dumps(report), encoding='utf-8')
+                (folder / 'native.txt').write_text('\n'.join(
+                    'S2GSE\t' + '\t'.join(map(str, [ms, event, origin, 0, action, 0, 0, 100, 0,
+                                                    0, signature, 0, 0, member]))
+                    for ms, event, origin, action, signature, member in events), encoding='utf-8')
+                return 'S2GBLOCK\t0\t0\tdark_transformation\nS2GBLOCK\t0\t1\tdeath_coil\n'
+            with patch('sequence.run', side_effect=native_exchange):
+                result = evaluate(source, candidate, root / 'result', character=character,
+                                  iterations=2, input_times=[0, 2000])
+                original = list(events)
+                events[2] = (2, 'native_derived', 1, 'blightfall', '', 0)
+                events[6] = (2050, 'native_execute', 2, 'death_coil', 'death_coil', 1)
+                with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
+                    evaluate(source, candidate, root / 'derived', character=character,
+                             iterations=2, input_times=[0, 2000])
+                events[:] = original + [original[2]]
+                with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
+                    evaluate(source, candidate, root / 'duplicate', character=character,
+                             iterations=2, input_times=[0, 2000])
+                events[:] = original
+                events[2] = (2, 'native_execute', 1, 'blightfall', 'other_command', 0)
+                with self.assertRaisesRegex(ValueError, '不属于来源输入对应的编译块'):
+                    evaluate(source, candidate, root / 'wrong-signature', character=character,
+                             iterations=2, input_times=[0, 2000])
+                events[:] = original
+                events[2] = (2, 'native_execute', 1, 'dark_transformation', 'dark_transformation', 0)
+                events[6] = (2050, 'native_interrupt', 2, 'death_coil', 'death_coil', 1)
+                direct = evaluate(source, candidate, root / 'direct', character=character,
+                                  iterations=2, input_times=[0, 2000])
+                self.assertTrue(direct['consistent'])
+        self.assertTrue(result['consistent'])
+        self.assertEqual([(row['action'], row['signature']) for row in result['trace']
+                          if row['event'] in {'native_execute', 'native_interrupt'}],
+                         [('blightfall', 'dark_transformation'), ('replacement_cast', 'death_coil')])
+
+
 class SequenceSimulationTests(unittest.TestCase):
+    def test_native_queue_replacement_advances_castsequence_as_issued_member(self):
+        from engine import training_template
+        from program import compile_program, from_search_program
+        with tempfile.TemporaryDirectory(prefix='native-replacement-') as directory:
+            root = Path(directory)
+            prepared = self.prepare(training_template().read_text(encoding='utf-8'), root / 'standard')
+            source, character, native, capabilities = prepared
+            program = from_search_program([dict(kind='CastSequence',
+                members=['dark_transformation', 'dark_transformation'], reset=None)], capabilities)
+            candidate = compile_program(program, root / 'export', identity=native['identity'],
+                                        capabilities=capabilities)
+            times = list(range(0, 180000, 300))
+            result = evaluate(source, candidate, root / 'controlled', character=character,
+                              iterations=2, input_times=times)
+            quiet = evaluate(source, candidate, root / 'quiet', character=character,
+                             iterations=2, input_times=times, trace=False)
+            self.assertEqual(result['report']['sim']['players'][0]['collected_data'],
+                             quiet['report']['sim']['players'][0]['collected_data'])
+            timed = evaluate(source, candidate, root / 'timed', character=character,
+                             iterations=2, input_times=times, failure_events=[])
+            replaced = next(row for row in timed['trace']
+                            if row['event'] == 'native_execute' and row['action'] == 'blightfall')
+            with self.assertRaisesRegex(ValueError, '已执行后收到否定反馈'):
+                evaluate(source, candidate, root / 'late-feedback', character=character,
+                         iterations=2, input_times=times,
+                         failure_events=[(int(replaced['ms']) + 1, replaced['origin'], 'dark_transformation')])
+        executed = [row for row in result['trace'] if row['event'] == 'native_execute' and row['battle'] == 0]
+        self.assertEqual([(row['action'], row['signature'], row['sequence_member'])
+                          for row in executed[:2]],
+                         [('dark_transformation', 'dark_transformation', 0),
+                          ('blightfall', 'dark_transformation', 1)])
+        self.assertTrue(result['consistent'])
+
     def test_long_search_castsequence_compiles_and_runs_with_member_limits(self):
         from program import compile_program, from_search_program
 

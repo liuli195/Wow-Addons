@@ -1,0 +1,13 @@
+--- a/engine/class_modules/sc_death_knight.cpp
++++ b/engine/class_modules/sc_death_knight.cpp
+@@ -6234,7 +6234,10 @@
+       return action_base_t::queue_execute( et );
+
+     if ( this->always_replace || ( this->replacement_action_buff && this->replacement_action_buff->check() ) )
++    {
++      p()->sim2gse_control.transfer_replacement( this, this->replacement_action );
+       return this->replacement_action->queue_execute( et );
++    }
+
+     return action_base_t::queue_execute( et );
+   }

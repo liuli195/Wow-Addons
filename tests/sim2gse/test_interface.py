@@ -1171,6 +1171,34 @@ class InterfaceTests(unittest.TestCase):
         self.thread.join(timeout=2)
         self.directory.cleanup()
 
+    def test_terminal_parent_does_not_show_stale_scene_as_running(self):
+        import result_store
+        from dual_task import PARENT_SCHEMA
+        task_id = 'a' * 32
+        _, destination = self.server.task_paths(task_id)
+        destination.mkdir()
+        (destination / 'dual.json').write_text(json.dumps(dict(parent_id=task_id)), encoding='utf-8')
+        checkpoint = destination / 'single_target' / 'checkpoint.json'
+        checkpoint.parent.mkdir()
+        checkpoint.write_bytes(b'{"preserved":true}')
+        row = dict.fromkeys(PARENT_SCHEMA)
+        row.update(parent_id=task_id, status='failed', phase='single_target', error='native trace failed',
+                   input_sha256='frozen', definition_id='reviewed', spec_id=252,
+                   config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
+                   rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
+                   single_target_path='single_target', aoe_path='aoe',
+                   single_target_status='running', aoe_status='pending', burst_instructions='')
+        for status, scene_status in [('failed', 'failed'), ('interrupted', 'incomplete')]:
+            row['status'] = status
+            result_store.write('dual_tasks', task_id, [row], schema=PARENT_SCHEMA)
+            state = self._json_request('GET', '/api/tasks/' + task_id)
+            self.assertEqual(state['status'], status)
+            self.assertEqual(state['scenes'][0]['status'], scene_status)
+            self.assertEqual(state['scenes'][1]['status'], 'pending')
+            self.assertTrue(state['recoverable'])
+            self.assertFalse(state['result_ready'])
+            self.assertEqual(checkpoint.read_bytes(), b'{"preserved":true}')
+
     def test_homepage_is_the_real_three_step_shell(self) -> None:
         with urlopen(self.url, timeout=2) as response:
             page = response.read().decode("utf-8")

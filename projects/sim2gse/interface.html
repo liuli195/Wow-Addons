@@ -64,7 +64,7 @@ async function poll(){
   progress.value=state.progress||0;progressText.textContent=phases[state.phase]||state.phase||'正在处理';
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
   if(state.scenes){
-   const labels={single_target:'单目标',aoe:'5目标'},statuses={pending:'等待',running:'运行中',completed:'完成'};
+   const labels={single_target:'单目标',aoe:'5目标'},statuses={pending:'等待',running:'运行中',completed:'完成',failed:'失败',incomplete:'未完成'};
    progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)).join(' · ');
    progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。';
    for(const [purpose,[field,button]] of Object.entries(outputs)){field.value=state.exports[purpose]||'';button.disabled=!field.value;}
