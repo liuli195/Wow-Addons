@@ -487,7 +487,7 @@ def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path)
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     try:
@@ -576,7 +576,7 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_
     monkeypatch.setattr(dual_task, '_save', save)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     request = Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
@@ -631,7 +631,7 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     try:
@@ -718,7 +718,7 @@ server.serve_forever()
     from test_interface import InterfaceTests
     monkeypatch.setattr(sequence, 'evaluate', InterfaceTests._ui_score)
     server = create_server(page_root)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     try:

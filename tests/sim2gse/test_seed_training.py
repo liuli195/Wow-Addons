@@ -961,8 +961,10 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     from unittest.mock import patch
     import sequence
     import result_store
+    import search
     from seed_training import CANDIDATE_SCHEMA as SOURCE_SCHEMA, decode
 
+    assert search.config_for(training=True)['round_candidate_limit'] == 16
     # Existing public center schemas, not a substitute history reader.
     result_store.write('runs', 'historic-1', [dict(dict.fromkeys(result_store.RUN_SCHEMA),
         run_id='historic-1', status='completed',
@@ -979,14 +981,14 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    with training_boundary():
+    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, ['prepare', *args[1:]]) == 0
     # Reproduce the inactive derived source left by the previous score-quality gate.
     source = result_store.read_records('seed_candidates', 'registry')[0]
     source.update(active=False, semantic='unsupported', program=[], core=decode(source['core']),
                   changes=['历史缺少可靠最佳候选或有效成绩'], unavailable_reason='历史缺少可靠最佳候选或有效成绩')
     result_store.write('seed_candidates', 'registry', [source], schema=SOURCE_SCHEMA)
-    with training_boundary():
+    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, args) == 0
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     first = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
@@ -1004,16 +1006,19 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     assert {row['seed'] for row in retests} == {20261008, 20261009, 20261010}
     assert result_store.read_records('runs', 'historic-1') == history_before
     before = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('可靠完整路径不能重训')):
+    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
+            patch.object(sequence, 'evaluate', side_effect=AssertionError('可靠完整路径不能重训')):
         assert command(tmp_path, args) == 0
     assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == before
     template.write_text(sample_profile() + '\n# new template revision\n', encoding='utf-8')
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=ValueError('新条件重新计算')):
+    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
+            patch.object(sequence, 'evaluate', side_effect=ValueError('新条件重新计算')):
         assert command(tmp_path, args) == 2
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     rows = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert len({row['condition'] for row in rows}) == 2
     assert any(row['status'] == 'failed' for row in rows)
+    assert search.config_for(training=True)['round_candidate_limit'] == 16
 
 
 def test_training_trains_history_matching_completed_final_and_reuses_only_initial_paths(tmp_path, capsys):
