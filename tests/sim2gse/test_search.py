@@ -85,17 +85,18 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None):
+                   on_native_start=None, score=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     if on_native_start is not None:
         on_native_start()
     input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
-    score = score_offset + 100.0 + sum(
-        command.get("spell_id", command.get("item_id", 0))
-        for block in candidate["blocks"] for command in block
-    ) / 1000.0
+    if score is None:
+        score = score_offset + 100.0 + sum(
+            command.get("spell_id", command.get("item_id", 0))
+            for block in candidate["blocks"] for command in block
+        ) / 1000.0
     samples = max(1, iterations - 1)
     report = _fast_report(character, score, samples)
     (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")

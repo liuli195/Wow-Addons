@@ -18,13 +18,7 @@ def training_boundary(damage_for=lambda candidate: 100.):
     def evaluate(profile, candidate, folder, **kwargs):
         kwargs.pop('input_sources', None)
         kwargs.pop('burst_candidate', None)
-        result = _fast_evaluate(profile, candidate, folder, **kwargs)
-        damage = damage_for(candidate)
-        result['summary']['dps'] = damage
-        result['report']['sim']['statistics']['raid_dps']['mean'] = damage
-        result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
-        Path(folder, 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
-        return result
+        return _fast_evaluate(profile, candidate, folder, score=damage_for(candidate), **kwargs)
 
     with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
         yield
