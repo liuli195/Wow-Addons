@@ -102,10 +102,12 @@ class NativeTraceContractTests(unittest.TestCase):
 class SequenceSimulationTests(unittest.TestCase):
     def test_native_queue_replacement_advances_castsequence_as_issued_member(self):
         from engine import training_template
+        from seed_training import template_character
         from program import compile_program, from_search_program
         with tempfile.TemporaryDirectory(prefix='native-replacement-') as directory:
             root = Path(directory)
-            prepared = self.prepare(training_template().read_text(encoding='utf-8'), root / 'standard')
+            prepared = self.prepare(training_template().read_text(encoding='utf-8'), root / 'standard',
+                                    character_parser=template_character)
             source, character, native, capabilities = prepared
             program = from_search_program([dict(kind='CastSequence',
                 members=['dark_transformation', 'dark_transformation'], reset=None)], capabilities)
@@ -376,11 +378,11 @@ class SequenceSimulationTests(unittest.TestCase):
         cls.directory.cleanup()
 
     @staticmethod
-    def prepare(text, root):
+    def prepare(text, root, *, character_parser=parse_character):
         root.mkdir(parents=True, exist_ok=True)
         source = root / 'input.simc'
         source.write_text(text, encoding='utf-8')
-        character = parse_character(text)
+        character = character_parser(text)
         native = reference(source, root / 'reference', character)
         character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
         return source, character, native, inspect(native, root / 'capabilities')
