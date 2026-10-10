@@ -5,6 +5,7 @@ import subprocess
 import shutil
 import sys
 import sqlite3
+import random
 from contextlib import contextmanager
 
 
@@ -29,6 +30,11 @@ def training_boundary(damage_for=lambda candidate: 100.):
         yield
 
 import pytest
+
+
+class NoFallbackShuffle(random.Random):
+    def randrange(self, *args, **kwargs):
+        return 1 if args == (16,) else super().randrange(*args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -248,7 +254,8 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
         assert command(tmp_path, args) == 0
 
 
-def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys):
+def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys,
+                                                                          memory_training_center):
     from test_character_export import sample_profile
     from test_search import _fast_evaluate
     from unittest.mock import patch
@@ -831,10 +838,10 @@ def test_training_command_rejects_invalid_parallelism_before_compute(tmp_path, m
 
 
 @pytest.mark.parametrize('partial_improvement', [False, True])
-def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_path, partial_improvement):
+def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_path, partial_improvement,
+                                                                          memory_training_center):
     from test_character_export import sample_profile
     from unittest.mock import patch
-    import random
     import result_store
     import search
 
@@ -848,10 +855,6 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
     assert command(tmp_path, ['register', str(source)]) == 0
     proposals = {}
     scores = {}
-
-    class NoFallbackShuffle(random.Random):
-        def randrange(self, *args, **kwargs):
-            return 1 if args == (16,) else super().randrange(*args, **kwargs)
 
     def growing_program(parent, *args, **kwargs):
         size = len(parent) + 4
@@ -1844,6 +1847,7 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
     from test_character_export import sample_profile
     from unittest.mock import patch
     import result_store
+    import search
     import sequence
     import threading
     target = [['death_coil'], ['scourge_strike'], ['outbreak'], ['dark_transformation'], ['use_item,slot=trinket1']]
@@ -1861,7 +1865,9 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
     gated = set()
     calls = []
     lock = threading.Lock()
-    with training_boundary(plateau):
+    # Only the common improvement is needed for this real transaction/trace boundary.
+    with training_boundary(plateau), patch.object(search, 'mutate', return_value=target), \
+            patch.object(search.random, 'Random', NoFallbackShuffle):
         native = sequence.evaluate
         def observed(*args, **kwargs):
             candidate, folder = args[1], Path(args[2])
@@ -1914,7 +1920,8 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
         source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
         family='cached', core=[], program=target)), encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
-    with training_boundary(plateau):
+    with training_boundary(plateau), patch.object(search, 'mutate', return_value=target), \
+            patch.object(search.random, 'Random', NoFallbackShuffle):
         assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
                                   '--workspace', str(tmp_path / 'work')]) == 0
     records = result_store.read_records('seed_processed', 'deathknight-unholy-1')
