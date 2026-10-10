@@ -399,6 +399,66 @@ def test_training_entry_reuses_verified_legacy_namespace_without_retraining(tmp_
     assert result_store.read_records('seed_selected', 'deathknight-unholy-1')[0]['condition'] == processed[0]['condition']
 
 
+@pytest.mark.parametrize('fault', ['none', 'missing_source', 'changed_source', 'changed_legacy_content', 'changed_current'])
+def test_training_entry_reuses_legacy_only_with_checked_original_line_endings(tmp_path, fault,
+                                                                            legacy_engine_boundary,
+                                                                            monkeypatch):
+    import hashlib
+    import result_store
+    import sequence
+    from engine import ROOT
+    from seed_training import adopt_legacy_condition, LEGACY_SOURCE_COMMIT
+    keys = ['projects/sim2gse/' + name for name in
+            ('gse_import.py', 'macro_interpreter.py', 'runtime.py')]
+    source_root = tmp_path / 'legacy-source'
+    original_rules = {}
+    normalized_hashes = {}
+    for key in keys:
+        blob = subprocess.check_output(['git', 'show', LEGACY_SOURCE_COMMIT + ':' + key], cwd=ROOT)
+        normalized = blob.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+        original = normalized.replace(b'\n', b'\r\n', 1)
+        if fault == 'changed_legacy_content' and key == keys[0]:
+            original = original.replace(b'import hashlib', b'import random as hashlib', 1)
+        source = source_root / key
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(original)
+        original_rules[key] = hashlib.sha256(original).hexdigest()
+        normalized_hashes[key] = hashlib.sha256(normalized).hexdigest()
+    template, batch, evidence = legacy_batch_fixture(tmp_path,
+        mutate_input=lambda payload: payload['rules'].update(original_rules))
+    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    original_payload = json.loads(json.dumps(evidence['condition_input']))
+    checkpoint = Path(processed[0]['task_path']) / 'task.sqlite3'
+    before = checkpoint.read_bytes()
+    if fault == 'missing_source':
+        (source_root / keys[0]).unlink()
+    elif fault == 'changed_source':
+        with (source_root / keys[0]).open('ab') as handle:
+            handle.write(b'# not the recorded original\n')
+    if fault in ('missing_source', 'changed_source', 'changed_legacy_content'):
+        with pytest.raises(ValueError):
+            adopt_legacy_condition(batch, evidence, processed=processed, selected=[], source_root=source_root)
+        assert not (batch / 'identity.json').exists()
+        assert checkpoint.read_bytes() == before
+        return
+    manifest = adopt_legacy_condition(batch, evidence, processed=processed, selected=[], source_root=source_root)
+    assert evidence['condition_input'] == original_payload == manifest['condition_input']
+    assert manifest['condition'] == processed[0]['condition']
+    assert manifest['legacy_line_endings'] == {key: dict(raw_sha256=original_rules[key],
+        normalized_sha256=normalized_hashes[key]) for key in keys}
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('可靠完整旧成绩不能重算'))
+    if fault == 'changed_current':
+        original_read = Path.read_bytes
+        changed_path = (ROOT / keys[0]).resolve()
+        monkeypatch.setattr(Path, 'read_bytes', lambda path: original_read(path).replace(
+            b'import hashlib', b'import random as hashlib', 1)
+            if path.resolve() == changed_path else original_read(path))
+    assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+        '--workspace', str(tmp_path / 'work'), '--max-processes', '4']) == (2 if fault == 'changed_current' else 0)
+    assert checkpoint.read_bytes() == before
+    assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == processed
+
+
 def test_training_entry_can_start_changed_template_without_borrowing_unproven_legacy(tmp_path,
                                                                                   legacy_engine_boundary):
     import result_store

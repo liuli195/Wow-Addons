@@ -44,6 +44,12 @@ LEGACY_EXECUTION_RULES = {
         '649f3a70293b25ddde2ac66505966a91bc3370999f928b867e713ab4fa220484',
         '4f842e229e2c4c01091fa0e7faaf9fc90b6fd367d4979a99b86d3c17ddb794f5'),
 }
+# 仅这三个未改模块可由受控导入器证明换行差异；摘要来自固定 be350 Git blob。
+LEGACY_LINE_ENDING_RULES = {
+    'projects/sim2gse/gse_import.py': '9a01cccda449b49c30d96ae315c9bfec027e8cb7bc29f1ce83f3cf693a41cd31',
+    'projects/sim2gse/macro_interpreter.py': '2b31a0812c3658411ccb77b78b892314f822876500f0895dd49bab7ea593bcc5',
+    'projects/sim2gse/runtime.py': 'bcc3d3e28f17e04735b4629272ada3bf311db8471ecfe3cc74de4c916270364f',
+}
 LEGACY_SEMANTIC_VERSIONS = dict(training='seed-training-v2',
     search='multi-start-local-adaptive-v2', statistics='paired-bootstrap-v1',
     behavior='sim2gse-search-behavior-v1')
@@ -383,9 +389,19 @@ def _validate_identity(batch, manifest, current_input, *, processed=(), selected
             if (legacy != LEGACY_SOURCE_COMMIT or versions != LEGACY_SEMANTIC_VERSIONS or
                     digest(payload) != condition or set(rules) != set(current_rules)):
                 raise ValueError('旧训练条件凭据缺失或不是已审核基线')
+            proof = manifest.get('legacy_line_endings', {})
+            if not isinstance(proof, dict) or set(proof) - set(LEGACY_LINE_ENDING_RULES):
+                raise ValueError('旧训练源码换行凭据键不兼容')
             for key, value in rules.items():
-                allowed = LEGACY_EXECUTION_RULES.get(key, (current_rules[key],))
-                if value not in allowed:
+                if key in proof:
+                    from engine import ROOT
+                    raw = (ROOT / key).read_bytes()
+                    normalized = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+                    if (proof[key] != dict(raw_sha256=value, normalized_sha256=LEGACY_LINE_ENDING_RULES[key]) or
+                            hashlib.sha256(raw).hexdigest() != current_rules[key] or
+                            hashlib.sha256(normalized).hexdigest() != LEGACY_LINE_ENDING_RULES[key]):
+                        raise ValueError('旧训练源码换行凭据或当前内容不兼容: ' + key)
+                elif value not in LEGACY_EXECUTION_RULES.get(key, (current_rules[key],)):
                     raise ValueError('旧训练源码凭据不兼容: ' + key)
         elif condition != manifest['semantic_condition']:
             raise ValueError('训练条件不是当前语义身份')
@@ -444,7 +460,7 @@ def _read_identity(path):
 
 
 @writer_lock()
-def adopt_legacy_condition(batch, evidence, *, processed, selected):
+def adopt_legacy_condition(batch, evidence, *, processed, selected, source_root=None):
     """仅为已核对的 be350 批次补出处清单；不改旧检查点、成绩或请求键。"""
     from engine import identity
     from task import _write_json
@@ -461,6 +477,19 @@ def adopt_legacy_condition(batch, evidence, *, processed, selected):
     manifest = dict(format=1, condition=digest(payload), condition_input=payload, input_sha256=digest(payload),
         semantic_versions=versions, semantic_condition=semantic_condition(payload, versions),
         legacy_source_commit=evidence['source_commit'], executions=[])
+    if source_root is not None:
+        proof = {}
+        try:
+            for key, expected in LEGACY_LINE_ENDING_RULES.items():
+                raw = (Path(source_root) / key).read_bytes()
+                raw_sha = hashlib.sha256(raw).hexdigest()
+                normalized_sha = hashlib.sha256(raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')).hexdigest()
+                if raw_sha != payload['rules'].get(key) or normalized_sha != expected:
+                    raise ValueError('原训练源码不匹配旧凭据或固定基线: ' + key)
+                proof[key] = dict(raw_sha256=raw_sha, normalized_sha256=normalized_sha)
+        except OSError as error:
+            raise ValueError('原训练源码缺失或不可读: ' + str(error)) from error
+        manifest['legacy_line_endings'] = proof
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
     current_input = training_condition_input(payload['template'], engines, payload['config'],
         payload['simulation'], burst_context=payload.get('burst'))
