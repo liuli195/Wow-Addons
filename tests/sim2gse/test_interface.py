@@ -1171,6 +1171,34 @@ class InterfaceTests(unittest.TestCase):
         self.thread.join(timeout=2)
         self.directory.cleanup()
 
+    def test_terminal_parent_does_not_show_stale_scene_as_running(self):
+        import result_store
+        from dual_task import PARENT_SCHEMA
+        task_id = 'a' * 32
+        _, destination = self.server.task_paths(task_id)
+        destination.mkdir()
+        (destination / 'dual.json').write_text(json.dumps(dict(parent_id=task_id)), encoding='utf-8')
+        checkpoint = destination / 'single_target' / 'checkpoint.json'
+        checkpoint.parent.mkdir()
+        checkpoint.write_bytes(b'{"preserved":true}')
+        row = dict.fromkeys(PARENT_SCHEMA)
+        row.update(parent_id=task_id, status='failed', phase='single_target', error='native trace failed',
+                   input_sha256='frozen', definition_id='reviewed', spec_id=252,
+                   config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
+                   rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
+                   single_target_path='single_target', aoe_path='aoe',
+                   single_target_status='running', aoe_status='pending', burst_instructions='')
+        for status, scene_status in [('failed', 'failed'), ('interrupted', 'incomplete')]:
+            row['status'] = status
+            result_store.write('dual_tasks', task_id, [row], schema=PARENT_SCHEMA)
+            state = self._json_request('GET', '/api/tasks/' + task_id)
+            self.assertEqual(state['status'], status)
+            self.assertEqual(state['scenes'][0]['status'], scene_status)
+            self.assertEqual(state['scenes'][1]['status'], 'pending')
+            self.assertTrue(state['recoverable'])
+            self.assertFalse(state['result_ready'])
+            self.assertEqual(checkpoint.read_bytes(), b'{"preserved":true}')
+
     def test_homepage_is_the_real_three_step_shell(self) -> None:
         with urlopen(self.url, timeout=2) as response:
             page = response.read().decode("utf-8")
@@ -2947,6 +2975,18 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self._decode_candidate(json.loads(result.stdout)['candidate'], expected_spec)
 
+    @staticmethod
+    def _ui_score(profile, candidate, folder, *, burst_candidate=None, input_sources=None, **kwargs):
+        """Construct scores only; browser, preparation, compiler and Windows IO stay real."""
+        result = _fast_evaluate(profile, candidate, folder, **kwargs)
+        targets = (kwargs.get('simulation_config') or {}).get('target_count', 1)
+        report = result['report']['sim']
+        report['targets'] = [dict(report['targets'][0]) for _ in range(targets)]
+        for event in result['trace'] if input_sources is not None else []:
+            source = input_sources[event['origin'] - 1]
+            event.update(source=source, source_origin=input_sources[:event['origin']].count(source))
+        return result
+
     def _decode_candidate(self, candidate, expected_spec):
         import base64, zlib, cbor2
         # 游戏 12.1 实际编码 {1,"test"} 的输出；不由产品编码器生成预期值。
@@ -3009,7 +3049,12 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(self.server.tasks, {})
 
     def test_browser_uses_adjustable_input_interval(self):
+        scoring = self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
         self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
+        self.assertEqual({call.kwargs['simulation_config']['target_count']
+                          for call in scoring.call_args_list}, {1, 5})
+        self.assertTrue(any(call.kwargs['input_times'][:2] == [0, 180]
+                            for call in scoring.call_args_list))
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
         result = read_task(destination / 'aoe', include_search_records=True)
@@ -3170,6 +3215,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
 
     def test_browser_waits_for_result_publication_before_finishing(self):
         from unittest.mock import patch
+        self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
         original = os.replace
         def delayed_result(source, destination):
             if Path(destination).name == 'result.json':
@@ -3180,6 +3226,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
 
     def test_browser_survives_transient_windows_report_sharing_conflicts(self):
         from unittest.mock import patch
+        self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
         original=os.replace
         failures=set()
         conflicts=[]

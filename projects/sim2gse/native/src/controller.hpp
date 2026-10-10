@@ -31,6 +31,7 @@ public:
   void write_report( js::JsonOutput root ) const;
   selection_t select();
   void notify( const char* event, action_t*, unsigned origin );
+  void transfer_replacement( action_t* from, action_t* to );
   void precombat( action_t&, precombat_phase );
   unsigned origin() const { return sim2gse_origin; }
   unsigned exchange_origin( unsigned value );
@@ -64,6 +65,7 @@ private:
   std::vector<std::tuple<timespan_t, unsigned, std::string>> sim2gse_observed_failure_events;
   std::vector<std::pair<action_t*, unsigned>> sim2gse_candidates;
   std::set<std::pair<unsigned, action_t*>> sim2gse_executed_actions;
+  std::map<std::pair<unsigned, action_t*>, action_t*> issued_actions_;
   std::map<std::pair<unsigned, action_t*>, event_t*> sim2gse_deferred_dispatches;
   timespan_t sim2gse_last_observed_gcd_start = 0_ms;
   timespan_t sim2gse_last_observed_gcd_duration = 0_ms;
@@ -116,7 +118,7 @@ private:
   void sim2gse_reset_castsequence( unsigned );
   void sim2gse_castsequence_update();
   void handle_event( const char*, action_t*, unsigned );
-  void write_trace( const char*, action_t*, unsigned, int, int, bool ) const;
+  void write_trace( const char*, action_t*, unsigned, int, int, action_t* ) const;
   void sim2gse_dispatch_action( action_t*, unsigned );
   void sim2gse_tick();
 };

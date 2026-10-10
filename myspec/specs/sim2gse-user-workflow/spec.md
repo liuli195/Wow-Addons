@@ -21,7 +21,7 @@
 - **THEN** 两场绑定相同冻结输入和定义，先单目标再5目标，分别显示实际成绩和进度；不得并行运行两场或重复输入。
 ### Requirement: Sim2GSE displays real progress and actionable failures
 
-系统 MUST 在运行期间展示来自实际任务的当前阶段与进度，不把定时演示冒充计算；失败时以简短中文说明原因与下一步。
+系统 MUST 在运行期间展示来自实际任务的当前阶段与进度，不把定时演示冒充计算；失败时以简短中文说明原因与下一步。父任务已失败、中断、取消或部分结束时，遗留运行中场景 MUST 显示失败或未完成，保留已有成果和检查点，不暗示仍在计算。
 
 #### Scenario: Start with an empty input
 
@@ -32,6 +32,11 @@
 
 - **WHEN** 角色输入通过检查并启动真实评估
 - **THEN** 页面显示实际进行的阶段和任务进度，尚无结果时不显示复制结果区。
+
+#### Scenario: Parent task ends while a scene retains running status
+
+- **WHEN** 父任务已失败、中断、取消或部分结束，而场景保留历史运行中状态
+- **THEN** 页面将该场景显示为失败或未完成，保留完成成果、错误及检查点，且不把未完成场景标为成功或继续计算。
 ### Requirement: Sim2GSE reveals only available export results
 
 系统 MUST 为单目标、5目标和爆发提供三个不同用途名称及单独复制，名称不得改变受测动作；全部有效并通过原生集合导入编译检查后，另提供一次导入三份的集合包。失败保留已经成功的单独结果，整体不冒称完成；修改角色或重新开始须清空旧显示。

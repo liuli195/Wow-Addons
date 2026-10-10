@@ -139,6 +139,7 @@ void controller_t::reset( player_t& owner )
   sim2gse_pending = sim2gse_committed = sim2gse_dispatch = nullptr;
   sim2gse_candidates.clear();
   sim2gse_executed_actions.clear();
+  issued_actions_.clear();
   sim2gse_deferred_dispatches.clear();
   sim2gse_commit = sim2gse_queue = nullptr;
 }
@@ -266,6 +267,17 @@ selection_t controller_t::select()
 void controller_t::notify( const char* event, action_t* action, unsigned origin )
 {
   if ( enabled() ) handle_event( event, action, origin );
+}
+
+void controller_t::transfer_replacement( action_t* from, action_t* to )
+{
+  if ( !enabled() || !sim2gse_origin ) return;
+  const auto issued = issued_actions_.find( { sim2gse_origin, from } );
+  if ( issued == issued_actions_.end() ) return; // Derived actions cannot authorize a replacement.
+  const auto [found, inserted] = issued_actions_.emplace(
+    std::make_pair( sim2gse_origin, to ), issued->second );
+  if ( !inserted && found->second != issued->second )
+    throw std::runtime_error("sim2gse native replacement has conflicting issued actions");
 }
 
 void controller_t::precombat( action_t& action, precombat_phase phase )
@@ -587,6 +599,13 @@ void controller_t::handle_event(const char* event, action_t* a, unsigned origin)
 {
   const bool native_execute = std::string(event) == "native_execute";
   const bool native_interrupt = std::string(event) == "native_interrupt";
+  const auto issued = issued_actions_.find( { origin, a } );
+  action_t* command = issued == issued_actions_.end() ? nullptr : issued->second;
+  if ( !command && !native_execute && !native_interrupt && origin && a &&
+       std::find(sim2gse_blocks[step_for_origin(origin)].begin(),
+                 sim2gse_blocks[step_for_origin(origin)].end(), a) !=
+       sim2gse_blocks[step_for_origin(origin)].end() )
+    command = a; // Controller failures may happen before native dispatch.
   bool sequence_pending_success = false;
   int sequence_step = -1;
   int sequence_member = -1;
@@ -601,43 +620,39 @@ void controller_t::handle_event(const char* event, action_t* a, unsigned origin)
       sequence_member = static_cast<int>(original == sim2gse_castsequence_origin_members.end() ?
                                          sim2gse_castsequence_positions[step] : original->second);
       auto pending = sim2gse_castsequence_pending_origins.find(step);
-      sequence_pending_success = native_execute && pending != sim2gse_castsequence_pending_origins.end() &&
+      sequence_pending_success = native_execute && command && pending != sim2gse_castsequence_pending_origins.end() &&
                                  pending->second == origin;
       if (pending != sim2gse_castsequence_pending_origins.end() && pending->second == origin &&
-          (native_execute || native_interrupt || std::string(event) == "dispatch_failed" ||
+          (((native_execute || native_interrupt || std::string(event) == "dispatch_failed") && command) ||
            std::string(event) == "observed_failed" || std::string(event) == "queue_rollback" ||
            std::string(event) == "replace"))
         sim2gse_castsequence_pending_origins.erase(pending);
-      if (std::string(event) == "queue_restore" && a == sequence->second[sequence_member] &&
+      if (std::string(event) == "queue_restore" && command == sequence->second[sequence_member] &&
           sim2gse_castsequence_origin_generations[origin] == sim2gse_castsequence_generations[step])
         sim2gse_castsequence_pending_origins[step] = origin;
     }
   }
-  const bool direct = origin && a &&
-    std::find(sim2gse_blocks[step_for_origin(origin)].begin(),
-              sim2gse_blocks[step_for_origin(origin)].end(), a) !=
-    sim2gse_blocks[step_for_origin(origin)].end();
-  if (native_execute && direct)
+  if (native_execute && command)
   {
-    sim2gse_executed_actions.emplace(origin, a);
+    sim2gse_executed_actions.emplace(origin, command);
     const auto step = step_for_origin(origin);
     const auto sequence = sim2gse_castsequence_members.find(step);
     if (sequence != sim2gse_castsequence_members.end() && sequence_pending_success)
     {
       auto& position = sim2gse_castsequence_positions[step];
-      if (position >= sequence->second.size() || sequence->second[position] != a)
+      if (position >= sequence->second.size() || sequence->second[position] != command)
         throw std::runtime_error("sim2gse castsequence success does not match current member");
       position = (position + 1) % sequence->second.size();
     }
   }
-  write_trace( event, a, origin, sequence_step, sequence_member, direct );
+  write_trace( event, a, origin, sequence_step, sequence_member, command );
 }
 
 void controller_t::write_trace( const char* event, action_t* a, unsigned origin,
-                                int sequence_step, int sequence_member, bool direct ) const
+                                int sequence_step, int sequence_member, action_t* command ) const
 {
   if ( !sim2gse_trace ) return;
-  if ( (std::string(event) == "native_execute" || std::string(event) == "native_interrupt") && !direct )
+  if ( (std::string(event) == "native_execute" || std::string(event) == "native_interrupt") && !command )
     event = "native_derived";
   const auto source = input_steps_.empty() ? std::string() : fmt::format("\t{}\t{}",
       origin ? (burst_inputs_.at(origin - 1) ? "burst" : "loop") : "-",
@@ -645,7 +660,7 @@ void controller_t::write_trace( const char* event, action_t* a, unsigned origin,
   owner_->sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}", owner_->sim->current_time().total_millis(),
       event, origin, origin ? static_cast<int>(step_for_origin(origin)) : -1, a ? a->name_str : "-", owner_->gcd_ready.total_millis(),
       owner_->resources.current[owner_->primary_resource()], owner_->health_percentage(), a ? a->cooldown->remains().total_millis() : 0,
-      owner_->sim->current_iteration, a ? a->signature_str : "-", a ? a->execute_time().total_millis() : 0,
+      owner_->sim->current_iteration, command ? command->signature_str : a ? a->signature_str : "-", a ? a->execute_time().total_millis() : 0,
       sequence_step, sequence_member, source);
 }
 
@@ -662,6 +677,9 @@ void controller_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
     handle_event("dispatch_failed", a, origin);
     return;
   }
+  const auto [issued, inserted] = issued_actions_.emplace(std::make_pair(origin, a), a);
+  if (!inserted && issued->second != a)
+    throw std::runtime_error("sim2gse dispatch conflicts with native replacement identity");
   handle_event("dispatch", a, origin);
   sim2gse_origin = origin;
   if (casting)
