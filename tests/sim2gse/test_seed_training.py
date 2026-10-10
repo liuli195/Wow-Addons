@@ -39,6 +39,62 @@ def training_center(tmp_path, installed_data_store, monkeypatch):
                     'connect', '--project', str(tmp_path)], check=True, capture_output=True)
 
 
+@pytest.fixture
+def memory_training_center(training_center, installed_data_store_api, monkeypatch):
+    """纯逻辑检查的中心IO；TaskStore/报告位置清单仍真实，不证明Parquet耐久性。"""
+    import duckdb
+    import threading
+    import result_store
+
+    groups = {}
+    lock = threading.RLock()
+    with duckdb.connect(':memory:', config={'threads': 1}) as database, monkeypatch.context() as scoped:
+        def write(root, table, key, rows, *, schema=None):
+            table = installed_data_store_api['_name'](table, table=True)
+            key = installed_data_store_api['_name'](key)
+            payload = json.dumps(rows, ensure_ascii=False, allow_nan=False)
+            group = f'"_memory_{table}_{key}"'
+            with lock, database.cursor() as cursor:
+                structure = (json.dumps([schema]) if schema is not None else
+                             cursor.execute('SELECT json_structure(?)', [payload]).fetchone()[0])
+                if schema is None and installed_data_store_api['_opaque'](json.loads(structure)):
+                    raise ValueError('无法推断有类型的记录，请明确提供字段类型')
+                transform = 'from_json_strict' if schema is not None else 'from_json'
+                cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT record.* FROM '
+                               f'(SELECT unnest({transform}(?, ?)) AS record)', [payload, structure])
+                groups.setdefault(table, {})[key] = group
+                sources = ' UNION ALL BY NAME '.join(f'SELECT * FROM {name}'
+                                                    for name in groups[table].values())
+                cursor.execute(f'CREATE OR REPLACE VIEW "{table}" AS {sources}')
+            return len(rows)
+
+        def query(root, sql, parameters=None):
+            with lock:
+                cursor = database.cursor()
+                try:
+                    return cursor.execute(sql, parameters if parameters is not None else [])
+                except BaseException:
+                    cursor.close()
+                    raise
+
+        def read_key(root, table, key, *, columns=None, filters=None):
+            table = installed_data_store_api['_name'](table, table=True)
+            key = installed_data_store_api['_name'](key)
+            with lock:
+                if key not in groups.get(table, {}):
+                    raise installed_data_store_api['MissingKeyError'](key)
+                projection = ','.join('"' + name.replace('"', '""') + '"' for name in columns) if columns else '*'
+                predicate = (' WHERE ' + ' AND '.join('"' + name.replace('"', '""') +
+                             '" IS NOT DISTINCT FROM ?' for name in filters)) if filters else ''
+                return query(root, f'SELECT {projection} FROM {groups[table][key]}{predicate}',
+                             list(filters.values()) if filters else [])
+
+        api = dict(write=write, query=query, read_key=read_key,
+                   **{name: installed_data_store_api[name] for name in ('MissingKeyError', 'CorruptDataError')})
+        scoped.setattr(result_store, '_api', lambda: api)
+        yield
+
+
 def command(tmp_path, args):
     from seed_training import main
     # These existing cases exercise the explicitly retained legacy training mode.
@@ -531,8 +587,9 @@ def test_training_condition_excludes_only_execution_and_keeps_real_inputs(tmp_pa
     assert semantic_condition(payload, dict(versions, search='new-search')) != expected
 
 
+@pytest.mark.parametrize('grouped', [False, True], ids=['legacy-single', 'real-group'])
 def test_upgrade_postcheck_accepts_legacy_identity_and_keeps_retest_key_checks(tmp_path, legacy_engine_boundary,
-                                                                            monkeypatch):
+                                                                            grouped):
     import result_store
     import runpy
     from search import digest
@@ -561,27 +618,36 @@ def test_upgrade_postcheck_accepts_legacy_identity_and_keeps_retest_key_checks(t
                  burst_definition_id='test-definition')
     scene = dict(targets=1, run_id='page-fixture', training_condition=row['condition'],
                  processed=[row['candidate_id'], 'rejected-a', 'rejected-b'])
-    batches = {}
-    for name in ('retest-initial', 'retest-final'):
-        for seed in RETEST_SEEDS:
-            key = digest(dict(folder=str(Path(row['task_path']) / name), seed=seed))
-            batches[key] = dict(purpose='seed_retest', seed=seed, samples=127, dps=100.,
-                engines=payload['engines'], condition_key=row['condition'], requested_iterations=128,
-                program_identity=canonicalize_search_program(row['program'], _fast_capabilities())['form'])
-    real_read, checked = result_store.read_records, []
-    def read(table, key, **kwargs):
-        if table == 'runs':
-            return [dict(engines=payload['engines'])]
-        if table == 'batches':
-            checked.append(key)
-            return [batches[key]]
-        return real_read(table, key, **kwargs)
-    monkeypatch.setattr(result_store, 'read_records', read)
-    # 已经穿过旧身份及六个复测核验；此构造场景故意仅有一份成功材料。
+    result_store.write('runs', 'page-fixture', [dict(dict.fromkeys(result_store.RUN_SCHEMA),
+        run_id='page-fixture', engines=payload['engines'])], schema=result_store.RUN_SCHEMA)
+    schema = dict(batch_key='VARCHAR', purpose='VARCHAR', seed='UBIGINT', samples='UBIGINT', dps='DOUBLE',
+                  engines='JSON', condition_key='VARCHAR', requested_iterations='UBIGINT', program_identity='JSON')
+    groups = {}
+    keys = []
+    with sqlite3.connect(Path(row['task_path']) / 'task.sqlite3') as database:
+        for name in ('retest-initial', 'retest-final'):
+            for seed in RETEST_SEEDS:
+                key = digest(dict(folder=str(Path(row['task_path']) / name), seed=seed))
+                group = name.replace('-', '_') if grouped else key
+                keys.append((key, group))
+                groups.setdefault(group, []).append(dict(batch_key=key, purpose='seed_retest', seed=seed,
+                    samples=127, dps=100., engines=payload['engines'], condition_key=row['condition'],
+                    requested_iterations=128,
+                    program_identity=canonicalize_search_program(row['program'], _fast_capabilities())['form']))
+                if grouped:
+                    database.execute('INSERT OR REPLACE INTO batches VALUES (?,?)',
+                        (key, json.dumps(dict(status='success', storage_group_key=group))))
+    for group, records in groups.items():
+        result_store.write('batches', group, records, schema=schema)
+    if grouped:
+        # The business key really is absent; only the stored group can locate these rows.
+        assert result_store.read_records('batches', keys[0][0]) == []
+    # This existing scenario intentionally has one successful material, after all six real retests.
     with pytest.raises(ValueError, match='缺少两类成功材料'):
         postcheck['check_scene'](scene, ready)
-    assert len(checked) == 6
-    batches[checked[0]]['condition_key'] = 'foreign-condition'
+    key, group = keys[0]
+    groups[group][0]['condition_key'] = 'foreign-condition'
+    result_store.write('batches', group, groups[group], schema=schema)
     with pytest.raises(ValueError, match='独立复测引擎、条件或程序身份不一致'):
         postcheck['check_scene'](scene, ready)
 
@@ -1414,7 +1480,7 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
     assert (engine.reference, engine.inspect) == entrypoints
 
 
-def test_training_run_persists_history_revisions_and_keeps_explicit_scope(tmp_path, capsys):
+def test_training_run_persists_history_revisions_and_keeps_explicit_scope(tmp_path, capsys, memory_training_center):
     import result_store
     from test_character_export import sample_profile
 
@@ -1470,7 +1536,7 @@ def test_training_run_persists_history_revisions_and_keeps_explicit_scope(tmp_pa
     assert json.loads(capsys.readouterr().out) == before_failure
 
 
-def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, capsys):
+def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, capsys, memory_training_center):
     from test_character_export import sample_profile
     import result_store
     import sequence
@@ -1545,7 +1611,8 @@ def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, 
     assert json.loads(capsys.readouterr().out) == before_failure
 
 
-def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(tmp_path, capsys, monkeypatch):
+def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(tmp_path, capsys, monkeypatch,
+                                                                             memory_training_center):
     import burst
     import sequence
     import engine
@@ -1680,7 +1747,8 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
 
 
 @pytest.mark.parametrize(('outer', 'inner'), [(2, 2), (3, 2), (1, 4)])
-def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys, outer, inner):
+def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys, outer, inner,
+                                                                  memory_training_center):
     from test_character_export import sample_profile
     from unittest.mock import patch
     import result_store
@@ -1855,3 +1923,33 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
     assert cached['trace_source']['run_id'] in runs and cached['trace_source']['run_id'] != state['run_id']
     origin = result_store.read_records('traces', cached['trace_source']['storage_key'])
     assert origin and {row['run_id'] for row in origin} == {cached['trace_source']['run_id']}
+
+
+def test_training_prepare_reads_only_applicable_history_fields(tmp_path, capsys, monkeypatch):
+    import result_store
+    from test_character_export import sample_profile
+
+    for run_id, spec in [('applicable', 'unholy'), ('foreign', 'blood')]:
+        result_store.write('runs', run_id, [dict(dict.fromkeys(result_store.RUN_SCHEMA),
+            run_id=run_id, status='completed', profile={'identity': {'class': 'deathknight', 'spec': spec}},
+            candidate_key='winner', candidate_data_key=run_id + '_candidate', search_dps=0.,
+            input_original='unneeded history payload')], schema=result_store.RUN_SCHEMA)
+    result_store.write('candidates', 'applicable_candidate', [dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA),
+        run_id='applicable', candidate_key='winner', candidate_data_key='applicable_candidate',
+        source='search', program=[['death_coil']])], schema=result_store.CANDIDATE_SCHEMA)
+    observed = []
+    real_iter = result_store.iter_rows
+    def observe(sql, parameters=None, **options):
+        for row in real_iter(sql, parameters, **options):
+            observed.append(row)
+            yield row
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    with training_boundary(), monkeypatch.context() as scoped:
+        scoped.setattr(result_store, 'iter_rows', observe)
+        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
+                                 '--workspace', str(tmp_path / 'work')]) == 0
+    capsys.readouterr()
+    assert len(observed) == 1 and observed[0]['run_id'] == 'applicable'
+    assert set(observed[0]) == {'run_id', 'profile', 'status', 'candidate_data_key', 'candidate_key', 'search_dps'}
+    assert result_store.read_records('seed_candidates', 'registry')[0]['source_id'] == 'history:applicable'

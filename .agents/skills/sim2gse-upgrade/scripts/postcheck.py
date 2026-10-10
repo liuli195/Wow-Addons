@@ -37,6 +37,18 @@ def checkpoint(folder, fields):
         connection.close()
 
 
+def batch_checkpoint(folder, key):
+    """只读取得业务键的既有报告位置；旧单条可以没有组凭据。"""
+    path = Path(folder).resolve() / 'task.sqlite3'
+    require(path.is_file(), '任务检查点不存在: ' + str(path))
+    connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+    try:
+        saved = connection.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()
+        return json.loads(saved[0]) if saved is not None else None
+    finally:
+        connection.close()
+
+
 def one(table, key, columns, filters=None):
     import result_store
     rows = result_store.read_records(table, key, columns=columns, filters=filters)
@@ -88,8 +100,11 @@ def check_scene(scene, ready):
         for name, scores in [('retest-initial', row['initial_scores']), ('retest-final', row['scores'])]:
             for seed, score in zip(RETEST_SEEDS, scores):
                 key = digest(dict(folder=str(Path(row['task_path']) / name), seed=seed))
-                batch = one('batches', key, ['purpose', 'seed', 'samples', 'dps',
-                            'engines', 'condition_key', 'program_identity', 'requested_iterations'])
+                location = batch_checkpoint(row['task_path'], key)
+                group = (location or {}).get('storage_group_key') or key
+                batch = one('batches', group, ['purpose', 'seed', 'samples', 'dps',
+                            'engines', 'condition_key', 'program_identity', 'requested_iterations'],
+                            {'batch_key': key})
                 program = decode(row['initial_program' if name == 'retest-initial' else 'program'])
                 canonical = canonicalize_search_program(program, state['capabilities'])
                 require(batch['purpose'] == 'seed_retest' and batch['seed'] == seed and
@@ -131,14 +146,9 @@ def check_scene(scene, ready):
     require(bool(scene['batches']), '缺少页面重新评分批次')
     scored = set()
     for locator in scene['batches']:
-        path = Path(scene['page_task']).resolve() / 'task.sqlite3'
-        connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
-        try:
-            saved = connection.execute('SELECT value FROM batches WHERE key=?', (locator['key'],)).fetchone()
-            require(saved is not None, '页面本地批次缺失')
-            group = json.loads(saved[0])['storage_group_key']
-        finally:
-            connection.close()
+        saved = batch_checkpoint(scene['page_task'], locator['key'])
+        require(saved is not None, '页面本地批次缺失')
+        group = saved['storage_group_key']
         require(group == locator['group'], '批次存储组与任务记录不一致')
         row = one('batches', group, ['batch_key', 'run_id', 'condition_key',
                   'candidate_key', 'program_identity', 'purpose', 'dps', 'samples', 'requested_iterations'],

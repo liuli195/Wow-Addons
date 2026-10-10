@@ -2290,13 +2290,17 @@ class SearchAndValidationTests(TestCase):
         import itertools
         import search
         import sequence
+        import result_store
 
         def equal_damage(profile, candidate, folder, **kwargs):
             nonlocal diagnostic_rounds
             if kwargs.get('trace'):
                 diagnostic_rounds += 1
             result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            damage = 200.0 if improve and diagnostic_rounds >= 3 and result['blocks'] not in starts else 100.0
+            # 同一程序的构造成绩固定，后续诊断不能把已发布请求从100改成200。
+            key = json.dumps(sequence.compiled_identity(candidate), sort_keys=True)
+            damage = scores.setdefault(key, 200.0 if improve and diagnostic_rounds >= 3
+                                      and result['blocks'] not in starts else 100.0)
             result['summary']['dps'] = damage
             result['report']['sim']['statistics']['raid_dps']['mean'] = damage
             result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
@@ -2306,13 +2310,16 @@ class SearchAndValidationTests(TestCase):
         for count, improve in ((4, False), (8, False), (4, True)):
             with self.subTest(starts=count, improves=improve), tempfile.TemporaryDirectory() as directory:
                 diagnostic_rounds = 0
+                scores = {}
                 source = Path(directory) / 'role.simc'
                 source.write_text(sample_profile(), encoding='utf-8')
                 names = ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')
                 starts = [[[name] for name in order]
                           for order in itertools.islice(itertools.permutations(names), count)]
                 inputs = starts + [starts[0], [['missing_action']]]
+                # 不同构造评分场景不共享同condition的真实报告库。
                 with _fast_search_boundary(), \
+                        patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'), \
                         patch.object(search, 'initial_programs', return_value=inputs), \
                         patch.object(sequence, 'evaluate', side_effect=equal_damage):
                     result = run_task(source, Path(directory) / 'task', search_config=dict(

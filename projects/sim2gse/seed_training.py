@@ -196,7 +196,11 @@ def sync_history(character):
         available = bool(cursor.fetchone())
     scanned = set()
     updates = {}
-    histories = result_store.iter_rows('SELECT * FROM runs') if available else ()
+    histories = result_store.iter_rows(
+        'SELECT run_id, profile, status, candidate_data_key, candidate_key, search_dps FROM runs '
+        "WHERE json_extract_string(profile, '$.identity.class') = ? "
+        "AND json_extract_string(profile, '$.identity.spec') = ?",
+        [character.class_name, character.spec]) if available else ()
     for run in histories:
         profile = decode(run['profile']) or {}
         identity = profile.get('identity', {})

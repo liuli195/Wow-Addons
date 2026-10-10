@@ -377,7 +377,10 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
                         blocks=[['outbreak'], ['army_of_the_dead']]),
                         dict(kind='CastSequence', members=['army_of_the_dead', 'death_coil'],
                              reset=dict(timeout_seconds=None, flags=[]))])
-    result_store.write('seed_candidates', 'registry', [candidate], schema=seed_training.CANDIDATE_SCHEMA)
+    source = tmp_path / 'nested-source.json'
+    source.write_text(json.dumps({key: value for key, value in candidate.items()
+                                  if key != 'candidate_id'}), encoding='utf-8')
+    seed_training.register(source)
     legacy = dict(candidate_id='old-selected', condition='old', class_name='deathknight',
                   spec='unholy', targets=1, program=[['army_of_the_dead']], family='old',
                   score=1., scores=[1.], template_sha256='old', engines={})
