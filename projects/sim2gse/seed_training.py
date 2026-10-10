@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import msvcrt
 from pathlib import Path
+import sqlite3
 import sys
 import uuid
 
@@ -29,6 +31,28 @@ SELECTED_SCHEMA = dict(candidate_id='VARCHAR', condition='VARCHAR', class_name='
     scores='DOUBLE[]', template_sha256='VARCHAR', engines='JSON')
 RETEST_SEEDS = (20261008, 20261009, 20261010)
 TRAINING_VERSION = 'seed-training-v2'
+LEGACY_SOURCE_COMMIT = 'be350c90af3ff90af3ba59e05ad011b4bd61ab44'
+# 仅本票已审阅的三个执行/身份模块；摘要来自固定 Git blob 的 LF / CRLF 字节。
+LEGACY_EXECUTION_RULES = {
+    'projects/sim2gse/search.py': (
+        '485ab5afb5d5c5335524a0996215605fe241839467e9476295e55270855c22b0',
+        '48a5995fc3a84cf9a0d3718882bbdcfae52777dfc62bd7501f8ffcedb811debc'),
+    'projects/sim2gse/seed_training.py': (
+        '54e32ce78bb1973899909da3841108335d180a2e763af871bc34c47487da6510',
+        'b816f1e1c6506724f20902b9566a3a25b2b6f8a2fe0143c423b637a868d6b768'),
+    'projects/sim2gse/simulation_config.py': (
+        '649f3a70293b25ddde2ac66505966a91bc3370999f928b867e713ab4fa220484',
+        '4f842e229e2c4c01091fa0e7faaf9fc90b6fd367d4979a99b86d3c17ddb794f5'),
+}
+# 仅这三个未改模块可由受控导入器证明换行差异；摘要来自固定 be350 Git blob。
+LEGACY_LINE_ENDING_RULES = {
+    'projects/sim2gse/gse_import.py': '9a01cccda449b49c30d96ae315c9bfec027e8cb7bc29f1ce83f3cf693a41cd31',
+    'projects/sim2gse/macro_interpreter.py': '2b31a0812c3658411ccb77b78b892314f822876500f0895dd49bab7ea593bcc5',
+    'projects/sim2gse/runtime.py': 'bcc3d3e28f17e04735b4629272ada3bf311db8471ecfe3cc74de4c916270364f',
+}
+LEGACY_SEMANTIC_VERSIONS = dict(training='seed-training-v2',
+    search='multi-start-local-adaptive-v2', statistics='paired-bootstrap-v1',
+    behavior='sim2gse-search-behavior-v1')
 
 
 def decode(value):
@@ -300,15 +324,199 @@ def _check_cancelled(cancel_event):
         raise TaskCancelled('任务已取消')
 
 
-def training_condition(template_sha, engines, config, simulation_config, *, burst_context=None):
-    """训练与升级核验共用的条件计算；不启动计算、不读取历史。"""
+def semantic_versions():
+    """改变训练、搜索、统计或行为语义时，须递增其既有版本。"""
+    from search import SEARCH_ALGORITHM, STATS_VERSION
+    from program import BEHAVIOR_IDENTITY_VERSION
+    return dict(training=TRAINING_VERSION, search=SEARCH_ALGORITHM,
+                statistics=STATS_VERSION, behavior=BEHAVIOR_IDENTITY_VERSION)
+
+
+def training_condition_input(template_sha, engines, config, simulation_config, *, burst_context=None):
+    """完整输入保留源码出处；执行并发不再直接决定成绩身份。"""
     from engine import ROOT, COMMON
     from task import _rule_hashes
-    return digest(dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
+    return dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
                        config=config, simulation=simulation_config, retest=RETEST_SEEDS,
                        effective_options=COMMON, rules=_rule_hashes(relative_to=ROOT),
                        **(dict(task_category='burst_free_training', burst=burst_context)
-                          if burst_context else {})))
+                          if burst_context else {}))
+
+
+def semantic_condition(payload, versions):
+    semantic = dict(payload, config={key: value for key, value in payload['config'].items()
+                                    if key != 'max_processes'}, semantic_versions=versions)
+    semantic.pop('rules')
+    return digest(semantic)
+
+
+def training_condition(template_sha, engines, config, simulation_config, *, burst_context=None):
+    """训练与升级核验共用的语义条件计算；不启动计算、不读取历史。"""
+    return semantic_condition(training_condition_input(template_sha, engines, config, simulation_config,
+                              burst_context=burst_context), semantic_versions())
+
+
+def _checkpoint_states(batch):
+    """只读原检查点，不创建 SQLite（轻量数据库）或改写业务记录。"""
+    states = {}
+    for path in sorted(Path(batch).glob('*/task.sqlite3')):
+        with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as database:
+            state = TaskStore.load_state(database)
+            progress = database.execute('SELECT elapsed FROM runtime_progress WHERE id=1').fetchone()
+            if progress:
+                state['elapsed_seconds'] = max(state.get('elapsed_seconds', 0), progress[0])
+            states[path.parent.name] = state
+    return states
+
+
+def _validate_identity(batch, manifest, current_input, *, processed=(), selected=(), adopting=False):
+    """完整证明后才把旧条件视为同一语义的存储命名空间。"""
+    try:
+        payload, versions, condition = (manifest['condition_input'], manifest['semantic_versions'],
+                                       manifest['condition'])
+        if (manifest['format'] != 1 or versions != semantic_versions() or
+                payload['version'] != versions['training'] or
+                manifest['input_sha256'] != digest(payload) or
+                manifest['semantic_condition'] != semantic_condition(payload, versions) or
+                manifest['semantic_condition'] != semantic_condition(current_input, semantic_versions()) or
+                (Path(batch) / 'condition.txt').read_text(encoding='ascii') != condition or
+                hashlib.sha256((Path(batch) / 'standard.simc').read_text(encoding='utf-8').encode()).hexdigest()
+                != payload['template']):
+            raise ValueError('训练语义身份、模板或原条件不一致')
+        legacy = manifest.get('legacy_source_commit')
+        if legacy:
+            rules, current_rules = payload['rules'], current_input['rules']
+            if (legacy != LEGACY_SOURCE_COMMIT or versions != LEGACY_SEMANTIC_VERSIONS or
+                    digest(payload) != condition or set(rules) != set(current_rules)):
+                raise ValueError('旧训练条件凭据缺失或不是已审核基线')
+            proof = manifest.get('legacy_line_endings', {})
+            if not isinstance(proof, dict) or set(proof) - set(LEGACY_LINE_ENDING_RULES):
+                raise ValueError('旧训练源码换行凭据键不兼容')
+            for key, value in rules.items():
+                if key in proof:
+                    from engine import ROOT
+                    raw = (ROOT / key).read_bytes()
+                    normalized = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+                    if (proof[key] != dict(raw_sha256=value, normalized_sha256=LEGACY_LINE_ENDING_RULES[key]) or
+                            hashlib.sha256(raw).hexdigest() != current_rules[key] or
+                            hashlib.sha256(normalized).hexdigest() != LEGACY_LINE_ENDING_RULES[key]):
+                        raise ValueError('旧训练源码换行凭据或当前内容不兼容: ' + key)
+                elif value not in LEGACY_EXECUTION_RULES.get(key, (current_rules[key],)):
+                    raise ValueError('旧训练源码凭据不兼容: ' + key)
+        elif condition != manifest['semantic_condition']:
+            raise ValueError('训练条件不是当前语义身份')
+        states = _checkpoint_states(batch)
+        for folder, state in states.items():
+            if (state.get('training_condition') != condition or
+                    state.get('training_candidate_id', '')[:12] != folder or
+                    semantic_condition(dict(payload, config=state['config']), versions) !=
+                    manifest['semantic_condition'] or state.get('burst') != payload.get('burst') or
+                    (adopting and digest(state['config']) != digest(payload['config']))):
+                raise ValueError('训练检查点与完整条件凭据不一致: ' + folder)
+        for row in processed:
+            if row['condition'] == condition:
+                folder = Path(row['task_path']).resolve()
+                if folder.parent != Path(batch).resolve() or folder.name != row['candidate_id'][:12]:
+                    raise ValueError('旧训练记录与批次目录不一致')
+                if row['status'] != 'rejected' and (folder.name not in states or
+                        states[folder.name]['training_candidate_id'] != row['candidate_id']):
+                    raise ValueError('旧训练记录缺少原检查点')
+        completed = {row['candidate_id']: row for row in processed
+                     if row['condition'] == condition and row['status'] == 'completed'}
+        for row in selected:
+            if row['condition'] == condition:
+                trained = completed.get(row['candidate_id'])
+                if (trained is None or row['template_sha256'] != payload['template'] or
+                        decode(row['engines']) != payload['engines'] or not any(
+                            decode(row['program']) == decode(trained[program]) and row['scores'] == trained[scores]
+                            for program, scores in [('program', 'scores'), ('initial_program', 'initial_scores')])):
+                    raise ValueError('旧入选记录与原完成程序、复测成绩或条件凭据不一致')
+        return manifest
+    except (KeyError, TypeError, OSError, sqlite3.Error) as error:
+        raise ValueError('训练条件凭据不完整: ' + str(error)) from error
+
+
+def validate_training_identity(batch, template_sha, engines, config, simulation_config, *,
+                               burst_context=None, processed=(), selected=()):
+    """升级后核查与训练入口共用的只读核验，不放宽原评分批次验真。"""
+    manifest = _read_identity(Path(batch) / 'identity.json')
+    current_input = training_condition_input(template_sha, engines, config, simulation_config,
+                                             burst_context=burst_context)
+    return _validate_identity(batch, manifest, current_input, processed=processed, selected=selected)
+
+
+def _read_identity(path):
+    try:
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        payload, versions = manifest['condition_input'], manifest['semantic_versions']
+        if (manifest['format'] != 1 or not isinstance(manifest['executions'], list) or
+                payload['version'] != versions['training'] or
+                manifest['input_sha256'] != digest(payload) or
+                manifest['semantic_condition'] != semantic_condition(payload, versions)):
+            raise ValueError('训练身份清单损坏: ' + str(path))
+        return manifest
+    except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
+        raise ValueError('训练身份清单不完整: ' + str(path)) from error
+
+
+@writer_lock()
+def adopt_legacy_condition(batch, evidence, *, processed, selected, source_root=None):
+    """仅为已核对的 be350 批次补出处清单；不改旧检查点、成绩或请求键。"""
+    from engine import identity
+    from task import _write_json
+    batch = Path(batch)
+    if (batch / 'identity.json').exists():
+        raise ValueError('该训练批次已有身份清单，不能覆盖')
+    required = {'version', 'template', 'engines', 'config', 'simulation', 'retest', 'effective_options', 'rules'}
+    if (not isinstance(evidence, dict) or not isinstance(evidence.get('condition_input'), dict) or
+            set(evidence['condition_input']) not in (required, required | {'task_category', 'burst'}) or
+            evidence.get('source_commit') != LEGACY_SOURCE_COMMIT or
+            evidence.get('semantic_versions') != LEGACY_SEMANTIC_VERSIONS):
+        raise ValueError('旧训练完整输入、来源或语义版本凭据缺失')
+    payload, versions = evidence['condition_input'], evidence['semantic_versions']
+    manifest = dict(format=1, condition=digest(payload), condition_input=payload, input_sha256=digest(payload),
+        semantic_versions=versions, semantic_condition=semantic_condition(payload, versions),
+        legacy_source_commit=evidence['source_commit'], executions=[])
+    if source_root is not None:
+        proof = {}
+        try:
+            for key, expected in LEGACY_LINE_ENDING_RULES.items():
+                raw = (Path(source_root) / key).read_bytes()
+                raw_sha = hashlib.sha256(raw).hexdigest()
+                normalized_sha = hashlib.sha256(raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')).hexdigest()
+                if raw_sha != payload['rules'].get(key) or normalized_sha != expected:
+                    raise ValueError('原训练源码不匹配旧凭据或固定基线: ' + key)
+                proof[key] = dict(raw_sha256=raw_sha, normalized_sha256=normalized_sha)
+        except OSError as error:
+            raise ValueError('原训练源码缺失或不可读: ' + str(error)) from error
+        manifest['legacy_line_endings'] = proof
+    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    current_input = training_condition_input(payload['template'], engines, payload['config'],
+        payload['simulation'], burst_context=payload.get('burst'))
+    _validate_identity(batch, manifest, current_input, processed=processed, selected=selected, adopting=True)
+    if not any(row['condition'] == manifest['condition'] for row in processed):
+        raise ValueError('旧批次没有相符的原处理记录')
+    manifest['executions'].append(dict(origin='legacy_checkpoint', config=payload['config'],
+        rules=payload['rules'], candidates={key: _execution_state(state)
+                                           for key, state in _checkpoint_states(batch).items()}))
+    _write_json(batch / 'identity.json', manifest, atomic=True)
+    return manifest
+
+
+def _execution_state(state):
+    return {key: state.get(key) for key in ('phase', 'rounds', 'elapsed_seconds',
+            'native_batch_starts', 'batch_requests', 'batch_cache_hits')}
+
+
+def _write_execution(batch, manifest, candidate_id, config, state):
+    from engine import ROOT
+    from task import _rule_hashes, _write_json
+    segment = dict(candidate_id=candidate_id, started_at=datetime.now(timezone.utc).isoformat(),
+                   config=dict(config), rules=_rule_hashes(relative_to=ROOT),
+                   before=_execution_state(state))
+    manifest['executions'].append(segment)
+    _write_json(batch / 'identity.json', manifest, atomic=True)
+    return segment
 
 
 def selected_materials(candidate_ids):
@@ -327,10 +535,14 @@ def selected_materials(candidate_ids):
     return rows
 
 
-def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None):
+def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None,
+                  max_processes=None):
     from engine import identity, reference, prepare_loop
     from program import canonicalize_search_program
     _check_cancelled(cancel_event)
+    if max_processes is None:
+        from simulation_config import load_training_config
+        max_processes = load_training_config()['max_processes']
     text = template.read_text(encoding='utf-8')
     character = template_character(text)
     if materials is not None and any(row['class_name'] != character.class_name or
@@ -338,15 +550,57 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         raise ValueError('训练材料与标准角色职业或专精不一致')
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
     config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
-                         'no_improvement_rounds': 2})
+                         'no_improvement_rounds': 2, 'max_processes': max_processes}, training=True)
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
     burst_context = None
     capabilities = None
+    definition = None
+    processed = result_store.read_records('seed_processed', scope)
+    all_selected = result_store.read_records('seed_selected', scope)
+    template_sha = hashlib.sha256(text.encode()).hexdigest()
     if use_burst:
         from burst import select_definition
         definition = select_definition(character)
-        config = config_for(dict(config, input_interval_ms=200))
+        config = config_for(dict(config, input_interval_ms=200), training=True)
+    matches = []
+    for path in (workspace.resolve() / str(targets)).glob('*/condition.txt'):
+        if not path.with_name('identity.json').exists() and any(
+                row['condition'] == path.read_text(encoding='ascii') for row in processed):
+            old_profile = path.with_name('standard.simc')
+            if (not old_profile.is_file() or hashlib.sha256(
+                    old_profile.read_text(encoding='utf-8').encode()).hexdigest() == template_sha):
+                raise ValueError('同模板旧训练批次缺少完整身份凭据，请先核验原条件: ' + str(path.parent))
+    for path in sorted((workspace.resolve() / str(targets)).glob('*/identity.json')):
+        manifest = _read_identity(path)
+        stored_burst = manifest['condition_input'].get('burst')
+        if bool(stored_burst) != use_burst or (use_burst and
+                stored_burst['definition_id'] != definition['definition_id']):
+            continue
+        current_input = training_condition_input(template_sha, engines, config, simulation_config,
+                                                 burst_context=stored_burst)
+        if semantic_condition(current_input, semantic_versions()) == manifest['semantic_condition']:
+            _validate_identity(path.parent, manifest, current_input,
+                               processed=processed, selected=all_selected)
+            matches.append((path.parent, manifest))
+    if len(matches) > 1:
+        raise ValueError('同一训练语义存在多个批次，必须明确保留一个运行目录')
+    batch, manifest = matches[0] if matches else (None, None)
+    if manifest:
+        burst_context = manifest['condition_input'].get('burst')
+        states = _checkpoint_states(batch)
+        capabilities = next((state['capabilities'] for state in states.values() if 'capabilities' in state), None)
+    # 完整成绩复用先核验身份，再决定是否需要启动参考计算。
+    condition = manifest['condition'] if manifest else None
+    completed = {row['candidate_id'] for row in processed
+                 if row['condition'] == condition and row['status'] in ('completed', 'rejected')}
+    candidates = (materials if materials is not None else
+                  result_store.read_records('seed_candidates', 'registry') + history_candidates(character))
+    _check_cancelled(cancel_event)
+    candidates = [row for row in candidates if row.get('semantic') != 'unsupported' and
+                  row['class_name'] == character.class_name and
+                  row['spec'] == character.spec and row['candidate_id'] not in completed]
+    if use_burst and candidates:
         setup = workspace.resolve() / 'burst-setup' / uuid.uuid4().hex
         setup.mkdir(parents=True)
         setup_profile = setup / 'standard.simc'
@@ -357,20 +611,16 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
         all_capabilities, capabilities, burst_context = prepare_loop(native, character, setup, setup_runtime,
                                                       definition=definition, interval_ms=config['input_interval_ms'])
-    template_sha = hashlib.sha256(text.encode()).hexdigest()
-    condition = training_condition(template_sha, engines, config, simulation_config,
-                                   burst_context=burst_context)
-    processed = result_store.read_records('seed_processed', scope)
-    selected = [row for row in result_store.read_records('seed_selected', scope)
-                if row['condition'] == condition]
-    completed = {row['candidate_id'] for row in processed
-                 if row['condition'] == condition and row['status'] in ('completed', 'rejected')}
-    candidates = (materials if materials is not None else
-                  result_store.read_records('seed_candidates', 'registry') + history_candidates(character))
-    _check_cancelled(cancel_event)
-    candidates = [row for row in candidates if row.get('semantic') != 'unsupported' and
-                  row['class_name'] == character.class_name and
-                  row['spec'] == character.spec and row['candidate_id'] not in completed]
+    current_input = training_condition_input(template_sha, engines, config, simulation_config,
+                                             burst_context=burst_context)
+    if manifest:
+        _validate_identity(batch, manifest, current_input, processed=processed, selected=all_selected)
+    else:
+        condition = semantic_condition(current_input, semantic_versions())
+        batch = workspace.resolve() / str(targets) / condition[:12]
+        manifest = dict(format=1, condition=condition, condition_input=current_input, input_sha256=digest(current_input),
+                        semantic_versions=semantic_versions(), semantic_condition=condition, executions=[])
+    selected = [row for row in all_selected if row['condition'] == condition]
     if not candidates:
         status = 'unchanged'
         _check_cancelled(cancel_event)
@@ -382,7 +632,6 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 result_store.write('seed_selected', scope, restored, schema=SELECTED_SCHEMA)
                 status = 'restored'
         return dict(status=status, processed=0, targets=targets)
-    batch = workspace.resolve() / str(targets) / condition[:12]
     batch.mkdir(parents=True, exist_ok=True)
     identity_file = batch / 'condition.txt'
     if identity_file.exists() and identity_file.read_text(encoding='ascii') != condition:
@@ -390,6 +639,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     identity_file.write_text(condition, encoding='ascii')
     profile = batch / 'standard.simc'
     profile.write_text(text, encoding='utf-8')
+    from task import _write_json
+    _write_json(batch / 'identity.json', manifest, atomic=True)
     setup_runtime = TaskRuntime(600, cancel_event=cancel_event)
     setup_runtime.check()
     if not use_burst:
@@ -427,6 +678,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                       initial_scores=[], comparison={}, task_path=str(folder), native_batch_starts=0,
                       batch_requests=0, cache_hits=0)
         store = None
+        execution = None
         cancelled = False
         try:
             if burst_context is not None:
@@ -458,6 +710,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     raise ValueError('训练恢复条件不一致')
                 if store.state.get('training_candidate_id', row['candidate_id']) != row['candidate_id']:
                     raise ValueError('训练候选目录短标识碰撞')
+                execution = _write_execution(batch, manifest, row['candidate_id'], config, store.state)
                 store.state.update(training_condition=condition, config=config, capabilities=capabilities,
                                    training_candidate_id=row['candidate_id'],
                                    run_id=store.state.get('run_id', uuid.uuid4().hex),
@@ -501,6 +754,11 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 record['status'] = 'rejected'
         finally:
             if store:
+                if execution is not None:
+                    execution.update(finished_at=datetime.now(timezone.utc).isoformat(),
+                                     after=_execution_state(store.state), status=record['status'],
+                                     error=record['error'])
+                    _write_json(batch / 'identity.json', manifest, atomic=True)
                 store.close()
         if record['status'] == 'completed':
             identity = canonicalize_search_program(decode(record['program']), capabilities)['identity']
@@ -526,10 +784,11 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     return dict(status='completed', processed=len(candidates), selected=len(selected), targets=targets)
 
 
-def run_training(template, targets, workspace, *, use_burst=False):
+def run_training(template, targets, workspace, *, use_burst=False, max_processes=None):
     from seed_activity import training_activity
     with training_activity() as cancel_event:
-        return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst)
+        return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
+                             max_processes=max_processes)
 
 
 def check_training(template=None, *, use_burst=True):
@@ -564,6 +823,8 @@ def main(argv=None):
     training.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
     training.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
     training.add_argument('--candidate-id', action='append', help='只训练指定登记材料；可重复传入，默认全部')
+    training.add_argument('--max-processes', type=int, choices=range(1, 17),
+                          help='覆盖内部训练并发（缺省2，最多16）；不并行处理材料或目标场景')
     training.add_argument('--workspace', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.local/sim2gse/seed-training')
     checking = commands.add_parser('check', help='只读核对训练模板、引擎与审核适用性，不启动计算')
@@ -582,6 +843,9 @@ def main(argv=None):
         elif args.command == 'check':
             output = check_training(args.template, use_burst=args.use_burst)
         elif args.command == 'run':
+            from simulation_config import load_training_config
+            max_processes = (args.max_processes if args.max_processes is not None else
+                             load_training_config()['max_processes'])
             material_options = ({'materials': selected_materials(args.candidate_id)}
                                 if args.candidate_id else {})
             ready = check_training(args.template, use_burst=args.use_burst)
@@ -590,6 +854,7 @@ def main(argv=None):
                 with training_activity() as cancel_event:
                     output = [_run_training(Path(ready['template']), targets, args.workspace,
                                             cancel_event=cancel_event, use_burst=args.use_burst,
+                                            max_processes=max_processes,
                                             **material_options)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state in ('pending', 'unsupported'):

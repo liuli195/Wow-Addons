@@ -58,7 +58,9 @@ def verify_behavior_identity_state(state):
         raise ValueError('候选行为身份版本已变化，请创建新任务')
 
 
-def config_for(values=None):
+def config_for(values=None, *, training=False):
+    if type(training) is not bool:
+        raise ValueError('训练配置开关必须为布尔值')
     config = dict(DEFAULT_CONFIG)
     if values:
         if set(values)-set(config):
@@ -73,7 +75,7 @@ def config_for(values=None):
     if config['search_budget_seconds'] > config['total_budget_seconds']:
         raise ValueError('搜索预算不能超过总预算')
     for key, maximum in (('candidate_limit',1000),('round_candidate_limit',16),('no_improvement_rounds',5),
-                         ('max_processes',2),('validation_batches',20),('final_batches',20),
+                         ('max_processes',DEFAULT_CONFIG['round_candidate_limit'] if training else 2),('validation_batches',20),('final_batches',20),
                          ('iterations',512),('final_iterations',100),('random_seed',1000000000)):
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
@@ -1780,7 +1782,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                 work['score_error'] = str(error)
                                 store.save()
                         except BaseException as error:
-                            # 即使一项停止，也消费另一项完整成绩，供原顺序恢复使用。
+                            # 即使一项停止，也消费其余完整成绩，供原顺序恢复使用。
                             if stopped is None:
                                 stopped = error
                     if stopped is not None:

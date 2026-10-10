@@ -33,24 +33,37 @@ def config_for(values: dict | None = None) -> dict:
     return config
 
 
-def load_config(path: str | Path | None = None) -> dict:
-    """从本地 TOML 文件读取配置；文件不存在时返回约定默认值。"""
+def _load_document(path=None):
     path = DEFAULT_PATH if path is None else Path(path)
     if not path.exists():
-        return config_for()
+        return {}
     try:
         document = tomllib.loads(path.read_bytes().decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"本地模拟配置无效: {path}: {error}") from error
     if not isinstance(document, dict):
         raise ValueError("本地模拟配置必须是 TOML 对象")
-    unknown = set(document) - {"simulation"}
+    unknown = set(document) - {"simulation", "training"}
     if unknown:
         raise ValueError("未知模拟配置区域: " + ", ".join(sorted(unknown)))
-    section = document.get("simulation", {})
+    return document
+
+
+def load_config(path: str | Path | None = None) -> dict:
+    """读取模拟区域；独立训练区域不改变普通模拟。"""
+    section = _load_document(path).get("simulation", {})
     if not isinstance(section, dict):
         raise ValueError("[simulation] 必须是 TOML 表")
     return config_for(dict(section))
+
+
+def load_training_config(path: str | Path | None = None) -> dict:
+    """每次人工启动读取一次，只开放既有候选评分并发。"""
+    section = _load_document(path).get("training", {})
+    if not isinstance(section, dict) or set(section) - {"max_processes"}:
+        raise ValueError("[training] 只接受 max_processes（评分并发）")
+    from search import config_for as search_config_for
+    return {"max_processes": search_config_for(section, training=True)["max_processes"]}
 
 
 def engine_options(config: dict | None = None) -> list[str]:
@@ -59,4 +72,4 @@ def engine_options(config: dict | None = None) -> list[str]:
     return [f"desired_targets={config['target_count']}"]
 
 
-__all__ = ["DEFAULT_CONFIG", "DEFAULT_PATH", "config_for", "engine_options", "load_config"]
+__all__ = ["DEFAULT_CONFIG", "DEFAULT_PATH", "config_for", "engine_options", "load_config", "load_training_config"]

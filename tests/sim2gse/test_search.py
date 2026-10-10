@@ -197,6 +197,17 @@ def _apl_task_boundary(native=None):
 
 
 class SearchAndValidationTests(TestCase):
+    def test_normal_task_and_dual_scene_still_refuse_four_processes(self):
+        import dual_task
+        from search import config_for
+        self.assertEqual(config_for()['max_processes'], 2)
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            for entry in (run_task, dual_task.start):
+                with self.subTest(entry=entry.__name__), self.assertRaisesRegex(ValueError, 'max_processes'):
+                    entry(source, Path(directory) / 'task', search_config={'max_processes': 4})
+
     def test_task_uses_full_apl_pool_without_changing_baseline_starts(self):
         native = apl_pool_reference()
         with tempfile.TemporaryDirectory() as directory:

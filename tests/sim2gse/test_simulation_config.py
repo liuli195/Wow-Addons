@@ -24,6 +24,7 @@ from simulation_config import (  # noqa: E402
     config_for,
     engine_options,
     load_config,
+    load_training_config,
 )
 
 
@@ -53,6 +54,23 @@ def _read_state(destination: Path) -> bytes:
 
 
 class SimulationConfigTests(unittest.TestCase):
+    def test_training_section_is_independent_validated_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.toml'
+            self.assertEqual(load_training_config(path), {'max_processes': 2})
+            for value in (1, 2, 4, 16):
+                path.write_text('[simulation]\ntarget_count=5\n[training]\nmax_processes=' + str(value),
+                                encoding='utf-8')
+                self.assertEqual(load_config(path)['target_count'], 5)
+                self.assertEqual(load_training_config(path), {'max_processes': value})
+            for option in ('max_processes=0', 'max_processes=17', 'max_processes=true',
+                           'max_processes=2.5', 'max_processes="4"', 'unknown=2'):
+                path.write_text('[training]\n' + option, encoding='utf-8')
+                with self.subTest(option=option):
+                    self.assertEqual(load_config(path), DEFAULT_CONFIG)
+                    with self.assertRaises(ValueError):
+                        load_training_config(path)
+
     def test_missing_config_uses_documented_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = load_config(Path(directory) / "missing.toml")
