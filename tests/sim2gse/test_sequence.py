@@ -106,7 +106,10 @@ class SequenceSimulationTests(unittest.TestCase):
         from program import compile_program, from_search_program
         with tempfile.TemporaryDirectory(prefix='native-replacement-') as directory:
             root = Path(directory)
-            prepared = self.prepare(training_template().read_text(encoding='utf-8'), root / 'standard',
+            # Fixed upstream's official San'layn variant selects Blightfall; Rider does not.
+            template = training_template().with_name(
+                "MID2_Death_Knight_Unholy_San'layn.simc")
+            prepared = self.prepare(template.read_text(encoding='utf-8'), root / 'standard',
                                     character_parser=template_character)
             source, character, native, capabilities = prepared
             program = from_search_program([dict(kind='CastSequence',
