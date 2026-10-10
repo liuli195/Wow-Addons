@@ -787,9 +787,13 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
 
 class TaskStore:
     """任务检查点与成功批次；锁保护心跳与主线程共用的事务。"""
-    def __init__(self, destination):
+    def __init__(self, destination, *, lock=None):
+        self.lock = lock or threading.RLock()
+        with self.lock:
+            self._initialize(destination)
+
+    def _initialize(self, destination):
         self.destination = Path(destination)
-        self.lock = threading.RLock()
         self.db = sqlite3.connect(self.destination / 'task.sqlite3', check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')
@@ -945,7 +949,15 @@ class TaskStore:
                                               stored['batch_index'], stored['scenario'], self.simulation_config)
                         valid = True
                     except (ValueError, KeyError, TypeError, RuntimeError):
-                        pass
+                        # 同请求已有可靠报告但成绩冲突时，不能最后写入静默覆盖。
+                        try:
+                            _validate_saved_batch(existing, key, dict(row, **{
+                                name: existing[name] for name in ('dps', 'samples', 'variance')}),
+                                self.character, stored['batch_index'], stored['scenario'], self.simulation_config)
+                        except (ValueError, KeyError, TypeError, RuntimeError):
+                            pass
+                        else:
+                            raise ValueError('同请求可靠报告成绩冲突: ' + key)
                 plan = plans.setdefault(group, dict(metadata=[], replacements={}))
                 plan['metadata'].append((key, dict(row, storage_group_key=group,
                                                   batch_index=stored['batch_index'], scenario=stored['scenario'])))
@@ -1692,7 +1704,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 stored['reset_events'] = [dict(ms=ms, kind=kind)
                                           for ms, kind in request['reset_events']]
             if trace and config['diagnostic_logging']:
-                write_traces(key, state['run_id'], result['trace'], batch_key=key)
+                trace_key = digest(dict(run_id=state['run_id'], batch_key=key))
+                write_traces(trace_key, state['run_id'], result['trace'], batch_key=key)
+                row['trace_source'] = dict(run_id=state['run_id'], batch_key=key, storage_key=trace_key)
             with store.lock:
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))

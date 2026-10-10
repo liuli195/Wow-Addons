@@ -57,12 +57,12 @@ class SimulationConfigTests(unittest.TestCase):
     def test_training_section_is_independent_validated_and_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.toml'
-            self.assertEqual(load_training_config(path), {'max_processes': 2})
+            self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 2})
             for value in (1, 2, 4, 16):
-                path.write_text('[simulation]\ntarget_count=5\n[training]\nmax_processes=' + str(value),
+                path.write_text('[simulation]\ntarget_count=5\n[training]\nmax_trainings=1\nmax_processes=' + str(value),
                                 encoding='utf-8')
                 self.assertEqual(load_config(path)['target_count'], 5)
-                self.assertEqual(load_training_config(path), {'max_processes': value})
+                self.assertEqual(load_training_config(path), {'max_processes': value, 'max_trainings': 1})
             for option in ('max_processes=0', 'max_processes=17', 'max_processes=true',
                            'max_processes=2.5', 'max_processes="4"', 'unknown=2'):
                 path.write_text('[training]\n' + option, encoding='utf-8')

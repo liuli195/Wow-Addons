@@ -57,13 +57,22 @@ def load_config(path: str | Path | None = None) -> dict:
     return config_for(dict(section))
 
 
-def load_training_config(path: str | Path | None = None) -> dict:
-    """每次人工启动读取一次，只开放既有候选评分并发。"""
+def load_training_config(path: str | Path | None = None, *, max_processes=None, max_trainings=None) -> dict:
+    """人工训练的有界外/内并发；CLI覆盖配置后再共同验证CPU上限。"""
     section = _load_document(path).get("training", {})
-    if not isinstance(section, dict) or set(section) - {"max_processes"}:
-        raise ValueError("[training] 只接受 max_processes（评分并发）")
+    if not isinstance(section, dict) or set(section) - {"max_processes", "max_trainings"}:
+        raise ValueError("[training] 只接受 max_processes（评分并发）与 max_trainings（训练并发）")
+    values = dict(max_processes=2, max_trainings=2)
+    values.update(section)
+    values.update({key: value for key, value in dict(max_processes=max_processes,
+        max_trainings=max_trainings).items() if value is not None})
     from search import config_for as search_config_for
-    return {"max_processes": search_config_for(section, training=True)["max_processes"]}
+    search_config_for({'max_processes': values['max_processes']}, training=True)
+    if type(values['max_trainings']) is not int or not 1 <= values['max_trainings'] <= 3:
+        raise ValueError('训练并发必须为1至3的整数')
+    if values['max_processes'] * values['max_trainings'] > 16:
+        raise ValueError('训练并发与评分并发乘积不得超过16')
+    return values
 
 
 def engine_options(config: dict | None = None) -> list[str]:
