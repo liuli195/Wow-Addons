@@ -208,11 +208,9 @@ def sync_history(character):
         scanned.add(source_id)
         reason, shared, program = '', None, []
         if run['status'] != 'completed':
-            reason = '历史尚无可靠有效成绩: ' + str(run['status'])
-        elif (not run['candidate_data_key'] or not isinstance(run['search_dps'], (int, float))
-              or not math.isfinite(run['search_dps']) or run['search_dps'] <= 0
-              or (run.get('search_samples') is not None and run['search_samples'] < 2)):
-            reason = '历史缺少可靠最佳候选或有效成绩'
+            reason = '历史尚未完成: ' + str(run['status'])
+        elif not run['candidate_data_key']:
+            reason = '历史最佳候选引用缺失'
         else:
             candidate = result_store.one('candidates', 'candidate_data_key', run['candidate_data_key'])
             if candidate is None:
