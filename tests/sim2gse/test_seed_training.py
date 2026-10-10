@@ -190,7 +190,7 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
         assert command(tmp_path, args) == 0
 
 
-def test_training_command_selects_four_processes_without_changing_default_or_work(tmp_path, capsys):
+def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys):
     from test_character_export import sample_profile
     from test_search import _fast_evaluate
     from unittest.mock import patch
@@ -231,8 +231,10 @@ def test_training_command_selects_four_processes_without_changing_default_or_wor
                 with lock:
                     active -= 1
 
+        workspace = tmp_path / ('work-2' if workers is None else 'work-4')
+        run_args = args[:-1] + [str(workspace)]
         with training_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-            assert command(tmp_path, args + ([] if workers is None else ['--max-processes', str(workers)])) == 0
+            assert command(tmp_path, run_args + ([] if workers is None else ['--max-processes', str(workers)])) == 0
         assert peak == (2 if workers is None else 4)
         assert command(tmp_path, ['list', '--state', 'processed']) == 0
         rows = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -242,16 +244,377 @@ def test_training_command_selects_four_processes_without_changing_default_or_wor
         assert record['stop_reason'] == 'no_improvement'
         observations.append((record, sorted(json.dumps(row, sort_keys=True) for row in requests)))
     first, second = observations
-    assert first[0]['condition'] != second[0]['condition']
+    assert first[0]['condition'] == second[0]['condition']
     for field in ('initial_program', 'program', 'scores', 'initial_scores', 'native_batch_starts', 'batch_requests'):
         assert first[0][field] == second[0][field]
     assert first[1] == second[1]
     with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+        assert command(tmp_path, run_args + ['--max-processes', '2']) == 0
+        assert command(tmp_path, run_args + ['--max-processes', '4']) == 0
+
+
+def test_training_entry_reads_internal_concurrency_and_reuses_complete_scores(tmp_path, capsys, monkeypatch):
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    import simulation_config
+    import sequence
+    import threading
+    import time
+
+    settings = tmp_path / 'config.toml'
+    settings.write_text('[simulation]\ntarget_count=3\n[training]\nmax_processes=4\n', encoding='utf-8')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', settings)
+    source = tmp_path / 'candidate.json'
+    source.write_text(json.dumps(dict(label='internal', class_name='deathknight', spec='unholy',
+        source='constructed-test', original='three actions', instructions='repeat', semantic='preserved',
+        changes=[], family='plain', core=[], program=[['outbreak'], ['death_coil'], ['scourge_strike']])),
+        encoding='utf-8')
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    active = peak = 0
+    lock = threading.Lock()
+    with training_boundary():
+        native = sequence.evaluate
+        def observed(*args, **kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(.02)
+                return native(*args, **kwargs)
+            finally:
+                with lock:
+                    active -= 1
+        with patch.object(sequence, 'evaluate', side_effect=observed):
+            assert command(tmp_path, args) == 0
+    assert peak == 4
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    before = json.loads(capsys.readouterr().out.splitlines()[-1])
+    settings.write_text('[simulation]\ntarget_count=3\n[training]\nmax_processes=16\n', encoding='utf-8')
+    assert simulation_config.load_config()['target_count'] == 3
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复训练或复测')):
+        assert command(tmp_path, args) == 0
         assert command(tmp_path, args + ['--max-processes', '2']) == 0
-        assert command(tmp_path, args + ['--max-processes', '4']) == 0
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1]) == before
+    import search
+    monkeypatch.setattr(search, 'SEARCH_ALGORITHM', 'changed-search-semantics')
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=ValueError('真实语义变化重新评分')):
+        assert command(tmp_path, args) == 2
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    changed = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert len({row['condition'] for row in changed}) == 2
+    assert any(row['status'] == 'failed' for row in changed)
 
 
-@pytest.mark.parametrize('value', ['0', '5', '1.5', 'four'])
+def legacy_batch_fixture(tmp_path, *, mutate_input=lambda payload: None, burst_context=None):
+    """构造完整旧条件/检查点/成绩证据；不冒充本机真实成绩。"""
+    import hashlib
+    import result_store
+    from engine import identity
+    from search import TaskStore, config_for, digest
+    from seed_training import (training_condition_input, LEGACY_EXECUTION_RULES,
+                               LEGACY_SOURCE_COMMIT, LEGACY_SEMANTIC_VERSIONS, PROCESSED_SCHEMA)
+    from test_character_export import sample_profile
+    from test_search import _fast_capabilities
+    source = tmp_path / 'candidate.json'
+    source.write_text(json.dumps(dict(label='legacy', class_name='deathknight', spec='unholy',
+        source='constructed-legacy', original='three actions', instructions='repeat', semantic='preserved',
+        changes=[], family='plain', core=[], program=[['outbreak'], ['death_coil'], ['scourge_strike']])),
+        encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    candidate = result_store.read_records('seed_candidates', 'registry')[0]
+    candidate['program'] = json.loads(candidate['program'])
+    template = tmp_path / 'standard.simc'
+    text = sample_profile()
+    template.write_text(text, encoding='utf-8')
+    config = config_for(dict(diagnostic_logging=True, diagnostics='summary', no_improvement_rounds=2,
+                             **({'input_interval_ms': 200} if burst_context else {})))
+    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    payload = training_condition_input(hashlib.sha256(text.encode()).hexdigest(), engines, config,
+                                       dict(target_count=1, enable_omnium_talents=True), burst_context=burst_context)
+    payload['rules'].update({key: values[0] for key, values in LEGACY_EXECUTION_RULES.items()})
+    payload = json.loads(json.dumps(payload))
+    mutate_input(payload)
+    condition = digest(payload)
+    batch = tmp_path / 'work' / '1' / condition[:12]
+    folder = batch / candidate['candidate_id'][:12]
+    folder.mkdir(parents=True)
+    (batch / 'standard.simc').write_text(text, encoding='utf-8')
+    (batch / 'condition.txt').write_text(condition, encoding='ascii')
+    store = TaskStore(folder)
+    store.state.update(training_condition=condition, training_candidate_id=candidate['candidate_id'],
+                       config=payload['config'], capabilities=_fast_capabilities(), phase='done',
+                       rounds=2, elapsed_seconds=7., native_batch_starts=10,
+                       batch_requests=11, batch_cache_hits=1,
+                       **({'burst': burst_context} if burst_context else {}))
+    store.save()
+    store.close()
+    row = dict(candidate_id=candidate['candidate_id'], condition=condition, status='completed', error='',
+        initial_program=candidate['program'], program=candidate['program'], family='plain', core_retained=True,
+        rounds=2, stop_reason='no_improvement', elapsed_seconds=7., scores=[100.] * 3,
+        initial_scores=[100.] * 3, comparison={}, task_path=str(folder), native_batch_starts=10,
+        batch_requests=11, cache_hits=1)
+    result_store.write('seed_processed', 'deathknight-unholy-1' + ('-burst' if burst_context else ''),
+                       [row], schema=PROCESSED_SCHEMA)
+    evidence = dict(condition_input=payload, source_commit=LEGACY_SOURCE_COMMIT,
+                    semantic_versions=LEGACY_SEMANTIC_VERSIONS)
+    return template, batch, evidence
+
+
+@pytest.fixture
+def legacy_engine_boundary():
+    with training_boundary():
+        yield
+
+
+def test_training_entry_reuses_verified_legacy_namespace_without_retraining(tmp_path, monkeypatch, capsys,
+                                                                          legacy_engine_boundary):
+    import result_store
+    import sequence
+    from seed_training import adopt_legacy_condition, validate_training_identity
+    template, batch, evidence = legacy_batch_fixture(tmp_path)
+    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+            '--max-processes', '4']
+    monkeypatch.setattr(sequence, 'evaluate', lambda *a, **kw: pytest.fail('完整旧成绩不能重算'))
+    assert command(tmp_path, args) == 2
+    assert '缺少完整身份凭据' in capsys.readouterr().err
+    before = (Path(processed[0]['task_path']) / 'task.sqlite3').read_bytes()
+    # 原Python输入可能是tuple，检查点/JSON凭据是list，规范摘要仍相同。
+    evidence['condition_input']['config']['batch_targets'] = tuple(evidence['condition_input']['config']['batch_targets'])
+    manifest = adopt_legacy_condition(batch, evidence, processed=processed, selected=[])
+    assert command(tmp_path, args) == 0
+    assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == processed
+    assert (Path(processed[0]['task_path']) / 'task.sqlite3').read_bytes() == before
+    assert manifest['condition'] == processed[0]['condition'] != manifest['semantic_condition']
+    assert manifest['executions'][0]['config']['max_processes'] == 2
+    payload = evidence['condition_input']
+    validated = validate_training_identity(batch, payload['template'], payload['engines'],
+        dict(payload['config'], max_processes=4), payload['simulation'])
+    assert validated['condition'] == processed[0]['condition']
+    assert result_store.read_records('seed_selected', 'deathknight-unholy-1')[0]['condition'] == processed[0]['condition']
+
+
+def test_training_entry_can_start_changed_template_without_borrowing_unproven_legacy(tmp_path,
+                                                                                  legacy_engine_boundary):
+    import result_store
+    import sequence
+    from unittest.mock import patch
+    template, _, _ = legacy_batch_fixture(tmp_path)
+    original = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
+    template.write_text(template.read_text(encoding='utf-8') + '\n# new role revision\n', encoding='utf-8')
+    with patch.object(sequence, 'evaluate', side_effect=ValueError('新模板重新评分')):
+        assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+            '--workspace', str(tmp_path / 'work'), '--max-processes', '4']) == 2
+    rows = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    assert any(row == original for row in rows)
+    assert len({row['condition'] for row in rows}) == 2
+
+
+@pytest.mark.parametrize('fault', ['source', 'missing_rule', 'changed_rule', 'versions', 'checkpoint', 'record',
+                                 'selected_program', 'selected_scores'])
+def test_legacy_adoption_refuses_incomplete_or_unknown_proof(tmp_path, fault, legacy_engine_boundary):
+    import result_store
+    from seed_training import adopt_legacy_condition
+    def mutate(payload):
+        if fault == 'missing_rule':
+            payload['rules'].pop('projects/sim2gse/engine.py')
+        elif fault == 'changed_rule':
+            payload['rules']['projects/sim2gse/engine.py'] = 'unreviewed'
+    template, batch, evidence = legacy_batch_fixture(tmp_path, mutate_input=mutate)
+    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    if fault == 'source':
+        evidence['source_commit'] = 'unknown'
+    elif fault == 'versions':
+        evidence['semantic_versions'] = dict(evidence['semantic_versions'], behavior='unknown')
+    elif fault == 'checkpoint':
+        with sqlite3.connect(Path(processed[0]['task_path']) / 'task.sqlite3') as database:
+            database.execute("UPDATE state_fields SET value=? WHERE key='training_condition'", ('"other"',))
+    elif fault == 'record':
+        processed[0]['condition'] = 'other'
+    selected = []
+    if fault.startswith('selected_'):
+        payload = evidence['condition_input']
+        selected = [dict(candidate_id=processed[0]['candidate_id'], condition=processed[0]['condition'],
+            template_sha256=payload['template'], engines=payload['engines'],
+            program=json.loads(processed[0]['program']), scores=processed[0]['scores'])]
+        if fault == 'selected_program':
+            selected[0]['program'] = [['death_coil']]
+        else:
+            selected[0]['scores'] = [200.] * 3
+    with pytest.raises(ValueError):
+        adopt_legacy_condition(batch, evidence, processed=processed, selected=selected)
+    assert not (batch / 'identity.json').exists()
+
+
+def test_training_condition_excludes_only_execution_and_keeps_real_inputs(tmp_path, legacy_engine_boundary):
+    from copy import deepcopy
+    from seed_training import semantic_condition, semantic_versions
+    _, _, evidence = legacy_batch_fixture(tmp_path)
+    payload, versions = evidence['condition_input'], semantic_versions()
+    expected = semantic_condition(payload, versions)
+    execution = deepcopy(payload)
+    execution['config']['max_processes'] = 16
+    execution['rules']['projects/sim2gse/seed_training.py'] = 'logging-only-source-change'
+    assert semantic_condition(execution, versions) == expected
+    for field, value in [('template', 'new-role'), ('engines', {'baseline': 'new-engine'}),
+                         ('retest', [20261011]), ('effective_options', ['threads=2'])]:
+        assert semantic_condition(dict(payload, **{field: value}), versions) != expected
+    for key in ('random_seed', 'iterations', 'no_improvement_rounds', 'input_interval_ms'):
+        changed = deepcopy(payload)
+        changed['config'][key] += 1
+        assert semantic_condition(changed, versions) != expected
+    assert semantic_condition(payload, dict(versions, search='new-search')) != expected
+
+
+def test_upgrade_postcheck_accepts_legacy_identity_and_keeps_retest_key_checks(tmp_path, legacy_engine_boundary,
+                                                                            monkeypatch):
+    import result_store
+    import runpy
+    from search import digest
+    from program import canonicalize_search_program
+    from seed_training import adopt_legacy_condition, RETEST_SEEDS, PROCESSED_SCHEMA
+    from test_search import _fast_capabilities
+    _, batch, evidence = legacy_batch_fixture(tmp_path, burst_context={'definition_id': 'test-definition'})
+    scope = 'deathknight-unholy-1-burst'
+    rows = result_store.read_records('seed_processed', scope)
+    row = rows[0]
+    adopt_legacy_condition(batch, evidence, processed=rows, selected=[])
+    for candidate_id in ('rejected-a', 'rejected-b'):
+        rows.append(dict(row, candidate_id=candidate_id, status='rejected', error='explicit rejection'))
+    for item in rows:
+        for field in ('initial_program', 'program', 'comparison'):
+            item[field] = json.loads(item[field])
+    result_store.write('seed_processed', scope, rows, schema=PROCESSED_SCHEMA)
+    scripts = Path(__file__).resolve().parents[2] / '.agents/skills/sim2gse-upgrade/scripts'
+    sys.path.insert(0, str(scripts))
+    try:
+        postcheck = runpy.run_path(str(scripts / 'postcheck.py'))
+    finally:
+        sys.path.remove(str(scripts))
+    payload = evidence['condition_input']
+    ready = dict(template_sha256=payload['template'], engines=payload['engines'],
+                 burst_definition_id='test-definition')
+    scene = dict(targets=1, run_id='page-fixture', training_condition=row['condition'],
+                 processed=[row['candidate_id'], 'rejected-a', 'rejected-b'])
+    batches = {}
+    for name in ('retest-initial', 'retest-final'):
+        for seed in RETEST_SEEDS:
+            key = digest(dict(folder=str(Path(row['task_path']) / name), seed=seed))
+            batches[key] = dict(purpose='seed_retest', seed=seed, samples=127, dps=100.,
+                engines=payload['engines'], condition_key=row['condition'], requested_iterations=128,
+                program_identity=canonicalize_search_program(row['program'], _fast_capabilities())['form'])
+    real_read, checked = result_store.read_records, []
+    def read(table, key, **kwargs):
+        if table == 'runs':
+            return [dict(engines=payload['engines'])]
+        if table == 'batches':
+            checked.append(key)
+            return [batches[key]]
+        return real_read(table, key, **kwargs)
+    monkeypatch.setattr(result_store, 'read_records', read)
+    # 已经穿过旧身份及六个复测核验；此构造场景故意仅有一份成功材料。
+    with pytest.raises(ValueError, match='缺少两类成功材料'):
+        postcheck['check_scene'](scene, ready)
+    assert len(checked) == 6
+    batches[checked[0]]['condition_key'] = 'foreign-condition'
+    with pytest.raises(ValueError, match='独立复测引擎、条件或程序身份不一致'):
+        postcheck['check_scene'](scene, ready)
+
+
+def test_training_entry_resumes_two_to_four_preserving_successful_batches(tmp_path, capsys, monkeypatch):
+    import hashlib
+    import result_store
+    import sequence
+    import seed_activity
+    import threading
+    import types
+    import task
+    import engine
+    from engine import ROOT
+    from seed_training import (_checkpoint_states, adopt_legacy_condition, training_condition_input,
+        LEGACY_SOURCE_COMMIT, LEGACY_EXECUTION_RULES, LEGACY_SEMANTIC_VERSIONS)
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    source = tmp_path / 'candidate.json'
+    source.write_text(json.dumps(dict(label='resume', class_name='deathknight', spec='unholy',
+        source='constructed-test', original='three actions', instructions='repeat', semantic='preserved',
+        changes=[], family='plain', core=[], program=[['outbreak'], ['death_coil'], ['scourge_strike']])),
+        encoding='utf-8')
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    cancelled = threading.Event()
+    @contextmanager
+    def activity():
+        yield cancelled
+    monkeypatch.setattr(seed_activity, 'training_activity', activity)
+    requests = []
+    # 原固定提交的公开命令生成真实旧请求键；只替换文件来源和外部引擎边界。
+    baseline = types.ModuleType('seed_training_baseline')
+    baseline.__file__ = str(ROOT / 'projects/sim2gse/seed_training.py')
+    old_source = subprocess.check_output(['git', 'show', LEGACY_SOURCE_COMMIT + ':projects/sim2gse/seed_training.py'],
+                                         cwd=ROOT).decode('utf-8')
+    exec(compile(old_source, baseline.__file__, 'exec'), baseline.__dict__)
+    old_rules = task._rule_hashes(relative_to=ROOT)
+    old_rules.update({key: values[0] for key, values in LEGACY_EXECUTION_RULES.items()})
+    with training_boundary(), patch.object(task, '_rule_hashes', return_value=old_rules):
+        evaluate = sequence.evaluate
+        def interrupt(profile, candidate, folder, **kwargs):
+            requests.append(Path(folder).name)
+            result = evaluate(profile, candidate, folder, **kwargs)
+            if len(requests) >= 12:
+                cancelled.set()
+            return result
+        with patch.object(sequence, 'evaluate', side_effect=interrupt):
+            assert baseline.main(['--project', str(tmp_path), *args, '--legacy']) == 2
+    failed = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
+    batch = Path(failed['task_path']).parent
+    before = next(iter(_checkpoint_states(batch).values()))
+    assert before['phase'] == 'search' and before['pending'] and before['rng']
+    with sqlite3.connect(Path(failed['task_path']) / 'task.sqlite3') as database:
+        saved = {key: value for key, value in database.execute('SELECT key,value FROM batches')
+                 if json.loads(value).get('status') == 'success'}
+    assert saved
+    with training_boundary():
+        engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
+        payload = training_condition_input(hashlib.sha256(template.read_text(encoding='utf-8').encode()).hexdigest(),
+            engines, before['config'], {'target_count': 1, 'enable_omnium_talents': True})
+        payload['rules'] = old_rules
+        evidence = dict(condition_input=payload, source_commit=LEGACY_SOURCE_COMMIT,
+                        semantic_versions=LEGACY_SEMANTIC_VERSIONS)
+        adopt_legacy_condition(batch, evidence,
+            processed=result_store.read_records('seed_processed', 'deathknight-unholy-1'), selected=[])
+    cancelled.clear()
+    resumed = []
+    with training_boundary():
+        evaluate = sequence.evaluate
+        def observe(profile, candidate, folder, **kwargs):
+            resumed.append(Path(folder).name)
+            return evaluate(profile, candidate, folder, **kwargs)
+        with patch.object(sequence, 'evaluate', side_effect=observe):
+            assert command(tmp_path, args + ['--max-processes', '4']) == 0
+    complete = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
+    assert complete['condition'] == failed['condition'] and complete['task_path'] == failed['task_path']
+    assert complete['status'] == 'completed' and complete['cache_hits'] > 0
+    assert not set(saved) & set(resumed)
+    with sqlite3.connect(Path(complete['task_path']) / 'task.sqlite3') as database:
+        after = dict(database.execute('SELECT key,value FROM batches'))
+    assert all(after[key] == value for key, value in saved.items())
+    manifest = json.loads((batch / 'identity.json').read_text(encoding='utf-8'))
+    assert [segment['config']['max_processes'] for segment in manifest['executions']] == [2, 4]
+    segment = manifest['executions'][-1]
+    assert segment['before']['elapsed_seconds'] == before['elapsed_seconds']
+    assert segment['before']['native_batch_starts'] == before['native_batch_starts']
+    assert segment['after']['elapsed_seconds'] >= before['elapsed_seconds']
+
+
+@pytest.mark.parametrize('value', ['0', '17', '1.5', 'four'])
 def test_training_command_rejects_invalid_parallelism_before_compute(tmp_path, monkeypatch, value):
     from seed_training import main
 

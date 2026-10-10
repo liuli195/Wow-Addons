@@ -53,7 +53,7 @@ def valid_scores(values):
 def check_scene(scene, ready):
     from program import canonicalize_search_program
     from search import digest
-    from seed_training import RETEST_SEEDS, search_program, training_condition
+    from seed_training import RETEST_SEEDS, search_program, validate_training_identity
     targets = scene['targets']
     scope = f'deathknight-unholy-{targets}-burst'
     run = one('runs', scene['run_id'], ['run_id', 'status', 'engines', 'condition_key',
@@ -77,10 +77,11 @@ def check_scene(scene, ready):
         require(valid_scores(row['scores']) and valid_scores(row['initial_scores']), '独立复测成绩缺项')
         state = checkpoint(row['task_path'], ['config', 'training_condition', 'capabilities',
                            'training_candidate_id', 'burst'])
-        current_condition = training_condition(ready['template_sha256'], ready['engines'],
+        manifest = validate_training_identity(Path(row['task_path']).parent,
+            ready['template_sha256'], ready['engines'],
             state['config'], {'target_count': targets, 'enable_omnium_talents': True},
             burst_context=state['burst'])
-        require(row['condition'] == current_condition, '训练引擎身份或条件过期')
+        require(row['condition'] == manifest['condition'], '训练引擎身份或条件过期')
         require(state['training_condition'] == row['condition'] and
                 state['training_candidate_id'] == candidate_id, '训练记录与检查点不一致')
         require(state['burst']['definition_id'] == ready['burst_definition_id'], '训练爆发定义过期')

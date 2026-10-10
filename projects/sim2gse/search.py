@@ -75,7 +75,7 @@ def config_for(values=None, *, training=False):
     if config['search_budget_seconds'] > config['total_budget_seconds']:
         raise ValueError('搜索预算不能超过总预算')
     for key, maximum in (('candidate_limit',1000),('round_candidate_limit',16),('no_improvement_rounds',5),
-                         ('max_processes',4 if training else 2),('validation_batches',20),('final_batches',20),
+                         ('max_processes',DEFAULT_CONFIG['round_candidate_limit'] if training else 2),('validation_batches',20),('final_batches',20),
                          ('iterations',512),('final_iterations',100),('random_seed',1000000000)):
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
