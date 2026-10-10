@@ -1406,7 +1406,8 @@ def test_connected_public_search_creates_data_root_on_first_run(tmp_path, monkey
 
 
 @pytest.mark.parametrize('case', ['structured', 'history-only', 'changed-definition', 'empty', 'single-member', 'unknown', 'invalid-block', 'invalid-program'])
-def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(tmp_path, capsys, monkeypatch, case):
+def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(tmp_path, capsys, monkeypatch, case,
+                                                                              four_candidate_training_rounds):
     import burst
     import engine
     import result_store
