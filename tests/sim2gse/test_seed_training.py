@@ -104,6 +104,23 @@ def no_training_proposals(monkeypatch):
     monkeypatch.setattr(search.random, 'Random', NoFallbackShuffle)
 
 
+@pytest.fixture
+def four_candidate_training_rounds(monkeypatch):
+    import seed_training
+    config_for = seed_training.config_for
+    assert config_for(training=True)['round_candidate_limit'] == 16
+    assert config_for({'max_processes': 16}, training=True)['max_processes'] == 16
+
+    def small_rounds(values=None, *, training=False):
+        return config_for(dict(values or {}, round_candidate_limit=4), training=training)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(seed_training, 'config_for', small_rounds)
+        yield
+    assert config_for(training=True)['round_candidate_limit'] == 16
+    assert config_for({'max_processes': 16}, training=True)['max_processes'] == 16
+
+
 def command(tmp_path, args):
     from seed_training import main
     # These existing cases exercise the explicitly retained legacy training mode.
@@ -256,7 +273,8 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
 
 
 def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys,
-                                                                          memory_training_center):
+                                                                          memory_training_center,
+                                                                          four_candidate_training_rounds):
     from test_character_export import sample_profile
     from test_search import _fast_evaluate
     from unittest.mock import patch
@@ -1771,7 +1789,8 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
 
 @pytest.mark.parametrize(('outer', 'inner'), [(2, 2), (3, 2), (1, 4)])
 def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys, outer, inner,
-                                                                  memory_training_center):
+                                                                  memory_training_center,
+                                                                  four_candidate_training_rounds):
     from test_character_export import sample_profile
     from unittest.mock import patch
     import result_store
