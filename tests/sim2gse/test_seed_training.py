@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import sqlite3
 from contextlib import contextmanager
@@ -35,8 +36,9 @@ def training_center(tmp_path, installed_data_store, monkeypatch):
     import result_store
     (tmp_path / 'data').mkdir(exist_ok=True)
     monkeypatch.setattr(result_store, '_BOUND_PROJECT', None)
-    subprocess.run([sys.executable, str(installed_data_store / 'scripts/project_binding.py'),
-                    'connect', '--project', str(tmp_path)], check=True, capture_output=True)
+    # 业务检查使用隔离安装副本；官方 connect/Junction 由 test_data_store_connection 专项验证。
+    shutil.copytree(installed_data_store, tmp_path / '.local/skills/data-store',
+                    ignore=shutil.ignore_patterns('__pycache__'))
 
 
 @pytest.fixture
