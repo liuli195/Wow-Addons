@@ -854,6 +854,8 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
+    round_size = 2
+    assert search.config_for(training=True)['round_candidate_limit'] == 16
     proposals = {}
     scores = {}
 
@@ -862,15 +864,15 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
         positions = [(a, b) for a in range(size) for b in range(size) if a != b]
         key = json.dumps(parent, sort_keys=True)
         index = proposals.get(key, 0)
-        round_index = sum(proposals.values()) // 16
+        round_index = sum(proposals.values()) // round_size
         proposals[key] = index + 1
-        if partial_improvement and len(parent) == 3 and index >= 24:
+        if partial_improvement and len(parent) == 3 and index >= round_size + round_size // 2:
             return None
         a, b = positions[index % len(positions)]
         program = [['outbreak'] for _ in range(size)]
         program[a], program[b] = ['death_coil'], ['scourge_strike']
         if partial_improvement:
-            score = 103. if len(parent) == 3 and index < 16 else 107.
+            score = 103. if len(parent) == 3 and index < round_size else 107.
         else:
             score = (103., 107., 107., 111., 113., 113., 113.)[round_index]
         scores[json.dumps(program)] = score
@@ -881,10 +883,12 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
         return scores.get(json.dumps(program), 103.)
 
     with training_boundary(damage_for), \
+            patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=round_size), \
             patch.object(search, 'mutate', side_effect=growing_program), \
             patch.object(search.random, 'Random', NoFallbackShuffle):
         assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
                                   '--workspace', str(tmp_path / 'work')]) == 0
+    assert search.config_for(training=True)['round_candidate_limit'] == 16
     completed = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
     assert completed['status'] == 'completed'
     assert completed['rounds'] == (4 if partial_improvement else 7)
@@ -894,6 +898,7 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
                          uri=True) as database:
         state = search.TaskStore.load_state(database)
     assert state['no_improvement'] == 2
+    assert len(state['archive']) == (8 if partial_improvement else 15)
     assert len(state['chains']) == 1
 
 
@@ -1014,6 +1019,8 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
 def test_training_trains_history_matching_completed_final_and_reuses_only_initial_paths(tmp_path, capsys):
     from test_character_export import sample_profile
     import result_store
+    import search
+    from unittest.mock import patch
 
     source = tmp_path / 'candidate.json'
     source.write_text(json.dumps(dict(label='training seed', class_name='deathknight', spec='unholy',
@@ -1028,7 +1035,8 @@ def test_training_trains_history_matching_completed_final_and_reuses_only_initia
         return 100. if [[action['simc_action'] for action in block] for block in candidate['blocks']] == [
             ['outbreak'], ['death_coil'], ['scourge_strike']] else 110.
 
-    with training_boundary(plateau):
+    assert search.config_for(training=True)['round_candidate_limit'] == 16
+    with training_boundary(plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, args) == 0
 
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
@@ -1079,7 +1087,7 @@ def test_training_trains_history_matching_completed_final_and_reuses_only_initia
             program=shared_program(program))], schema=result_store.CANDIDATE_SCHEMA)
 
     # 模拟旧覆盖政策留下的动态免训记录：必须补完整独立路径，不动A可靠成果。
-    with training_boundary(plateau):
+    with training_boundary(plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, ['prepare', *args[1:]]) == 0
     registry = result_store.read_records('seed_candidates', 'registry')
     old_id = next(row['candidate_id'] for row in registry if row['source_id'] == 'history:history-final')
@@ -1091,9 +1099,10 @@ def test_training_trains_history_matching_completed_final_and_reuses_only_initia
     original = dict(completed, initial_program=initial, program=final, comparison=json.loads(completed['comparison']))
     result_store.write('seed_processed', 'deathknight-unholy-1', [original, old_skip],
                        schema=__import__('seed_training').PROCESSED_SCHEMA)
-    with training_boundary(plateau):
+    with training_boundary(plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, args) == 0
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    assert search.config_for(training=True)['round_candidate_limit'] == 16
     processed = json.loads(capsys.readouterr().out.splitlines()[-1])
     history_rows = [row for row in processed if row['family'] == 'history-search']
     duplicate = next(row for row in history_rows if json.loads(row['initial_program']) == final)
