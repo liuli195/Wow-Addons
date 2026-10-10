@@ -327,7 +327,8 @@ def selected_materials(candidate_ids):
     return rows
 
 
-def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None):
+def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None,
+                  max_processes=2):
     from engine import identity, reference, prepare_loop
     from program import canonicalize_search_program
     _check_cancelled(cancel_event)
@@ -338,7 +339,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         raise ValueError('训练材料与标准角色职业或专精不一致')
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
     config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
-                         'no_improvement_rounds': 2})
+                         'no_improvement_rounds': 2, 'max_processes': max_processes}, training=True)
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
     burst_context = None
@@ -346,7 +347,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     if use_burst:
         from burst import select_definition
         definition = select_definition(character)
-        config = config_for(dict(config, input_interval_ms=200))
+        config = config_for(dict(config, input_interval_ms=200), training=True)
         setup = workspace.resolve() / 'burst-setup' / uuid.uuid4().hex
         setup.mkdir(parents=True)
         setup_profile = setup / 'standard.simc'
@@ -526,10 +527,11 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     return dict(status='completed', processed=len(candidates), selected=len(selected), targets=targets)
 
 
-def run_training(template, targets, workspace, *, use_burst=False):
+def run_training(template, targets, workspace, *, use_burst=False, max_processes=2):
     from seed_activity import training_activity
     with training_activity() as cancel_event:
-        return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst)
+        return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
+                             max_processes=max_processes)
 
 
 def check_training(template=None, *, use_burst=True):
@@ -564,6 +566,8 @@ def main(argv=None):
     training.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
     training.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
     training.add_argument('--candidate-id', action='append', help='只训练指定登记材料；可重复传入，默认全部')
+    training.add_argument('--max-processes', type=int, choices=(1, 2, 3, 4), default=2,
+                          help='同层单线程候选评分上限（默认2，最多4）；不并行处理材料或目标场景')
     training.add_argument('--workspace', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.local/sim2gse/seed-training')
     checking = commands.add_parser('check', help='只读核对训练模板、引擎与审核适用性，不启动计算')
@@ -590,6 +594,7 @@ def main(argv=None):
                 with training_activity() as cancel_event:
                     output = [_run_training(Path(ready['template']), targets, args.workspace,
                                             cancel_event=cancel_event, use_burst=args.use_burst,
+                                            max_processes=args.max_processes,
                                             **material_options)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state in ('pending', 'unsupported'):

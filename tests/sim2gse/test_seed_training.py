@@ -190,6 +190,80 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
         assert command(tmp_path, args) == 0
 
 
+def test_training_command_selects_four_processes_without_changing_default_or_work(tmp_path, capsys):
+    from test_character_export import sample_profile
+    from test_search import _fast_evaluate
+    from unittest.mock import patch
+    import sequence
+    import threading
+    import time
+
+    source = tmp_path / 'candidate.json'
+    source.write_text(json.dumps(dict(label='parallel', class_name='deathknight', spec='unholy',
+        source='constructed-test', original='three actions', instructions='repeat',
+        semantic='preserved', changes=[], family='plain', core=[['outbreak']],
+        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    observations = []
+    for workers in (None, 4):
+        active = peak = 0
+        requests = []
+        lock = threading.Lock()
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                requests.append((candidate['blocks'], kwargs['iterations'], kwargs['seed']))
+            try:
+                time.sleep(.02)  # 外部引擎边界等待，确保同层请求确实重叠。
+                result = _fast_evaluate(profile, candidate, folder, **kwargs)
+                result['summary']['dps'] = 100.
+                result['report']['sim']['statistics']['raid_dps']['mean'] = 100.
+                result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = 100.
+                Path(folder, 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+                return result
+            finally:
+                with lock:
+                    active -= 1
+
+        with training_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+            assert command(tmp_path, args + ([] if workers is None else ['--max-processes', str(workers)])) == 0
+        assert peak == (2 if workers is None else 4)
+        assert command(tmp_path, ['list', '--state', 'processed']) == 0
+        rows = json.loads(capsys.readouterr().out.splitlines()[-1])
+        record = rows[-1]
+        assert record['status'] == 'completed'
+        assert record['rounds'] == 2
+        assert record['stop_reason'] == 'no_improvement'
+        observations.append((record, sorted(json.dumps(row, sort_keys=True) for row in requests)))
+    first, second = observations
+    assert first[0]['condition'] != second[0]['condition']
+    for field in ('initial_program', 'program', 'scores', 'initial_scores', 'native_batch_starts', 'batch_requests'):
+        assert first[0][field] == second[0][field]
+    assert first[1] == second[1]
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+        assert command(tmp_path, args + ['--max-processes', '2']) == 0
+        assert command(tmp_path, args + ['--max-processes', '4']) == 0
+
+
+@pytest.mark.parametrize('value', ['0', '5', '1.5', 'four'])
+def test_training_command_rejects_invalid_parallelism_before_compute(tmp_path, monkeypatch, value):
+    from seed_training import main
+
+    def forbidden_process(*args, **kwargs):
+        raise AssertionError('非法并发参数不能启动计算进程')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
+    with pytest.raises(SystemExit) as stopped:
+        main(['--project', str(tmp_path), 'run', '--max-processes', value])
+    assert stopped.value.code == 2
+
+
 @pytest.mark.parametrize('partial_improvement', [False, True])
 def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_path, partial_improvement):
     from test_character_export import sample_profile
@@ -253,7 +327,8 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
     assert len(state['chains']) == 1
 
 
-def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(tmp_path):
+@pytest.mark.parametrize('max_processes', [2, 4])
+def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(tmp_path, max_processes):
     from test_character_export import sample_profile
     from unittest.mock import patch
     from runtime import BudgetExceeded
@@ -269,7 +344,8 @@ def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(tmp_
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+            '--max-processes', str(max_processes)]
     with training_boundary():
         assert command(tmp_path, args) == 0
     previous = result_store.read_records('seed_selected', 'deathknight-unholy-1')
@@ -653,6 +729,8 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
     history_before = result_store.read_records('candidates', 'historical-program')
     args = ['--project', str(tmp_path), 'run', '--template', str(template), '--targets', '1',
             '--workspace', str(tmp_path / 'work')]
+    if case == 'structured':
+        args += ['--max-processes', '4']
     with training_boundary(), monkeypatch.context() as guarded:
         inspect = engine.inspect
         def full_catalogue(*args, **kwargs):
