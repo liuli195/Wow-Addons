@@ -2086,7 +2086,7 @@ class InterfaceTests(unittest.TestCase):
                 first = destination not in started
                 started.add(destination)
             if first:
-                first_reports.wait(5)
+                first_reports.wait(self.server.task_options['search_config']['search_budget_seconds'])
             return _fast_evaluate(*args, **kwargs)
 
         second_server = second_thread = None
