@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 import string
+import sqlite3
 import argparse
 import sys
 import os
@@ -764,7 +765,7 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
     return starts + added
 
 
-def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False):
+def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False, burst_identity=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
     from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
@@ -807,10 +808,15 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             definition = None
             if use_burst:
                 from burst import load, select_definition
-                if state.get('burst_definition_id'):
-                    definition = load(state['burst_spec_id'])
-                    if definition['definition_id'] != state['burst_definition_id']:
-                        raise TaskError('恢复任务的爆发定义已变化，请创建新任务')
+                frozen = burst_identity or (dict(spec_id=state['burst_spec_id'],
+                            definition_id=state['burst_definition_id']) if state.get('burst_definition_id') else None)
+                if frozen:
+                    definition = load(frozen['spec_id'])
+                    if definition['definition_id'] != frozen['definition_id']:
+                        raise TaskError('任务的爆发定义已变化，请创建新任务')
+                    if state.get('burst_definition_id') and (state['burst_spec_id'] != frozen['spec_id'] or
+                            state['burst_definition_id'] != frozen['definition_id']):
+                        raise TaskError('任务的冻结爆发身份不符，请创建新任务')
                 else:
                     definition = select_definition(parse_character(effective_bytes.decode('utf-8')))
                 from program import BEHAVIOR_IDENTITY_VERSION
@@ -1002,10 +1008,16 @@ def _task_lease(destination):
 def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
+    if burst_identity is not None:
+        if not use_burst or mode != 'optimize' or resume:
+            raise TaskError('冻结爆发身份仅用于新的爆发优化任务')
+        if (not isinstance(burst_identity, dict) or set(burst_identity) != {'spec_id', 'definition_id'} or
+                type(burst_identity['spec_id']) is not int or not isinstance(burst_identity['definition_id'], str)):
+            raise TaskError('冻结爆发身份格式无效')
     if use_burst and (search_config is None or isinstance(search_config, dict) and 'input_interval_ms' not in search_config):
         search_config = dict(search_config or {}, input_interval_ms=200)
     if resume and not _lease:
@@ -1088,7 +1100,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
                 raise TaskError(message) from error
         try:
             return _run_optimize(destination, character, config=config, runtime=runtime,
-                                 simulation_config=simulation_config, use_burst=use_burst)
+                                 simulation_config=simulation_config, use_burst=use_burst, burst_identity=burst_identity)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _save_failure(destination, state)
@@ -1102,20 +1114,20 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None) -> dict:
     if mode != 'optimize' or _lease:
         return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
                          search_config=search_config, simulation_config=simulation_config,
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst)
+                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity)
     from seed_activity import foreground_search
     with foreground_search():
         return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
                          search_config=search_config, simulation_config=simulation_config,
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst)
+                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity)
 
 
 class TaskHandle:
@@ -1280,6 +1292,35 @@ def read_task(output_root, *, include_search_records=False, include_reports=Fals
         raise TaskError(str(error)) from error
 
 
+def _batch_locations(destination, keys):
+    """Read only requested batch locators from the existing read-only checkpoint."""
+    from result_store import DataReadError, DATA_ROOT, report_locations
+    keys = list(dict.fromkeys(key for key in keys if key))
+    locations = {}
+    database = destination / 'task.sqlite3'
+    if keys and database.is_file():
+        connection = None
+        try:
+            connection = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)
+            for offset in range(0, len(keys), 500):
+                chunk = keys[offset:offset + 500]
+                sql = 'SELECT key,value FROM batches WHERE key IN (' + ','.join('?' for _ in chunk) + ')'
+                for key, payload in connection.execute(sql, chunk):
+                    row = json.loads(payload)
+                    if not isinstance(row, dict):
+                        raise ValueError('批次位置记录必须是对象')
+                    locations[key] = row.get('storage_group_key') or row.get('data_key') or key
+        except (sqlite3.Error, ValueError, TypeError) as error:
+            raise DataReadError('任务批次位置不可读取') from error
+        finally:
+            if connection is not None:
+                connection.close()
+    missing = [key for key in keys if key not in locations]
+    if missing and (DATA_ROOT / '.report-locations.jsonl').exists():
+        locations.update({key: group for key, group in report_locations(missing).items() if group})
+    return locations
+
+
 def _read_task(output_root, *, include_search_records=False, include_reports=False):
     destination = Path(output_root).resolve()
     progress_path = destination / 'progress.json'
@@ -1305,7 +1346,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
     if not run_id:
         return pointer
 
-    from result_store import iter_rows, one as read_record
+    from result_store import read_many, one as read_record
 
     saved = read_record('runs', 'run_id', run_id)
     if saved is None:
@@ -1369,8 +1410,12 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             selected_version=candidate['selected_version'], import_sha256=candidate['import_sha256'],
             game_validation=candidate['game_validation'])
 
+    locations = _batch_locations(destination, [saved['controlled_data_key'],
+                         *(search['batch_keys'] if include_search_records else [])])
     if saved['controlled_data_key']:
-        controlled = read_record('batches', 'batch_key', saved['controlled_data_key'])
+        controlled = read_record('batches', 'batch_key', saved['controlled_data_key'],
+                                 group_key=locations.get(saved['controlled_data_key']),
+                                 columns=None if include_reports else ['batch_key', 'dps', 'samples'])
         if controlled is None:
             raise TaskError('结果中心的受控模拟报告缺失')
         controlled_simulation = dict(summary=dict(dps=controlled['dps'], samples=controlled['samples']),
@@ -1380,15 +1425,22 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         task_result['controlled_simulation'] = controlled_simulation
 
     if include_search_records and search['batch_keys']:
-        candidates = {}
-        for row in iter_rows('SELECT * FROM candidates WHERE run_id = ?', [run_id]):
-            candidates[row['candidate_key']] = row
-        sql = ("SELECT batch_key, candidate_key, purpose, condition_key, program_identity, "
-               "batch_index, scenario, stats_version, seed, input_seed, iterations, times, "
-               "trace, dps, samples, variance, requested_iterations "
-               "FROM batches WHERE list_contains(?, batch_key) ORDER BY candidate_key, batch_index")
+        from search import digest
+        wanted = set(search['batch_keys'])
+        groups = list(dict.fromkeys(locations.get(key) or key for key in search['batch_keys']))
+        columns = ['batch_key', 'candidate_key', 'purpose', 'condition_key', 'program_identity',
+                   'batch_index', 'scenario', 'stats_version', 'seed', 'input_seed', 'iterations',
+                   'times', 'trace', 'dps', 'samples', 'variance', 'requested_iterations']
+        batches = {row['batch_key']: row for row in read_many('batches', groups, columns=columns)
+                   if row['batch_key'] in wanted}
+        candidate_keys = list(dict.fromkeys(row['candidate_key'] for row in batches.values()
+                              if row['purpose'] == 'search' and row['candidate_key']))
+        candidates = {row['candidate_key']: row for row in read_many('candidates',
+                      [digest(dict(run_id=run_id, candidate_key=key)) for key in candidate_keys],
+                      columns=['run_id', 'candidate_key', 'search_order', 'program', 'source',
+                               'export_text', 'simulation'], filters={'run_id': run_id})}
         grouped = {}
-        for row in iter_rows(sql, [search['batch_keys']]):
+        for row in sorted(batches.values(), key=lambda row: (row['candidate_key'] or '', row['batch_index'] or 0)):
             if row['purpose'] != 'search' or not row['candidate_key']:
                 continue
             key = row['candidate_key']

@@ -44,6 +44,7 @@ _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
 _PUBLICATION_LOCK = threading.RLock()
 _BOUND_PROJECT = None
+_REPORT_LOCATIONS = None
 
 
 class ReportLocations:
@@ -161,9 +162,11 @@ def _api():
                         "数据中心尚未接入本项目，请从已安装技能入口运行 project_binding.py connect --project <仓库>"
                     )
                 functions = runpy.run_path(str(script))
-                required = ("write", "query", "read_key", "MissingKeyError", "CorruptDataError")
+                if functions.get("DATA_STORE_API_VERSION") != 2:
+                    raise DataReadError("data-store 接口版本不支持，请同步具备 API 版本 2 的技能后重启")
+                required = ("write", "query", "read_key", "read_keys", "MissingKeyError", "CorruptDataError")
                 if any(name not in functions for name in required):
-                    raise RuntimeError("data-store 技能缺少逻辑键点读能力，请同步已安装的技能")
+                    raise DataReadError("data-store 技能缺少逻辑键点读能力，请同步已安装的技能后重启")
                 _SKILL_API = {name: functions[name] for name in required}
     return _SKILL_API
 
@@ -216,13 +219,29 @@ def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -
                                   for index, event in enumerate(events)])
 
 
-def query(sql: str, parameters=None):
-    """Return the installed skill's DuckDB cursor for bounded reads."""
-    return _api()["query"](DATA_ROOT, sql, parameters)
+def query(sql: str, parameters=None, *, tables):
+    """Return a cursor limited to the caller's explicit logical tables."""
+    try:
+        return _api()["query"](DATA_ROOT, sql, parameters, tables=tables)
+    except (DataReadError, ValueError, TypeError):
+        raise
+    except Exception as error:
+        raise DataReadError('数据中心查询不可读') from error
 
 
 def read_records(table: str, key: str, *, columns=None, filters=None):
     """Point-read a caller-defined record group; only a missing key is empty."""
+    return _read_records("read_key", table, key, columns=columns, filters=filters)
+
+
+def read_many(table: str, keys, *, columns=None, filters=None):
+    """Read only known groups, retaining the public multi-key failure boundary."""
+    if not keys:
+        return []
+    return _read_records("read_keys", table, keys, columns=columns, filters=filters)
+
+
+def _read_records(operation, table, keys, *, columns, filters):
     api = _api()
     try:
         options = {}
@@ -230,18 +249,33 @@ def read_records(table: str, key: str, *, columns=None, filters=None):
             options['columns'] = columns
         if filters is not None:
             options['filters'] = filters
-        with api['read_key'](DATA_ROOT, table, key, **options) as cursor:
+        with api[operation](DATA_ROOT, table, keys, **options) as cursor:
             names = [column[0] for column in cursor.description]
             return [dict(zip(names, row)) for row in cursor.fetchall()]
-    except api['MissingKeyError']:
-        return []
+    except api['MissingKeyError'] as error:
+        if operation == "read_key":
+            return []
+        raise DataReadError('数据中心指定记录组缺失') from error
     except api['CorruptDataError'] as error:
         raise InvalidRecordError('数据中心目标记录损坏') from error
     except Exception as error:
         raise DataReadError(f'数据中心记录不可读: {error}') from error
 
 
-def one(table: str, field: str, value, *, group_key=None):
+def report_locations(keys):
+    """Reuse the verified journal and refresh its delta once for a set of keys."""
+    global _REPORT_LOCATIONS
+    try:
+        with _PUBLICATION_LOCK:
+            if _REPORT_LOCATIONS is None or _REPORT_LOCATIONS.root != Path(DATA_ROOT):
+                _REPORT_LOCATIONS = ReportLocations(DATA_ROOT)
+            with _REPORT_LOCATIONS.locked() as locations:
+                return {key: locations.entries.get(key) for key in keys}
+    except OSError as error:
+        raise DataReadError('报告位置清单不可读取') from error
+
+
+def one(table: str, field: str, value, *, group_key=None, columns=None):
     """Read at most two matching rows, returning a named record if unique."""
     if table not in {"runs", "candidates", "batches"} or field not in {
         "run_id", "candidate_key", "candidate_data_key", "batch_key"
@@ -251,16 +285,11 @@ def one(table: str, field: str, value, *, group_key=None):
     stored_key = {"runs": "run_id", "candidates": "candidate_data_key", "batches": "batch_key"}
     try:
         if table == 'batches' and group_key is None and (DATA_ROOT / '.report-locations.jsonl').exists():
-            with ReportLocations(DATA_ROOT).locked() as locations:
-                group_key = locations.entries.get(value)
-        try:
-            cursor = (api["read_key"](DATA_ROOT, table, group_key, filters={field: value}) if group_key else
-                      api["read_key"](DATA_ROOT, table, value) if field == stored_key[table]
-                      else query(f"SELECT * FROM {table} WHERE {field} = ?", [value]))
-        except api["MissingKeyError"]:
-            if group_key or table != 'batches':
-                raise
-            cursor = query(f"SELECT * FROM {table} WHERE {field} = ? LIMIT 2", [value])
+            group_key = report_locations([value]).get(value)
+        options = {'columns': columns} if columns is not None else {}
+        cursor = (api["read_key"](DATA_ROOT, table, group_key, filters={field: value}, **options) if group_key else
+                  api["read_key"](DATA_ROOT, table, value, **options) if field == stored_key[table]
+                  else query(f"SELECT * FROM {table} WHERE {field} = ?", [value], tables=[table]))
         with cursor:
             columns = [column[0] for column in cursor.description]
             rows = cursor.fetchmany(2)
@@ -276,12 +305,12 @@ def one(table: str, field: str, value, *, group_key=None):
     return record if record.get(field) == value else None
 
 
-def iter_rows(sql: str, parameters=None, *, batch_size: int = 500):
+def iter_rows(sql: str, parameters=None, *, tables, batch_size: int = 500):
     """Yield named rows from a center query using bounded cursor reads."""
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("batch_size 必须大于零")
     try:
-        with query(sql, parameters) as cursor:
+        with query(sql, parameters, tables=tables) as cursor:
             columns = [column[0] for column in cursor.description]
             while rows := cursor.fetchmany(batch_size):
                 for row in rows:

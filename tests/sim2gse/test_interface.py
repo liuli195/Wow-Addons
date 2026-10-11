@@ -1814,7 +1814,7 @@ class InterfaceTests(unittest.TestCase):
         with result_store.query(
             "SELECT storage_group_key, count(*) FROM batches "
             "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
-        ) as cursor:
+        , tables=['batches']) as cursor:
             groups = cursor.fetchall()
         self.assertGreater(sum(row[1] for row in groups), 12)
         self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
@@ -1822,7 +1822,7 @@ class InterfaceTests(unittest.TestCase):
         with result_store.query(
             "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
             "WHERE purpose IN ('search', 'validation', 'final')"
-        ) as cursor:
+        , tables=['batches']) as cursor:
             reports = cursor.fetchall()
         self.assertEqual(len(reports), sum(row[1] for row in groups))
         self.assertEqual(len({key for key, _ in reports}), len(reports))
@@ -1909,7 +1909,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
         self.assertEqual(len(evaluated), len(set(evaluated)))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
         self.assertEqual(len(keys), len(set(keys)))
@@ -1950,7 +1950,7 @@ class InterfaceTests(unittest.TestCase):
             resumed = resume_task(handle.output_root)
         self.assertTrue(damaged)
         self.assertEqual(resumed['status'], 'completed')
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
         self.assertEqual(len(keys), len(set(keys)))
@@ -2007,7 +2007,7 @@ class InterfaceTests(unittest.TestCase):
             resumed = resume_task(handle.output_root)
         self.assertEqual(resumed['status'], 'completed')
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'") as cursor:
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
         self.assertEqual(len(set(keys)), 14)
@@ -2056,7 +2056,7 @@ class InterfaceTests(unittest.TestCase):
                     finally:
                         self.url = original_url
                         server.shutdown(); server.server_close(); thread.join(2)
-                    with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'") as cursor:
+                    with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
                         keys = [row[0] for row in cursor.fetchall()]
                     self.assertEqual(len(keys), 14)
                     self.assertEqual(len(set(keys)), 14)
@@ -2120,7 +2120,7 @@ class InterfaceTests(unittest.TestCase):
                 second_server.shutdown()
                 second_server.server_close()
                 second_thread.join(2)
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'") as cursor:
+        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
         self.assertEqual(len(keys), len(set(keys)))
