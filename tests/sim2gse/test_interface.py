@@ -2113,7 +2113,11 @@ class InterfaceTests(unittest.TestCase):
                         if state['status'] in {'completed', 'failed'}:
                             break
                         time.sleep(.02)
-                    self.assertEqual(state['status'], 'completed', state)
+                    server = self.server if url == original_url else second_server
+                    error = server.tasks[task['task_id']][1].error
+                    self.assertEqual(state['status'], 'completed', dict(state, task_error=repr(error),
+                        task_error_cause=repr(getattr(error, '__cause__', None)),
+                        task_error_context=repr(getattr(error, '__context__', None))))
         finally:
             self.url = original_url
             if second_server is not None:
