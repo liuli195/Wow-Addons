@@ -1,7 +1,7 @@
 # 准星 HUD：高亮血沸提示色
 
-**Status:** ready-for-agent
-**Flow Level:** Full（完整），原提示色票据及已批准的满格静止提示增量票据
+**Status:** accepted-game（用户报告实机验收通过；门禁二已批准、正式规格已应用，PR交付进行中）
+**Flow Level:** Full（完整），提示色、满格静止提示及既有右侧显示顺序恢复三票
 **Fixed baseline:** a687dbb1c0ff288578ad06c07409a1c85d75133f
 **Incremental baseline:** df05803ce190fb3020f044ebddb20aced5670bf2，tree 470a5e335d18bcd6c47cb21b8489200c85e1ce62；父级已核其与已部署 935a84ab22ee87efa43f4f1713949b9e4b15f97d 同 tree，云端对象库没有该部署提交，不以缺失对象伪称独立核验。
 **Worktree:** /workspace/shared/wow-addons
@@ -69,3 +69,23 @@
 - 已加载并实际使用 dev-flow、subagent-policy、codebase-design（由只读架构调查者使用）、grill-with-docs/grilling/domain-modeling、to-spec、to-tickets。现有术语固定为“沸点循环监控条、填充色、提示色、原生血沸高亮”；原预测与实时高亮必须区分。已确认的事件、配置和生命周期组成同一完整纵向切片，无新增需求分支。
 - 宿主无具名 Architect（架构师）入口，使用通用只读角色回退，gpt-6-sol/xhigh；实施与限定审查按门禁明确批准的 Sol/Astra 安排。
 - 固定 12.1.0/69814 界面源码的发光事件仅含法术编号，不能区分触发 Aura。最终需用户游戏实测确认其他天赋是否会对同一血沸发光；离线颜色回归不证明游戏机制唯一性。
+
+
+## Final Acceptance and Delivery State
+
+2026-10-11 UTC：三票实施、固定提交独立审查和必要Windows正式差异验证已通过。用户消息 `Sentinel_ac60a4e2a68c8191b061ac2bcdd4181e` 报告：“我测试了HUD，应该是通过了。你把HUD的任务进行收尾吧”。本次实机结果来自用户，未由代理补造逐场景和客户端版本证据。
+
+最终产品树为 `26cf8027d83dc7e7c39949263d2f0e1f63e5a746`（云端提交 `5627bbc4b3adbd32801b86608ec0532620a23c1c`；父级核验远端同树提交 `1844be8472536d5c3868812924c31f07ba78a085`）。Windows正式固定基线验证7项实际执行、0缓存；HUD77项通过、0跳过，耗时7.8397681秒、退出0；素材构建1.0847秒、退出0。最近已批准部署仅Elements.lua，准确校验值见票据03与遮挡恢复验证。
+
+正式规格候选明确补充已批准的提示色、空闲满格、到期仍高亮回满格及右侧显示顺序，同时修正旧的“无有效消费即隐藏”“仅表示三秒窗口”“到期全部隐藏”文字；没有新建三秒计时器、改变三秒周期或扩大游戏接口范围。门禁准备时只生成并验证预览，未提前应用正式规格；现已按下节记录取得确认并应用，提交与远端交付仍由父级继续。
+
+门禁二——规格与交付已确认，批准范围见 [门禁二准备](delivery-gate2.md)。此次源码收尾不要求新增发布、版本号升级或重新安装；这些仍是独立授权范围。
+
+
+## Gate 2 Approval and Formal Specification Application
+
+2026-10-11 UTC：完整门禁二展示后，用户消息 `Sentinel_2081a239376481918aab810e3d348a24` 回复“这个确认”。该批准包括已展示的HUD正式规格5项修改、1项新增、准确提交推送、草稿PR、最新CI、官方合并及安全清理，并明确批准仅复用本机既有GitHub认证执行官方交付CLI的例外。
+
+本次云端仅执行正式规格应用和收尾文档校验。应用前重新核验10份冻结输入和11份正式规格未漂移、批准diff（差异）逐字一致、预览运行身份为MySpec release（发布版）2.3.0；进程使用既有managed npm前缀，doctor（诊断）packageVersion=2.3.0且versionMismatch=false。通过裸 `myspec apply-delta` 原子应用并 `validate-main` 通过，仅 `myspec/specs/myui-crosshair-hud/spec.md` 发生批准的5修改、1新增；其他10份能力规格字节不变。成功后由CLI自行清理当前工作区与锁，没有手改CLI状态。
+
+正式HUD规格SHA256为 `678221ce6f94170eeac7c5f611d85a100ccfda0c4680639580a1774cd29c2d46`，批准完整差异SHA256为 `a79b3216da61f775458bc5a9c4beabb406fce14a3d472c950cdcad11da1bc9a5`；证据保存在 `.local/tests/hud-closeout/approved-application-evidence.json`。本次未提交或推送、未修改产品／测试及工具链文件、未创建PR、未合并或清理分支；这些已批准交付动作由父级串行继续。
