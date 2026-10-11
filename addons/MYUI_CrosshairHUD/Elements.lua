@@ -133,8 +133,8 @@ local function SmoothTexture(texture, file, wrap)
     texture:SetTexture(MEDIA .. file .. ".blp", wrap, wrap, "TRILINEAR")
 end
 
-local function NewTexture(sub, file)
-    local texture = Elements.frame:CreateTexture(nil, "ARTWORK", nil, sub)
+local function NewTexture(sub, file, parent)
+    local texture = (parent or Elements.frame):CreateTexture(nil, "ARTWORK", nil, sub)
     SmoothTexture(texture, file)
     return texture
 end
@@ -156,8 +156,8 @@ local function PlaceLayers(part, spec)
     end
 end
 
-local function NewMask()
-    local mask = Elements.frame:CreateMaskTexture()
+local function NewMask(parent)
+    local mask = (parent or Elements.frame):CreateMaskTexture()
     mask:SetTexture(MEDIA .. "mask_half.blp", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE", "TRILINEAR")
     mask:SetAllPoints(Elements.frame)
     return mask
@@ -215,14 +215,19 @@ function Elements.Create()
     }
     placements.coagulatedBlood = bloodSpec
     Place(parts.coagulatedBlood.bg, bloodSpec)
+    -- 复用生产凝固之血的填充层级：细弧和刻度高于主弧，仍锚在原 HUD 圆心。
+    local overlay = CreateFrame("Frame", nil, frame)
+    overlay:SetAllPoints(frame)
+    overlay:SetFrameLevel(frame:GetFrameLevel() + 1)
+    overlay:EnableMouse(false)
     local echo = { bg = NewTexture(SUB_BG, "coagulated_blood_fill"),
-        fill = NewTexture(SUB_FILL, "coagulated_blood_fill"), mask = NewMask() }
+        fill = NewTexture(SUB_FILL, "coagulated_blood_fill", overlay), mask = NewMask(overlay) }
     echo.bg:SetTexCoord(1, 0, 0, 1)
     echo.fill:SetTexCoord(1, 0, 0, 1)
     echo.fill:AddMaskTexture(echo.mask)
     parts.boilingPoint, placements.boilingPoint = echo, PLACEMENT.boilingPoint
     PlaceLayers(echo, PLACEMENT.boilingPoint)
-    parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker")
+    parts.deathStrike = NewTexture(SUB_CROSSHAIR, "death_strike_marker", overlay)
     SmoothTexture(parts.deathStrike, "death_strike_marker", "CLAMPTOBLACKADDITIVE")
     parts.deathStrike:SetShown(false)
 
