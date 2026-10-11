@@ -3058,23 +3058,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertIn("点击间隔", json.loads(raised.exception.read())["error"])
         self.assertEqual(self.server.tasks, {})
 
-    def test_browser_uses_adjustable_input_interval(self):
-        scoring = self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
-        self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
-        self.assertEqual({call.kwargs['simulation_config']['target_count']
-                          for call in scoring.call_args_list}, {1, 5})
-        self.assertTrue(any(call.kwargs['input_times'][:2] == [0, 180]
-                            for call in scoring.call_args_list))
-        from task import read_task
-        destination, _ = next(iter(self.server.tasks.values()))
-        result = read_task(destination / 'aoe', include_search_records=True)
-        self.assertEqual(result['simulation_config']['target_count'], 5)
-        self.assertEqual(result['config']['input_interval_ms'], 180)
-        self.assertTrue(result['burst']['definition_id'])
-        scenarios = result['final']['scenarios']
-        self.assertEqual(scenarios, {})
-
-
     def test_healer_profile_reaches_damage_candidate(self):
         self._export_candidate('''druid="Restoration healer"
 level=90
@@ -3223,26 +3206,19 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             for handle in held:
                 if handle:kernel.CloseHandle(handle)
 
-    def test_browser_waits_for_result_publication_before_finishing(self):
-        from unittest.mock import patch
-        self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
-        original = os.replace
-        def delayed_result(source, destination):
-            if Path(destination).name == 'result.json':
-                time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
-            return original(source, destination)
-        with patch.object(os, 'replace', side_effect=delayed_result):
-            self.test_browser_computes_copies_and_clears_real_candidate()
-
-    def test_browser_survives_transient_windows_report_sharing_conflicts(self):
-        from unittest.mock import patch
-        self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
+    def test_browser_uses_adjustable_interval_while_publication_is_delayed_and_contended(self):
+        # 三项页面回归复用同一次双场任务；原生初始化、编译及存储仍真实。
+        scoring = self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
         original=os.replace
         failures=set()
         conflicts=[]
         readers=[]
+        delayed=set()
         def sharing_conflict(source,destination):
             name=Path(destination).name
+            if name == 'result.json' and Path(destination) not in delayed:
+                delayed.add(Path(destination))
+                time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
             if name in ('progress.json','result.json') and name not in failures:
                 failures.add(name)
                 if not Path(destination).exists():Path(destination).write_text('{"status":"starting"}',encoding='utf-8')
@@ -3253,10 +3229,22 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 conflicts.append(error.winerror)
                 raise
         with patch.object(os,'replace',side_effect=sharing_conflict):
-            self.test_browser_computes_copies_and_clears_real_candidate()
+            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
         self.assertEqual(failures,{'progress.json','result.json'})
         for reader in readers:reader.join()
         self.assertTrue(set(conflicts)&{5,32},'必须触发真实 Windows 文件占用冲突')
+        self.assertTrue(delayed, '必须经过延迟的真实结果发布')
+        self.assertEqual({call.kwargs['simulation_config']['target_count']
+                          for call in scoring.call_args_list}, {1, 5})
+        self.assertTrue(any(call.kwargs['input_times'][:2] == [0, 180]
+                            for call in scoring.call_args_list))
+        from task import read_task
+        destination, _ = next(iter(self.server.tasks.values()))
+        result = read_task(destination / 'aoe', include_search_records=True)
+        self.assertEqual(result['simulation_config']['target_count'], 5)
+        self.assertEqual(result['config']['input_interval_ms'], 180)
+        self.assertTrue(result['burst']['definition_id'])
+        self.assertEqual(result['final']['scenarios'], {})
 
 
 if __name__ == "__main__":
