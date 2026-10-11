@@ -797,6 +797,11 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(tmp_pa
     old_source = subprocess.check_output(['git', 'show', LEGACY_SOURCE_COMMIT + ':projects/sim2gse/seed_training.py'],
                                          cwd=ROOT).decode('utf-8')
     exec(compile(old_source, baseline.__file__, 'exec'), baseline.__dict__)
+    # 仅旧生成器补显式 runs 范围；历史源码、请求键和真实点读/写入保持原样。
+    legacy_api = dict(vars(result_store))
+    legacy_api.update(query=lambda sql, parameters=None: result_store.query(sql, parameters, tables=['runs']),
+        iter_rows=lambda sql, parameters=None: result_store.iter_rows(sql, parameters, tables=['runs']))
+    baseline.result_store = types.SimpleNamespace(**legacy_api)
     old_rules = task._rule_hashes(relative_to=ROOT)
     old_rules.update({key: values[0] for key, values in LEGACY_EXECUTION_RULES.items()})
     with training_boundary(), patch.object(task, '_rule_hashes', return_value=old_rules):

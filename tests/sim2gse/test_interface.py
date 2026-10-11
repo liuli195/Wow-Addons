@@ -2052,7 +2052,12 @@ class InterfaceTests(unittest.TestCase):
                         second.join(30)
                         state = self._json_request('GET', '/api/tasks/' + created['task_id'])
                         self.assertEqual(state['status'], 'failed', state)
-                        self.assertIn('报告位置清单', state['error'])
+                        self.assertEqual(state['phase'], 'storage_unavailable', state)
+                        self.assertTrue(state['storage_unavailable'] and state['recoverable'])
+                        self.assertFalse(state['result_ready'])
+                        self.assertIn('共享存储', state['error'])
+                        self.assertIsInstance(second.error.__cause__, result_store.DataReadError)
+                        self.assertIn('报告位置清单', str(second.error))
                     finally:
                         self.url = original_url
                         server.shutdown(); server.server_close(); thread.join(2)
