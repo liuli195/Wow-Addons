@@ -746,3 +746,43 @@ assert.match(await page.locator('#collectionResult').inputValue(),/^!GSE3!/);
         assert restored['status'] == 'completed' and restored['collection_ready'], restored
     finally:
         server.shutdown();server.server_close();thread.join(3)
+
+
+def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path, monkeypatch):
+    import burst
+    import dual_task
+    import engine
+    import result_store
+    from runtime import TaskCancelled
+    from test_search import _fast_search_boundary
+
+    definition, raw = reviewed_fixture()
+    reviewed = burst.publish(definition)
+    profile = tmp_path / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    queries = []
+    api = dict(result_store._api())
+    query = api['query']
+    def bounded_query(*args, **kwargs):
+        queries.append(kwargs.get('tables'))
+        if len(queries) > 2:
+            raise OSError('child must use frozen point-read identity')
+        return query(*args, **kwargs)
+    api['query'] = bounded_query
+    monkeypatch.setattr(result_store, '_SKILL_API', api)
+    def cancelled_reference(*args, **kwargs):
+        raise TaskCancelled('fixture stops after frozen child initialization')
+    with _fast_search_boundary(), monkeypatch.context() as scoped:
+        scoped.setattr(engine, 'reference', cancelled_reference)
+        handle = dual_task.start(profile, tmp_path / 'dual', search_config={'candidate_limit': 1})
+        handle.join(5)
+        assert handle.done
+        saved = dual_task.read(handle.output_root)
+        assert saved['status'] == 'cancelled', saved
+    assert queries == [['burst_definitions'], ['burst_definitions']]
+    revised = copy.deepcopy(definition)
+    revised['version'] += '-new-plan'
+    burst.publish(revised)
+    with pytest.raises(task.TaskError, match='爆发定义已变化'):
+        task.run_task(profile, tmp_path / 'changed', use_burst=True,
+                      burst_identity={'spec_id': reviewed['spec_id'], 'definition_id': reviewed['definition_id']})

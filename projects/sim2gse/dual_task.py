@@ -159,7 +159,8 @@ def _worker(handle):
                         _save(row)
                         child_path = destination / row[purpose + '_path']
                     child = task.run_task(destination / 'input.original.simc', child_path,
-                        use_burst=True, cancel_event=handle.cancel_event, search_config=row['config'],
+                        use_burst=True, burst_identity={key: row[key] for key in ('spec_id', 'definition_id')},
+                        cancel_event=handle.cancel_event, search_config=row['config'],
                         simulation_config=dict(row['simulation_config'], target_count=targets))
                 if child.get('status') == 'cancelled':
                     raise TaskCancelled('已取消；已完成的场景保留')
