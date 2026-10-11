@@ -66,8 +66,8 @@ local function Region()
     local t = { shown = true }
     function t:SetTexture(path, _, _, filter) self.path = path; self.filter = filter end
     function t:SetSize(w,h) self.w,self.h=w,h end
-    function t:SetPoint(_,_,_,x,y) self.x,self.y=x,y end
-    function t:SetAllPoints() end
+    function t:SetPoint(_,parent,_,x,y) self.pointParent=parent;self.x,self.y=x,y end
+    function t:SetAllPoints(parent) self.allPoints=parent end
     function t:AddMaskTexture(mask) self.mask=mask end
     function t:SetShown(v) self.shown=v end
     function t:SetRotation(v) self.rotation=v end
@@ -95,20 +95,20 @@ function CreateFrame(kind, _, parent, template)
     function f:SetValue(v) self.value=v end
     function f:GetMinMaxValues() return self.minimum,self.maximum end
     function f:GetValue() return self.value end
-    function f:CreateTexture(_,_,_,sub)
-        local t=Region();t.sub=sub;textures[#textures+1]=t;return t
+    function f:CreateTexture(_,layer,_,sub)
+        local t=Region();t.parent=self;t.drawLayer=layer;t.sub=sub;textures[#textures+1]=t;return t
     end
-    function f:CreateMaskTexture() return Region() end
+    function f:CreateMaskTexture() local t=Region();t.parent=self;return t end
     function f:CreateLine() local t=Region();lines[#lines+1]=t;return t end
     function f:RegisterEvent(e) self.events[e]=true end
     function f:RegisterUnitEvent(e,unit) assert(e:sub(1,5)=="UNIT_");assert(unit=="player");self.events[e]=true end
     function f:SetScript(e,fn) self.scripts[e]=fn end
     function f:UnregisterAllEvents() self.events={} end
-    function f:SetAllPoints() end
+    function f:SetAllPoints(parent) self.allPoints=parent end
     function f:SetScale(v) self.scale=v end
     function f:GetFrameLevel() return self.level or 5 end
     function f:SetFrameLevel(v) self.level=v end
-    function f:EnableMouse() end
+    function f:EnableMouse(v) self.mouseEnabled=v end
     function f:SetSize(w,h) self.w,self.h=w,h end
     function f:GetWidth() return self.w end
     function f:GetHeight() return self.h end
@@ -197,6 +197,7 @@ def run_scenario(scenario, native=False):
                                 capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'PASS: blood DK features' in result.stdout
+    return result.stdout
 
 
 def test_lowest_applicable_runic_cost():
@@ -376,6 +377,85 @@ now=41;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
 now=45;Tick();assert(fill.shown and fill.mask.rotation==full,"repeated idle SHOW must not start another timer")
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(not fill.shown)
 ''')
+
+
+def test_boiling_point_and_marker_keep_native_blood_fill_order_above_power():
+    output = run_scenario(r'''
+local hud=NS.Elements.frame
+local power=assert(Layer("health_arc.blp",1,32))
+local marker=assert(Marker())
+local fill,bg
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.coords then
+        if t.mask then fill=t else bg=t end
+    end
+end
+assert(fill and bg)
+local nativeBar=assert(nativeContainer.button.boundBar)
+local nativeBg
+for _,t in ipairs(textures) do if t.parent==nativeContainer.button then nativeBg=t end end
+local function Order()
+    local overlay=fill.parent
+    assert(overlay~=hud and overlay.parent==hud and overlay.kind=="Frame",
+        "right fine fill must use a child frame above power, like production native blood")
+    assert(overlay:GetFrameLevel()==hud:GetFrameLevel()+1)
+    assert(overlay:GetFrameLevel()==nativeBar:GetFrameLevel())
+    assert(overlay.allPoints==hud and overlay.mouseEnabled==false)
+    assert(fill.mask.parent==overlay and marker.parent==overlay)
+    assert(fill.drawLayer=="ARTWORK" and fill.sub==1)
+    assert(marker.drawLayer=="ARTWORK" and marker.sub==2,"marker must stay above fine fill")
+    assert(fill.pointParent==hud and fill.mask.allPoints==hud and marker.pointParent==hud)
+    assert(power.parent==hud and power.drawLayer=="ARTWORK" and power.sub==1)
+    assert(bg.parent==hud and bg.sub==0,"fine background must keep its original parent")
+    assert(nativeBar.parent==nativeContainer.button and nativeBg.sub==0)
+    assert(nativeContainer.button:GetFrameLevel()==hud:GetFrameLevel()-1)
+    for _,t in ipairs(textures) do
+        if t~=fill and t~=marker and t~=nativeBg and t~=nativeBar.texture then
+            if t.parent.kind=="StatusBar" then
+                assert(t.parent.parent==hud,"probe bar must keep its original parent")
+            else
+                assert(t.parent==hud,"other HUD textures must keep their original parent")
+            end
+            if t.mask then assert(t.mask.parent==hud and t.mask.allPoints==hud) end
+        end
+    end
+end
+assert(not fill.shown and marker.shown and power.shown)
+NativeUpdate(75)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(fill.shown and nativeContainer.button.shown)
+io.write(string.format("ORDER: power=HUD/%d/%s/%d; nativeFill=%d; nativeBg=%d; echo=%s/%d/%s/%d; mask=%s; marker=%s/%d/%s/%d\n",
+    power.parent:GetFrameLevel(),power.drawLayer,power.sub,nativeBar:GetFrameLevel(),nativeBg.parent:GetFrameLevel(),
+    fill.parent==hud and "HUD" or "child",fill.parent:GetFrameLevel(),fill.drawLayer,fill.sub,
+    fill.mask.parent==hud and "HUD" or "child",marker.parent==hud and "HUD" or "child",
+    marker.parent:GetFrameLevel(),marker.drawLayer,marker.sub))
+Order() -- 只记录游戏接口的层级契约；真实像素仍由游戏验收。
+Near(fill.mask.rotation,math.rad(-609));Near(fill.color[2],0.82)
+local powerRotation=power.mask.rotation
+now=16;Tick();Near(fill.mask.rotation,math.rad(-609));Order()
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(not fill.shown)
+now=20;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","consume",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+assert(fill.shown);Near(fill.color[1],0.77);Near(fill.mask.rotation,math.rad(-609));Order()
+now=21.5;Tick();Near(fill.mask.rotation,math.rad(-661));Order()
+for _,scale in ipairs({0.5,1,2}) do
+    rows["常规"]["HUD 缩放"].setValue(scale)
+    Order();Near(fill.w,128*scale);Near(fill.h,128*scale);Near(fill.x,0);Near(fill.y,0)
+    Near(Thickness(marker),1.5*scale)
+    assert(fill.coords[1]==1 and fill.coords[2]==0 and fill.mask.coords==nil)
+    assert(power.mask.rotation==powerRotation and nativeBar.value==75)
+end
+now=23;Tick();assert(not fill.shown and marker.shown and power.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown);Order()
+rows["沸点循环监控条"]["启用"].setValue(false);assert(not fill.shown and marker.shown)
+rows["沸点循环监控条"]["启用"].setValue(true)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown);Order()
+rows["常规"]["启用准星HUD"].setValue(false);assert(not hud.shown)
+rows["常规"]["启用准星HUD"].setValue(true);assert(hud.shown and not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown);Order()
+''',native=True)
+    print(output, end='')
 
 
 def test_boiling_point_hint_swatch_layout_tooltip_saved_color_and_shared_alpha():

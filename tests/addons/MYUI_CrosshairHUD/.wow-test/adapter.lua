@@ -112,6 +112,9 @@ return function(ctx)
         function frame:SetPoint(...) self.anchor = { ... } end
         function frame:ClearAllPoints() self.anchor = nil end
         function frame:SetFrameStrata(s) self.strata = s end
+        function frame:GetFrameLevel() return self.level or 1 end
+        function frame:SetFrameLevel(v) self.level = v end
+        function frame:EnableMouse(v) self.mouseEnabled = v end
         function frame:CreateTexture(...) return Texture() end
         function frame:CreateMaskTexture(...) return Mask() end
         function frame:CreateLine(...) return Texture() end

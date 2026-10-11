@@ -73,6 +73,9 @@ function CreateFrame()
     function f:SetSize(w, h) f.width, f.height = w, h end
     function f:SetPoint() end
     function f:SetFrameStrata() end
+    function f:GetFrameLevel() return self.level or 1 end
+    function f:SetFrameLevel(v) self.level=v end
+    function f:EnableMouse(v) self.mouseEnabled=v end
     function f:SetShown() end
     if not frame then frame = f end
     return f
