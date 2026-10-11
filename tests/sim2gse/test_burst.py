@@ -27,17 +27,15 @@ def reviewed_fixture():
 
 @contextmanager
 def page_task_boundary():
-    """页面故障只构造引擎结果；HTTP、编译、检查点、共享存储和恢复仍真实。"""
+    """页面故障构造外部引擎和编译结果；HTTP、检查点、共享存储和恢复仍真实。"""
     import engine
     import sequence
-    import codec
     from test_search import _fast_search_boundary
     from test_interface import InterfaceTests
 
     definition, _ = reviewed_fixture()
-    compiler = codec.run_command
     identity = engine.identity
-    with _fast_search_boundary(), patch.object(codec, 'run_command', compiler), \
+    with _fast_search_boundary(), \
          patch.object(engine, 'identity', identity):
         reference = engine.reference
         inspect = engine.inspect
@@ -508,7 +506,8 @@ def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, 
     handle.join(10)
     assert handle.done and handle.error is None
     if recover_first:
-        recovered = task.resume_task(output)
+        with page_task_boundary():
+            recovered = task.resume_task(output)
         assert recovered['burst']['definition_id']
     revised = copy.deepcopy(definition)
     revised['version'] += '-new-plan'
