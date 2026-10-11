@@ -2,7 +2,7 @@
 
 **What to build:** 鲜血死亡骑士玩家在没有沸点三秒倒计时但仍有原生血沸高亮时看到满格静止提示；倒计时结束仍高亮也回到满格，高亮消失且无计时则隐藏。运行中的三秒预测、续轮、提示色和原填充透明度保持原有行为。
 **Blocked by:** 01（提示色实现已存在于增量固定基线，可立即实施本票）
-**Status:** accepted-game（用户报告实机验收通过；门禁二已批准、正式规格已应用，PR交付进行中）
+**Status:** completed（用户实机验收通过；正式规格已应用，PR65已合并、HUD分支及旧验证工作树已清理）
 **Development gate:** 用户 Sentinel_f893e9459d948191a9a227820fc5c432 在本增量门禁展示后回复“确认”。Full（完整），单一纵向票据；沿用原工作树与 codex/hud-blood-boil-highlight-color，增量固定基线 df05803ce190fb3020f044ebddb20aced5670bf2。
 
 - [x] 无计时的合法50842 SHOW 显示比例1、现有提示色及填充透明度；经过三秒或重复 SHOW 仍静止，不新建计时器或状态。
@@ -29,4 +29,4 @@
 - 父级转交最新Windows必要检查：素材构建实际耗时1.0847秒、正式固定基线验证7.8397681秒，均退出0；7项选中检查全部实际执行、0缓存，HUD测试77项通过、0跳过。未运行全仓 `--full`，不把这些结果写成全仓冷执行通过。
 - 父级转交已批准部署：2026-10-11 11:15:50 UTC，仅替换 `MYUI_CrosshairHUD/Elements.lua`，SHA256为 `cc98fa55d245ce864fd4347ba3fd11fe6cd3dae5ddabff19bcf698ba9f524477`；Core、Config、Logic未变。
 - 用户消息 `Sentinel_ac60a4e2a68c8191b061ac2bcdd4181e` 原话：“我测试了HUD，应该是通过了。你把HUD的任务进行收尾吧”。按用户报告记录本次HUD实机验收通过；用户未逐项列出场景、客户端构建号或像素测量，代理不补造这些细节，也不将其描述为代理亲自实测。
-- 用户消息 `Sentinel_2081a239376481918aab810e3d348a24` 已确认完整门禁二；正式规格已通过裸MySpec原子应用并校验，提交、推送、PR（拉取请求）、合并和分支清理由父级继续执行已批准范围。交付动作及已知边界见 [门禁二准备](../delivery-gate2.md)。
+- 用户消息 `Sentinel_2081a239376481918aab810e3d348a24` 已确认完整门禁二；正式规格已通过裸MySpec原子应用并校验，[PR65](https://github.com/liuli195/Wow-Addons/pull/65) 已按官方流程合并，最终受检提交 `88ff0dd62b19d9a377b23050faac3c01625f631b` 的Windows addon checks（Windows插件检查）和pr-flow-toolchain（流程工具链检查）均通过，合并提交为 `197a4d46bc3f4caf5189a5b413d76e39fd78c36f`。本机官方交付结果为cleanup_complete（清理完成），HUD本地、远端及跟踪分支已删除；云端旧分支 `536491aff97d85ee56a9744a5ed8278d1d38a788` 经用户确认后通过正常Git强制分支删除，关联分支reflog（引用历史）由Git自然移除。父级核对本机实际执行结果：旧 `D:\My Project\Wow Addons\.local\worktrees\hud-blood-boil-verify` 目录及工作树登记均已删除，证据为仓库内 `.local/hud-blood-boil-evidence/hud-worktree-removal.json`；这不是云端代理亲自检查本机。主工作树、其他活动任务及隔离工作区外的证据和历史资料保留，未发布或再次安装。 原批准范围见 [门禁二准备](../delivery-gate2.md)。
