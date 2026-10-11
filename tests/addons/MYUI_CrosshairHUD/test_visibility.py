@@ -72,6 +72,8 @@ function CreateFrame()
     function f:SetPoint() end
     function f:ClearAllPoints() end
     function f:SetFrameStrata() end
+    function f:SetFrameLevel(v) self.level=v end
+    function f:EnableMouse(v) self.mouseEnabled=v end
     function f:SetShown(v) f.shown = v ~= false end
     function f:IsShown() return f.shown end
     function f:GetWidth() return f.width or 0 end
@@ -88,7 +90,7 @@ function CreateFrame()
     end
     function f:UnregisterAllEvents() f.events = {} end
     function f:SetScript(kind, callback) f.scripts[kind] = callback end
-    function f:GetFrameLevel() return 1 end
+    function f:GetFrameLevel() return self.level or 1 end
     frames[#frames + 1] = f
     return f
 end

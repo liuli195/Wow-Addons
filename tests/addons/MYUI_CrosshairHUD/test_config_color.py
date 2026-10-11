@@ -70,6 +70,8 @@ function CreateFrame()
     function f:SetPoint() end
     function f:ClearAllPoints() end
     function f:SetFrameStrata() end
+    function f:SetFrameLevel(v) self.level=v end
+    function f:EnableMouse(v) self.mouseEnabled=v end
     function f:SetShown() end
     function f:GetWidth() return f.width or 0 end
     function f:GetHeight() return f.height or 0 end
@@ -78,7 +80,7 @@ function CreateFrame()
     function f:RegisterUnitEvent() end
     function f:UnregisterAllEvents() end
     function f:SetScript() end
-    function f:GetFrameLevel() return 1 end
+    function f:GetFrameLevel() return self.level or 1 end
     if not frame then frame = f end
     return f
 end
