@@ -163,6 +163,26 @@ def _fast_search_boundary():
 
 
 @contextmanager
+def _captured_task_connections():
+    import search
+
+    original_connect = search.sqlite3.connect
+    connections = []
+
+    def connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    try:
+        with patch.object(search.sqlite3, 'connect', side_effect=connect):
+            yield connections
+    finally:
+        for connection in connections:
+            connection.close()
+
+
+@contextmanager
 def _apl_task_boundary(native=None):
     import engine
     import sequence
@@ -198,6 +218,109 @@ def _apl_task_boundary(native=None):
 
 
 class SearchAndValidationTests(TestCase):
+    def test_task_store_initialization_failure_closes_connection(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-store-init-failure-') as directory:
+            destination = Path(directory) / 'task'
+            destination.mkdir()
+            database = sqlite3.connect(destination / 'task.sqlite3')
+            try:
+                database.execute('CREATE TABLE state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
+                database.execute('INSERT INTO state VALUES (1, ?)', ('{invalid-state',))
+                database.commit()
+            finally:
+                database.close()
+            with _captured_task_connections() as connections:
+                with self.assertRaises(json.JSONDecodeError) as caught:
+                    TaskStore(destination)
+                self.assertEqual(caught.exception.doc, '{invalid-state')
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
+    def test_task_profile_parse_failure_closes_connection_and_keeps_error(self):
+        import sqlite3
+
+        original_read = Path.read_text
+        with tempfile.TemporaryDirectory(prefix='sim2gse-profile-failure-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+
+            def read(path, *args, **kwargs):
+                if path == destination / 'profile.json':
+                    return '{invalid-profile'
+                return original_read(path, *args, **kwargs)
+
+            with _fast_search_boundary(), _captured_task_connections() as connections, \
+                    patch.object(Path, 'read_text', new=read):
+                with self.assertRaises(json.JSONDecodeError) as caught:
+                    run_task(source, destination, search_config=dict(
+                        candidate_limit=1, batch_targets=(2,), iterations=2,
+                        validation_batches=1, scenarios=('nominal',), max_processes=1))
+                self.assertEqual(caught.exception.doc, '{invalid-profile')
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
+    def test_task_store_diagnostics_write_failure_still_closes_connection(self):
+        import sqlite3
+
+        original_write = Path.write_text
+        failure = OSError('diagnostics unavailable')
+        with tempfile.TemporaryDirectory(prefix='sim2gse-diagnostics-failure-') as directory:
+            destination = Path(directory) / 'task'
+            destination.mkdir()
+
+            def write(path, *args, **kwargs):
+                if path == destination / 'diagnostics.json':
+                    raise failure
+                return original_write(path, *args, **kwargs)
+
+            with _captured_task_connections() as connections:
+                store = TaskStore(destination)
+                store.diagnostics_mode = 'summary'
+                with patch.object(Path, 'write_text', new=write), \
+                        self.assertRaises(OSError) as caught:
+                    store.close()
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
+    def test_task_final_publish_failure_still_closes_connection(self):
+        import sqlite3
+        from runtime import TaskRuntime
+
+        original_write = Path.write_text
+        failure = OSError('final progress unavailable')
+        runtime = TaskRuntime(60)
+        failed_writes = []
+        with tempfile.TemporaryDirectory(prefix='sim2gse-final-publish-failure-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+
+            def write(path, *args, **kwargs):
+                if path == destination / 'progress.pending.json' and runtime.reservation is None:
+                    failed_writes.append(path)
+                    raise failure
+                return original_write(path, *args, **kwargs)
+
+            with _fast_search_boundary(), _captured_task_connections() as connections, \
+                    patch.object(Path, 'write_text', new=write):
+                with self.assertRaises(OSError) as caught:
+                    run_task(source, destination, _runtime=runtime, search_config=dict(
+                        candidate_limit=1, batch_targets=(2,), iterations=2,
+                        validation_batches=1, scenarios=('nominal',), max_processes=1))
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(failed_writes, [destination / 'progress.pending.json'])
+                self.assertIsNone(runtime.reservation)
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
     def test_normal_task_and_dual_scene_still_refuse_four_processes(self):
         import dual_task
         from search import config_for

@@ -790,7 +790,12 @@ class TaskStore:
     def __init__(self, destination, *, lock=None):
         self.lock = lock or threading.RLock()
         with self.lock:
-            self._initialize(destination)
+            try:
+                self._initialize(destination)
+            except BaseException:
+                if hasattr(self, 'db'):
+                    self.db.close()
+                raise
 
     def _initialize(self, destination):
         self.destination = Path(destination)
@@ -1151,6 +1156,8 @@ class TaskStore:
             beat()
 
     def close(self):
+        self.db.close()
+        self.verified_batches.clear()
         if getattr(self, 'diagnostics_mode', 'off') != 'off':
             diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
                                task_state_writes=self.state_write_count,
@@ -1159,8 +1166,6 @@ class TaskStore:
                                lua_compiler_starts=self.lua_compiler_starts)
             (self.destination / 'diagnostics.json').write_text(
                 _json(diagnostics), encoding='utf-8')
-        self.verified_batches.clear()
-        self.db.close()
 
 
 def _score(rows):
