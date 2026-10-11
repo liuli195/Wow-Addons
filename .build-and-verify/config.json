@@ -23,7 +23,7 @@
         "pr": false,
         "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse --dist=worksteal",
         "checkParallel": true,
-        "pytestXdistWorkers": 16,
+        "pytestXdistWorkers": 20,
         "paths": [
           "projects/sim2gse/**",
           "scripts/dev/sim2gse/**",
