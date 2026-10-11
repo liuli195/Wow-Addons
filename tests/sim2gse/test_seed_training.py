@@ -42,7 +42,7 @@ def training_center(tmp_path, installed_data_store, monkeypatch):
 
 
 @pytest.fixture
-def memory_training_center(training_center, installed_data_store_api, monkeypatch):
+def memory_result_center(installed_data_store_api, monkeypatch):
     """纯逻辑检查的中心IO；TaskStore/报告位置清单仍真实，不证明Parquet耐久性。"""
     import duckdb
     import threading
@@ -107,6 +107,11 @@ def memory_training_center(training_center, installed_data_store_api, monkeypatc
                    **{name: installed_data_store_api[name] for name in ('MissingKeyError', 'CorruptDataError')})
         scoped.setattr(result_store, '_api', lambda: api)
         yield
+
+
+@pytest.fixture
+def memory_training_center(training_center, memory_result_center):
+    yield
 
 
 @pytest.fixture
@@ -995,7 +1000,8 @@ def test_unexpressible_material_is_retained_but_not_trained(tmp_path, capsys):
 
 
 @pytest.mark.parametrize('historic_dps', [90., 0., None])
-def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_path, capsys, historic_dps):
+def test_history_candidate_is_retested_and_changed_template_is_not_reused(
+        tmp_path, capsys, historic_dps, memory_training_center):
     from test_character_export import sample_profile
     from unittest.mock import patch
     import sequence
@@ -1682,6 +1688,7 @@ def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, 
 
 def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(tmp_path, capsys, monkeypatch,
                                                                              memory_training_center,
+                                                                             four_candidate_training_rounds,
                                                                              no_training_proposals):
     import burst
     import sequence

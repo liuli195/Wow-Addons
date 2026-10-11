@@ -10,6 +10,7 @@ import json
 import base64
 import os
 import subprocess
+import pytest
 import zlib
 from pathlib import Path
 from urllib.error import HTTPError
@@ -23,6 +24,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from gse_import import inspect_import  # noqa: E402
+from test_seed_training import memory_result_center  # noqa: E402
 
 
 def gse_fixture(payload):
@@ -3206,6 +3208,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             for handle in held:
                 if handle:kernel.CloseHandle(handle)
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_browser_uses_adjustable_interval_while_publication_is_delayed_and_contended(self):
         # 页面故障复用构造引擎边界；独立完整场景保留真实原生计算。
         from test_burst import page_task_boundary

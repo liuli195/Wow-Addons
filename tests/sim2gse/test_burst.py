@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from contextlib import contextmanager
 from unittest.mock import patch
+from test_seed_training import memory_result_center
 
 
 @pytest.fixture(autouse=True)
@@ -564,7 +565,7 @@ def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path)
 
 @pytest.mark.parametrize('fault', ['aoe', 'collection', 'registration', 'cancel', 'preparation'])
 def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
-        tmp_path, monkeypatch, fault, page_task_engine):
+        tmp_path, monkeypatch, fault, page_task_engine, memory_result_center):
     import burst
     import dual_task
     import codec
