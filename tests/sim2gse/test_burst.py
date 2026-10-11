@@ -48,6 +48,8 @@ def page_task_boundary():
 
         def two_item_catalogue(*args, **kwargs):
             capabilities = inspect(*args, **kwargs)
+            capabilities['actions'].append(dict(kind='spell', spell_id=42650,
+                base_spell_id=42650, simc_action='army_of_the_dead', name='亡者大军', gcd_ms=1500))
             capabilities['actions'].append(dict(kind='item', slot=14, item_id=273796,
                 simc_action='use_item,slot=trinket2', name='使用trinket2', gcd_ms=0))
             return capabilities
@@ -572,8 +574,6 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
     import burst
     import dual_task
     import codec
-    import sequence
-    from test_interface import InterfaceTests
     import threading
     from interface import create_server
     from urllib.request import Request, urlopen
@@ -616,7 +616,6 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
             assert server.tasks[task_id][1].cancel_event.wait(5)
         return original_save(row)
 
-    monkeypatch.setattr(sequence, 'evaluate', InterfaceTests._ui_score)
     monkeypatch.setattr(task, 'run_task', run)
     monkeypatch.setattr(codec, 'collection', collect)
     monkeypatch.setattr(dual_task, '_save', save)
@@ -705,7 +704,7 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path, p
 
 
 def test_restarted_page_recovers_parent_after_real_process_exit(
-        tmp_path, installed_data_store, monkeypatch, page_task_engine):
+        tmp_path, installed_data_store, page_task_engine):
     import result_store
     import threading
     import sys
@@ -764,9 +763,6 @@ server.serve_forever()
     assert (destination / 'single_target/reference').exists()
     runtime.cancel();process_thread.join(10)
     assert stopped and not process_thread.is_alive()
-    import sequence
-    from test_interface import InterfaceTests
-    monkeypatch.setattr(sequence, 'evaluate', InterfaceTests._ui_score)
     server = create_server(page_root)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
