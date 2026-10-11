@@ -445,7 +445,8 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
     [['use_item,slot=trinket1']],
     [['use_item,slot=trinket2']],
 ])
-def test_public_single_task_refuses_burst_content_in_ordinary_sequence(tmp_path, program):
+def test_public_single_task_refuses_burst_content_in_ordinary_sequence(
+        tmp_path, program, page_task_engine, memory_result_center):
     import burst
     definition, raw = reviewed_fixture()
     burst.publish(definition)
@@ -455,7 +456,8 @@ def test_public_single_task_refuses_burst_content_in_ordinary_sequence(tmp_path,
         task.run_task(profile, tmp_path / 'single', mode='single', use_burst=True, program=program)
 
 
-def test_public_search_skips_entire_forbidden_history_structure(tmp_path):
+def test_public_search_skips_entire_forbidden_history_structure(
+        tmp_path, page_task_engine, memory_result_center):
     import burst
     import result_store
     import seed_training
