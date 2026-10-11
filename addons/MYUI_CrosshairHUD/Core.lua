@@ -486,6 +486,7 @@ local function BuildState()
     state.coagulatedBlood.hasStacks = last.hasBloodStacks == true
     state.coagulatedBlood.maxStacks = blood.maxStacks
     local fraction = BoilingFraction()
+    if fraction == nil and bloodBoilHighlighted then fraction = 1 end
     local arc = Logic.ARCS.boilingPoint
     state.boilingPoint = ElementState(elements.boilingPoint,
         fraction and Logic.MaskAngle(arc.start, arc.span, fraction, arc.reverse), fraction ~= nil)

@@ -259,7 +259,9 @@ end
 local fill=assert(Echo(),"right-side fine arc must reuse the centered material")
 assert(not fill.shown)
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
-assert(not fill.shown,"proc alone must not start the 3-second echo")
+assert(fill.shown and fill.mask,"idle native highlight must display the full fine arc")
+Near(fill.color[1],1);Near(fill.color[2],0.82);Near(fill.color[3],0)
+Near(fill.mask.rotation,math.rad(-609)) -- Full right-side arc, not a started countdown.
 Event("UNIT_SPELLCAST_SUCCEEDED","player","cast1",50842)
 now=10.2;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
 assert(fill.shown and fill.mask,"paired cast/HIDE must display the right fine arc")
@@ -315,6 +317,64 @@ now=71.5;Event("UNIT_SPELLCAST_SUCCEEDED","player","cast7",50842)
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
 now=73.2;Tick();assert(fill.shown)
 now=74.5;Tick();assert(not fill.shown,"second manual consumption must expire at its cast+3")
+''')
+
+
+def test_boiling_point_idle_highlight_stays_full_and_returns_after_countdown():
+    run_scenario(r'''
+local controls=rows["沸点循环监控条"]
+controls["填充颜色"].setValue(55)
+local fill
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+assert(fill and not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(fill.shown)
+Near(fill.mask.rotation,math.rad(-609))
+Near(fill.color[1],1);Near(fill.color[2],0.82);Near(fill.color[3],0);Near(fill.color[4],0.55)
+local full=fill.mask.rotation
+now=12;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+now=16;Tick();assert(fill.shown and fill.mask.rotation==full,"idle highlight must not count down")
+now=20;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(not fill.shown)
+now=21;Tick();assert(not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",999)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",secret)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","ordinary",50842)
+Event("UNIT_POWER_UPDATE");assert(not fill.shown,"ordinary and unreadable signals must not create an idle hint")
+now=22;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+controls["启用"].setValue(false);assert(not fill.shown)
+controls["启用"].setValue(true);Tick();assert(not fill.shown,"re-enable must clear idle highlight")
+now=23;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+rows["常规"]["启用准星HUD"].setValue(false);assert(not NS.Elements.frame.shown)
+rows["常规"]["启用准星HUD"].setValue(true);assert(not fill.shown)
+now=24;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+playerSpec=251;Event("PLAYER_SPECIALIZATION_CHANGED");assert(not fill.shown)
+playerSpec=250;Event("PLAYER_SPECIALIZATION_CHANGED");assert(not fill.shown)
+now=25;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown)
+-- Reload through the same login entry with no historical idle highlight.
+frames,textures,lines,tickers={},{},{},{}
+MYUI_CHH=nil;EllesmereUI._prebuilding=true
+for _,name in ipairs({"Logic","Elements","Config","Debug","Core"}) do
+    assert(loadfile(dir.."/"..name..".lua"))()
+end
+NS=MYUI_CHH;Event("PLAYER_LOGIN")
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+assert(not fill.shown,"reload must clear idle highlight")
+-- The existing timer wins; the single continuation stays tied to the old deadline.
+now=30;Event("UNIT_SPELLCAST_SUCCEEDED","player","manual",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=31;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(fill.shown and fill.mask.rotation~=full,"a running countdown must not become an idle full arc")
+now=33.5;Tick();assert(fill.shown and fill.mask.rotation~=full,"pending continuation must retain its old deadline")
+now=36;Tick();assert(fill.shown and fill.mask.rotation==full,"expiry with native highlight must return to full idle hint")
+Near(fill.color[2],0.82);Near(fill.color[4],0.55)
+now=40;Tick();assert(fill.shown and fill.mask.rotation==full)
+now=41;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+now=45;Tick();assert(fill.shown and fill.mask.rotation==full,"repeated idle SHOW must not start another timer")
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(not fill.shown)
 ''')
 
 
@@ -405,7 +465,8 @@ for _,t in ipairs(textures) do
 end
 assert(not fill.shown,"reload must start with no countdown")
 Near(NS.Config.Get().elements.boilingPoint.highlightFill[2],0.6)
-Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown)
+Near(fill.color[1],0.1);Near(fill.color[2],0.6);Near(fill.color[3],0.9);Near(fill.color[4],0.35)
 Event("UNIT_SPELLCAST_SUCCEEDED","player","after-reload",50842)
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
 Near(fill.color[1],0.2);Near(fill.color[4],0.35)
