@@ -3221,7 +3221,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         delayed=set()
         def sharing_conflict(source,destination):
             name=Path(destination).name
-            if name == 'result.json' and Path(destination) not in delayed:
+            if name == 'result.json' and not delayed:
                 delayed.add(Path(destination))
                 time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
             if name in ('progress.json','result.json') and name not in failures:
@@ -3236,6 +3236,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         with patch.object(os,'replace',side_effect=sharing_conflict):
             self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
         self.assertEqual(failures,{'progress.json','result.json'})
+        self.assertEqual(len(delayed), 1, '一个真实发布延迟窗口足以覆盖轮询恢复')
         for reader in readers:reader.join()
         self.assertTrue(set(conflicts)&{5,32},'必须触发真实 Windows 文件占用冲突')
         self.assertTrue(delayed, '必须经过延迟的真实结果发布')
