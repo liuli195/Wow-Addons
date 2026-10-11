@@ -5,6 +5,8 @@ from test_character_export import sample_profile
 import copy
 import json
 from pathlib import Path
+from contextlib import contextmanager
+from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +23,46 @@ def reviewed_fixture():
     definition['talent_hashes'] = [talent_hash(character)]
     definition['reviewer'] = 'isolated test fixture'
     return definition, profile
+
+
+@contextmanager
+def page_task_boundary():
+    """页面故障只构造引擎结果；HTTP、编译、检查点、共享存储和恢复仍真实。"""
+    import engine
+    import sequence
+    import codec
+    from test_search import _fast_search_boundary
+    from test_interface import InterfaceTests
+
+    definition, _ = reviewed_fixture()
+    compiler = codec.run_command
+    identity = engine.identity
+    with _fast_search_boundary(), patch.object(codec, 'run_command', compiler), \
+         patch.object(engine, 'identity', identity):
+        reference = engine.reference
+        inspect = engine.inspect
+
+        def reviewed_reference(*args, **kwargs):
+            result = reference(*args, **kwargs)
+            result['identity']['data_version'] = definition['data_version']
+            return result
+
+        def two_item_catalogue(*args, **kwargs):
+            capabilities = inspect(*args, **kwargs)
+            capabilities['actions'].append(dict(kind='item', slot=14, item_id=273796,
+                simc_action='use_item,slot=trinket2', name='使用trinket2', gcd_ms=0))
+            return capabilities
+
+        with patch.object(engine, 'reference', side_effect=reviewed_reference), \
+             patch.object(engine, 'inspect', side_effect=two_item_catalogue), \
+             patch.object(sequence, 'evaluate', side_effect=InterfaceTests._ui_score):
+            yield
+
+
+@pytest.fixture
+def page_task_engine():
+    with page_task_boundary():
+        yield
 
 
 def test_public_burst_precheck_requires_a_reviewed_definition(tmp_path):
@@ -522,7 +564,8 @@ def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path)
 
 
 @pytest.mark.parametrize('fault', ['aoe', 'collection', 'registration', 'cancel', 'preparation'])
-def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_path, monkeypatch, fault):
+def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
+        tmp_path, monkeypatch, fault, page_task_engine):
     import burst
     import dual_task
     import codec
@@ -621,7 +664,7 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_
     thread.join(3)
 
 
-def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
+def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path, page_task_engine):
     import burst
     import result_store
     import threading
@@ -656,7 +699,8 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
         server.shutdown();server.server_close();thread.join(3)
 
 
-def test_restarted_page_recovers_parent_after_real_process_exit(tmp_path, installed_data_store, monkeypatch):
+def test_restarted_page_recovers_parent_after_real_process_exit(
+        tmp_path, installed_data_store, monkeypatch, page_task_engine):
     import result_store
     import threading
     import sys

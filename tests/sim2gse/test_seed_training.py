@@ -942,7 +942,7 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
 
 @pytest.mark.parametrize('max_processes', [2, 4])
 def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
-        tmp_path, max_processes, memory_training_center, four_candidate_training_rounds):
+        tmp_path, max_processes, memory_training_center, four_candidate_training_rounds, no_training_proposals):
     from test_character_export import sample_profile
     from unittest.mock import patch
     from runtime import BudgetExceeded
@@ -1243,7 +1243,8 @@ def test_training_entry_rejects_an_active_foreground_search(tmp_path, monkeypatc
 
 @pytest.mark.parametrize('interruption', ['foreground', 'store_failure', 'inactive_failed'])
 def test_foreground_search_does_not_wait_for_training_and_stops_it(
-        tmp_path, capsys, interruption, memory_training_center, four_candidate_training_rounds):
+        tmp_path, capsys, interruption, memory_training_center, four_candidate_training_rounds,
+        no_training_proposals):
     import os
     import time
     import threading
@@ -1431,7 +1432,8 @@ def test_connected_public_search_creates_data_root_on_first_run(tmp_path, monkey
 @pytest.mark.parametrize('case', ['structured', 'history-only', 'changed-definition', 'empty', 'single-member', 'unknown', 'invalid-block', 'invalid-program'])
 def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(tmp_path, capsys, monkeypatch, case,
                                                                               four_candidate_training_rounds,
-                                                                              memory_training_center):
+                                                                              memory_training_center,
+                                                                              no_training_proposals):
     import burst
     import engine
     import result_store

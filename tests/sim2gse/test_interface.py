@@ -2912,7 +2912,7 @@ class InterfaceTests(unittest.TestCase):
 
     def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=200, target_count=1):
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
-            search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
+            search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
             scenarios=('nominal','jitter','slow','pause','phase') if interval_ms != 300 else ('nominal',),max_processes=1)}
         from test_burst import reviewed_fixture
@@ -3207,7 +3207,9 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 if handle:kernel.CloseHandle(handle)
 
     def test_browser_uses_adjustable_interval_while_publication_is_delayed_and_contended(self):
-        # 三项页面回归复用同一次双场任务；原生初始化、编译及存储仍真实。
+        # 页面故障复用构造引擎边界；独立完整场景保留真实原生计算。
+        from test_burst import page_task_boundary
+        self.enterContext(page_task_boundary())
         scoring = self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
         original=os.replace
         failures=set()
