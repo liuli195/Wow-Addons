@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
+from itertools import islice
 import json
 import math
 import msvcrt
@@ -189,10 +190,11 @@ def registry_rows():
     return rows
 
 
-def sync_history(character):
+def sync_history(character, *, sources=None):
     """适配来源后一次原子登记；读取失败不会伪装成来源删除。"""
-    rows = registry_rows()
-    with result_store.query("SELECT table_name FROM information_schema.tables WHERE table_name='runs'") as cursor:
+    rows = registry_rows() if sources is None else sources
+    with result_store.query("SELECT table_name FROM information_schema.tables WHERE table_name='runs'",
+                            tables=['runs']) as cursor:
         available = bool(cursor.fetchone())
     scanned = set()
     updates = {}
@@ -200,47 +202,66 @@ def sync_history(character):
         'SELECT run_id, profile, status, candidate_data_key, candidate_key, search_dps FROM runs '
         "WHERE json_extract_string(profile, '$.identity.class') = ? "
         "AND json_extract_string(profile, '$.identity.spec') = ?",
-        [character.class_name, character.spec]) if available else ()
-    for run in histories:
-        profile = decode(run['profile']) or {}
-        identity = profile.get('identity', {})
-        if identity.get('class') != character.class_name or identity.get('spec') != character.spec:
-            continue
-        source_id = 'history:' + run['run_id']
-        if source_id in scanned:
-            raise ValueError('历史来源身份不唯一: ' + run['run_id'])
-        scanned.add(source_id)
-        reason, shared, program = '', None, []
-        if run['status'] != 'completed':
-            reason = '历史尚未完成: ' + str(run['status'])
-        elif not run['candidate_data_key']:
-            reason = '历史最佳候选引用缺失'
-        else:
-            candidate = result_store.one('candidates', 'candidate_data_key', run['candidate_data_key'])
-            if candidate is None:
-                reason = '历史最佳候选记录缺失: ' + run['run_id']
-            elif (candidate['run_id'] != run['run_id'] or
-                  (run.get('candidate_key') and candidate['candidate_key'] != run['candidate_key'])):
-                reason = '历史最佳候选引用不一致: ' + run['run_id']
+        [character.class_name, character.spec], tables=['runs']) if available else ()
+    candidate_columns = ['candidate_data_key', 'run_id', 'candidate_key', 'program']
+    while history_batch := list(islice(histories, 500)):
+        keys = list(dict.fromkeys(run['candidate_data_key'] for run in history_batch
+                                 if run['status'] == 'completed' and run['candidate_data_key']))
+        try:
+            candidates = result_store.read_many('candidates', keys, columns=candidate_columns)
+        except result_store.DataReadError as error:
+            if not isinstance(error.__cause__, result_store._api()['MissingKeyError']):
+                raise
+            candidates = []
+        if (len(candidates) != len(keys)
+                or {candidate['candidate_data_key'] for candidate in candidates} != set(keys)):
+            # 非空组写入契约下，异常批次沿用逐组唯一性判断；只点读本批已知键。
+            candidates = [candidate for key in keys if (candidate := result_store.one(
+                'candidates', 'candidate_data_key', key, columns=candidate_columns)) is not None]
+        candidates_by_key = {}
+        for candidate in candidates:
+            candidates_by_key.setdefault(candidate['candidate_data_key'], []).append(candidate)
+        for run in history_batch:
+            profile = decode(run['profile']) or {}
+            identity = profile.get('identity', {})
+            if identity.get('class') != character.class_name or identity.get('spec') != character.spec:
+                continue
+            source_id = 'history:' + run['run_id']
+            if source_id in scanned:
+                raise ValueError('历史来源身份不唯一: ' + run['run_id'])
+            scanned.add(source_id)
+            reason, shared, program = '', None, []
+            if run['status'] != 'completed':
+                reason = '历史尚未完成: ' + str(run['status'])
+            elif not run['candidate_data_key']:
+                reason = '历史最佳候选引用缺失'
             else:
-                shared = decode(candidate['program'])
-                try:
-                    program = search_program(shared)
-                except (ValueError, KeyError, TypeError) as error:
-                    reason = str(error)
-        previous = next((row for row in rows if row['source_id'] == source_id or
-                         row['candidate_id'] == digest(dict(history=run['run_id'], program=program))), None)
-        row = dict(candidate_id=(digest(dict(history=run['run_id'], program=program)) if not reason
-                                 else (previous['candidate_id'] if previous else digest(dict(history=run['run_id'])))),
-                   source_id=source_id, label=run['run_id'], class_name=character.class_name, spec=character.spec,
-                   source=source_id, original=json.dumps(shared, ensure_ascii=False),
-                   instructions='历史最佳程序；原角色成绩仅作来源证据，当前训练独立评价',
-                   semantic='unsupported' if reason else 'preserved', changes=[reason] if reason else [],
-                   family='history-search', core=[], program=program if not reason else [],
-                   active=not bool(reason), unavailable_reason=reason)
-        row['source_revision'] = digest(dict(row, candidate_reference=run['candidate_data_key'],
-                                            status=run['status'], search_dps=run['search_dps']))
-        updates[source_id] = row
+                matches = candidates_by_key.get(run['candidate_data_key'], [])
+                candidate = matches[0] if len(matches) == 1 else None
+                if candidate is None:
+                    reason = '历史最佳候选记录缺失: ' + run['run_id']
+                elif (candidate['run_id'] != run['run_id'] or
+                      (run.get('candidate_key') and candidate['candidate_key'] != run['candidate_key'])):
+                    reason = '历史最佳候选引用不一致: ' + run['run_id']
+                else:
+                    shared = decode(candidate['program'])
+                    try:
+                        program = search_program(shared)
+                    except (ValueError, KeyError, TypeError) as error:
+                        reason = str(error)
+            previous = next((row for row in rows if row['source_id'] == source_id or
+                             row['candidate_id'] == digest(dict(history=run['run_id'], program=program))), None)
+            row = dict(candidate_id=(digest(dict(history=run['run_id'], program=program)) if not reason
+                                     else (previous['candidate_id'] if previous else digest(dict(history=run['run_id'])))),
+                       source_id=source_id, label=run['run_id'], class_name=character.class_name, spec=character.spec,
+                       source=source_id, original=json.dumps(shared, ensure_ascii=False),
+                       instructions='历史最佳程序；原角色成绩仅作来源证据，当前训练独立评价',
+                       semantic='unsupported' if reason else 'preserved', changes=[reason] if reason else [],
+                       family='history-search', core=[], program=program if not reason else [],
+                       active=not bool(reason), unavailable_reason=reason)
+            row['source_revision'] = digest(dict(row, candidate_reference=run['candidate_data_key'],
+                                                status=run['status'], search_dps=run['search_dps']))
+            updates[source_id] = row
     output = []
     for row in rows:
         if row['source_id'] in updates:
@@ -634,11 +655,12 @@ def _write_execution(batch, manifest, candidate_id, config, state, *, max_traini
     return segment
 
 
-def selected_materials(candidate_ids):
+def selected_materials(candidate_ids, *, sources=None):
     """只读取明确登记的材料，错误编号在启动计算前拒绝。"""
+    sources = registry_rows() if sources is None else sources
     rows = []
     for candidate_id in dict.fromkeys(candidate_ids):
-        matches = [row for row in registry_rows() if row['candidate_id'] == candidate_id]
+        matches = [row for row in sources if row['candidate_id'] == candidate_id]
         if len(matches) != 1:
             raise ValueError('训练材料不存在或不唯一: ' + candidate_id)
         if matches[0].get('semantic') == 'unsupported' or matches[0].get('active') is False:
@@ -649,7 +671,8 @@ def selected_materials(candidate_ids):
     return rows
 
 
-def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None):
+def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None,
+                     burst_identity=None):
     from engine import identity
     _check_cancelled(cancel_event)
     if max_processes is None:
@@ -665,8 +688,15 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     template_sha = hashlib.sha256(text.encode()).hexdigest()
     definition = None
     if use_burst:
-        from burst import select_definition
-        definition = select_definition(character)
+        from burst import load, select_definition
+        if burst_identity is None:
+            definition = select_definition(character)
+        else:
+            definition = load(burst_identity['spec_id'])
+            if definition['definition_id'] != burst_identity['definition_id']:
+                raise ValueError('本次训练的爆发定义已变化，请重新准备')
+            if (definition['class_key'] != character.class_name or definition['spec_key'] != character.spec):
+                raise ValueError('当前标准角色职业或专精不适用冻结爆发定义')
         config = config_for(dict(config, input_interval_ms=200), training=True)
     return dict(text=text, character=character, scope=scope, config=config, simulation_config=simulation_config,
                 engines=engines, template_sha=template_sha, definition=definition)
@@ -680,7 +710,7 @@ def source_relationships(sources, initial, final):
 
 
 def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burst=False,
-                    materials=None, max_processes=None, inputs=None):
+                    materials=None, max_processes=None, inputs=None, sources=None):
     """run/prepare共用入口：完整快照原子保存成功后才返回可派发队列。"""
     from engine import reference, prepare_loop
     from program import canonicalize_search_program, from_search_program, compile_program
@@ -714,7 +744,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
             or header.get('checksum') != digest([{key: value for key, value in row.items()
                                                 if key != 'checksum'} for row in cached])):
         cached, header = [], None
-    sources = registry_rows()
+    sources = registry_rows() if sources is None else sources
     sources = [row for row in sources if row['class_name'] == character.class_name and row['spec'] == character.spec]
     active = [row for row in sources if row.get('active', True) and row['semantic'] != 'unsupported']
     context = header['context'] if header else None
@@ -857,12 +887,12 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
 
 
 def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None,
-                  max_processes=None, max_trainings=None, prepare_only=False):
+                  max_processes=None, max_trainings=None, prepare_only=False, sources=None, burst_identity=None):
     from simulation_config import load_training_config
     parallelism = load_training_config(max_processes=max_processes, max_trainings=max_trainings)
     max_processes, max_trainings = parallelism['max_processes'], parallelism['max_trainings']
     inputs = _training_inputs(template, targets, cancel_event=cancel_event, use_burst=use_burst,
-                              max_processes=max_processes)
+                              max_processes=max_processes, burst_identity=burst_identity)
     text, character, scope, config, simulation_config, engines, template_sha, definition = (
         inputs[name] for name in ('text', 'character', 'scope', 'config', 'simulation_config',
                                  'engines', 'template_sha', 'definition'))
@@ -899,7 +929,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         capabilities = next((state['capabilities'] for state in states.values() if 'capabilities' in state), None)
     # 完整成绩复用先核验原身份，准备成功后再派发唯一队列。
     ready = ensure_prepared(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
-                            materials=materials, max_processes=max_processes, inputs=inputs)
+                            materials=materials, max_processes=max_processes, inputs=inputs, sources=sources)
     context = ready['context']
     if context:
         burst_context, capabilities, native = context['burst'], context['capabilities'], context['native']
@@ -1184,9 +1214,9 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
 def run_training(template, targets, workspace, *, use_burst=False, max_processes=None, max_trainings=None):
     from seed_activity import training_activity
     with writer_lock(), training_activity() as cancel_event:
-        sync_history(template_character(Path(template).read_text(encoding='utf-8')))
+        sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
-                             max_processes=max_processes, max_trainings=max_trainings)
+                             max_processes=max_processes, max_trainings=max_trainings, sources=sources)
 
 
 def check_training(template=None, *, use_burst=True):
@@ -1203,7 +1233,9 @@ def check_training(template=None, *, use_burst=True):
     return dict(status='ready', template=str(path), template_source='explicit' if template else 'current_build',
                 template_sha256=hashlib.sha256(text.encode()).hexdigest(),
                 talent_sha256=talent_hash(character), engines=engines, use_burst=use_burst,
-                burst_definition_id=definition['definition_id'] if definition else None)
+                burst_definition_id=definition['definition_id'] if definition else None,
+                burst_identity=dict(spec_id=definition['spec_id'], definition_id=definition['definition_id'])
+                               if definition else None)
 
 
 def main(argv=None):
@@ -1249,20 +1281,23 @@ def main(argv=None):
             from simulation_config import load_training_config
             parallelism = load_training_config(max_processes=args.max_processes, max_trainings=args.max_trainings)
             max_processes = parallelism['max_processes']
-            if args.candidate_id:
-                selected_materials(args.candidate_id)  # 明显非法编号不依赖模板或引擎。
-            ready = check_training(args.template, use_burst=False)
             from seed_activity import training_activity
             with writer_lock():
+                sources = registry_rows()
+                if args.candidate_id:
+                    selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
+                ready = check_training(args.template, use_burst=False)
                 with training_activity() as cancel_event:
-                    sync_history(template_character(Path(ready['template']).read_text(encoding='utf-8')))
-                    material_options = ({'materials': selected_materials(args.candidate_id)}
+                    sources = sync_history(template_character(Path(ready['template']).read_text(encoding='utf-8')),
+                                           sources=sources)
+                    material_options = ({'materials': selected_materials(args.candidate_id, sources=sources)}
                                         if args.candidate_id else {})
-                    check_training(Path(ready['template']), use_burst=args.use_burst)
+                    frozen = check_training(Path(ready['template']), use_burst=args.use_burst)
                     output = [_run_training(Path(ready['template']), targets, args.workspace,
                                             cancel_event=cancel_event, use_burst=args.use_burst,
                                             max_processes=max_processes, max_trainings=parallelism['max_trainings'],
-                                            prepare_only=args.command == 'prepare',
+                                            prepare_only=args.command == 'prepare', sources=sources,
+                                            burst_identity=frozen['burst_identity'],
                                             **material_options)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state == 'prepared':

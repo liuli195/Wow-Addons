@@ -70,7 +70,11 @@ def memory_training_center(training_center, installed_data_store_api, monkeypatc
                 cursor.execute(f'CREATE OR REPLACE VIEW "{table}" AS {sources}')
             return len(rows)
 
-        def query(root, sql, parameters=None):
+        def query(root, sql, parameters=None, *, tables):
+            if not isinstance(tables, (list, tuple)) or not tables:
+                raise ValueError('tables 必须是非空逻辑表名列表')
+            for table in tables:
+                installed_data_store_api['_name'](table, table=True)
             with lock:
                 cursor = database.cursor()
                 try:
@@ -80,18 +84,26 @@ def memory_training_center(training_center, installed_data_store_api, monkeypatc
                     raise
 
         def read_key(root, table, key, *, columns=None, filters=None):
+            return read_keys(root, table, [key], columns=columns, filters=filters)
+
+        def read_keys(root, table, keys, *, columns=None, filters=None):
             table = installed_data_store_api['_name'](table, table=True)
-            key = installed_data_store_api['_name'](key)
+            if not isinstance(keys, (list, tuple)) or not keys:
+                raise ValueError('记录键必须是非空列表')
+            keys = list(dict.fromkeys(installed_data_store_api['_name'](key) for key in keys))
             with lock:
-                if key not in groups.get(table, {}):
-                    raise installed_data_store_api['MissingKeyError'](key)
+                for key in keys:
+                    if key not in groups.get(table, {}):
+                        raise installed_data_store_api['MissingKeyError'](key)
                 projection = ','.join('"' + name.replace('"', '""') + '"' for name in columns) if columns else '*'
                 predicate = (' WHERE ' + ' AND '.join('"' + name.replace('"', '""') +
                              '" IS NOT DISTINCT FROM ?' for name in filters)) if filters else ''
-                return query(root, f'SELECT {projection} FROM {groups[table][key]}{predicate}',
-                             list(filters.values()) if filters else [])
+                selected = ' UNION ALL BY NAME '.join(
+                    f'SELECT * FROM {groups[table][key]}' for key in keys)
+                return query(root, f'SELECT {projection} FROM ({selected}) AS records{predicate}',
+                             list(filters.values()) if filters else [], tables=[table])
 
-        api = dict(write=write, query=query, read_key=read_key,
+        api = dict(write=write, query=query, read_key=read_key, read_keys=read_keys,
                    **{name: installed_data_store_api[name] for name in ('MissingKeyError', 'CorruptDataError')})
         scoped.setattr(result_store, '_api', lambda: api)
         yield
@@ -785,6 +797,11 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(tmp_pa
     old_source = subprocess.check_output(['git', 'show', LEGACY_SOURCE_COMMIT + ':projects/sim2gse/seed_training.py'],
                                          cwd=ROOT).decode('utf-8')
     exec(compile(old_source, baseline.__file__, 'exec'), baseline.__dict__)
+    # 仅旧生成器补显式 runs 范围；历史源码、请求键和真实点读/写入保持原样。
+    legacy_api = dict(vars(result_store))
+    legacy_api.update(query=lambda sql, parameters=None: result_store.query(sql, parameters, tables=['runs']),
+        iter_rows=lambda sql, parameters=None: result_store.iter_rows(sql, parameters, tables=['runs']))
+    baseline.result_store = types.SimpleNamespace(**legacy_api)
     old_rules = task._rule_hashes(relative_to=ROOT)
     old_rules.update({key: values[0] for key, values in LEGACY_EXECUTION_RULES.items()})
     with training_boundary(), patch.object(task, '_rule_hashes', return_value=old_rules):
@@ -1019,7 +1036,7 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     assert first['status'] == 'completed' and first['rounds'] == 2
     assert len(first['initial_scores']) == len(first['scores']) == 3
     assert all(score > 90. for score in [*first['initial_scores'], *first['scores']])
-    retests = list(result_store.iter_rows("SELECT * FROM batches WHERE purpose='seed_retest'"))
+    retests = list(result_store.iter_rows("SELECT * FROM batches WHERE purpose='seed_retest'", tables=['batches']))
     assert len(retests) == 6 and all(row['iterations'] == 128 for row in retests)
     assert {row['seed'] for row in retests} == {20261008, 20261009, 20261010}
     assert result_store.read_records('runs', 'historic-1') == history_before
@@ -1569,7 +1586,9 @@ def test_training_run_persists_history_revisions_and_keeps_explicit_scope(tmp_pa
     from unittest.mock import patch
     before_failure = unavailable
     history([['outbreak'], ['death_coil']])
-    with training_boundary(), patch.object(result_store, 'one', side_effect=result_store.DataReadError('临时历史读取失败')):
+    def unreadable_history(*args, **options):
+        raise PermissionError('临时历史读取失败')
+    with training_boundary(), patch.dict(result_store._api(), read_keys=unreadable_history):
         assert command(tmp_path, args) == 2
     assert '临时历史读取失败' in capsys.readouterr().err
     assert command(tmp_path, ['list', '--state', 'unsupported']) == 0
@@ -1942,7 +1961,7 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
     common = set(local_batches[0]) & set(local_batches[1])
     trace_key = next(key for key in common if local_batches[0][key]['status'] == 'success' and
                      local_batches[0][key]['request']['trace'] and local_batches[0][key]['dps'] == 120.)
-    traces = list(result_store.iter_rows('SELECT run_id,batch_key FROM traces WHERE batch_key = ?', [trace_key]))
+    traces = list(result_store.iter_rows('SELECT run_id,batch_key FROM traces WHERE batch_key = ?', [trace_key], tables=['traces']))
     assert {row['run_id'] for row in traces} == set(runs)
     assert all(result_store.one('batches', 'batch_key', key) is not None for key in common
                if local_batches[0][key]['status'] == 'success')
@@ -2000,3 +2019,252 @@ def test_training_prepare_reads_only_applicable_history_fields(tmp_path, capsys,
     assert len(observed) == 1 and observed[0]['run_id'] == 'applicable'
     assert set(observed[0]) == {'run_id', 'profile', 'status', 'candidate_data_key', 'candidate_key', 'search_dps'}
     assert result_store.read_records('seed_candidates', 'registry')[0]['source_id'] == 'history:applicable'
+
+
+def test_training_prepare_batches_known_history_candidates_without_unrelated_reads(tmp_path, capsys, monkeypatch):
+    import result_store
+    from test_character_export import sample_profile
+
+    result_store.bind_project(tmp_path)
+    for run_id, spec in [('first', 'unholy'), ('second', 'unholy'), ('foreign', 'blood')]:
+        result_store.write('runs', run_id, [dict(dict.fromkeys(result_store.RUN_SCHEMA),
+            run_id=run_id, status='completed', profile={'identity': {'class': 'deathknight', 'spec': spec}},
+            candidate_key='winner', candidate_data_key=run_id + '_candidate', search_dps=0.)],
+            schema=result_store.RUN_SCHEMA)
+    for run_id, program in [('first', [['death_coil']]), ('second', [['outbreak']])]:
+        result_store.write('candidates', run_id + '_candidate', [dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA),
+            run_id=run_id, candidate_key='winner', candidate_data_key=run_id + '_candidate',
+            program=program)], schema=result_store.CANDIDATE_SCHEMA)
+    (result_store.DATA_ROOT / 'candidates/foreign_candidate.parquet').write_bytes(b'unrelated broken candidate')
+    unrelated = result_store.DATA_ROOT / 'unrelated'
+    unrelated.mkdir()
+    (unrelated / 'broken.parquet').write_bytes(b'unrelated broken table')
+    api = result_store._api()
+    read_key, read_keys = api['read_key'], api['read_keys']
+    observed = []
+
+    def known_groups(root, table, keys, **options):
+        if table == 'candidates':
+            observed.append((list(keys), options.get('columns')))
+        return read_keys(root, table, keys, **options)
+
+    def no_single_candidate(root, table, key, **options):
+        if table == 'candidates':
+            raise AssertionError('历史已知候选必须批读，不能逐条点读')
+        return read_key(root, table, key, **options)
+
+    monkeypatch.setattr(result_store, '_api', lambda: api)  # 保留真实安装副本的存储边界。
+    monkeypatch.setitem(api, 'read_key', no_single_candidate)
+    monkeypatch.setitem(api, 'read_keys', known_groups)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    with training_boundary():
+        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
+                                 '--workspace', str(tmp_path / 'work')]) == 0
+    assert json.loads(capsys.readouterr().out)[0]['status'] == 'prepared'
+    assert command(tmp_path, ['list']) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert {row['source_id'] for row in rows} == {'history:first', 'history:second'}
+    assert {row['label']: json.loads(row['program']) for row in rows} == {
+        'first': [['death_coil']], 'second': [['outbreak']]}
+    assert len(observed) == 1 and set(observed[0][0]) == {'first_candidate', 'second_candidate'}
+    assert set(observed[0][1]) == {'candidate_data_key', 'run_id', 'candidate_key', 'program'}
+
+
+def test_training_prepare_reuses_one_registry_snapshot_for_selected_materials_and_scenes(tmp_path, capsys, monkeypatch):
+    import result_store
+    from test_character_export import sample_profile
+
+    material = tmp_path / 'material.json'
+    candidate_ids = []
+    for name, action in [('first', 'outbreak'), ('second', 'death_coil'), ('unselected', 'scourge_strike')]:
+        material.write_text(json.dumps(dict(label=name, source_id=name, class_name='deathknight', spec='unholy',
+            source='constructed-test', original='fixture', instructions='repeat', semantic='preserved',
+            changes=[], family=name, core=[], program=[[action]])), encoding='utf-8')
+        assert command(tmp_path, ['register', str(material)]) == 0
+        candidate_ids.append(json.loads(capsys.readouterr().out)['candidate_id'])
+    api = result_store._api()
+    read_key = api['read_key']
+    registry_reads = 0
+
+    def fixed_snapshot(root, table, key, **options):
+        nonlocal registry_reads
+        if table == 'seed_candidates' and key == 'registry':
+            registry_reads += 1
+            if registry_reads > 1:
+                raise PermissionError('同次准备不得重复读取登记快照')
+        return read_key(root, table, key, **options)
+
+    monkeypatch.setattr(result_store, '_api', lambda: api)
+    monkeypatch.setitem(api, 'read_key', fixed_snapshot)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    with training_boundary():
+        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1', '5',
+            '--candidate-id', candidate_ids[0], '--candidate-id', candidate_ids[1],
+            '--candidate-id', candidate_ids[0], '--workspace', str(tmp_path / 'work')]) == 0
+    scenes = json.loads(capsys.readouterr().out)
+    assert [scene['targets'] for scene in scenes] == [1, 5]
+    assert all(scene['status'] == 'prepared' and scene['preparation']['unique_inputs'] == 2 for scene in scenes)
+    assert registry_reads == 1
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definition(tmp_path, capsys, monkeypatch,
+                                                                                 changed):
+    import burst
+    import engine
+    import result_store
+    from test_character_export import sample_profile
+
+    result_store.bind_project(tmp_path)
+    definition = json.loads(Path('projects/sim2gse/burst/unholy.json').read_text(encoding='utf-8'))
+    definition['version'] += '-fixture'
+    definition['blocks'] = [[dict(kind='spell', simc_action='death_coil', name='死亡缠绕', spell_id=1002)]]
+    definition['excluded_spell_ids'] = [1002]
+    published = burst.publish(definition)
+    material = tmp_path / 'material.json'
+    material.write_text(json.dumps(dict(label='ordinary-loop', class_name='deathknight', spec='unholy',
+        source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
+        family='plain', core=[], program=[['outbreak']])), encoding='utf-8')
+    assert command(tmp_path, ['register', str(material)]) == 0
+    capsys.readouterr()
+    api = result_store._api()
+    query, read_key = api['query'], api['read_key']
+    discovery_queries = current_reads = references = 0
+
+    def one_discovery(root, sql, parameters=None, **options):
+        nonlocal discovery_queries
+        if options.get('tables') == ['burst_definitions']:
+            discovery_queries += 1
+            if discovery_queries > 2:
+                raise PermissionError('同次准备已知爆发身份不得再次通用发现')
+        return query(root, sql, parameters, **options)
+
+    def current_definition(root, table, key, **options):
+        nonlocal current_reads
+        if table == 'burst_definitions' and key == 'current_252':
+            current_reads += 1
+        return read_key(root, table, key, **options)
+
+    monkeypatch.setattr(result_store, '_api', lambda: api)
+    monkeypatch.setitem(api, 'query', one_discovery)
+    monkeypatch.setitem(api, 'read_key', current_definition)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    with training_boundary(), monkeypatch.context() as scoped:
+        reference = engine.reference
+
+        def fixed_native(*args, **options):
+            nonlocal references
+            references += 1
+            native = reference(*args, **options)
+            native['identity']['data_version'] = definition['data_version']
+            if changed and references == 1:
+                replacement = dict(definition, version=definition['version'] + '-changed', instructions='changed')
+                burst.publish(replacement)
+            return native
+
+        scoped.setattr(engine, 'reference', fixed_native)
+        status = command(tmp_path, ['prepare', '--template', str(template), '--targets', '1', '5',
+            '--use-burst', '--workspace', str(tmp_path / 'work')])
+    if changed:
+        assert status == 2
+        assert '爆发定义已变化' in capsys.readouterr().err
+        assert references == 1
+        assert not (tmp_path / 'work/5').exists()
+    else:
+        assert status == 0
+        scenes = json.loads(capsys.readouterr().out)
+        assert [scene['targets'] for scene in scenes] == [1, 5]
+        for scene in scenes:
+            assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', scene['config_key']]) == 0
+            snapshot = json.loads(capsys.readouterr().out)
+            context = json.loads(next(row['context'] for row in snapshot if row['kind'] == 'context'))
+            assert context['burst']['definition_id'] == published['definition_id']
+        assert references == 2 and current_reads == 3
+    assert discovery_queries == 2
+
+
+@pytest.mark.parametrize('failure', ['missing', 'duplicate', 'mixed-duplicate', 'foreign-reference',
+                                     'corrupt', 'unreadable', 'fallback-corrupt', 'fallback-unreadable'])
+def test_training_prepare_keeps_history_missing_and_read_failure_semantics(tmp_path, capsys, monkeypatch, failure):
+    import result_store
+    from test_character_export import sample_profile
+
+    source = tmp_path / 'material.json'
+    source.write_text(json.dumps(dict(label='registered', class_name='deathknight', spec='unholy', source='fixture',
+        original='fixture', instructions='repeat', semantic='preserved', changes=[], family='plain', core=[],
+        program=[['outbreak']])), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    before = json.loads(capsys.readouterr().out)
+    assert command(tmp_path, ['list']) == 0
+    registry_before = json.loads(capsys.readouterr().out)
+    for run_id in ('valid', 'affected'):
+        result_store.write('runs', run_id, [dict(dict.fromkeys(result_store.RUN_SCHEMA),
+            run_id=run_id, status='completed', profile={'identity': {'class': 'deathknight', 'spec': 'unholy'}},
+            candidate_key='winner', candidate_data_key=run_id + '_candidate', search_dps=0.)],
+            schema=result_store.RUN_SCHEMA)
+        row = dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA), run_id=run_id, candidate_key='winner',
+                   candidate_data_key=run_id + '_candidate', program=[['death_coil']])
+        if run_id == 'affected' and failure == 'missing':
+            continue
+        if run_id == 'affected' and failure == 'foreign-reference':
+            row['run_id'] = 'foreign'
+        records = [row]
+        if run_id == 'affected' and failure == 'duplicate':
+            records.append(row)
+        elif run_id == 'affected' and failure in ('mixed-duplicate', 'fallback-corrupt', 'fallback-unreadable'):
+            records.append(dict(row, candidate_data_key='other_candidate'))
+        result_store.write('candidates', run_id + '_candidate', records, schema=result_store.CANDIDATE_SCHEMA)
+    if failure == 'corrupt':
+        (result_store.DATA_ROOT / 'candidates/affected_candidate.parquet').write_bytes(b'broken known candidate')
+    api = result_store._api()
+    read_keys, read_key = api['read_keys'], api['read_key']
+    fallback_keys = []
+
+    def candidate_groups(root, table, keys, **options):
+        if table == 'candidates' and failure == 'unreadable':
+            raise PermissionError('临时历史读取失败')
+        return read_keys(root, table, keys, **options)
+
+    def known_single(root, table, key, **options):
+        if table == 'candidates':
+            fallback_keys.append(key)
+            if key == 'affected_candidate' and failure == 'fallback-unreadable':
+                raise PermissionError('临时历史读取失败')
+            if key == 'affected_candidate' and failure == 'fallback-corrupt':
+                (Path(root) / 'candidates/affected_candidate.parquet').write_bytes(b'broken during group check')
+        return read_key(root, table, key, **options)
+
+    monkeypatch.setattr(result_store, '_api', lambda: api)
+    monkeypatch.setitem(api, 'read_keys', candidate_groups)
+    monkeypatch.setitem(api, 'read_key', known_single)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    with training_boundary():
+        status = command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
+                                  '--workspace', str(tmp_path / 'work')])
+    if failure in ('corrupt', 'unreadable', 'fallback-corrupt', 'fallback-unreadable'):
+        assert status == 2
+        assert ('损坏' if failure in ('corrupt', 'fallback-corrupt') else '临时历史读取失败') in capsys.readouterr().err
+        assert not (tmp_path / 'work').exists()
+        assert command(tmp_path, ['list']) == 0
+        assert json.loads(capsys.readouterr().out) == registry_before
+        if failure.startswith('fallback-'):
+            assert 'affected_candidate' in fallback_keys
+            assert set(fallback_keys) <= {'valid_candidate', 'affected_candidate'}
+        else:
+            assert fallback_keys == []
+    else:
+        assert status == 0
+        capsys.readouterr()
+        assert command(tmp_path, ['list', '--state', 'unsupported']) == 0
+        inactive = json.loads(capsys.readouterr().out)
+        assert len(inactive) == 1 and inactive[0]['source_id'] == 'history:affected'
+        assert ('引用不一致' if failure == 'foreign-reference' else '候选记录缺失') in inactive[0]['unavailable_reason']
+        assert command(tmp_path, ['list']) == 0
+        active = json.loads(capsys.readouterr().out)
+        assert {row['source_id'] for row in active} == {before['candidate_id'], 'history:valid'}
+        assert set(fallback_keys) == ({'valid_candidate', 'affected_candidate'}
+                                      if failure in ('missing', 'duplicate', 'mixed-duplicate') else set())

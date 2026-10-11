@@ -243,7 +243,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         handle = entry[1] if entry else None
         try:
             if handle is not None and handle.done and handle.error is not None:
-                raise TaskError(str(handle.error))
+                raise TaskError(str(handle.error)) from handle.error
             if (destination / 'dual.json').exists():
                 from dual_task import read
                 state = read(destination, active=not handle.done if handle else None)
@@ -252,11 +252,11 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 return state
             return _public_state(read_task(destination, include_reports=False), destination)
         except (TaskError, DataReadError) as error:
-            if isinstance(error, DataReadError) or '共享存储' in str(error):
+            if _is_storage_error(error) or '共享存储' in str(error):
                 active = handle is not None and not handle.done
                 return dict(status='running' if active else 'failed', phase='storage_unavailable',
                             result_ready=False, recoverable=not active, storage_unavailable=True,
-                            error='共享存储暂时不可读取，正在重试；计算可能仍在继续。')
+                            error=_friendly_error(error))
             if handle is not None and not handle.done:
                 return _starting_state()
             if handle is not None and handle.error is not None:
@@ -309,8 +309,22 @@ def _starting_state() -> dict:
     }
 
 
+def _is_storage_error(error: BaseException) -> bool:
+    seen = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, DataReadError):
+            return True
+        seen.add(id(error))
+        error = error.__cause__
+    return False
+
+
 def _friendly_error(error: BaseException) -> str:
     message = str(error).strip()
+    if _is_storage_error(error):
+        if message.startswith('data-store '):
+            return message.splitlines()[0][:160]
+        return '共享存储不可读取，请检查数据中心接入与读写权限后重试。'
     if message.startswith('GSE '):
         return message.splitlines()[0][:160]
     if message.startswith('原生未提供此角色的伤害模拟'):

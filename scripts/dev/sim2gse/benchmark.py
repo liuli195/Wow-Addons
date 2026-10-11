@@ -68,7 +68,9 @@ def extract_product(result):
              independently_tested=result.get('independent_validation_complete',False),
              final_scenarios=list(((result.get('final') or {}).get('scenarios') or {}).keys()))
 def run(source,profile,out,seed,*,phase2=False):
- cfg=dict(CONFIG,random_seed=seed);code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))";start=time.monotonic();p=subprocess.Popen([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);timeline=[];seen=0;search_wall=None;search_started=None
+ cfg=dict(CONFIG,random_seed=seed);code=("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
+        "if (Path(sys.argv[1]) / 'result_store.py').is_file():\n import result_store\n result_store.bind_project(Path(sys.argv[5]))\n"
+        "from task import run_task\nrun_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))");start=time.monotonic();p=subprocess.Popen([sys.executable,"-c",code,str(source),str(profile),str(out),_json(cfg),str(ROOT)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE);timeline=[];seen=0;search_wall=None;search_started=None
  while p.poll() is None:
   database=out/"task.sqlite3"
   if database.is_file():
@@ -95,11 +97,13 @@ def run(source,profile,out,seed,*,phase2=False):
  row["search_wall_seconds"]=search_wall;row["evidence_complete"]=row["evidence_complete"] and row.get("simc_total_iterations") is not None and bool(row.get("engine_identities"));row.update(process_returncode=p.returncode,stderr_tail=stderr[-4000:]);return row
 
 def read_task_result(source,out,*,include_search_records=False):
- code=("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\nfrom task import read_task\n"
+ code=("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
+       "if (Path(sys.argv[1]) / 'result_store.py').is_file():\n import result_store\n result_store.bind_project(Path(sys.argv[3]))\n"
+       "from task import read_task\n"
        f"try:\n result=read_task(Path(sys.argv[2]),include_search_records={include_search_records!r},include_reports=False)\n"
        "except TypeError:\n result=read_task(Path(sys.argv[2]))\n"
        "print(json.dumps(result,ensure_ascii=False,default=str))\n")
- process=subprocess.run([sys.executable,'-c',code,str(source),str(out)],cwd=ROOT,text=True,
+ process=subprocess.run([sys.executable,'-c',code,str(source),str(out),str(ROOT)],cwd=ROOT,text=True,
                         stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  if process.returncode==0 and process.stdout.strip():return json.loads(process.stdout)
  raise RuntimeError(process.stderr[-4000:] or '无法读取数据中心任务结果')
@@ -170,9 +174,11 @@ def summarize_product(root):
 def run_product(source,profile,out,seed,side):
  config=dict(CONFIG,random_seed=seed)
  if side=='current':config.update(search_budget_seconds=600,diagnostic_logging=False)
- code="import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from task import run_task;run_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))"
+ code=("import json,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
+        "if (Path(sys.argv[1]) / 'result_store.py').is_file():\n import result_store\n result_store.bind_project(Path(sys.argv[5]))\n"
+        "from task import run_task\nrun_task(Path(sys.argv[2]),Path(sys.argv[3]),search_config=json.loads(sys.argv[4]))")
  started=time.monotonic()
- process=subprocess.Popen([sys.executable,'-c',code,str(source),str(profile),str(out),_json(config)],cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ process=subprocess.Popen([sys.executable,'-c',code,str(source),str(profile),str(out),_json(config),str(ROOT)],cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  timeline=[];observed={};previous=0.0
  def observe():
   database=out/'task.sqlite3'

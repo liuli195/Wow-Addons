@@ -1005,10 +1005,10 @@ class SearchAndValidationTests(TestCase):
             run_id = json.loads((root / "task" / "profile.json").read_text())["run_id"]
             observation_batches = list(result_store.iter_rows(
                 "SELECT batch_key FROM batches WHERE run_id = ? AND purpose = 'position_observation'",
-                [run_id]))
+                [run_id], tables=['batches']))
             traces = list(result_store.iter_rows(
                 "SELECT t.batch_key, b.purpose FROM traces t LEFT JOIN batches b "
-                "ON t.batch_key = b.batch_key AND t.run_id = b.run_id WHERE t.run_id = ?", [run_id]))
+                "ON t.batch_key = b.batch_key AND t.run_id = b.run_id WHERE t.run_id = ?", [run_id], tables=['traces', 'batches']))
             self.assertTrue(observation_batches)
             self.assertTrue(traces)
             self.assertTrue(all(row["batch_key"] is not None for row in traces))
@@ -1362,7 +1362,7 @@ class SearchAndValidationTests(TestCase):
                 second = run_task(source, Path(directory) / "second", search_config=config)
             first_run_id = json.loads((first_destination / "profile.json").read_text())["run_id"]
             traces = list(result_store.iter_rows(
-                'SELECT event_index FROM traces WHERE run_id = ?', [first_run_id]))
+                'SELECT event_index FROM traces WHERE run_id = ?', [first_run_id], tables=['traces']))
 
         self.assertEqual(first["search"]["batch_cache_hits"], 0)
         self.assertEqual(first["search"]["batch_requests"],
@@ -2016,7 +2016,7 @@ class SearchAndValidationTests(TestCase):
                 saved['report']['sim']['statistics']['raid_dps']['mean'] = 1.0
                 group = saved.get('storage_group_key') or row['data_key']
                 records = list(result_store.iter_rows(
-                    'SELECT * FROM batches WHERE storage_group_key = ?', [group]))
+                    'SELECT * FROM batches WHERE storage_group_key = ?', [group], tables=['batches']))
                 result_store.write('batches', group, [saved if item['batch_key'] == row['data_key']
                                                      else item for item in records])
                 resumed=run_task(source,Path(directory)/'second',search_config=config)
@@ -2342,14 +2342,14 @@ class SearchAndValidationTests(TestCase):
                              batch['request']['times'])
             candidates = list(result_store.iter_rows(
                 'SELECT candidate_key, export_text FROM candidates WHERE run_id = ?',
-                [loaded['run_id']]))
+                [loaded['run_id']], tables=['candidates']))
             self.assertIn(batch['request']['behavior_identity'],
                           {candidate['candidate_key'] for candidate in candidates})
             self.assertIn(result['candidate']['text'],
                           {candidate['export_text'] for candidate in candidates})
             try:
                 stored_traces = list(result_store.iter_rows(
-                    'SELECT event_index FROM traces WHERE run_id = ?', [loaded['run_id']]))
+                    'SELECT event_index FROM traces WHERE run_id = ?', [loaded['run_id']], tables=['traces']))
             except result_store.DataReadError:
                 stored_traces = []
             self.assertEqual(stored_traces, [])
@@ -2686,3 +2686,53 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
+
+
+
+def test_task_details_read_known_groups_without_scanning_foreign_shards(tmp_path):
+    import result_store
+
+    source = tmp_path / "role.simc"
+    source.write_text(sample_profile(), encoding="utf-8")
+    destination = tmp_path / "task"
+    with _fast_search_boundary():
+        result = run_task(source, destination, search_config={
+            "candidate_limit": 1, "batch_targets": [2], "validation_batches": 1,
+            "max_processes": 1,
+        })
+    assert result["status"] == "completed"
+    for table in ("candidates", "batches"):
+        (result_store.DATA_ROOT / table / "foreign.parquet").write_bytes(b"unrelated broken shard")
+    loaded = read_task(destination, include_search_records=True, include_reports=False)
+    assert loaded["candidate"]["text"] == result["candidate"]["text"]
+    assert len(loaded["search"]["records"]) == 1
+    assert loaded["search"]["records"][0]["candidate"]["identity"] == result["search"]["records"][0]["key"]
+    assert "report" not in loaded.get("controlled_simulation", {})
+
+
+def test_task_summary_projects_controlled_report_and_full_read_keeps_it(tmp_path, monkeypatch):
+    import result_store
+
+    source, destination = tmp_path / 'role.simc', tmp_path / 'task'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _fast_search_boundary():
+        result = run_task(source, destination, mode='single', program=[['outbreak']])
+    assert result['status'] == 'offline_ready'
+    api = dict(result_store._api())
+    read_key = api['read_key']
+    requests = []
+
+    def observe(root, table, key, **options):
+        if table == 'batches':
+            requests.append(options.get('columns'))
+        return read_key(root, table, key, **options)
+
+    api['read_key'] = observe
+    monkeypatch.setattr(result_store, '_SKILL_API', api)
+    summary = read_task(destination)
+    assert requests == [['batch_key', 'dps', 'samples']]
+    assert summary['controlled_simulation']['summary'] == result['controlled_simulation']['summary']
+    assert 'report' not in summary['controlled_simulation']
+    full = read_task(destination, include_reports=True)
+    assert requests[-1] is None
+    assert full['controlled_simulation']['report']['sim']['players'][0]['collected_data']['dps']['mean'] == result['controlled_simulation']['summary']['dps']

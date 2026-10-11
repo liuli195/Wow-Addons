@@ -168,3 +168,26 @@ class BenchmarkTests(TestCase):
   self.assertIsNone(result["threshold"])
   self.assertIsNone(result["efficiency_result"]["threshold_wall_time_gain"])
   self.assertEqual(result["status"],"insufficient_evidence")
+
+
+
+def test_snapshot_result_reader_binds_the_original_connected_project(tmp_path, installed_data_store, monkeypatch):
+ import benchmark, result_store, shutil, subprocess
+ run_id = 'snapshot-run'
+ row = dict.fromkeys(result_store.RUN_SCHEMA)
+ row.update(run_id=run_id, status='completed', phase='done', batch_keys=[])
+ result_store.write('runs', run_id, [row], schema=result_store.RUN_SCHEMA)
+ connected = subprocess.run([sys.executable, str(installed_data_store / 'scripts/project_binding.py'),
+                            'connect', '--project', str(tmp_path)], text=True, capture_output=True)
+ assert connected.returncode == 0, connected.stderr
+ source = tmp_path / 'snapshot/projects/sim2gse'
+ source.mkdir(parents=True)
+ for name in ('task.py', 'runtime.py', 'simulation_config.py', 'result_store.py'):
+  shutil.copy2(ROOT / 'projects/sim2gse' / name, source / name)
+ destination = tmp_path / 'saved-task'
+ destination.mkdir()
+ (destination / 'result.json').write_text(json.dumps({'run_id': run_id}), encoding='utf-8')
+ monkeypatch.setattr(benchmark, 'ROOT', tmp_path)
+ result = benchmark.read_task_result(source, destination)
+ assert result['run_id'] == run_id and result['status'] == 'completed'
+ assert not (tmp_path / 'snapshot/data').exists()
