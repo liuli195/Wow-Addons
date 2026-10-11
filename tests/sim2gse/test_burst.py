@@ -528,7 +528,8 @@ def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path)
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+        final_batches=1, final_iterations=2, scenarios=('nominal',))))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -618,7 +619,8 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
     monkeypatch.setattr(codec, 'collection', collect)
     monkeypatch.setattr(dual_task, '_save', save)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+        final_batches=1, final_iterations=2, scenarios=('nominal',))))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -673,7 +675,8 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path, p
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+        final_batches=1, final_iterations=2, scenarios=('nominal',))))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -726,7 +729,8 @@ def paused_reference(profile, folder, *args, **kwargs):
     threading.Event().wait()
 engine.reference = paused_reference
 server = create_server(Path({str(page_root)!r}), task_options=dict(search_config=dict(
-    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+    final_batches=1, final_iterations=2, scenarios=('nominal',))))
 Path({str(ready)!r}).write_text(json.dumps(dict(port=server.server_port)))
 server.serve_forever()
 """
