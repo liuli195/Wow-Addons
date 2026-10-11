@@ -1587,6 +1587,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("pairs 遍历顺序不确定", json.loads(raised.exception.read())["error"])
 
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_inspection_and_task_share_case_and_stopmacro_reachability(self) -> None:
         imported = gse_fixture(["MACRO_REACHABILITY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -1663,6 +1664,7 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(self.server.tasks, {})
                 self.assertEqual(list(self.server.task_root.iterdir()), [])
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_known_false_macro_condition_still_skips_its_unreachable_command(self) -> None:
         imported = gse_fixture(["KNOWN_FALSE_CONDITION", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -1723,6 +1725,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(list(self.server.task_root.iterdir()), [])
 
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,

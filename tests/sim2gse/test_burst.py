@@ -369,7 +369,7 @@ def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
     assert quiet['consistent'] and not quiet['trace']
 
 
-def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path):
+def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path, memory_result_center):
     import burst
     definition, raw = reviewed_fixture()
     burst.publish(definition)
