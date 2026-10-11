@@ -2918,11 +2918,11 @@ class InterfaceTests(unittest.TestCase):
             "canonicalized_duplicates": 4,
         })
 
-    def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=200, target_count=1, scenarios=None):
+    def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=200, target_count=1):
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
-            scenarios=scenarios if scenarios is not None else ('nominal','jitter','slow','pause','phase'),max_processes=1)}
+            scenarios=('nominal','jitter','slow','pause','phase') if interval_ms != 300 else ('nominal',),max_processes=1)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
@@ -3240,8 +3240,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 conflicts.append(error.winerror)
                 raise
         with patch.object(os,'replace',side_effect=sharing_conflict):
-            self.test_browser_computes_copies_and_clears_real_candidate(
-                interval_ms=180, target_count=5, scenarios=('nominal',))
+            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
         self.assertEqual(failures,{'progress.json','result.json'})
         self.assertEqual(len(delayed), 1, '一个真实发布延迟窗口足以覆盖轮询恢复')
         for reader in readers:reader.join()
