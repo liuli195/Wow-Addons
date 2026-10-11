@@ -1752,6 +1752,7 @@ class InterfaceTests(unittest.TestCase):
         from task import read_task
         self.assertEqual(read_task(destination)["simulation_config"]["target_count"], 5)
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_import_gcd_pause_uses_upstream_integer_click_count(self) -> None:
         imported = gse_fixture(["GCD_PAUSE", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -2260,6 +2261,7 @@ class InterfaceTests(unittest.TestCase):
 
 
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_public_search_generates_exports_and_native_evaluates_castsequence_reset(self) -> None:
         import cbor2
         import codec
@@ -2386,6 +2388,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(selected_native["castsequences"][0]["members"],
                          ["outbreak", "death_coil"])
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_public_search_generates_and_evaluates_wait_clicks(self) -> None:
         import cbor2
         import codec

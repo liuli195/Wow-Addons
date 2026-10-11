@@ -293,7 +293,7 @@ def test_public_task_runs_loop_and_burst_on_one_native_player(tmp_path):
     assert restored['burst']['candidate']['text'] == result['burst']['candidate']['text']
 
 
-def test_public_dual_task_uses_fixed_burst_with_disabled_extra_talents(tmp_path):
+def test_public_dual_task_uses_fixed_burst_with_disabled_extra_talents(tmp_path, memory_result_center):
     import burst
     definition, raw = reviewed_fixture()
     raw += '\nomnium_talents=1:1\n'
