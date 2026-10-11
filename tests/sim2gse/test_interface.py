@@ -2978,6 +2978,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     @staticmethod
     def _ui_score(profile, candidate, folder, *, burst_candidate=None, input_sources=None, **kwargs):
         """Construct scores only; browser, preparation, compiler and Windows IO stay real."""
+        from test_search import _fast_evaluate
         result = _fast_evaluate(profile, candidate, folder, **kwargs)
         targets = (kwargs.get('simulation_config') or {}).get('target_count', 1)
         report = result['report']['sim']

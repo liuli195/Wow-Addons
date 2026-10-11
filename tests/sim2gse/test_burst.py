@@ -377,7 +377,10 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
                         blocks=[['outbreak'], ['army_of_the_dead']]),
                         dict(kind='CastSequence', members=['army_of_the_dead', 'death_coil'],
                              reset=dict(timeout_seconds=None, flags=[]))])
-    result_store.write('seed_candidates', 'registry', [candidate], schema=seed_training.CANDIDATE_SCHEMA)
+    source = tmp_path / 'nested-source.json'
+    source.write_text(json.dumps({key: value for key, value in candidate.items()
+                                  if key != 'candidate_id'}), encoding='utf-8')
+    seed_training.register(source)
     legacy = dict(candidate_id='old-selected', condition='old', class_name='deathknight',
                   spec='unholy', targets=1, program=[['army_of_the_dead']], family='old',
                   score=1., scores=[1.], template_sha256='old', engines={})
@@ -484,7 +487,7 @@ def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path)
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     try:
@@ -523,6 +526,8 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_
     import burst
     import dual_task
     import codec
+    import sequence
+    from test_interface import InterfaceTests
     import threading
     from interface import create_server
     from urllib.request import Request, urlopen
@@ -565,12 +570,13 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_
             assert server.tasks[task_id][1].cancel_event.wait(5)
         return original_save(row)
 
+    monkeypatch.setattr(sequence, 'evaluate', InterfaceTests._ui_score)
     monkeypatch.setattr(task, 'run_task', run)
     monkeypatch.setattr(codec, 'collection', collect)
     monkeypatch.setattr(dual_task, '_save', save)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     request = Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
@@ -625,7 +631,7 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     try:
@@ -650,7 +656,7 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
         server.shutdown();server.server_close();thread.join(3)
 
 
-def test_restarted_page_recovers_parent_after_real_process_exit(tmp_path, installed_data_store):
+def test_restarted_page_recovers_parent_after_real_process_exit(tmp_path, installed_data_store, monkeypatch):
     import result_store
     import threading
     import sys
@@ -708,8 +714,11 @@ server.serve_forever()
     assert (destination / 'single_target/reference').exists()
     runtime.cancel();process_thread.join(10)
     assert stopped and not process_thread.is_alive()
+    import sequence
+    from test_interface import InterfaceTests
+    monkeypatch.setattr(sequence, 'evaluate', InterfaceTests._ui_score)
     server = create_server(page_root)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
     try:

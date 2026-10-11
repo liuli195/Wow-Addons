@@ -769,7 +769,11 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
     from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
     state = store.state
-    run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8')).get('run_id')
+    try:
+        run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8')).get('run_id')
+    except BaseException:
+        store.close()
+        raise
     if not isinstance(run_id, str) or not run_id:
         store.close()
         raise TaskError('任务缺少结果中心身份，请创建新任务')
@@ -971,8 +975,10 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         raise TaskError(str(error)) from error
     finally:
         runtime.reservation = None
-        store.publish()
-        store.close()
+        try:
+            store.publish()
+        finally:
+            store.close()
 
 
 @contextmanager

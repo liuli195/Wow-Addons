@@ -85,17 +85,18 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None):
+                   on_native_start=None, score=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     if on_native_start is not None:
         on_native_start()
     input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
-    score = score_offset + 100.0 + sum(
-        command.get("spell_id", command.get("item_id", 0))
-        for block in candidate["blocks"] for command in block
-    ) / 1000.0
+    if score is None:
+        score = score_offset + 100.0 + sum(
+            command.get("spell_id", command.get("item_id", 0))
+            for block in candidate["blocks"] for command in block
+        ) / 1000.0
     samples = max(1, iterations - 1)
     report = _fast_report(character, score, samples)
     (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
@@ -162,6 +163,26 @@ def _fast_search_boundary():
 
 
 @contextmanager
+def _captured_task_connections():
+    import search
+
+    original_connect = search.sqlite3.connect
+    connections = []
+
+    def connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    try:
+        with patch.object(search.sqlite3, 'connect', side_effect=connect):
+            yield connections
+    finally:
+        for connection in connections:
+            connection.close()
+
+
+@contextmanager
 def _apl_task_boundary(native=None):
     import engine
     import sequence
@@ -197,6 +218,109 @@ def _apl_task_boundary(native=None):
 
 
 class SearchAndValidationTests(TestCase):
+    def test_task_store_initialization_failure_closes_connection(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory(prefix='sim2gse-store-init-failure-') as directory:
+            destination = Path(directory) / 'task'
+            destination.mkdir()
+            database = sqlite3.connect(destination / 'task.sqlite3')
+            try:
+                database.execute('CREATE TABLE state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
+                database.execute('INSERT INTO state VALUES (1, ?)', ('{invalid-state',))
+                database.commit()
+            finally:
+                database.close()
+            with _captured_task_connections() as connections:
+                with self.assertRaises(json.JSONDecodeError) as caught:
+                    TaskStore(destination)
+                self.assertEqual(caught.exception.doc, '{invalid-state')
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
+    def test_task_profile_parse_failure_closes_connection_and_keeps_error(self):
+        import sqlite3
+
+        original_read = Path.read_text
+        with tempfile.TemporaryDirectory(prefix='sim2gse-profile-failure-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+
+            def read(path, *args, **kwargs):
+                if path == destination / 'profile.json':
+                    return '{invalid-profile'
+                return original_read(path, *args, **kwargs)
+
+            with _fast_search_boundary(), _captured_task_connections() as connections, \
+                    patch.object(Path, 'read_text', new=read):
+                with self.assertRaises(json.JSONDecodeError) as caught:
+                    run_task(source, destination, search_config=dict(
+                        candidate_limit=1, batch_targets=(2,), iterations=2,
+                        validation_batches=1, scenarios=('nominal',), max_processes=1))
+                self.assertEqual(caught.exception.doc, '{invalid-profile')
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
+    def test_task_store_diagnostics_write_failure_still_closes_connection(self):
+        import sqlite3
+
+        original_write = Path.write_text
+        failure = OSError('diagnostics unavailable')
+        with tempfile.TemporaryDirectory(prefix='sim2gse-diagnostics-failure-') as directory:
+            destination = Path(directory) / 'task'
+            destination.mkdir()
+
+            def write(path, *args, **kwargs):
+                if path == destination / 'diagnostics.json':
+                    raise failure
+                return original_write(path, *args, **kwargs)
+
+            with _captured_task_connections() as connections:
+                store = TaskStore(destination)
+                store.diagnostics_mode = 'summary'
+                with patch.object(Path, 'write_text', new=write), \
+                        self.assertRaises(OSError) as caught:
+                    store.close()
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
+    def test_task_final_publish_failure_still_closes_connection(self):
+        import sqlite3
+        from runtime import TaskRuntime
+
+        original_write = Path.write_text
+        failure = OSError('final progress unavailable')
+        runtime = TaskRuntime(60)
+        failed_writes = []
+        with tempfile.TemporaryDirectory(prefix='sim2gse-final-publish-failure-') as directory:
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            destination = Path(directory) / 'task'
+
+            def write(path, *args, **kwargs):
+                if path == destination / 'progress.pending.json' and runtime.reservation is None:
+                    failed_writes.append(path)
+                    raise failure
+                return original_write(path, *args, **kwargs)
+
+            with _fast_search_boundary(), _captured_task_connections() as connections, \
+                    patch.object(Path, 'write_text', new=write):
+                with self.assertRaises(OSError) as caught:
+                    run_task(source, destination, _runtime=runtime, search_config=dict(
+                        candidate_limit=1, batch_targets=(2,), iterations=2,
+                        validation_batches=1, scenarios=('nominal',), max_processes=1))
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(failed_writes, [destination / 'progress.pending.json'])
+                self.assertIsNone(runtime.reservation)
+                self.assertEqual(len(connections), 1)
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
+                    connections[0].execute('SELECT 1')
+
     def test_normal_task_and_dual_scene_still_refuse_four_processes(self):
         import dual_task
         from search import config_for
@@ -2290,13 +2414,17 @@ class SearchAndValidationTests(TestCase):
         import itertools
         import search
         import sequence
+        import result_store
 
         def equal_damage(profile, candidate, folder, **kwargs):
             nonlocal diagnostic_rounds
             if kwargs.get('trace'):
                 diagnostic_rounds += 1
             result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            damage = 200.0 if improve and diagnostic_rounds >= 3 and result['blocks'] not in starts else 100.0
+            # 同一程序的构造成绩固定，后续诊断不能把已发布请求从100改成200。
+            key = json.dumps(sequence.compiled_identity(candidate), sort_keys=True)
+            damage = scores.setdefault(key, 200.0 if improve and diagnostic_rounds >= 3
+                                      and result['blocks'] not in starts else 100.0)
             result['summary']['dps'] = damage
             result['report']['sim']['statistics']['raid_dps']['mean'] = damage
             result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
@@ -2306,13 +2434,16 @@ class SearchAndValidationTests(TestCase):
         for count, improve in ((4, False), (8, False), (4, True)):
             with self.subTest(starts=count, improves=improve), tempfile.TemporaryDirectory() as directory:
                 diagnostic_rounds = 0
+                scores = {}
                 source = Path(directory) / 'role.simc'
                 source.write_text(sample_profile(), encoding='utf-8')
                 names = ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')
                 starts = [[[name] for name in order]
                           for order in itertools.islice(itertools.permutations(names), count)]
                 inputs = starts + [starts[0], [['missing_action']]]
+                # 不同构造评分场景不共享同condition的真实报告库。
                 with _fast_search_boundary(), \
+                        patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'), \
                         patch.object(search, 'initial_programs', return_value=inputs), \
                         patch.object(sequence, 'evaluate', side_effect=equal_damage):
                     result = run_task(source, Path(directory) / 'task', search_config=dict(
