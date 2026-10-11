@@ -64,6 +64,7 @@ Config.DEFAULTS = {
         },
         boilingPoint = {
             enabled = true,
+            highlightFill = { 1, 0.82, 0 },
             fill = { 0.77, 0.12, 0.23 }, fillAlpha = 1,
             bg = { 0.77, 0.12, 0.23 }, bgAlpha = 0,
         },
@@ -348,6 +349,9 @@ function Config.CellPlan(elementKey)
     end
     if elementKey == "coagulatedBlood" or elementKey == "boilingPoint" then
         plan[2].modeKey = nil
+    end
+    if elementKey == "boilingPoint" then
+        plan[2].hintColorKey = "highlightFill"
     end
     if elementKey == "coagulatedBlood" then
         plan[1].gear = { { kind = "slider", text = "最大显示层数", key = "maxStacks",
@@ -660,6 +664,11 @@ function Config.BuildPage(_, parent, yOffset)
         if not (cell and cell.kind == "color" and region) then return end
         if EUI._prebuilding or not EUI.BuildColorSwatch then return end
         local specs = CellSwatches(store, cell.colorKey, cell.modeKey, cell.source)
+        if cell.hintColorKey then
+            local hint = CellSwatches(store, cell.hintColorKey, nil, nil)[1]
+            hint.tooltip = "这个颜色是高亮血沸的触发提示色"
+            table.insert(specs, 1, hint)
+        end
         for i = #specs, 1, -1 do
             AttachSwatch(region, specs[i], grayed, onChanged)
         end

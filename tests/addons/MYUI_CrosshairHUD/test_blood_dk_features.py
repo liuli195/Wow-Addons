@@ -268,7 +268,18 @@ now=11.5;Tick();local halfway=fill.mask.rotation
 assert(initial~=halfway,"time must advance the displayed fill")
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
 assert(fill.mask.rotation==halfway,"new proc must not reset this countdown")
-    now=13.4;Tick();assert(fill.shown,"pending proc must continue at the old deadline")
+Near(fill.color[1],1);Near(fill.color[2],0.82);Near(fill.color[3],0)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",999)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",999)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",secret)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","ordinary",50842)
+Event("UNIT_POWER_UPDATE");Near(fill.color[2],0.82)
+now=13.4;Tick();assert(fill.shown,"pending proc must continue at the old deadline")
+Near(fill.color[2],0.82) -- Continuation clears the prediction proc, not native highlight.
+local continued=fill.mask.rotation
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+assert(fill.mask.rotation==continued,"unpaired HIDE must not reset the countdown")
+Near(fill.color[1],0.77);Near(fill.color[2],0.12);Near(fill.color[3],0.23)
 now=16;Tick();assert(not fill.shown,"a round without new proc must hide on expiry")
 -- Opposite event order, unrelated units/spells, and a cast outside the pairing window.
 now=20;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
@@ -304,6 +315,100 @@ now=71.5;Event("UNIT_SPELLCAST_SUCCEEDED","player","cast7",50842)
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
 now=73.2;Tick();assert(fill.shown)
 now=74.5;Tick();assert(not fill.shown,"second manual consumption must expire at its cast+3")
+''')
+
+
+def test_boiling_point_hint_swatch_layout_tooltip_saved_color_and_shared_alpha():
+    run_scenario(r'''
+local swatches,tip,opened={},nil,0
+local dualRow=EllesmereUI.Widgets.DualRow
+function EllesmereUI.Widgets:DualRow(parent,y,left,right)
+    local row,h=dualRow(self,parent,y,left,right)
+    for _,entry in ipairs({{row._leftRegion,left},{row._rightRegion,right}}) do
+        entry[1].text=entry[2].text
+        entry[1]._control={}
+        entry[1].GetFrameLevel=function() return 1 end
+    end
+    return row,h
+end
+function EllesmereUI.BuildColorSwatch(region,_,getRGB,setRGB)
+    local s={region=region,getRGB=getRGB,choose=setRGB,scripts={}}
+    function s:SetPoint(_,anchor) self.anchor=anchor end
+    function s:SetAlpha(value) self.alpha=value end
+    function s:HookScript(event,fn) self.scripts[event]=fn end
+    function s:GetScript(event) return self.scripts[event] end
+    function s:SetScript(event,fn) self.scripts[event]=fn end
+    s.scripts.OnClick=function() opened=opened+1 end
+    if section=="沸点循环监控条" and region.text=="填充颜色" then
+        swatches[#swatches+1]=s
+    end
+    return s
+end
+function EllesmereUI.ShowWidgetTooltip(_,text) tip=text end
+function EllesmereUI.HideWidgetTooltip() tip=nil end
+EllesmereUI._prebuilding=false;Page()
+assert(#swatches==2,"boiling fill must have exactly the normal and hint swatches")
+local normal,hint=swatches[1],swatches[2]
+assert(hint.anchor==normal and normal.anchor==normal.region._control,"hint must precede normal fill")
+hint.scripts.OnEnter();assert(tip=="这个颜色是高亮血沸的触发提示色")
+hint.scripts.OnLeave();assert(tip==nil)
+local r,g,b=hint.getRGB();Near(r,1);Near(g,0.82);Near(b,0)
+hint.scripts.OnClick(hint);assert(opened==1,"hint must open the existing editable color picker")
+hint.choose(0.1,0.6,0.9);normal.choose(0.2,0.3,0.4)
+rows["沸点循环监控条"]["填充颜色"].setValue(35)
+NS.Config.Load()
+local cfg=NS.Config.Get().elements.boilingPoint
+assert(#NS.Config.CellPlan("boilingPoint")==3 and cfg.fillMode==nil)
+Near(cfg.highlightFill[1],0.1);Near(cfg.highlightFill[2],0.6);Near(cfg.highlightFill[3],0.9)
+local fill
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+Event("UNIT_SPELLCAST_SUCCEEDED","player","manual",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+Near(fill.color[1],0.2);Near(fill.color[4],0.35)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","ordinary",50842)
+Event("UNIT_POWER_UPDATE");Near(fill.color[1],0.2)
+now=11;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Near(fill.color[1],0.1);Near(fill.color[2],0.6);Near(fill.color[3],0.9);Near(fill.color[4],0.35)
+now=11.4;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+Near(fill.color[1],0.2);Near(fill.color[4],0.35)
+now=13.4;Tick();assert(fill.shown,"unpaired HIDE must preserve the pending continuation")
+Near(fill.color[1],0.2)
+rows["沸点循环监控条"]["启用"].setValue(false)
+hint.choose(1,0,0);Near(cfg.highlightFill[1],0.1)
+hint.scripts.OnClick(hint);assert(opened==1,"disabled hint must not open a picker")
+rows["沸点循环监控条"]["启用"].setValue(true)
+playerSpec=251;Event("PLAYER_SPECIALIZATION_CHANGED")
+hint.choose(1,0,0);Near(cfg.highlightFill[1],0.1)
+playerSpec=250;Event("PLAYER_SPECIALIZATION_CHANGED");assert(not fill.shown)
+now=20;Event("UNIT_SPELLCAST_SUCCEEDED","player","manual2",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=21;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+rows["常规"]["启用准星HUD"].setValue(false)
+assert(not NS.Elements.frame.shown,"HUD parent must hide on the global switch")
+hint.choose(1,0,0);Near(cfg.highlightFill[1],0.1)
+rows["常规"]["启用准星HUD"].setValue(true)
+assert(not fill.shown,"re-enabling HUD must not restore a historical countdown")
+now=30;Event("UNIT_SPELLCAST_SUCCEEDED","player","manual3",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=31;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+-- Reload the real modules with the same SavedVariables and fresh game objects.
+frames,textures,lines,tickers={},{},{},{}
+MYUI_CHH=nil;EllesmereUI._prebuilding=true
+for _,name in ipairs({"Logic","Elements","Config","Debug","Core"}) do
+    assert(loadfile(dir.."/"..name..".lua"))()
+end
+NS=MYUI_CHH;Event("PLAYER_LOGIN")
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+assert(not fill.shown,"reload must start with no countdown")
+Near(NS.Config.Get().elements.boilingPoint.highlightFill[2],0.6)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(not fill.shown)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","after-reload",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+Near(fill.color[1],0.2);Near(fill.color[4],0.35)
 ''')
 
 

@@ -378,6 +378,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ]]
 local boiling = {}
+-- 原生高亮与预测触发/待续轮独立；预测到期不能代替发光 HIDE。
+local bloodBoilHighlighted = false
 local function ClearBoiling()
     boiling.proc, boiling.pending, boiling.cast, boiling.hide, boiling.deadline = nil, nil, nil, nil, nil
 end
@@ -387,6 +389,7 @@ local function BoilingFraction()
     if cfg.enabled == false or cfg.elements.boilingPoint.enabled == false
         or not Config.Available("boilingPoint") then
         ClearBoiling()
+        bloodBoilHighlighted = false
         return nil
     end
     local now = GetTime()
@@ -411,10 +414,12 @@ local function BoilingEvent(event, unit, _, spellID)
     else
         if MaybeNumber(unit) ~= 50842 then return end
         if event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" then
+            bloodBoilHighlighted = true
             boiling.proc = true
             if boiling.deadline then boiling.pending = true end
             return
         end
+        bloodBoilHighlighted = false
         boiling.hide = GetTime()
     end
     if boiling.cast and boiling.hide and math.abs(boiling.cast - boiling.hide) <= 0.30 + 1e-9 then
@@ -485,6 +490,9 @@ local function BuildState()
     state.boilingPoint = ElementState(elements.boilingPoint,
         fraction and Logic.MaskAngle(arc.start, arc.span, fraction, arc.reverse), fraction ~= nil)
     state.boilingPoint.visible = fraction ~= nil
+    if fraction and bloodBoilHighlighted then
+        state.boilingPoint.fillColor = elements.boilingPoint.highlightFill
+    end
     if NS.Debug then NS.Debug.ApplyProbe(state) end
     local marker = elements.deathStrike
     state.deathStrike = { visible = marker.enabled ~= false and last.costMarker ~= nil,
@@ -633,6 +641,7 @@ local talentPending = false
 local function OnEvent(_, event, ...)
     if event == "PLAYER_SPECIALIZATION_CHANGED" or event == "ACTIVE_TALENT_GROUP_CHANGED" then
         ClearBoiling()
+        bloodBoilHighlighted = false
         Core.UpdateReadings()
         Refresh()
         local EUI = rawget(_G, "EllesmereUI")
