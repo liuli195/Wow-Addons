@@ -254,12 +254,17 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 本插件的配置不变
 ### Requirement: Frame strata is configurable
 
-系统 MUST 提供框架层级配置（低／中／高／对话框，默认中）。在该层级下 HUD MUST 位于所有窗口类界面之下。
+系统 MUST 提供框架层级配置（低／中／高／对话框，默认中）。在该层级下 HUD MUST 位于所有窗口类界面之下。沸点细弧的填充 MUST 完整显示在能量填充之上，灵打消耗刻度 MUST 显示在细弧填充之上；显示顺序 MUST 随整体图层与缩放保持，MUST NOT 拦截鼠标或改变既有位置、颜色、透明度及圆弧填充方向。
 
 #### Scenario: A window is opened over the HUD
 
 - **WHEN** 玩家打开暴雪设置窗口或任意下拉菜单
 - **THEN** HUD 显示在它们之下
+
+#### Scenario: Fine arc remains visible over power
+
+- **WHEN** 能量填充、沸点的满格提示或满格／半格倒计时、灵打消耗刻度同时显示
+- **THEN** 能量不会覆盖沸点细弧，灵打刻度仍显示在细弧之上，隐藏后重现及整体缩放不改变此顺序
 ### Requirement: A diagnostic command reports the environment
 
 正式插件 MUST 保留手动诊断命令 /chh diag（/chh report 也可），默认不运行诊断。调用后 MUST 打开可全选复制的文本窗口，报告插件及游戏版本、依赖状态、配置摘要、最近读数状态和凝固之血绑定状态。聊天 MUST 仅显示短提示，MUST NOT 自动发送报告。报告 MUST NOT 包含账号、角色名、聊天、本机路径、原始错误文本或受限数值。正式包 MUST NOT 提供假数据演示及独立测试工具。
@@ -486,7 +491,7 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 隐藏刻度，恢复后重新显示，不猜测位置
 ### Requirement: New installations use the confirmed HUD defaults without replacing saved settings
 
-新安装 MUST 默认位置居中、可见性总是显示且没有隐藏条件；整体缩放0.8、图层中、所有组成项开启。血条默认职业色、能量条默认能量色、职业资源默认资源色，准星、凝固之血及灵打消耗刻度默认白色，填充浓淡100%；沸点默认开启，填充为自定义 RGB(0.77,0.12,0.23)、100%，背景为相同RGB、0%。基础条背景 MUST 为深灰#313131、100%，凝固之血及沸点背景0%；阴影黑色80%、最大显示层数100、刻度粗细2。已有设置 MUST 保留，升级只补缺失默认项，不覆盖用户的位置、可见性或配色。
+新安装 MUST 默认位置居中、可见性总是显示且没有隐藏条件；整体缩放0.8、图层中、所有组成项开启。血条默认职业色、能量条默认能量色、职业资源默认资源色，准星、凝固之血及灵打消耗刻度默认白色，填充浓淡100%；沸点默认开启，普通填充为自定义 RGB(0.77,0.12,0.23)、100%，高亮提示色为自定义 RGB(1,0.82,0)且共用填充浓淡，背景为普通填充的相同RGB、0%。基础条背景 MUST 为深灰#313131、100%，凝固之血及沸点背景0%；阴影黑色80%、最大显示层数100、刻度粗细2。已有设置 MUST 保留，升级只补缺失默认项，不覆盖用户的位置、可见性或配色。
 
 #### Scenario: Fresh installation
 
@@ -548,7 +553,7 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 #### Scenario: Eligible without selected talents
 
 - **WHEN** 鲜血死亡骑士未点选对应天赋而查看这两项配置
-- **THEN** 两项仍按鲜血专精资格允许配置，实际无增益或无有效消费信号时对应弧线隐藏
+- **THEN** 两项仍按鲜血专精资格允许配置，凝固之血在实际无增益时隐藏；沸点在无运行倒计时且无原生血沸高亮时隐藏，原生高亮仍可显示满格静止提示
 
 #### Scenario: Switch away and back
 
@@ -561,12 +566,12 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 该项外观控件禁用，但启用开关仍能重新打开该项
 ### Requirement: Boiling Point Echo predicts a three-second arc after paired consumption signals
 
-沸点 MUST 在能量条外侧显示与凝固之血对应的右侧半粗细弧，仅表示根据玩家信号预测的三秒窗口，MUST NOT 被描述为读取到真实回声施法或增益到期。法术50842的发光出现 MUST 只表示收到触发；只有玩家法术50842施放成功与该法术发光消失的时间差不超过0.30秒时，才 MUST 推断一次强化消费并从该次施放时刻起算三秒。两种信号顺序 MUST 都可配对，每个有效配对 MUST 只消费一次。其他单位、其他法术、超窗或不可读受限信号 MUST NOT 启动或改变窗口，MUST NOT 对不可读负载做普通比较、运算或输出。配置 MUST 只有启用、填充和背景三项，颜色与透明度分别可自定义，MUST NOT 提供职业配色或最大层数控件。
+沸点 MUST 在能量条外侧显示与凝固之血对应的右侧半粗细弧，有效消费后的倒计时 MUST 仅表示根据玩家信号预测的三秒窗口，MUST NOT 被描述为读取到真实回声施法或增益到期。法术50842的原生发光出现 MUST 表示当前高亮及收到触发，MUST NOT 单独新建三秒倒计时；无倒计时的高亮显示 MUST 遵循满格静止提示规则；只有玩家法术50842施放成功与该法术发光消失的时间差不超过0.30秒时，才 MUST 推断一次强化消费并从该次施放时刻起算三秒。两种信号顺序 MUST 都可配对，每个有效配对 MUST 只消费一次。其他单位、其他法术、超窗或不可读受限信号 MUST NOT 启动或改变窗口，MUST NOT 对不可读负载做普通比较、运算或输出。配置 MUST 保留启用、填充和背景三项；填充格内 MUST 按提示色、普通填充色、现有填充透明度排列，两种填充色 MUST 可分别自定义并共用原填充透明度，背景颜色与透明度 MUST 保持独立，MUST NOT 提供职业配色、最大层数、新开关或独立提示色透明度控件。
 
 #### Scenario: Glow appears without consumption
 
 - **WHEN** 只收到50842发光出现，没有有效的玩家施放成功与发光消失配对
-- **THEN** 记录触发但不新建三秒倒计时
+- **THEN** 记录当前高亮与触发但不新建三秒倒计时；若无运行倒计时则显示满格静止提示
 
 #### Scenario: Cast and glow disappearance pair in either order
 
@@ -579,7 +584,7 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 - **THEN** 不据此启动或改变预测窗口，基础资源显示不受影响且不输出受限值
 ### Requirement: Boiling Point Echo advances pending procs without resetting an active round
 
-已有沸点窗口期间的新触发 MUST 只记录为一次待续轮标记，MUST NOT 重置当前剩余时间。当前轮到期且有待续标记时 MUST 从旧截止时刻追加三秒并清除该标记，MUST NOT 从迟到的刷新时刻重新起算，也 MUST NOT 按重复触发数量排队。新的有效玩家手动消费配对 MUST 重新设置为该次施放时刻加三秒，并清除旧待续标记。没有待续标记而到期时，背景和填充 MUST 全部隐藏。关闭总开关或沸点开关、切换专精时 MUST 清除预测状态；重载后 MUST 从空状态开始，MUST NOT 猜测历史触发或消费。
+已有沸点窗口期间的新触发 MUST 只记录为一次待续轮标记，MUST NOT 重置当前剩余时间。当前轮到期且有待续标记时 MUST 从旧截止时刻追加三秒并清除该标记，MUST NOT 从迟到的刷新时刻重新起算，也 MUST NOT 按重复触发数量排队。新的有效玩家手动消费配对 MUST 重新设置为该次施放时刻加三秒，并清除旧待续标记。没有待续标记而到期时，MUST NOT 自行续轮；原生血沸仍高亮时 MUST 回到满格静止提示，无高亮时背景和填充 MUST 全部隐藏。预测到期或清除待续标记 MUST NOT 伪造原生高亮消失。关闭总开关或沸点开关、切换专精时 MUST 清除预测与实时高亮状态；重载后 MUST 从空状态开始，MUST NOT 猜测历史高亮、触发或消费。
 
 #### Scenario: Pending proc continues at the old deadline
 
@@ -593,13 +598,18 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 #### Scenario: No pending proc at expiry
 
-- **WHEN** 窗口到期且无待续标记
+- **WHEN** 窗口到期且无待续标记、无原生血沸高亮
 - **THEN** 背景与填充全部隐藏，不自行续轮
 
 #### Scenario: State resets
 
 - **WHEN** 玩家关闭总开关或沸点开关、切换专精或重载界面
-- **THEN** 预测状态清空，之后重新启用不恢复猜测的历史窗口
+- **THEN** 预测与实时高亮状态清空，之后重新启用不恢复猜测的历史窗口或高亮
+
+#### Scenario: Native highlight remains at expiry
+
+- **WHEN** 无待续标记的倒计时到期，但原生血沸高亮仍存在
+- **THEN** 回到满格静止提示，不自行启动新三秒窗口；后续原生高亮消失且无倒计时时背景和填充全部隐藏
 ### Requirement: Reused media preserves existing fills and the assembled crosshair
 
 正式HUD素材 MUST 仅包含当前被引用的15种BLP成品。左右主弧及其阴影 MUST 共用对应主体轮廓，六个符文及其阴影 MUST 按三对对称轮廓复用；右侧纹理镜像后，满、半、空状态及原有填充方向 MUST 保持不变，MUST NOT 将填充遮罩随纹理镜像。左右细弧 MUST 共用居中轮廓且与HUD圆心重合；右细弧只镜像纹理，凝固之血的原生受限层数显示 MUST 保持不变。准星 MUST 由臂、臂影、点、点影四张源图组成四臂、四臂影与各一次中心点、点影；线与线影 MUST 以相同90度方向旋转，中心两层 MUST 各只显示一次。四张源图尺寸 MUST 分别为256×64、512×256、64×64和256×256，并保持八像素每设计单位、已确认间距、独立阴影层级、染色与整体缩放。
@@ -623,3 +633,26 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 - **WHEN** 检查正式包的HUD素材
 - **THEN** 仅有15种被引用的完整缩小层BLP，不携带已删除的重复主弧、符文或旧准星成品
+### Requirement: Blood Boil native highlight selects the hint colour and a static idle arc
+
+系统 MUST 仅用可读的法术50842原生发光出现与消失信号控制沸点的实时高亮提示，普通施法、充能、按键反馈、无关法术与不可读负载 MUST NOT 自行触发提示色。运行中的倒计时 MUST 优先保持原比例和截止，高亮时使用提示色、高亮消失时立即恢复普通填充色，MUST NOT 重置三秒窗口或待续轮。无倒计时但仍高亮时 MUST 使用现有细弧显示满格静止提示；重复高亮或时间经过 MUST NOT 凭空启动倒计时。无倒计时且高亮消失时背景和填充 MUST 全部隐藏。提示色 MUST 默认RGB(1,0.82,0)，可从普通填充色前的色块修改、保存及重载，悬停说明 MUST 为“这个颜色是高亮血沸的触发提示色”，并 MUST 共用原填充透明度。当前总／单项开关、鲜血专精资格和整体可见性规则 MUST 继续生效，关闭、切换专精或重载 MUST 清除运行高亮且不恢复历史。
+
+#### Scenario: Active countdown changes colour without restarting
+
+- **WHEN** 运行中的沸点倒计时收到50842原生高亮出现，之后收到该高亮消失
+- **THEN** 填充先使用提示色再恢复普通色，透明度、比例、截止与原待续轮行为保持不变
+
+#### Scenario: Idle highlight remains full and static
+
+- **WHEN** 没有运行倒计时而收到50842原生高亮出现，随后重复出现或经过三秒
+- **THEN** 使用提示色与现有填充透明度显示满格静止细弧，不新建三秒窗口
+
+#### Scenario: Idle highlight disappears or valid consumption arrives
+
+- **WHEN** 空闲高亮消失，且没有有效消费配对；或玩家施放与高亮消失按既有规则形成有效配对
+- **THEN** 前者整条隐藏，后者按施放时刻起算既有三秒倒计时；保留双向事件配对前的原有短间隔
+
+#### Scenario: Hint colour is configured and state resets
+
+- **WHEN** 玩家修改提示色并保存、重载，或关闭开关、切换专精
+- **THEN** 配置颜色按既有持久化规则保留且控件跟随禁用规则，运行高亮与预测状态清空，不恢复历史提示

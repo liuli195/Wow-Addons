@@ -66,8 +66,8 @@ local function Region()
     local t = { shown = true }
     function t:SetTexture(path, _, _, filter) self.path = path; self.filter = filter end
     function t:SetSize(w,h) self.w,self.h=w,h end
-    function t:SetPoint(_,_,_,x,y) self.x,self.y=x,y end
-    function t:SetAllPoints() end
+    function t:SetPoint(_,parent,_,x,y) self.pointParent=parent;self.x,self.y=x,y end
+    function t:SetAllPoints(parent) self.allPoints=parent end
     function t:AddMaskTexture(mask) self.mask=mask end
     function t:SetShown(v) self.shown=v end
     function t:SetRotation(v) self.rotation=v end
@@ -95,20 +95,20 @@ function CreateFrame(kind, _, parent, template)
     function f:SetValue(v) self.value=v end
     function f:GetMinMaxValues() return self.minimum,self.maximum end
     function f:GetValue() return self.value end
-    function f:CreateTexture(_,_,_,sub)
-        local t=Region();t.sub=sub;textures[#textures+1]=t;return t
+    function f:CreateTexture(_,layer,_,sub)
+        local t=Region();t.parent=self;t.drawLayer=layer;t.sub=sub;textures[#textures+1]=t;return t
     end
-    function f:CreateMaskTexture() return Region() end
+    function f:CreateMaskTexture() local t=Region();t.parent=self;return t end
     function f:CreateLine() local t=Region();lines[#lines+1]=t;return t end
     function f:RegisterEvent(e) self.events[e]=true end
     function f:RegisterUnitEvent(e,unit) assert(e:sub(1,5)=="UNIT_");assert(unit=="player");self.events[e]=true end
     function f:SetScript(e,fn) self.scripts[e]=fn end
     function f:UnregisterAllEvents() self.events={} end
-    function f:SetAllPoints() end
+    function f:SetAllPoints(parent) self.allPoints=parent end
     function f:SetScale(v) self.scale=v end
     function f:GetFrameLevel() return self.level or 5 end
     function f:SetFrameLevel(v) self.level=v end
-    function f:EnableMouse() end
+    function f:EnableMouse(v) self.mouseEnabled=v end
     function f:SetSize(w,h) self.w,self.h=w,h end
     function f:GetWidth() return self.w end
     function f:GetHeight() return self.h end
@@ -197,6 +197,7 @@ def run_scenario(scenario, native=False):
                                 capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'PASS: blood DK features' in result.stdout
+    return result.stdout
 
 
 def test_lowest_applicable_runic_cost():
@@ -259,7 +260,9 @@ end
 local fill=assert(Echo(),"right-side fine arc must reuse the centered material")
 assert(not fill.shown)
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
-assert(not fill.shown,"proc alone must not start the 3-second echo")
+assert(fill.shown and fill.mask,"idle native highlight must display the full fine arc")
+Near(fill.color[1],1);Near(fill.color[2],0.82);Near(fill.color[3],0)
+Near(fill.mask.rotation,math.rad(-609)) -- Full right-side arc, not a started countdown.
 Event("UNIT_SPELLCAST_SUCCEEDED","player","cast1",50842)
 now=10.2;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
 assert(fill.shown and fill.mask,"paired cast/HIDE must display the right fine arc")
@@ -268,7 +271,18 @@ now=11.5;Tick();local halfway=fill.mask.rotation
 assert(initial~=halfway,"time must advance the displayed fill")
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
 assert(fill.mask.rotation==halfway,"new proc must not reset this countdown")
-    now=13.4;Tick();assert(fill.shown,"pending proc must continue at the old deadline")
+Near(fill.color[1],1);Near(fill.color[2],0.82);Near(fill.color[3],0)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",999)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",999)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",secret)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","ordinary",50842)
+Event("UNIT_POWER_UPDATE");Near(fill.color[2],0.82)
+now=13.4;Tick();assert(fill.shown,"pending proc must continue at the old deadline")
+Near(fill.color[2],0.82) -- Continuation clears the prediction proc, not native highlight.
+local continued=fill.mask.rotation
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+assert(fill.mask.rotation==continued,"unpaired HIDE must not reset the countdown")
+Near(fill.color[1],0.77);Near(fill.color[2],0.12);Near(fill.color[3],0.23)
 now=16;Tick();assert(not fill.shown,"a round without new proc must hide on expiry")
 -- Opposite event order, unrelated units/spells, and a cast outside the pairing window.
 now=20;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
@@ -304,6 +318,238 @@ now=71.5;Event("UNIT_SPELLCAST_SUCCEEDED","player","cast7",50842)
 Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
 now=73.2;Tick();assert(fill.shown)
 now=74.5;Tick();assert(not fill.shown,"second manual consumption must expire at its cast+3")
+''')
+
+
+def test_boiling_point_idle_highlight_stays_full_and_returns_after_countdown():
+    run_scenario(r'''
+local controls=rows["沸点循环监控条"]
+controls["填充颜色"].setValue(55)
+local fill
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+assert(fill and not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(fill.shown)
+Near(fill.mask.rotation,math.rad(-609))
+Near(fill.color[1],1);Near(fill.color[2],0.82);Near(fill.color[3],0);Near(fill.color[4],0.55)
+local full=fill.mask.rotation
+now=12;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+now=16;Tick();assert(fill.shown and fill.mask.rotation==full,"idle highlight must not count down")
+now=20;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(not fill.shown)
+now=21;Tick();assert(not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",999)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",secret)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","ordinary",50842)
+Event("UNIT_POWER_UPDATE");assert(not fill.shown,"ordinary and unreadable signals must not create an idle hint")
+now=22;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+controls["启用"].setValue(false);assert(not fill.shown)
+controls["启用"].setValue(true);Tick();assert(not fill.shown,"re-enable must clear idle highlight")
+now=23;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+rows["常规"]["启用准星HUD"].setValue(false);assert(not NS.Elements.frame.shown)
+rows["常规"]["启用准星HUD"].setValue(true);assert(not fill.shown)
+now=24;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+playerSpec=251;Event("PLAYER_SPECIALIZATION_CHANGED");assert(not fill.shown)
+playerSpec=250;Event("PLAYER_SPECIALIZATION_CHANGED");assert(not fill.shown)
+now=25;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown)
+-- Reload through the same login entry with no historical idle highlight.
+frames,textures,lines,tickers={},{},{},{}
+MYUI_CHH=nil;EllesmereUI._prebuilding=true
+for _,name in ipairs({"Logic","Elements","Config","Debug","Core"}) do
+    assert(loadfile(dir.."/"..name..".lua"))()
+end
+NS=MYUI_CHH;Event("PLAYER_LOGIN")
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+assert(not fill.shown,"reload must clear idle highlight")
+-- The existing timer wins; the single continuation stays tied to the old deadline.
+now=30;Event("UNIT_SPELLCAST_SUCCEEDED","player","manual",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=31;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(fill.shown and fill.mask.rotation~=full,"a running countdown must not become an idle full arc")
+now=33.5;Tick();assert(fill.shown and fill.mask.rotation~=full,"pending continuation must retain its old deadline")
+now=36;Tick();assert(fill.shown and fill.mask.rotation==full,"expiry with native highlight must return to full idle hint")
+Near(fill.color[2],0.82);Near(fill.color[4],0.55)
+now=40;Tick();assert(fill.shown and fill.mask.rotation==full)
+now=41;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+now=45;Tick();assert(fill.shown and fill.mask.rotation==full,"repeated idle SHOW must not start another timer")
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(not fill.shown)
+''')
+
+
+def test_boiling_point_and_marker_keep_native_blood_fill_order_above_power():
+    output = run_scenario(r'''
+local hud=NS.Elements.frame
+local power=assert(Layer("health_arc.blp",1,32))
+local marker=assert(Marker())
+local fill,bg
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.coords then
+        if t.mask then fill=t else bg=t end
+    end
+end
+assert(fill and bg)
+local nativeBar=assert(nativeContainer.button.boundBar)
+local nativeBg
+for _,t in ipairs(textures) do if t.parent==nativeContainer.button then nativeBg=t end end
+local function Order()
+    local overlay=fill.parent
+    assert(overlay~=hud and overlay.parent==hud and overlay.kind=="Frame",
+        "right fine fill must use a child frame above power, like production native blood")
+    assert(overlay:GetFrameLevel()==hud:GetFrameLevel()+1)
+    assert(overlay:GetFrameLevel()==nativeBar:GetFrameLevel())
+    assert(overlay.allPoints==hud and overlay.mouseEnabled==false)
+    assert(fill.mask.parent==overlay and marker.parent==overlay)
+    assert(fill.drawLayer=="ARTWORK" and fill.sub==1)
+    assert(marker.drawLayer=="ARTWORK" and marker.sub==2,"marker must stay above fine fill")
+    assert(fill.pointParent==hud and fill.mask.allPoints==hud and marker.pointParent==hud)
+    assert(power.parent==hud and power.drawLayer=="ARTWORK" and power.sub==1)
+    assert(bg.parent==hud and bg.sub==0,"fine background must keep its original parent")
+    assert(nativeBar.parent==nativeContainer.button and nativeBg.sub==0)
+    assert(nativeContainer.button:GetFrameLevel()==hud:GetFrameLevel()-1)
+    for _,t in ipairs(textures) do
+        if t~=fill and t~=marker and t~=nativeBg and t~=nativeBar.texture then
+            if t.parent.kind=="StatusBar" then
+                assert(t.parent.parent==hud,"probe bar must keep its original parent")
+            else
+                assert(t.parent==hud,"other HUD textures must keep their original parent")
+            end
+            if t.mask then assert(t.mask.parent==hud and t.mask.allPoints==hud) end
+        end
+    end
+end
+assert(not fill.shown and marker.shown and power.shown)
+NativeUpdate(75)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+assert(fill.shown and nativeContainer.button.shown)
+io.write(string.format("ORDER: power=HUD/%d/%s/%d; nativeFill=%d; nativeBg=%d; echo=%s/%d/%s/%d; mask=%s; marker=%s/%d/%s/%d\n",
+    power.parent:GetFrameLevel(),power.drawLayer,power.sub,nativeBar:GetFrameLevel(),nativeBg.parent:GetFrameLevel(),
+    fill.parent==hud and "HUD" or "child",fill.parent:GetFrameLevel(),fill.drawLayer,fill.sub,
+    fill.mask.parent==hud and "HUD" or "child",marker.parent==hud and "HUD" or "child",
+    marker.parent:GetFrameLevel(),marker.drawLayer,marker.sub))
+Order() -- 只记录游戏接口的层级契约；真实像素仍由游戏验收。
+Near(fill.mask.rotation,math.rad(-609));Near(fill.color[2],0.82)
+local powerRotation=power.mask.rotation
+now=16;Tick();Near(fill.mask.rotation,math.rad(-609));Order()
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842);assert(not fill.shown)
+now=20;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","consume",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+assert(fill.shown);Near(fill.color[1],0.77);Near(fill.mask.rotation,math.rad(-609));Order()
+now=21.5;Tick();Near(fill.mask.rotation,math.rad(-661));Order()
+for _,scale in ipairs({0.5,1,2}) do
+    rows["常规"]["HUD 缩放"].setValue(scale)
+    Order();Near(fill.w,128*scale);Near(fill.h,128*scale);Near(fill.x,0);Near(fill.y,0)
+    Near(Thickness(marker),1.5*scale)
+    assert(fill.coords[1]==1 and fill.coords[2]==0 and fill.mask.coords==nil)
+    assert(power.mask.rotation==powerRotation and nativeBar.value==75)
+end
+now=23;Tick();assert(not fill.shown and marker.shown and power.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown);Order()
+rows["沸点循环监控条"]["启用"].setValue(false);assert(not fill.shown and marker.shown)
+rows["沸点循环监控条"]["启用"].setValue(true)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown);Order()
+rows["常规"]["启用准星HUD"].setValue(false);assert(not hud.shown)
+rows["常规"]["启用准星HUD"].setValue(true);assert(hud.shown and not fill.shown)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown);Order()
+''',native=True)
+    print(output, end='')
+
+
+def test_boiling_point_hint_swatch_layout_tooltip_saved_color_and_shared_alpha():
+    run_scenario(r'''
+local swatches,tip,opened={},nil,0
+local dualRow=EllesmereUI.Widgets.DualRow
+function EllesmereUI.Widgets:DualRow(parent,y,left,right)
+    local row,h=dualRow(self,parent,y,left,right)
+    for _,entry in ipairs({{row._leftRegion,left},{row._rightRegion,right}}) do
+        entry[1].text=entry[2].text
+        entry[1]._control={}
+        entry[1].GetFrameLevel=function() return 1 end
+    end
+    return row,h
+end
+function EllesmereUI.BuildColorSwatch(region,_,getRGB,setRGB)
+    local s={region=region,getRGB=getRGB,choose=setRGB,scripts={}}
+    function s:SetPoint(_,anchor) self.anchor=anchor end
+    function s:SetAlpha(value) self.alpha=value end
+    function s:HookScript(event,fn) self.scripts[event]=fn end
+    function s:GetScript(event) return self.scripts[event] end
+    function s:SetScript(event,fn) self.scripts[event]=fn end
+    s.scripts.OnClick=function() opened=opened+1 end
+    if section=="沸点循环监控条" and region.text=="填充颜色" then
+        swatches[#swatches+1]=s
+    end
+    return s
+end
+function EllesmereUI.ShowWidgetTooltip(_,text) tip=text end
+function EllesmereUI.HideWidgetTooltip() tip=nil end
+EllesmereUI._prebuilding=false;Page()
+assert(#swatches==2,"boiling fill must have exactly the normal and hint swatches")
+local normal,hint=swatches[1],swatches[2]
+assert(hint.anchor==normal and normal.anchor==normal.region._control,"hint must precede normal fill")
+hint.scripts.OnEnter();assert(tip=="这个颜色是高亮血沸的触发提示色")
+hint.scripts.OnLeave();assert(tip==nil)
+local r,g,b=hint.getRGB();Near(r,1);Near(g,0.82);Near(b,0)
+hint.scripts.OnClick(hint);assert(opened==1,"hint must open the existing editable color picker")
+hint.choose(0.1,0.6,0.9);normal.choose(0.2,0.3,0.4)
+rows["沸点循环监控条"]["填充颜色"].setValue(35)
+NS.Config.Load()
+local cfg=NS.Config.Get().elements.boilingPoint
+assert(#NS.Config.CellPlan("boilingPoint")==3 and cfg.fillMode==nil)
+Near(cfg.highlightFill[1],0.1);Near(cfg.highlightFill[2],0.6);Near(cfg.highlightFill[3],0.9)
+local fill
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+Event("UNIT_SPELLCAST_SUCCEEDED","player","manual",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+Near(fill.color[1],0.2);Near(fill.color[4],0.35)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","ordinary",50842)
+Event("UNIT_POWER_UPDATE");Near(fill.color[1],0.2)
+now=11;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+Near(fill.color[1],0.1);Near(fill.color[2],0.6);Near(fill.color[3],0.9);Near(fill.color[4],0.35)
+now=11.4;Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+Near(fill.color[1],0.2);Near(fill.color[4],0.35)
+now=13.4;Tick();assert(fill.shown,"unpaired HIDE must preserve the pending continuation")
+Near(fill.color[1],0.2)
+rows["沸点循环监控条"]["启用"].setValue(false)
+hint.choose(1,0,0);Near(cfg.highlightFill[1],0.1)
+hint.scripts.OnClick(hint);assert(opened==1,"disabled hint must not open a picker")
+rows["沸点循环监控条"]["启用"].setValue(true)
+playerSpec=251;Event("PLAYER_SPECIALIZATION_CHANGED")
+hint.choose(1,0,0);Near(cfg.highlightFill[1],0.1)
+playerSpec=250;Event("PLAYER_SPECIALIZATION_CHANGED");assert(not fill.shown)
+now=20;Event("UNIT_SPELLCAST_SUCCEEDED","player","manual2",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=21;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+rows["常规"]["启用准星HUD"].setValue(false)
+assert(not NS.Elements.frame.shown,"HUD parent must hide on the global switch")
+hint.choose(1,0,0);Near(cfg.highlightFill[1],0.1)
+rows["常规"]["启用准星HUD"].setValue(true)
+assert(not fill.shown,"re-enabling HUD must not restore a historical countdown")
+now=30;Event("UNIT_SPELLCAST_SUCCEEDED","player","manual3",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+now=31;Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842)
+-- Reload the real modules with the same SavedVariables and fresh game objects.
+frames,textures,lines,tickers={},{},{},{}
+MYUI_CHH=nil;EllesmereUI._prebuilding=true
+for _,name in ipairs({"Logic","Elements","Config","Debug","Core"}) do
+    assert(loadfile(dir.."/"..name..".lua"))()
+end
+NS=MYUI_CHH;Event("PLAYER_LOGIN")
+for _,t in ipairs(textures) do
+    if t.path and t.path:find("coagulated_blood_fill.blp",1,true) and t.mask then fill=t end
+end
+assert(not fill.shown,"reload must start with no countdown")
+Near(NS.Config.Get().elements.boilingPoint.highlightFill[2],0.6)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW",50842);assert(fill.shown)
+Near(fill.color[1],0.1);Near(fill.color[2],0.6);Near(fill.color[3],0.9);Near(fill.color[4],0.35)
+Event("UNIT_SPELLCAST_SUCCEEDED","player","after-reload",50842)
+Event("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE",50842)
+Near(fill.color[1],0.2);Near(fill.color[4],0.35)
 ''')
 
 
