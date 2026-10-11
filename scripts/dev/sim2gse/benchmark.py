@@ -1,8 +1,10 @@
 """运行和汇总 Sim2GSE 固定 A/B Benchmark（基准测试）。"""
 from __future__ import annotations
-import argparse,hashlib,json,os,re,shutil,sqlite3,statistics,subprocess,sys,time,uuid
+import argparse,hashlib,json,re,shutil,sqlite3,statistics,subprocess,sys,time,uuid
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[3];BASELINE="efd9b71a9bf934a5cb990f314651e17ace73e9d1";CONTRACT="search-v1"
+sys.path.insert(0,str(ROOT/"projects/sim2gse"))
+from runtime import replace_file
 PHASE2_BASELINE="cc94eb7253004ba1bff74e029fd6f3a8f23681d2"
 PRODUCT_CURRENT="9e50f2c3191744462059c9c77b26983781de48dc"
 PROFILES={"current":ROOT/".local/sim2gse/ui-tasks/tasks/b2a776ffb0aa4c0d815e5beed1a2ede7/input.original.simc","talent-trinket":ROOT/".local/sim2gse/target-evidence/task-05/unholy-20260912-0240.simc","equipment":ROOT/".local/sim2gse/ui-tasks/tasks/9d0657821b9b48d2a339db860f709e5b/input.original.simc"}
@@ -29,7 +31,7 @@ def materialize(root,commit,label,worktree=False):
   storage=pending/"projects/sim2gse/result_store.py"
   if storage.is_file():storage.write_text(storage.read_text().replace('DATA_ROOT = Path(__file__).resolve().parents[2] / "data"',f'DATA_ROOT = Path({str(ROOT / "data")!r})'))
   files={p.relative_to(pending).as_posix():_sha(p) for p in sorted((pending/"projects/sim2gse").rglob("*")) if p.is_file()};(pending/"source-manifest.json").write_text(json.dumps({"commit":commit,"files":files,"worktree_files":originals},indent=2))
-  try:os.replace(pending,base)
+  try:replace_file(pending,base)
   except FileExistsError:shutil.rmtree(pending)
  finally:
   if pending.exists():shutil.rmtree(pending)

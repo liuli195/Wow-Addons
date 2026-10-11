@@ -42,7 +42,7 @@ def training_center(tmp_path, installed_data_store, monkeypatch):
 
 
 @pytest.fixture
-def memory_training_center(training_center, installed_data_store_api, monkeypatch):
+def memory_result_center(installed_data_store_api, monkeypatch):
     """纯逻辑检查的中心IO；TaskStore/报告位置清单仍真实，不证明Parquet耐久性。"""
     import duckdb
     import threading
@@ -107,6 +107,11 @@ def memory_training_center(training_center, installed_data_store_api, monkeypatc
                    **{name: installed_data_store_api[name] for name in ('MissingKeyError', 'CorruptDataError')})
         scoped.setattr(result_store, '_api', lambda: api)
         yield
+
+
+@pytest.fixture
+def memory_training_center(training_center, memory_result_center):
+    yield
 
 
 @pytest.fixture
@@ -242,7 +247,8 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     assert len(json.loads(capsys.readouterr().out.splitlines()[-1])) == 1
 
 
-def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed_work(tmp_path, capsys):
+def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed_work(
+        tmp_path, capsys, memory_training_center, four_candidate_training_rounds):
     from seed_training import main
     from test_character_export import sample_profile
     from unittest.mock import patch
@@ -349,7 +355,8 @@ def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_
         assert command(tmp_path, run_args + ['--max-processes', '4']) == 0
 
 
-def test_training_entry_reads_internal_concurrency_and_reuses_complete_scores(tmp_path, capsys, monkeypatch):
+def test_training_entry_reads_internal_concurrency_and_reuses_complete_scores(
+        tmp_path, capsys, monkeypatch, memory_training_center, four_candidate_training_rounds):
     from test_character_export import sample_profile
     from unittest.mock import patch
     import simulation_config
@@ -693,7 +700,8 @@ def test_upgrade_postcheck_accepts_legacy_identity_and_keeps_retest_key_checks(t
 
 
 @pytest.mark.parametrize('stage', ['search', 'retest', 'handoff'])
-def test_training_entry_resumes_two_to_four_preserving_successful_batches(tmp_path, capsys, monkeypatch, stage):
+def test_training_entry_resumes_two_to_four_preserving_successful_batches(
+        tmp_path, capsys, monkeypatch, stage, memory_training_center):
     if stage != 'search':
         from test_character_export import sample_profile
         from unittest.mock import patch
@@ -938,7 +946,8 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
 
 
 @pytest.mark.parametrize('max_processes', [2, 4])
-def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(tmp_path, max_processes):
+def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
+        tmp_path, max_processes, memory_training_center, four_candidate_training_rounds, no_training_proposals):
     from test_character_export import sample_profile
     from unittest.mock import patch
     from runtime import BudgetExceeded
@@ -991,7 +1000,8 @@ def test_unexpressible_material_is_retained_but_not_trained(tmp_path, capsys):
 
 
 @pytest.mark.parametrize('historic_dps', [90., 0., None])
-def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_path, capsys, historic_dps):
+def test_history_candidate_is_retested_and_changed_template_is_not_reused(
+        tmp_path, capsys, historic_dps, memory_training_center):
     from test_character_export import sample_profile
     from unittest.mock import patch
     import sequence
@@ -1056,7 +1066,8 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(tmp_pa
     assert search.config_for(training=True)['round_candidate_limit'] == 16
 
 
-def test_training_trains_history_matching_completed_final_and_reuses_only_initial_paths(tmp_path, capsys):
+def test_training_trains_history_matching_completed_final_and_reuses_only_initial_paths(
+        tmp_path, capsys, memory_training_center):
     from test_character_export import sample_profile
     import result_store
     import search
@@ -1237,7 +1248,9 @@ def test_training_entry_rejects_an_active_foreground_search(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize('interruption', ['foreground', 'store_failure', 'inactive_failed'])
-def test_foreground_search_does_not_wait_for_training_and_stops_it(tmp_path, capsys, interruption):
+def test_foreground_search_does_not_wait_for_training_and_stops_it(
+        tmp_path, capsys, interruption, memory_training_center, four_candidate_training_rounds,
+        no_training_proposals):
     import os
     import time
     import threading
@@ -1424,7 +1437,9 @@ def test_connected_public_search_creates_data_root_on_first_run(tmp_path, monkey
 
 @pytest.mark.parametrize('case', ['structured', 'history-only', 'changed-definition', 'empty', 'single-member', 'unknown', 'invalid-block', 'invalid-program'])
 def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(tmp_path, capsys, monkeypatch, case,
-                                                                              four_candidate_training_rounds):
+                                                                              four_candidate_training_rounds,
+                                                                              memory_training_center,
+                                                                              no_training_proposals):
     import burst
     import engine
     import result_store
@@ -1673,6 +1688,7 @@ def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, 
 
 def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(tmp_path, capsys, monkeypatch,
                                                                              memory_training_center,
+                                                                             four_candidate_training_rounds,
                                                                              no_training_proposals):
     import burst
     import sequence

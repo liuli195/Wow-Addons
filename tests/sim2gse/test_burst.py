@@ -5,6 +5,9 @@ from test_character_export import sample_profile
 import copy
 import json
 from pathlib import Path
+from contextlib import contextmanager
+from unittest.mock import patch
+from test_seed_training import memory_result_center
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +24,46 @@ def reviewed_fixture():
     definition['talent_hashes'] = [talent_hash(character)]
     definition['reviewer'] = 'isolated test fixture'
     return definition, profile
+
+
+@contextmanager
+def page_task_boundary():
+    """页面故障构造外部引擎和编译结果；HTTP、检查点、共享存储和恢复仍真实。"""
+    import engine
+    import sequence
+    from test_search import _fast_search_boundary
+    from test_interface import InterfaceTests
+
+    definition, _ = reviewed_fixture()
+    identity = engine.identity
+    with _fast_search_boundary(), \
+         patch.object(engine, 'identity', identity):
+        reference = engine.reference
+        inspect = engine.inspect
+
+        def reviewed_reference(*args, **kwargs):
+            result = reference(*args, **kwargs)
+            result['identity']['data_version'] = definition['data_version']
+            return result
+
+        def two_item_catalogue(*args, **kwargs):
+            capabilities = inspect(*args, **kwargs)
+            capabilities['actions'].append(dict(kind='spell', spell_id=42650,
+                base_spell_id=42650, simc_action='army_of_the_dead', name='亡者大军', gcd_ms=1500))
+            capabilities['actions'].append(dict(kind='item', slot=14, item_id=273796,
+                simc_action='use_item,slot=trinket2', name='使用trinket2', gcd_ms=0))
+            return capabilities
+
+        with patch.object(engine, 'reference', side_effect=reviewed_reference), \
+             patch.object(engine, 'inspect', side_effect=two_item_catalogue), \
+             patch.object(sequence, 'evaluate', side_effect=InterfaceTests._ui_score):
+            yield
+
+
+@pytest.fixture
+def page_task_engine():
+    with page_task_boundary():
+        yield
 
 
 def test_public_burst_precheck_requires_a_reviewed_definition(tmp_path):
@@ -250,7 +293,7 @@ def test_public_task_runs_loop_and_burst_on_one_native_player(tmp_path):
     assert restored['burst']['candidate']['text'] == result['burst']['candidate']['text']
 
 
-def test_public_dual_task_uses_fixed_burst_with_disabled_extra_talents(tmp_path):
+def test_public_dual_task_uses_fixed_burst_with_disabled_extra_talents(tmp_path, memory_result_center):
     import burst
     definition, raw = reviewed_fixture()
     raw += '\nomnium_talents=1:1\n'
@@ -326,7 +369,7 @@ def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
     assert quiet['consistent'] and not quiet['trace']
 
 
-def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path):
+def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path, memory_result_center):
     import burst
     definition, raw = reviewed_fixture()
     burst.publish(definition)
@@ -404,7 +447,8 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
     [['use_item,slot=trinket1']],
     [['use_item,slot=trinket2']],
 ])
-def test_public_single_task_refuses_burst_content_in_ordinary_sequence(tmp_path, program):
+def test_public_single_task_refuses_burst_content_in_ordinary_sequence(
+        tmp_path, program, page_task_engine, memory_result_center):
     import burst
     definition, raw = reviewed_fixture()
     burst.publish(definition)
@@ -414,7 +458,8 @@ def test_public_single_task_refuses_burst_content_in_ordinary_sequence(tmp_path,
         task.run_task(profile, tmp_path / 'single', mode='single', use_burst=True, program=program)
 
 
-def test_public_search_skips_entire_forbidden_history_structure(tmp_path):
+def test_public_search_skips_entire_forbidden_history_structure(
+        tmp_path, page_task_engine, memory_result_center):
     import burst
     import result_store
     import seed_training
@@ -466,7 +511,8 @@ def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, 
     handle.join(10)
     assert handle.done and handle.error is None
     if recover_first:
-        recovered = task.resume_task(output)
+        with page_task_boundary():
+            recovered = task.resume_task(output)
         assert recovered['burst']['definition_id']
     revised = copy.deepcopy(definition)
     revised['version'] += '-new-plan'
@@ -486,7 +532,8 @@ def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path)
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+        final_batches=1, final_iterations=2, scenarios=('nominal',))))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -522,12 +569,11 @@ def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path)
 
 
 @pytest.mark.parametrize('fault', ['aoe', 'collection', 'registration', 'cancel', 'preparation'])
-def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_path, monkeypatch, fault):
+def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
+        tmp_path, monkeypatch, fault, page_task_engine, memory_result_center):
     import burst
     import dual_task
     import codec
-    import sequence
-    from test_interface import InterfaceTests
     import threading
     from interface import create_server
     from urllib.request import Request, urlopen
@@ -570,12 +616,12 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_
             assert server.tasks[task_id][1].cancel_event.wait(5)
         return original_save(row)
 
-    monkeypatch.setattr(sequence, 'evaluate', InterfaceTests._ui_score)
     monkeypatch.setattr(task, 'run_task', run)
     monkeypatch.setattr(codec, 'collection', collect)
     monkeypatch.setattr(dual_task, '_save', save)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+        final_batches=1, final_iterations=2, scenarios=('nominal',))))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -621,7 +667,7 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(tmp_
     thread.join(3)
 
 
-def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
+def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path, page_task_engine):
     import burst
     import result_store
     import threading
@@ -630,7 +676,8 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+        final_batches=1, final_iterations=2, scenarios=('nominal',))))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -656,7 +703,8 @@ def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path):
         server.shutdown();server.server_close();thread.join(3)
 
 
-def test_restarted_page_recovers_parent_after_real_process_exit(tmp_path, installed_data_store, monkeypatch):
+def test_restarted_page_recovers_parent_after_real_process_exit(
+        tmp_path, installed_data_store, page_task_engine):
     import result_store
     import threading
     import sys
@@ -682,7 +730,8 @@ def paused_reference(profile, folder, *args, **kwargs):
     threading.Event().wait()
 engine.reference = paused_reference
 server = create_server(Path({str(page_root)!r}), task_options=dict(search_config=dict(
-    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2)))
+    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
+    final_batches=1, final_iterations=2, scenarios=('nominal',))))
 Path({str(ready)!r}).write_text(json.dumps(dict(port=server.server_port)))
 server.serve_forever()
 """
@@ -714,9 +763,6 @@ server.serve_forever()
     assert (destination / 'single_target/reference').exists()
     runtime.cancel();process_thread.join(10)
     assert stopped and not process_thread.is_alive()
-    import sequence
-    from test_interface import InterfaceTests
-    monkeypatch.setattr(sequence, 'evaluate', InterfaceTests._ui_score)
     server = create_server(page_root)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()

@@ -131,7 +131,8 @@ def _fast_initialization(*, real_engine=False):
     def compiler(command, *args, **kwargs):
         if kwargs.get("on_start") is not None:
             kwargs["on_start"]()
-        output = b"CHECKSUM\ttest\nPASS\ttest\n"
+        output = (b"PASS\tcollection_import_compile\n" if command[-1] == "collection"
+                  else b"CHECKSUM\ttest\nPASS\ttest\n")
         return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
 
     def check_report(report, character, iterations, **kwargs):

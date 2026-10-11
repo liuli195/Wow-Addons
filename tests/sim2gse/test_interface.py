@@ -10,6 +10,7 @@ import json
 import base64
 import os
 import subprocess
+import pytest
 import zlib
 from pathlib import Path
 from urllib.error import HTTPError
@@ -23,6 +24,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from gse_import import inspect_import  # noqa: E402
+from test_seed_training import memory_result_center  # noqa: E402
 
 
 def gse_fixture(payload):
@@ -1585,6 +1587,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("pairs 遍历顺序不确定", json.loads(raised.exception.read())["error"])
 
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_inspection_and_task_share_case_and_stopmacro_reachability(self) -> None:
         imported = gse_fixture(["MACRO_REACHABILITY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -1661,6 +1664,7 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(self.server.tasks, {})
                 self.assertEqual(list(self.server.task_root.iterdir()), [])
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_known_false_macro_condition_still_skips_its_unreachable_command(self) -> None:
         imported = gse_fixture(["KNOWN_FALSE_CONDITION", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -1721,6 +1725,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(list(self.server.task_root.iterdir()), [])
 
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -1747,6 +1752,7 @@ class InterfaceTests(unittest.TestCase):
         from task import read_task
         self.assertEqual(read_task(destination)["simulation_config"]["target_count"], 5)
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_import_gcd_pause_uses_upstream_integer_click_count(self) -> None:
         imported = gse_fixture(["GCD_PAUSE", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -2086,7 +2092,7 @@ class InterfaceTests(unittest.TestCase):
                 first = destination not in started
                 started.add(destination)
             if first:
-                first_reports.wait(5)
+                first_reports.wait(self.server.task_options['search_config']['search_budget_seconds'])
             return _fast_evaluate(*args, **kwargs)
 
         second_server = second_thread = None
@@ -2255,6 +2261,7 @@ class InterfaceTests(unittest.TestCase):
 
 
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_public_search_generates_exports_and_native_evaluates_castsequence_reset(self) -> None:
         import cbor2
         import codec
@@ -2381,6 +2388,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(selected_native["castsequences"][0]["members"],
                          ["outbreak", "death_coil"])
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_public_search_generates_and_evaluates_wait_clicks(self) -> None:
         import cbor2
         import codec
@@ -2912,7 +2920,7 @@ class InterfaceTests(unittest.TestCase):
 
     def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=200, target_count=1):
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
-            search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
+            search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
             scenarios=('nominal','jitter','slow','pause','phase') if interval_ms != 300 else ('nominal',),max_processes=1)}
         from test_burst import reviewed_fixture
@@ -3206,8 +3214,11 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             for handle in held:
                 if handle:kernel.CloseHandle(handle)
 
+    @pytest.mark.usefixtures('memory_result_center')
     def test_browser_uses_adjustable_interval_while_publication_is_delayed_and_contended(self):
-        # 三项页面回归复用同一次双场任务；原生初始化、编译及存储仍真实。
+        # 页面故障复用构造引擎边界；独立完整场景保留真实原生计算。
+        from test_burst import page_task_boundary
+        self.enterContext(page_task_boundary())
         scoring = self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
         original=os.replace
         failures=set()
@@ -3216,7 +3227,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         delayed=set()
         def sharing_conflict(source,destination):
             name=Path(destination).name
-            if name == 'result.json' and Path(destination) not in delayed:
+            if name == 'result.json' and not delayed:
                 delayed.add(Path(destination))
                 time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
             if name in ('progress.json','result.json') and name not in failures:
@@ -3231,6 +3242,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         with patch.object(os,'replace',side_effect=sharing_conflict):
             self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
         self.assertEqual(failures,{'progress.json','result.json'})
+        self.assertEqual(len(delayed), 1, '一个真实发布延迟窗口足以覆盖轮询恢复')
         for reader in readers:reader.join()
         self.assertTrue(set(conflicts)&{5,32},'必须触发真实 Windows 文件占用冲突')
         self.assertTrue(delayed, '必须经过延迟的真实结果发布')
