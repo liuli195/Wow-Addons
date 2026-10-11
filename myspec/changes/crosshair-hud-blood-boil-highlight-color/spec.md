@@ -1,6 +1,6 @@
 # 准星 HUD：高亮血沸提示色
 
-**Status:** accepted-game（用户报告实机验收通过；门禁二已批准、正式规格已应用，PR交付进行中）
+**Status:** completed（用户实机验收通过；正式规格已应用，PR65已合并、HUD分支及旧验证工作树已清理）
 **Flow Level:** Full（完整），提示色、满格静止提示及既有右侧显示顺序恢复三票
 **Fixed baseline:** a687dbb1c0ff288578ad06c07409a1c85d75133f
 **Incremental baseline:** df05803ce190fb3020f044ebddb20aced5670bf2，tree 470a5e335d18bcd6c47cb21b8489200c85e1ce62；父级已核其与已部署 935a84ab22ee87efa43f4f1713949b9e4b15f97d 同 tree，云端对象库没有该部署提交，不以缺失对象伪称独立核验。
@@ -77,7 +77,7 @@
 
 最终产品树为 `26cf8027d83dc7e7c39949263d2f0e1f63e5a746`（云端提交 `5627bbc4b3adbd32801b86608ec0532620a23c1c`；父级核验远端同树提交 `1844be8472536d5c3868812924c31f07ba78a085`）。Windows正式固定基线验证7项实际执行、0缓存；HUD77项通过、0跳过，耗时7.8397681秒、退出0；素材构建1.0847秒、退出0。最近已批准部署仅Elements.lua，准确校验值见票据03与遮挡恢复验证。
 
-正式规格候选明确补充已批准的提示色、空闲满格、到期仍高亮回满格及右侧显示顺序，同时修正旧的“无有效消费即隐藏”“仅表示三秒窗口”“到期全部隐藏”文字；没有新建三秒计时器、改变三秒周期或扩大游戏接口范围。门禁准备时只生成并验证预览，未提前应用正式规格；现已按下节记录取得确认并应用，提交与远端交付仍由父级继续。
+正式规格候选明确补充已批准的提示色、空闲满格、到期仍高亮回满格及右侧显示顺序，同时修正旧的“无有效消费即隐藏”“仅表示三秒窗口”“到期全部隐藏”文字；没有新建三秒计时器、改变三秒周期或扩大游戏接口范围。门禁准备时只生成并验证预览，未提前应用正式规格；现已按下节记录取得确认并应用，后续PR65交付与HUD清理均已完成。
 
 门禁二——规格与交付已确认，批准范围见 [门禁二准备](delivery-gate2.md)。此次源码收尾不要求新增发布、版本号升级或重新安装；这些仍是独立授权范围。
 
@@ -88,4 +88,4 @@
 
 本次云端仅执行正式规格应用和收尾文档校验。应用前重新核验10份冻结输入和11份正式规格未漂移、批准diff（差异）逐字一致、预览运行身份为MySpec release（发布版）2.3.0；进程使用既有managed npm前缀，doctor（诊断）packageVersion=2.3.0且versionMismatch=false。通过裸 `myspec apply-delta` 原子应用并 `validate-main` 通过，仅 `myspec/specs/myui-crosshair-hud/spec.md` 发生批准的5修改、1新增；其他10份能力规格字节不变。成功后由CLI自行清理当前工作区与锁，没有手改CLI状态。
 
-正式HUD规格SHA256为 `678221ce6f94170eeac7c5f611d85a100ccfda0c4680639580a1774cd29c2d46`，批准完整差异SHA256为 `a79b3216da61f775458bc5a9c4beabb406fce14a3d472c950cdcad11da1bc9a5`；证据保存在 `.local/tests/hud-closeout/approved-application-evidence.json`。本次未提交或推送、未修改产品／测试及工具链文件、未创建PR、未合并或清理分支；这些已批准交付动作由父级串行继续。
+正式HUD规格SHA256为 `678221ce6f94170eeac7c5f611d85a100ccfda0c4680639580a1774cd29c2d46`，批准完整差异SHA256为 `a79b3216da61f775458bc5a9c4beabb406fce14a3d472c950cdcad11da1bc9a5`；证据保存在 `.local/tests/hud-closeout/approved-application-evidence.json`。该段记录的是云端规格应用阶段；后续交付及清理已完成。[PR65](https://github.com/liuli195/Wow-Addons/pull/65) 已按官方流程合并，最终受检提交 `88ff0dd62b19d9a377b23050faac3c01625f631b` 的Windows addon checks（Windows插件检查）和pr-flow-toolchain（流程工具链检查）均通过，合并提交为 `197a4d46bc3f4caf5189a5b413d76e39fd78c36f`。本机官方交付结果为cleanup_complete（清理完成），HUD本地、远端及跟踪分支已删除；云端旧分支 `536491aff97d85ee56a9744a5ed8278d1d38a788` 经用户确认后通过正常Git强制分支删除，关联分支reflog（引用历史）由Git自然移除。父级核对本机实际执行结果：旧 `D:\My Project\Wow Addons\.local\worktrees\hud-blood-boil-verify` 目录及工作树登记均已删除，证据为仓库内 `.local/hud-blood-boil-evidence/hud-worktree-removal.json`；这不是云端代理亲自检查本机。主工作树、其他活动任务及隔离工作区外的证据和历史资料保留，未发布或再次安装。
