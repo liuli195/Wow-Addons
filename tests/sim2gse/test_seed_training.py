@@ -502,6 +502,35 @@ def test_training_entry_reuses_verified_legacy_namespace_without_retraining(tmp_
     assert result_store.read_records('seed_selected', 'deathknight-unholy-1')[0]['condition'] == processed[0]['condition']
 
 
+def test_training_entry_reuses_real_legacy_program_digest_without_retraining(
+        tmp_path, memory_result_center, legacy_engine_boundary):
+    import hashlib
+    import result_store
+    import sequence
+    from engine import ROOT
+    from seed_training import adopt_legacy_condition, LEGACY_SOURCE_COMMIT
+
+    key = 'projects/sim2gse/program.py'
+    blob = subprocess.check_output(['git', 'show', LEGACY_SOURCE_COMMIT + ':' + key], cwd=ROOT)
+    # 摘要来自真实旧提交；只按该工作树的 LF / CRLF 形式还原原件。
+    if b'\r\n' in (ROOT / key).read_bytes():
+        blob = blob.replace(b'\n', b'\r\n')
+    old_digest = hashlib.sha256(blob).hexdigest()
+    template, batch, evidence = legacy_batch_fixture(tmp_path,
+        mutate_input=lambda payload: payload['rules'].update({key: old_digest}))
+    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    checkpoint = Path(processed[0]['task_path']) / 'task.sqlite3'
+    before = checkpoint.read_bytes()
+    legacy_engine_boundary.setattr(sequence, 'evaluate',
+        lambda *args, **kwargs: pytest.fail('可靠完成训练不能重训或复测'))
+    manifest = adopt_legacy_condition(batch, evidence, processed=processed, selected=[])
+    assert manifest['condition_input']['rules'][key] == old_digest
+    assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+        '--workspace', str(tmp_path / 'work'), '--max-processes', '4']) == 0
+    assert checkpoint.read_bytes() == before
+    assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == processed
+
+
 @pytest.mark.parametrize('fault', ['none', 'missing_source', 'changed_source', 'changed_legacy_content', 'changed_current'])
 def test_training_entry_reuses_legacy_only_with_checked_original_line_endings(tmp_path, fault,
                                                                             legacy_engine_boundary,

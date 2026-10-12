@@ -426,6 +426,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'no_improvement_round_limit')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    if state is not None and 'seed_adaptations' in state:
+        search_metrics['seed_adaptations'] = state['seed_adaptations']
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
                              for row in record.get('batches', [])
                              if row.get('cached') and isinstance(row.get('data_key'), str)})
@@ -699,8 +701,9 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
                    capabilities, runtime):
     """Append selected programs after role mapping and shared export checks."""
     if not snapshot:
-        return starts
+        return starts, []
     from program import canonicalize_search_program
+    from seed_training import filter_search_program
     from codec import load_targeting, prepare_block, prepare_castsequence
 
     def check_program(program, target_masks):
@@ -717,6 +720,33 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
             elif node['kind'] != 'Pause':
                 raise ValueError('搜索节点无法导出')
 
+    def check_original_limits(program):
+        # 上限只看原结构，不把静态不可用动作映射成当前可执行按钮。
+        if not isinstance(program, list):
+            return  # 其余原结构错误仍由共享解析器拒绝。
+        blocks = clicks = len(capabilities.get('precombat_actions', []))
+        for segment in program:
+            if isinstance(segment, list):
+                blocks += 1
+                clicks += 1
+            elif isinstance(segment, dict):
+                kind = segment.get('kind')
+                if kind == 'Loop' and isinstance(segment.get('blocks'), list):
+                    blocks += len(segment['blocks'])
+                    count = segment.get('count')
+                    if type(count) is int and count > 0:
+                        clicks += count * len(segment['blocks'])
+                elif kind == 'WaitClicks':
+                    count = segment.get('clicks')
+                    if type(count) is int and count > 0:
+                        clicks += count
+                elif kind == 'CastSequence':
+                    clicks += 1
+        if blocks > 128:
+            raise ValueError('原搜索程序展开超过 128 个顶层动作块')
+        if clicks > 4096:
+            raise ValueError('原搜索程序展开超过 4096 次按键')
+
     identities = set()
     for program in starts:
         try:
@@ -724,8 +754,25 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
         except (TypeError, ValueError, KeyError):
             continue
 
+    # 原生静态资格不读取冷却、资源或是否执行；同名当前可用按钮优先。
+    known = {action['simc_action']: action for action in capabilities['actions']}
+    available = {variant['simc_action'] for action in capabilities['actions']
+                 for variant in action.get('variants', [action])}
+    excluded = set()
+    for row in capabilities.get('sources', []):
+        if (row.get('catalogue') != 'apl' or row.get('status') != 'native_unavailable'
+                or row.get('action_initialized') is not True or row.get('available') is not False):
+            continue
+        name = row.get('signature', '').split(',', 1)[0]
+        if not name or name in available:
+            continue
+        excluded.add(name)
+        if row.get('data_valid') is True and type(row.get('data_id')) is int and row['data_id'] > 0:
+            known[name] = dict(kind='spell', simc_action=name, spell_id=row['data_id'],
+                              name=row.get('name') or name, gcd_ms=row.get('gcd_ms', 0))
+    validation_capabilities = dict(capabilities, actions=list(known.values()))
     target_masks = None
-    added = []
+    added, decisions = [], []
     for row in snapshot:
         if len(added) >= 4:
             break
@@ -746,23 +793,35 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
                 program = json.loads(program)
             except ValueError:
                 continue
+        decision = dict(candidate_id=row.get('candidate_id'), original_program=program,
+                        derived_program=None, removed=[], status='rejected', reason='')
+        decisions.append(decision)
         try:
-            canonical = canonicalize_search_program(program, capabilities)
-        except (TypeError, ValueError, KeyError):
+            check_original_limits(program)
+            derived, removed = filter_search_program(program, excluded, validation_capabilities)
+            decision.update(derived_program=derived, removed=[dict(item,
+                reason='当前原生动作已初始化但种族、天赋或等级资格不可用') for item in removed])
+            canonical = canonicalize_search_program(derived, capabilities)
+        except (TypeError, ValueError, KeyError) as error:
+            decision['reason'] = str(error)
             continue
+        decision['behavior_identity'] = canonical['identity']
         if canonical['identity'] in identities:
+            decision.update(status='duplicate', reason='适配后与已有起点行为相同')
             continue
         if target_masks is None:
             target_masks = load_targeting(runtime=runtime)['target_masks']
         try:
             check_program(canonical['program'], target_masks)
-        except (TypeError, ValueError, KeyError):
+        except (TypeError, ValueError, KeyError) as error:
+            decision['reason'] = str(error)
             continue
         # The normal optimizer compiles and identity-checks this start during its
         # first score, avoiding a duplicate Lua compiler launch at task startup.
         identities.add(canonical['identity'])
-        added.append(program)
-    return starts + added
+        decision['status'] = 'accepted'
+        added.append(derived)
+    return starts + added, decisions
 
 
 def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False, burst_identity=None):
@@ -907,7 +966,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     condition = digest(dict(base=base_condition, burst=context))
                     state['condition'] = condition
                 starts = initial_programs(capabilities, native, config['random_seed'])
-                state['starts'] = _seed_programs(
+                state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
                     targets=simulation_config['target_count'], engines=identities,
                     capabilities=capabilities, runtime=runtime)
