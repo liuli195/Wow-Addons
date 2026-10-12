@@ -492,6 +492,260 @@ def test_public_search_skips_entire_forbidden_history_structure(
                                        'use_item,slot=trinket1', 'use_item,slot=trinket2'})
 
 
+@contextmanager
+def character_seed_boundary(*, native_flags=None):
+    """构造原生目录及外部成绩；角色映射、任务及程序校验保持真实。"""
+    import engine
+    import sequence
+    from test_engine import apl_pool_reference
+    from test_interface import InterfaceTests
+    from test_search import _fast_search_boundary
+
+    definition, _ = reviewed_fixture()
+    native = apl_pool_reference()
+    template = native['apl_actions'][0]
+    auto = dict(template, name='auto_attack', signature='auto_attack',
+                data_id=6603, base_spell_id=6603, gcd_ms=0)
+    native['executed_actions'].append(auto)
+    native['apl_actions'] += [auto, *[dict(template, name=name, signature=name,
+        data_id=spell, base_spell_id=spell, available=False) for name, spell in
+        [('berserking', 26297), ('soul_reaper', 343294)]]]
+    if native_flags:
+        native['apl_actions'][-2].update(native_flags)
+    inspect = engine.inspect
+    with _fast_search_boundary():
+        reference = engine.reference
+
+        def character_reference(*args, **kwargs):
+            result = reference(*args, **kwargs)
+            result.update(native, unavailable_actions=[dict(kind='item', slot=slot,
+                reason='passive_item') for slot in (13, 14)])
+            result['identity']['data_version'] = definition['data_version']
+            return result
+
+        with patch.object(engine, 'reference', side_effect=character_reference), \
+                patch.object(engine, 'inspect', side_effect=inspect), \
+                patch.object(sequence, 'evaluate', side_effect=InterfaceTests._ui_score):
+            yield {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
+
+
+def test_page_dual_scores_character_adapted_seed_without_changing_training(
+        tmp_path, memory_result_center):
+    import burst
+    import result_store
+    import seed_training
+    import threading
+    from interface import create_server
+    from urllib.request import Request, urlopen
+
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    original = [['berserking', 'auto_attack'], ['outbreak'], ['soul_reaper'],
+                ['death_coil'], ['outbreak']]
+    expected = [['auto_attack'], ['outbreak'], ['death_coil'], ['outbreak']]
+    with character_seed_boundary() as engines:
+        row = dict(candidate_id='standard-troll', condition='old-training',
+            class_name='deathknight', spec='unholy', targets=5, program=original,
+            family='community', score=99999., scores=[99999.] * 3,
+            template_sha256='standard-troll', engines=engines)
+        result_store.write('seed_selected', 'deathknight-unholy-5-burst', [row],
+                           schema=seed_training.SELECTED_SCHEMA)
+        before = result_store.read_records('seed_selected', 'deathknight-unholy-5-burst')
+        server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
+            candidate_limit=8, batch_targets=(2,), iterations=2, validation_batches=1,
+            final_batches=1, final_iterations=2, scenarios=('nominal',))))
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        try:
+            request = Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
+                              {'Content-Type': 'application/json'})
+            with urlopen(request, timeout=3) as response:
+                created = json.load(response)
+            handle = server.tasks[created['task_id']][1]
+            handle.join(20)
+            with urlopen(base + '/api/tasks/' + created['task_id'], timeout=3) as response:
+                state = json.load(response)
+            assert state['status'] == 'completed', state
+            assert [scene['target_count'] for scene in state['scenes']] == [1, 5]
+            _, destination = server.task_paths(created['task_id'])
+            saved = task.read_task(destination / 'aoe', include_search_records=True)
+            assert any([[command['simc_action'] for command in node['commands']]
+                        for node in record['program']['nodes']] == expected
+                       for record in saved['search']['records']
+                       if all(node['kind'] == 'Action' for node in record['program']['nodes']))
+            assert saved['search_result']['dps'] != 99999.
+            adaptation = saved['search']['seed_adaptations'][0]
+            assert adaptation['original_program'] == original
+            assert adaptation['derived_program'] == expected
+            assert adaptation['status'] == 'accepted'
+            assert [(item['path'], item['action']) for item in adaptation['removed']] == [
+                ('segments[0][0]', 'berserking'), ('segments[2][0]', 'soul_reaper')]
+            assert all(item['reason'] for item in adaptation['removed'])
+            assert result_store.read_records('seed_selected', 'deathknight-unholy-5-burst') == before
+        finally:
+            for _, handle in server.tasks.values():
+                if not handle.done:
+                    handle.cancel_event.set()
+                    handle.join(5)
+            server.shutdown()
+            server.server_close()
+            thread.join(3)
+
+
+@pytest.mark.parametrize('original, expected, status', [
+    ([dict(kind='Loop', count=3, blocks=[['berserking', 'auto_attack'], ['soul_reaper'],
+                                       ['death_coil']]), dict(kind='WaitClicks', clicks=2),
+      dict(kind='CastSequence', members=['soul_reaper', 'outbreak', 'death_coil'],
+           reset=dict(timeout_seconds=3, flags=['target', 'combat']))],
+     [dict(kind='Loop', count=3, blocks=[['auto_attack'], ['death_coil']]),
+      dict(kind='WaitClicks', clicks=2),
+      dict(kind='CastSequence', members=['outbreak', 'death_coil'],
+           reset=dict(timeout_seconds=3, flags=['target', 'combat']))], 'accepted'),
+    ([dict(kind='Loop', count=2, blocks=[['berserking'], ['soul_reaper']]), ['death_coil']],
+     [['death_coil']], 'accepted'),
+    ([['soul_reaper']], [], 'rejected'),
+    ([['berserking'], dict(kind='WaitClicks', clicks=2)],
+     [dict(kind='WaitClicks', clicks=2)], 'rejected'),
+    ([dict(kind='CastSequence', members=['berserking', 'soul_reaper'], reset=None)],
+     [], 'rejected'),
+    ([dict(kind='CastSequence', members=['soul_reaper', 'death_coil'], reset=None)],
+     [dict(kind='CastSequence', members=['death_coil'], reset=None)], 'rejected'),
+    ([['berserking', 'unknown_action', 'auto_attack']],
+     [['unknown_action', 'auto_attack']], 'rejected'),
+    ([dict(kind='Loop', count=4096, blocks=[['berserking'], ['auto_attack']])],
+     None, 'rejected'),
+    ([dict(kind='Loop', count=0, blocks=[['berserking']])],
+     [dict(kind='Loop', count=0, blocks=[['berserking']])], 'rejected'),
+    ([dict(kind='CastSequence', members=['soul_reaper', 'berserking'],
+           reset=dict(timeout_seconds=0, flags=[]))], None, 'rejected'),
+    ([dict(kind='CastSequence', members=['soul_reaper', 'unknown_action'], reset=None)],
+     None, 'rejected'),
+    # 单段合法也不能靠裁剪洗掉总按键／映射动作块超限。
+    ([dict(kind='Loop', count=2048, blocks=[['berserking'], ['auto_attack']]),
+      dict(kind='WaitClicks', clicks=2)], None, 'rejected'),
+    ([dict(kind='Loop', count=4096, blocks=[['berserking']]),
+      dict(kind='CastSequence', members=['outbreak', 'death_coil'], reset=None)],
+     None, 'rejected'),
+    ([dict(kind='Loop', count=2048, blocks=[['berserking']]),
+      dict(kind='Loop', count=2049, blocks=[['auto_attack']])], None, 'rejected'),
+    ([dict(kind='Loop', count=1, blocks=[['berserking']] + [['auto_attack']] * 127),
+      ['death_coil']], None, 'rejected'),
+    ([dict(kind='Loop', count=2048, blocks=[['berserking'], ['auto_attack']])],
+     [dict(kind='Loop', count=2048, blocks=[['auto_attack']])], 'accepted'),
+    ([dict(kind='Loop', count=1, blocks=[['berserking']] + [['auto_attack']] * 127)],
+     [dict(kind='Loop', count=1, blocks=[['auto_attack']] * 127)], 'accepted'),
+])
+def test_public_search_preserves_seed_structure_or_records_why_it_cannot(
+        tmp_path, memory_result_center, original, expected, status):
+    import burst
+    import result_store
+    import seed_training
+
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    profile = tmp_path / 'role.simc'
+    profile.write_text(raw, encoding='utf-8')
+    with character_seed_boundary() as engines:
+        row = dict(candidate_id='structure', condition='training', class_name='deathknight',
+            spec='unholy', targets=5, program=original, family='community', score=99999.,
+            scores=[99999.] * 3, template_sha256='training', engines=engines)
+        result_store.write('seed_selected', 'deathknight-unholy-5-burst', [row],
+                           schema=seed_training.SELECTED_SCHEMA)
+        task.run_task(profile, tmp_path / 'search', use_burst=True,
+            simulation_config=dict(target_count=5), search_config=dict(candidate_limit=1,
+                batch_targets=(2,), iterations=2, validation_batches=1))
+        decision = task.read_task(tmp_path / 'search')['search']['seed_adaptations'][0]
+    assert decision['original_program'] == original
+    assert decision['derived_program'] == expected
+    assert decision['status'] == status
+    assert bool(decision['reason']) == (status != 'accepted')
+
+
+@pytest.mark.parametrize('native_flags, status', [
+    ({'action_initialized': False}, 'rejected'),
+    ({'action_initialized': 1}, 'rejected'),
+    ({'available': None}, 'rejected'),
+    ({'available': 0}, 'rejected'),
+    ({'available': True, 'executions': 0, 'cooldown_ms': 99999, 'resource_cost': 99999}, 'accepted'),
+    ({'name': 'outbreak', 'signature': 'outbreak', 'data_id': 77575}, 'accepted'),
+])
+def test_public_search_only_prunes_confirmed_static_unavailability(
+        tmp_path, memory_result_center, native_flags, status):
+    import result_store
+    import seed_training
+
+    profile = tmp_path / 'role.simc'
+    profile.write_text(sample_profile(), encoding='utf-8')
+    original = [[native_flags.get('signature', 'berserking'), 'auto_attack'], ['outbreak']]
+    with character_seed_boundary(native_flags=native_flags) as engines:
+        row = dict(candidate_id='availability', condition='training', class_name='deathknight',
+            spec='unholy', targets=5, program=original, family='community', score=99999.,
+            scores=[99999.] * 3, template_sha256='training', engines=engines)
+        result_store.write('seed_selected', 'deathknight-unholy-5', [row],
+                           schema=seed_training.SELECTED_SCHEMA)
+        task.run_task(profile, tmp_path / 'search', simulation_config=dict(target_count=5),
+            search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+        decision = task.read_task(tmp_path / 'search')['search']['seed_adaptations'][0]
+        if status == 'rejected':
+            with pytest.raises(task.TaskError, match='不支持的动作'):
+                task.run_task(profile, tmp_path / 'explicit', mode='single', program=original,
+                              simulation_config=dict(target_count=5))
+    assert decision['derived_program'] == original
+    assert decision['removed'] == []
+    assert decision['status'] == status
+
+
+def test_public_search_freezes_deduplicated_seed_adaptations_on_resume(
+        tmp_path, memory_result_center):
+    import result_store
+    import seed_training
+
+    profile = tmp_path / 'role.simc'
+    profile.write_text(sample_profile(), encoding='utf-8')
+    original = [['berserking', 'auto_attack'], ['outbreak'], ['death_coil'], ['outbreak']]
+    with character_seed_boundary() as engines:
+        row = dict(candidate_id='first', condition='training', class_name='deathknight',
+            spec='unholy', targets=5, program=original, family='community', score=99999.,
+            scores=[99999.] * 3, template_sha256='training', engines=engines)
+        result_store.write('seed_selected', 'deathknight-unholy-5',
+            [row, dict(row, candidate_id='same-behavior', program=original + [['soul_reaper']])],
+            schema=seed_training.SELECTED_SCHEMA)
+        destination = tmp_path / 'search'
+        task.run_task(profile, destination, simulation_config=dict(target_count=5),
+            search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+        before = task.read_task(destination)
+        assert [decision['status'] for decision in before['search']['seed_adaptations']] == [
+            'accepted', 'duplicate']
+        result_store.write('seed_selected', 'deathknight-unholy-5',
+            [dict(row, program=[['epidemic'], ['death_coil']])], schema=seed_training.SELECTED_SCHEMA)
+        read = result_store.read_records
+
+        def no_seed_reload(table, key):
+            assert table != 'seed_selected', '恢复不得刷新入选快照'
+            return read(table, key)
+
+        with patch.object(result_store, 'read_records', side_effect=no_seed_reload):
+            task.resume_task(destination, simulation_config=dict(target_count=5))
+        after = task.read_task(destination)
+        assert after['search']['seed_adaptations'] == before['search']['seed_adaptations']
+        assert after['completed_batches'] == before['completed_batches']
+        rules = task._rule_hashes()
+        with patch.object(task, '_rule_hashes', return_value=dict(rules, changed='new-rule')):
+            with pytest.raises(task.TaskError, match='规则已变化'):
+                task.resume_task(destination, simulation_config=dict(target_count=5))
+        assert task.read_task(destination)['search']['seed_adaptations'] == before['search']['seed_adaptations']
+
+        def unreadable_snapshot(table, key):
+            if table == 'seed_selected':
+                raise result_store.DataReadError('selected snapshot unavailable')
+            return read(table, key)
+
+        with patch.object(result_store, 'read_records', side_effect=unreadable_snapshot):
+            with pytest.raises(task.TaskError, match='selected snapshot unavailable'):
+                task.run_task(profile, tmp_path / 'unreadable', simulation_config=dict(target_count=5))
+
+
 @pytest.mark.parametrize('recover_first', [False, True])
 def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, recover_first):
     import burst

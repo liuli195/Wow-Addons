@@ -357,15 +357,9 @@ def retains_core(program, core):
     return any(program[index:index + len(core)] == core for index in range(len(program)))
 
 
-def training_program(program, capabilities, all_capabilities, burst_context):
-    """仅派生训练输入；原来源、剩余控制结构及施法序列重置不变。"""
-    from burst import _excluded
+def filter_search_program(program, excluded, validation_capabilities):
+    """只派生程序；裁剪已知动作并保留剩余结构、顺序与原始删除位置。"""
     from program import from_search_program
-    policy = capabilities['burst_exclusions']
-    actions = [*all_capabilities['actions'],
-               *(command for block in burst_context['candidate']['blocks'] for command in block)]
-    excluded = set(policy['actions']) | {action['simc_action'] for action in actions
-                                        if _excluded(action, policy)}
     removed = []
 
     def keep(block, path):
@@ -403,14 +397,26 @@ def training_program(program, capabilities, all_capabilities, burst_context):
                 output.append(dict(segment, blocks=remaining))
         elif isinstance(segment, dict) and segment.get('kind') == 'CastSequence':
             # 删除前用既有解析核对成员和reset，不能删除后掩盖无效定义。
-            by_name = {action['simc_action']: action for action in actions}
-            from_search_program([segment], dict(all_capabilities, actions=list(by_name.values())))
+            from_search_program([segment], validation_capabilities)
             members = keep(segment['members'], path + '.members')
             if members:
                 output.append(dict(segment, members=members))
         else:
             output.append(segment)
     return output, removed
+
+
+def training_program(program, capabilities, all_capabilities, burst_context):
+    """仅派生训练输入；原来源、剩余控制结构及施法序列重置不变。"""
+    from burst import _excluded
+    policy = capabilities['burst_exclusions']
+    actions = [*all_capabilities['actions'],
+               *(command for block in burst_context['candidate']['blocks'] for command in block)]
+    excluded = set(policy['actions']) | {action['simc_action'] for action in actions
+                                        if _excluded(action, policy)}
+    by_name = {action['simc_action']: action for action in actions}
+    return filter_search_program(program, excluded,
+        dict(all_capabilities, actions=list(by_name.values())))
 
 
 def publish_records(processed, selected, *, condition, character, targets, template_sha, engines, capabilities=None,
