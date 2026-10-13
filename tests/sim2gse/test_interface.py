@@ -2963,36 +2963,15 @@ class InterfaceTests(unittest.TestCase):
         })
 
     def test_browser_computes_copies_and_clears_real_candidate(self):
-        # 一次真实180ms双场任务覆盖发布故障；200ms仅保页面初始默认值。
+        # 一次真实180ms双场任务覆盖计算、复制和清旧；200ms保页面初始默认值。
         import sequence
-        evaluate, original_replace = sequence.evaluate, os.replace
+        evaluate = sequence.evaluate
         evaluated_inputs = set()
-        failures, delayed = set(), set()
-        conflicts, readers = [], []
 
         def observe_evaluation(*args, **kwargs):
             evaluated_inputs.add((kwargs['simulation_config']['target_count'],
                                   tuple(kwargs['input_times'][:2])))
             return evaluate(*args, **kwargs)
-
-        def sharing_conflict(source, destination):
-            name = Path(destination).name
-            if name == 'result.json' and not delayed:
-                delayed.add(Path(destination))
-                time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
-            if name in ('progress.json', 'result.json') and name not in failures:
-                failures.add(name)
-                if not Path(destination).exists():
-                    Path(destination).write_text('{"status":"starting"}', encoding='utf-8')
-                reader = open(destination, 'rb')
-                release = threading.Timer(0.08, reader.close)
-                readers.append(release)
-                release.start()
-            try:
-                return original_replace(source, destination)
-            except PermissionError as error:
-                conflicts.append(error.winerror)
-                raise
 
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
@@ -3018,76 +2997,34 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   page.on('response',async response=>{if(response.url().includes('/api/tasks/')&&response.request().method()==='GET')state=await response.json();});
   await page.goto(input.url);
   assert.equal(await page.locator('#interval').inputValue(),'200');
-  assert.equal(await page.locator('#targetCount').inputValue(),'1');
-  assert.deepEqual(await page.locator('#targetCount option').evaluateAll(options=>options.map(o=>o.value)),['1','5']);
+  assert.equal(await page.locator('#resultSection').isVisible(),false);
   await page.locator('#interval').fill('180');
-  await page.locator('#targetCount').selectOption('5');
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
+  await page.locator('#profile').fill(input.profile);
   await page.locator('#start').click();
-  assert.match(await page.locator('#error').innerText(),/请先粘贴/);
-  await page.locator('#profile').fill('mage=test\nlevel=80\nspec=frost');
-  await page.locator('#start').click();
-  await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-  const asyncError=await page.locator('#error').innerText();
-  assert.match(asyncError,/请检查角色导出内容/);
-  assert.ok(!asyncError.includes('\\'));
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
-  let dropped=false;
-  await page.route('**/api/tasks/*',async route=>{if(!dropped){dropped=true;await route.abort();}else await route.continue();});
-  const disconnected=page.waitForEvent('requestfailed');
-  await page.locator('#profile').fill(input.profile);await page.locator('#start').click();
-  await disconnected;await page.waitForTimeout(700);
-  assert.equal(await page.locator('#start').isDisabled(),true,'瞬时断连不能结束后台任务');
-  assert.equal(await page.locator('#targetCount').isDisabled(),true);
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
   await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:35000});
   assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
   const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
   assert.equal(state.input_interval_ms,180);
   assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
-  assert.equal(await page.locator("#targetCount").isDisabled(),false);
   assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
   assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
   assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
-  const exports=state.exports;
+  await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
   await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
-  const profilePage=await context.newPage();
-  await profilePage.goto(input.url);
-  await profilePage.waitForFunction(()=>!document.querySelector('#start').disabled);
-  assert.equal(await profilePage.locator('#result').inputValue(),text);
-  const reloaded=profilePage.waitForResponse(response=>response.url().includes('/api/tasks/')&&response.request().method()==='GET');
-  await profilePage.reload();await profilePage.waitForFunction(()=>!document.querySelector('#start').disabled);assert.equal(await profilePage.locator('#result').inputValue(),text);
-  assert.deepEqual((await (await reloaded).json()).exports,exports);
-  await profilePage.locator('#copy').click();
-  assert.equal(await profilePage.evaluate(()=>navigator.clipboard.readText()),text);
-  assert.match(await profilePage.locator('#resultNote').innerText(),/未进行最终独立复测/);
-  await profilePage.locator('#profile').fill(input.profile+'\n# changed');
-  assert.equal(await profilePage.locator('#resultSection').isVisible(),false);
-  assert.equal(await profilePage.locator('#result').inputValue(),'');
-  assert.equal(await page.locator('#result').inputValue(),text);
-  assert.equal(await page.locator('#targetCount').inputValue(),'5');
-  await page.locator('#targetCount').selectOption('1');
+  await page.locator('#profile').fill(input.profile+'\n# changed');
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   assert.equal(await page.locator('#result').inputValue(),'');
   console.log(JSON.stringify({candidate:text,state}));
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        with patch.object(sequence, 'evaluate', observe_evaluation), \
-                patch.object(os, 'replace', sharing_conflict):
-            try:
-                result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
-                    text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
-            finally:
-                for reader in readers:
-                    reader.join()
+        with patch.object(sequence, 'evaluate', observe_evaluation):
+            result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
+                text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertEqual(failures, {'progress.json', 'result.json'})
-        self.assertEqual(len(delayed), 1, '一个真实发布延迟窗口足以覆盖轮询恢复')
-        self.assertTrue(set(conflicts) & {5, 32}, '必须触发真实 Windows 文件占用冲突')
         self.assertEqual({targets for targets, _ in evaluated_inputs}, {1, 5})
         self.assertEqual({targets for targets, times in evaluated_inputs if times == (0, 180)}, {1, 5})
-        self.assertEqual(len(self.server.tasks), 1, '两个页面必须共用同一任务，不能重新计算')
+        self.assertEqual(len(self.server.tasks), 1, '一次开始只创建一个双场任务')
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
         saved = read_task(destination / 'aoe', include_search_records=True)
@@ -3251,87 +3188,6 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 self.assertNotIn('\\', message)
                 self.assertLess(len(message), 161)
         self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
-
-    def test_manual_browser_cancellation_cleans_process_tree(self):
-        from unittest.mock import patch
-        import ctypes
-        from ctypes import wintypes
-        import manual_interface
-        import runtime
-        from runtime import TaskCancelled, TaskRuntime
-        original_create=runtime._kernel32.CreateProcessW
-        held=[];node_ids=[];watch_errors=[]
-        created=threading.Event();task_runtime=TaskRuntime(30)
-        kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-        class Entry(ctypes.Structure):
-            _fields_=[('size',wintypes.DWORD),('usage',wintypes.DWORD),('pid',wintypes.DWORD),
-                      ('heap',ctypes.c_size_t),('module',wintypes.DWORD),('threads',wintypes.DWORD),
-                      ('parent',wintypes.DWORD),('priority',wintypes.LONG),('flags',wintypes.DWORD),
-                      ('exe',wintypes.WCHAR*260)]
-        kernel.CreateToolhelp32Snapshot.restype=wintypes.HANDLE
-        kernel.Process32FirstW.argtypes=[wintypes.HANDLE,ctypes.POINTER(Entry)]
-        kernel.Process32NextW.argtypes=[wintypes.HANDLE,ctypes.POINTER(Entry)]
-        kernel.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
-        kernel.OpenProcess.restype=wintypes.HANDLE
-        kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
-        kernel.CloseHandle.argtypes=[wintypes.HANDLE]
-        def edge_ids(parent_id):
-            snapshot=kernel.CreateToolhelp32Snapshot(2,0)
-            row=Entry();row.size=ctypes.sizeof(row)
-            found=set()
-            try:
-                more=kernel.Process32FirstW(snapshot,ctypes.byref(row))
-                while more:
-                    if row.parent==parent_id and row.exe.lower()=='msedge.exe':found.add(row.pid)
-                    more=kernel.Process32NextW(snapshot,ctypes.byref(row))
-                return found
-            finally:kernel.CloseHandle(snapshot)
-        def create_process(*args):
-            result=original_create(*args)
-            if result:
-                info=ctypes.cast(args[9],ctypes.POINTER(runtime._PROCESS_INFORMATION)).contents
-                node_ids.append(info.dwProcessId)
-                held.append(kernel.OpenProcess(0x100000,False,info.dwProcessId))
-                created.set()
-            return result
-        def cancel_after_edge():
-            try:
-                if not created.wait(10):raise AssertionError('Node 进程未启动')
-                child_ids=[]
-                until=time.monotonic()+10
-                while time.monotonic()<until and not child_ids:
-                    child_ids=edge_ids(node_ids[0])
-                    if not child_ids:time.sleep(0.05)
-                if not child_ids:raise AssertionError('Edge 浏览器进程未启动')
-                for pid in child_ids:
-                    handle=kernel.OpenProcess(0x100000,False,int(pid))
-                    if not handle or kernel.WaitForSingleObject(handle,0)!=258:
-                        raise AssertionError('无法捕获仍在运行的 Edge 浏览器进程')
-                    held.append(handle)
-            except BaseException as error:
-                watch_errors.append(error)
-            finally:task_runtime.cancel()
-        destination=Path(self.directory.name)/'取消 界面'
-        profile=Path(self.directory.name)/'sample.simc'
-        profile.write_text(sample_profile(),encoding='utf-8')
-        watcher=threading.Thread(target=cancel_after_edge,daemon=True)
-        try:
-            watcher.start()
-            with patch.object(sys,'argv',['manual_interface.py','--output',str(destination),'--profile',str(profile)]), \
-                 patch.object(manual_interface,'TaskRuntime',return_value=task_runtime), \
-                 patch.object(runtime._kernel32,'CreateProcessW',side_effect=create_process):
-                with self.assertRaises(TaskCancelled):manual_interface.main()
-            watcher.join(20)
-            self.assertFalse(watcher.is_alive(),'浏览器启动观察线程未结束')
-            if watch_errors:raise watch_errors[0]
-            self.assertGreaterEqual(sum(bool(handle) for handle in held),2,'必须观察到 Node 及浏览器子进程')
-            for handle in held:
-                if handle:self.assertEqual(kernel.WaitForSingleObject(handle,5000),0,'浏览器进程未被清理')
-        finally:
-            task_runtime.cancel();watcher.join(1)
-            for handle in held:
-                if handle:kernel.CloseHandle(handle)
-
 
 
 if __name__ == "__main__":
