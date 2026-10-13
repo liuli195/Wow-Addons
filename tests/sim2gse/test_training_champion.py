@@ -43,6 +43,26 @@ def champion_engine(page_task_engine, monkeypatch):
     yield
 
 
+def test_champion_engine_and_local_score_restore_the_original_functions():
+    """真实夹具逐层退出后，受检函数不能残留快速替身。"""
+    from contextlib import contextmanager
+    from functools import partial
+    import codec
+    import engine
+    import sequence
+
+    watched = [(engine, name) for name in ('identity', 'reference', 'inspect', 'check_report')]
+    watched += [(sequence, 'evaluate'), (codec, 'run_command')]
+    originals = [getattr(module, name) for module, name in watched]
+    with pytest.MonkeyPatch.context() as outer:
+        with contextmanager(page_task_engine.__wrapped__)() as page:
+            with contextmanager(champion_engine.__wrapped__)(page, outer):
+                with patch.object(sequence, 'evaluate', partial(sequence.evaluate, score=123.)):
+                    assert engine.check_report is REAL_CHECK_REPORT
+    assert [(module.__name__, name) for (module, name), original in zip(watched, originals)
+            if getattr(module, name) is not original] == []
+
+
 def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0):
     """构造完整最终成绩凭据，不启动训练或原生计算。"""
     from contextlib import closing
