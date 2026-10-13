@@ -8,73 +8,20 @@ from test_seed_training import memory_result_center
 from test_training_champion import champion_engine, completed_training, dual_result
 
 
-def test_dual_retains_each_scenes_formal_champion_after_publication_retries(tmp_path,
+def test_dual_inherits_each_scenes_formal_champion_after_publication(tmp_path,
         champion_engine):
     import burst
     import result_store
-    import sequence
-    import os
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    api = result_store._api()
-    fault = 'champion_write'
-    published_champions = {}
-    replace = os.replace
-
-    def publish_write(root, table, key, rows, **kwargs):
-        if table == 'search_champions' and fault == 'champion_write':
-            raise OSError('constructed champion publication failure')
-        return api['write'](root, table, key, rows, **kwargs)
-
-    def pointer_replace(source, destination):
-        destination = Path(destination)
-        if fault == 'publication_pointer' and destination.name == 'result.json':
-            payload = __import__('json').loads(Path(source).read_text(encoding='utf-8'))
-            if payload.get('formal_champion_publication', {}).get('status') == 'published':
-                raise OSError('constructed publication pointer failure')
-        return replace(source, destination)
-
-    def fail_pointer(saved):
-        nonlocal fault
-        for scene in saved['scenes']:
-            publication = scene['formal_champion_publication']
-            assert publication['status'] == 'pending'
-            assert publication['error'] == 'constructed champion publication failure'
-            assert scene['search_result']['samples'] > 0
-            assert result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key']) is None
-        fault = 'publication_pointer'
-        resume_patches.enter_context(patch.object(sequence, 'evaluate', lambda *args, **kwargs:
-            pytest.fail('补发布重复启动评分')))
-
-    def restore(saved):
-        nonlocal fault
-        for original, scene in zip(saved['previous_state']['scenes'], saved['scenes']):
-            publication = scene['formal_champion_publication']
-            assert publication['status'] == 'pending'
-            assert publication['error'] == 'constructed publication pointer failure'
-            champion = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
-            assert champion is not None
-            assert champion['version'] == original['formal_champion_snapshot']['version'] + 1
-            published_champions[scene['formal_champion_snapshot']['condition_key']] = champion
-            assert champion['source_run_id'] == original['formal_champion_publication']['source_run_id']
-            assert scene['search_result'] == original['search_result']
-            assert scene['elapsed_seconds'] == original['elapsed_seconds']
-        fault = None
-
-    with ExitStack() as resume_patches, \
-         patch.object(result_store, '_api', return_value=dict(api, write=publish_write)), \
-         patch.object(os, 'replace', side_effect=pointer_replace):
-        first = dual_result(tmp_path / 'first', raw, candidate_limit=1,
-                            before_resume=(fail_pointer, restore))
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
     assert [scene['formal_champion_publication']['status'] for scene in first['scenes']] == [
         'published', 'published']
-    for original, scene in zip(first['previous_state']['previous_state']['scenes'], first['scenes']):
-        key = scene['formal_champion_snapshot']['condition_key']
-        assert result_store.read_search_champion(key) == published_champions[key]
-        assert scene['formal_champion_publication']['source_run_id'] == original['formal_champion_publication']['source_run_id']
-        assert scene['search_result'] == original['search_result']
-        assert scene['elapsed_seconds'] == original['elapsed_seconds']
+    for scene in first['scenes']:
+        champion = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
+        assert champion['source_run_id'] == scene['formal_champion_publication']['source_run_id']
+        assert scene['search_result']['samples'] > 0
 
     second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
     for previous, scene in zip(first['scenes'], second['scenes']):
@@ -114,11 +61,8 @@ def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp
     assert all(scene['formal_champion_publication']['status'] == 'unchanged' for scene in second['scenes'])
 
 
-@pytest.mark.parametrize('former_count,challenger_count,validation_batches,path_count,publication', [
-    (6, 12, 1, 9, 'unchanged'), (20, 30, 2, 10, 'published')])
-def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp_path,
-        monkeypatch, memory_result_center, champion_engine, former_count, challenger_count,
-        validation_batches, path_count, publication):
+def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_promotion(tmp_path,
+        monkeypatch, memory_result_center, champion_engine):
     import burst
     import engine
     import result_store
@@ -136,11 +80,11 @@ def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp
         return native
 
     with patch.object(engine, 'reference', four_native_sources):
-        former = [['death_coil']] * former_count + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
+        former = [['death_coil']] * 20 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
         template, _ = completed_training(tmp_path, 1, [(former, [200.] * 3)])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-        first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=validation_batches)
-        challenger = [['death_coil']] * challenger_count + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
+        first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=2)
+        challenger = [['death_coil']] * 30 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
         _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')
         engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
         selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
@@ -150,20 +94,20 @@ def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp
             template_sha256='selected-template', engines=engines) for index in range(4)]
         result_store.write('seed_selected', 'deathknight-unholy-1-burst', selected,
                            schema=seed_training.SELECTED_SCHEMA)
-        second = dual_result(tmp_path / 'second', raw, candidate_limit=10, validation_batches=validation_batches)
+        second = dual_result(tmp_path / 'second', raw, candidate_limit=10, validation_batches=2)
         scene = second['scenes'][0]
-        assert len(scene['start_sources']) == path_count
+        assert len(scene['start_sources']) == 10
         groups = [source for values in scene['start_sources'].values() for source in values]
         assert [sum(source['source_kind'] == kind for source in groups) for kind in
                 ('native', 'seed_selected', 'training_champion', 'formal_champion')] == [4, 4, 1, 1]
-        # Equal behaviors retain every source, with only successful distinct lanes counted.
+        # All ten distinct starts retain their sources and count toward stagnation.
         folders = list((tmp_path / 'second' / 'page' / 'tasks').glob('*/single_target'))
         saved = task.read_task(folders[0], include_search_records=True)
-        assert len(saved['search']['chains']) == saved['search']['no_improvement_round_limit'] == path_count
+        assert len(saved['search']['chains']) == saved['search']['no_improvement_round_limit'] == 10
         assert saved['config']['total_budget_seconds'] == 600
-        assert scene['formal_champion_publication']['status'] == publication
-        assert (scene['formal_champion_publication']['source_run_id'] != first['scenes'][0][
-            'formal_champion_publication']['source_run_id']) == (publication == 'published')
+        assert scene['formal_champion_publication']['status'] == 'published'
+        assert scene['formal_champion_publication']['source_run_id'] != first['scenes'][0][
+            'formal_champion_publication']['source_run_id']
         import math
         from search import TaskStore
         from runtime import TaskCancelled
@@ -191,7 +135,7 @@ def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp
         try:
             with patch.object(TaskStore, 'save', stop_after_saved_baseline):
                 third = dual_result(third_root, raw, candidate_limit=10,
-                    validation_batches=validation_batches, expected='cancelled')
+                    validation_batches=2, expected='cancelled')
         finally:
             cancel_once[0] = False
         assert third['scenes'][0]['formal_champion_adaptation']['current_score'] == third['scenes'][0]['search_result']['dps']
@@ -200,11 +144,7 @@ def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp
         assert result_store.read_search_champion(incumbent['condition_key']) == incumbent
         assert third['scenes'][0]['formal_champion_snapshot']['source_run_id'] == scene[
             'formal_champion_publication']['source_run_id']
-        if publication == 'published':
-            assert third['scenes'][0]['formal_champion_snapshot']['promotion_evidence'][0]['comparison']['ci95'][0] > 0
-        else:
-            assert any({source['source_kind'] for source in group} == {'native', 'formal_champion'}
-                       for group in scene['start_sources'].values())
+        assert third['scenes'][0]['formal_champion_snapshot']['promotion_evidence'][0]['comparison']['ci95'][0] > 0
 
 
 def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_path,

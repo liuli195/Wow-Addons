@@ -206,10 +206,9 @@ def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', inter
         with urlopen(base + '/api/tasks/' + created['task_id'], timeout=5) as response:
             state = json.load(response)
         assert state['status'] == expected, state
-        callbacks = (before_resume,) if callable(before_resume) else (before_resume or ())
-        for callback in callbacks:
+        if before_resume is not None:
             previous = state
-            callback(state)
+            before_resume(state)
             with urlopen(Request(base + '/api/tasks/' + created['task_id'] + '/resume', b'{}',
                                  {'Content-Type': 'application/json'}), timeout=5) as response:
                 json.load(response)
