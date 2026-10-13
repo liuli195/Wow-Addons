@@ -2874,6 +2874,50 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(any(row["click_position"] == 1 and row["queue_blocked"] > 0
                             for row in repeated_positions))
 
+    def test_completed_task_is_not_visible_before_its_result_is_reliably_saved(self) -> None:
+        import search
+        import task
+
+        waiting, heartbeat, release = threading.Event(), threading.Event(), threading.Event()
+        store_run, publish = task._store_run, search.TaskStore.publish
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
+            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
+            final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=37,
+        )}
+
+        def held_result(destination, result, *, state=None):
+            if result.get("status") == "completed":
+                waiting.set()
+                if not release.wait(5):
+                    raise AssertionError("result persistence was not released")
+            return store_run(destination, result, state=state)
+
+        def published_heartbeat(store):
+            publish(store)
+            if waiting.is_set():
+                heartbeat.set()
+
+        with _fast_search_boundary(), patch.object(
+                search, "initial_programs", return_value=[[['outbreak']]]), \
+                patch.object(task, "_store_run", side_effect=held_result), \
+                patch.object(search.TaskStore, "publish", published_heartbeat):
+            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            handle = self.server.tasks[created["task_id"]][1]
+            try:
+                self.assertTrue(waiting.wait(5), "task never reached result persistence")
+                self.assertTrue(heartbeat.wait(5), "held task did not publish a heartbeat")
+                pending = self._json_request("GET", "/api/tasks/" + created["task_id"])
+                self.assertEqual(pending["status"], "running", pending)
+                self.assertFalse(pending["result_ready"], pending)
+            finally:
+                release.set()
+                handle.join(5)
+            self.assertTrue(handle.done)
+            completed = self._json_request("GET", "/api/tasks/" + created["task_id"])
+        self.assertEqual(completed["status"], "completed", completed)
+        self.assertTrue(completed["result_ready"], completed)
+
     def test_public_task_search_observability_is_off_by_default(self) -> None:
         import search
 

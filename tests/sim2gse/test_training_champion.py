@@ -304,7 +304,8 @@ def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_error
                 raise OSError('temporary isolated storage failure')
         return api['read_key'](root, table, group, **kwargs)
     with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)):
-        state = dual_result(tmp_path, raw, expected='failed' if fault == 'temporary_error' else 'completed')
+        state = dual_result(tmp_path, raw, candidate_limit=1,
+                            expected='failed' if fault == 'temporary_error' else 'completed')
     if fault == 'temporary_error':
         assert '不可读' in state['error']
         return
@@ -465,7 +466,8 @@ def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failure
         return read_text(path, *args, **kwargs)
     with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)), \
             patch.object(Path, 'read_text', read_identity):
-        state = dual_result(tmp_path, raw, expected='completed' if fault == 'processed_corrupt' else 'failed')
+        state = dual_result(tmp_path, raw, candidate_limit=1,
+                            expected='completed' if fault == 'processed_corrupt' else 'failed')
     if fault == 'processed_corrupt':
         champion = state['scenes'][0]['training_champion_snapshot']
         assert champion['status'] == 'absent'

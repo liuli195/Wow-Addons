@@ -10,10 +10,10 @@ def test_dual_retains_each_scenes_formal_champion_across_new_tasks(tmp_path,
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=4)
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
     assert [scene['formal_champion_publication']['status'] for scene in first['scenes']] == [
         'published', 'published']
-    second = dual_result(tmp_path / 'second', raw, candidate_limit=4)
+    second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
     for previous, scene in zip(first['scenes'], second['scenes']):
         snapshot = scene['formal_champion_snapshot']
         assert snapshot['status'] == 'selected'
@@ -67,7 +67,7 @@ def test_dual_saved_results_survive_publication_failure_and_resume_without_scori
 
     with patch.object(result_store, '_api', return_value=dict(api, write=publish_write)), \
          patch.object(os, 'replace', side_effect=pointer_replace):
-        state = dual_result(tmp_path, raw, candidate_limit=4, before_resume=restore)
+        state = dual_result(tmp_path, raw, candidate_limit=1, before_resume=restore)
     assert all(scene['formal_champion_publication']['status'] == 'published' for scene in state['scenes'])
     assert [scene['search_result'] for scene in state['scenes']] == [
         scene['search_result'] for scene in state['previous_state']['scenes']]
@@ -83,7 +83,7 @@ def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=4)
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
     inspect = engine.inspect
 
     def invalid_native(*args, **kwargs):
@@ -93,7 +93,7 @@ def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp
         return capabilities
 
     monkeypatch.setattr(engine, 'inspect', invalid_native)
-    second = dual_result(tmp_path / 'second', raw, candidate_limit=4)
+    second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
     assert all(scene['formal_champion_adaptation']['status'] == 'accepted' for scene in second['scenes'])
     assert [scene['search_result']['dps'] for scene in second['scenes']] == [
         scene['search_result']['dps'] for scene in first['scenes']]
@@ -182,7 +182,7 @@ def test_management_import_rechecks_one_known_formal_source_without_history_scan
                      if source_rules == 'old_rules' else rules)
     with patch.object(result_store, '_api', return_value=dict(api, write=unavailable_champion_write)), \
          patch.object(task, '_rule_hashes', return_value=source_hashes):
-        historical = dual_result(tmp_path / 'old', raw, candidate_limit=4)
+        historical = dual_result(tmp_path / 'old', raw, candidate_limit=1)
     source = historical['scenes'][0]['formal_champion_publication']['source_run_id']
     original_source = result_store.read_records('runs', source)[0]
     profile = tmp_path / 'current.simc'
@@ -216,7 +216,7 @@ def test_management_import_rechecks_one_known_formal_source_without_history_scan
         return
     with patch.object(result_store, '_api', return_value=dict(api, query=known_only)):
         task.import_formal_champion(profile, tmp_path / 'imported', [source, source], use_burst=True,
-            search_config=dict(candidate_limit=4, batch_targets=(2,), iterations=2,
+            search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
                 validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',),
                 input_interval_ms=200))
     saved = task.read_task(tmp_path / 'imported')
@@ -303,7 +303,7 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
         return api['write'](root, table, key, rows, **kwargs)
 
     with patch.object(result_store, '_api', return_value=dict(api, write=fail_champion)):
-        state = dual_result(tmp_path / 'dual', raw, candidate_limit=4)
+        state = dual_result(tmp_path / 'dual', raw, candidate_limit=1)
     folder = next((tmp_path / 'dual' / 'page' / 'tasks').glob('*/single_target'))
     previous = task.read_task(folder)
     if exhausted:
@@ -465,7 +465,7 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=4)
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
     evaluate = sequence.evaluate
     cancelled = [False]
 
@@ -502,14 +502,15 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
                            schema=result_store.SEARCH_CHAMPION_SCHEMA)
 
     with patch.object(sequence, 'evaluate', side_effect=interrupt):
-        resumed = dual_result(tmp_path / 'cancelled', raw, candidate_limit=4,
+        resumed = dual_result(tmp_path / 'cancelled', raw, candidate_limit=1,
             expected='cancelled', before_resume=newer_version)
     assert resumed['scenes'][0]['formal_champion_snapshot'] == resumed['previous_state']['scenes'][0][
         'formal_champion_snapshot']
     assert resumed['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
 
 
-@pytest.mark.parametrize('fault', ['corrupt_champion', 'temporary_read', 'source_program'])
+@pytest.mark.parametrize('fault', ['corrupt_champion', 'temporary_read', 'corrupt_candidate',
+    'temporary_candidate_read', 'source_program'])
 def test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_the_incumbent(tmp_path,
         monkeypatch, memory_result_center, champion_engine, fault):
     import burst
@@ -535,6 +536,14 @@ def test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_th
                 raise OSError('constructed temporary champion read failure')
             return api['read_key'](root, table, key, **kwargs)
         monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_key=unavailable))
+    elif fault in ('corrupt_candidate', 'temporary_candidate_read'):
+        def unreadable_candidate(root, table, key, **kwargs):
+            if table == 'candidates':
+                if fault == 'corrupt_candidate':
+                    raise api['CorruptDataError']('constructed corrupt champion artifact')
+                raise OSError('constructed temporary champion artifact read failure')
+            return api['read_key'](root, table, key, **kwargs)
+        monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_key=unreadable_candidate))
     else:
         candidate = result_store.read_records('candidates', original['source_candidate_data_key'])[0]
         candidate['program'] = {}

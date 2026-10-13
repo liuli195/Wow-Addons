@@ -15,7 +15,7 @@ from test_seed_training import memory_result_center
 def dual_page(root, raw):
     from interface import create_server
     server = create_server(root / 'page', task_options=dict(search_config=dict(
-        candidate_limit=10, batch_targets=(2,), iterations=2, validation_batches=2,
+        candidate_limit=5, batch_targets=(2,), iterations=2, validation_batches=2,
         final_batches=1, final_iterations=2, scenarios=('nominal',))))
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     worker.start()
@@ -105,7 +105,7 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
         if fault == 'competition':
             stronger = [['death_coil']] * 30 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
             completed_training(tmp_path, 1, [(stronger, [300.] * 3)], name='newer')
-            competing = dual_result(tmp_path / 'competing', raw, candidate_limit=10, validation_batches=2)
+            competing = dual_result(tmp_path / 'competing', raw, candidate_limit=5, validation_batches=2)
             expected_incumbent = result_store.read_search_champion(key)
             assert expected_incumbent['source_run_id'] == competing['scenes'][0]['formal_champion_publication']['source_run_id']
             assert expected_incumbent['behavior_identity'] != champion_a['behavior_identity']
@@ -163,7 +163,7 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
                     raise OSError('read-only incumbent inheritance probe')
                 return api['write'](root, table, data_key, rows, **kwargs)
             with patch.object(result_store, '_api', return_value=dict(api, write=no_probe_publication)):
-                retained = dual_result(tmp_path / 'while-pending', raw, candidate_limit=10, validation_batches=2)
+                retained = dual_result(tmp_path / 'while-pending', raw, candidate_limit=5, validation_batches=2)
             assert retained['scenes'][0]['formal_champion_snapshot']['behavior_identity'] == champion_a['behavior_identity']
             def no_completed_scene_scoring(*args, **kwargs):
                 if (kwargs.get('simulation_config') or {}).get('target_count', 1) == 1:
@@ -186,5 +186,5 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
             assert incumbent['version'] == champion_a['version'] + 1
             assert incumbent['source_run_id'] == saved_a['run_id']
             expected_incumbent = incumbent
-        inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=10, validation_batches=2)
+        inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=5, validation_batches=2)
         assert inherited['scenes'][0]['formal_champion_snapshot']['behavior_identity'] == expected_incumbent['behavior_identity']

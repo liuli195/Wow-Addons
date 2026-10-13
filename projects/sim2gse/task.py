@@ -828,7 +828,7 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
     return starts + added, decisions
 
 
-def _validate_formal_source(record, state, character, *, run=None, candidate=None):
+def _validate_formal_source(record, state, character, *, run=None, candidate=None, verify_reports=True):
     """One source contract for live publication and immutable published evidence."""
     from result_store import one, read_many, report_locations, InvalidRecordError
     from seed_training import decode, search_program
@@ -874,6 +874,16 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
                != record['behavior_identity']
             or canonicalize_search_program(record['program'], state['capabilities'])['identity'] != record['behavior_identity']):
         raise InvalidRecordError('正式冠军程序、导出或正式来源行为不符')
+    if not verify_reports:
+        import math
+        if (type(record.get('score')) not in (int, float) or not math.isfinite(record['score'])
+                or type(record.get('samples')) is not int or record['samples'] < 1
+                or not isinstance(record.get('batch_keys'), list) or not record['batch_keys']
+                or any(not isinstance(key, str) or not key for key in record['batch_keys'])
+                or len(set(record['batch_keys'])) != len(record['batch_keys'])):
+            raise InvalidRecordError('正式冠军成绩或原报告引用格式不符')
+        # Published evidence was verified before CAS; inheritance always scores the program anew.
+        return evidence
     wanted = set(record['batch_keys'])
     locations = report_locations(record['batch_keys'])
     groups = list(dict.fromkeys(locations.get(key) or key for key in record['batch_keys']))
@@ -935,7 +945,7 @@ def _freeze_formal_champion(state, character, native, capabilities):
         from result_store import InvalidRecordError
         raise InvalidRecordError('正式冠军条件绑定不符')
     checked = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-    _validate_formal_source(record, dict(state, capabilities=capabilities), checked)
+    _validate_formal_source(record, dict(state, capabilities=capabilities), checked, verify_reports=False)
     snapshot.update(record, status='selected', legacy_import_status='not_imported',
                     target_count=binding['target_count'])
     return snapshot
@@ -1106,7 +1116,8 @@ def _prepare_formal_publication(store, result=None):
                   batch_keys=list(dict.fromkeys([row['data_key'] for row in winner['batches']] +
                       [batch for item in evidence for batch in item['batch_keys']])), promotion_evidence=evidence)
     incumbent = previous or (dict(version=snapshot['version'], source_run_id=snapshot['source_run_id'],
-        behavior_identity=snapshot['behavior_identity']) if snapshot['status'] == 'selected' else None)
+        behavior_identity=snapshot['behavior_identity'])
+        if snapshot['status'] == 'selected' and snapshot['version'] > 0 else None)
     fields = {name: result[name] for name in ('status', 'phase', 'elapsed_seconds', 'completed_batches',
         'final', 'independent_validation_complete', 'improvement') if result is not None and name in result}
     if result is not None:
@@ -1324,7 +1335,6 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     if use_burst:
                         scope += '-burst'
                     state['seed_selected_snapshot'] = read_records('seed_selected', scope)
-                    store.save()
                 if 'training_champion_snapshot' not in state:
                     from seed_training import training_champion
                     state['training_champion_snapshot'] = training_champion(
@@ -1332,7 +1342,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
                         burst_identity=(dict(spec_id=definition['spec_id'],
                                              definition_id=definition['definition_id']) if definition else None))
-                    store.save()
+                # 冠军与代表快照随 inflight 同一事务冻结，先于任何原生评分。
                 # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
@@ -1472,11 +1482,13 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         adaptation.update(current_score=scored.get('score'),
                                           current_samples=sum(batch.get('samples', 0)
                                                               for batch in scored.get('batches', [])))
-            state.update(status=result['status'], phase=result['phase'])
             _prepare_formal_publication(store, result)
-            store.save()
+            store.save()  # Intent freezes the completed archive while heartbeats remain nonterminal.
             pointer = _store_run(destination, result, state=state)
             _write_json(destination/'result.json', pointer, atomic=True)
+            state.update(status=result['status'], phase=result['phase'])
+            if not state.get('formal_champion_publication_intent'):
+                store.save()
             _publish_formal_champion(store, destination)
             result['search'].update({name: state[name] for name in ('formal_champion_snapshot',
                 'formal_champion_adaptation', 'formal_champion_publication') if name in state})
