@@ -178,10 +178,12 @@ def test_dual_reads_each_scenes_final_training_champion(tmp_path, monkeypatch,
 
 def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_path, monkeypatch,
         memory_result_center, champion_engine):
+    from functools import partial
     import burst
     import engine
     import result_store
     import seed_training
+    import sequence
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
@@ -191,6 +193,7 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
     entries += [(winning_program, [199., 200., 201.]), (winning_program, [190., 200., 210.])]
     template, rows = completed_training(tmp_path, 1, entries)
     monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(sequence, 'evaluate', partial(sequence.evaluate, score=123.))
     selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
         class_name='deathknight', spec='unholy', targets=1,
         program=[['death_coil'], dict(kind='WaitClicks', clicks=100 + index), ['outbreak']],
@@ -215,7 +218,8 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
     assert champion['candidate_id'] == rows[65]['candidate_id']
     assert champion['program'] == winning_program
     assert champion['phase'] == 'final' and champion['score'] == 200.
-    assert scene['training_champion_adaptation']['current_score'] != 200.
+    assert scene['training_champion_adaptation']['current_score'] == 123.
+    assert scene['training_champion_adaptation']['current_samples'] > 0
     sources = [source for group in scene['start_sources'].values() for source in group]
     assert {source['candidate_id'] for source in sources if source['source_kind'] == 'seed_selected'} == {
         'selected-0', 'selected-1', 'selected-2', 'selected-3'}

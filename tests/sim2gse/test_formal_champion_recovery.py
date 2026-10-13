@@ -53,6 +53,9 @@ def dual_page(root, raw):
     'saved_run_failed_checkpoint'])
 def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
+    import math
+    from runtime import TaskCancelled
+    from program import canonicalize_search_program
     import burst
     import engine
     import result_store
@@ -68,13 +71,46 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
     evaluate, store_run, write_json, api = sequence.evaluate, task._store_run, task._write_json, result_store._api()
     cancel_once, checkpoint_once = [True], [True]
     save_checkpoint = TaskStore.save
+    baseline_probe = dict(root=None, expected=None, score=None, samples=None, folder=None)
 
     def crash_after_cas(store):
         if (fault == 'checkpoint_after_cas' and checkpoint_once[0]
                 and store.state.get('formal_champion_publication', {}).get('status') == 'published'):
             checkpoint_once[0] = False
             raise SystemExit('constructed process exit after CAS before publication checkpoint')
-        return save_checkpoint(store)
+        saved = save_checkpoint(store)
+        root = baseline_probe['root']
+        archive = store.state.get('archive', [])
+        if root is not None and root in store.destination.parents and archive:
+            assert len(archive) == 1
+            row = archive[0]
+            expected = baseline_probe['expected']
+            assert store.state['formal_champion_snapshot']['behavior_identity'] == expected
+            assert store.state['formal_champion_adaptation']['status'] == 'accepted'
+            assert row['key'] == canonicalize_search_program(
+                row['program'], store.state['capabilities'])['identity'] == expected
+            assert math.isfinite(row['score']) and row['batches']
+            assert all(batch['status'] == 'success' and batch['samples'] > 0
+                       and batch['request']['condition'] == store.state['condition']
+                       and batch['request']['behavior_identity'] == expected for batch in row['batches'])
+            baseline_probe.update(root=None, score=row['score'],
+                samples=sum(batch['samples'] for batch in row['batches']), folder=store.destination)
+            raise TaskCancelled('auxiliary inheritance probe saved its complete current baseline')
+        return saved
+
+    def assert_probe(state, expected):
+        scene = state['scenes'][0]
+        assert scene['formal_champion_snapshot']['behavior_identity'] == expected['behavior_identity']
+        assert scene['formal_champion_snapshot']['source_run_id'] == expected['source_run_id']
+        assert scene['formal_champion_snapshot']['condition_key'] == expected['condition_key']
+        assert scene['formal_champion_adaptation']['status'] == 'accepted'
+        assert scene['formal_champion_adaptation']['current_score'] == baseline_probe['score']
+        assert scene['search_result']['dps'] == baseline_probe['score']
+        assert scene['search_result']['samples'] == baseline_probe['samples'] > 0
+        saved = task.read_task(baseline_probe['folder'])
+        assert saved['selected_candidate_key'] == saved['locked_candidate_key'] == expected['behavior_identity']
+        assert scene['formal_champion_publication']['status'] == 'unchanged'
+        assert result_store.read_search_champion(key) == expected
 
     def stop_after_complete_batch(*args, **kwargs):
         result = evaluate(*args, **kwargs)
@@ -162,9 +198,15 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
                 if table == 'search_champions':
                     raise OSError('read-only incumbent inheritance probe')
                 return api['write'](root, table, data_key, rows, **kwargs)
-            with patch.object(result_store, '_api', return_value=dict(api, write=no_probe_publication)):
-                retained = dual_result(tmp_path / 'while-pending', raw, candidate_limit=5, validation_batches=2)
-            assert retained['scenes'][0]['formal_champion_snapshot']['behavior_identity'] == champion_a['behavior_identity']
+            baseline_probe.update(root=(tmp_path / 'while-pending').resolve(),
+                expected=champion_a['behavior_identity'], score=None, samples=None, folder=None)
+            try:
+                with patch.object(result_store, '_api', return_value=dict(api, write=no_probe_publication)):
+                    retained = dual_result(tmp_path / 'while-pending', raw, candidate_limit=5,
+                        validation_batches=2, expected='cancelled')
+            finally:
+                baseline_probe['root'] = None
+            assert_probe(retained, champion_a)
             def no_completed_scene_scoring(*args, **kwargs):
                 if (kwargs.get('simulation_config') or {}).get('target_count', 1) == 1:
                     pytest.fail('已完成单场补成果或发布重复评分')
@@ -186,5 +228,11 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
             assert incumbent['version'] == champion_a['version'] + 1
             assert incumbent['source_run_id'] == saved_a['run_id']
             expected_incumbent = incumbent
-        inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=5, validation_batches=2)
-        assert inherited['scenes'][0]['formal_champion_snapshot']['behavior_identity'] == expected_incumbent['behavior_identity']
+        baseline_probe.update(root=(tmp_path / 'inherited').resolve(),
+            expected=expected_incumbent['behavior_identity'], score=None, samples=None, folder=None)
+        try:
+            inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=5,
+                validation_batches=2, expected='cancelled')
+        finally:
+            baseline_probe['root'] = None
+        assert_probe(inherited, expected_incumbent)
