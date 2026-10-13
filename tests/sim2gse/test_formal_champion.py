@@ -1,6 +1,6 @@
 """正式冠军通过公开双场入口、真实隔离持久中心保留。"""
 from test_training_champion import champion_engine, dual_result
-from test_burst import reviewed_fixture
+from test_burst import page_task_engine, reviewed_fixture
 
 
 def test_dual_retains_each_scenes_formal_champion_across_new_tasks(tmp_path,
