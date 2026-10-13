@@ -126,7 +126,7 @@ def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp
     with patch.object(engine, 'reference', four_native_sources):
         former = [['death_coil']] * former_count + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
         template, _ = completed_training(tmp_path, 1, [(former, [200.] * 3)])
-        monkeypatch.setattr(engine, 'training_template', lambda: template)
+        monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
         first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=validation_batches)
         challenger = [['death_coil']] * challenger_count + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
         _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')

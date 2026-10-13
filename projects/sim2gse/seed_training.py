@@ -678,7 +678,7 @@ def selected_materials(candidate_ids, *, sources=None):
 
 
 def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None,
-                     burst_identity=None):
+                     burst_identity=None, verified_engines=None):
     from engine import identity
     _check_cancelled(cancel_event)
     if max_processes is None:
@@ -690,7 +690,8 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
                          'no_improvement_rounds': 2, 'max_processes': max_processes}, training=True)
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
-    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    engines = (verified_engines if verified_engines is not None else
+               {mode: identity(mode)[1] for mode in ('baseline', 'controlled')})
     template_sha = hashlib.sha256(text.encode()).hexdigest()
     definition = None
     if use_burst:
@@ -1249,7 +1250,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
     """只读全部已完成最终成果及三份原复测，不训练、不补算、不改库。"""
     from program import canonicalize_search_program
     from search import _validate_saved_batch, STATS_VERSION
-    from engine import player_report
+    from engine import player_report, _training_template
     scope = f"{class_name}-{spec}-{simulation_config['target_count']}" + ('-burst' if use_burst else '')
     snapshot = dict(source_kind='training_champion', status='absent', excluded=[])
     try:
@@ -1260,13 +1261,15 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
     rows = [row for row in rows if row.get('status') == 'completed']
     if not rows:
         return snapshot
-    ready = check_training(use_burst=use_burst)
-    inputs = _training_inputs(ready['template'], simulation_config['target_count'], use_burst=use_burst,
-                             burst_identity=ready['burst_identity'])
+    inputs = _training_inputs(_training_template(engines['baseline']), simulation_config['target_count'],
+                              use_burst=use_burst, verified_engines=engines)
+    definition = inputs['definition']
+    training_burst_identity = (dict(spec_id=definition['spec_id'], definition_id=definition['definition_id'])
+                               if definition else None)
     if (inputs['character'].class_name != class_name or inputs['character'].spec != spec or
-            inputs['engines'] != engines or inputs['simulation_config'] != simulation_config or
+            inputs['simulation_config'] != simulation_config or
             inputs['config']['input_interval_ms'] != input_interval_ms or
-            (use_burst and ready['burst_identity'] != burst_identity)):
+            (use_burst and training_burst_identity != burst_identity)):
         snapshot['reason'] = '当前标准训练模板、引擎、场景或按法不适用'
         return snapshot
     batches, eligible = {}, []
@@ -1284,7 +1287,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                 manifest = _read_identity(batch / 'identity.json')
                 context = manifest['condition_input'].get('burst')
                 if (bool(context) != use_burst or (use_burst and (
-                        context['definition_id'] != ready['burst_definition_id'] or
+                        context['definition_id'] != definition['definition_id'] or
                         context['plan'] != inputs['definition']['plan'] or
                         context['interval_ms'] != input_interval_ms))):
                     raise ValueError('训练爆发内容或按法不适用')

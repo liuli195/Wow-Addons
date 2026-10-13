@@ -67,7 +67,7 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
     burst.publish(definition)
     program = [['death_coil']] * 20 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
     template, _ = completed_training(tmp_path, 1, [(program, [200.] * 3)])
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     evaluate, store_run, write_json, api = sequence.evaluate, task._store_run, task._write_json, result_store._api()
     cancel_once, checkpoint_once = [True], [True]
     save_checkpoint = TaskStore.save

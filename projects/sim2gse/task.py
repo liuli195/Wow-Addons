@@ -1789,9 +1789,13 @@ def _resume_task(output_root, **kwargs):
             if config != config_for(state['config']):
                 raise TaskError('恢复配置发生变化，请创建新任务')
             from engine import identity
+            # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
+            verified = getattr(kwargs.get('_runtime'), 'identities', {})
             try:
+                verified = {mode: verified[mode] if mode in verified else identity(mode)
+                            for mode in ('baseline', 'controlled')}
                 if (state.get('rules') != _rule_hashes() or
-                        state.get('engines') != {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}):
+                        state.get('engines') != {mode: entry[1] for mode, entry in verified.items()}):
                     raise TaskError('恢复任务的版本或编译规则已变化，请创建新任务')
             except (ValueError, OSError) as error:
                 raise TaskError(str(error)) from error
@@ -1832,6 +1836,7 @@ def _resume_task(output_root, **kwargs):
             store.close()
         runtime = kwargs.pop('_runtime',None) or TaskRuntime(config['total_budget_seconds'],cancel_event=kwargs.pop('cancel_event',None))
         kwargs.pop('cancel_event',None)
+        runtime.identities.update(verified)
         runtime.used_seconds=used
         runtime.budget_seconds=config['total_budget_seconds']
         runtime.phase_limit=runtime.budget_seconds

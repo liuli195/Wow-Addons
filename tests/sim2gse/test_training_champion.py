@@ -201,7 +201,7 @@ def test_dual_reads_each_scenes_final_training_champion(tmp_path, monkeypatch,
     aoe = [['death_coil'], ['outbreak'], ['death_coil']]
     template, single_rows = completed_training(tmp_path, 1, [(single, [190., 200., 210.])])
     _, aoe_rows = completed_training(tmp_path, 5, [(aoe, [290., 300., 310.])])
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     state = dual_result(tmp_path, raw)
     assert [scene['training_champion_snapshot']['candidate_id'] for scene in state['scenes']] == [
         single_rows[0]['candidate_id'], aoe_rows[0]['candidate_id']]
@@ -225,7 +225,7 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
                 [100., 100., 100.]) for index in range(65)]
     entries += [(winning_program, [199., 200., 201.]), (winning_program, [190., 200., 210.])]
     template, rows = completed_training(tmp_path, 1, entries)
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
         class_name='deathknight', spec='unholy', targets=1,
         program=[['death_coil'], dict(kind='WaitClicks', clicks=100 + index), ['outbreak']],
@@ -281,7 +281,7 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
     template, rows = completed_training(tmp_path, 1, [
         ([['outbreak'], ['death_coil'], ['outbreak']], [100.] * 3),
         ([['death_coil'], ['outbreak'], ['death_coil']], [200.] * 3)])
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     high = rows[1]
     folder = Path(high['task_path'])
     key = digest(dict(folder=str(folder / 'retest-final'), seed=seed_training.RETEST_SEEDS[0]))
@@ -422,7 +422,7 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     template, rows = completed_training(tmp_path, 1, [([['outbreak']], [100.] * 3),
                                                         ([['scourge_strike']], [200.] * 3)])
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     inspect = engine.inspect
     def current_catalogue(*args, **kwargs):
         capabilities = inspect(*args, **kwargs)
@@ -453,7 +453,7 @@ def test_dual_merges_equivalent_native_selected_and_training_champion_sources(tm
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     program = [['outbreak'], ['death_coil'], ['scourge_strike']]
     template, rows = completed_training(tmp_path, 1, [(program, [200.] * 3)])
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
     selected = dict(candidate_id='same-selected', condition=rows[0]['condition'], class_name='deathknight',
         spec='unholy', targets=1, program=program, family='plain', score=99999., scores=[99999.] * 3,
@@ -481,7 +481,7 @@ def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arriv
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     template, rows = completed_training(tmp_path, 1, [
         ([['outbreak'], ['death_coil'], ['outbreak']], [200.] * 3)])
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     evaluate = sequence.evaluate
     cancelled = False
     def cancel_first_score(*args, **kwargs):
@@ -519,7 +519,7 @@ def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failure
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     template, rows = completed_training(tmp_path, 1, [([['outbreak']], [200.] * 3)])
-    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     api = result_store._api()
     def read_key(root, table, key, **kwargs):
         if table == 'seed_processed' and key == 'deathknight-unholy-1-burst':

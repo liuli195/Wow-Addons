@@ -56,6 +56,8 @@ def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_bud
     import burst
     import engine
     import result_store
+    import sequence
+    import task
 
     definition, raw = reviewed_fixture()
     burst.publish(definition)
@@ -95,10 +97,33 @@ def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_bud
             state = dual_result(tmp_path, raw, candidate_limit=1, before_resume=before_resume)
             assert reads == {'baseline': 2, 'controlled': 2}
             assert state['collection_ready']
-            # 独立新任务不能沿用上一任务已经验证的内存结果。
-            fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1)
+            # 新任务先取消单场，再独立恢复它，最后由网页继续另一场。
+            evaluate = sequence.evaluate
+            cancelled = False
+
+            def cancel_first_score(*args, **kwargs):
+                nonlocal cancelled
+                result = evaluate(*args, **kwargs)
+                if not cancelled:
+                    cancelled = True
+                    kwargs['runtime'].used_seconds = 17.
+                    kwargs['runtime'].cancel()
+                return result
+
+            def resume_single_scene(previous):
+                assert reads == {'baseline': 3, 'controlled': 3}
+                assert previous['scenes'][0]['elapsed_seconds'] >= 17.
+                folder = next((tmp_path / 'fresh/page/tasks').iterdir()) / 'single_target'
+                resumed = task.resume_task(folder)
+                assert resumed['status'] == 'completed'
+                assert resumed['elapsed_seconds'] >= 17.
+                assert reads == {'baseline': 4, 'controlled': 4}
+
+            with patch.object(sequence, 'evaluate', side_effect=cancel_first_score):
+                fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1,
+                                    expected='cancelled', before_resume=resume_single_scene)
             assert fresh['collection_ready']
-            assert reads == {'baseline': 3, 'controlled': 3}
+            assert reads == {'baseline': 5, 'controlled': 5}
 
 
 def test_dual_rejects_changed_engine_on_first_verification(
