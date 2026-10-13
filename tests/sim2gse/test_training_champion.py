@@ -38,27 +38,31 @@ def champion_engine(page_task_engine, monkeypatch):
             runtime.identities[mode] = deepcopy(entry)
         return entry
 
-    monkeypatch.setattr(engine, 'identity', verified_identity)
-    monkeypatch.setattr(engine, 'check_report', REAL_CHECK_REPORT)
-    yield
+    with patch.object(engine, 'identity', verified_identity), \
+            patch.object(engine, 'check_report', REAL_CHECK_REPORT):
+        yield
 
 
-def test_champion_engine_and_local_score_restore_the_original_functions():
-    """真实夹具逐层退出后，受检函数不能残留快速替身。"""
-    from contextlib import contextmanager
+def test_champion_engine_and_local_score_restore_the_original_functions(installed_data_store_api):
+    """真实夹具逐层退出后，受检函数不能残留快速替身或已关闭内存 API。"""
+    from contextlib import contextmanager, ExitStack
     from functools import partial
     import codec
     import engine
+    import result_store
     import sequence
 
     watched = [(engine, name) for name in ('identity', 'reference', 'inspect', 'check_report')]
-    watched += [(sequence, 'evaluate'), (codec, 'run_command')]
+    watched += [(sequence, 'evaluate'), (codec, 'run_command'), (result_store, '_api')]
     originals = [getattr(module, name) for module, name in watched]
-    with pytest.MonkeyPatch.context() as outer:
-        with contextmanager(page_task_engine.__wrapped__)() as page:
-            with contextmanager(champion_engine.__wrapped__)(page, outer):
-                with patch.object(sequence, 'evaluate', partial(sequence.evaluate, score=123.)):
-                    assert engine.check_report is REAL_CHECK_REPORT
+    with pytest.MonkeyPatch.context() as outer, ExitStack() as scopes:
+        scopes.enter_context(contextmanager(memory_result_center.__wrapped__)(installed_data_store_api, outer))
+        page = scopes.enter_context(contextmanager(page_task_engine.__wrapped__)())
+        scopes.enter_context(contextmanager(champion_engine.__wrapped__)(page, outer))
+        scopes.enter_context(patch.object(sequence, 'evaluate', partial(sequence.evaluate, score=123.)))
+        scopes.enter_context(patch.object(engine, 'inspect', wraps=engine.inspect))
+        scopes.enter_context(patch.object(result_store, '_api', return_value=result_store._api()))
+        assert engine.check_report is REAL_CHECK_REPORT
     assert [(module.__name__, name) for (module, name), original in zip(watched, originals)
             if getattr(module, name) is not original] == []
 
@@ -222,7 +226,6 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
     entries += [(winning_program, [199., 200., 201.]), (winning_program, [190., 200., 210.])]
     template, rows = completed_training(tmp_path, 1, entries)
     monkeypatch.setattr(engine, 'training_template', lambda: template)
-    monkeypatch.setattr(sequence, 'evaluate', partial(sequence.evaluate, score=123.))
     selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
         class_name='deathknight', spec='unholy', targets=1,
         program=[['death_coil'], dict(kind='WaitClicks', clicks=100 + index), ['outbreak']],
@@ -240,7 +243,8 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
         if table.startswith('seed_'):
             raise AssertionError('正式搜索写入了训练存储')
         return api['write'](root, table, key, values, **kwargs)
-    with patch.object(result_store, '_api', return_value=dict(api, write=read_only_training)):
+    with patch.object(sequence, 'evaluate', partial(sequence.evaluate, score=123.)), \
+            patch.object(result_store, '_api', return_value=dict(api, write=read_only_training)):
         state = dual_result(tmp_path, raw)
     scene = state['scenes'][0]
     champion = scene['training_champion_snapshot']
@@ -263,15 +267,16 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
     'foreign_template', 'foreign_engine', 'foreign_targets', 'foreign_cadence', 'foreign_version',
     'legacy_unapproved_hash', 'report_actor', 'report_spec', 'report_spec_id', 'report_race',
     'report_talents', 'second_report_identity', 'third_report_condition', 'receipt_non_object', 'invalid_group'])
-def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_errors(tmp_path, monkeypatch,
+def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_storage_errors(tmp_path, monkeypatch,
         memory_result_center, champion_engine, fault):
     import burst
     import engine
     import result_store
     import seed_training
     from search import digest
+    from simulation_config import config_for as simulation_config_for
     definition, raw = reviewed_fixture()
-    burst.publish(definition)
+    definition = burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     template, rows = completed_training(tmp_path, 1, [
         ([['outbreak'], ['death_coil'], ['outbreak']], [100.] * 3),
@@ -360,12 +365,20 @@ def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_error
                 raise OSError('temporary isolated storage failure')
         return api['read_key'](root, table, group, **kwargs)
     with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)):
-        state = dual_result(tmp_path, raw, candidate_limit=1,
-                            expected='failed' if fault == 'temporary_error' else 'completed')
-    if fault == 'temporary_error':
-        assert '不可读' in state['error']
-        return
-    champion = state['scenes'][0]['training_champion_snapshot']
+        if fault in ('wrong_program', 'foreign_template', 'temporary_error'):
+            state = dual_result(tmp_path, raw, candidate_limit=1,
+                                expected='failed' if fault == 'temporary_error' else 'completed')
+            if fault == 'temporary_error':
+                assert '不可读' in state['error']
+                return
+            champion = state['scenes'][0]['training_champion_snapshot']
+        else:
+            # 字段边界复用正式初始化的同一查询，三类结果仍经真实双场 HTTP。
+            champion = seed_training.training_champion('deathknight', 'unholy',
+                simulation_config_for({'target_count': 1}),
+                engines={mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')},
+                input_interval_ms=200, use_burst=True,
+                burst_identity=dict(spec_id=definition['spec_id'], definition_id=definition['definition_id']))
     if fault.startswith('foreign_') or fault == 'legacy_unapproved_hash':
         assert champion['status'] == 'absent'
         assert champion['excluded']
@@ -391,8 +404,8 @@ def test_dual_keeps_legal_native_starts_when_another_cannot_be_mapped(tmp_path, 
         capabilities['baseline_actions'] = capabilities['actions'] + [dict(kind='spell',
             spell_id=999999, simc_action='unmapped_native_action', name='unmapped', gcd_ms=1500)]
         return capabilities
-    monkeypatch.setattr(engine, 'inspect', native_catalogue)
-    state = dual_result(tmp_path, raw)
+    with patch.object(engine, 'inspect', native_catalogue):
+        state = dual_result(tmp_path, raw)
     assert all(scene['search_result']['dps'] > 0 for scene in state['scenes'])
     assert all(any(source['source_kind'] == 'native' for group in scene['start_sources'].values()
                    for source in group) for scene in state['scenes'])
@@ -420,8 +433,8 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
                 action_initialized=True, available=False, data_valid=True, data_id=1003,
                 signature='scourge_strike', name='scourge_strike', gcd_ms=1500))
         return capabilities
-    monkeypatch.setattr(engine, 'inspect', current_catalogue)
-    scene = dual_result(tmp_path, raw)['scenes'][0]
+    with patch.object(engine, 'inspect', current_catalogue):
+        scene = dual_result(tmp_path, raw)['scenes'][0]
     assert scene['training_champion_snapshot']['candidate_id'] == rows[1]['candidate_id']
     assert scene['training_champion_adaptation']['status'] == 'rejected'
     assert scene['training_champion_adaptation']['reason']
@@ -457,6 +470,7 @@ def test_dual_merges_equivalent_native_selected_and_training_champion_sources(tm
 
 def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arrives(tmp_path, monkeypatch,
         memory_result_center, champion_engine):
+    from contextlib import ExitStack
     import burst
     import engine
     import result_store
@@ -489,8 +503,8 @@ def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arriv
             if table == 'seed_processed' and key == 'deathknight-unholy-1-burst':
                 raise OSError('恢复刷新了单目标训练库')
             return api['read_key'](root, table, key, **kwargs)
-        monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_key=frozen_read))
-    with patch.object(sequence, 'evaluate', side_effect=cancel_first_score):
+        patches.enter_context(patch.object(result_store, '_api', return_value=dict(api, read_key=frozen_read)))
+    with ExitStack() as patches, patch.object(sequence, 'evaluate', side_effect=cancel_first_score):
         state = dual_result(tmp_path, raw, expected='cancelled', before_resume=update_training)
     assert state['scenes'][0]['training_champion_snapshot'] == state['previous_state']['scenes'][0]['training_champion_snapshot']
 
