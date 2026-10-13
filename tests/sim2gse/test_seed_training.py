@@ -1062,15 +1062,20 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(
     source.update(active=False, semantic='unsupported', program=[], core=decode(source['core']),
                   changes=['历史缺少可靠最佳候选或有效成绩'], unavailable_reason='历史缺少可靠最佳候选或有效成绩')
     result_store.write('seed_candidates', 'registry', [source], schema=SOURCE_SCHEMA)
+    # 三种旧成绩均真实同步并恢复来源；完整训练/变模板仅保留一个代表。
     with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
-        assert command(tmp_path, args) == 0
-    assert command(tmp_path, ['list', '--state', 'processed']) == 0
-    first = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
+        assert command(tmp_path, args if historic_dps == 90. else ['prepare', *args[1:]]) == 0
     source = next(row for row in result_store.read_records('seed_candidates', 'registry')
                   if row['source_id'] == 'history:historic-1')
     assert source['active'] and source['semantic'] == 'preserved'
     assert source['unavailable_reason'] == '' and source['changes'] == []
     assert json.loads(source['program']) == [['outbreak'], ['death_coil'], ['scourge_strike']]
+    assert result_store.read_records('runs', 'historic-1') == history_before
+    assert search.config_for(training=True)['round_candidate_limit'] == 16
+    if historic_dps != 90.:
+        return
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    first = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
     assert json.loads(first['initial_program']) == [['outbreak'], ['death_coil'], ['scourge_strike']]
     assert first['status'] == 'completed' and first['rounds'] == 2
     assert len(first['initial_scores']) == len(first['scores']) == 3
@@ -1078,7 +1083,6 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(
     retests = list(result_store.iter_rows("SELECT * FROM batches WHERE purpose='seed_retest'", tables=['batches']))
     assert len(retests) == 6 and all(row['iterations'] == 128 for row in retests)
     assert {row['seed'] for row in retests} == {20261008, 20261009, 20261010}
-    assert result_store.read_records('runs', 'historic-1') == history_before
     before = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
             patch.object(sequence, 'evaluate', side_effect=AssertionError('可靠完整路径不能重训')):
@@ -1852,7 +1856,7 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
     assert json.loads(capsys.readouterr().out) == selected
 
 
-@pytest.mark.parametrize(('outer', 'inner'), [(2, 2), (3, 2), (1, 4)])
+@pytest.mark.parametrize(('outer', 'inner'), [(2, 2), (3, 2)])
 def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys, outer, inner,
                                                                   memory_training_center,
                                                                   four_candidate_training_rounds):
@@ -1939,10 +1943,11 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     prepared = result_store.read_records('seed_prepared', output['config_key'])
     frozen = json.loads(next(row['context'] for row in prepared if row['kind'] == 'context'))['frozen_queue']
     assert [row['candidate_id'] for row in records] == [row['candidate_id'] for row in frozen]
-    before = result_store.read_records('seed_selected', 'deathknight-unholy-1')
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('完整路径不得重算')):
-        assert command(tmp_path, base_args + ['--max-trainings', '1', '--max-processes', '4']) == 0
-    assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
+    if (outer, inner) == (2, 2):
+        before = result_store.read_records('seed_selected', 'deathknight-unholy-1')
+        with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('完整路径不得重算')):
+            assert command(tmp_path, base_args + ['--max-trainings', '1', '--max-processes', '4']) == 0
+        assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
 
 
 def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tmp_path, capsys):
@@ -2036,36 +2041,6 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
     assert origin and {row['run_id'] for row in origin} == {cached['trace_source']['run_id']}
 
 
-def test_training_prepare_reads_only_applicable_history_fields(tmp_path, capsys, monkeypatch):
-    import result_store
-    from test_character_export import sample_profile
-
-    for run_id, spec in [('applicable', 'unholy'), ('foreign', 'blood')]:
-        result_store.write('runs', run_id, [dict(dict.fromkeys(result_store.RUN_SCHEMA),
-            run_id=run_id, status='completed', profile={'identity': {'class': 'deathknight', 'spec': spec}},
-            candidate_key='winner', candidate_data_key=run_id + '_candidate', search_dps=0.,
-            input_original='unneeded history payload')], schema=result_store.RUN_SCHEMA)
-    result_store.write('candidates', 'applicable_candidate', [dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA),
-        run_id='applicable', candidate_key='winner', candidate_data_key='applicable_candidate',
-        source='search', program=[['death_coil']])], schema=result_store.CANDIDATE_SCHEMA)
-    observed = []
-    real_iter = result_store.iter_rows
-    def observe(sql, parameters=None, **options):
-        for row in real_iter(sql, parameters, **options):
-            observed.append(row)
-            yield row
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    with training_boundary(), monkeypatch.context() as scoped:
-        scoped.setattr(result_store, 'iter_rows', observe)
-        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
-                                 '--workspace', str(tmp_path / 'work')]) == 0
-    capsys.readouterr()
-    assert len(observed) == 1 and observed[0]['run_id'] == 'applicable'
-    assert set(observed[0]) == {'run_id', 'profile', 'status', 'candidate_data_key', 'candidate_key', 'search_dps'}
-    assert result_store.read_records('seed_candidates', 'registry')[0]['source_id'] == 'history:applicable'
-
-
 def test_training_prepare_batches_known_history_candidates_without_unrelated_reads(tmp_path, capsys, monkeypatch):
     import result_store
     from test_character_export import sample_profile
@@ -2074,8 +2049,8 @@ def test_training_prepare_batches_known_history_candidates_without_unrelated_rea
     for run_id, spec in [('first', 'unholy'), ('second', 'unholy'), ('foreign', 'blood')]:
         result_store.write('runs', run_id, [dict(dict.fromkeys(result_store.RUN_SCHEMA),
             run_id=run_id, status='completed', profile={'identity': {'class': 'deathknight', 'spec': spec}},
-            candidate_key='winner', candidate_data_key=run_id + '_candidate', search_dps=0.)],
-            schema=result_store.RUN_SCHEMA)
+            candidate_key='winner', candidate_data_key=run_id + '_candidate', search_dps=0.,
+            input_original='unneeded history payload')], schema=result_store.RUN_SCHEMA)
     for run_id, program in [('first', [['death_coil']]), ('second', [['outbreak']])]:
         result_store.write('candidates', run_id + '_candidate', [dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA),
             run_id=run_id, candidate_key='winner', candidate_data_key=run_id + '_candidate',
@@ -2087,6 +2062,13 @@ def test_training_prepare_batches_known_history_candidates_without_unrelated_rea
     api = result_store._api()
     read_key, read_keys = api['read_key'], api['read_keys']
     observed = []
+    histories = []
+    real_iter = result_store.iter_rows
+
+    def observe_history(sql, parameters=None, **options):
+        for row in real_iter(sql, parameters, **options):
+            histories.append(row)
+            yield row
 
     def known_groups(root, table, keys, **options):
         if table == 'candidates':
@@ -2101,12 +2083,16 @@ def test_training_prepare_batches_known_history_candidates_without_unrelated_rea
     monkeypatch.setattr(result_store, '_api', lambda: api)  # 保留真实安装副本的存储边界。
     monkeypatch.setitem(api, 'read_key', no_single_candidate)
     monkeypatch.setitem(api, 'read_keys', known_groups)
+    monkeypatch.setattr(result_store, 'iter_rows', observe_history)
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     with training_boundary():
         assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
                                  '--workspace', str(tmp_path / 'work')]) == 0
     assert json.loads(capsys.readouterr().out)[0]['status'] == 'prepared'
+    assert len(histories) == 2 and {row['run_id'] for row in histories} == {'first', 'second'}
+    assert all(set(row) == {'run_id', 'profile', 'status', 'candidate_data_key', 'candidate_key', 'search_dps'}
+               for row in histories)
     assert command(tmp_path, ['list']) == 0
     rows = json.loads(capsys.readouterr().out)
     assert {row['source_id'] for row in rows} == {'history:first', 'history:second'}

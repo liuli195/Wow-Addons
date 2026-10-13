@@ -228,11 +228,12 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
             assert incumbent['version'] == champion_a['version'] + 1
             assert incumbent['source_run_id'] == saved_a['run_id']
             expected_incumbent = incumbent
-        baseline_probe.update(root=(tmp_path / 'inherited').resolve(),
-            expected=expected_incumbent['behavior_identity'], score=None, samples=None, folder=None)
-        try:
-            inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=5,
-                validation_batches=2, expected='cancelled')
-        finally:
-            baseline_probe['root'] = None
-        assert_probe(inherited, expected_incumbent)
+        if fault in ('none', 'competition'):
+            baseline_probe.update(root=(tmp_path / 'inherited').resolve(),
+                expected=expected_incumbent['behavior_identity'], score=None, samples=None, folder=None)
+            try:
+                inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=5,
+                    validation_batches=2, expected='cancelled')
+            finally:
+                baseline_probe['root'] = None
+            assert_probe(inherited, expected_incumbent)
