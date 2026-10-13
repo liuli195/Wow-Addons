@@ -926,8 +926,11 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
         (-item[0]['search_dps'], item[2]['identity'], item[0]['run_id']))
     # Verify the selected old score's complete reports, but never import its cache.
     locations = report_locations(run['batch_keys'])
+    wanted = set(run['batch_keys'])
     groups = list(dict.fromkeys(locations.get(key) or key for key in run['batch_keys']))
-    batches = read_many('batches', groups, filters={'candidate_key': canonical['identity'], 'purpose': 'search'})
+    batches = [row for row in read_many('batches', groups,
+               filters={'candidate_key': canonical['identity'], 'purpose': 'search'})
+               if row['batch_key'] in wanted]
     batches.sort(key=lambda row: row['batch_index'])
     scored = []
     config = state['config']

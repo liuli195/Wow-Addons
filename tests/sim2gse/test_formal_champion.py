@@ -333,7 +333,8 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
         scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]
 
 
-@pytest.mark.parametrize('fault', ['none', 'engine', 'cadence', 'burst', 'profile', 'report'])
+@pytest.mark.parametrize('fault', ['none', 'engine', 'cadence', 'burst', 'profile', 'report',
+    'source_batch_missing', 'source_batch_forged', 'score', 'samples'])
 def test_management_selects_the_highest_within_two_known_old_rule_sources_and_rejects_missing_proof(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
     import burst
@@ -378,6 +379,28 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
     monkeypatch.setattr(task, '_rule_hashes', real_rules)
     low_id, high_id = [state['scenes'][0]['formal_champion_publication']['source_run_id'] for state in (low, high)]
     run = result_store.read_records('runs', high_id)[0]
+    if fault in ('source_batch_missing', 'source_batch_forged', 'score', 'samples'):
+        if fault.startswith('source_batch_'):
+            locations = result_store.report_locations(run['batch_keys'])
+            groups = list(dict.fromkeys(locations.get(key) or key for key in run['batch_keys']))
+            source_batches = [row for row in result_store.read_many('batches', groups,
+                filters={'candidate_key': run['selected_candidate_key'], 'purpose': 'search'})
+                if row['batch_key'] in run['batch_keys']]
+            assert len(source_batches) == 1
+            run['batch_keys'].remove(source_batches[0]['batch_key'])
+            if fault == 'source_batch_forged':
+                foreign_id = high['scenes'][1]['formal_champion_publication']['source_run_id']
+                foreign = result_store.read_records('runs', foreign_id)[0]
+                locations = result_store.report_locations(foreign['batch_keys'])
+                groups = list(dict.fromkeys(locations.get(key) or key for key in foreign['batch_keys']))
+                foreign_batches = [row for row in result_store.read_many('batches', groups,
+                    filters={'candidate_key': run['selected_candidate_key'], 'purpose': 'search'})
+                    if row['batch_key'] in foreign['batch_keys']]
+                assert len(foreign_batches) == 1
+                run['batch_keys'].append(foreign_batches[0]['batch_key'])
+        else:
+            run['search_dps' if fault == 'score' else 'search_samples'] += 1
+        result_store.write('runs', high_id, [run], schema=result_store.RUN_SCHEMA)
     if fault in ('engine', 'cadence', 'burst', 'profile'):
         field = {'engine': 'engines', 'cadence': 'config', 'burst': 'burst', 'profile': 'profile'}[fault]
         payload = json.loads(run[field]) if isinstance(run[field], str) else run[field]
