@@ -1119,6 +1119,13 @@ def _prepare_formal_publication(store, result=None):
                                               reason='正式结果保存后发布')
 
 
+def _formal_publication_metadata(value):
+    if (not isinstance(value, dict) or value.get('status') not in
+            ('pending', 'published', 'unchanged', 'conflict', 'not_eligible')):
+        raise ValueError('正式冠军发布状态格式无效')
+    return value
+
+
 def _restore_formal_result(store, destination, character):
     """Finish durable complete archives before any resume early return; never score."""
     from result_store import one, InvalidRecordError
@@ -1161,11 +1168,13 @@ def _restore_formal_result(store, destination, character):
         result['validation'] = dict(dataset='validation', records=[row[name] for row in state['archive']
             for name in ('validation', 'global_validation') if name in row])
         result['elapsed_seconds'] = max(fields.get('elapsed_seconds', 0), state.get('elapsed_seconds', 0))
-        state.update(status=fields['status'], phase=fields['phase'])
-        state.pop('error', None)
-        store.save()
         pointer = _store_run(destination, result, state=state)
         _write_json(destination / 'result.json', pointer, atomic=True)
+    fields = intent.get('result_fields') or {}
+    if fields.get('status') in ('completed', 'cancelled'):
+        state.update(status=fields['status'], phase=fields['phase'])
+        state.pop('error', None)
+        store.save()  # A verified saved result also repairs a stale failed checkpoint without resetting elapsed time.
     if not (destination / 'result.json').is_file():
         _write_json(destination / 'result.json', dict(run_id=record['source_run_id'], status=state['status'], phase=state['phase']), atomic=True)
 
@@ -1734,6 +1743,11 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination)
         try:
             state = store.state
+            if 'formal_champion_publication' in state:
+                try:
+                    _formal_publication_metadata(state['formal_champion_publication'])
+                except ValueError as error:
+                    raise TaskError(str(error)) from error
             saved_burst_mode = state.get('use_burst', False)
             if 'use_burst' in kwargs and kwargs['use_burst'] != saved_burst_mode:
                 raise TaskError('恢复任务的爆发模式发生变化，请创建新任务')
@@ -1910,7 +1924,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             publication = (database.execute("SELECT value FROM state_fields WHERE key='formal_champion_publication'").fetchone()
                 if database.execute("SELECT 1 FROM sqlite_master WHERE name='state_fields'").fetchone() else None)
             if publication:
-                search['formal_champion_publication'] = decode(publication[0])
+                search['formal_champion_publication'] = _formal_publication_metadata(decode(publication[0]))
         except (sqlite3.Error, OSError, ValueError) as error:
             search['formal_champion_publication_verification'] = dict(status='unknown',
                 reason='本地正式冠军发布状态不可核验，保留中心可靠结果', error=str(error))
