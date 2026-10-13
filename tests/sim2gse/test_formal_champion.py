@@ -180,7 +180,7 @@ def test_management_import_rechecks_one_known_formal_source_without_history_scan
         historical = dual_result(tmp_path / 'old', raw, candidate_limit=4)
     source = historical['scenes'][0]['formal_champion_publication']['source_run_id']
     profile = tmp_path / 'current.simc'
-    profile.write_text(raw, encoding='utf-8')
+    profile.write_bytes(raw.encode('utf-8'))
     evaluate = sequence.evaluate
 
     def current_score(*args, **kwargs):
@@ -215,3 +215,292 @@ def test_management_import_rechecks_one_known_formal_source_without_history_scan
             search_config=saved['config'])
     with pytest.raises(task.TaskError, match='64'):
         task.import_formal_champion(profile, tmp_path / 'too-many', [f'{index:032x}' for index in range(65)])
+
+
+def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_path,
+        monkeypatch, memory_result_center, champion_engine):
+    import burst
+    import engine
+    import json
+    import result_store
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    definition, raw = reviewed_fixture()
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    burst.publish(definition)
+    inspect = engine.inspect
+    stale_ids = set()
+    waiting, release = threading.Event(), threading.Event()
+    api = result_store._api()
+
+    def native_order(native, folder, **kwargs):
+        capabilities = inspect(native, folder, **kwargs)
+        folder = Path(folder)
+        if 'fresh' in folder.parts:
+            capabilities['actions'] = list(reversed(capabilities['actions']))
+        if 'stale' in folder.parts:
+            stale_ids.add(json.loads((folder.parent / 'profile.json').read_text(encoding='utf-8'))['run_id'])
+        return capabilities
+
+    def held_result_write(root, table, key, rows, **kwargs):
+        if table == 'runs' and key in stale_ids and not release.is_set():
+            waiting.set()
+            if not release.wait(20):
+                raise AssertionError('fresh task did not publish')
+        return api['write'](root, table, key, rows, **kwargs)
+
+    monkeypatch.setattr(engine, 'inspect', native_order)
+    with patch.object(result_store, '_api', return_value=dict(api, write=held_result_write)), \
+         ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(dual_result, tmp_path / 'stale', raw, 1)
+        try:
+            assert waiting.wait(20)
+            fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1)
+        finally:
+            release.set()
+        stale = pending.result(20)
+    assert stale['scenes'][0]['formal_champion_snapshot']['status'] == 'absent'
+    assert stale['scenes'][0]['formal_champion_publication']['status'] == 'conflict'
+    assert stale['scenes'][0]['search_result']['samples'] > 0
+    inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=1)
+    assert inherited['scenes'][0]['formal_champion_snapshot']['source_run_id'] == fresh['scenes'][0][
+        'formal_champion_publication']['source_run_id']
+
+
+@pytest.mark.parametrize('exhausted', [False, True])
+def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_early_return(tmp_path,
+        monkeypatch, champion_engine, exhausted):
+    import burst
+    import result_store
+    import sequence
+    import task
+    from search import TaskStore
+    definition, raw = reviewed_fixture()
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    burst.publish(definition)
+    api = result_store._api()
+
+    def fail_champion(root, table, key, rows, **kwargs):
+        if table == 'search_champions':
+            raise OSError('saved winner awaiting publication')
+        return api['write'](root, table, key, rows, **kwargs)
+
+    with patch.object(result_store, '_api', return_value=dict(api, write=fail_champion)):
+        state = dual_result(tmp_path / 'dual', raw, candidate_limit=4)
+    folder = next((tmp_path / 'dual' / 'page' / 'tasks').glob('*/single_target'))
+    previous = task.read_task(folder)
+    if exhausted:
+        store = TaskStore(folder)
+        try:
+            store.state['elapsed_seconds'] = 600.
+            store.save()
+        finally:
+            store.close()
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('补发布重新评分'))
+    resumed = task.resume_task(folder, simulation_config=previous['simulation_config'])
+    assert resumed['search']['formal_champion_publication']['status'] == 'published'
+    assert resumed['search_result'] == previous['search_result']
+    assert resumed['completed_batches'] == previous['completed_batches']
+    again = task.resume_task(folder, simulation_config=previous['simulation_config'])
+    assert again['search']['formal_champion_publication'] == resumed['search']['formal_champion_publication']
+    assert again['search']['formal_champion_snapshot'] == previous['search']['formal_champion_snapshot']
+
+
+@pytest.mark.parametrize('change', ['name', 'equipment', 'cadence', 'engine'])
+def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(tmp_path,
+        monkeypatch, memory_result_center, champion_engine, change):
+    import burst
+    import engine
+    import result_store
+    definition, raw = reviewed_fixture()
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    burst.publish(definition)
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
+    interval = 200
+    if change == 'name':
+        raw = raw.replace('deathknight="', 'deathknight="Different ')
+    elif change == 'equipment':
+        raw = raw.replace('id=273795', 'id=273795,bonus_id=1')
+    elif change == 'cadence':
+        interval = 400
+    else:
+        identity = engine.identity
+        monkeypatch.setattr(engine, 'identity', lambda *args, **kwargs:
+            (lambda value: (value[0], dict(value[1], constructed_identity='different')))(identity(*args, **kwargs)))
+    second = dual_result(tmp_path / 'second', raw, candidate_limit=1, interval_ms=interval)
+    assert all(scene['formal_champion_snapshot']['status'] == 'absent' for scene in second['scenes'])
+    assert [scene['formal_champion_snapshot']['condition_key'] for scene in first['scenes']] != [
+        scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]
+
+
+@pytest.mark.parametrize('fault', ['none', 'engine', 'cadence', 'burst', 'profile', 'report'])
+def test_management_selects_the_highest_within_two_known_old_rule_sources_and_rejects_missing_proof(
+        tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
+    import burst
+    import engine
+    import json
+    import result_store
+    import sequence
+    import task
+    definition, raw = reviewed_fixture()
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    burst.publish(definition)
+    api = result_store._api()
+    real_rules, inspect, evaluate = task._rule_hashes, engine.inspect, sequence.evaluate
+    original = real_rules()
+    monkeypatch.setattr(task, '_rule_hashes', lambda **kwargs: dict(original,
+        **{str(Path(task.__file__).resolve()): 'f' * 64}))
+
+    def source_catalogue(native, folder, **kwargs):
+        capabilities = inspect(native, folder, **kwargs)
+        if 'high' in Path(folder).parts:
+            capabilities['actions'] = list(reversed(capabilities['actions']))
+        return capabilities
+
+    def source_scores(profile, candidate, folder, **kwargs):
+        result = evaluate(profile, candidate, folder, **kwargs)
+        score = 300. if 'high' in Path(profile).parts else 200.
+        result['summary']['dps'] = score
+        sim = result['report']['sim']
+        sim['statistics']['raid_dps']['mean'] = sim['players'][0]['collected_data']['dps']['mean'] = score
+        return result
+
+    def no_initial_champion(root, table, key, rows, **kwargs):
+        if table == 'search_champions':
+            raise OSError('old source only')
+        return api['write'](root, table, key, rows, **kwargs)
+
+    with patch.object(result_store, '_api', return_value=dict(api, write=no_initial_champion)), \
+         patch.object(engine, 'inspect', side_effect=source_catalogue), \
+         patch.object(sequence, 'evaluate', side_effect=source_scores):
+        low = dual_result(tmp_path / 'low', raw, candidate_limit=1)
+        high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
+    monkeypatch.setattr(task, '_rule_hashes', real_rules)
+    low_id, high_id = [state['scenes'][0]['formal_champion_publication']['source_run_id'] for state in (low, high)]
+    run = result_store.read_records('runs', high_id)[0]
+    if fault in ('engine', 'cadence', 'burst', 'profile'):
+        field = {'engine': 'engines', 'cadence': 'config', 'burst': 'burst', 'profile': 'profile'}[fault]
+        payload = json.loads(run[field]) if isinstance(run[field], str) else run[field]
+        if fault == 'engine':
+            payload['controlled']['constructed_identity'] = 'foreign'
+        elif fault == 'cadence':
+            payload['input_interval_ms'] = 400
+        elif fault == 'burst':
+            payload['definition_id'] = 'foreign'
+        else:
+            payload['input_effective_sha256'] = 'foreign'
+        run[field] = payload
+        result_store.write('runs', high_id, [run], schema=result_store.RUN_SCHEMA)
+    if fault == 'report':
+        def missing_report(root, table, keys, **kwargs):
+            if table == 'batches':
+                raise api['MissingKeyError']('selected old source report')
+            return api['read_keys'](root, table, keys, **kwargs)
+        monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_keys=missing_report))
+    profile = tmp_path / 'current.simc'
+    profile.write_bytes(raw.encode('utf-8'))
+    options = dict(use_burst=True, search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
+    if fault == 'none':
+        task.import_formal_champion(profile, tmp_path / 'imported', [low_id, high_id], **options)
+        saved = task.read_task(tmp_path / 'imported')
+        snapshot = saved['search']['formal_champion_snapshot']
+        assert snapshot['source_run_id'] == high_id
+        assert snapshot['score'] == 300.
+        assert snapshot['source_condition_key'] != saved['search']['formal_champion_snapshot']['binding']['condition']
+        assert saved['search_result']['dps'] != 300.
+        assert saved['search']['formal_champion_publication']['status'] == 'published'
+    else:
+        with pytest.raises(task.TaskError):
+            task.import_formal_champion(profile, tmp_path / 'rejected', [low_id, high_id], **options)
+
+
+@pytest.mark.parametrize('stage', ['complete_winner', 'partial_first_batch', 'crash_checkpoint'])
+def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch(tmp_path,
+        monkeypatch, memory_result_center, champion_engine, stage):
+    import burst
+    import result_store
+    import sequence
+    from runtime import TaskCancelled
+    definition, raw = reviewed_fixture()
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    burst.publish(definition)
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=4)
+    evaluate = sequence.evaluate
+    cancelled = [False]
+
+    def interrupt(*args, **kwargs):
+        if not cancelled[0]:
+            cancelled[0] = True
+            if stage == 'partial_first_batch':
+                raise TaskCancelled('constructed partial first batch')
+            result = evaluate(*args, **kwargs)
+            kwargs['runtime'].cancel()
+            return result
+        return evaluate(*args, **kwargs)
+
+    def newer_version(previous):
+        snapshot = previous['scenes'][0]['formal_champion_snapshot']
+        record = result_store.read_search_champion(snapshot['condition_key'])
+        assert record['source_run_id'] == first['scenes'][0]['formal_champion_publication']['source_run_id']
+        assert record['version'] == snapshot['version']
+        if stage != 'partial_first_batch':
+            assert previous['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
+        else:
+            assert 'search_result' not in previous['scenes'][0]
+        if stage == 'crash_checkpoint':
+            from search import TaskStore
+            folder = next((tmp_path / 'cancelled' / 'page' / 'tasks').glob('*/single_target'))
+            store = TaskStore(folder)
+            try:
+                store.state.update(status='running', inflight={})
+                store.save()  # Reconstruct the durable state of a worker that exited.
+            finally:
+                store.close()
+        record['version'] += 1
+        result_store.write('search_champions', snapshot['condition_key'], [record],
+                           schema=result_store.SEARCH_CHAMPION_SCHEMA)
+
+    with patch.object(sequence, 'evaluate', side_effect=interrupt):
+        resumed = dual_result(tmp_path / 'cancelled', raw, candidate_limit=4,
+            expected='cancelled', before_resume=newer_version)
+    assert resumed['scenes'][0]['formal_champion_snapshot'] == resumed['previous_state']['scenes'][0][
+        'formal_champion_snapshot']
+    assert resumed['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
+
+
+@pytest.mark.parametrize('fault', ['corrupt_champion', 'temporary_read', 'source_program'])
+def test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_the_incumbent(tmp_path,
+        monkeypatch, memory_result_center, champion_engine, fault):
+    import burst
+    import result_store
+    definition, raw = reviewed_fixture()
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    burst.publish(definition)
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
+    # Reuse the saved binding through the public next-task snapshot.
+    inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=1)
+    snapshot = inherited['scenes'][0]['formal_champion_snapshot']
+    original = result_store.read_search_champion(snapshot['condition_key'])
+    api = result_store._api()
+    if fault == 'corrupt_champion':
+        def unreadable(root, table, key, **kwargs):
+            if table == 'search_champions':
+                raise api['CorruptDataError']('constructed corrupt incumbent')
+            return api['read_key'](root, table, key, **kwargs)
+        monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_key=unreadable))
+    elif fault == 'temporary_read':
+        def unavailable(root, table, key, **kwargs):
+            if table == 'search_champions':
+                raise OSError('constructed temporary champion read failure')
+            return api['read_key'](root, table, key, **kwargs)
+        monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_key=unavailable))
+    else:
+        candidate = result_store.read_records('candidates', original['source_candidate_data_key'])[0]
+        candidate['program'] = {}
+        result_store.write('candidates', original['source_candidate_data_key'], [candidate],
+                           schema=result_store.CANDIDATE_SCHEMA)
+    failed = dual_result(tmp_path / 'failed', raw, candidate_limit=1, expected='failed')
+    assert failed['error']
+    monkeypatch.setattr(result_store, '_api', lambda: api)
+    assert result_store.read_search_champion(snapshot['condition_key']) == original
