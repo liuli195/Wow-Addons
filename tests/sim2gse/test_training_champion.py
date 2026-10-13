@@ -225,8 +225,9 @@ def test_dual_reads_67_rows_with_7_final_evidence_and_keeps_four_selected_source
                 [100., 100., 100.]) for index in range(5)]
     entries += [(winning_program, [199., 200., 201.]), (winning_program, [190., 200., 210.])]
     template, final_rows = completed_training(tmp_path, 1, entries, candidate_offset=60)
-    incomplete_rows = [dict(candidate_id=f'01{index:010d}' + '0' * 52,
-        condition=final_rows[0]['condition'], status='completed') for index in range(60)]
+    incomplete_rows = [dict.fromkeys(seed_training.PROCESSED_SCHEMA) | dict(
+        candidate_id=f'01{index:010d}' + '0' * 52, condition=final_rows[0]['condition'],
+        status='completed') for index in range(60)]
     result_store.write('seed_processed', 'deathknight-unholy-1-burst', incomplete_rows + final_rows,
                        schema=seed_training.PROCESSED_SCHEMA)
     rows = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
