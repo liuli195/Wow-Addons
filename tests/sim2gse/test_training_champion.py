@@ -45,6 +45,8 @@ def champion_engine(page_task_engine, monkeypatch):
 
 def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0):
     """构造完整最终成绩凭据，不启动训练或原生计算。"""
+    from contextlib import closing
+    import shutil
     import burst
     import engine
     import result_store
@@ -76,11 +78,18 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
     (batch / 'identity.json').write_text(json.dumps(manifest), encoding='utf-8')
     times, _ = burst.combined_inputs(list(range(0, 180000, 200)), context, 200)
     rows = []
+    schema_template = batch / 'empty-task.sqlite3'
     for ordinal, (program, scores) in enumerate(programs):
         candidate_id = f'{targets:02d}{ordinal + candidate_offset:010d}' + '0' * 52
         folder = batch / candidate_id[:12]
         folder.mkdir()
+        if ordinal:
+            shutil.copyfile(schema_template, folder / 'task.sqlite3')
         store = TaskStore(folder)
+        if ordinal == 0 and len(programs) > 1:
+            assert not store.state and not store.persisted_batches
+            with closing(sqlite3.connect(schema_template)) as database:
+                store.db.backup(database, name='main')
         store.state.update(run_id=candidate_id, training_condition=condition,
             training_candidate_id=candidate_id, config=inputs['config'], capabilities=capabilities,
             burst=context, phase='done')
