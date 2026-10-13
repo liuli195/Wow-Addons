@@ -990,7 +990,10 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 from program import canonicalize_search_program
                 sources = {}
                 for index, program in enumerate(starts):
-                    key = canonicalize_search_program(program, capabilities)['identity']
+                    try:
+                        key = canonicalize_search_program(program, capabilities)['identity']
+                    except (TypeError, ValueError, KeyError):
+                        continue  # 原优化器仍逐条记录无效起点，来源标记不改变失败语义。
                     sources.setdefault(key, []).append(dict(source_kind='native', index=index))
                 for kind, decisions in [('seed_selected', state['seed_adaptations']),
                                         ('training_champion', adaptations)]:

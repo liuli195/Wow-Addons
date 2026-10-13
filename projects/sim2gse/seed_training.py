@@ -1313,7 +1313,9 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                 for index, (seed, score) in enumerate(zip(RETEST_SEEDS, scores)):
                     key = digest(dict(folder=str(folder / 'retest-final'), seed=seed))
                     receipt = database.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()
-                    cached = json.loads(receipt[0]) if receipt else None
+                    if receipt is None:
+                        raise FileNotFoundError('最终复测请求凭据缺失: ' + key)
+                    cached = json.loads(receipt[0])
                     request = dict(condition=row['condition'], program=form, behavior_identity=digest(form),
                         purpose='seed_retest', seed=seed, input_seed=seed, iterations=128, times=times,
                         stats=STATS_VERSION, trace=False, reset_events=[])

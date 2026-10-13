@@ -22,3 +22,5 @@
 2026-10-13 14:35 UTC：真实Windows红灯成立。远端提交53e3c1a904f6c389c192cc73a2428e5935cedfec，树83fbf7a9154c526eeca6f7668911b7d711ba1369；公开POST双场到GET场景结果在test_training_champion.py:125报KeyError training_champion_snapshot，exit=1，1 failed in 4.00s。证据为本机仓库.local/t/champion-red-20261013-223420/red.log与exit-code.txt。Linux实际收集被msvcrt缺失阻塞，不算红灯。开始最小实现；严格旧凭据不扩范围，旧批次源码兼容限制留待专项核验。
 
 2026-10-13 14:45 UTC：首个同路径Windows绿灯成立，远端b1387007825631045e8dbcea05828ba398f7adce，树a1e67283e977a92348dfd7911725fa98c5450a36；exit=0，1 passed in 4.88s。证据.local/t/champion-green-20261013-224115/green.log及exit-code.txt。开始下个窄纵向参数化批次，覆盖67条最终记录、旧四代表与只读存储、完整条件和原复测故障、非法原生单条拒绝；先跑新增公开入口断言，后修实际红点。
+
+2026-10-13 14:54 UTC：第二窄纵向公开入口Windows红灯为2 failed、16 passed in 25.10s，外层25.55s，exit=1，未超过60秒。远端8ce340a9028a863b0dea1fb459993eb52268a1cb，树6453928ab89d586ab661d817a5c3e02c30af4d17；既有pytest-xdist使用4个独立隔离worker，不减少覆盖。实际失败为缺失最终receipt被误标invalid、来源标记把非法原生起点提升为整场失败。按这两个真实红点最小修复，缺失明确标missing，原生标记只跳过单条非法行为而保留原优化器拒绝语义。证据.local/t/champion-red18-20261013-225240/stdout.log及command/result。
