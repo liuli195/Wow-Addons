@@ -16,8 +16,10 @@ from test_training_champion import REAL_CHECK_REPORT, completed_training, dual_r
 def small_verified_engines(tmp_path, monkeypatch):
     """微型产物仍通过真实构建清单、路径、源码标记和二进制 SHA 核验。"""
     import engine
+    import task
     from native_build import build_identity, identity_digest, source_directory
 
+    project_root, rule_hashes = engine.ROOT, task._rule_hashes
     root = tmp_path / 'engine'
     lock = dict(build_protocol=2, upstream_commit='a' * 40, upstream_tree='b' * 40,
                 build_options=[], baseline_patches=[], patches=[], sources=[])
@@ -43,7 +45,10 @@ def small_verified_engines(tmp_path, monkeypatch):
             (source / 'source-identity.json').write_text(json.dumps(identity), encoding='utf-8')
             template.write_text(reviewed_fixture()[1], encoding='utf-8')
     monkeypatch.setattr(engine, 'ROOT', root)
-    return executables
+    # 仅引擎产物在微型根，规则仍现场读取本项目真实文件。
+    with patch.object(task, '_rule_hashes', side_effect=lambda *, relative_to=None:
+            rule_hashes(relative_to=project_root if relative_to == root else relative_to)):
+        yield executables
 
 
 def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_budgets(
