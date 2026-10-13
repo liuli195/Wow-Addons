@@ -143,7 +143,8 @@ def _worker(handle):
                 _save(row)
                 if (child_path / 'result.json').exists():
                     child = task.read_task(child_path)
-                    if child.get('status') != 'completed':
+                    if (child.get('status') != 'completed' or
+                            child.get('search', {}).get('formal_champion_publication', {}).get('status') == 'pending'):
                         child = task.resume_task(child_path, cancel_event=handle.cancel_event,
                             simulation_config=dict(row['simulation_config'], target_count=targets))
                 elif (child_path / 'task.sqlite3').exists():

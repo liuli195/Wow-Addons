@@ -100,8 +100,11 @@ def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp
     assert all(scene['formal_champion_publication']['status'] == 'unchanged' for scene in second['scenes'])
 
 
-def test_dual_builds_ten_real_paths_and_replaces_only_after_trusted_promotion(tmp_path,
-        monkeypatch, memory_result_center, champion_engine):
+@pytest.mark.parametrize('former_count,challenger_count,validation_batches,path_count,publication', [
+    (6, 12, 1, 9, 'unchanged'), (20, 30, 2, 10, 'published')])
+def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp_path,
+        monkeypatch, memory_result_center, champion_engine, former_count, challenger_count,
+        validation_batches, path_count, publication):
     import burst
     import engine
     import result_store
@@ -119,11 +122,11 @@ def test_dual_builds_ten_real_paths_and_replaces_only_after_trusted_promotion(tm
         return native
 
     monkeypatch.setattr(engine, 'reference', four_native_sources)
-    former = [['death_coil']] * 6 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
+    former = [['death_coil']] * former_count + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
     template, _ = completed_training(tmp_path, 1, [(former, [200.] * 3)])
     monkeypatch.setattr(engine, 'training_template', lambda: template)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=10)
-    challenger = [['death_coil']] * 12 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
+    first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=validation_batches)
+    challenger = [['death_coil']] * challenger_count + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
     _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')
     engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
     selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
@@ -133,24 +136,28 @@ def test_dual_builds_ten_real_paths_and_replaces_only_after_trusted_promotion(tm
         template_sha256='selected-template', engines=engines) for index in range(4)]
     result_store.write('seed_selected', 'deathknight-unholy-1-burst', selected,
                        schema=seed_training.SELECTED_SCHEMA)
-    second = dual_result(tmp_path / 'second', raw, candidate_limit=10)
+    second = dual_result(tmp_path / 'second', raw, candidate_limit=10, validation_batches=validation_batches)
     scene = second['scenes'][0]
-    assert len(scene['start_sources']) == 10
+    assert len(scene['start_sources']) == path_count
     groups = [source for values in scene['start_sources'].values() for source in values]
     assert [sum(source['source_kind'] == kind for source in groups) for kind in
             ('native', 'seed_selected', 'training_champion', 'formal_champion')] == [4, 4, 1, 1]
-    # Publicly readable stored result reports ten successfully established lanes.
+    # Equal behaviors retain every source, with only successful distinct lanes counted.
     folders = list((tmp_path / 'second' / 'page' / 'tasks').glob('*/single_target'))
     saved = task.read_task(folders[0], include_search_records=True)
-    assert len(saved['search']['chains']) == saved['search']['no_improvement_round_limit'] == 10
+    assert len(saved['search']['chains']) == saved['search']['no_improvement_round_limit'] == path_count
     assert saved['config']['total_budget_seconds'] == 600
-    assert scene['formal_champion_publication']['status'] == 'published'
-    assert scene['formal_champion_publication']['source_run_id'] != first['scenes'][0][
-        'formal_champion_publication']['source_run_id']
-    third = dual_result(tmp_path / 'third', raw, candidate_limit=10)
+    assert scene['formal_champion_publication']['status'] == publication
+    assert (scene['formal_champion_publication']['source_run_id'] != first['scenes'][0][
+        'formal_champion_publication']['source_run_id']) == (publication == 'published')
+    third = dual_result(tmp_path / 'third', raw, candidate_limit=10, validation_batches=validation_batches)
     assert third['scenes'][0]['formal_champion_snapshot']['source_run_id'] == scene[
         'formal_champion_publication']['source_run_id']
-    assert third['scenes'][0]['formal_champion_snapshot']['promotion_evidence'][0]['comparison']['ci95'][0] > 0
+    if publication == 'published':
+        assert third['scenes'][0]['formal_champion_snapshot']['promotion_evidence'][0]['comparison']['ci95'][0] > 0
+    else:
+        assert any({source['source_kind'] for source in group} == {'native', 'formal_champion'}
+                   for group in scene['start_sources'].values())
 
 
 def test_management_import_rechecks_one_known_formal_source_without_history_scanning(tmp_path,

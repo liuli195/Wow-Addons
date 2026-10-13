@@ -93,12 +93,13 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
     return template, rows
 
 
-def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', interval_ms=200, before_resume=None):
+def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', interval_ms=200, before_resume=None,
+                validation_batches=1):
     """走已批准的 POST 双场到 GET 公开结果接缝。"""
     from interface import create_server
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=candidate_limit, batch_targets=(2,), iterations=2,
-        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',))))
+        validation_batches=validation_batches, final_batches=1, final_iterations=2, scenarios=('nominal',))))
     thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
