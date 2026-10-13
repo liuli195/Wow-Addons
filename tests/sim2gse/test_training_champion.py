@@ -205,7 +205,7 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
     'wrong_seed', 'wrong_iterations', 'report_missing', 'report_corrupt', 'temporary_error',
     'foreign_template', 'foreign_engine', 'foreign_targets', 'foreign_cadence', 'foreign_version',
     'legacy_unapproved_hash', 'report_actor', 'report_spec', 'report_spec_id', 'report_race',
-    'report_talents', 'second_report_identity', 'third_report_condition'])
+    'report_talents', 'second_report_identity', 'third_report_condition', 'receipt_non_object', 'invalid_group'])
 def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_errors(tmp_path, monkeypatch,
         memory_result_center, champion_engine, fault):
     import burst
@@ -227,15 +227,21 @@ def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_error
         high['scores'] = [200., 200.]
         result_store.write('seed_processed', 'deathknight-unholy-1-burst', rows,
                            schema=seed_training.PROCESSED_SCHEMA)
-    if fault in ('receipt_missing', 'wrong_program', 'wrong_condition', 'wrong_seed', 'wrong_iterations'):
+    if fault in ('receipt_missing', 'wrong_program', 'wrong_condition', 'wrong_seed', 'wrong_iterations',
+                 'receipt_non_object', 'invalid_group'):
         with sqlite3.connect(folder / 'task.sqlite3') as database:
             if fault == 'receipt_missing':
                 database.execute('DELETE FROM batches WHERE key=?', (key,))
             else:
                 receipt = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()[0])
-                field, value = {'wrong_program': ('program', {}), 'wrong_condition': ('condition', 'foreign'),
-                                'wrong_seed': ('seed', 1), 'wrong_iterations': ('iterations', 127)}[fault]
-                receipt['request'][field] = value
+                if fault == 'receipt_non_object':
+                    receipt = [receipt]
+                elif fault == 'invalid_group':
+                    receipt['storage_group_key'] = []
+                else:
+                    field, value = {'wrong_program': ('program', {}), 'wrong_condition': ('condition', 'foreign'),
+                                    'wrong_seed': ('seed', 1), 'wrong_iterations': ('iterations', 127)}[fault]
+                    receipt['request'][field] = value
                 database.execute('UPDATE batches SET value=? WHERE key=?', (json.dumps(receipt), key))
     if fault.startswith('foreign_') or fault == 'legacy_unapproved_hash':
         batch = folder.parent
