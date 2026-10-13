@@ -49,7 +49,7 @@ def dual_page(root, raw):
         worker.join(3)
 
 
-@pytest.mark.parametrize('fault', ['none', 'publication', 'competition', 'crash_before_result', 'result_write'])
+@pytest.mark.parametrize('fault', ['none', 'publication', 'competition', 'crash_before_result', 'result_write', 'checkpoint_after_cas'])
 def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
     import burst
@@ -65,7 +65,15 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
     template, _ = completed_training(tmp_path, 1, [(program, [200.] * 3)])
     monkeypatch.setattr(engine, 'training_template', lambda: template)
     evaluate, store_run, api = sequence.evaluate, task._store_run, result_store._api()
-    cancel_once = [True]
+    cancel_once, checkpoint_once = [True], [True]
+    save_checkpoint = TaskStore.save
+
+    def crash_after_cas(store):
+        if (fault == 'checkpoint_after_cas' and checkpoint_once[0]
+                and store.state.get('formal_champion_publication', {}).get('status') == 'published'):
+            checkpoint_once[0] = False
+            raise SystemExit('constructed process exit after CAS before publication checkpoint')
+        return save_checkpoint(store)
 
     def stop_after_complete_batch(*args, **kwargs):
         result = evaluate(*args, **kwargs)
@@ -74,9 +82,10 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
             kwargs['runtime'].cancel()
         return result
 
-    with patch.object(sequence, 'evaluate', side_effect=stop_after_complete_batch), dual_page(tmp_path / 'original', raw) as (read, resume):
+    with patch.object(sequence, 'evaluate', side_effect=stop_after_complete_batch), \
+         patch.object(TaskStore, 'save', crash_after_cas), dual_page(tmp_path / 'original', raw) as (read, resume):
         first = read()
-        assert first['status'] == 'cancelled'
+        assert first['status'] == ('failed' if fault == 'checkpoint_after_cas' else 'cancelled')
         scene = first['scenes'][0]
         folder = next((tmp_path / 'original' / 'page' / 'tasks').glob('*/single_target'))
         saved_a = task.read_task(folder)
@@ -84,6 +93,13 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
         champion_a = result_store.read_search_champion(key)
         assert champion_a['source_run_id'] == saved_a['run_id']
         assert champion_a['version'] == 1
+        if fault == 'checkpoint_after_cas':
+            store = TaskStore(folder)
+            try:
+                assert not store.state.get('formal_champion_last_published')
+                assert store.state['formal_champion_publication']['status'] == 'pending'
+            finally:
+                store.close()
         expected_incumbent = champion_a
         if fault == 'competition':
             stronger = [['death_coil']] * 30 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]

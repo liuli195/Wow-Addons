@@ -296,7 +296,8 @@ def read(destination, *, active=None):
                 scene['search_result'] = child['search_result']
             search = child.get('search') or child
             for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
-                         'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication'):
+                         'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',
+                         'formal_champion_publication_verification'):
                 if name in search:
                     scene[name] = search[name]
         if status == 'completed':

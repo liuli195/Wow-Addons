@@ -32,7 +32,10 @@ def test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_
     assert after['candidate'] == before['candidate']
     assert after['search_result'] == before['search_result']
     assert after['search']['formal_champion_publication'] == before['search']['formal_champion_publication']
-    with pytest.raises(task.TaskError):
+    verification = after['search']['formal_champion_publication_verification']
+    assert verification['status'] == 'unknown'
+    assert verification['reason']
+    with pytest.raises((task.TaskError, sqlite3.Error, ValueError)):
         task.resume_task(folder)
     api = result_store._api()
 

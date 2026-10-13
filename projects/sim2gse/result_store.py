@@ -45,7 +45,7 @@ SEARCH_CHAMPION_SCHEMA = dict(
     behavior_identity="VARCHAR", source_run_id="VARCHAR", source_candidate_key="VARCHAR",
     source_candidate_data_key="VARCHAR",
     source_condition_key="VARCHAR", score="DOUBLE", samples="UBIGINT", batch_keys="VARCHAR[]",
-    promotion_evidence="JSON",
+    promotion_evidence="JSON", source_evidence="JSON",
 )
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
@@ -201,7 +201,7 @@ def read_search_champion(condition_key):
     if len(rows) != 1 or rows[0].get('condition_key') != condition_key:
         raise InvalidRecordError('正式冠军记录身份不唯一或不符')
     record = rows[0]
-    for field in ('binding', 'program', 'promotion_evidence'):
+    for field in ('binding', 'program', 'promotion_evidence', 'source_evidence'):
         if isinstance(record.get(field), str):
             try:
                 record[field] = json.loads(record[field])
@@ -239,14 +239,19 @@ def _search_champion_lock():
             msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def publish_search_champion(record, expected_version):
+def publish_search_champion(record, expected_version, *, expected_incumbent=None):
     """CAS protects a new incumbent; equivalent publication preserves its original source."""
     with _search_champion_lock():
         current = read_search_champion(record['condition_key'])
         if current and current['behavior_identity'] == record['behavior_identity']:
-            return dict(status=('published' if current['source_run_id'] == record['source_run_id']
-                                else 'unchanged'), version=current['version'],
+            same = all(current.get(key) == value for key, value in record.items() if key != 'version')
+            return dict(status='published' if same else 'unchanged', version=current['version'],
                         source_run_id=current['source_run_id'])
+        if expected_incumbent and (current is None or any(current.get(key) != value
+                for key, value in expected_incumbent.items())):
+            return dict(status='conflict', version=current['version'] if current else 0,
+                        source_run_id=current['source_run_id'] if current else None,
+                        reason='正式冠军已变化，本次结果保留但未接班')
         version = current['version'] if current else 0
         if version != expected_version:
             return dict(status='conflict', version=version,
