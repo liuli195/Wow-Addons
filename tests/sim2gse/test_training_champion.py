@@ -14,9 +14,12 @@ from engine import check_report as REAL_CHECK_REPORT
 
 @pytest.fixture
 def champion_engine(page_task_engine, monkeypatch):
-    """每测复用受检引擎身份，最终报告仍使用生产角色核验。"""
+    """每测复用受检引擎身份和不变规则清单，最终报告仍使用生产角色核验。"""
     from copy import deepcopy
     import engine
+    import task
+    rule_hashes, rules = task._rule_hashes, {}
+    rules_lock = threading.Lock()
     identity, verified = engine.identity, {}
     identity_lock = threading.Lock()
 
@@ -38,6 +41,14 @@ def champion_engine(page_task_engine, monkeypatch):
             runtime.identities[mode] = deepcopy(entry)
         return entry
 
+    def verified_rules(*, relative_to=None):
+        with rules_lock:
+            if relative_to not in rules:
+                rules[relative_to] = rule_hashes(relative_to=relative_to)
+            return dict(rules[relative_to])
+
+    # 与用例的局部替换同栈撤销，避免其清理时重新装回已结束夹具。
+    monkeypatch.setattr(task, '_rule_hashes', verified_rules)
     with patch.object(engine, 'identity', verified_identity), \
             patch.object(engine, 'check_report', REAL_CHECK_REPORT):
         yield
@@ -51,9 +62,10 @@ def test_champion_engine_and_local_score_restore_the_original_functions(installe
     import engine
     import result_store
     import sequence
+    import task
 
     watched = [(engine, name) for name in ('identity', 'reference', 'inspect', 'check_report')]
-    watched += [(sequence, 'evaluate'), (codec, 'run_command'), (result_store, '_api')]
+    watched += [(sequence, 'evaluate'), (codec, 'run_command'), (result_store, '_api'), (task, '_rule_hashes')]
     originals = [getattr(module, name) for module, name in watched]
     with pytest.MonkeyPatch.context() as outer, ExitStack() as scopes:
         scopes.enter_context(contextmanager(memory_result_center.__wrapped__)(installed_data_store_api, outer))
@@ -63,8 +75,35 @@ def test_champion_engine_and_local_score_restore_the_original_functions(installe
         scopes.enter_context(patch.object(engine, 'inspect', wraps=engine.inspect))
         scopes.enter_context(patch.object(result_store, '_api', return_value=result_store._api()))
         assert engine.check_report is REAL_CHECK_REPORT
+        rules = task._rule_hashes
+        outer.setattr(task, '_rule_hashes', lambda **kwargs: {'changed': 'local rule'})
+        assert task._rule_hashes() == {'changed': 'local rule'}
+        outer.setattr(task, '_rule_hashes', rules)
     assert [(module.__name__, name) for (module, name), original in zip(watched, originals)
             if getattr(module, name) is not original] == []
+
+
+def test_champion_engine_scans_each_rule_root_once_per_test(page_task_engine):
+    """真实首扫、两种路径键、并发副本和夹具间隔离只在本接缝核验。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from unittest.mock import call
+    import engine
+    import task
+
+    with patch.object(task, '_rule_hashes', wraps=task._rule_hashes) as scans:
+        for activation in range(2):
+            with pytest.MonkeyPatch.context() as scoped, \
+                    contextmanager(champion_engine.__wrapped__)(page_task_engine, scoped):
+                for root in (None, engine.ROOT):
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        copies = list(pool.map(lambda _: task._rule_hashes(relative_to=root), range(2)))
+                    assert copies[0] == copies[1]
+                    assert all(Path(key).is_absolute() == (root is None) for key in copies[1])
+                    copies[0].clear()
+                    assert copies[1] and task._rule_hashes(relative_to=root) == copies[1]
+            assert task._rule_hashes is scans
+            assert scans.call_args_list == [call(relative_to=None), call(relative_to=engine.ROOT)] * (activation + 1)
 
 
 def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0):
