@@ -776,52 +776,6 @@ def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, 
         task.resume_task(output)
 
 
-def test_page_runs_both_scenes_and_exports_three_independent_sequences(tmp_path):
-    import burst
-    import threading
-    import time
-    from interface import create_server
-    from urllib.request import Request, urlopen
-    from gse_import import decode_import
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
-        final_batches=1, final_iterations=2, scenarios=('nominal',))))
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-    thread.start()
-    base = f'http://127.0.0.1:{server.server_port}'
-    try:
-        request = Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
-                          {'Content-Type': 'application/json'})
-        with urlopen(request) as response:
-            started = json.load(response)
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            with urlopen(base + '/api/tasks/' + started['task_id']) as response:
-                state = json.load(response)
-            if state['status'] in ('completed', 'failed', 'partial', 'cancelled'):
-                break
-            time.sleep(0.05)
-        assert state['status'] == 'completed', state
-        assert [scene['target_count'] for scene in state['scenes']] == [1, 5]
-        assert all(scene['total_budget_seconds'] == 600 for scene in state['scenes'])
-        assert len({scene['input_sha256'] for scene in state['scenes']}) == 1
-        assert set(state['exports']) == {'single_target', 'aoe', 'burst'}
-        names = [decode_import(value)['sequences'] for value in state['exports'].values()]
-        assert len(set(name for member in names for name in member)) == 3
-        collection = decode_import(state['collection_text'])
-        assert collection['payload']['type'] == 'COLLECTION'
-        assert set(collection['sequences']) == {name for member in names for name in member}
-        assert state['collection_ready']
-        with urlopen(base + '/api/tasks/' + started['task_id']) as response:
-            assert json.load(response)['exports'] == state['exports']
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(3)
-
-
 @pytest.mark.parametrize('fault', ['aoe', 'collection', 'registration', 'cancel', 'preparation'])
 def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
         tmp_path, monkeypatch, fault, page_task_engine, memory_result_center):

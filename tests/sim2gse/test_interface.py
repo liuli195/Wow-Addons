@@ -3018,8 +3018,11 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
   assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
   assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
+  const exports=state.exports;
   await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
+  const reloaded=page.waitForResponse(response=>response.url().includes('/api/tasks/')&&response.request().method()==='GET');
   await page.reload();await page.waitForFunction(()=>!document.querySelector('#start').disabled);assert.equal(await page.locator('#result').inputValue(),text);
+  assert.deepEqual((await (await reloaded).json()).exports,exports);
   await page.locator('#copy').click();
   assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
   assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
@@ -3027,14 +3030,27 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   else await page.locator('#targetCount').selectOption('1');
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   assert.equal(await page.locator('#result').inputValue(),'');
-  console.log(JSON.stringify({candidate:text}));
+  console.log(JSON.stringify({candidate:text,state}));
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
         result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or reviewed_profile,interval_ms=interval_ms,target_count=target_count)),
             text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self._decode_candidate(json.loads(result.stdout)['candidate'], expected_spec)
+        output = json.loads(result.stdout)
+        self._decode_candidate(output['candidate'], expected_spec)
+        from gse_import import decode_import
+        state = output['state']
+        self.assertEqual(state['status'], 'completed', state)
+        self.assertEqual([scene['target_count'] for scene in state['scenes']], [1, 5])
+        self.assertTrue(all(scene['total_budget_seconds'] == 120 for scene in state['scenes']))
+        self.assertEqual(len({scene['input_sha256'] for scene in state['scenes']}), 1)
+        self.assertEqual(set(state['exports']), {'single_target', 'aoe', 'burst'})
+        names = [decode_import(value)['sequences'] for value in state['exports'].values()]
+        self.assertEqual(len({name for member in names for name in member}), 3)
+        collection = decode_import(state['collection_text'])
+        self.assertEqual(collection['payload']['type'], 'COLLECTION')
+        self.assertEqual(set(collection['sequences']), {name for member in names for name in member})
 
     @staticmethod
     def _ui_score(profile, candidate, folder, *, burst_candidate=None, input_sources=None, **kwargs):
