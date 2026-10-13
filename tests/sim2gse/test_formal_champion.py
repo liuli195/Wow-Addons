@@ -150,7 +150,40 @@ def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp
     assert scene['formal_champion_publication']['status'] == publication
     assert (scene['formal_champion_publication']['source_run_id'] != first['scenes'][0][
         'formal_champion_publication']['source_run_id']) == (publication == 'published')
-    third = dual_result(tmp_path / 'third', raw, candidate_limit=10, validation_batches=validation_batches)
+    import math
+    from search import TaskStore
+    from runtime import TaskCancelled
+    from program import canonicalize_search_program
+    incumbent = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
+    third_root, cancel_once, save_checkpoint = (tmp_path / 'third').resolve(), [True], TaskStore.save
+
+    def stop_after_saved_baseline(store):
+        saved = save_checkpoint(store)
+        if cancel_once[0] and third_root in store.destination.parents and store.state.get('archive'):
+            cancel_once[0] = False
+            assert len(store.state['archive']) == 1
+            row = store.state['archive'][0]
+            assert row['key'] == canonicalize_search_program(
+                row['program'], store.state['capabilities'])['identity'] == incumbent['behavior_identity']
+            assert store.state['formal_champion_snapshot']['condition_key'] == incumbent['condition_key']
+            assert store.state['formal_champion_adaptation']['status'] == 'accepted'
+            assert math.isfinite(row['score']) and row['batches']
+            assert all(batch['status'] == 'success' and batch['samples'] > 0
+                       and batch['request']['condition'] == store.state['condition']
+                       and batch['request']['behavior_identity'] == row['key'] for batch in row['batches'])
+            raise TaskCancelled('third-task probe saved its complete current champion baseline')
+        return saved
+
+    try:
+        with patch.object(TaskStore, 'save', stop_after_saved_baseline):
+            third = dual_result(third_root, raw, candidate_limit=10,
+                validation_batches=validation_batches, expected='cancelled')
+    finally:
+        cancel_once[0] = False
+    assert third['scenes'][0]['formal_champion_adaptation']['current_score'] == third['scenes'][0]['search_result']['dps']
+    assert third['scenes'][0]['formal_champion_adaptation']['current_samples'] == third['scenes'][0]['search_result']['samples'] > 0
+    assert third['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
+    assert result_store.read_search_champion(incumbent['condition_key']) == incumbent
     assert third['scenes'][0]['formal_champion_snapshot']['source_run_id'] == scene[
         'formal_champion_publication']['source_run_id']
     if publication == 'published':
