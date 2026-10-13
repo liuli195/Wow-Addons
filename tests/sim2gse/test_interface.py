@@ -2962,11 +2962,42 @@ class InterfaceTests(unittest.TestCase):
             "canonicalized_duplicates": 4,
         })
 
-    def test_browser_computes_copies_and_clears_real_candidate(self, profile_text=None, expected_spec=252, interval_ms=200, target_count=1):
+    def test_browser_computes_copies_and_clears_real_candidate(self):
+        # 一次真实180ms双场任务覆盖发布故障；200ms仅保页面初始默认值。
+        import sequence
+        evaluate, original_replace = sequence.evaluate, os.replace
+        evaluated_inputs = set()
+        failures, delayed = set(), set()
+        conflicts, readers = [], []
+
+        def observe_evaluation(*args, **kwargs):
+            evaluated_inputs.add((kwargs['simulation_config']['target_count'],
+                                  tuple(kwargs['input_times'][:2])))
+            return evaluate(*args, **kwargs)
+
+        def sharing_conflict(source, destination):
+            name = Path(destination).name
+            if name == 'result.json' and not delayed:
+                delayed.add(Path(destination))
+                time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
+            if name in ('progress.json', 'result.json') and name not in failures:
+                failures.add(name)
+                if not Path(destination).exists():
+                    Path(destination).write_text('{"status":"starting"}', encoding='utf-8')
+                reader = open(destination, 'rb')
+                release = threading.Timer(0.08, reader.close)
+                readers.append(release)
+                release.start()
+            try:
+                return original_replace(source, destination)
+            except PermissionError as error:
+                conflicts.append(error.winerror)
+                raise
+
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
-            scenarios=('nominal','jitter','slow','pause','phase') if interval_ms != 300 else ('nominal',),max_processes=1)}
+            scenarios=('nominal','jitter','slow','pause','phase'),max_processes=1)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
@@ -2989,8 +3020,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await page.locator('#interval').inputValue(),'200');
   assert.equal(await page.locator('#targetCount').inputValue(),'1');
   assert.deepEqual(await page.locator('#targetCount option').evaluateAll(options=>options.map(o=>o.value)),['1','5']);
-  await page.locator('#interval').fill(String(input.interval_ms));
-  await page.locator('#targetCount').selectOption(String(input.target_count));
+  await page.locator('#interval').fill('180');
+  await page.locator('#targetCount').selectOption('5');
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   await page.locator('#start').click();
   assert.match(await page.locator('#error').innerText(),/请先粘贴/);
@@ -3012,7 +3043,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:35000});
   assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
   const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
-  assert.equal(state.input_interval_ms,input.interval_ms);
+  assert.equal(state.input_interval_ms,180);
   assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
   assert.equal(await page.locator("#targetCount").isDisabled(),false);
   assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
@@ -3020,25 +3051,52 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
   const exports=state.exports;
   await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
-  const reloaded=page.waitForResponse(response=>response.url().includes('/api/tasks/')&&response.request().method()==='GET');
-  await page.reload();await page.waitForFunction(()=>!document.querySelector('#start').disabled);assert.equal(await page.locator('#result').inputValue(),text);
+  const profilePage=await context.newPage();
+  await profilePage.goto(input.url);
+  await profilePage.waitForFunction(()=>!document.querySelector('#start').disabled);
+  assert.equal(await profilePage.locator('#result').inputValue(),text);
+  const reloaded=profilePage.waitForResponse(response=>response.url().includes('/api/tasks/')&&response.request().method()==='GET');
+  await profilePage.reload();await profilePage.waitForFunction(()=>!document.querySelector('#start').disabled);assert.equal(await profilePage.locator('#result').inputValue(),text);
   assert.deepEqual((await (await reloaded).json()).exports,exports);
-  await page.locator('#copy').click();
-  assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
-  assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
-  if(input.target_count===1) await page.locator('#profile').fill(input.profile+'\n# changed');
-  else await page.locator('#targetCount').selectOption('1');
+  await profilePage.locator('#copy').click();
+  assert.equal(await profilePage.evaluate(()=>navigator.clipboard.readText()),text);
+  assert.match(await profilePage.locator('#resultNote').innerText(),/未进行最终独立复测/);
+  await profilePage.locator('#profile').fill(input.profile+'\n# changed');
+  assert.equal(await profilePage.locator('#resultSection').isVisible(),false);
+  assert.equal(await profilePage.locator('#result').inputValue(),'');
+  assert.equal(await page.locator('#result').inputValue(),text);
+  assert.equal(await page.locator('#targetCount').inputValue(),'5');
+  await page.locator('#targetCount').selectOption('1');
   assert.equal(await page.locator('#resultSection').isVisible(),false);
   assert.equal(await page.locator('#result').inputValue(),'');
   console.log(JSON.stringify({candidate:text,state}));
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=profile_text or reviewed_profile,interval_ms=interval_ms,target_count=target_count)),
-            text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
+        with patch.object(sequence, 'evaluate', observe_evaluation), \
+                patch.object(os, 'replace', sharing_conflict):
+            try:
+                result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
+                    text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
+            finally:
+                for reader in readers:
+                    reader.join()
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(failures, {'progress.json', 'result.json'})
+        self.assertEqual(len(delayed), 1, '一个真实发布延迟窗口足以覆盖轮询恢复')
+        self.assertTrue(set(conflicts) & {5, 32}, '必须触发真实 Windows 文件占用冲突')
+        self.assertEqual({targets for targets, _ in evaluated_inputs}, {1, 5})
+        self.assertEqual({targets for targets, times in evaluated_inputs if times == (0, 180)}, {1, 5})
+        self.assertEqual(len(self.server.tasks), 1, '两个页面必须共用同一任务，不能重新计算')
+        from task import read_task
+        destination, _ = next(iter(self.server.tasks.values()))
+        saved = read_task(destination / 'aoe', include_search_records=True)
+        self.assertEqual(saved['simulation_config']['target_count'], 5)
+        self.assertEqual(saved['config']['input_interval_ms'], 180)
+        self.assertTrue(saved['burst']['definition_id'])
+        self.assertEqual(saved['final']['scenarios'], {})
         output = json.loads(result.stdout)
-        self._decode_candidate(output['candidate'], expected_spec)
+        self._decode_candidate(output['candidate'], 252)
         from gse_import import decode_import
         state = output['state']
         self.assertEqual(state['status'], 'completed', state)
@@ -3274,49 +3332,6 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             for handle in held:
                 if handle:kernel.CloseHandle(handle)
 
-    @pytest.mark.usefixtures('memory_result_center')
-    def test_browser_uses_adjustable_interval_while_publication_is_delayed_and_contended(self):
-        # 页面故障复用构造引擎边界；独立完整场景保留真实原生计算。
-        from test_burst import page_task_boundary
-        self.enterContext(page_task_boundary())
-        scoring = self.enterContext(patch('sequence.evaluate', side_effect=self._ui_score))
-        original=os.replace
-        failures=set()
-        conflicts=[]
-        readers=[]
-        delayed=set()
-        def sharing_conflict(source,destination):
-            name=Path(destination).name
-            if name == 'result.json' and not delayed:
-                delayed.add(Path(destination))
-                time.sleep(1.5)  # 模拟真实报告落盘期间的多个进度轮询。
-            if name in ('progress.json','result.json') and name not in failures:
-                failures.add(name)
-                if not Path(destination).exists():Path(destination).write_text('{"status":"starting"}',encoding='utf-8')
-                reader=open(destination,'rb')
-                release=threading.Timer(0.08,reader.close);release.start();readers.append(release)
-            try:return original(source,destination)
-            except PermissionError as error:
-                conflicts.append(error.winerror)
-                raise
-        with patch.object(os,'replace',side_effect=sharing_conflict):
-            self.test_browser_computes_copies_and_clears_real_candidate(interval_ms=180, target_count=5)
-        self.assertEqual(failures,{'progress.json','result.json'})
-        self.assertEqual(len(delayed), 1, '一个真实发布延迟窗口足以覆盖轮询恢复')
-        for reader in readers:reader.join()
-        self.assertTrue(set(conflicts)&{5,32},'必须触发真实 Windows 文件占用冲突')
-        self.assertTrue(delayed, '必须经过延迟的真实结果发布')
-        self.assertEqual({call.kwargs['simulation_config']['target_count']
-                          for call in scoring.call_args_list}, {1, 5})
-        self.assertTrue(any(call.kwargs['input_times'][:2] == [0, 180]
-                            for call in scoring.call_args_list))
-        from task import read_task
-        destination, _ = next(iter(self.server.tasks.values()))
-        result = read_task(destination / 'aoe', include_search_records=True)
-        self.assertEqual(result['simulation_config']['target_count'], 5)
-        self.assertEqual(result['config']['input_interval_ms'], 180)
-        self.assertTrue(result['burst']['definition_id'])
-        self.assertEqual(result['final']['scenarios'], {})
 
 
 if __name__ == "__main__":

@@ -357,9 +357,8 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
         assert again['search']['formal_champion_snapshot'] == previous['search']['formal_champion_snapshot']
 
 
-@pytest.mark.parametrize('change', ['name', 'equipment', 'cadence', 'engine'])
 def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(tmp_path,
-        memory_result_center, champion_engine, change):
+        memory_result_center, champion_engine, subtests):
     import burst
     import engine
     import result_store
@@ -367,22 +366,30 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
-    with ExitStack() as condition_patches:
-        interval = 200
-        if change == 'name':
-            raw = raw.replace('deathknight="', 'deathknight="Different ')
-        elif change == 'equipment':
-            raw = raw.replace('id=273795', 'id=273795,bonus_id=1')
-        elif change == 'cadence':
-            interval = 400
-        else:
-            identity = engine.identity
-            condition_patches.enter_context(patch.object(engine, 'identity', lambda *args, **kwargs:
-                (lambda value: (value[0], dict(value[1], constructed_identity='different')))(identity(*args, **kwargs))))
-        second = dual_result(tmp_path / 'second', raw, candidate_limit=1, interval_ms=interval)
-        assert all(scene['formal_champion_snapshot']['status'] == 'absent' for scene in second['scenes'])
-        assert [scene['formal_champion_snapshot']['condition_key'] for scene in first['scenes']] != [
-            scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]
+    originals = {scene['formal_champion_snapshot']['condition_key']:
+        result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
+        for scene in first['scenes']}
+    identity = engine.identity
+    for change in ('name', 'equipment', 'cadence', 'engine'):
+        with subtests.test(change=change):
+            with ExitStack() as condition_patches:
+                case_raw, interval = raw, 200
+                if change == 'name':
+                    case_raw = raw.replace('deathknight="', 'deathknight="Different ')
+                elif change == 'equipment':
+                    case_raw = raw.replace('id=273795', 'id=273795,bonus_id=1')
+                elif change == 'cadence':
+                    interval = 400
+                else:
+                    condition_patches.enter_context(patch.object(engine, 'identity', lambda *args, **kwargs:
+                        (lambda value: (value[0], dict(value[1], constructed_identity='different')))(identity(*args, **kwargs))))
+                second = dual_result(tmp_path / ('second-' + change), case_raw,
+                    candidate_limit=1, interval_ms=interval)
+                assert all(scene['formal_champion_snapshot']['status'] == 'absent' for scene in second['scenes'])
+                assert [scene['formal_champion_snapshot']['condition_key'] for scene in first['scenes']] != [
+                    scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]
+            assert engine.identity is identity
+            assert {key: result_store.read_search_champion(key) for key in originals} == originals
 
 
 def test_management_selects_the_highest_within_two_known_old_rule_sources_and_rejects_missing_proof(
@@ -566,11 +573,10 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     assert resumed['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
 
 
-@pytest.mark.parametrize('fault', ['corrupt_champion', 'temporary_read', 'corrupt_candidate',
-    'temporary_candidate_read', 'source_program'])
 def test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_the_incumbent(tmp_path,
-        memory_result_center, champion_engine, fault):
+        memory_result_center, champion_engine, subtests):
     import burst
+    import json
     import result_store
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
@@ -578,34 +584,47 @@ def test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_th
     first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
     snapshot = first['scenes'][0]['formal_champion_snapshot']
     original = result_store.read_search_champion(snapshot['condition_key'])
+    candidate_key = original['source_candidate_data_key']
+    original_candidate = result_store.read_records('candidates', candidate_key)[0]
+    source_program = original_candidate['program']
+    if isinstance(source_program, str):
+        source_program = json.loads(source_program)
     api = result_store._api()
-    case_api = dict(api)
-    if fault == 'corrupt_champion':
-        def unreadable(root, table, key, **kwargs):
-            if table == 'search_champions':
-                raise api['CorruptDataError']('constructed corrupt incumbent')
-            return api['read_key'](root, table, key, **kwargs)
-        case_api['read_key'] = unreadable
-    elif fault == 'temporary_read':
-        def unavailable(root, table, key, **kwargs):
-            if table == 'search_champions':
-                raise OSError('constructed temporary champion read failure')
-            return api['read_key'](root, table, key, **kwargs)
-        case_api['read_key'] = unavailable
-    elif fault in ('corrupt_candidate', 'temporary_candidate_read'):
-        def unreadable_candidate(root, table, key, **kwargs):
-            if table == 'candidates':
-                if fault == 'corrupt_candidate':
-                    raise api['CorruptDataError']('constructed corrupt champion artifact')
-                raise OSError('constructed temporary champion artifact read failure')
-            return api['read_key'](root, table, key, **kwargs)
-        case_api['read_key'] = unreadable_candidate
-    else:
-        candidate = result_store.read_records('candidates', original['source_candidate_data_key'])[0]
-        candidate['program'] = {}
-        result_store.write('candidates', original['source_candidate_data_key'], [candidate],
-                           schema=result_store.CANDIDATE_SCHEMA)
-    with patch.object(result_store, '_api', return_value=case_api):
-        failed = dual_result(tmp_path / 'failed', raw, candidate_limit=1, expected='failed')
-        assert failed['error']
-    assert result_store.read_search_champion(snapshot['condition_key']) == original
+    for fault in ('corrupt_champion', 'temporary_read', 'corrupt_candidate',
+                  'temporary_candidate_read', 'source_program'):
+        with subtests.test(fault=fault):
+            case_api = dict(api)
+            try:
+                if fault == 'corrupt_champion':
+                    def unreadable(root, table, key, **kwargs):
+                        if table == 'search_champions':
+                            raise api['CorruptDataError']('constructed corrupt incumbent')
+                        return api['read_key'](root, table, key, **kwargs)
+                    case_api['read_key'] = unreadable
+                elif fault == 'temporary_read':
+                    def unavailable(root, table, key, **kwargs):
+                        if table == 'search_champions':
+                            raise OSError('constructed temporary champion read failure')
+                        return api['read_key'](root, table, key, **kwargs)
+                    case_api['read_key'] = unavailable
+                elif fault in ('corrupt_candidate', 'temporary_candidate_read'):
+                    def unreadable_candidate(root, table, key, **kwargs):
+                        if table == 'candidates':
+                            if fault == 'corrupt_candidate':
+                                raise api['CorruptDataError']('constructed corrupt champion artifact')
+                            raise OSError('constructed temporary champion artifact read failure')
+                        return api['read_key'](root, table, key, **kwargs)
+                    case_api['read_key'] = unreadable_candidate
+                else:
+                    result_store.write('candidates', candidate_key, [dict(original_candidate, program={})],
+                                       schema=result_store.CANDIDATE_SCHEMA)
+                with patch.object(result_store, '_api', return_value=case_api):
+                    failed = dual_result(tmp_path / ('failed-' + fault), raw, candidate_limit=1, expected='failed')
+                    assert failed['error']
+            finally:
+                if fault == 'source_program':
+                    result_store.write('candidates', candidate_key, [dict(original_candidate, program=source_program)],
+                                       schema=result_store.CANDIDATE_SCHEMA)
+            assert result_store._api() is api
+            assert result_store.read_search_champion(snapshot['condition_key']) == original
+            assert result_store.read_records('candidates', candidate_key)[0] == original_candidate
