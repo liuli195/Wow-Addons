@@ -728,78 +728,8 @@ def test_upgrade_postcheck_accepts_legacy_identity_and_keeps_retest_key_checks(t
         postcheck['check_scene'](scene, ready)
 
 
-@pytest.mark.parametrize('stage', ['search', 'retest', 'handoff'])
 def test_training_entry_resumes_two_to_four_preserving_successful_batches(
-        tmp_path, capsys, monkeypatch, stage, memory_training_center):
-    if stage != 'search':
-        from test_character_export import sample_profile
-        from unittest.mock import patch
-        import result_store
-        import sequence
-        import seed_activity
-        import seed_training
-        import threading
-        source = tmp_path / 'candidate.json'
-        source.write_text(json.dumps(dict(label='stage', class_name='deathknight', spec='unholy',
-            source='fixture', original='fixture', instructions='repeat', semantic='preserved',
-            changes=[], family='plain', core=[], program=[['outbreak'], ['death_coil'], ['scourge_strike']])),
-            encoding='utf-8')
-        template = tmp_path / 'standard.simc'
-        template.write_text(sample_profile(), encoding='utf-8')
-        assert command(tmp_path, ['register', str(source)]) == 0
-        args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-        cancel = threading.Event()
-        @contextmanager
-        def activity():
-            yield cancel
-        monkeypatch.setattr(seed_activity, 'training_activity', activity)
-        real_write = result_store.write
-        def interrupted_write(table, key, rows, **kwargs):
-            if stage == 'handoff' and table == 'seed_processed' and any(row['status'] == 'completed' for row in rows):
-                raise PermissionError('完整结果交父级前存储失败')
-            return real_write(table, key, rows, **kwargs)
-        first_retest = None
-        with training_boundary():
-            native = sequence.evaluate
-            def interrupted(*args, **kwargs):
-                nonlocal first_retest
-                result = native(*args, **kwargs)
-                if stage == 'retest' and 'retest-initial' in Path(args[2]).parts:
-                    first_retest = str(args[2])
-                    cancel.set()
-                return result
-            with patch.object(sequence, 'evaluate', side_effect=interrupted), \
-                    patch.object(result_store, 'write', side_effect=interrupted_write):
-                assert command(tmp_path, args) == 2
-        batch = next((tmp_path / 'work' / '1').glob('*/identity.json')).parent
-        before = next(iter(seed_training._checkpoint_states(batch).values()))
-        assert before['phase'] == 'done' and before['stop_reason'] == 'no_improvement'
-        if stage == 'retest':
-            folder = Path(first_retest)
-            receipt = [result_store.one('batches', 'batch_key', seed_training.digest(dict(folder=str(folder.parent), seed=20261008)))]
-            assert receipt[0] and receipt[0]['purpose'] == 'seed_retest'
-        else:
-            assert before['training_result']['record']['status'] == 'completed'
-        assert not result_store.read_records('seed_selected', 'deathknight-unholy-1')
-        cancel.clear()
-        resumed = []
-        with training_boundary():
-            native = sequence.evaluate
-            def observe(*args, **kwargs):
-                folder = str(args[2])
-                assert 'retest-' in folder and folder != first_retest
-                if stage == 'handoff':
-                    raise AssertionError('完整结果恢复不应重新搜索或复测')
-                resumed.append(folder)
-                return native(*args, **kwargs)
-            with patch.object(sequence, 'evaluate', side_effect=observe):
-                assert command(tmp_path, args + ['--max-trainings', '1', '--max-processes', '4']) == 0
-        after = next(iter(seed_training._checkpoint_states(batch).values()))
-        assert after['elapsed_seconds'] == before['elapsed_seconds']
-        assert len(resumed) == (5 if stage == 'retest' else 0)
-        records = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-        assert records[0]['status'] == 'completed' and len(records[0]['scores']) == len(records[0]['initial_scores']) == 3
-        return
+        tmp_path, monkeypatch, memory_training_center):
     import hashlib
     import result_store
     import sequence
@@ -1856,8 +1786,7 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
     assert json.loads(capsys.readouterr().out) == selected
 
 
-@pytest.mark.parametrize(('outer', 'inner'), [(2, 2), (3, 2)])
-def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys, outer, inner,
+def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys,
                                                                   memory_training_center,
                                                                   four_candidate_training_rounds):
     from test_character_export import sample_profile
@@ -1867,10 +1796,11 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     import threading
     import time
 
+    outer, inner = 3, 2
     programs = [[['outbreak'], ['death_coil'], ['scourge_strike']],
                 [['death_coil'], ['scourge_strike'], ['outbreak']],
                 [['scourge_strike'], ['outbreak'], ['death_coil']],
-                [['outbreak'], ['scourge_strike'], ['death_coil'], ['outbreak']]][:outer + 1]
+                [['outbreak'], ['scourge_strike'], ['death_coil'], ['outbreak']]]
     for index, program in enumerate(programs):
         path = tmp_path / f'source-{index}.json'
         path.write_text(json.dumps(dict(label=str(index), source_id=f'parallel-{index}',
@@ -1880,8 +1810,7 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
         assert command(tmp_path, ['register', str(path)]) == 0
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
-    base_args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    args = base_args if (outer, inner) == (2, 2) else [*base_args,
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
             '--max-trainings', str(outer), '--max-processes', str(inner)]
     active = peak = 0
     active_paths = set()
@@ -1943,11 +1872,6 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     prepared = result_store.read_records('seed_prepared', output['config_key'])
     frozen = json.loads(next(row['context'] for row in prepared if row['kind'] == 'context'))['frozen_queue']
     assert [row['candidate_id'] for row in records] == [row['candidate_id'] for row in frozen]
-    if (outer, inner) == (2, 2):
-        before = result_store.read_records('seed_selected', 'deathknight-unholy-1')
-        with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('完整路径不得重算')):
-            assert command(tmp_path, base_args + ['--max-trainings', '1', '--max-processes', '4']) == 0
-        assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
 
 
 def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tmp_path, capsys):

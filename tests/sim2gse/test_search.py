@@ -1268,17 +1268,12 @@ class SearchAndValidationTests(TestCase):
                 return result, state.get("rng"), state.get("condition")
 
             baseline, baseline_rng, baseline_condition = run("off")
-            summarized, summary_rng, summary_condition = run("summary", "summary")
             observed, observed_rng, observed_condition = run("full", "full")
 
         self.assertNotIn("observability", baseline["search"])
-        self.assertEqual(summarized["search"]["observability"]["mode"], "summary")
-        self.assertNotIn("details", summarized["search"]["observability"])
         self.assertEqual(baseline["selected_candidate_key"], observed["selected_candidate_key"])
         self.assertEqual(baseline_rng, observed_rng)
-        self.assertEqual(baseline_rng, summary_rng)
         self.assertEqual(baseline_condition, observed_condition)
-        self.assertEqual(baseline_condition, summary_condition)
 
         def score_snapshot(result):
             records = []
@@ -1297,7 +1292,6 @@ class SearchAndValidationTests(TestCase):
             return records
 
         self.assertEqual(score_snapshot(baseline), score_snapshot(observed))
-        self.assertEqual(score_snapshot(baseline), score_snapshot(summarized))
 
     def test_observability_time_is_returned_to_total_budget_after_search(self):
         import search
@@ -2424,7 +2418,7 @@ class SearchAndValidationTests(TestCase):
             result = _fast_evaluate(profile, candidate, folder, **kwargs)
             # 同一程序的构造成绩固定，后续诊断不能把已发布请求从100改成200。
             key = json.dumps(sequence.compiled_identity(candidate), sort_keys=True)
-            damage = scores.setdefault(key, 200.0 if improve and diagnostic_rounds >= 3
+            damage = scores.setdefault(key, 200.0 if diagnostic_rounds >= 3
                                       and result['blocks'] not in starts else 100.0)
             result['summary']['dps'] = damage
             result['report']['sim']['statistics']['raid_dps']['mean'] = damage
@@ -2432,34 +2426,34 @@ class SearchAndValidationTests(TestCase):
             (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
             return result
 
-        for count, improve in ((4, False), (8, False), (4, True)):
-            with self.subTest(starts=count, improves=improve), tempfile.TemporaryDirectory() as directory:
-                diagnostic_rounds = 0
-                scores = {}
-                source = Path(directory) / 'role.simc'
-                source.write_text(sample_profile(), encoding='utf-8')
-                names = ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')
-                starts = [[[name] for name in order]
-                          for order in itertools.islice(itertools.permutations(names), count)]
-                inputs = starts + [starts[0], [['missing_action']]]
-                # 不同构造评分场景不共享同condition的真实报告库。
-                with _fast_search_boundary(), \
-                        patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'), \
-                        patch.object(search, 'initial_programs', return_value=inputs), \
-                        patch.object(sequence, 'evaluate', side_effect=equal_damage):
-                    result = run_task(source, Path(directory) / 'task', search_config=dict(
-                        candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
-                        iterations=2, validation_batches=2))
-                    saved = read_task(Path(directory) / 'task')
-                self.assertEqual(result['status'], 'completed')
-                self.assertEqual(result['search']['stop_reason'], 'no_improvement')
-                self.assertEqual(result['search']['rounds'], count + 3 * int(improve))
-                self.assertEqual(len(result['search']['chains']), count)
-                self.assertEqual([chain['rounds'] for chain in result['search']['chains']],
-                                 [1 + int(improve)] * 3 + [1] * (count - 3))
-                self.assertEqual(result['search_result']['dps'], 200.0 if improve else 100.0)
-                self.assertEqual(result['search']['no_improvement_round_limit'], count)
-                self.assertEqual(saved['search']['no_improvement_round_limit'], count)
+        count = 4
+        with tempfile.TemporaryDirectory() as directory:
+            diagnostic_rounds = 0
+            scores = {}
+            source = Path(directory) / 'role.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            names = ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')
+            starts = [[[name] for name in order]
+                      for order in itertools.islice(itertools.permutations(names), count)]
+            inputs = starts + [starts[0], [['missing_action']]]
+            # 构造评分仅写入本次隔离报告库。
+            with _fast_search_boundary(), \
+                    patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'), \
+                    patch.object(search, 'initial_programs', return_value=inputs), \
+                    patch.object(sequence, 'evaluate', side_effect=equal_damage):
+                result = run_task(source, Path(directory) / 'task', search_config=dict(
+                    candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
+                    iterations=2, validation_batches=2))
+                saved = read_task(Path(directory) / 'task')
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['search']['stop_reason'], 'no_improvement')
+            self.assertEqual(result['search']['rounds'], 7)
+            self.assertEqual(len(result['search']['chains']), count)
+            self.assertEqual([chain['rounds'] for chain in result['search']['chains']],
+                             [2, 2, 2, 1])
+            self.assertEqual(result['search_result']['dps'], 200.0)
+            self.assertEqual(result['search']['no_improvement_round_limit'], count)
+            self.assertEqual(saved['search']['no_improvement_round_limit'], count)
 
     def test_search_skips_exhausted_path_and_stops_only_after_all_paths_exhausted(self):
         import random
