@@ -350,10 +350,9 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
         scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]
 
 
-@pytest.mark.parametrize('fault', ['none', 'engine', 'cadence', 'burst', 'profile', 'report',
-    'source_batch_missing', 'source_batch_forged', 'score', 'samples'])
 def test_management_selects_the_highest_within_two_known_old_rule_sources_and_rejects_missing_proof(
-        tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
+        tmp_path, monkeypatch, memory_result_center, champion_engine, subtests):
+    from copy import deepcopy
     import burst
     import engine
     import json
@@ -395,53 +394,86 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
         high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
     monkeypatch.setattr(task, '_rule_hashes', real_rules)
     low_id, high_id = [state['scenes'][0]['formal_champion_publication']['source_run_id'] for state in (low, high)]
-    run = result_store.read_records('runs', high_id)[0]
-    if fault in ('source_batch_missing', 'source_batch_forged', 'score', 'samples'):
-        if fault.startswith('source_batch_'):
-            locations = result_store.report_locations(run['batch_keys'])
-            groups = list(dict.fromkeys(locations.get(key) or key for key in run['batch_keys']))
-            source_batches = [row for row in result_store.read_many('batches', groups,
-                filters={'candidate_key': run['selected_candidate_key'], 'purpose': 'search'})
-                if row['batch_key'] in run['batch_keys']]
-            assert len(source_batches) == 1
-            run['batch_keys'].remove(source_batches[0]['batch_key'])
-            if fault == 'source_batch_forged':
-                foreign_id = high['scenes'][1]['formal_champion_publication']['source_run_id']
-                foreign = result_store.read_records('runs', foreign_id)[0]
-                locations = result_store.report_locations(foreign['batch_keys'])
-                groups = list(dict.fromkeys(locations.get(key) or key for key in foreign['batch_keys']))
-                foreign_batches = [row for row in result_store.read_many('batches', groups,
-                    filters={'candidate_key': run['selected_candidate_key'], 'purpose': 'search'})
-                    if row['batch_key'] in foreign['batch_keys']]
-                assert len(foreign_batches) == 1
-                run['batch_keys'].append(foreign_batches[0]['batch_key'])
-        else:
-            run['search_dps' if fault == 'score' else 'search_samples'] += 1
-        result_store.write('runs', high_id, [run], schema=result_store.RUN_SCHEMA)
-    if fault in ('engine', 'cadence', 'burst', 'profile'):
-        field = {'engine': 'engines', 'cadence': 'config', 'burst': 'burst', 'profile': 'profile'}[fault]
-        payload = json.loads(run[field]) if isinstance(run[field], str) else run[field]
-        if fault == 'engine':
-            payload['controlled']['constructed_identity'] = 'foreign'
-        elif fault == 'cadence':
-            payload['input_interval_ms'] = 400
-        elif fault == 'burst':
-            payload['definition_id'] = 'foreign'
-        else:
-            payload['input_effective_sha256'] = 'foreign'
-        run[field] = payload
-        result_store.write('runs', high_id, [run], schema=result_store.RUN_SCHEMA)
-    if fault == 'report':
-        def missing_report(root, table, keys, **kwargs):
-            if table == 'batches':
-                raise api['MissingKeyError']('selected old source report')
-            return api['read_keys'](root, table, keys, **kwargs)
-        monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_keys=missing_report))
+    def normalized(row):
+        return {key: json.loads(value) if result_store.RUN_SCHEMA[key] == 'JSON'
+                and isinstance(value, str) else value for key, value in row.items()}
+
+    originals = {run_id: normalized(result_store.read_records('runs', run_id)[0])
+                 for run_id in (low_id, high_id)}
     profile = tmp_path / 'current.simc'
     profile.write_bytes(raw.encode('utf-8'))
     options = dict(use_burst=True, search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
         validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
-    if fault == 'none':
+    for fault in ('engine', 'cadence', 'burst', 'profile', 'report',
+                  'source_batch_missing', 'source_batch_forged', 'score', 'samples'):
+        with subtests.test(fault=fault):
+            run = deepcopy(originals[high_id])
+            champion_writes = []
+
+            def observed_write(root, table, key, rows, **kwargs):
+                if table == 'search_champions':
+                    champion_writes.append(key)
+                    raise AssertionError('rejected history attempted champion publication')
+                return api['write'](root, table, key, rows, **kwargs)
+
+            try:
+                with monkeypatch.context() as scoped:
+                    case_api = dict(api, write=observed_write)
+                    if fault in ('source_batch_missing', 'source_batch_forged', 'score', 'samples'):
+                        if fault.startswith('source_batch_'):
+                            locations = result_store.report_locations(run['batch_keys'])
+                            groups = list(dict.fromkeys(locations.get(key) or key for key in run['batch_keys']))
+                            source_batches = [row for row in result_store.read_many('batches', groups,
+                                filters={'candidate_key': run['selected_candidate_key'], 'purpose': 'search'})
+                                if row['batch_key'] in run['batch_keys']]
+                            assert len(source_batches) == 1
+                            run['batch_keys'].remove(source_batches[0]['batch_key'])
+                            if fault == 'source_batch_forged':
+                                foreign_id = high['scenes'][1]['formal_champion_publication']['source_run_id']
+                                foreign = result_store.read_records('runs', foreign_id)[0]
+                                locations = result_store.report_locations(foreign['batch_keys'])
+                                groups = list(dict.fromkeys(locations.get(key) or key for key in foreign['batch_keys']))
+                                foreign_batches = [row for row in result_store.read_many('batches', groups,
+                                    filters={'candidate_key': run['selected_candidate_key'], 'purpose': 'search'})
+                                    if row['batch_key'] in foreign['batch_keys']]
+                                assert len(foreign_batches) == 1
+                                run['batch_keys'].append(foreign_batches[0]['batch_key'])
+                        else:
+                            run['search_dps' if fault == 'score' else 'search_samples'] += 1
+                        result_store.write('runs', high_id, [run], schema=result_store.RUN_SCHEMA)
+                    if fault in ('engine', 'cadence', 'burst', 'profile'):
+                        field = {'engine': 'engines', 'cadence': 'config', 'burst': 'burst', 'profile': 'profile'}[fault]
+                        payload = run[field]
+                        if fault == 'engine':
+                            payload['controlled']['constructed_identity'] = 'foreign'
+                        elif fault == 'cadence':
+                            payload['input_interval_ms'] = 400
+                        elif fault == 'burst':
+                            payload['definition_id'] = 'foreign'
+                        else:
+                            payload['input_effective_sha256'] = 'foreign'
+                        result_store.write('runs', high_id, [run], schema=result_store.RUN_SCHEMA)
+                    if fault == 'report':
+                        def missing_report(root, table, keys, **kwargs):
+                            if table == 'batches':
+                                raise api['MissingKeyError']('selected old source report')
+                            return api['read_keys'](root, table, keys, **kwargs)
+                        case_api['read_keys'] = missing_report
+                    scoped.setattr(result_store, '_api', lambda: case_api)
+                    with pytest.raises(task.TaskError):
+                        task.import_formal_champion(profile, tmp_path / ('rejected-' + fault),
+                            [low_id, high_id], **options)
+                    assert champion_writes == [], 'rejected history changed a formal champion'
+                    assert normalized(result_store.read_records('runs', low_id)[0]) == originals[low_id]
+                    assert normalized(result_store.read_records('runs', high_id)[0]) == run
+            finally:
+                for run_id, original_row in originals.items():
+                    result_store.write('runs', run_id, [deepcopy(original_row)], schema=result_store.RUN_SCHEMA)
+            assert result_store._api() is api
+            assert {run_id: normalized(result_store.read_records('runs', run_id)[0])
+                    for run_id in (low_id, high_id)} == originals
+    # Successful publication comes last, so it cannot bypass any preceding source rejection.
+    with subtests.test(fault='none'):
         task.import_formal_champion(profile, tmp_path / 'imported', [low_id, high_id], **options)
         saved = task.read_task(tmp_path / 'imported')
         snapshot = saved['search']['formal_champion_snapshot']
@@ -450,9 +482,8 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
         assert snapshot['source_condition_key'] != saved['search']['formal_champion_snapshot']['binding']['condition']
         assert saved['search_result']['dps'] != 300.
         assert saved['search']['formal_champion_publication']['status'] == 'published'
-    else:
-        with pytest.raises(task.TaskError):
-            task.import_formal_champion(profile, tmp_path / 'rejected', [low_id, high_id], **options)
+        assert {run_id: normalized(result_store.read_records('runs', run_id)[0])
+                for run_id in (low_id, high_id)} == originals
 
 
 @pytest.mark.parametrize('stage', ['complete_winner', 'partial_first_batch', 'crash_checkpoint'])
