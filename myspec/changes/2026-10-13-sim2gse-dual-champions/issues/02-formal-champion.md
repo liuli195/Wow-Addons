@@ -18,3 +18,9 @@
 ## Comments
 
 2026-10-13：门禁一待确认；本票未实施、未测试。全部完成后独立限定审查为推荐安排；正式规格应用与PR交付仍受门禁二约束。
+
+2026-10-13 15:40 UTC：第二票最小真实Windows红灯成立：远端1b99b08c368c2418af5bf17c8e602bee400d4cd6，树3f06c9efb7e7761d4f7d97ae3254ded107826174；1 failed in 3.78s，exit=1，外层4.26s未超过60秒。测试从两次POST双场→GET验证各场正式冠军首次发布及下一任务继承，真实隔离Parquet中心；首次双场completed后在test_formal_champion.py:14报KeyError formal_champion_publication。更早fixture未注册的0.33s前置错误不算功能红，已显式引入page_task_engine后重跑。证据.local/t/formal-red-20261013-233927/。
+
+2026-10-13 15:46 UTC：首个实现仍红：远端badb8ef51eb66b65c4789b34d443537470cf5d45，树c525ba5ae7d4a758c33c07c4c1514c98b6d50c5f；1 failed in 3.86s，exit=1，外层4.32s。两场结果已completed/done且保留发布意图，但均pending，实际error为“完整正式结果尚未可靠保存，不能发布冠军”。只读追踪确认既有正式结果同时保留编译产物candidate_key与搜索行为selected/locked_candidate_key，两种身份不同；冠军接线错误地用行为键定位最终产物。仅在新增冠军记录及消费中分开source_candidate_key与behavior_identity，引用既有实际candidate_data_key，复用程序恢复及规范化核验二者对应；不修改既有RUN_SCHEMA、CANDIDATE_SCHEMA、存储键语义或旧读者。修复已发布0345f7d8b3da0c0adf865d9624ceb9416503f5e9，树90f48ba96fc7e0655ae5ec2405bc4c56450737a1，等待同项转绿。证据.local/t/formal-green-20261013-234503/。
+
+2026-10-13 15:52 UTC：同公开入口首绿成立，远端0345f7d8b3da0c0adf865d9624ceb9416503f5e9，树90f48ba96fc7e0655ae5ec2405bc4c56450737a1；1 passed in 7.47s，exit=0，外层7.94s未超过60秒。两次双场使用真实隔离Parquet中心，首次两场发布及新任务分场继承、当前评分、无改善保留全部断言通过。证据.local/t/formal-green-20261013-235050/。继续窄批覆盖发布故障恢复、非法原生起点与10真实路径／可信接替；尚未声称本票完成。
