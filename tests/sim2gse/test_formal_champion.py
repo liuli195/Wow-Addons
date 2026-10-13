@@ -1,41 +1,15 @@
 """正式冠军通过公开双场入口、真实隔离持久中心保留。"""
-from test_training_champion import champion_engine, dual_result
-from test_burst import page_task_engine, reviewed_fixture
-
-
-def test_dual_retains_each_scenes_formal_champion_across_new_tasks(tmp_path,
-        champion_engine):
-    import burst
-    import result_store
-    definition, raw = reviewed_fixture()
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
-    assert [scene['formal_champion_publication']['status'] for scene in first['scenes']] == [
-        'published', 'published']
-    second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
-    for previous, scene in zip(first['scenes'], second['scenes']):
-        snapshot = scene['formal_champion_snapshot']
-        assert snapshot['status'] == 'selected'
-        assert snapshot['source_run_id'] == previous['formal_champion_publication']['source_run_id']
-        assert snapshot['target_count'] == scene['target_count']
-        assert scene['formal_champion_adaptation']['current_score'] > 0
-        assert scene['formal_champion_publication']['status'] == 'unchanged'
-        sources = scene['start_sources'][snapshot['behavior_identity']]
-        assert any(source['source_kind'] == 'formal_champion' for source in sources)
-
-
 import pytest
 from pathlib import Path
 from unittest.mock import patch
 from contextlib import ExitStack
+from test_burst import page_task_engine, reviewed_fixture
 from test_seed_training import memory_result_center
-from test_training_champion import completed_training
+from test_training_champion import champion_engine, completed_training, dual_result
 
 
-@pytest.mark.parametrize('fault', ['champion_write', 'publication_pointer'])
-def test_dual_saved_results_survive_publication_failure_and_resume_without_scoring(tmp_path,
-        champion_engine, fault):
+def test_dual_retains_each_scenes_formal_champion_after_publication_retries(tmp_path,
+        champion_engine):
     import burst
     import result_store
     import sequence
@@ -44,37 +18,75 @@ def test_dual_saved_results_survive_publication_failure_and_resume_without_scori
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     api = result_store._api()
-    failing = [True]
+    fault = 'champion_write'
+    published_champions = {}
     replace = os.replace
 
     def publish_write(root, table, key, rows, **kwargs):
-        if table == 'search_champions' and failing[0] and fault == 'champion_write':
+        if table == 'search_champions' and fault == 'champion_write':
             raise OSError('constructed champion publication failure')
         return api['write'](root, table, key, rows, **kwargs)
 
     def pointer_replace(source, destination):
         destination = Path(destination)
-        if fault == 'publication_pointer' and failing[0] and destination.name == 'result.json':
+        if fault == 'publication_pointer' and destination.name == 'result.json':
             payload = __import__('json').loads(Path(source).read_text(encoding='utf-8'))
             if payload.get('formal_champion_publication', {}).get('status') == 'published':
                 raise OSError('constructed publication pointer failure')
         return replace(source, destination)
 
-    def restore(saved):
-        failing[0] = False
-        assert all(scene['search_result']['samples'] > 0 for scene in saved['scenes'])
+    def fail_pointer(saved):
+        nonlocal fault
+        for scene in saved['scenes']:
+            publication = scene['formal_champion_publication']
+            assert publication['status'] == 'pending'
+            assert publication['error'] == 'constructed champion publication failure'
+            assert scene['search_result']['samples'] > 0
+            assert result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key']) is None
+        fault = 'publication_pointer'
         resume_patches.enter_context(patch.object(sequence, 'evaluate', lambda *args, **kwargs:
             pytest.fail('补发布重复启动评分')))
+
+    def restore(saved):
+        nonlocal fault
+        for original, scene in zip(saved['previous_state']['scenes'], saved['scenes']):
+            publication = scene['formal_champion_publication']
+            assert publication['status'] == 'pending'
+            assert publication['error'] == 'constructed publication pointer failure'
+            champion = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
+            assert champion is not None
+            assert champion['version'] == original['formal_champion_snapshot']['version'] + 1
+            published_champions[scene['formal_champion_snapshot']['condition_key']] = champion
+            assert champion['source_run_id'] == original['formal_champion_publication']['source_run_id']
+            assert scene['search_result'] == original['search_result']
+            assert scene['elapsed_seconds'] == original['elapsed_seconds']
+        fault = None
 
     with ExitStack() as resume_patches, \
          patch.object(result_store, '_api', return_value=dict(api, write=publish_write)), \
          patch.object(os, 'replace', side_effect=pointer_replace):
-        state = dual_result(tmp_path, raw, candidate_limit=1, before_resume=restore)
-    assert all(scene['formal_champion_publication']['status'] == 'published' for scene in state['scenes'])
-    assert [scene['search_result'] for scene in state['scenes']] == [
-        scene['search_result'] for scene in state['previous_state']['scenes']]
-    assert [scene['elapsed_seconds'] for scene in state['scenes']] == [
-        scene['elapsed_seconds'] for scene in state['previous_state']['scenes']]
+        first = dual_result(tmp_path / 'first', raw, candidate_limit=1,
+                            before_resume=(fail_pointer, restore))
+    assert [scene['formal_champion_publication']['status'] for scene in first['scenes']] == [
+        'published', 'published']
+    for original, scene in zip(first['previous_state']['previous_state']['scenes'], first['scenes']):
+        key = scene['formal_champion_snapshot']['condition_key']
+        assert result_store.read_search_champion(key) == published_champions[key]
+        assert scene['formal_champion_publication']['source_run_id'] == original['formal_champion_publication']['source_run_id']
+        assert scene['search_result'] == original['search_result']
+        assert scene['elapsed_seconds'] == original['elapsed_seconds']
+
+    second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
+    for previous, scene in zip(first['scenes'], second['scenes']):
+        snapshot = scene['formal_champion_snapshot']
+        assert snapshot['status'] == 'selected'
+        assert snapshot['source_run_id'] == previous['formal_champion_publication']['source_run_id']
+        assert snapshot['target_count'] == scene['target_count']
+        assert scene['formal_champion_adaptation']['status'] == 'accepted'
+        assert scene['formal_champion_adaptation']['current_score'] > 0
+        assert scene['formal_champion_publication']['status'] == 'unchanged'
+        sources = scene['start_sources'][snapshot['behavior_identity']]
+        assert any(source['source_kind'] == 'formal_champion' for source in sources)
 
 
 def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp_path,
