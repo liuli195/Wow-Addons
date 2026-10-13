@@ -836,6 +836,12 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
     from search import digest, _validate_saved_batch, _score, input_times, STATS_VERSION, DEFAULT_SCENARIOS
     from sequence import compiled_identity
     binding = record['binding']
+    if (digest(binding) != record['condition_key']
+            or binding['input_effective_sha256'] != state['input_effective_sha256']
+            or binding['class_name'] != character.class_name or binding['spec'] != character.spec
+            or binding['spec_id'] != character.spec_id
+            or binding['target_count'] != state['simulation_config']['target_count']):
+        raise InvalidRecordError('正式冠军条件与当前冻结角色不符')
     if run is not None:
         profile = decode(run['profile']) or {}
         identity = profile.get('identity') or {}
