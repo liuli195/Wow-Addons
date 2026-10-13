@@ -1,6 +1,7 @@
 """网页双场每次启动/恢复完整验一次引擎，不共享两场计算预算。"""
 import hashlib
 import json
+import threading
 from pathlib import Path
 from urllib.error import HTTPError
 from unittest.mock import patch
@@ -45,9 +46,17 @@ def small_verified_engines(tmp_path, monkeypatch):
             (source / 'source-identity.json').write_text(json.dumps(identity), encoding='utf-8')
             template.write_text(reviewed_fixture()[1], encoding='utf-8')
     monkeypatch.setattr(engine, 'ROOT', root)
-    # 仅引擎产物在微型根，规则仍现场读取本项目真实文件。
-    with patch.object(task, '_rule_hashes', side_effect=lambda *, relative_to=None:
-            rule_hashes(relative_to=project_root if relative_to == root else relative_to)):
+    rules, rules_lock = {}, threading.Lock()
+
+    def verified_rules(*, relative_to=None):
+        relative_to = project_root if relative_to == root else relative_to
+        with rules_lock:
+            if relative_to not in rules:
+                rules[relative_to] = rule_hashes(relative_to=relative_to)
+            return dict(rules[relative_to])
+
+    # 仅引擎产物在微型根，规则每测按映射后的根真实首扫并复用副本。
+    with patch.object(task, '_rule_hashes', side_effect=verified_rules):
         yield executables
 
 
