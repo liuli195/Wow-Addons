@@ -1319,11 +1319,14 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                     request = dict(condition=row['condition'], program=form, behavior_identity=digest(form),
                         purpose='seed_retest', seed=seed, input_seed=seed, iterations=128, times=times,
                         stats=STATS_VERSION, trace=False, reset_events=[])
-                    if (not cached or cached.get('status') != 'success' or cached.get('request') != request or
+                    if (not isinstance(cached, dict) or cached.get('status') != 'success' or cached.get('request') != request or
                             cached.get('data_key') != key or cached.get('requested_iterations') != 128 or
                             cached.get('dps') != score or cached.get('samples', 0) < 2):
                         raise ValueError('最终复测请求、程序、条件、种子或128次样本规则不符')
-                    group = cached.get('storage_group_key') or key
+                    group = cached.get('storage_group_key')
+                    if group is not None and not isinstance(group, str):
+                        raise ValueError('最终复测报告位置凭据无效')
+                    group = group or key
                     saved = result_store.one('batches', 'batch_key', key, group_key=group)
                     if saved is None:
                         raise FileNotFoundError('最终复测报告缺失: ' + key)
