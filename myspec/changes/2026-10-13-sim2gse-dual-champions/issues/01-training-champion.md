@@ -4,14 +4,14 @@
 
 **Blocked by:** None（门禁一批准后可开始）
 
-**Status:** ready-for-agent
+**Status:** implemented-awaiting-integration-review（实施完成，待整体验证与独立审查）
 
-- [ ] 单目标和群体目标从各自同条件全部completed最终program/scores选择均值最高者；67条样例、initial高分、core=false、final不变、稳定同分均正确。
-- [ ] 精确核验模板、引擎、完整语义条件及三份最终复测证据；缺失、损坏、不符与临时读取异常正确区分。
-- [ ] 复用严格当前角色适配；最高者不能用时缺席，不改用第二名、不修改旧四代表或旧训练数据。
-- [ ] 原程序/旧分与适配后的程序/当前分分开追溯；等价合并保留来源，不凑第九条。
-- [ ] 初始化仅冻结一次，取消/崩溃恢复不读新训练冠军；训练流程、并发、语义版本与旧式凭据核验不被默改。
-- [ ] 红绿及最终冒烟从POST /api/tasks mode=dual到GET结果，公开任务恢复与故障检查补充；红绿和云端/Windows执行证据分别记录。
+- [x] 单目标和群体目标从各自同条件全部completed最终program/scores选择均值最高者；67条样例、initial高分、core=false、final不变、稳定同分均正确。
+- [x] 精确核验模板、引擎、完整语义条件及三份最终复测证据；缺失、损坏、不符与临时读取异常正确区分。
+- [x] 复用严格当前角色适配；最高者不能用时缺席，不改用第二名、不修改旧四代表或旧训练数据。
+- [x] 原程序/旧分与适配后的程序/当前分分开追溯；等价合并保留来源，不凑第九条。
+- [x] 初始化仅冻结一次，取消/崩溃恢复不读新训练冠军；训练流程、并发、语义版本与旧式凭据核验不被默改。
+- [x] 红绿及最终冒烟从POST /api/tasks mode=dual到GET结果，公开任务恢复与故障检查补充；红绿和云端/Windows执行证据分别记录。
 
 ## Comments
 
@@ -32,3 +32,5 @@
 2026-10-13 15:20 UTC：真实生产shape同32项Windows绿灯全部通过，远端6d688a01b0eade112b2132053610b7ee54d07f13，树1623363d3481a1a4667dcf20ceb74b6ed4e79632；32 passed in 35.43s，exit=0，外层35.88s未超过60秒，树干净。证据.local/t/champion-real-green-20261013-231507/stdout.log、command.txt、result.txt。只读形状核查又发现非对象receipt会提升成整场失败、非字符串storage_group_key可被误标缺失；追加两个公开入口参数，先取得真实红证据，再添加最小凭据类型门槛。
 
 2026-10-13 15:24 UTC：两个坏凭据shape的Windows公开入口红灯成立，远端539fff7392f3e7a84cede9f41862783fb634314a，树b90dd3a46448f612bd0ab8be43183ce4f5433b19；2 failed in 5.04s，exit=1，外层5.51s。receipt_non_object实际整场failed，错误为list没有get属性；invalid_group实际missing而非invalid，是错误分类而非崩溃。仅加两处类型校验：receipt必须为对象，显式非字符串报告定位凭据必须标损坏；原缺失定位字段的旧直键回退保持。证据.local/t/champion-bad-red-20261013-232245/stdout.log、command.txt、result.txt。
+
+2026-10-13 15:29 UTC：第一票完整34项公开双场链Windows绿灯全部通过，远端635d57ff4a3d7cd7a9a29f0de6b6ffa19b4d59dd，树552ac2802e19304ebe564c764a6781382cf8417a；34 passed in 37.90s，exit=0，外层38.36s未超过60秒，树干净。证据.local/t/champion-green34-20261013-232654/stdout.log、command.txt、result.txt。验收勾选表示本票隔离合成角色、快速外部评分与真实公开任务/恢复/存储核验已覆盖；训练及用户真实数据均未运行或写入，正式统一验证、第二票、独立审查与门禁二仍待。严格旧式源码凭据规则未放宽；本次task.py/dual_task.py摘要变化会阻塞不在既有兼容范围内的旧式批次，需专项审查决策，不能声称全部旧数据已接入。Linux实际集成收集因msvcrt缺失阻塞，语法编译不计集成通过。
