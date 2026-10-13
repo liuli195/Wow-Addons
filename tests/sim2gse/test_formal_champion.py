@@ -160,8 +160,9 @@ def test_dual_deduplicates_sources_and_replaces_only_after_trusted_promotion(tmp
                    for group in scene['start_sources'].values())
 
 
+@pytest.mark.parametrize('source_rules', ['old_rules', 'same_request'])
 def test_management_import_rechecks_one_known_formal_source_without_history_scanning(tmp_path,
-        monkeypatch, memory_result_center, champion_engine):
+        monkeypatch, memory_result_center, champion_engine, source_rules):
     import burst
     import result_store
     import sequence
@@ -176,9 +177,14 @@ def test_management_import_rechecks_one_known_formal_source_without_history_scan
             raise OSError('retain historical result without establishing a champion')
         return api['write'](root, table, key, rows, **kwargs)
 
-    with patch.object(result_store, '_api', return_value=dict(api, write=unavailable_champion_write)):
+    rules = task._rule_hashes()
+    source_hashes = (dict(rules, **{str(Path(task.__file__).resolve()): 'f' * 64})
+                     if source_rules == 'old_rules' else rules)
+    with patch.object(result_store, '_api', return_value=dict(api, write=unavailable_champion_write)), \
+         patch.object(task, '_rule_hashes', return_value=source_hashes):
         historical = dual_result(tmp_path / 'old', raw, candidate_limit=4)
     source = historical['scenes'][0]['formal_champion_publication']['source_run_id']
+    original_source = result_store.read_records('runs', source)[0]
     profile = tmp_path / 'current.simc'
     profile.write_bytes(raw.encode('utf-8'))
     evaluate = sequence.evaluate
@@ -197,6 +203,17 @@ def test_management_import_rechecks_one_known_formal_source_without_history_scan
         return api['query'](root, sql, parameters, tables=tables)
 
     monkeypatch.setattr(sequence, 'evaluate', current_score)
+    if source_rules == 'same_request':
+        with pytest.raises(task.TaskError, match='同请求可靠报告成绩冲突'):
+            task.import_formal_champion(profile, tmp_path / 'conflict', [source], use_burst=True,
+                search_config=__import__('json').loads(original_source['config'])
+                    if isinstance(original_source['config'], str) else original_source['config'])
+        assert result_store.read_records('runs', source)[0] == original_source
+        rejected = task.read_task(tmp_path / 'conflict')
+        assert rejected['status'] == 'failed'
+        assert result_store.read_search_champion(
+            rejected['search']['formal_champion_snapshot']['condition_key']) is None
+        return
     with patch.object(result_store, '_api', return_value=dict(api, query=known_only)):
         task.import_formal_champion(profile, tmp_path / 'imported', [source, source], use_burst=True,
             search_config=dict(candidate_limit=4, batch_targets=(2,), iterations=2,
