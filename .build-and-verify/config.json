@@ -21,7 +21,7 @@
       {
         "id": "verify.sim2gse",
         "pr": false,
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse --dist=load --maxschedchunk=1",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse --dist=worksteal",
         "checkParallel": true,
         "pytestXdistWorkers": 20,
         "paths": [
