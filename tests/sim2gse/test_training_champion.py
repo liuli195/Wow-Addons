@@ -14,8 +14,31 @@ from engine import check_report as REAL_CHECK_REPORT
 
 @pytest.fixture
 def champion_engine(page_task_engine, monkeypatch):
-    """仅快速生成外部评分，最终报告继续使用生产角色核验。"""
+    """每测复用受检引擎身份，最终报告仍使用生产角色核验。"""
+    from copy import deepcopy
     import engine
+    identity, verified = engine.identity, {}
+    identity_lock = threading.Lock()
+
+    def verified_identity(mode, runtime=None):
+        if mode not in ('baseline', 'controlled'):
+            return identity(mode, runtime)
+        if runtime:
+            runtime.check()
+            if mode in runtime.identities:
+                return deepcopy(runtime.identities[mode])
+        executable = (engine.ROOT / '.local/sim2gse/build' / mode / 'simc.exe').resolve()
+        key = mode, executable
+        with identity_lock:
+            if key not in verified:
+                verified[key] = identity(mode)
+        entry = deepcopy(verified[key])
+        if runtime:
+            runtime.check()
+            runtime.identities[mode] = deepcopy(entry)
+        return entry
+
+    monkeypatch.setattr(engine, 'identity', verified_identity)
     monkeypatch.setattr(engine, 'check_report', REAL_CHECK_REPORT)
     yield
 
