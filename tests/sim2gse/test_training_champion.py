@@ -209,7 +209,7 @@ def test_dual_reads_each_scenes_final_training_champion(tmp_path, monkeypatch,
         [190., 200., 210.], [290., 300., 310.]]
 
 
-def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_path, monkeypatch,
+def test_dual_reads_67_rows_with_7_final_evidence_and_keeps_four_selected_sources(tmp_path, monkeypatch,
         memory_result_center, champion_engine):
     from functools import partial
     import burst
@@ -222,9 +222,20 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     winning_program = [['outbreak'], dict(kind='WaitClicks', clicks=72), ['death_coil']]
     entries = [([['outbreak'], dict(kind='WaitClicks', clicks=index + 2), ['death_coil']],
-                [100., 100., 100.]) for index in range(65)]
+                [100., 100., 100.]) for index in range(5)]
     entries += [(winning_program, [199., 200., 201.]), (winning_program, [190., 200., 210.])]
-    template, rows = completed_training(tmp_path, 1, entries)
+    template, final_rows = completed_training(tmp_path, 1, entries, candidate_offset=60)
+    incomplete_rows = [dict(candidate_id=f'01{index:010d}' + '0' * 52,
+        condition=final_rows[0]['condition'], status='completed') for index in range(60)]
+    result_store.write('seed_processed', 'deathknight-unholy-1-burst', incomplete_rows + final_rows,
+                       schema=seed_training.PROCESSED_SCHEMA)
+    rows = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
+    assert len(rows) == 67 and len(final_rows) == 7
+    assert all(row['status'] == 'completed' for row in rows)
+    assert all(row['scores'] is None and row['task_path'] is None for row in rows[:60])
+    assert [row['candidate_id'] for row in rows[:60]] == [row['candidate_id'] for row in incomplete_rows]
+    assert rows[65]['candidate_id'] == final_rows[5]['candidate_id']
+    assert all(row['core_retained'] is False for row in final_rows)
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
         class_name='deathknight', spec='unholy', targets=1,
@@ -249,6 +260,10 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
     scene = state['scenes'][0]
     champion = scene['training_champion_snapshot']
     assert champion['candidate_id'] == rows[65]['candidate_id']
+    assert len(champion['excluded']) == 60
+    assert {row['candidate_id'] for row in champion['excluded']} == {
+        row['candidate_id'] for row in incomplete_rows}
+    assert all(row['status'] == 'invalid' for row in champion['excluded'])
     assert champion['program'] == winning_program
     assert champion['phase'] == 'final' and champion['score'] == 200.
     assert scene['training_champion_adaptation']['current_score'] == 123.
