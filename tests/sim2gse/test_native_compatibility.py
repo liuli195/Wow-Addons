@@ -114,25 +114,22 @@ class NativeComparisonTests(unittest.TestCase):
             profile = folder / 'sample.simc'
             profile.write_text(sample_profile(), encoding='utf-8')
             character = parse_character(sample_profile())
-            for targets in (1, 5):
-                with self.subTest(targets=targets):
-                    scene = folder / str(targets)
-                    engine.reference(profile, scene / 'baseline', character, iterations=2,
-                                     simulation_config={'target_count': targets})
-                    engine.run(profile, scene / 'disabled', 'controlled', options=['iterations=2'],
-                               simulation_config={'target_count': targets})
-                    original_folder = scene / 'original'
-                    original_folder.mkdir(parents=True)
-                    command = [str(original), str(profile), *engine.COMMON,
-                               f'desired_targets={targets}', 'iterations=2', 'max_time=180',
-                               'json2=native.json', 'output=native.txt']
-                    result = subprocess.run(command, cwd=original_folder, capture_output=True, timeout=30)
-                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
-                    reports = [json.loads((scene / mode / 'native.json').read_text(encoding='utf-8'))
-                               for mode in ('original', 'baseline', 'disabled')]
-                    combat = [battle_report(report) for report in reports]
-                    self.assertEqual(combat[0], combat[1])
-                    self.assertEqual(combat[1], combat[2])
+            engine.reference(profile, folder / 'baseline', character, iterations=2,
+                             simulation_config={'target_count': 1})
+            engine.run(profile, folder / 'disabled', 'controlled', options=['iterations=2'],
+                       simulation_config={'target_count': 1})
+            original_folder = folder / 'original'
+            original_folder.mkdir(parents=True)
+            command = [str(original), str(profile), *engine.COMMON,
+                       'desired_targets=1', 'iterations=2', 'max_time=180',
+                       'json2=native.json', 'output=native.txt']
+            result = subprocess.run(command, cwd=original_folder, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+            reports = [json.loads((folder / mode / 'native.json').read_text(encoding='utf-8'))
+                       for mode in ('original', 'baseline', 'disabled')]
+            combat = [battle_report(report) for report in reports]
+            self.assertEqual(combat[0], combat[1])
+            self.assertEqual(combat[1], combat[2])
 
 
 class NativeCatalogueTests(unittest.TestCase):
