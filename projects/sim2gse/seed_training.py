@@ -1249,6 +1249,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
     """只读全部已完成最终成果及三份原复测，不训练、不补算、不改库。"""
     from program import canonicalize_search_program
     from search import _validate_saved_batch, STATS_VERSION
+    from engine import player_report
     scope = f"{class_name}-{spec}-{simulation_config['target_count']}" + ('-burst' if use_burst else '')
     snapshot = dict(source_kind='training_champion', status='absent', excluded=[])
     try:
@@ -1302,8 +1303,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                     raise ValueError('最终训练记录缺少相符的原检查点')
                 program = decode(row['program'])
                 form = canonicalize_search_program(program, state['capabilities'])['form']
-                character = replace(inputs['character'], spec_id=state['native']['identity']['spec_id'],
-                                    race=state['native']['identity']['race'])
+                character = inputs['character']
                 context = manifest['condition_input'].get('burst')
                 times = list(range(0, 180000, input_interval_ms))
                 if context:
@@ -1329,6 +1329,14 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                         raise FileNotFoundError('最终复测报告缺失: ' + key)
                     if decode(saved.get('engines')) != engines or saved.get('requested_iterations') != 128:
                         raise ValueError('最终复测引擎或128次样本规则不符')
+                    player = player_report(saved['report'], inputs['character'])
+                    if (player.get('sim2gse_spec') != spec or player.get('race') != inputs['character'].race or
+                            type(player.get('sim2gse_spec_id')) is not int or player['sim2gse_spec_id'] <= 0 or
+                            character.spec_id not in (None, player['sim2gse_spec_id']) or
+                            (use_burst and player['sim2gse_spec_id'] != inputs['definition']['spec_id'])):
+                        raise ValueError('最终复测标准角色身份不符')
+                    if character.spec_id is None:
+                        character = replace(character, spec_id=player['sim2gse_spec_id'])
                     _validate_saved_batch(saved, key, cached, character, index, 'nominal', simulation_config)
                     evidence.append(dict(batch_key=key, storage_group_key=group, seed=seed,
                                          requested_iterations=128, samples=cached['samples']))

@@ -62,23 +62,26 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
             training_candidate_id=candidate_id, config=inputs['config'], capabilities=capabilities,
             burst=context, phase='done')
         form = canonicalize_search_program(program, capabilities)['form']
+        group = folder.name + '-retest-final'
+        reports = []
         for index, (seed, score) in enumerate(zip(seed_training.RETEST_SEEDS, scores)):
             key = digest(dict(folder=str(folder / 'retest-final'), seed=seed))
             request = dict(condition=condition, program=form, behavior_identity=digest(form),
                 purpose='seed_retest', seed=seed, input_seed=seed, iterations=128, times=times,
                 stats=STATS_VERSION, trace=False, reset_events=[])
             receipt = dict(status='success', request=request, dps=score, samples=127,
-                           variance=0., requested_iterations=128, data_key=key)
+                           variance=0., requested_iterations=128, data_key=key, storage_group_key=group)
             report = _fast_report(character, score, 127)
             report['sim']['targets'] *= targets
-            result_store.write_batch(key, dict(batch_key=key, run_id=candidate_id,
+            reports.append(result_store.prepare_batch(dict(batch_key=key, run_id=candidate_id,
                 purpose='seed_retest', seed=seed, input_seed=seed, iterations=128,
                 requested_iterations=128, samples=127, dps=score, variance=0.,
                 engines=inputs['engines'], condition_key=condition, candidate_key=digest(form),
                 program_identity=json.dumps(form, ensure_ascii=False, sort_keys=True, separators=(',', ':')),
                 batch_index=index, scenario='nominal', stats_version=STATS_VERSION,
-                times=times, trace=False, report=report))
+                times=times, trace=False, report=report)))
             store.put_batch(key, receipt)
+        result_store.write('batches', group, reports)
         store.save()
         store.close()
         rows.append(dict(candidate_id=candidate_id, condition=condition, status='completed', error='',
@@ -266,7 +269,9 @@ def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_error
                  'second_report_identity', 'third_report_condition'):
         report_index = 1 if fault == 'second_report_identity' else 2 if fault == 'third_report_condition' else 0
         report_key = digest(dict(folder=str(folder / 'retest-final'), seed=seed_training.RETEST_SEEDS[report_index]))
-        stored = result_store.one('batches', 'batch_key', report_key)
+        group = folder.name + '-retest-final'
+        report_group = result_store.read_records('batches', group)
+        stored = next(report for report in report_group if report['batch_key'] == report_key)
         player = stored['report']['sim']['players'][0]
         if fault == 'report_actor':
             player['name'] = 'foreign actor'
@@ -280,10 +285,10 @@ def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_error
             player['talents'] = 'foreign-talents'
         else:
             stored['condition_key'] = 'foreign-final-condition'
-        result_store.write_batch(report_key, stored)
+        result_store.write('batches', group, report_group)
     api = result_store._api()
     def read_key(root, table, group, **kwargs):
-        if table == 'batches' and group == key:
+        if table == 'batches' and group == folder.name + '-retest-final' and kwargs.get('filters') == {'batch_key': key}:
             if fault == 'report_missing':
                 raise api['MissingKeyError'](key)
             if fault == 'report_corrupt':
