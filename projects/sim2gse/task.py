@@ -828,7 +828,7 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
     return starts + added, decisions
 
 
-def _freeze_formal_champion(state, character, native):
+def _freeze_formal_champion(state, character, native, capabilities):
     from result_store import read_search_champion, one, InvalidRecordError
     from search import digest
     binding = dict(condition=state['condition'], input_effective_sha256=state['input_effective_sha256'],
@@ -845,15 +845,23 @@ def _freeze_formal_champion(state, character, native):
     if (record['binding'] != binding or run is None or candidate is None
             or run['status'] not in ('completed', 'cancelled')
             or run['condition_key'] != record.get('source_condition_key')
-            or run['candidate_key'] != record['behavior_identity']
+            or run['selected_candidate_key'] != record['behavior_identity']
+            or run['locked_candidate_key'] != record['behavior_identity']
+            or run['candidate_key'] != record.get('source_candidate_key')
             or run['candidate_data_key'] != record['source_candidate_data_key']
             or candidate['run_id'] != record['source_run_id']
-            or candidate['candidate_key'] != record['behavior_identity']
+            or candidate['candidate_key'] != record.get('source_candidate_key')
             or candidate['simulation'] != 'passed_native_model'
             or not candidate['export_text'] or run['search_dps'] != record.get('score')
             or run['search_samples'] != record.get('samples')
             or not set(record.get('batch_keys') or []) <= set(run.get('batch_keys') or [])):
         raise InvalidRecordError('正式冠军的完整正式来源缺失或不符')
+    from seed_training import decode, search_program
+    from program import canonicalize_search_program
+    if (record['source_condition_key'] != binding['condition']
+            or canonicalize_search_program(search_program(decode(candidate['program'])), capabilities)['identity']
+               != record['behavior_identity']):
+        raise InvalidRecordError('正式冠军程序与正式来源行为不符')
     snapshot.update(record, status='selected', legacy_import_status='not_imported',
                     target_count=binding['target_count'])
     return snapshot
@@ -906,9 +914,12 @@ def _prepare_formal_publication(store):
             if current is None:
                 state['formal_champion_publication'] = dict(status='not_eligible', reason='冠军晋级前序缺失')
                 return
+    # Persisted export identity and search behavior identity are intentionally distinct.
+    source_key = candidate.get('identity') or digest(candidate['program'])
     record = dict(condition_key=snapshot['condition_key'], binding=snapshot['binding'], version=0,
                   program=winner['program'], behavior_identity=key, source_run_id=state['run_id'],
-                  source_candidate_data_key=digest(dict(run_id=state['run_id'], candidate_key=key)),
+                  source_candidate_key=source_key,
+                  source_candidate_data_key=digest(dict(run_id=state['run_id'], candidate_key=source_key)),
                   source_condition_key=state['condition'], score=winner['score'],
                   samples=sum(row['samples'] for row in winner['batches']),
                   batch_keys=list(dict.fromkeys([row['data_key'] for row in winner['batches']] +
@@ -929,7 +940,11 @@ def _publish_formal_champion(store, destination):
         record = intent['record']
         run = one('runs', 'run_id', record['source_run_id'])
         candidate = one('candidates', 'candidate_data_key', record['source_candidate_data_key'])
-        if (run is None or candidate is None or run['candidate_key'] != record['behavior_identity']
+        if (run is None or candidate is None
+                or run['selected_candidate_key'] != record['behavior_identity']
+                or run['locked_candidate_key'] != record['behavior_identity']
+                or run['candidate_key'] != record['source_candidate_key']
+                or candidate['candidate_key'] != record['source_candidate_key']
                 or run['candidate_data_key'] != record['source_candidate_data_key']
                 or run['search_dps'] != record['score'] or run['search_samples'] != record['samples']
                 or candidate['simulation'] != 'passed_native_model'
@@ -1096,7 +1111,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     condition = digest(dict(base=base_condition, burst=context))
                     state['condition'] = condition
                 if 'formal_champion_snapshot' not in state:
-                    state['formal_champion_snapshot'] = _freeze_formal_champion(state, character, native)
+                    state['formal_champion_snapshot'] = _freeze_formal_champion(state, character, native, capabilities)
                     store.save()
                 starts = initial_programs(capabilities, native, config['random_seed'])
                 state['starts'], state['seed_adaptations'] = _seed_programs(

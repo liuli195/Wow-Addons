@@ -42,7 +42,8 @@ RUN_SCHEMA = dict(
 )
 SEARCH_CHAMPION_SCHEMA = dict(
     condition_key="VARCHAR", binding="JSON", version="UBIGINT", program="JSON",
-    behavior_identity="VARCHAR", source_run_id="VARCHAR", source_candidate_data_key="VARCHAR",
+    behavior_identity="VARCHAR", source_run_id="VARCHAR", source_candidate_key="VARCHAR",
+    source_candidate_data_key="VARCHAR",
     source_condition_key="VARCHAR", score="DOUBLE", samples="UBIGINT", batch_keys="VARCHAR[]",
     promotion_evidence="JSON",
 )
