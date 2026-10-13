@@ -49,7 +49,8 @@ def dual_page(root, raw):
         worker.join(3)
 
 
-@pytest.mark.parametrize('fault', ['none', 'publication', 'competition', 'crash_before_result', 'result_write', 'checkpoint_after_cas'])
+@pytest.mark.parametrize('fault', ['none', 'publication', 'competition', 'crash_before_result', 'result_write', 'checkpoint_after_cas',
+    'saved_run_failed_checkpoint'])
 def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
     import burst
@@ -64,7 +65,7 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
     program = [['death_coil']] * 20 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
     template, _ = completed_training(tmp_path, 1, [(program, [200.] * 3)])
     monkeypatch.setattr(engine, 'training_template', lambda: template)
-    evaluate, store_run, api = sequence.evaluate, task._store_run, result_store._api()
+    evaluate, store_run, write_json, api = sequence.evaluate, task._store_run, task._write_json, result_store._api()
     cancel_once, checkpoint_once = [True], [True]
     save_checkpoint = TaskStore.save
 
@@ -115,7 +116,17 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
                     and result.get('status') == 'completed'):
                 failing[0] = False
                 raise SystemExit('constructed process exit after completed checkpoint before result write')
+            if (fault == 'saved_run_failed_checkpoint' and failing[0] and Path(destination) == folder
+                    and result.get('status') == 'failed'):
+                failing[0] = False
+                raise OSError('constructed failed result replacement failure')
             return store_run(destination, result, state=state)
+
+        def save_pointer(destination, value, **kwargs):
+            if (fault == 'saved_run_failed_checkpoint' and failing[0]
+                    and Path(destination) == folder / 'result.json' and value.get('status') == 'completed'):
+                raise OSError('constructed completed result pointer failure')
+            return write_json(destination, value, **kwargs)
 
         def save_center(root, table, data_key, rows, **kwargs):
             if failing[0] and table == 'search_champions' and fault == 'publication':
@@ -128,6 +139,7 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
             return api['write'](root, table, data_key, rows, **kwargs)
 
         with patch.object(task, '_store_run', side_effect=save_result), \
+             patch.object(task, '_write_json', side_effect=save_pointer), \
              patch.object(result_store, '_api', return_value=dict(api, write=save_center)):
             continued = resume()
         store = TaskStore(folder)
@@ -136,12 +148,16 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
             winner_b = intent['behavior_identity']
             assert winner_b != champion_a['behavior_identity']
             assert store.state['formal_champion_snapshot'] == scene['formal_champion_snapshot']
-            if fault == 'result_write':
+            expected_batches = store.state['completed_batches']
+            if fault == 'saved_run_failed_checkpoint':
+                assert store.state['status'] == 'failed'
+                assert result_store.read_records('runs', saved_a['run_id'])[0]['status'] == 'completed'
+            if fault in ('result_write', 'saved_run_failed_checkpoint'):
                 store.state['elapsed_seconds'] = 600.
                 store.save()
         finally:
             store.close()
-        if fault in ('publication', 'crash_before_result', 'result_write'):
+        if fault in ('publication', 'crash_before_result', 'result_write', 'saved_run_failed_checkpoint'):
             def no_probe_publication(root, table, data_key, rows, **kwargs):
                 if table == 'search_champions':
                     raise OSError('read-only incumbent inheritance probe')
@@ -149,11 +165,14 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
             with patch.object(result_store, '_api', return_value=dict(api, write=no_probe_publication)):
                 retained = dual_result(tmp_path / 'while-pending', raw, candidate_limit=10, validation_batches=2)
             assert retained['scenes'][0]['formal_champion_snapshot']['behavior_identity'] == champion_a['behavior_identity']
-            before_retry = task.read_task(folder)
-            with patch.object(sequence, 'evaluate', side_effect=lambda *args, **kwargs: pytest.fail('补成果或发布重复评分')):
+            def no_completed_scene_scoring(*args, **kwargs):
+                if (kwargs.get('simulation_config') or {}).get('target_count', 1) == 1:
+                    pytest.fail('已完成单场补成果或发布重复评分')
+                return evaluate(*args, **kwargs)  # The untouched AOE scene may start normally.
+            with patch.object(sequence, 'evaluate', side_effect=no_completed_scene_scoring):
                 continued = resume()
             assert continued['scenes'][0]['search_result']['dps'] == intent['score']
-            assert task.read_task(folder)['completed_batches'] == before_retry['completed_batches']
+            assert task.read_task(folder)['completed_batches'] == expected_batches
         final = task.read_task(folder)
         if fault == 'competition':
             assert final['search']['formal_champion_publication']['status'] == 'conflict'

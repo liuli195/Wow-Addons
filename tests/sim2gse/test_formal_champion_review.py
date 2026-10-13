@@ -9,7 +9,8 @@ from test_training_champion import champion_engine, dual_result
 from test_seed_training import memory_result_center
 
 
-@pytest.mark.parametrize('fault', ['database', 'publication_json'])
+@pytest.mark.parametrize('fault', ['database', 'publication_json', 'publication_list', 'publication_null',
+    'publication_string', 'publication_status'])
 def test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_is_broken(
         tmp_path, memory_result_center, champion_engine, fault):
     import burst
@@ -26,7 +27,9 @@ def test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_
         checkpoint.write_bytes(b'constructed unreadable checkpoint')
     else:
         with sqlite3.connect(checkpoint) as database:
-            database.execute("UPDATE state_fields SET value='{' WHERE key='formal_champion_publication'")
+            value = {'publication_json': '{', 'publication_list': '[]', 'publication_null': 'null',
+                     'publication_string': '"bad"', 'publication_status': '{"status":"unsupported"}'}[fault]
+            database.execute("UPDATE state_fields SET value=? WHERE key='formal_champion_publication'", [value])
     after = task.read_task(folder)
     assert after['status'] == before['status'] == 'completed'
     assert after['candidate'] == before['candidate']
@@ -45,5 +48,5 @@ def test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_
         return api['read_key'](root, table, key, **kwargs)
 
     with patch.object(result_store, '_api', return_value=dict(api, read_key=unreadable_center)):
-        with pytest.raises(result_store.InvalidRecordError):
+        with pytest.raises(task.TaskError, match='结果中心目标记录损坏'):
             task.read_task(folder)
