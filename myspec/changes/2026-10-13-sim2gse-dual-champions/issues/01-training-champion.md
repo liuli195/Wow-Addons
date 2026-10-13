@@ -20,3 +20,5 @@
 2026-10-13 14:25 UTC：完整门禁一获用户“确认”（Sentinel_b873d11a5c088191b558d9b9ecbfd0ab）。进入第一票红灯准备。必要Windows验证由父端协调；不得伪造锁模块以绕过平台依赖。
 
 2026-10-13 14:35 UTC：真实Windows红灯成立。远端提交53e3c1a904f6c389c192cc73a2428e5935cedfec，树83fbf7a9154c526eeca6f7668911b7d711ba1369；公开POST双场到GET场景结果在test_training_champion.py:125报KeyError training_champion_snapshot，exit=1，1 failed in 4.00s。证据为本机仓库.local/t/champion-red-20261013-223420/red.log与exit-code.txt。Linux实际收集被msvcrt缺失阻塞，不算红灯。开始最小实现；严格旧凭据不扩范围，旧批次源码兼容限制留待专项核验。
+
+2026-10-13 14:45 UTC：首个同路径Windows绿灯成立，远端b1387007825631045e8dbcea05828ba398f7adce，树a1e67283e977a92348dfd7911725fa98c5450a36；exit=0，1 passed in 4.88s。证据.local/t/champion-green-20261013-224115/green.log及exit-code.txt。开始下个窄纵向参数化批次，覆盖67条最终记录、旧四代表与只读存储、完整条件和原复测故障、非法原生单条拒绝；先跑新增公开入口断言，后修实际红点。
