@@ -426,8 +426,11 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'no_improvement_round_limit')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
-    if state is not None and 'seed_adaptations' in state:
-        search_metrics['seed_adaptations'] = state['seed_adaptations']
+    if state is not None:
+        for name in ('seed_adaptations', 'training_champion_snapshot',
+                     'training_champion_adaptation', 'start_sources'):
+            if name in state:
+                search_metrics[name] = state[name]
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
                              for row in record.get('batches', [])
                              if row.get('cached') and isinstance(row.get('data_key'), str)})
@@ -924,6 +927,14 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         scope += '-burst'
                     state['seed_selected_snapshot'] = read_records('seed_selected', scope)
                     store.save()
+                if 'training_champion_snapshot' not in state:
+                    from seed_training import training_champion
+                    state['training_champion_snapshot'] = training_champion(
+                        character.class_name, character.spec, simulation_config, engines=identities,
+                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
+                        burst_identity=(dict(spec_id=definition['spec_id'],
+                                             definition_id=definition['definition_id']) if definition else None))
+                    store.save()
                 # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
@@ -970,6 +981,24 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     starts, state['seed_selected_snapshot'], character=character,
                     targets=simulation_config['target_count'], engines=identities,
                     capabilities=capabilities, runtime=runtime)
+                champion = state['training_champion_snapshot']
+                state['starts'], adaptations = _seed_programs(
+                    state['starts'], [champion] if champion.get('status') == 'selected' else [],
+                    character=character, targets=simulation_config['target_count'], engines=identities,
+                    capabilities=capabilities, runtime=runtime)
+                state['training_champion_adaptation'] = adaptations[0] if adaptations else None
+                from program import canonicalize_search_program
+                sources = {}
+                for index, program in enumerate(starts):
+                    key = canonicalize_search_program(program, capabilities)['identity']
+                    sources.setdefault(key, []).append(dict(source_kind='native', index=index))
+                for kind, decisions in [('seed_selected', state['seed_adaptations']),
+                                        ('training_champion', adaptations)]:
+                    for decision in decisions:
+                        if decision['status'] in ('accepted', 'duplicate'):
+                            sources.setdefault(decision['behavior_identity'], []).append(dict(
+                                source_kind=kind, candidate_id=decision['candidate_id']))
+                state['start_sources'] = sources
                 if not state['starts']:
                     raise TaskError('当前爆发排除条件下没有有效搜索起点')
                 if not config['diagnostic_logging']:
@@ -999,6 +1028,14 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 result['burst'] = dict(state['burst'], candidate=dict(
                     state['burst']['candidate'], simulation='passed_native_model'))
             result['elapsed_seconds'] = runtime.elapsed_seconds
+            adaptation = state.get('training_champion_adaptation')
+            if adaptation and adaptation.get('behavior_identity'):
+                scored = next((row for row in state.get('archive', [])
+                               if row['key'] == adaptation['behavior_identity']), None)
+                if scored:
+                    adaptation.update(current_score=scored.get('score'),
+                                      current_samples=sum(batch.get('samples', 0)
+                                                          for batch in scored.get('batches', [])))
             pointer = _store_run(destination, result, state=state)
             _write_json(destination/'result.json', pointer, atomic=True)
             state.update(status=result['status'], phase=result['phase'])

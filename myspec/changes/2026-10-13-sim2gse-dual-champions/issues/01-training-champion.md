@@ -18,3 +18,5 @@
 2026-10-13：已批准业务方案，门禁一完整内容尚待用户确认；本票未实施、未运行测试。此票只读训练成果，不运行真实训练或写用户真实数据。
 
 2026-10-13 14:25 UTC：完整门禁一获用户“确认”（Sentinel_b873d11a5c088191b558d9b9ecbfd0ab）。进入第一票红灯准备。必要Windows验证由父端协调；不得伪造锁模块以绕过平台依赖。
+
+2026-10-13 14:35 UTC：真实Windows红灯成立。远端提交53e3c1a904f6c389c192cc73a2428e5935cedfec，树83fbf7a9154c526eeca6f7668911b7d711ba1369；公开POST双场到GET场景结果在test_training_champion.py:125报KeyError training_champion_snapshot，exit=1，1 failed in 4.00s。证据为本机仓库.local/t/champion-red-20261013-223420/red.log与exit-code.txt。Linux实际收集被msvcrt缺失阻塞，不算红灯。开始最小实现；严格旧凭据不扩范围，旧批次源码兼容限制留待专项核验。

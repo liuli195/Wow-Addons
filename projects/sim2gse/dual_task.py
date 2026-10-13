@@ -293,6 +293,10 @@ def read(destination, *, active=None):
             scene['progress'] = min(1., scene['elapsed_seconds'] / scene['total_budget_seconds'])
             if child.get('search_result'):
                 scene['search_result'] = child['search_result']
+            search = child.get('search') or child
+            for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources'):
+                if name in search:
+                    scene[name] = search[name]
         if status == 'completed':
             completed += 1
             scene['progress'] = 1.
