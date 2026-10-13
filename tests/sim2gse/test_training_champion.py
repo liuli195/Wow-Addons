@@ -1,5 +1,4 @@
 """网页双场通过真实任务和隔离中心消费最终训练冠军。"""
-import copy
 import json
 import threading
 import sqlite3
@@ -10,9 +9,18 @@ from urllib.request import Request, urlopen
 
 from test_burst import page_task_engine, reviewed_fixture
 from test_seed_training import memory_result_center
+from engine import check_report as REAL_CHECK_REPORT
 
 
-def completed_training(tmp_path, targets, programs, *, name='current'):
+@pytest.fixture
+def champion_engine(page_task_engine, monkeypatch):
+    """仅快速生成外部评分，最终报告继续使用生产角色核验。"""
+    import engine
+    monkeypatch.setattr(engine, 'check_report', REAL_CHECK_REPORT)
+    yield
+
+
+def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0):
     """构造完整最终成绩凭据，不启动训练或原生计算。"""
     import burst
     import engine
@@ -46,13 +54,13 @@ def completed_training(tmp_path, targets, programs, *, name='current'):
     times, _ = burst.combined_inputs(list(range(0, 180000, 200)), context, 200)
     rows = []
     for ordinal, (program, scores) in enumerate(programs):
-        candidate_id = f'{targets:02d}{ordinal:010d}' + '0' * 52
+        candidate_id = f'{targets:02d}{ordinal + candidate_offset:010d}' + '0' * 52
         folder = batch / candidate_id[:12]
         folder.mkdir()
         store = TaskStore(folder)
         store.state.update(run_id=candidate_id, training_condition=condition,
             training_candidate_id=candidate_id, config=inputs['config'], capabilities=capabilities,
-            native=native, burst=context, phase='done')
+            burst=context, phase='done')
         form = canonicalize_search_program(program, capabilities)['form']
         for index, (seed, score) in enumerate(zip(seed_training.RETEST_SEEDS, scores)):
             key = digest(dict(folder=str(folder / 'retest-final'), seed=seed))
@@ -82,7 +90,7 @@ def completed_training(tmp_path, targets, programs, *, name='current'):
     return template, rows
 
 
-def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', interval_ms=200):
+def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', interval_ms=200, before_resume=None):
     """走已批准的 POST 双场到 GET 公开结果接缝。"""
     from interface import create_server
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
@@ -99,6 +107,17 @@ def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', inter
         with urlopen(base + '/api/tasks/' + created['task_id'], timeout=5) as response:
             state = json.load(response)
         assert state['status'] == expected, state
+        if before_resume is not None:
+            previous = state
+            before_resume(state)
+            with urlopen(Request(base + '/api/tasks/' + created['task_id'] + '/resume', b'{}',
+                                 {'Content-Type': 'application/json'}), timeout=5) as response:
+                json.load(response)
+            server.tasks[created['task_id']][1].join(30)
+            with urlopen(base + '/api/tasks/' + created['task_id'], timeout=5) as response:
+                state = json.load(response)
+            assert state['status'] == 'completed', state
+            state['previous_state'] = previous
         return state
     finally:
         for _, handle in server.tasks.values():
@@ -111,7 +130,7 @@ def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', inter
 
 
 def test_dual_reads_each_scenes_final_training_champion(tmp_path, monkeypatch,
-        memory_result_center, page_task_engine):
+        memory_result_center, champion_engine):
     import burst
     import engine
     import result_store
@@ -131,7 +150,7 @@ def test_dual_reads_each_scenes_final_training_champion(tmp_path, monkeypatch,
 
 
 def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_path, monkeypatch,
-        memory_result_center, page_task_engine):
+        memory_result_center, champion_engine):
     import burst
     import engine
     import result_store
@@ -182,9 +201,10 @@ def test_dual_chooses_all_67_final_results_and_keeps_four_selected_sources(tmp_p
 @pytest.mark.parametrize('fault', ['scores_missing', 'receipt_missing', 'wrong_program', 'wrong_condition',
     'wrong_seed', 'wrong_iterations', 'report_missing', 'report_corrupt', 'temporary_error',
     'foreign_template', 'foreign_engine', 'foreign_targets', 'foreign_cadence', 'foreign_version',
-    'legacy_unapproved_hash'])
+    'legacy_unapproved_hash', 'report_actor', 'report_spec', 'report_spec_id', 'report_race',
+    'report_talents', 'second_report_identity', 'third_report_condition'])
 def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_errors(tmp_path, monkeypatch,
-        memory_result_center, page_task_engine, fault):
+        memory_result_center, champion_engine, fault):
     import burst
     import engine
     import result_store
@@ -242,6 +262,25 @@ def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_error
             row['condition'] = manifest['condition']
         result_store.write('seed_processed', 'deathknight-unholy-1-burst', rows,
                            schema=seed_training.PROCESSED_SCHEMA)
+    if fault in ('report_actor', 'report_spec', 'report_spec_id', 'report_race', 'report_talents',
+                 'second_report_identity', 'third_report_condition'):
+        report_index = 1 if fault == 'second_report_identity' else 2 if fault == 'third_report_condition' else 0
+        report_key = digest(dict(folder=str(folder / 'retest-final'), seed=seed_training.RETEST_SEEDS[report_index]))
+        stored = result_store.one('batches', 'batch_key', report_key)
+        player = stored['report']['sim']['players'][0]
+        if fault == 'report_actor':
+            player['name'] = 'foreign actor'
+        elif fault == 'report_spec':
+            player['sim2gse_spec'] = 'frost'
+        elif fault in ('report_spec_id', 'second_report_identity'):
+            player['sim2gse_spec_id'] = 251
+        elif fault == 'report_race':
+            player['race'] = 'orc'
+        elif fault == 'report_talents':
+            player['talents'] = 'foreign-talents'
+        else:
+            stored['condition_key'] = 'foreign-final-condition'
+        result_store.write_batch(report_key, stored)
     api = result_store._api()
     def read_key(root, table, group, **kwargs):
         if table == 'batches' and group == key:
@@ -270,7 +309,7 @@ def test_dual_rejects_invalid_final_evidence_and_reports_temporary_storage_error
 
 
 def test_dual_keeps_legal_native_starts_when_another_cannot_be_mapped(tmp_path, monkeypatch,
-        memory_result_center, page_task_engine):
+        memory_result_center, champion_engine):
     import burst
     import engine
     import result_store
@@ -288,3 +327,136 @@ def test_dual_keeps_legal_native_starts_when_another_cannot_be_mapped(tmp_path, 
     assert all(scene['search_result']['dps'] > 0 for scene in state['scenes'])
     assert all(any(source['source_kind'] == 'native' for group in scene['start_sources'].values()
                    for source in group) for scene in state['scenes'])
+
+
+@pytest.mark.parametrize('static_proof', [True, False])
+def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_place(tmp_path, monkeypatch,
+        memory_result_center, champion_engine, static_proof):
+    import burst
+    import engine
+    import result_store
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    template, rows = completed_training(tmp_path, 1, [([['outbreak']], [100.] * 3),
+                                                        ([['scourge_strike']], [200.] * 3)])
+    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    inspect = engine.inspect
+    def current_catalogue(*args, **kwargs):
+        capabilities = inspect(*args, **kwargs)
+        capabilities['actions'] = [action for action in capabilities['actions']
+                                   if action['simc_action'] != 'scourge_strike']
+        if static_proof:
+            capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
+                action_initialized=True, available=False, data_valid=True, data_id=1003,
+                signature='scourge_strike', name='scourge_strike', gcd_ms=1500))
+        return capabilities
+    monkeypatch.setattr(engine, 'inspect', current_catalogue)
+    scene = dual_result(tmp_path, raw)['scenes'][0]
+    assert scene['training_champion_snapshot']['candidate_id'] == rows[1]['candidate_id']
+    assert scene['training_champion_adaptation']['status'] == 'rejected'
+    assert scene['training_champion_adaptation']['reason']
+    assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
+                   for source in group)
+
+
+def test_dual_merges_equivalent_native_selected_and_training_champion_sources(tmp_path, monkeypatch,
+        memory_result_center, champion_engine):
+    import burst
+    import engine
+    import result_store
+    import seed_training
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    program = [['outbreak'], ['death_coil'], ['scourge_strike']]
+    template, rows = completed_training(tmp_path, 1, [(program, [200.] * 3)])
+    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
+    selected = dict(candidate_id='same-selected', condition=rows[0]['condition'], class_name='deathknight',
+        spec='unholy', targets=1, program=program, family='plain', score=99999., scores=[99999.] * 3,
+        template_sha256='old-standard', engines=engines)
+    result_store.write('seed_selected', 'deathknight-unholy-1-burst', [selected], schema=seed_training.SELECTED_SCHEMA)
+    scene = dual_result(tmp_path, raw)['scenes'][0]
+    assert scene['training_champion_adaptation']['status'] == 'duplicate'
+    groups = [sources for sources in scene['start_sources'].values()
+              if any(source['source_kind'] == 'training_champion' for source in sources)]
+    assert len(groups) == 1
+    assert {source['source_kind'] for source in groups[0]} == {'native', 'seed_selected', 'training_champion'}
+    assert scene['training_champion_adaptation']['current_score'] != 200.
+
+
+def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arrives(tmp_path, monkeypatch,
+        memory_result_center, champion_engine):
+    import burst
+    import engine
+    import result_store
+    import seed_training
+    import sequence
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    template, rows = completed_training(tmp_path, 1, [
+        ([['outbreak'], ['death_coil'], ['outbreak']], [200.] * 3)])
+    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    evaluate = sequence.evaluate
+    cancelled = False
+    def cancel_first_score(*args, **kwargs):
+        nonlocal cancelled
+        result = evaluate(*args, **kwargs)
+        if not cancelled:
+            cancelled = True
+            kwargs['runtime'].cancel()
+        return result
+    def update_training(previous):
+        assert previous['scenes'][0]['training_champion_snapshot']['candidate_id'] == rows[0]['candidate_id']
+        _, arrivals = completed_training(tmp_path, 1, [
+            ([['death_coil'], ['outbreak'], ['death_coil']], [900.] * 3)], name='later', candidate_offset=1000)
+        # 新训练确有完整更高成绩，但恢复不得重新选择本场冠军。
+        result_store.write('seed_processed', 'deathknight-unholy-1-burst', rows + arrivals,
+                           schema=seed_training.PROCESSED_SCHEMA)
+        api = result_store._api()
+        def frozen_read(root, table, key, **kwargs):
+            if table == 'seed_processed' and key == 'deathknight-unholy-1-burst':
+                raise OSError('恢复刷新了单目标训练库')
+            return api['read_key'](root, table, key, **kwargs)
+        monkeypatch.setattr(result_store, '_api', lambda: dict(api, read_key=frozen_read))
+    with patch.object(sequence, 'evaluate', side_effect=cancel_first_score):
+        state = dual_result(tmp_path, raw, expected='cancelled', before_resume=update_training)
+    assert state['scenes'][0]['training_champion_snapshot'] == state['previous_state']['scenes'][0]['training_champion_snapshot']
+
+
+@pytest.mark.parametrize('fault', ['processed_corrupt', 'processed_temporary', 'identity_temporary'])
+def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failures(tmp_path, monkeypatch,
+        memory_result_center, champion_engine, fault):
+    import burst
+    import engine
+    import result_store
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    template, rows = completed_training(tmp_path, 1, [([['outbreak']], [200.] * 3)])
+    monkeypatch.setattr(engine, 'training_template', lambda: template)
+    api = result_store._api()
+    def read_key(root, table, key, **kwargs):
+        if table == 'seed_processed' and key == 'deathknight-unholy-1-burst':
+            if fault == 'processed_corrupt':
+                raise api['CorruptDataError'](key)
+            if fault == 'processed_temporary':
+                raise OSError('temporary isolated processed storage error')
+        return api['read_key'](root, table, key, **kwargs)
+    read_text = Path.read_text
+    identity = Path(rows[0]['task_path']).parent / 'identity.json'
+    def read_identity(path, *args, **kwargs):
+        if fault == 'identity_temporary' and path == identity:
+            raise PermissionError('temporary isolated identity access error')
+        return read_text(path, *args, **kwargs)
+    with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)), \
+            patch.object(Path, 'read_text', read_identity):
+        state = dual_result(tmp_path, raw, expected='completed' if fault == 'processed_corrupt' else 'failed')
+    if fault == 'processed_corrupt':
+        champion = state['scenes'][0]['training_champion_snapshot']
+        assert champion['status'] == 'absent'
+        assert champion['excluded'][0]['status'] == 'invalid'
+    else:
+        assert '不可读' in state['error']

@@ -24,3 +24,5 @@
 2026-10-13 14:45 UTC：首个同路径Windows绿灯成立，远端b1387007825631045e8dbcea05828ba398f7adce，树a1e67283e977a92348dfd7911725fa98c5450a36；exit=0，1 passed in 4.88s。证据.local/t/champion-green-20261013-224115/green.log及exit-code.txt。开始下个窄纵向参数化批次，覆盖67条最终记录、旧四代表与只读存储、完整条件和原复测故障、非法原生单条拒绝；先跑新增公开入口断言，后修实际红点。
 
 2026-10-13 14:54 UTC：第二窄纵向公开入口Windows红灯为2 failed、16 passed in 25.10s，外层25.55s，exit=1，未超过60秒。远端8ce340a9028a863b0dea1fb459993eb52268a1cb，树6453928ab89d586ab661d817a5c3e02c30af4d17；既有pytest-xdist使用4个独立隔离worker，不减少覆盖。实际失败为缺失最终receipt被误标invalid、来源标记把非法原生起点提升为整场失败。按这两个真实红点最小修复，缺失明确标missing，原生标记只跳过单条非法行为而保留原优化器拒绝语义。证据.local/t/champion-red18-20261013-225240/stdout.log及command/result。
+
+2026-10-13 14:59 UTC：同18项Windows绿灯全部通过，远端2054eb097b8c3cdffb27e0f1a651890ff00eb9cb，树9e4373aaeeb7e1a49ba3f1cd02e4f4a929d0d794；18 passed in 24.92s，exit=0，外层25.38s未超过60秒。证据.local/t/champion-green18-20261013-225653/stdout.log、command.txt、result.txt。只读核对另发现真实训练检查点不保存native，之前合成夹具多加该字段，尚不能据18绿验收真实训练消费。最后窄批去掉虚构字段，启用生产报告角色核验，补角色身份、第二/第三报告关联否定、最高不适配不换第二名、等价来源合并、公开取消恢复冻结及临时读取错误；先取得真实形状公开入口红证据再修产品。
