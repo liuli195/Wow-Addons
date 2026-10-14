@@ -2076,6 +2076,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if route_promoted and not work['start']:
                     state['chains'][work['lane']]['best'] = key
                 if global_promoted:
+                    if not training and 'formal_champion_snapshot' in state:
+                        current['global_predecessor_key'] = state['best']
                     state['best'] = key
                     state['round_improved'] = True
                 if work['start']:

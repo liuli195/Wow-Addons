@@ -1,0 +1,52 @@
+# 01: 双场正式搜索消费最终训练冠军
+
+**What to build:** 用户从原网页双场入口开始搜索，原4加4保持，各场独立追加同条件全部已完成训练的最终冠军；当前角色重新适配、评分及去重，来源和冻结结果可查询，恢复不刷新。
+
+**Blocked by:** None（门禁一已批准；本票开发验收完成，交付等待门禁二）
+
+**Status:** accepted-awaiting-pr-delivery（开发、独立审查及官方无缓存验收已通过，待门禁二授权）
+
+- [x] 单目标和群体目标从各自同条件全部completed最终program/scores选择均值最高者；当前规模例为67条记录中7份真实最终凭据加60条轻量无效记录，冠军位于第66条；initial高分、core=false、final不变、稳定同分仍覆盖，不再表示67份全部有效凭据。
+- [x] 精确核验模板、引擎、完整语义条件及三份最终复测证据；缺失、损坏、不符与临时读取异常正确区分。
+- [x] 复用严格当前角色适配；最高者不能用时缺席，不改用第二名、不修改旧四代表或旧训练数据。
+- [x] 原程序/旧分与适配后的程序/当前分分开追溯；等价合并保留来源，不凑第九条。
+- [x] 初始化仅冻结一次，取消/崩溃恢复不读新训练冠军；训练流程、并发、语义版本与旧式凭据核验不被默改。
+- [x] 主链红绿及最终冒烟从POST /api/tasks mode=dual到GET结果，公开任务恢复与故障代表补充；24类坏凭据中3类走HTTP、21类走同生产查询，云端静态检查与Windows原生验收分别记录。
+
+## Comments
+
+2026-10-13：已批准业务方案，门禁一完整内容尚待用户确认；本票未实施、未运行测试。此票只读训练成果，不运行真实训练或写用户真实数据。
+
+2026-10-13 14:25 UTC：完整门禁一获用户“确认”（Sentinel_b873d11a5c088191b558d9b9ecbfd0ab）。进入第一票红灯准备。必要Windows验证由父端协调；不得伪造锁模块以绕过平台依赖。
+
+2026-10-13 14:35 UTC：真实Windows红灯成立。远端提交53e3c1a904f6c389c192cc73a2428e5935cedfec，树83fbf7a9154c526eeca6f7668911b7d711ba1369；公开POST双场到GET场景结果在test_training_champion.py:125报KeyError training_champion_snapshot，exit=1，1 failed in 4.00s。证据为本机仓库.local/t/champion-red-20261013-223420/red.log与exit-code.txt。Linux实际收集被msvcrt缺失阻塞，不算红灯。开始最小实现；严格旧凭据不扩范围，旧批次源码兼容限制留待专项核验。
+
+2026-10-13 14:45 UTC：首个同路径Windows绿灯成立，远端b1387007825631045e8dbcea05828ba398f7adce，树a1e67283e977a92348dfd7911725fa98c5450a36；exit=0，1 passed in 4.88s。证据.local/t/champion-green-20261013-224115/green.log及exit-code.txt。开始下个窄纵向参数化批次，覆盖67条最终记录、旧四代表与只读存储、完整条件和原复测故障、非法原生单条拒绝；先跑新增公开入口断言，后修实际红点。
+
+2026-10-13 14:54 UTC：第二窄纵向公开入口Windows红灯为2 failed、16 passed in 25.10s，外层25.55s，exit=1，未超过60秒。远端8ce340a9028a863b0dea1fb459993eb52268a1cb，树6453928ab89d586ab661d817a5c3e02c30af4d17；既有pytest-xdist使用4个独立隔离worker，不减少覆盖。实际失败为缺失最终receipt被误标invalid、来源标记把非法原生起点提升为整场失败。按这两个真实红点最小修复，缺失明确标missing，原生标记只跳过单条非法行为而保留原优化器拒绝语义。证据.local/t/champion-red18-20261013-225240/stdout.log及command/result。
+
+2026-10-13 14:59 UTC：同18项Windows绿灯全部通过，远端2054eb097b8c3cdffb27e0f1a651890ff00eb9cb，树9e4373aaeeb7e1a49ba3f1cd02e4f4a929d0d794；18 passed in 24.92s，exit=0，外层25.38s未超过60秒。证据.local/t/champion-green18-20261013-225653/stdout.log、command.txt、result.txt。只读核对另发现真实训练检查点不保存native，之前合成夹具多加该字段，尚不能据18绿验收真实训练消费。最后窄批去掉虚构字段，启用生产报告角色核验，补角色身份、第二/第三报告关联否定、最高不适配不换第二名、等价来源合并、公开取消恢复冻结及临时读取错误；先取得真实形状公开入口红证据再修产品。
+
+2026-10-13 15:11 UTC：真实生产shape公开入口Windows红灯为22 failed、10 passed in 36.48s，外层36.94s，exit=1，未超过60秒；远端b7658fdfc8f44eaa36f83767f885480cf147c781，树083dd2c20298c39c39ea4af787b12b87e64aefc4。失败集中于真实检查点无native导致冠军缺席（candidate_id缺失）、等价适配为None，临时报告故障未触达。最小修复不再依赖虚构native，从第一份原报告定位并冻结标准角色spec_id，逐份核验姓名/职业/专精/种族/定义及原缓存身份和完整报告；原check_report及_validate_saved_batch不放宽。测试同时以每候选三报告的实际storage_group_key点读，故障修改/注入明确指向实际group和各batch_key，67样例写入分组从201减至67，不减少覆盖。证据.local/t/champion-real-red-20261013-230529/stdout.log、command.txt、result.txt。
+
+2026-10-13 15:20 UTC：真实生产shape同32项Windows绿灯全部通过，远端6d688a01b0eade112b2132053610b7ee54d07f13，树1623363d3481a1a4667dcf20ceb74b6ed4e79632；32 passed in 35.43s，exit=0，外层35.88s未超过60秒，树干净。证据.local/t/champion-real-green-20261013-231507/stdout.log、command.txt、result.txt。只读形状核查又发现非对象receipt会提升成整场失败、非字符串storage_group_key可被误标缺失；追加两个公开入口参数，先取得真实红证据，再添加最小凭据类型门槛。
+
+2026-10-13 15:24 UTC：两个坏凭据shape的Windows公开入口红灯成立，远端539fff7392f3e7a84cede9f41862783fb634314a，树b90dd3a46448f612bd0ab8be43183ce4f5433b19；2 failed in 5.04s，exit=1，外层5.51s。receipt_non_object实际整场failed，错误为list没有get属性；invalid_group实际missing而非invalid，是错误分类而非崩溃。仅加两处类型校验：receipt必须为对象，显式非字符串报告定位凭据必须标损坏；原缺失定位字段的旧直键回退保持。证据.local/t/champion-bad-red-20261013-232245/stdout.log、command.txt、result.txt。
+
+2026-10-13 15:29 UTC：第一票完整34项公开双场链Windows绿灯全部通过，远端635d57ff4a3d7cd7a9a29f0de6b6ffa19b4d59dd，树552ac2802e19304ebe564c764a6781382cf8417a；34 passed in 37.90s，exit=0，外层38.36s未超过60秒，树干净。证据.local/t/champion-green34-20261013-232654/stdout.log、command.txt、result.txt。验收勾选表示本票隔离合成角色、快速外部评分与真实公开任务/恢复/存储核验已覆盖；训练及用户真实数据均未运行或写入，正式统一验证、第二票、独立审查与门禁二仍待。严格旧式源码凭据规则未放宽；本次task.py/dual_task.py摘要变化会阻塞不在既有兼容范围内的旧式批次，需专项审查决策，不能声称全部旧数据已接入。Linux实际集成收集因msvcrt缺失阻塞，语法编译不计集成通过。
+
+
+### 2026-10-14：最终验收及当前覆盖
+
+本票已通过独立Spec（规格）与Standards（标准）审查及最终固定基线官方无缓存验收，当前为accepted-awaiting-gate2（已验收、待门禁二），不表示PR（拉取请求）已交付。上文各日期的红绿、待验及阻塞均为当时状态，保留不改写。
+
+按用户明确ROI（投入产出比）授权，67份完整凭据已改为7份真实SQLite检查点/21份最终报告加60条缺scores/task_path的轻量记录，保第66条冠军、均值/同分、initial排除、core=false、当前评分123、旧四代表、分场及只读断言；失去超过64份全部有效凭据组合。24类坏凭据改3类HTTP整链加21类生产查询，错误分类保留但不再全走HTTP。测试夹具的规则首次扫描复用仅限当前测试，补丁完整恢复；冻结、最高不适配不换第二名及身份核验代表保留。完整现行覆盖取舍见../spec.md的Testing Decisions，不以历史34项全链绿推断当前仍保留全部旧交叉。
+
+最终已验证代码：固定基线ab8b825144115f8f382180bf0d9d5d5d828c18d8；远端fae02c799007a6dd600e51416deb11e732a604d8，树f9f19d839b014baa8558064c6df22c04cc4d5aee，云端4176812c77357b4e9a99b5a5003470debdc7d224同树。父端转交2026-10-14真实Windows干净树结果：官方build exit 0、22.8234327秒；verify exit 0、42.8897358秒；20进程/worksteal/60秒，无观察器、结果缓存命中0。Sim2GSE 529主测试及153子测试全部通过，pytest 38.73秒/检查39.86秒；文档370份1.86秒、清单0.27秒通过。用户仓库证据.local/t/official-roi-latest1/{build.log,verify.log,verify-result.txt}；执行任务01a135a9-233a-74eb-9bf9-e01eeb53801d，回合01a1395b-0ebf-70de-a2d3-e76738a08b16。
+
+旧式凭据专项未放宽白名单：正常非legacy身份语义一致时允许旧/新摘要；严格legacy兼容在固定基线前已有摘要差异，本次仍新增差异，不承诺全部旧成果可用。真实用户训练或数据迁移未执行；正式规格未应用，门禁二未批准。本段为后续文档对齐，以上验收仅属于所列代码提交/树，不宣称这次文档修改已经重跑全套；文档检查、独审及正式规格预览另行收口。
+
+
+## 门禁二批准与规格应用
+
+2026-10-14：用户在完整规格预览和门禁范围展示后明确回复“确认”（助手Sentinel_972b6ed4d5e881919c7f06a3896b9249；用户Sentinel_25d4de7e343c819183909a9ee40343c6），批准规格应用、功能分支交付、实际检查/审查通过后的PR合并及非强制收尾；不包含发布、部署、真实训练、历史迁移或用户数据删除。应用前全部输入/主规格指纹与已确认预览匹配，官方MySpec原子应用及正式规格校验均通过。当前进入PR交付，尚未声称PR或合并完成。代码验收继续引用fae02的无缓存42.8897358秒证据，后续仅规格/文档变更另行校验。

@@ -40,6 +40,13 @@ RUN_SCHEMA = dict(
     native_batch_starts="UBIGINT", validation_summary="JSON", final_status="VARCHAR",
     final_scenarios="JSON", error="VARCHAR",
 )
+SEARCH_CHAMPION_SCHEMA = dict(
+    condition_key="VARCHAR", binding="JSON", version="UBIGINT", program="JSON",
+    behavior_identity="VARCHAR", source_run_id="VARCHAR", source_candidate_key="VARCHAR",
+    source_candidate_data_key="VARCHAR",
+    source_condition_key="VARCHAR", score="DOUBLE", samples="UBIGINT", batch_keys="VARCHAR[]",
+    promotion_evidence="JSON", source_evidence="JSON",
+)
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
 _PUBLICATION_LOCK = threading.RLock()
@@ -184,6 +191,75 @@ def write(table: str, key: str, rows: list[dict], *, schema=None) -> int:
     """Write caller-defined typed records through the installed skill."""
     return _api()["write"](DATA_ROOT, table, key, rows, schema=schema)
 
+
+
+def read_search_champion(condition_key):
+    """One small authoritative record; a read failure is never an empty champion."""
+    rows = read_records('search_champions', condition_key)
+    if not rows:
+        return None
+    if len(rows) != 1 or rows[0].get('condition_key') != condition_key:
+        raise InvalidRecordError('正式冠军记录身份不唯一或不符')
+    record = rows[0]
+    for field in ('binding', 'program', 'promotion_evidence', 'source_evidence'):
+        if isinstance(record.get(field), str):
+            try:
+                record[field] = json.loads(record[field])
+            except ValueError as error:
+                raise InvalidRecordError('正式冠军记录损坏') from error
+    if (type(record.get('version')) is not int or record['version'] < 1
+            or not isinstance(record.get('binding'), dict)
+            or not isinstance(record.get('program'), list)
+            or not record['program'] or not isinstance(record.get('behavior_identity'), str)):
+        raise InvalidRecordError('正式冠军记录缺少完整身份')
+    return record
+
+
+@contextmanager
+def _search_champion_lock():
+    # ponytail: one short global publication lock; split by condition only if contention matters.
+    with _PUBLICATION_LOCK, (DATA_ROOT / '.search-champions.lock').open('a+b') as lease:
+        if lease.tell() == 0:
+            lease.write(b'0')
+            lease.flush()
+        deadline = time.monotonic() + 30
+        while True:
+            lease.seek(0)
+            try:
+                msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise DataReadError('等待正式冠军发布锁超时')
+                time.sleep(.05)
+        try:
+            yield
+        finally:
+            lease.seek(0)
+            msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def publish_search_champion(record, expected_version, *, expected_incumbent=None):
+    """CAS protects a new incumbent; equivalent publication preserves its original source."""
+    with _search_champion_lock():
+        current = read_search_champion(record['condition_key'])
+        if current and current['behavior_identity'] == record['behavior_identity']:
+            same = all(current.get(key) == value for key, value in record.items() if key != 'version')
+            return dict(status='published' if same else 'unchanged', version=current['version'],
+                        source_run_id=current['source_run_id'])
+        if expected_incumbent and (current is None or any(current.get(key) != value
+                for key, value in expected_incumbent.items())):
+            return dict(status='conflict', version=current['version'] if current else 0,
+                        source_run_id=current['source_run_id'] if current else None,
+                        reason='正式冠军已变化，本次结果保留但未接班')
+        version = current['version'] if current else 0
+        if version != expected_version:
+            return dict(status='conflict', version=version,
+                        source_run_id=current['source_run_id'] if current else None,
+                        reason='正式冠军已变化，本次结果保留但未接班')
+        record = dict(record, version=version + 1)
+        write('search_champions', record['condition_key'], [record], schema=SEARCH_CHAMPION_SCHEMA)
+        return dict(status='published', version=record['version'], source_run_id=record['source_run_id'])
 
 
 def _report_columns(value):

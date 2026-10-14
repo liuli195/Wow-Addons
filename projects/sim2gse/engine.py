@@ -77,8 +77,12 @@ def discard_diagnostic_files(folder):
 
 def training_template():
     """从受检构建定位本项目固定标准角色，不使用历史产品目录。"""
+    return _training_template(identity('baseline')[1])
+
+
+def _training_template(manifest):
+    """用本次已核验基准构建定位模板，仍检查源码身份标记。"""
     from native_build import source_directory
-    _, manifest = identity('baseline')
     lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
     expected = build_identity(lock, 'baseline', manifest['compiler_sha256'])
     source = source_directory(ROOT, expected)

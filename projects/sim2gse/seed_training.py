@@ -678,7 +678,7 @@ def selected_materials(candidate_ids, *, sources=None):
 
 
 def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None,
-                     burst_identity=None):
+                     burst_identity=None, verified_engines=None):
     from engine import identity
     _check_cancelled(cancel_event)
     if max_processes is None:
@@ -690,7 +690,8 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
                          'no_improvement_rounds': 2, 'max_processes': max_processes}, training=True)
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
-    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
+    engines = (verified_engines if verified_engines is not None else
+               {mode: identity(mode)[1] for mode in ('baseline', 'controlled')})
     template_sha = hashlib.sha256(text.encode()).hexdigest()
     definition = None
     if use_burst:
@@ -1242,6 +1243,134 @@ def check_training(template=None, *, use_burst=True):
                 burst_definition_id=definition['definition_id'] if definition else None,
                 burst_identity=dict(spec_id=definition['spec_id'], definition_id=definition['definition_id'])
                                if definition else None)
+
+
+def training_champion(class_name, spec, simulation_config, *, engines, input_interval_ms,
+                      use_burst=False, burst_identity=None):
+    """只读全部已完成最终成果及三份原复测，不训练、不补算、不改库。"""
+    from program import canonicalize_search_program
+    from search import _validate_saved_batch, STATS_VERSION
+    from engine import player_report, _training_template
+    scope = f"{class_name}-{spec}-{simulation_config['target_count']}" + ('-burst' if use_burst else '')
+    snapshot = dict(source_kind='training_champion', status='absent', excluded=[])
+    try:
+        rows = result_store.read_records('seed_processed', scope)
+    except result_store.InvalidRecordError as error:
+        snapshot['excluded'].append(dict(status='invalid', reason=str(error)))
+        return snapshot
+    rows = [row for row in rows if row.get('status') == 'completed']
+    if not rows:
+        return snapshot
+    inputs = _training_inputs(_training_template(engines['baseline']), simulation_config['target_count'],
+                              use_burst=use_burst, verified_engines=engines)
+    definition = inputs['definition']
+    training_burst_identity = (dict(spec_id=definition['spec_id'], definition_id=definition['definition_id'])
+                               if definition else None)
+    if (inputs['character'].class_name != class_name or inputs['character'].spec != spec or
+            inputs['simulation_config'] != simulation_config or
+            inputs['config']['input_interval_ms'] != input_interval_ms or
+            (use_burst and training_burst_identity != burst_identity)):
+        snapshot['reason'] = '当前标准训练模板、引擎、场景或按法不适用'
+        return snapshot
+    batches, eligible = {}, []
+    for row in rows:
+        try:
+            scores = row['scores']
+            if (not isinstance(scores, list) or len(scores) != 3 or any(
+                    type(score) not in (int, float) or not math.isfinite(score) or score <= 0 for score in scores)):
+                raise ValueError('最终程序缺少三项有限有效复测成绩')
+            folder = Path(row['task_path']).resolve()
+            if folder.name != row['candidate_id'][:12]:
+                raise ValueError('最终训练记录与原任务目录身份不符')
+            batch = folder.parent
+            if batch not in batches:
+                manifest = _read_identity(batch / 'identity.json')
+                context = manifest['condition_input'].get('burst')
+                if (bool(context) != use_burst or (use_burst and (
+                        context['definition_id'] != definition['definition_id'] or
+                        context['plan'] != inputs['definition']['plan'] or
+                        context['interval_ms'] != input_interval_ms))):
+                    raise ValueError('训练爆发内容或按法不适用')
+                manifest = validate_training_identity(batch, inputs['template_sha'], engines,
+                    inputs['config'], simulation_config, burst_context=context)
+                batches[batch] = manifest
+            manifest = batches[batch]
+            if row['condition'] != manifest['condition']:
+                raise ValueError('最终训练记录与完整条件凭据不符')
+            checkpoint = folder / 'task.sqlite3'
+            checkpoint.stat()  # 缺失和权限/磁盘故障不能混为一类。
+            with sqlite3.connect(checkpoint.as_uri() + '?mode=ro', uri=True) as database:
+                state = TaskStore.load_state(database)
+                if (state.get('training_candidate_id') != row['candidate_id'] or
+                        state.get('training_condition') != row['condition']):
+                    raise ValueError('最终训练记录缺少相符的原检查点')
+                program = decode(row['program'])
+                form = canonicalize_search_program(program, state['capabilities'])['form']
+                character = inputs['character']
+                context = manifest['condition_input'].get('burst')
+                times = list(range(0, 180000, input_interval_ms))
+                if context:
+                    from burst import combined_inputs
+                    times, _ = combined_inputs(times, context, input_interval_ms)
+                evidence = []
+                for index, (seed, score) in enumerate(zip(RETEST_SEEDS, scores)):
+                    key = digest(dict(folder=str(folder / 'retest-final'), seed=seed))
+                    receipt = database.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()
+                    if receipt is None:
+                        raise FileNotFoundError('最终复测请求凭据缺失: ' + key)
+                    cached = json.loads(receipt[0])
+                    request = dict(condition=row['condition'], program=form, behavior_identity=digest(form),
+                        purpose='seed_retest', seed=seed, input_seed=seed, iterations=128, times=times,
+                        stats=STATS_VERSION, trace=False, reset_events=[])
+                    if (not isinstance(cached, dict) or cached.get('status') != 'success' or cached.get('request') != request or
+                            cached.get('data_key') != key or cached.get('requested_iterations') != 128 or
+                            cached.get('dps') != score or cached.get('samples', 0) < 2):
+                        raise ValueError('最终复测请求、程序、条件、种子或128次样本规则不符')
+                    group = cached.get('storage_group_key')
+                    if group is not None and not isinstance(group, str):
+                        raise ValueError('最终复测报告位置凭据无效')
+                    group = group or key
+                    saved = result_store.one('batches', 'batch_key', key, group_key=group)
+                    if saved is None:
+                        raise FileNotFoundError('最终复测报告缺失: ' + key)
+                    if decode(saved.get('engines')) != engines or saved.get('requested_iterations') != 128:
+                        raise ValueError('最终复测引擎或128次样本规则不符')
+                    player = player_report(saved['report'], inputs['character'])
+                    if (player.get('sim2gse_spec') != spec or player.get('race') != inputs['character'].race or
+                            type(player.get('sim2gse_spec_id')) is not int or player['sim2gse_spec_id'] <= 0 or
+                            character.spec_id not in (None, player['sim2gse_spec_id']) or
+                            (use_burst and player['sim2gse_spec_id'] != inputs['definition']['spec_id'])):
+                        raise ValueError('最终复测标准角色身份不符')
+                    if character.spec_id is None:
+                        character = replace(character, spec_id=player['sim2gse_spec_id'])
+                    _validate_saved_batch(saved, key, cached, character, index, 'nominal', simulation_config)
+                    evidence.append(dict(batch_key=key, storage_group_key=group, seed=seed,
+                                         requested_iterations=128, samples=cached['samples']))
+            eligible.append(dict(source_kind='training_champion', status='selected',
+                candidate_id=row['candidate_id'], phase='final', program=program, program_identity=form,
+                scores=scores, score=sum(scores) / 3, condition=row['condition'],
+                semantic_condition=manifest['semantic_condition'], condition_input=manifest['condition_input'],
+                semantic_versions=manifest['semantic_versions'], template_sha256=inputs['template_sha'],
+                engines=engines, class_name=class_name, spec=spec, targets=simulation_config['target_count'],
+                task_path=str(folder), identity_path=str(batch / 'identity.json'), evidence=evidence))
+        except (ValueError, KeyError, TypeError, FileNotFoundError, result_store.InvalidRecordError,
+                sqlite3.Error) as error:
+            cause = error
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            corrupt_sqlite = isinstance(cause, sqlite3.DatabaseError) and any(
+                text in str(cause).lower() for text in ('malformed', 'not a database'))
+            if ((isinstance(cause, OSError) and not isinstance(cause, FileNotFoundError)) or
+                    (isinstance(cause, sqlite3.Error) and not corrupt_sqlite)):
+                raise result_store.DataReadError('训练冠军原凭据暂时不可读: ' + str(cause)) from error
+            snapshot['excluded'].append(dict(candidate_id=row.get('candidate_id'),
+                status='missing' if isinstance(cause, FileNotFoundError) else 'invalid', reason=str(error)))
+        except OSError as error:
+            raise result_store.DataReadError('训练冠军原凭据暂时不可读: ' + str(error)) from error
+    if eligible:
+        winner = min(eligible, key=lambda item: (-item['score'], digest(item['program']), item['candidate_id']))
+        snapshot.update(winner)
+    return snapshot
 
 
 def main(argv=None):

@@ -52,15 +52,14 @@ def _load(destination):
     return row
 
 
-def _verify(row, destination):
+def _verify(row, destination, identities):
     from burst import load
-    from engine import identity
     if hashlib.sha256((destination / 'input.original.simc').read_bytes()).hexdigest() != row['input_sha256']:
         raise task.TaskError('双场任务的冻结输入已变化，请创建新任务')
     if load(row['spec_id'])['definition_id'] != row['definition_id']:
         raise task.TaskError('双场任务的爆发定义已变化，请创建新任务')
     if row['rules'] != task._rule_hashes() or row['engines'] != {
-            mode: identity(mode)[1] for mode in ('baseline', 'controlled')}:
+            mode: entry[1] for mode, entry in identities.items()}:
         raise task.TaskError('双场任务的版本或规则已变化，请创建新任务')
 
 
@@ -98,8 +97,9 @@ def _child_matches(row, child, targets):
 
 
 class DualHandle:
-    def __init__(self, destination):
+    def __init__(self, destination, identities):
         self.output_root = destination
+        self.identities = identities
         self.cancel_event = threading.Event()
         self.thread = None
         self.error = None
@@ -128,7 +128,7 @@ def _worker(handle):
     try:
         from seed_activity import foreground_search
         with foreground_search():
-            _verify(row, destination)
+            _verify(row, destination, handle.identities)
             row.update(status='running', error=None)
             _save(row)
             compiled_exports = {}
@@ -136,18 +136,21 @@ def _worker(handle):
             for purpose, targets in SCENES:
                 if handle.cancel_event.is_set():
                     raise TaskCancelled('已取消；等待的场景未启动')
-                _verify(row, destination)
+                _verify(row, destination, handle.identities)
                 child_path = destination / row[purpose + '_path']
                 row['phase'] = purpose
                 row[purpose + '_status'] = 'running'
                 _save(row)
+                runtime = TaskRuntime(row['config']['total_budget_seconds'], cancel_event=handle.cancel_event)
+                runtime.identities = copy.deepcopy(handle.identities)
                 if (child_path / 'result.json').exists():
                     child = task.read_task(child_path)
-                    if child.get('status') != 'completed':
-                        child = task.resume_task(child_path, cancel_event=handle.cancel_event,
+                    if (child.get('status') != 'completed' or
+                            child.get('search', {}).get('formal_champion_publication', {}).get('status') == 'pending'):
+                        child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
                             simulation_config=dict(row['simulation_config'], target_count=targets))
                 elif (child_path / 'task.sqlite3').exists():
-                    child = task.resume_task(child_path, cancel_event=handle.cancel_event,
+                    child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
                         simulation_config=dict(row['simulation_config'], target_count=targets))
                 else:
                     if child_path.exists():
@@ -160,7 +163,7 @@ def _worker(handle):
                         child_path = destination / row[purpose + '_path']
                     child = task.run_task(destination / 'input.original.simc', child_path,
                         use_burst=True, burst_identity={key: row[key] for key in ('spec_id', 'definition_id')},
-                        cancel_event=handle.cancel_event, search_config=row['config'],
+                        cancel_event=handle.cancel_event, search_config=row['config'], _runtime=runtime,
                         simulation_config=dict(row['simulation_config'], target_count=targets))
                 if child.get('status') == 'cancelled':
                     raise TaskCancelled('已取消；已完成的场景保留')
@@ -185,7 +188,7 @@ def _worker(handle):
                 _save(row)
             if handle.cancel_event.is_set():
                 raise TaskCancelled('已取消；三个单份结果已保留')
-            _verify(row, destination)
+            _verify(row, destination, handle.identities)
             row['phase'] = 'package'
             _save(row)
             from codec import collection
@@ -223,10 +226,11 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     config = config_for(dict(search_config or {}, input_interval_ms=(search_config or {}).get('input_interval_ms', 200)))
     effective = task._effective_input_bytes(original, text, simulation_config)
     definition = select_definition(task.parse_character(effective.decode('utf-8')))
+    identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
     row = dict(parent_id=uuid.uuid4().hex, status='starting', phase='prepare', error=None,
                input_sha256=hashlib.sha256(original).hexdigest(), definition_id=definition['definition_id'],
                spec_id=definition['spec_id'], config=config, simulation_config=simulation_config,
-               rules=task._rule_hashes(), engines={mode: identity(mode)[1] for mode in ('baseline', 'controlled')},
+               rules=task._rule_hashes(), engines={mode: entry[1] for mode, entry in identities.items()},
                preparation_seconds=time.monotonic() - started, packaging_seconds=0., collection_text=None,
                burst_instructions=definition['instructions'], single_target_path='single_target', aoe_path='aoe',
                single_target_status='pending', aoe_status='pending', single_target_export=None,
@@ -235,21 +239,24 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     (destination / 'input.original.simc').write_bytes(original)
     task._write_json(destination / 'dual.json', dict(parent_id=row['parent_id']), atomic=True)
     _save(row)
-    return _launch(destination)
+    return _launch(destination, identities)
 
 
-def _launch(destination):
-    handle = DualHandle(destination)
+def _launch(destination, identities):
+    handle = DualHandle(destination, identities)
     handle.thread = threading.Thread(target=_worker, args=(handle,), daemon=True, name='sim2gse-dual')
     handle.thread.start()
     return handle
 
 
 def resume(destination):
+    from engine import identity
     destination = Path(destination).resolve()
     with task._task_lease(destination):
-        _verify(_load(destination), destination)
-    return _launch(destination)
+        row = _load(destination)
+        identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
+        _verify(row, destination, identities)
+    return _launch(destination, identities)
 
 
 def _is_running(destination):
@@ -293,6 +300,12 @@ def read(destination, *, active=None):
             scene['progress'] = min(1., scene['elapsed_seconds'] / scene['total_budget_seconds'])
             if child.get('search_result'):
                 scene['search_result'] = child['search_result']
+            search = child.get('search') or child
+            for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
+                         'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',
+                         'formal_champion_publication_verification'):
+                if name in search:
+                    scene[name] = search[name]
         if status == 'completed':
             completed += 1
             scene['progress'] = 1.

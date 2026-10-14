@@ -426,8 +426,12 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'no_improvement_round_limit')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
-    if state is not None and 'seed_adaptations' in state:
-        search_metrics['seed_adaptations'] = state['seed_adaptations']
+    if state is not None:
+        for name in ('seed_adaptations', 'training_champion_snapshot',
+                     'training_champion_adaptation', 'start_sources', 'formal_champion_snapshot',
+                     'formal_champion_adaptation', 'formal_champion_publication'):
+            if name in state:
+                search_metrics[name] = state[name]
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
                              for row in record.get('batches', [])
                              if row.get('cached') and isinstance(row.get('data_key'), str)})
@@ -824,7 +828,413 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
     return starts + added, decisions
 
 
-def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False, burst_identity=None):
+def _validate_formal_source(record, state, character, *, run=None, candidate=None, verify_reports=True):
+    """One source contract for live publication and immutable published evidence."""
+    from result_store import one, read_many, report_locations, InvalidRecordError
+    from seed_training import decode, search_program
+    from program import canonicalize_search_program, canonical_behavior_key
+    from search import digest, _validate_saved_batch, _score, input_times, STATS_VERSION, DEFAULT_SCENARIOS
+    from sequence import compiled_identity
+    binding = record['binding']
+    if (digest(binding) != record['condition_key']
+            or binding['input_effective_sha256'] != state['input_effective_sha256']
+            or binding['class_name'] != character.class_name or binding['spec'] != character.spec
+            or binding['spec_id'] != character.spec_id
+            or binding['target_count'] != state['simulation_config']['target_count']):
+        raise InvalidRecordError('正式冠军条件与当前冻结角色不符')
+    if run is not None:
+        profile = decode(run['profile']) or {}
+        identity = profile.get('identity') or {}
+        evidence = dict(status=run['status'], input_effective_sha256=profile.get('input_effective_sha256'),
+                        class_name=identity.get('class'), spec=identity.get('spec'), spec_id=identity.get('spec_id'))
+        if (run['run_id'] != record['source_run_id'] or run['condition_key'] != record['source_condition_key']
+                or run['selected_candidate_key'] != record['behavior_identity']
+                or run['locked_candidate_key'] != record['behavior_identity']
+                or run['candidate_key'] != record['source_candidate_key']
+                or run['candidate_data_key'] != record['source_candidate_data_key']
+                or run['search_dps'] != record['score'] or run['search_samples'] != record['samples']
+                or not set(record['batch_keys']) <= set(run['batch_keys'] or [])):
+            raise InvalidRecordError('正式冠军的完整正式来源缺失或不符')
+    else:
+        evidence = record.get('source_evidence') or {}
+    if (evidence.get('status') not in ('completed', 'cancelled')
+            or any(evidence.get(key) != binding[key] for key in
+                   ('input_effective_sha256', 'class_name', 'spec', 'spec_id'))
+            or record['source_condition_key'] != binding['condition']
+            or binding['condition'] != state['condition']):
+        raise InvalidRecordError('正式冠军的来源状态、角色或条件不符')
+    if candidate is None:
+        candidate = one('candidates', 'candidate_data_key', record['source_candidate_data_key'],
+            columns=['candidate_data_key', 'run_id', 'candidate_key', 'program', 'simulation', 'export_text', 'source'])
+    if (candidate is None or candidate['run_id'] != record['source_run_id']
+            or candidate['candidate_key'] != record['source_candidate_key']
+            or candidate['source'] != 'search' or candidate['simulation'] != 'passed_native_model'
+            or not candidate['export_text']
+            or canonicalize_search_program(search_program(decode(candidate['program'])), state['capabilities'])['identity']
+               != record['behavior_identity']
+            or canonicalize_search_program(record['program'], state['capabilities'])['identity'] != record['behavior_identity']):
+        raise InvalidRecordError('正式冠军程序、导出或正式来源行为不符')
+    if not verify_reports:
+        import math
+        if (type(record.get('score')) not in (int, float) or not math.isfinite(record['score'])
+                or type(record.get('samples')) is not int or record['samples'] < 1
+                or not isinstance(record.get('batch_keys'), list) or not record['batch_keys']
+                or any(not isinstance(key, str) or not key for key in record['batch_keys'])
+                or len(set(record['batch_keys'])) != len(record['batch_keys'])):
+            raise InvalidRecordError('正式冠军成绩或原报告引用格式不符')
+        # Published evidence was verified before CAS; inheritance always scores the program anew.
+        return evidence
+    wanted = set(record['batch_keys'])
+    locations = report_locations(record['batch_keys'])
+    groups = list(dict.fromkeys(locations.get(key) or key for key in record['batch_keys']))
+    batches = {row['batch_key']: row for row in read_many('batches', groups) if row['batch_key'] in wanted}
+    if set(batches) != wanted or not wanted:
+        raise InvalidRecordError('正式冠军原报告缺失')
+    scored = []
+    config = state['config']
+    for row in batches.values():
+        purpose, index, scenario = row['purpose'], row['batch_index'], row['scenario']
+        if purpose not in ('search', 'validation') or type(index) is not int or index < 0:
+            raise InvalidRecordError('正式冠军原报告批次身份不符')
+        if purpose == 'search':
+            if index >= len(config['batch_targets']) or scenario != 'nominal':
+                raise InvalidRecordError('正式冠军评分批次不符')
+            iterations = config['batch_targets'][index] - (config['batch_targets'][index - 1] if index else 0)
+        else:
+            if index >= config['validation_batches'] or scenario not in DEFAULT_SCENARIOS:
+                raise InvalidRecordError('正式冠军晋级批次不符')
+            iterations = config['iterations']
+        seed = config['random_seed'] + (100000 if purpose == 'validation' else 0) + index + DEFAULT_SCENARIOS.index(scenario) * 1000
+        times = input_times(scenario, seed + 500000, config['input_interval_ms'])
+        form = decode(row['program_identity'])
+        request = dict(condition=binding['condition'], program=form, behavior_identity=canonical_behavior_key(form),
+            purpose=purpose, seed=seed, input_seed=seed + 500000, iterations=iterations,
+            times=times, stats=STATS_VERSION, trace=row['trace'], reset_events=[list(item) for item in config['reset_events']])
+        if state.get('burst'):
+            from burst import combined_inputs
+            context = state['burst']
+            request['times'], sources = combined_inputs(times, context, config['input_interval_ms'])
+            request['burst'] = dict(definition_id=context['definition_id'], program=compiled_identity(context['candidate']),
+                                    plan=context['plan'], interval_ms=config['input_interval_ms'], sources=sources)
+        receipt = dict(request=request, dps=row['dps'], samples=row['samples'], variance=row['variance'])
+        if digest(request) != row['batch_key']:
+            raise InvalidRecordError('正式冠军原报告请求身份不符')
+        _validate_saved_batch(row, row['batch_key'], receipt, character, index, scenario, state['simulation_config'])
+        if purpose == 'search' and row['candidate_key'] == record['behavior_identity']:
+            scored.append(row)
+    scored.sort(key=lambda row: row['batch_index'])
+    if (not scored or [row['batch_index'] for row in scored] != list(range(len(scored)))
+            or _score(scored) != record['score'] or sum(row['samples'] for row in scored) != record['samples']):
+        raise InvalidRecordError('正式冠军分数或样本与原报告不符')
+    return evidence
+
+
+def _freeze_formal_champion(state, character, native, capabilities):
+    from result_store import read_search_champion
+    from search import digest
+    binding = dict(condition=state['condition'], input_effective_sha256=state['input_effective_sha256'],
+                   class_name=character.class_name, spec=character.spec,
+                   spec_id=native['identity']['spec_id'], target_count=state['simulation_config']['target_count'])
+    key = digest(binding)
+    record = read_search_champion(key)
+    snapshot = dict(status='absent', condition_key=key, binding=binding, version=0,
+                    legacy_import_status='not_imported', target_count=binding['target_count'])
+    if record is None:
+        return snapshot
+    if record['binding'] != binding:
+        from result_store import InvalidRecordError
+        raise InvalidRecordError('正式冠军条件绑定不符')
+    checked = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
+    _validate_formal_source(record, dict(state, capabilities=capabilities), checked, verify_reports=False)
+    snapshot.update(record, status='selected', legacy_import_status='not_imported',
+                    target_count=binding['target_count'])
+    return snapshot
+
+
+def _historical_formal_champion(state, character, native, capabilities, snapshot):
+    """One explicit bounded management pass; never a routine historical scan."""
+    import math
+    from result_store import read_many, report_locations
+    from seed_training import decode, search_program
+    from search import digest, _validate_saved_batch, _score, STATS_VERSION, input_times, config_for
+    from program import canonicalize_search_program
+    if snapshot['status'] != 'absent':
+        raise TaskError('已有正式冠军，历史导入不能覆盖')
+    scope = state['formal_history_scope']
+    columns = ['run_id', 'status', 'profile', 'config', 'simulation_config', 'engines', 'burst',
+               'condition_key', 'candidate_key', 'candidate_data_key', 'selected_candidate_key',
+               'locked_candidate_key', 'search_dps', 'search_samples', 'batch_keys']
+    runs = read_many('runs', scope, columns=columns)
+    if len(runs) != len(scope) or {run['run_id'] for run in runs} != set(scope):
+        raise TaskError('明确历史来源缺失或不唯一')
+    keys = [run['candidate_data_key'] for run in runs if run['candidate_data_key']]
+    candidates = read_many('candidates', keys,
+        columns=['run_id', 'candidate_key', 'candidate_data_key', 'program', 'simulation', 'export_text', 'source'])
+    by_key = {row['candidate_data_key']: row for row in candidates}
+    if len(by_key) != len(candidates):
+        raise TaskError('明确历史候选身份不唯一')
+    eligible = []
+    for run in runs:
+        profile, config = decode(run['profile']), decode(run['config'])
+        candidate = by_key.get(run['candidate_data_key'])
+        identity = (profile or {}).get('identity', {})
+        config_without_logging = lambda value: {key: item for key, item in value.items()
+            if key not in ('search_observability', 'diagnostics', 'diagnostic_logging')}
+        source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
+        source_context = {key: item for key, item in source_burst.items()
+                          if key not in ('candidate_key', 'candidate_data_key')}
+        current_context = {key: item for key, item in current_burst.items() if key != 'candidate'}
+        if (run['status'] != 'completed' or not isinstance(profile, dict) or not isinstance(config, dict)
+                or profile.get('input_effective_sha256') != state['input_effective_sha256']
+                or identity.get('class') != character.class_name or identity.get('spec') != character.spec
+                or identity.get('spec_id') != native['identity']['spec_id']
+                or decode(run['engines']) != state['engines']
+                or decode(run['simulation_config']) != state['simulation_config']
+                or set(config_without_logging(config)) != set(config_without_logging(state['config']))
+                or config_without_logging(config_for(config)) != config_without_logging(state['config'])
+                or source_context != current_context or not run['condition_key']
+                or run['selected_candidate_key'] != run['locked_candidate_key']
+                or not run['selected_candidate_key'] or candidate is None
+                or candidate['run_id'] != run['run_id'] or candidate['candidate_key'] != run['candidate_key']
+                or candidate['simulation'] != 'passed_native_model' or not candidate['export_text']
+                or candidate['source'] != 'search'
+                or type(run['search_dps']) not in (int, float) or not math.isfinite(run['search_dps'])
+                or run['search_dps'] < 0 or type(run['search_samples']) is not int or run['search_samples'] < 1):
+            raise TaskError('明确历史来源的角色、完整条件或正式成果无法核验: ' + run['run_id'])
+        program = search_program(decode(candidate['program']))
+        canonical = canonicalize_search_program(program, capabilities)
+        if canonical['identity'] != run['selected_candidate_key']:
+            raise TaskError('明确历史候选的程序与行为身份不符')
+        eligible.append((run, program, canonical))
+    run, program, canonical = min(eligible, key=lambda item:
+        (-item[0]['search_dps'], item[2]['identity'], item[0]['run_id']))
+    # Verify the selected old score's complete reports, but never import its cache.
+    locations = report_locations(run['batch_keys'])
+    wanted = set(run['batch_keys'])
+    groups = list(dict.fromkeys(locations.get(key) or key for key in run['batch_keys']))
+    batches = [row for row in read_many('batches', groups,
+               filters={'candidate_key': canonical['identity'], 'purpose': 'search'})
+               if row['batch_key'] in wanted]
+    batches.sort(key=lambda row: row['batch_index'])
+    scored = []
+    config = state['config']
+    for index, row in enumerate(batches):
+        if index >= len(config['batch_targets']) or row['batch_index'] != index:
+            raise TaskError('明确历史评分批次编号不符')
+        seed = config['random_seed'] + index
+        times = input_times('nominal', seed + 500000, config['input_interval_ms'])
+        if state.get('burst'):
+            from burst import combined_inputs
+            times, _ = combined_inputs(times, state['burst'], config['input_interval_ms'])
+        iterations = config['batch_targets'][index] - (config['batch_targets'][index - 1] if index else 0)
+        request = dict(condition=run['condition_key'], program=canonical['form'], behavior_identity=canonical['identity'],
+            purpose='search', seed=seed, input_seed=seed + 500000, iterations=iterations, times=times,
+            stats=STATS_VERSION, trace=row['trace'], reset_events=[list(item) for item in config['reset_events']])
+        receipt = dict(request=request, dps=row['dps'], samples=row['samples'], variance=row['variance'])
+        _validate_saved_batch(row, row['batch_key'], receipt, character, index, 'nominal', state['simulation_config'])
+        scored.append(receipt)
+    if not scored or _score(scored) != run['search_dps'] or sum(row['samples'] for row in scored) != run['search_samples']:
+        raise TaskError('明确历史评分报告或样本不完整')
+    return dict(snapshot, status='selected', legacy_import_status='candidate_frozen', source_scope=scope,
+                program=program, behavior_identity=canonical['identity'], source_run_id=run['run_id'],
+                source_candidate_key=run['candidate_key'], source_candidate_data_key=run['candidate_data_key'],
+                source_condition_key=run['condition_key'], score=run['search_dps'], samples=run['search_samples'])
+
+
+def import_formal_champion(input_path, output_root, source_run_ids, *, search_config=None,
+                           simulation_config=None, use_burst=False):
+    """Explicit internal management entry; the supplied range is not all historical results."""
+    if (not isinstance(source_run_ids, (list, tuple)) or not source_run_ids
+            or any(not isinstance(key, str) or not re.fullmatch('[0-9a-f]{32}', key) for key in source_run_ids)):
+        raise TaskError('历史导入需要明确有限的正式run_id范围')
+    scope = list(dict.fromkeys(source_run_ids))
+    if len(scope) > 64:
+        raise TaskError('历史导入最多64个唯一正式来源，请缩小明确范围')
+    from seed_activity import foreground_search
+    with foreground_search():
+        return _run_task(input_path, output_root, search_config=search_config,
+            simulation_config=simulation_config, use_burst=use_burst, _formal_source_run_ids=scope)
+
+
+def _prepare_formal_publication(store, result=None):
+    """Freeze an intent only for a fully archived, export-verified winner."""
+    import math
+    from program import canonicalize_search_program
+    from sequence import compiled_identity
+    from search import digest
+    state = store.state
+    snapshot = state.get('formal_champion_snapshot')
+    if snapshot is None:
+        return
+    key = state.get('locked_candidate_key')
+    winner = next((row for row in state.get('archive', []) if row['key'] == key), None)
+    if winner is None:
+        state['formal_champion_publication'] = dict(status='not_eligible', reason='没有完整正式赢家')
+        return
+    canonical = canonicalize_search_program(winner['program'], state['capabilities'])
+    candidate = winner.get('candidate') or {}
+    if (canonical['identity'] != key or canonical['form'] != compiled_identity(candidate)
+            or candidate.get('simulation') != 'passed_native_model' or not candidate.get('text')
+            or not winner.get('batches') or not math.isfinite(winner['score'])
+            or any(row.get('status') != 'success' or not row.get('data_key')
+                   or row.get('samples', 0) < 1 for row in winner['batches'])):
+        state['formal_champion_publication'] = dict(status='not_eligible', reason='正式赢家证据不完整')
+        return
+    evidence = []
+    previous = state.get('formal_champion_last_published')
+    baseline = (previous['behavior_identity'] if previous else
+                snapshot.get('behavior_identity') if snapshot['status'] == 'selected' else None)
+    if baseline and key != baseline:
+        current = winner
+        visited = set()
+        while current['key'] != baseline:
+            predecessor = current.get('global_predecessor_key')
+            comparison = current.get('global_validation') or current.get('validation')
+            ci = (comparison or {}).get('comparison', {}).get('ci95')
+            if (current['key'] in visited or not predecessor or not ci or ci[0] <= 0
+                    or len(comparison.get('candidate', [])) != state['config']['validation_batches']
+                    or len(comparison.get('control', [])) != state['config']['validation_batches']):
+                state['formal_champion_publication'] = dict(status='not_eligible', reason='缺少可信冠军晋级链')
+                return
+            visited.add(current['key'])
+            evidence.append(dict(candidate_key=current['key'], predecessor_key=predecessor,
+                                 comparison=comparison['comparison'],
+                                 batch_keys=[row['data_key'] for side in ('candidate', 'control')
+                                             for row in comparison[side]]))
+            current = next((row for row in state['archive'] if row['key'] == predecessor), None)
+            if current is None:
+                state['formal_champion_publication'] = dict(status='not_eligible', reason='冠军晋级前序缺失')
+                return
+    # Persisted export identity and search behavior identity are intentionally distinct.
+    source_key = candidate.get('identity') or digest(candidate['program'])
+    record = dict(condition_key=snapshot['condition_key'], binding=snapshot['binding'], version=0,
+                  program=winner['program'], behavior_identity=key, source_run_id=state['run_id'],
+                  source_candidate_key=source_key,
+                  source_candidate_data_key=digest(dict(run_id=state['run_id'], candidate_key=source_key)),
+                  source_condition_key=state['condition'], score=winner['score'],
+                  samples=sum(row['samples'] for row in winner['batches']),
+                  batch_keys=list(dict.fromkeys([row['data_key'] for row in winner['batches']] +
+                      [batch for item in evidence for batch in item['batch_keys']])), promotion_evidence=evidence)
+    incumbent = previous or (dict(version=snapshot['version'], source_run_id=snapshot['source_run_id'],
+        behavior_identity=snapshot['behavior_identity'])
+        if snapshot['status'] == 'selected' and snapshot['version'] > 0 else None)
+    fields = {name: result[name] for name in ('status', 'phase', 'elapsed_seconds', 'completed_batches',
+        'final', 'independent_validation_complete', 'improvement') if result is not None and name in result}
+    if result is not None:
+        fields['search'] = {name: value for name, value in result['search'].items()
+                            if name in ('candidate_count', 'unique_candidates', 'rounds', 'partial_round',
+                                        'stop_reason', 'no_improvement_round_limit')}
+    state['formal_champion_publication_intent'] = dict(record=record,
+        expected_version=incumbent['version'] if incumbent else 0, expected_incumbent=incumbent, result_fields=fields)
+    state['formal_champion_publication'] = dict(status='pending', source_run_id=state['run_id'],
+                                              reason='正式结果保存后发布')
+
+
+def _formal_publication_metadata(value):
+    if (not isinstance(value, dict) or value.get('status') not in
+            ('pending', 'published', 'unchanged', 'conflict', 'not_eligible')):
+        raise ValueError('正式冠军发布状态格式无效')
+    return value
+
+
+def _restore_formal_result(store, destination, character):
+    """Finish durable complete archives before any resume early return; never score."""
+    from result_store import one, InvalidRecordError
+    state = store.state
+    intent = state.get('formal_champion_publication_intent')
+    if not intent or state.get('formal_champion_publication', {}).get('status') != 'pending':
+        return
+    record = intent['record']
+    run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
+        'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
+        'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys'])
+    try:
+        if run is None:
+            raise InvalidRecordError('完整正式结果缺失')
+        _validate_formal_source(record, state, character, run=run)
+    except (InvalidRecordError, ValueError, KeyError, TypeError):
+        winner = next((row for row in state.get('archive', []) if row['key'] == record['behavior_identity']), None)
+        fields = intent.get('result_fields') or {}
+        if (winner is None or fields.get('status') not in ('completed', 'cancelled')
+                or winner['score'] != record['score']
+                or sum(row['samples'] for row in winner['batches']) != record['samples']):
+            raise TaskError('正式成果无法从完整归档补保存')
+        from program import canonicalize_search_program
+        from sequence import compiled_identity
+        from search import digest
+        compiled = winner.get('candidate') or {}
+        canonical = canonicalize_search_program(winner['program'], state['capabilities'])
+        if (canonical['identity'] != record['behavior_identity'] or compiled_identity(compiled) != canonical['form']
+                or (compiled.get('identity') or digest(compiled['program'])) != record['source_candidate_key']
+                or state['run_id'] != record['source_run_id']):
+            raise TaskError('正式成果归档程序或产物身份不符')
+        # Verify the complete archive and original reports before filling the missing artifact/result.
+        _validate_formal_source(dict(record, source_evidence=dict(status=fields['status'],
+            **{key: record['binding'][key] for key in ('input_effective_sha256', 'class_name', 'spec', 'spec_id')})),
+            state, character, candidate=dict(run_id=state['run_id'], candidate_key=record['source_candidate_key'],
+                program=compiled['program'], source=compiled.get('source', 'search'),
+                simulation=compiled.get('simulation'), export_text=compiled.get('text')))
+        result = dict(fields, locked_candidate_key=record['behavior_identity'], selected_candidate_key=record['behavior_identity'])
+        result['search'] = dict(fields.get('search') or {}, records=state['archive'], chains=state['chains'], errors=state.get('errors', []))
+        result['validation'] = dict(dataset='validation', records=[row[name] for row in state['archive']
+            for name in ('validation', 'global_validation') if name in row])
+        result['elapsed_seconds'] = max(fields.get('elapsed_seconds', 0), state.get('elapsed_seconds', 0))
+        pointer = _store_run(destination, result, state=state)
+        _write_json(destination / 'result.json', pointer, atomic=True)
+    fields = intent.get('result_fields') or {}
+    if fields.get('status') in ('completed', 'cancelled'):
+        state.update(status=fields['status'], phase=fields['phase'])
+        state.pop('error', None)
+        store.save()  # A verified saved result also repairs a stale failed checkpoint without resetting elapsed time.
+    if not (destination / 'result.json').is_file():
+        _write_json(destination / 'result.json', dict(run_id=record['source_run_id'], status=state['status'], phase=state['phase']), atomic=True)
+
+
+def _publish_formal_champion(store, destination):
+    """Publication errors retain the reliable result and its retryable intent."""
+    from result_store import one, publish_search_champion
+    state = store.state
+    intent = state.get('formal_champion_publication_intent')
+    if not intent:
+        return
+    try:
+        record = intent['record']
+        native = state['native']['identity']
+        character = replace(parse_character((destination / 'input.simc').read_text(encoding='utf-8-sig')),
+                            spec_id=native['spec_id'], race=native['race'])
+        if state.get('formal_champion_publication', {}).get('status') == 'pending':
+            run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
+        'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
+        'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys'])
+            if run is None:
+                raise TaskError('完整正式结果尚未可靠保存，不能发布冠军')
+            record['source_evidence'] = _validate_formal_source(record, state, character, run=run)
+            state['formal_champion_publication'] = publish_search_champion(record, intent['expected_version'],
+                expected_incumbent=intent.get('expected_incumbent'))
+            publication = state['formal_champion_publication']
+            if publication['status'] == 'published':
+                state['formal_champion_last_published'] = dict(version=publication['version'],
+                    source_run_id=publication['source_run_id'], behavior_identity=record['behavior_identity'])
+    except Exception as error:
+        state['formal_champion_publication'] = dict(status='pending', source_run_id=state['run_id'],
+                                                  reason='结果已保存，正式冠军尚未更新', error=str(error))
+    try:
+        store.save()
+        pointer_path = destination / 'result.json'
+        pointer = json.loads(pointer_path.read_text(encoding='utf-8'))
+        pointer['formal_champion_publication'] = state['formal_champion_publication']
+        _write_json(pointer_path, pointer, atomic=True)
+    except Exception as error:
+        state['formal_champion_publication'] = dict(status='pending', source_run_id=state['run_id'],
+            reason='结果已保存，正式冠军发布状态尚待确认', error=str(error))
+        try:
+            store.save()
+        except Exception:
+            pass  # The already durable pending intent is enough for an idempotent retry.
+
+
+def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False,
+                  burst_identity=None, formal_source_run_ids=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
     from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
@@ -841,6 +1251,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         store.close()
         raise TaskError('任务结果中心身份与检查点不符，请创建新任务')
     state['run_id'] = run_id
+    if formal_source_run_ids is not None:
+        state['formal_history_scope'] = formal_source_run_ids
     runtime.diagnostic_logging = config['diagnostic_logging']
     def reservation(key, allowance):
         with store.lock:
@@ -923,7 +1335,14 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     if use_burst:
                         scope += '-burst'
                     state['seed_selected_snapshot'] = read_records('seed_selected', scope)
-                    store.save()
+                if 'training_champion_snapshot' not in state:
+                    from seed_training import training_champion
+                    state['training_champion_snapshot'] = training_champion(
+                        character.class_name, character.spec, simulation_config, engines=identities,
+                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
+                        burst_identity=(dict(spec_id=definition['spec_id'],
+                                             definition_id=definition['definition_id']) if definition else None))
+                # 冠军与代表快照随 inflight 同一事务冻结，先于任何原生评分。
                 # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
@@ -965,11 +1384,66 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     state['burst'] = context
                     condition = digest(dict(base=base_condition, burst=context))
                     state['condition'] = condition
+                if 'formal_champion_snapshot' not in state:
+                    snapshot = _freeze_formal_champion(state, character, native, capabilities)
+                    if state.get('formal_history_scope'):
+                        checked_character = replace(character, spec_id=native['identity']['spec_id'],
+                                                    race=native['identity']['race'])
+                        snapshot = _historical_formal_champion(state, checked_character, native, capabilities, snapshot)
+                    state['formal_champion_snapshot'] = snapshot
+                    store.save()
                 starts = initial_programs(capabilities, native, config['random_seed'])
                 state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
                     targets=simulation_config['target_count'], engines=identities,
                     capabilities=capabilities, runtime=runtime)
+                champion = state['training_champion_snapshot']
+                state['starts'], adaptations = _seed_programs(
+                    state['starts'], [champion] if champion.get('status') == 'selected' else [],
+                    character=character, targets=simulation_config['target_count'], engines=identities,
+                    capabilities=capabilities, runtime=runtime)
+                state['training_champion_adaptation'] = adaptations[0] if adaptations else None
+                from program import canonicalize_search_program
+                sources = {}
+                for index, program in enumerate(starts):
+                    try:
+                        key = canonicalize_search_program(program, capabilities)['identity']
+                    except (TypeError, ValueError, KeyError):
+                        continue  # 原优化器仍逐条记录无效起点，来源标记不改变失败语义。
+                    sources.setdefault(key, []).append(dict(source_kind='native', index=index))
+                for kind, decisions in [('seed_selected', state['seed_adaptations']),
+                                        ('training_champion', adaptations)]:
+                    for decision in decisions:
+                        if decision['status'] in ('accepted', 'duplicate'):
+                            sources.setdefault(decision['behavior_identity'], []).append(dict(
+                                source_kind=kind, candidate_id=decision['candidate_id']))
+                formal = state['formal_champion_snapshot']
+                state['formal_champion_adaptation'] = None
+                if formal['status'] == 'selected':
+                    try:
+                        canonical = canonicalize_search_program(formal['program'], capabilities)
+                        if canonical['identity'] != formal['behavior_identity']:
+                            raise ValueError('正式冠军行为身份不符')
+                        from burst import check_loop
+                        if use_burst:
+                            check_loop(canonical['program'], capabilities)
+                        key = canonical['identity']
+                        remaining = []
+                        for program in state['starts']:
+                            try:
+                                duplicate = canonicalize_search_program(program, capabilities)['identity'] == key
+                            except (TypeError, ValueError, KeyError):
+                                duplicate = False  # Keep the optimizer's per-native rejection semantics.
+                            if not duplicate:
+                                remaining.append(program)
+                        state['starts'] = [formal['program']] + remaining
+                        sources.setdefault(key, []).append(dict(source_kind='formal_champion',
+                            source_run_id=formal['source_run_id'], version=formal['version']))
+                        state['formal_champion_adaptation'] = dict(status='accepted',
+                            behavior_identity=key, derived_program=formal['program'])
+                    except (TypeError, ValueError, KeyError) as error:
+                        state['formal_champion_adaptation'] = dict(status='rejected', reason=str(error))
+                state['start_sources'] = sources
                 if not state['starts']:
                     raise TaskError('当前爆发排除条件下没有有效搜索起点')
                 if not config['diagnostic_logging']:
@@ -999,10 +1473,25 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 result['burst'] = dict(state['burst'], candidate=dict(
                     state['burst']['candidate'], simulation='passed_native_model'))
             result['elapsed_seconds'] = runtime.elapsed_seconds
+            for name in ('training_champion_adaptation', 'formal_champion_adaptation'):
+                adaptation = state.get(name)
+                if adaptation and adaptation.get('behavior_identity'):
+                    scored = next((row for row in state.get('archive', [])
+                                   if row['key'] == adaptation['behavior_identity']), None)
+                    if scored:
+                        adaptation.update(current_score=scored.get('score'),
+                                          current_samples=sum(batch.get('samples', 0)
+                                                              for batch in scored.get('batches', [])))
+            _prepare_formal_publication(store, result)
+            store.save()  # Intent freezes the completed archive while heartbeats remain nonterminal.
             pointer = _store_run(destination, result, state=state)
             _write_json(destination/'result.json', pointer, atomic=True)
             state.update(status=result['status'], phase=result['phase'])
-            store.save()
+            if not state.get('formal_champion_publication_intent'):
+                store.save()
+            _publish_formal_champion(store, destination)
+            result['search'].update({name: state[name] for name in ('formal_champion_snapshot',
+                'formal_champion_adaptation', 'formal_champion_publication') if name in state})
             return result
     except (TaskCancelled, BudgetExceeded) as error:
         try:
@@ -1067,7 +1556,8 @@ def _task_lease(destination):
 def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False, burst_identity=None) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None,
+             _formal_source_run_ids=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
@@ -1159,7 +1649,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
                 raise TaskError(message) from error
         try:
             return _run_optimize(destination, character, config=config, runtime=runtime,
-                                 simulation_config=simulation_config, use_burst=use_burst, burst_identity=burst_identity)
+                                 simulation_config=simulation_config, use_burst=use_burst, burst_identity=burst_identity,
+                                 formal_source_run_ids=_formal_source_run_ids)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _save_failure(destination, state)
@@ -1264,6 +1755,11 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination)
         try:
             state = store.state
+            if 'formal_champion_publication' in state:
+                try:
+                    _formal_publication_metadata(state['formal_champion_publication'])
+                except ValueError as error:
+                    raise TaskError(str(error)) from error
             saved_burst_mode = state.get('use_burst', False)
             if 'use_burst' in kwargs and kwargs['use_burst'] != saved_burst_mode:
                 raise TaskError('恢复任务的爆发模式发生变化，请创建新任务')
@@ -1293,9 +1789,13 @@ def _resume_task(output_root, **kwargs):
             if config != config_for(state['config']):
                 raise TaskError('恢复配置发生变化，请创建新任务')
             from engine import identity
+            # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
+            verified = getattr(kwargs.get('_runtime'), 'identities', {})
             try:
+                verified = {mode: verified[mode] if mode in verified else identity(mode)
+                            for mode in ('baseline', 'controlled')}
                 if (state.get('rules') != _rule_hashes() or
-                        state.get('engines') != {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}):
+                        state.get('engines') != {mode: entry[1] for mode, entry in verified.items()}):
                     raise TaskError('恢复任务的版本或编译规则已变化，请创建新任务')
             except (ValueError, OSError) as error:
                 raise TaskError(str(error)) from error
@@ -1311,6 +1811,13 @@ def _resume_task(output_root, **kwargs):
                 used = min(config['total_budget_seconds'],used+min(30,penalty))
                 state.update(elapsed_seconds=used,status='interrupted',inflight={})
                 store.save()  # 扣除与恢复标记同一事务，重复恢复不会再次扣除。
+            if state.get('formal_champion_publication_intent'):
+                _restore_formal_result(store, destination, character)
+                _publish_formal_champion(store, destination)
+            if (destination / 'result.json').is_file():
+                if state.get('status') == 'completed':
+                    store.publish()
+                    return read_task(destination)
             if used >= config['total_budget_seconds']:
                 if state.get('status')!='completed':
                     state.update(status='validation_incomplete',elapsed_seconds=used,error='计算预算已耗尽')
@@ -1329,6 +1836,7 @@ def _resume_task(output_root, **kwargs):
             store.close()
         runtime = kwargs.pop('_runtime',None) or TaskRuntime(config['total_budget_seconds'],cancel_event=kwargs.pop('cancel_event',None))
         kwargs.pop('cancel_event',None)
+        runtime.identities.update(verified)
         runtime.used_seconds=used
         runtime.budget_seconds=config['total_budget_seconds']
         runtime.phase_limit=runtime.budget_seconds
@@ -1423,6 +1931,23 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         batch_keys=saved['batch_keys'] or [])
     if saved['search_metrics']:
         search.update(decode(saved['search_metrics']))
+    if pointer.get('formal_champion_publication'):
+        search['formal_champion_publication'] = pointer['formal_champion_publication']
+    checkpoint = destination / 'task.sqlite3'
+    if checkpoint.is_file():
+        database = None
+        try:
+            database = sqlite3.connect(checkpoint.as_uri() + '?mode=ro', uri=True)
+            publication = (database.execute("SELECT value FROM state_fields WHERE key='formal_champion_publication'").fetchone()
+                if database.execute("SELECT 1 FROM sqlite_master WHERE name='state_fields'").fetchone() else None)
+            if publication:
+                search['formal_champion_publication'] = _formal_publication_metadata(decode(publication[0]))
+        except (sqlite3.Error, OSError, ValueError) as error:
+            search['formal_champion_publication_verification'] = dict(status='unknown',
+                reason='本地正式冠军发布状态不可核验，保留中心可靠结果', error=str(error))
+        finally:
+            if database is not None:
+                database.close()
     if saved['search_observability']:
         search['observability'] = decode(saved['search_observability'])
     search['native_batch_starts_total'] = saved['native_batch_starts'] or 0

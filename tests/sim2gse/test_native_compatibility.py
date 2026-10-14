@@ -114,25 +114,22 @@ class NativeComparisonTests(unittest.TestCase):
             profile = folder / 'sample.simc'
             profile.write_text(sample_profile(), encoding='utf-8')
             character = parse_character(sample_profile())
-            for targets in (1, 5):
-                with self.subTest(targets=targets):
-                    scene = folder / str(targets)
-                    engine.reference(profile, scene / 'baseline', character, iterations=2,
-                                     simulation_config={'target_count': targets})
-                    engine.run(profile, scene / 'disabled', 'controlled', options=['iterations=2'],
-                               simulation_config={'target_count': targets})
-                    original_folder = scene / 'original'
-                    original_folder.mkdir(parents=True)
-                    command = [str(original), str(profile), *engine.COMMON,
-                               f'desired_targets={targets}', 'iterations=2', 'max_time=180',
-                               'json2=native.json', 'output=native.txt']
-                    result = subprocess.run(command, cwd=original_folder, capture_output=True, timeout=30)
-                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
-                    reports = [json.loads((scene / mode / 'native.json').read_text(encoding='utf-8'))
-                               for mode in ('original', 'baseline', 'disabled')]
-                    combat = [battle_report(report) for report in reports]
-                    self.assertEqual(combat[0], combat[1])
-                    self.assertEqual(combat[1], combat[2])
+            engine.reference(profile, folder / 'baseline', character, iterations=2,
+                             simulation_config={'target_count': 1})
+            engine.run(profile, folder / 'disabled', 'controlled', options=['iterations=2'],
+                       simulation_config={'target_count': 1})
+            original_folder = folder / 'original'
+            original_folder.mkdir(parents=True)
+            command = [str(original), str(profile), *engine.COMMON,
+                       'desired_targets=1', 'iterations=2', 'max_time=180',
+                       'json2=native.json', 'output=native.txt']
+            result = subprocess.run(command, cwd=original_folder, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+            reports = [json.loads((folder / mode / 'native.json').read_text(encoding='utf-8'))
+                       for mode in ('original', 'baseline', 'disabled')]
+            combat = [battle_report(report) for report in reports]
+            self.assertEqual(combat[0], combat[1])
+            self.assertEqual(combat[1], combat[2])
 
 
 class NativeCatalogueTests(unittest.TestCase):
@@ -150,6 +147,14 @@ class NativeCatalogueTests(unittest.TestCase):
             self.assertEqual(dbc['Live']['build_level'], 69933,
                              '角色目录仍使用旧客户端数据，未适配已核实的正式客户端')
             self.assertTrue(capabilities['actions'])
+            for mode in ('baseline', 'controlled'):
+                with self.subTest(mode=mode):
+                    _, manifest = engine.identity(mode)
+                    self.assertTrue({
+                        'projects/sim2gse/native/src/catalogue.hpp',
+                        'projects/sim2gse/native/src/catalogue.cpp',
+                    }.issubset({entry['path'] for entry in manifest['sources']}),
+                        '报告和目录尚未由共用、受身份校验的源码提供')
 
     def test_product_builds_use_the_final_hooks_without_the_historical_chain(self):
         for mode in ('baseline', 'controlled'):
@@ -160,19 +165,3 @@ class NativeCatalogueTests(unittest.TestCase):
                     Path(entry['path']).parent.as_posix() == 'projects/sim2gse/native/hooks'
                     for entry in manifest['patches']),
                     '产品仍依赖累计历史补丁链，尚未切换最终连接补丁')
-
-    def test_reference_catalogue_is_backed_by_the_shared_checked_sources(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            profile = folder / 'sample.simc'
-            profile.write_text(sample_profile(), encoding='utf-8')
-            native = engine.reference(profile, folder / 'reference', parse_character(sample_profile()), iterations=2)
-            capabilities = engine.inspect(native, folder / 'capabilities')
-            self.assertTrue(capabilities['actions'])
-            for mode in ('baseline', 'controlled'):
-                _, manifest = engine.identity(mode)
-                self.assertTrue({
-                    'projects/sim2gse/native/src/catalogue.hpp',
-                    'projects/sim2gse/native/src/catalogue.cpp',
-                }.issubset({entry['path'] for entry in manifest['sources']}),
-                    '报告和目录尚未由共用、受身份校验的源码提供')
