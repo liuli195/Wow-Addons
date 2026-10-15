@@ -444,10 +444,10 @@ class DefectDetectionTest(unittest.TestCase):
                          "适配器不应随注入变化——差异必须来自生产代码")
         self.assertEqual(before, {n: (tracked / n).read_bytes() for n in self.PRODUCTION},
                          "注入改动了受版本控制的生产文件")
-        if name == "health-arc":
+        if name in ("health-arc", "event-branch"):
             # 同一临时项目原字节恢复后重跑同一目标，保留真实失败→恢复闭环。
             source.write_bytes(original)
-            restored, _ = self._run_project(project, "health-restored.json", case_id)
+            restored, _ = self._run_project(project, f"{name}-restored.json", case_id)
             self.assertEqual(restored["status"], "pass", "恢复后目标用例没有重新通过")
 
     def test_injected_health_curve_defect_is_detected(self):
@@ -464,16 +464,16 @@ class DefectDetectionTest(unittest.TestCase):
                                            "(now - start) / (duration * 2)", "resource", "spec-250.runes-depleted-1")
 
     def test_injected_event_update_defect_is_detected(self):
-        """事件更新路径：让生命事件分支不再更新读数，必须被抓到。
+        """禁用旧的两个生命事件入口，仍须在事件后的即时检查点抓到旧比例。
 
-        做法是让**两个生命事件都不再进入更新分支**。注意不能只摘掉其中一个：
-        `UNIT_HEALTH` 与 `UNIT_MAXHEALTH` 走的是同一个分支，只摘一个另一个照样触发，
-        看起来"没有差异"，实则是自己的注入没生效——不是"事件不可观测"。
+        锚只匹配分支首行，不绑定后续事件条件或换行。modifier事件保持原样，
+        目标用例只发送UNIT_HEALTH/UNIT_MAXHEALTH。ticker仍正常运行：工具先用
+        旧状态推进时间，再安装新输入并发事件，因此下一次轮询不能冒充即时更新。
         """
         self._component_defect_is_detected(
             "event-branch", "Core.lua",
-            'if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then',
-            'if event == "UNIT_HEALTH_OFF" or event == "UNIT_MAXHEALTH_OFF" then',
+            'elseif event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH"',
+            'elseif event == "UNIT_HEALTH_OFF" or event == "UNIT_MAXHEALTH_OFF"',
             "health", "spec-250.health-max-roundtrip")
 
 
