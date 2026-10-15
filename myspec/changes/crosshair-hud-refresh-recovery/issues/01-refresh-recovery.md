@@ -59,3 +59,7 @@ Parent: [血量与符能刷新恢复](../spec.md)
 API 核对：已直接读取固定提交 4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59 的官方 UnitDocumentation.lua，UnitMaxHealthModifiersChanged 定义确有 LiteralName=UNIT_MAX_HEALTH_MODIFIERS_CHANGED，并有 unitTarget 负载；事件负载为受限数据，本实现不读、不比较其比例，仅经现有玩家单位注册触发重新采样。来源：https://github.com/Gethe/wow-ui-source/blob/4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59/Interface/AddOns/Blizzard_APIDocumentationGenerated/UnitDocumentation.lua#L4059-L4069
 
 2026-10-15 独立审查P3返工：新增demo中发送UNIT_MAX_HEALTH_MODIFIERS_CHANGED后真实血量查询计数保持不变的断言，先红（review-demo-red.txt，1 failed in 0.04s），再仅对此新增事件在demo下提前Refresh并返回；不更改旧健康事件即时读取语义。相同max_health_events命令转绿（review-demo-green.txt，1 passed in 0.02s）；上述7文件相关回归命令43 passed in 0.66s（review-demo-regression.txt）。luac -p及git diff --check退出0。未提交，等待独立修复差异复审。
+
+2026-10-15 独立双轴审查：规范轴对80cb3a8...7b8f59b报告0硬规则违反/0需处理坏味道；规格轴报告1项P3（演示期间新增modifier事件即时采样），修复提交442df6b后，仅复审7b8f59b...442df6b，两轴均无新阻塞，P3关闭。规格轴独立执行新增三场景0.022秒及修复场景0.006秒。主代理复跑相关43项通过0.69秒；实施者返修回归43项通过0.66秒。
+
+正式验证尚未通过：当前Linux云端缺Windows专用LuaLS/Luacheck与配置路径；已向用户请求仅推功能分支并触发既有GitHub Windows CI，等待确认。没有部署、PR、合并或发布；未改正式规格，另一任务规划文件原样保留。
