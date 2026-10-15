@@ -1209,5 +1209,8 @@ assert(#deferred==1,"failed read must release pending for retry")
 healthFraction=0.75;NextFrame();Near(health.rotation,math.rad(-265))
 -- Demo also suppresses the additional next-frame sampling.
 Event("UNIT_MAXHEALTH");NS.Core.demo=true;h=healthCalls;NextFrame();assert(healthCalls==h)
+Event("UNIT_MAX_HEALTH_MODIFIERS_CHANGED")
+assert(healthCalls==h,"new modifier event must not sample real health in demo")
+NextFrame();assert(healthCalls==h)
 NS.Core.demo=false;Event("UNIT_MAXHEALTH");assert(#deferred==1);NextFrame()
     ''', refresh=True)

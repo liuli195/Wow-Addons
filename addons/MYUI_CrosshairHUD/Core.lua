@@ -670,6 +670,10 @@ local function OnEvent(_, event, ...)
         Refresh()
     elseif event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH"
         or event == "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" then
+        if event == "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" and NS.Debug and NS.Debug.IsDemo() then
+            Refresh()
+            return
+        end
         UpdateHealthArc()
         Refresh()
         if event ~= "UNIT_HEALTH" and not maxHealthPending then

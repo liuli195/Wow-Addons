@@ -55,3 +55,7 @@ Parent: [血量与符能刷新恢复](../spec.md)
 最终结果 regression-final.txt：43 passed in 0.72s。另 .tools/lua-5.1.5/src/luac -p addons/MYUI_CrosshairHUD/Core.lua 与 git diff --check 退出0。Linux云端 Lua 5.1.5/Python 3.12 离线行为证据；不代表游戏实测、真实帧率或 Windows 正式完整验证。主代理负责正式提交、固定基线 Build and Verify（构建与验证）和独立审查；本票尚未最终验收。
 
 门禁一确认记录：2026-10-15，用户 Sentinel_24e6cf04e5648191832a0ef66b35ecb0 回复完整门禁 Sentinel_f9a7b1d5b31c819189056657bf2f0854 确认。已在同一工作树创建 codex/fix-crosshair-hud-refresh；后续交付仍待门禁二。
+
+API 核对：已直接读取固定提交 4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59 的官方 UnitDocumentation.lua，UnitMaxHealthModifiersChanged 定义确有 LiteralName=UNIT_MAX_HEALTH_MODIFIERS_CHANGED，并有 unitTarget 负载；事件负载为受限数据，本实现不读、不比较其比例，仅经现有玩家单位注册触发重新采样。来源：https://github.com/Gethe/wow-ui-source/blob/4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59/Interface/AddOns/Blizzard_APIDocumentationGenerated/UnitDocumentation.lua#L4059-L4069
+
+2026-10-15 独立审查P3返工：新增demo中发送UNIT_MAX_HEALTH_MODIFIERS_CHANGED后真实血量查询计数保持不变的断言，先红（review-demo-red.txt，1 failed in 0.04s），再仅对此新增事件在demo下提前Refresh并返回；不更改旧健康事件即时读取语义。相同max_health_events命令转绿（review-demo-green.txt，1 passed in 0.02s）；上述7文件相关回归命令43 passed in 0.66s（review-demo-regression.txt）。luac -p及git diff --check退出0。未提交，等待独立修复差异复审。
