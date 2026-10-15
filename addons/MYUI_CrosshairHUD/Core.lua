@@ -133,7 +133,7 @@ end
 local function HealthArc()
     local curve = arcCurves.health
     if not (curve and UnitHealthPercent) then return false end
-    local ok, angle = pcall(UnitHealthPercent, "player", false, curve)
+    local ok, angle = pcall(UnitHealthPercent, "player", true, curve)
     if not ok then return false end
     return true, angle
 end
@@ -559,18 +559,31 @@ local function ShouldShow()
     return visibility.ShouldShow() and true or false
 end
 
+-- 复用现有显示条件，只为启用的弧补读；演示不新增真实采样。
+local function UpdateVisibleArcs()
+    if (NS.Debug and NS.Debug.IsDemo()) or not ShouldShow() then return end
+    local elements = Config.Get().elements
+    if elements.health.enabled ~= false then UpdateHealthArc() end
+    if elements.power.enabled ~= false then UpdatePowerArc() end
+end
+
+local wasVisible = false
 local function Refresh()
     if not Elements.frame then return end
 
     if not ShouldShow() then
+        wasVisible = false
         Elements.Apply(nil)
         return
     end
 
     if NS.Debug and NS.Debug.IsDemo() then
+        wasVisible = false
         Elements.Apply(NS.Debug.DemoState())
         return
     end
+    if not wasVisible then UpdateVisibleArcs() end
+    wasVisible = true
     Elements.Apply(BuildState())
 end
 Core.Refresh = Refresh
@@ -629,7 +642,7 @@ for _, event in ipairs({
     events:RegisterEvent(event)
 end
 for _, event in ipairs({
-    "UNIT_HEALTH", "UNIT_MAXHEALTH",
+    "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_MAX_HEALTH_MODIFIERS_CHANGED",
     "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER",
     "UNIT_AURA",
     "UNIT_SPELLCAST_SUCCEEDED",
@@ -638,6 +651,7 @@ for _, event in ipairs({
 end
 
 local talentPending = false
+local maxHealthPending = false
 
 local function OnEvent(_, event, ...)
     if event == "PLAYER_SPECIALIZATION_CHANGED" or event == "ACTIVE_TALENT_GROUP_CHANGED" then
@@ -654,9 +668,21 @@ local function OnEvent(_, event, ...)
     elseif event == "UNIT_AURA" then
         UpdateDKFeatures()
         Refresh()
-    elseif event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
+    elseif event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH"
+        or event == "UNIT_MAX_HEALTH_MODIFIERS_CHANGED" then
         UpdateHealthArc()
         Refresh()
+        if event ~= "UNIT_HEALTH" and not maxHealthPending then
+            maxHealthPending = true
+            C_Timer.After(0, function()
+                -- 先释放合并标志；隐藏或读取失败也不能阻塞后续事件。
+                maxHealthPending = false
+                if (NS.Debug and NS.Debug.IsDemo()) or not ShouldShow()
+                    or Config.Get().elements.health.enabled == false then return end
+                UpdateHealthArc()
+                Refresh()
+            end)
+        end
     elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT"
         or event == "UNIT_MAXPOWER" then
         UpdatePowerArc()
@@ -701,6 +727,7 @@ C_Timer.NewTicker(POLL_INTERVAL, function()
         Refresh()
         return
     end
+    if wasVisible then UpdateVisibleArcs() end
     UpdateRunes()
     Refresh()
 end)
@@ -757,6 +784,7 @@ Core.ApplyScaleAndStrata = ApplyScaleAndStrata
 -- 配置页里的每一项改完都走这里
 function Core.ApplyConfig()
     ApplyScaleAndStrata()
+    if wasVisible then UpdateVisibleArcs() end
     UpdateDKFeatures()
     BoilingFraction()
     Refresh()

@@ -25,10 +25,26 @@ C_SpecializationInfo = {
     GetSpecialization = function() return 1 end,
     GetSpecializationInfo = function() return playerSpec end,
 }
-function GetRuneCooldown() return 0, 0, true end
 function UnitPowerMax() return maximum end
-function UnitHealthPercent(_, _, curve) return curve:Evaluate(1) end
-function UnitPowerPercent(_, _, _, curve) return curve:Evaluate(0.7) end
+local healthFraction, powerFraction = 1, 0.7
+local healthCalls, powerCalls, runeCalls = 0, 0, 0
+function GetRuneCooldown() runeCalls=runeCalls+1;return 0, 0, true end
+local predicted, unmodified, healthThrows, powerThrows
+local healthSecret, powerSecret = false, false
+function UnitHealthPercent(unit, prediction, curve)
+    assert(unit == "player")
+    healthCalls=healthCalls+1;predicted=prediction
+    if healthThrows then error("health unavailable") end
+    if healthSecret then return secret end
+    return curve:Evaluate(healthFraction)
+end
+function UnitPowerPercent(unit, powerType, raw, curve)
+    assert(unit == "player" and powerType == 6)
+    powerCalls=powerCalls+1;unmodified=raw
+    if powerThrows then error("power unavailable") end
+    if powerSecret then return secret end
+    return curve:Evaluate(powerFraction)
+end
 function InCombatLockdown() return false end
 local messages={}
 function print(msg) messages[#messages+1]=msg end
@@ -47,7 +63,15 @@ C_Spell = { GetSpellPowerCost = function(id)
     return { { type = 0, minCost = 1, cost = 1 },
         { type = 6, minCost = fee, cost = 90, requiredAuraID = 0, hasRequiredAura = false } }
 end }
-C_Timer = { After = function(_, fn) fn() end, NewTicker = function(_, fn)
+local deferred, queuedAfter, tickerIntervals = {}, false, {}
+local function NextFrame()
+    local current=deferred;deferred={}
+    for _,fn in ipairs(current) do fn() end
+end
+C_Timer = { After = function(delay, fn)
+    if queuedAfter and delay == 0 then deferred[#deferred+1]=fn else fn() end
+end, NewTicker = function(interval, fn)
+    tickerIntervals[#tickerIntervals+1]=interval
     tickers[#tickers + 1] = fn; return {}
 end }
 C_CurveUtil = { CreateCurve = function()
@@ -85,6 +109,7 @@ local function Region()
     function t:SetTexelSnappingBias(v) self.bias=v end
     return t
 end
+local onHUDShown
 function CreateFrame(kind, _, parent, template)
     local f = { events={},scripts={},kind=kind,parent=parent,template=template }
     function f:SetStatusBarTexture(t) self.texture=t end
@@ -116,7 +141,10 @@ function CreateFrame(kind, _, parent, template)
     function f:SetPoint() end
     function f:ClearAllPoints() end
     function f:SetFrameStrata() end
-    function f:SetShown(v) self.shown=v end
+    function f:SetShown(v)
+        if onHUDShown and MYUI_CHH and self == MYUI_CHH.Elements.frame then onHUDShown(v) end
+        self.shown=v
+    end
     frames[#frames+1]=f;return f
 end
 __NATIVE_SUPPORT__
@@ -141,6 +169,7 @@ function EllesmereUI:RefreshPage()
     pageRefreshes=pageRefreshes+1
     for _, fn in ipairs(gearRefresh) do fn() end
 end
+__REFRESH_SUPPORT__
 for _, name in ipairs({"Logic","Elements","Config","Debug","Core"}) do
     assert(loadfile(dir.."/"..name..".lua"))()
 end
@@ -186,10 +215,11 @@ io.write("PASS: blood DK features\n")
 '''
 
 
-def run_scenario(scenario, native=False):
+def run_scenario(scenario, native=False, refresh=False):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / 'features.lua'
         source = HARNESS.replace('__SCENARIO__', scenario).replace('__NATIVE_SUPPORT__', NATIVE_SUPPORT if native else '')
+        source = source.replace('__REFRESH_SUPPORT__', REFRESH_SUPPORT if refresh else '')
         if native:
             source = source.replace('{"Logic","Elements","Config","Debug","Core"}', '{"Logic","NativeBlood","Elements","Config","Debug","Core"}')
         path.write_text(source, encoding='utf-8')
@@ -1060,3 +1090,124 @@ assert(attempts==2 and NS.NativeBlood.ready and NS.NativeBlood.host.shown,
 assert(nativeContainer.button.maximum==200)
 NativeUpdate(10);Tick();assert(nativeContainer.button.boundBar.value==10)
 ''',native=True)
+
+
+REFRESH_SUPPORT = r'''
+queuedAfter=true
+local optionsHidden=false
+EllesmereUI.CheckVisibilityOptions=function() return optionsHidden end
+local visibilityChanged
+EllesmereUI.RegisterVisibilityUpdater=function(fn) visibilityChanged=fn end
+assert(loadfile(dir.."/Visibility.lua"))()
+local function SetHidden(value) optionsHidden=value;visibilityChanged() end
+'''
+
+
+def test_resource_events_draw_predicted_health_and_unmodified_power_immediately():
+    run_scenario(r'''
+local health=assert(Layer("health_arc.blp",1,-32)).mask
+local power=assert(Layer("health_arc.blp",1,32)).mask
+assert(predicted == true, "health must explicitly use predicted snapshot")
+assert(unmodified == false, "runic power unmodified must stay false")
+healthFraction=0.5;Event("UNIT_HEALTH")
+Near(health.rotation, math.rad(-239))
+powerFraction=0.5;Event("UNIT_POWER_FREQUENT")
+Near(power.rotation, math.rad(-661))
+healthFraction=0;Event("PLAYER_DEAD");Event("UNIT_HEALTH")
+Near(health.rotation, math.rad(-187))
+healthFraction=0.25;Event("PLAYER_ALIVE");Event("UNIT_HEALTH")
+Near(health.rotation, math.rad(-213))
+    ''', refresh=True)
+
+
+def test_resource_ticker_recovers_failures_visibility_and_disabled_arcs():
+    run_scenario(r'''
+local health=assert(Layer("health_arc.blp",1,-32)).mask
+local power=assert(Layer("health_arc.blp",1,32)).mask
+local h,p,r=healthCalls,powerCalls,runeCalls
+assert(#tickers == 1);Near(tickerIntervals[1],0.1)
+healthFraction=0.5;powerFraction=0.5
+for i=1,10 do Tick() end
+Near(health.rotation,math.rad(-239));Near(power.rotation,math.rad(-661))
+assert(healthCalls-h==10 and powerCalls-p==10,"each enabled arc samples ten times per second")
+assert(runeCalls-r==60,"runes keep their existing sampling cadence")
+healthThrows=true;powerThrows=true;Tick()
+Near(health.rotation,math.rad(-239));Near(power.rotation,math.rad(-661))
+healthThrows=false;powerThrows=false;healthFraction=0.25;powerFraction=0.25;Tick()
+Near(health.rotation,math.rad(-213));Near(power.rotation,math.rad(-687))
+healthSecret=true;powerSecret=true;Tick()
+assert(rawequal(health.rotation,secret) and rawequal(power.rotation,secret))
+healthSecret=false;powerSecret=false
+SetHidden(true);h,p=healthCalls,powerCalls
+for i=1,10 do Tick() end
+assert(healthCalls==h and powerCalls==p,"hidden HUD must not poll arcs")
+healthFraction=0.5;powerFraction=0.5
+onHUDShown=function(visible)
+    if visible then assert(healthCalls>h and powerCalls>p,"fresh reads precede first shown state") end
+end
+SetHidden(false);onHUDShown=nil
+Near(health.rotation,math.rad(-239));Near(power.rotation,math.rad(-661))
+rows["生命值条"]["启用"].setValue(false);h,p=healthCalls,powerCalls
+for i=1,10 do Tick() end
+assert(healthCalls==h and powerCalls-p==10,"only the enabled arc polls")
+healthFraction=0.25;rows["生命值条"]["启用"].setValue(true)
+Near(health.rotation,math.rad(-213))
+rows["能量条"]["启用"].setValue(false);h,p=healthCalls,powerCalls
+for i=1,10 do Tick() end
+assert(healthCalls-h==10 and powerCalls==p,"health alone samples ten times per second")
+rows["生命值条"]["启用"].setValue(false);h,p=healthCalls,powerCalls
+for i=1,10 do Tick() end
+assert(healthCalls==h and powerCalls==p,"both disabled arcs have zero periodic reads")
+rows["生命值条"]["启用"].setValue(true);rows["能量条"]["启用"].setValue(true)
+rows["常规"]["启用准星HUD"].setValue(false);h,p=healthCalls,powerCalls
+for i=1,10 do Tick() end
+assert(healthCalls==h and powerCalls==p,"master off must not poll arcs")
+healthFraction=0;powerFraction=0.25
+rows["常规"]["启用准星HUD"].setValue(true)
+Near(health.rotation,math.rad(-187));Near(power.rotation,math.rad(-687))
+-- The ticker must use today's ShouldShow result even before a visibility callback.
+optionsHidden=true;h,p=healthCalls,powerCalls;Tick()
+assert(healthCalls==h and powerCalls==p)
+optionsHidden=false;healthFraction=0.5;Tick();Near(health.rotation,math.rad(-239))
+NS.Core.demo=true;h,p=healthCalls,powerCalls
+for i=1,10 do Tick() end
+assert(healthCalls==h and powerCalls==p,"demo must not add real arc sampling")
+NS.Core.demo=false;Tick()
+healthFraction=0;Event("PLAYER_DEAD");Tick();Near(health.rotation,math.rad(-187))
+healthFraction=0.5;Event("PLAYER_ALIVE");Tick();Near(health.rotation,math.rad(-239))
+assert(#tickers==1,"recovery must reuse the existing ticker")
+    ''', refresh=True)
+
+
+def test_max_health_events_converge_next_frame_and_release_pending_after_skip_or_failure():
+    run_scenario(r'''
+local health=assert(Layer("health_arc.blp",1,-32)).mask
+local h=healthCalls
+healthFraction=0.5;Event("UNIT_MAXHEALTH")
+Near(health.rotation,math.rad(-239))
+healthFraction=0.25;Event("UNIT_MAX_HEALTH_MODIFIERS_CHANGED")
+Near(health.rotation,math.rad(-213))
+assert(healthCalls-h==2,"both max health events must read immediately")
+assert(#deferred==1,"max health events share one next-frame read")
+healthFraction=0.75;NextFrame()
+Near(health.rotation,math.rad(-265))
+assert(healthCalls-h==3 and #deferred==0)
+-- Closing while queued skips the read, but must not strand the next event.
+Event("UNIT_MAXHEALTH");rows["常规"]["启用准星HUD"].setValue(false)
+h=healthCalls;NextFrame();assert(healthCalls==h)
+rows["常规"]["启用准星HUD"].setValue(true)
+Event("UNIT_MAX_HEALTH_MODIFIERS_CHANGED");assert(#deferred==1)
+SetHidden(true);h=healthCalls;NextFrame();assert(healthCalls==h)
+SetHidden(false)
+Event("UNIT_MAXHEALTH");rows["生命值条"]["启用"].setValue(false)
+h=healthCalls;NextFrame();assert(healthCalls==h)
+rows["生命值条"]["启用"].setValue(true)
+healthFraction=0.5;Event("UNIT_MAXHEALTH");healthThrows=true;NextFrame()
+Near(health.rotation,math.rad(-239))
+healthThrows=false;healthFraction=0.25;Event("UNIT_MAX_HEALTH_MODIFIERS_CHANGED")
+assert(#deferred==1,"failed read must release pending for retry")
+healthFraction=0.75;NextFrame();Near(health.rotation,math.rad(-265))
+-- Demo also suppresses the additional next-frame sampling.
+Event("UNIT_MAXHEALTH");NS.Core.demo=true;h=healthCalls;NextFrame();assert(healthCalls==h)
+NS.Core.demo=false;Event("UNIT_MAXHEALTH");assert(#deferred==1);NextFrame()
+    ''', refresh=True)
