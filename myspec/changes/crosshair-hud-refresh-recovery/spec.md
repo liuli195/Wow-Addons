@@ -1,6 +1,6 @@
 # 准星 HUD 血量与符能刷新恢复
 
-Status: ready-for-agent
+Status: implemented
 Gate: 门禁一已确认，实施完成，等待正式验证与独立审查
 Flow Level: Full
 
@@ -61,3 +61,5 @@ Flow Level: Full
 - 2026-10-15：用户消息 Sentinel_24e6cf04e5648191832a0ef66b35ecb0 确认完整门禁一；三组红绿已实施，详见本票 Comments。正式规格仍未修改，固定基线验证、独立审查与后续门禁仍由主代理负责。
 
 门禁一确认记录：2026-10-15，用户 Sentinel_24e6cf04e5648191832a0ef66b35ecb0 回复完整门禁 Sentinel_f9a7b1d5b31c819189056657bf2f0854 确认。已在同一工作树创建 codex/fix-crosshair-hud-refresh；后续交付仍待门禁二。
+
+2026-10-15 最终状态：本机固定基线必要验证7项passed（11.01秒），独立双轴审查通过；用户Sentinel_c49d2a1f83b88191a3d43720890eb454确认门禁二。正式规格已按批准预览应用并校验，PR交付尚待执行结果。
