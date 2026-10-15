@@ -16,7 +16,7 @@
 - **THEN** 屏幕中心出现准星、两条弧与六个资源格，位置居中
 ### Requirement: Health and power arcs fill proportionally from their lower ends
 
-生命值弧 MUST 按当前生命值比例填充，能量弧 MUST 按当前能量比例填充。两条弧 MUST 都从靠近下方的那一端起始，并 MUST 左右镜像地向上增长（一侧顺时针、另一侧逆时针）。填充 MUST NOT 越出弧的两端。
+生命值弧 MUST 按客户端默认开启预测的生命值比例填充，不提供额外的预测开关；能量弧 MUST 按当前能量比例填充。两条弧 MUST 都从靠近下方的那一端起始，并 MUST 左右镜像地向上增长（一侧顺时针、另一侧逆时针）。填充 MUST NOT 越出弧的两端。
 
 #### Scenario: Health is full
 
@@ -656,3 +656,38 @@ HUD MUST NOT 启用鼠标交互：落在它覆盖区域内的点击 MUST 穿透�
 
 - **WHEN** 玩家修改提示色并保存、重载，或关闭开关、切换专精
 - **THEN** 配置颜色按既有持久化规则保留且控件跟随禁用规则，运行高亮与预测状态清空，不恢复历史提示
+### Requirement: Health and power arcs promptly refresh and recover stale readings
+
+生命值弧和符能弧 MUST 在对应玩家资源事件到达时立即更新，不等待周期刷新。可见且启用的弧 MUST 以既有0.1秒周期补读；若此前读取失败或快照变化后没有新资源事件，接口恢复可用后的下一次允许采样 MUST 恢复显示。读取失败仍保留最近成功状态，受限数值仍只转交游戏绘制。隐藏或关闭的弧 MUST NOT 增加这类周期采样；重新显示或重新启用后的首个显示状态 MUST 使用重新取得的读数。演示模式 MUST NOT 因新增补读或新增最大生命值修正事件查询真实资源。
+
+最大生命值及其修正变化 MUST 立即更新生命值弧，并将同轮变化合并为一次下一帧补读，以显示随后到达的最终比例；回调前隐藏、关闭或接口失败 MUST NOT 阻止之后恢复和再次补读。其他资源指示器的刷新频率 MUST 保持不变。0.1秒是采样周期，不是受击到屏幕的端到端延迟保证。
+
+#### Scenario: Resource event arrives
+
+- **WHEN** 玩家血量或符能事件到达且读数有效
+- **THEN** 对应弧在该事件处理期间更新，不推迟到周期采样
+
+#### Scenario: Reading recovers without a new resource event
+
+- **WHEN** 可见且启用的弧此前读取失败或仍持旧快照，接口随后提供新读数而没有新资源事件
+- **THEN** 下一次允许的周期采样更新该弧，失败期间保留最近成功状态
+
+#### Scenario: Hidden or disabled arc returns
+
+- **WHEN** 弧隐藏或关闭后重新显示或启用
+- **THEN** 隐藏或关闭期间不增加周期采样，恢复的首个显示状态使用重新取得的读数
+
+#### Scenario: Maximum health settles after the event
+
+- **WHEN** 同轮最大生命值或修正事件到达后，当前生命值快照在下一帧才收敛
+- **THEN** 先即时更新，再合并一次下一帧补读最终比例，不累积重复补读
+
+#### Scenario: Deferred refresh is interrupted
+
+- **WHEN** 下一帧补读前弧被隐藏或关闭，或本次补读接口失败
+- **THEN** 不强制显示或猜测数值，后续显示、有效采样与新事件仍可恢复
+
+#### Scenario: Demo remains isolated
+
+- **WHEN** 演示状态下执行新增周期补读、延后补读或收到新增最大生命值修正事件
+- **THEN** 继续显示演示数据，不因这些新增路径采样真实资源

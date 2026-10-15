@@ -87,7 +87,7 @@ local forcedAngle = nil           -- 非 nil 时引擎直接返回它（可以�
 
 function UnitHealthPercent(unit, usePredicted, curve)
     assert(unit == "player", "只查 player")
-    assert(usePredicted == false, "电弧要的是**实际**血量，不是预测治疗后的")
+    assert(usePredicted == true, "血弧显式开启客户端预测口径")
     assert(type(curve) == "table" and curve.Evaluate, "第三条必须是曲线")
     if engineThrows then error("engine unavailable") end
     if forcedAngle ~= nil then return forcedAngle end
