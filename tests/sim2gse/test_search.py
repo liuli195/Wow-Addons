@@ -19,7 +19,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
-from test_engine import apl_pool_reference
+from test_engine import apl_pool_reference, static_snapshot
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
 from search import initial_programs, mutate, TaskStore
 
@@ -43,7 +43,7 @@ def _fast_reference(profile, folder, character, *, runtime=None, iterations=100,
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "native.json").write_text(json.dumps(_fast_report(character, 100.0, max(1, iterations-1))),
                                          encoding="utf-8")
-    return dict(dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
+    return dict(static_snapshot=static_snapshot(), dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
                 identity=dict(class_id=6, spec_id=252, spec=character.spec, race=character.race,
                               role=character.fields.get("role", "attack"), resource="runic_power"),
                 action_sequence=[{"name": "use_item,slot=trinket1", "queue_failed": False}],
@@ -198,11 +198,14 @@ def _apl_task_boundary(native=None):
         iterations = int(next(value.split('=', 1)[1] for value in reversed(command)
                               if value.startswith('iterations=')))
         report = _fast_report(character, 100.0, max(1, iterations - 1))
+        targets = int(next(value.split('=', 1)[1] for value in command if value.startswith('desired_targets=')))
+        report['sim']['targets'] = [dict(name=f'Damage_Dummy_{i}', level=90) for i in range(targets)]
         player = report['sim']['players'][0]
         player.update(sim2gse_actions_protocol=1, sim2gse_actions=native['executed_actions'],
                       sim2gse_apl_actions_protocol=native.get('apl_actions_protocol'),
                       sim2gse_apl_actions=native.get('apl_actions'),
-                      sim2gse_items=[], sim2gse_precombat_actions=[])
+                      sim2gse_items=[], sim2gse_precombat_actions=[],
+                      sim2gse_static_snapshot=native.get('static_snapshot'))
         player['collected_data'].update(action_sequence=native['action_sequence'],
                                          action_sequence_precombat=[])
         report_name = next(value.split('=', 1)[1] for value in command if value.startswith('json2='))
@@ -345,8 +348,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(result['status'], 'completed')
         self.assertEqual([row['simc_action'] for row in result['capabilities']['actions']],
                          ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
-        self.assertEqual(initial_programs(result['capabilities'], native), [
-            [['outbreak'], ['death_coil'], ['scourge_strike']],
+        self.assertEqual(initial_programs(result['capabilities'], native)[1:], [
             [['outbreak'], ['outbreak'], ['death_coil']],
             [['outbreak'], ['death_coil'], ['outbreak'], ['death_coil']],
             [['scourge_strike'], ['death_coil'], ['outbreak']],
@@ -1729,18 +1731,17 @@ class SearchAndValidationTests(TestCase):
             ],
             import_actions=[dict(kind="spell", spell_id=316239, simc_action="import_only")],
         )
-        reference = dict(action_sequence=[
+        reference = dict(identity={"spec_id": 252}, static_snapshot=static_snapshot(), action_sequence=[
             dict(name="outbreak"), dict(name="death_coil"), dict(name="outbreak"),
             dict(name="scourge_strike", queue_failed=True), dict(name="unknown_action"),
         ])
         expected = [
-            [["outbreak"], ["death_coil"], ["scourge_strike"]],
             [["outbreak"], ["outbreak"], ["death_coil"]],
             [["outbreak"], ["death_coil"], ["outbreak"], ["death_coil"]],
             [["scourge_strike"], ["death_coil"], ["outbreak"]],
         ]
 
-        self.assertEqual(initial_programs(capabilities, reference, seed=20260912), expected)
+        self.assertEqual(initial_programs(capabilities, reference, seed=20260912)[1:], expected)
         from search import input_times
         first = input_times("jitter", seed=20260912)
         self.assertEqual(first, input_times("jitter", seed=20260912))
@@ -1864,7 +1865,8 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(search_seeds & validation_seeds or search_seeds & final_seeds or validation_seeds & final_seeds)
 
     def test_reference_start_keeps_executed_active_items(self):
-        starts = initial_programs(_fast_capabilities(), dict(action_sequence=[
+        starts = initial_programs(_fast_capabilities(), dict(identity={"spec_id": 252},
+            static_snapshot=static_snapshot(), action_sequence=[
             dict(name="use_item,slot=trinket1", queue_failed=False),
         ]))
         self.assertEqual(starts[1], [["use_item,slot=trinket1"]])
@@ -2015,8 +2017,11 @@ class SearchAndValidationTests(TestCase):
                 result_store.write('batches', group, [saved if item['batch_key'] == row['data_key']
                                                      else item for item in records])
                 resumed=run_task(source,Path(directory)/'second',search_config=config)
-                self.assertGreater(resumed['search']['records'][0]['batches'][0]['dps'],1)
-                self.assertFalse(resumed['search']['records'][0]['batches'][0].get('cached',False))
+                # A frozen champion may lead the new run; verify the corrupted identity, not index zero.
+                recomputed = next(batch for item in resumed['search']['records'] for batch in item['batches']
+                                  if batch['data_key'] == row['data_key'])
+                self.assertGreater(recomputed['dps'], 1)
+                self.assertFalse(recomputed.get('cached', False))
                 with self.assertRaises(TaskError):
                     resume_task(destination,search_config=dict(config,max_processes=2))
                 self.assertFalse(resumed['independent_validation_complete'])

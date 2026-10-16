@@ -2,6 +2,8 @@
 #include "sim2gse/catalogue.hpp"
 #include "simulationcraft.hpp"
 #include <set>
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace sim2gse
 {
@@ -68,8 +70,71 @@ unsigned base_spell_id( const player_t& p, unsigned id )
   return 0;
 }
 
+// Called once after native precombat initialization, before pre-pull callbacks/actions.
+// This records existing arithmetic only: no ready(), execute(), event, or RNG calls.
+void capture_static_snapshot( player_t& p, const std::vector<std::string>& names,
+                              const std::map<std::string, double>& parameters,
+                              const std::map<std::string, bool>& talents )
+{
+  if ( !p.sim2gse_static_snapshot_json.empty() || p.is_pet() ) return;
+  rapidjson::Document document;
+  document.SetObject();
+  js::JsonOutput root( document, document );
+  root[ "protocol" ] = 1;
+  root[ "stage" ] = "precombat_initialized_before_actions";
+  root[ "collected_at_ms" ] = p.sim->current_time().total_millis();
+  root[ "source" ] = "native initialized actor; action_t virtual arithmetic";
+  auto resources = root[ "resources" ];
+  for ( resource_e resource = RESOURCE_NONE; resource < RESOURCE_MAX; resource++ )
+  {
+    if ( p.resources.max[ resource ] <= 0 ) continue;
+    auto row = resources[ util::resource_type_string( resource ) ];
+    row[ "current" ] = p.resources.current[ resource ];
+    row[ "maximum" ] = p.resources.max[ resource ];
+  }
+  auto values = root[ "parameters" ];
+  for ( const auto& entry : parameters ) values[ entry.first ] = entry.second;
+  for ( const auto& entry : talents ) values[ entry.first ] = entry.second;
+  auto actions = root[ "actions" ];
+  actions.make_array();
+  for ( const auto* action : p.action_list )
+  {
+    if ( action->is_precombat || action->background || !action->initialized ||
+         range::find( names, action->name_str ) == names.end() ) continue;
+    auto row = actions.add();
+    row[ "name" ] = action->name_str;
+    row[ "signature" ] = action->signature_str;
+    row[ "action_list" ] = action->action_list ? action->action_list->name_str : "";
+    row[ "spell_id" ] = action->data().id();
+    row[ "gcd_ms" ] = action->gcd().total_millis();
+    row[ "cooldown_ms" ] = action->cooldown_duration().total_millis();
+    row[ "cast_ms" ] = action->execute_time().total_millis();
+    row[ "channeled" ] = action->channeled;
+    row[ "charges" ] = action->cooldown->current_charge;
+    row[ "max_charges" ] = action->cooldown->charges;
+    auto costs = row[ "costs" ];
+    if ( action->current_resource() != RESOURCE_NONE )
+      costs[ util::resource_type_string( action->current_resource() ) ] = action->cost();
+    auto gains = row[ "gains" ];
+    if ( action->energize_type_() == action_energize::ON_CAST &&
+         action->energize_resource_() != RESOURCE_NONE )
+      gains[ util::resource_type_string( action->energize_resource_() ) ] =
+        action->composite_energize_amount( nullptr );
+  }
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer( buffer );
+  document.Accept( writer );
+  p.sim2gse_static_snapshot_json.assign( buffer.GetString(), buffer.GetSize() );
+}
+
 void write_player_report( js::JsonOutput root, const player_t& p, bool include_apl )
 {
+  if ( !p.sim2gse_static_snapshot_json.empty() )
+  {
+    rapidjson::Document snapshot;
+    snapshot.Parse( p.sim2gse_static_snapshot_json.c_str() );
+    root[ "sim2gse_static_snapshot" ].val().CopyFrom( snapshot, root.doc().GetAllocator() );
+  }
   root[ "sim2gse_class" ] = util::player_type_string( p.type );
   root[ "sim2gse_class_id" ] = util::class_id( p.type );
   root[ "sim2gse_spec_id" ] = static_cast<unsigned>( p.specialization() );

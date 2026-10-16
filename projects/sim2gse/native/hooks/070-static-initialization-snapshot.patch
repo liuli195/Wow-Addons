@@ -1,0 +1,54 @@
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -168,6 +168,7 @@
+   player_t*   target;
+   bool        initialized;
+   bool        precombat_initialized;
++  std::string sim2gse_static_snapshot_json;
+   bool        potion_used;
+   double      leech_pool;  // for leech batching
+ 
+--- a/engine/class_modules/sc_death_knight.cpp
++++ b/engine/class_modules/sc_death_knight.cpp
+@@ -27,6 +27,7 @@
+ #include "report/highchart.hpp"
+ 
+ #include "simulationcraft.hpp"
++#include "sim2gse/catalogue.hpp"
+ 
+ namespace
+ {  // UNNAMED NAMESPACE
+@@ -2014,6 +2015,7 @@
+   bool validate_actor() override;
+   double composite_attribute( attribute_e ) const override;
+   double composite_bonus_armor() const override;
++  void precombat_init() override;
+   void combat_begin() override;
+   void activate() override;
+   void moving() override;
+@@ -16778,6 +16780,25 @@
+   return a;
+ }
+ 
++// Specialization parameters stay in the native specialization binding.
++void death_knight_t::precombat_init()
++{
++  player_t::precombat_init();
++  if ( specialization() != DEATH_KNIGHT_UNHOLY || !sim2gse_static_snapshot_json.empty() ) return;
++  std::map<std::string, double> parameters = {
++    { "rune_recharge_ms", 1000.0 / runes_per_second() },
++    { "rune_recharge_slots", static_cast<double>( MAX_REGENERATING_RUNES ) }
++  };
++  if ( background_actions.dread_plague )
++    parameters[ "dread_plague_duration_ms" ] =
++      background_actions.dread_plague->composite_dot_duration( nullptr ).total_millis();
++  sim2gse::capture_static_snapshot( *this,
++    { "outbreak", "putrefy", "death_and_decay", "death_coil", "epidemic",
++      "festering_strike", "scourge_strike" }, parameters,
++    { { "cycle_of_death", talent.unholy.cycle_of_death.ok() },
++      { "festering_scythe", talent.unholy.festering_scythe.ok() } } );
++}
++
+ // death_knight_t::combat_begin =============================================
+ 
+ void death_knight_t::combat_begin()

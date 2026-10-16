@@ -300,6 +300,8 @@ def read(destination, *, active=None):
             scene['progress'] = min(1., scene['elapsed_seconds'] / scene['total_budget_seconds'])
             if child.get('search_result'):
                 scene['search_result'] = child['search_result']
+            if child.get('rule_initialization'):
+                scene['rule_initialization'] = child['rule_initialization']
             search = child.get('search') or child
             for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
                          'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',

@@ -363,6 +363,8 @@ def _public_state(state: dict, destination: Path) -> dict:
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
+    if state.get('rule_initialization'):
+        response['rule_initialization'] = state['rule_initialization']
     search = state.get("search") or state
     metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
                     "canonicalized_duplicates")

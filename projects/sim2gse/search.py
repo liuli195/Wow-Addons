@@ -141,8 +141,14 @@ def _unique_names(names, available):
     return list(dict.fromkeys(name for name in names if name in available))
 
 
-def initial_programs(capabilities, reference, seed=20260912):
+def initial_programs(capabilities, reference, seed=20260912, *, input_interval_ms=300,
+                     target_count=1, burst=None, initialization=None):
     """从四个来源产生稳定合法的起点，而不读派生或宠物动作。"""
+    from rule_initialization import generate
+    rule_start = generate(capabilities, reference, input_interval_ms=input_interval_ms,
+                          target_count=target_count, burst=burst)
+    if initialization is not None:
+        initialization.update(rule_start)
     baseline_actions = capabilities.get('baseline_actions', capabilities['actions'])
     actions = [a["simc_action"] for a in baseline_actions]
     available = set(actions)
@@ -157,7 +163,7 @@ def initial_programs(capabilities, reference, seed=20260912):
         if names:
             starts.append([[name] for name in names])
 
-    add(actions)  # 基准目录的均匀合法排列。
+    starts.append(rule_start['program'])  # 只替换均匀来源；其余三项保持。
     frequency = []
     for row in reference.get("action_sequence", []):
         if row.get("queue_failed"):
@@ -1515,7 +1521,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('batch_estimate', 0.25)
     starts = state.get('starts')
     if starts is None:
-        starts = initial_programs(capabilities, reference, config['random_seed'])
+        starts = initial_programs(capabilities, reference, config['random_seed'],
+            input_interval_ms=config['input_interval_ms'],
+            target_count=simulation_config['target_count'], burst=state.get('burst'),
+            initialization=state.setdefault('rule_initialization', {}))
     observable_flags = tuple(name for name in ('target', 'combat', 'shift', 'ctrl', 'alt')
                              if any(kind == name for _, kind in config['reset_events']))
     state.setdefault('starts', starts)
@@ -1851,6 +1860,15 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
 
     def search():
         runtime.phase_limit = min(config['search_budget_seconds'], config['total_budget_seconds'])
+        initialization = state.get('rule_initialization')
+        if initialization:
+            # Export the rule start even when a frozen champion is searched first.
+            # The ordinary candidate cache reuses this compilation; no extra simulation.
+            compiled = candidate(initialization['program'])
+            initialization.update(export_text=compiled['text'],
+                                  compilation=compiled['upstream_compilation'],
+                                  click_mapping=compiled['compiled_program']['clicks'])
+            store.save()
         if not state['archive'] and not state['pending']:
             with store.lock:
                 state['pending'] = []

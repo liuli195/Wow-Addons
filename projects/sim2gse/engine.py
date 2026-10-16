@@ -403,6 +403,7 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     player = player_report(report, character)
     result['action_sequence'] = player['collected_data'].get('action_sequence', [])
     result['precombat_sequence'] = player['collected_data'].get('action_sequence_precombat', [])
+    result['static_snapshot'] = player.get('sim2gse_static_snapshot')
     result['actions_protocol'] = player.get('sim2gse_actions_protocol')
     result['executed_actions'] = player.get('sim2gse_actions', [])
     result['apl_actions_protocol'] = player.get('sim2gse_apl_actions_protocol')

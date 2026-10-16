@@ -440,6 +440,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     record = dict(
         run_id=run_id, status=result.get('status', 'failed'), phase=result.get('phase', 'done'),
         burst=burst_record or None,
+        rule_initialization=result.get('rule_initialization') or (state or {}).get('rule_initialization'),
         profile=profile, identity=profile.get('identity', {}),
         input_original=original, input_effective=effective,
         config=result.get('config') or (state or {}).get('config', {}),
@@ -1392,7 +1393,10 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         snapshot = _historical_formal_champion(state, checked_character, native, capabilities, snapshot)
                     state['formal_champion_snapshot'] = snapshot
                     store.save()
-                starts = initial_programs(capabilities, native, config['random_seed'])
+                starts = initial_programs(capabilities, native, config['random_seed'],
+                    input_interval_ms=config['input_interval_ms'],
+                    target_count=simulation_config['target_count'], burst=state.get('burst'),
+                    initialization=state.setdefault('rule_initialization', {}))
                 state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
                     targets=simulation_config['target_count'], engines=identities,
@@ -1468,7 +1472,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             result.update(config=config, simulation_config=simulation_config,
                               character=character, output_root=destination,capabilities=state['capabilities'],
                               profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
-                              reference_data_key=state.get('reference_data_key'))
+                              reference_data_key=state.get('reference_data_key'),
+                              rule_initialization=state.get('rule_initialization'))
             if state.get('burst'):
                 result['burst'] = dict(state['burst'], candidate=dict(
                     state['burst']['candidate'], simulation='passed_native_model'))
@@ -1962,6 +1967,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         locked_candidate_key=saved['locked_candidate_key'], improvement=saved['improvement'],
         independent_validation_complete=saved['independent_validation_complete'],
         native_reference=decode(saved['reference_summary']), search=search,
+        rule_initialization=decode(saved.get('rule_initialization')),
         final=dict(dataset='final', status=saved['final_status'],
                    scenarios=decode(saved['final_scenarios']) or {}),
         error=saved['error'], output_root=destination)

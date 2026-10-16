@@ -2177,6 +2177,31 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["phase"], "done")
         self.assertGreater(state["elapsed_seconds"], 0)
 
+    def test_rule_start_and_sources_are_visible_through_page_and_task_api(self):
+        from test_search import _apl_task_boundary
+        self.server.task_options = {'search_config': dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2,
+            validation_batches=1, input_interval_ms=200)}
+        with _apl_task_boundary():
+            page = urlopen(self.url).read().decode('utf-8')
+            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile(),
+                                       'input_interval_ms': 200, 'target_count': 1})
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created['task_id'], deadline)
+                if state['status'] in ('completed', 'failed', 'cancelled'):
+                    break
+                time.sleep(.01)
+        self.assertEqual(state['status'], 'completed', state)
+        initialization = state['rule_initialization']
+        self.assertTrue(initialization['export_text'].startswith('!GSE3!'))
+        self.assertEqual(initialization['compilation'], 'passed_with_client_boundary_stubs')
+        self.assertTrue(initialization['click_mapping'])
+        self.assertTrue(initialization['parameter_sources'])
+        self.assertIn('ruleInitialization', page)
+        self.assertIn('state.rule_initialization', page)
+
+
     def test_finished_task_error_is_not_hidden_by_a_completed_result(self):
         import task
         from contextlib import contextmanager

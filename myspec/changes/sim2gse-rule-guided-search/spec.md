@@ -153,7 +153,7 @@ LinUCB成本随编码维数增长，默认交互项d=1+q+p×q；预测约O(C×d�
 
 ## 9. 验证及最终对比
 
-环境准备入口：[环境说明](../../../docs/environment-setup.md)、[本机任务与数据中心连接](../../../docs/sim2gse/local-task.md)、[构建验证配置](../../../.build-and-verify/config.json)、[固定兼容版本](../../../projects/sim2gse/compatibility/lock.json)。`.tools/`、`.local/` 属于忽略的缓存/运行目录，clone 只保证取得受版本管理的代码和版本锁，不保证完整 SimC 源码/构建产品、GSE 缓存、实际 data-store 安装连接、私有角色输入或历史报告就绪；按上述现有入口准备并核验。外部 data-store 安装副本存在不等于当前项目已连接。Coba 依赖安装和版本锁属于第03票尚待实施内容。
+环境准备首先使用[统一云端初始化入口](../../../docs/cloud-environment.md)：技能仓库 `scripts/cloud_bootstrap.py` 读取 `scripts/cloud-environment.json` 的项目配置，Linux 使用 `scripts/project_environment.py` 准备依赖，Windows 调用项目 `scripts/dev/setup.ps1`。它不等于原生引擎已构建或正式入口验收通过。其他环境说明：[环境说明](../../../docs/environment-setup.md)、[本机任务与数据中心连接](../../../docs/sim2gse/local-task.md)、[构建验证配置](../../../.build-and-verify/config.json)、[固定兼容版本](../../../projects/sim2gse/compatibility/lock.json)。`.tools/`、`.local/` 属于忽略的缓存/运行目录，clone 只保证取得受版本管理的代码和版本锁，不保证完整 SimC 源码/构建产品、GSE 缓存、实际 data-store 安装连接、私有角色输入或历史报告就绪；按上述现有入口准备并核验。外部 data-store 安装副本存在不等于当前项目已连接。Coba 依赖安装和版本锁属于第03票尚待实施内容。
 
 复用最高现有入口网页→任务API→task.run_task及相关任务恢复，内部复用sequence.evaluate与共享编译接缝。构造样例验证分支与失败路径，真实角色产物验证实际数据和导出，两者区分。测试加入现有自动发现，不建第二测试框架。
 

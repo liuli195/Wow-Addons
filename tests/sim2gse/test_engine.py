@@ -11,6 +11,25 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 from engine import _profile_with_import_queries, identity, inspect, reference  # noqa: E402
 
 
+def static_snapshot():
+    """构造的初始化协议，绝非真实角色数据。"""
+    return {
+        'protocol': 1, 'stage': 'precombat_initialized_before_actions',
+        'resources': {'runic_power': {'current': 0, 'maximum': 100},
+                      'rune': {'current': 6, 'maximum': 6}},
+        'parameters': {'rune_recharge_ms': 3000, 'rune_recharge_slots': 3,
+                       'dread_plague_duration_ms': 24000, 'cycle_of_death': False,
+                       'festering_scythe': False},
+        'actions': [dict(name=name, gcd_ms=1000, cooldown_ms=0, cast_ms=0,
+                         channeled=False, costs=costs, gains=gains)
+                    for name, costs, gains in [
+                        ('outbreak', {'rune': 1}, {'runic_power': 10}),
+                        ('scourge_strike', {'rune': 1}, {'runic_power': 10}),
+                        ('death_coil', {'runic_power': 30}, {}),
+                        ('epidemic', {'runic_power': 30}, {})]],
+    }
+
+
 def apl_pool_reference():
     """固定协议样例：单目标未执行群体动作，仍是当前角色合法按钮。"""
     def spell(name, spell_id, **flags):
@@ -24,6 +43,7 @@ def apl_pool_reference():
                 spell('scourge_strike', 55090)]
     pool = [*baseline, spell('death_and_decay', 43265), spell('epidemic', 207317)]
     return dict(actions_protocol=1, apl_actions_protocol=1, active_items=[],
+                identity={'spec_id': 252}, static_snapshot=static_snapshot(),
                 executed_actions=baseline, apl_actions=pool,
                 action_sequence=[dict(name='outbreak'), dict(name='death_coil'),
                                  dict(name='outbreak'), dict(name='scourge_strike', queue_failed=True)],
