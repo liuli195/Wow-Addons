@@ -153,11 +153,13 @@ LinUCB成本随编码维数增长，默认交互项d=1+q+p×q；预测约O(C×d�
 
 ## 9. 验证及最终对比
 
+环境准备入口：[环境说明](../../../docs/environment-setup.md)、[本机任务与数据中心连接](../../../docs/sim2gse/local-task.md)、[构建验证配置](../../../.build-and-verify/config.json)、[固定兼容版本](../../../projects/sim2gse/compatibility/lock.json)。`.tools/`、`.local/` 属于忽略的缓存/运行目录，clone 只保证取得受版本管理的代码和版本锁，不保证完整 SimC 源码/构建产品、GSE 缓存、实际 data-store 安装连接、私有角色输入或历史报告就绪；按上述现有入口准备并核验。外部 data-store 安装副本存在不等于当前项目已连接。Coba 依赖安装和版本锁属于第03票尚待实施内容。
+
 复用最高现有入口网页→任务API→task.run_task及相关任务恢复，内部复用sequence.evaluate与共享编译接缝。构造样例验证分支与失败路径，真实角色产物验证实际数据和导出，两者区分。测试加入现有自动发现，不建第二测试框架。
 
 云端完成开发。正式引擎构建、固定Windows/Lua及真实数据中心安装副本相关验证依仓库现有环境要求执行；缺环境明确报告，不用mock或Linux定向结果冒称正式通过。本机具体动作和路径须列入授权，未经允许不在仓库外创建文件。
 
-现有命令与预算依据：build-and-verify build --project .；build-and-verify verify --project . --full --performance-report --execution-context local。构建配置中Sim2GSE构建超时1200秒；整套正式验证预算60秒，单项Sim2GSE检查另有600秒上限，不能把单项上限当整套可用时间。以上均为既有上限，不是耗时预测，也不是新增模拟成本阈值。首票真实静态读取/导出的具体执行入口及总限时需在开始该动作前列清。
+现有命令与预算依据（带 --base 的正式验证在提交后、干净工作树运行）：build-and-verify build --project .；build-and-verify verify --project . --base 5d7165b798d8a7555a74006a1206bd60d8db4331 --execution-context cloud（本机实际执行时地点改为 local；默认快速验证，完整模式仅按技能允许场景执行）。构建配置中Sim2GSE构建超时1200秒；整套正式验证预算60秒，单项Sim2GSE检查另有600秒上限，不能把单项上限当整套可用时间。以上均为既有上限，不是耗时预测，也不是新增模拟成本阈值。首票真实静态读取/导出的具体执行入口及总限时需在开始该动作前列清。
 
 **最终收益验收只有一项：同样条件下旧方案和新方案各跑600秒，直接比较输出DPS。** 不加额外复测、四组消融、统计门槛、最低提升百分比或5%开销门槛。现有内部晋级机制仍保留。历史100份180秒五目标报告用于研究，不能机械变成本次必须再跑100次的规定；真实战斗按约定完整时长，不人为截短成有利结果。
 
@@ -211,13 +213,13 @@ LinUCB成本随编码维数增长，默认交互项d=1+q+p×q；预测约O(C×d�
 
 #### 项目最高入口、编辑与反馈接缝
 
-下列位置均相对仓库根目录、对应上述项目核验基线；实施时按当前版本复核行号：
+下列项目路径相对本仓库根目录，行号对应固定核验基线 `5d7165b798d8a7555a74006a1206bd60d8db4331`；实施后优先按函数名定位，并核对当前行号。全文省略的项目 Python 模块（search.py、task.py、engine.py、program.py、codec.py、result_store.py、burst.py、seed_training.py、sequence.py）位于 `projects/sim2gse/`；task.py 明确指该目录的任务模块，不是同名开发命令脚本。TaskStore 定义在 `projects/sim2gse/search.py:788`；controller.cpp、catalogue.cpp 位于 `projects/sim2gse/native/src/`。S1–S13 中的 `engine/...` 则是 SimC 官方仓库路径，须从对应固定提交链接读取，不是本仓库根目录。
 
-- projects/sim2gse/search.py:144–188为initial_programs，均匀来源在160附近；task.py与search.py均有调用，须统一替换这一个来源。
-- search.py:209–472为现有mutate选择及实际编辑体；1898–1904还有调用侧洗牌，不能只换函数内部而留下旧兜底。
-- search.py:1688–1690、1824–1833保留request、dps、samples、variance及batches；545–561、2042–2045为现有配对晋级数据。学习反馈按本规格使用共同search批次，不要求新增配对模拟。
-- search.py:1761的32/128/256是累积目标，实际增量为32/96/128；engine.py:352按iterations−1形成samples，必须使用存档实际samples加权。
-- search.py的pending尚需保存生成父身份与选择快照，不能依赖可关闭的observability字段；整轮先入队，后续学习不伪称实时重排已排候选。
+- projects/sim2gse/search.py:144–188为initial_programs，均匀来源在160附近；projects/sim2gse/task.py与projects/sim2gse/search.py均有调用，须统一替换这一个来源。
+- projects/sim2gse/search.py:209–472为现有mutate选择及实际编辑体；1898–1904还有调用侧洗牌，不能只换函数内部而留下旧兜底。
+- projects/sim2gse/search.py:1688–1690、1824–1833保留request、dps、samples、variance及batches；545–561、2042–2045为现有配对晋级数据。学习反馈按本规格使用共同search批次，不要求新增配对模拟。
+- projects/sim2gse/search.py:34定义32/128/256累积目标；score_batch在1761–1764按target−previous形成32/96/128增量；projects/sim2gse/engine.py:348–354读取实际count并核验其为max(1, iterations−1)，samples取该count，必须使用存档实际samples加权。
+- projects/sim2gse/search.py的pending尚需保存生成父身份与选择快照，不能依赖可关闭的observability字段；整轮先入队，后续学习不伪称实时重排已排候选。
 - 现有TaskStore使用SQLite检查点，save/flush有既有缓存和事务边界；共享模型与反馈去重原子性仍须验证，不能假定不同存储天然跨库原子。
 - tests/sim2gse/test_search.py已有run_task/fast_evaluate接缝，适合契约检查，不能代替真实角色静态参数或正式引擎产物。
 
@@ -328,7 +330,7 @@ D&D duration：action.cpp:3372–3373 转入 dot_t::create_expression；dot.cpp:
 
 以下是 baseline 教师 APL 的既有动作快照，只证明相应报告字段确实可以读取，不是新 GSE 学生轨迹，也不是新诊断结果。
 
-报告：actual-skill-audit-20261014/input/apl-mining-20261015-native-100/run-001/native.json
+报告标识（非仓库相对路径，不随clone）：actual-skill-audit-20261014/input/apl-mining-20261015-native-100/run-001/native.json
 SHA256：b8c1dc37462410afd81e1cfefccfc3ede9226bbc65cb12fedf010d66c156d65c
 角色：邪 DK，5 目标，固定 180 秒，iterations=1，seed=2026101501。
 对应 invocation.json 标明 mode=baseline、固定上述上游提交；DBC Live 12.1.0.69933。
@@ -388,4 +390,4 @@ https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949
 S13 engine/sim/raid_event.cpp:3045–3094,3179–3187
 https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/sim/raid_event.cpp
 
-历史原件标识：apl-mining-20261015-native-100/run-001/native.json；运行身份来自同批 invocation.json。原始大文件不随仓库提交，必要字段、输入/报告身份与源码证据已在本文保留；开发不得依赖特定云端绝对路径。
+历史原件标识（非仓库相对路径，不随clone）：apl-mining-20261015-native-100/run-001/native.json；运行身份来自同批 invocation.json。原始大文件不随仓库提交，必要字段、输入/报告身份与源码证据已在本文保留；开发不得依赖特定云端绝对路径。本文摘录可直接阅读；如需重新核验原件，须取得上述同SHA256报告，不将原件缺失误报为仓库文件丢失。
