@@ -26,7 +26,7 @@
    void combat_begin() override;
    void activate() override;
    void moving() override;
-@@ -16778,6 +16780,26 @@
+@@ -16778,6 +16780,27 @@
    return a;
  }
  
@@ -47,6 +47,7 @@
 +    { "outbreak", "putrefy", "death_and_decay", "death_coil", "epidemic",
 +      "festering_strike", "festering_scythe", "scourge_strike" }, parameters,
 +    { { "cycle_of_death", talent.unholy.cycle_of_death.ok() },
++      { "blightburst", talent.unholy.blightburst.ok() },
 +      { "festering_scythe", talent.unholy.festering_scythe.ok() } } );
 +}
 +

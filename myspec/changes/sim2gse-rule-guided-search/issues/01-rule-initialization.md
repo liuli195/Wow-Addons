@@ -139,3 +139,13 @@ Blocked by: 无其他开发票。依据已确认规则及专精分层；缺必�
 - 原3个容量断言按新批准合同改为一次30单位。未知收益替代回归保留严格完整期望，独立mock改为60费用消费一次：骨架6填充+1消费7秒，最终8秒，规则7撤回末次多余维护并恢复其替代条目。相同测试加载固定3f523e7旧生成器仍失败（多2动作及Wait），当前通过，未以删除或放宽断言掩盖原缺陷。
 - 云端初始化33 passed（5.29秒）；冠军条件隔离、取消恢复及等价来源合并4 passed、4 subtests passed（4.26秒）。红绿日志为 `review8-red/green-single-spend.txt`、`review8-red/green-single-target-cooldown.txt`、`review8-red-retained-uncertain-credit.txt`、`review8-final-targeted.txt`、`review8-champion-regressions.txt`，仍在既有忽略证据目录。Python编译及差异空白检查通过。
 - 未修改C++、正式规格或02/03实施。待本轮固定提交双轴复审后，一次同步Windows跑最终快速verify并重新生成真实角色的完整中文序列供用户审阅；不重复建立引擎，不用mock结果代替该序列。
+
+### 2026-10-16 已确认天赋的腐化维护替代（待独审及Windows重建）
+
+- 用户批准邪DK初始化可由腐化替代爆发维护疾病。固定SimC的putrefy_damage_base_t::trigger_blightburst及主目标/范围impact表明施病或延病依赖Blightburst；不是Cycle of Death或Scythe。固定APL:372仍保留Outbreak的开场及断病兜底，省略属于用户初始化选择，不声称上游推荐删除该技能。
+- 复用原生070专精bool map增加blightburst=talent.unholy.blightburst.ok()。已有reference/capabilities没有解析后的该天赋值，talents只有编码串；未新增解码器、查询模拟或效果系统。两套补丁链适用通过，仅更新070及两个受影响DK文件的锁身份，未在云端构建C++。
+- 专精绑定仅在明确true且Putrefy可用并在普通CD骨架时令periodic_action=None；false、缺失unknown或腐化不可用均保留Outbreak。通用生成器未改，自然不再插入Outbreak或为其周期补尾；腐化仍是CD/伤害动作，原CD、固定爆发及DT尝试对齐均未改。完整Outbreak绑定保留用户替代来源与coverage=unknown，明确不保证首次爆炸前或全程疾病覆盖。
+- 同一公开task四条件回归：替代正例先红，修后4 passed；独立mock成品为腐化、填充、填充、消费，均1000ms动作及4空点击，共4秒，原疾病间隔6秒不再强加尾等。false/unknown/不可用仍保留疾病动作和6秒周期。全部初始化及必要目录/身份入口39 passed（5.82秒）；较宽目录组另有2项因云端缺原生build.json无法执行，50 passed、7 subtests，不把缺环境记为通过。
+- 既有NativeCatalogue/reference测试新增明确bool契约。旧本地真实快照缺字段红只证明旧协议缺口，不是C++执行红；Windows须用旧binary的同一reference值先确认缺字段，再重建baseline/controlled并运行契约绿及原版/基准/禁用控制器战斗字段对照。证据位于原忽略目录：review9-red/green-alternative-maintenance、review9-red-native-field-captured、review9-native-patch-check、review9-final-targeted、review9-final-supported。
+- Wowhead本轮仅核对只读索引，英雄切换与正文未全文核实，尚未接入完整指南规则。用户要求先列实际指南条目核对，后续另按确认范围处理；本片仅依据明确替代授权及固定源码。
+- 独审后一次同步Windows重建、固定基线快速verify，并分别生成保存真实单体和AoE初始化，明确目标数，提供完整中文节点/等待/理由/映射供用户审阅；不新建训练批次，不用mock替代真实产物。01仍未最终验收。

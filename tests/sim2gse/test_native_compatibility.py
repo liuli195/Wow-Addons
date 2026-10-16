@@ -148,6 +148,7 @@ class NativeCatalogueTests(unittest.TestCase):
                              '角色目录仍使用旧客户端数据，未适配已核实的正式客户端')
             self.assertTrue(capabilities['actions'])
             snapshot = native['static_snapshot']
+            self.assertIs(type(snapshot['parameters']['blightburst']), bool)
             strikes = [row for row in snapshot['actions'] if row['spell_id'] == 85948]
             self.assertTrue(strikes)
             for row in strikes:

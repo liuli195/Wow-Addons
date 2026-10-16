@@ -149,6 +149,48 @@ def test_task_demonstrates_available_talented_cooldown_in_single_target(tmp_path
         assert binding['initialization_coverage']['upstream_applicable'] is False
 
 
+@pytest.mark.parametrize('blightburst,available', [(True, True), (False, True), (None, True), (True, False)])
+def test_task_uses_confirmed_alternative_disease_maintenance(tmp_path, blightburst, available):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    template = native['apl_actions'][0]
+    native['apl_actions'].append(dict(template, name='putrefy', signature='putrefy',
+        data_id=10042, base_spell_id=10042, available=available))
+    snapshot = native['static_snapshot']
+    snapshot['resources']['runic_power']['maximum'] = 30
+    snapshot['parameters']['dread_plague_duration_ms'] = 6000
+    if blightburst is not None:
+        snapshot['parameters']['blightburst'] = blightburst
+    snapshot['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=12000,
+        cast_ms=0, channeled=False, costs={'rune': 1}, gains={'runic_power': 10},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    actions = [row['action'] for row in report['positions'] if row['kind'] == 'action']
+    if blightburst is True and available:
+        assert report['program'] == [
+            ['putrefy'], {'kind': 'WaitClicks', 'clicks': 4},
+            ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
+            ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
+            ['death_coil'], {'kind': 'WaitClicks', 'clicks': 4}]
+        assert report['duration_ms'] == 4000
+        assert report['periodic_edits'] == []
+        binding = next(row for row in report['bindings'] if row['id'] == 'unholy.cooldowns.1')
+        assert 'time<5' in binding['signature']
+        assert 'dot.dread_plague.active_dots=0' in binding['signature']
+        assert binding['initialization_coverage']['provider'] == 'putrefy'
+        assert binding['initialization_coverage']['coverage'] == 'unknown'
+    else:
+        assert 'outbreak' in actions
+        assert report['duration_ms'] == 6000
+    assert ('putrefy' in report['skeleton']['demonstrated']) is available
+
+
 def test_periodic_spacing_survives_fixed_burst_pause_without_modifying_burst(tmp_path):
     import copy
     from engine import inspect

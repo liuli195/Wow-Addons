@@ -397,6 +397,14 @@ def bind(capabilities, snapshot, target_count, *, spec_id):
 
     bindings = [dict(row, source=APL_SOURCE+'#L'+row['source']) for row in BINDINGS
                 if row['list'] in ('high_priority', 'cooldowns', branch)]
+    periodic_action = 'outbreak' if 'outbreak' in available else None
+    alternative_maintenance = params.get('blightburst') is True and 'putrefy' in cooldowns
+    if alternative_maintenance:
+        periodic_action = None
+        next(row for row in bindings if row['id'] == 'unholy.cooldowns.1')['initialization_coverage'] = dict(
+            basis='user_approved_alternative_disease_maintenance', provider='putrefy', coverage='unknown',
+            note='用户初始化替代策略：已确认Blightburst且腐化可用，省略普通起点的爆发；'
+                 '不保证全程或首次爆炸前疾病覆盖，原APL开场及断病兜底条件保留')
     if branch == 'single_target' and 'death_and_decay' in cooldowns:
         next(row for row in bindings if row['id'] == 'unholy.cooldowns.2')['initialization_coverage'] = dict(
             basis='user_approved_single_target_demo', upstream_applicable=False,
@@ -413,21 +421,24 @@ def bind(capabilities, snapshot, target_count, *, spec_id):
         burst_alignment=[('putrefy', 'dark_transformation')],
         cooldowns_before_spender=branch == 'aoe',
         full_charge_action='putrefy' if branch == 'aoe' else None,
-        periodic_action='outbreak' if 'outbreak' in available else None,
+        periodic_action=periodic_action,
         periodic_interval_ms=params.get('dread_plague_duration_ms'),
         periodic_interval_source='dread_plague_duration_ms',
         spending_decisions=spending_decisions,
         bindings=bindings,
         parameter_sources=dict(lesser_ghoul_ready_stacks=
             'sc_death_knight.cpp:buffs.lesser_ghoul_ready->check(); initialized before actions',
+            blightburst='sc_death_knight.cpp:talent.unholy.blightburst.ok(); initialized before actions',
             dread_plague_duration_ms=
             'sc_death_knight.cpp:outbreak_t::impact -> background_actions.dread_plague::composite_dot_duration',
             rune_recharge_ms='sc_death_knight.cpp:death_knight_t::runes_per_second',
             rune_recharge_slots='sc_death_knight.cpp:MAX_REGENERATING_RUNES'),
-        approximate=['以原生疾病持续时间作为低频间隔，不保证全场疾病状态',
+        approximate=[('用户初始化选择腐化承担疾病维护尝试，不给腐化添加疾病周期或保证覆盖'
+                      if alternative_maintenance else '以原生疾病持续时间作为低频间隔，不保证全场疾病状态'),
                      '初始缺层时每循环一次FS增益维护示范，不保证持续增益',
                      '固定爆发不推断Army冷却或Buff生效'],
         unknown=['完整APL动态条件与前序让位未由静态排列实现',
+                 'Blightburst缺失时保持天赋状态未知并保留爆发；已确认替代也不保证首次爆炸前或全程疾病覆盖',
                  'FS仅在初始缺层时示范一次增益维护；后续随机层数、Scythe替换和持续维护未知，不设固定比例/周期',
                  '疾病、伤口、随机触发、Buff反应历史及替换形态的战斗相位',
                  '爆发尝试不证明成功；爆发实际资源消费和增益相位未预测',
