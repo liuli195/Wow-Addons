@@ -499,7 +499,14 @@ void controller_t::sim2gse_init()
       sim2gse_castsequence_positions.emplace(step, 0);
     }
   }
-  for ( auto block : util::string_split(sim2gse_steps, "/") )
+  // Python/GSE bound source nodes separately. These are expanded clicks, with an
+  // independent 4096-click limit for each ordinary/burst macro, not their sum.
+  const auto blocks = util::string_split(sim2gse_steps, "/");
+  if ( blocks.empty() || ( input_sources_text_.empty() ? blocks.size() > 4096 :
+       ( !burst_offset_ || burst_offset_ > 4096 || burst_offset_ >= blocks.size() ||
+         blocks.size() - burst_offset_ > 4096 ) ) )
+    throw std::runtime_error("invalid sim2gse sequence length: each source requires 1..4096 clicks");
+  for ( auto block : blocks )
   {
     const auto block_index = static_cast<unsigned>(sim2gse_blocks.size());
     if (block == "0")
@@ -550,8 +557,6 @@ void controller_t::sim2gse_init()
     }
     sim2gse_blocks.push_back(actions);
   }
-  if ( sim2gse_blocks.empty() || sim2gse_blocks.size() > 128 )
-    throw std::runtime_error("invalid sim2gse sequence length");
   initialize_sources();
   for (const auto& [step, members] : sim2gse_castsequence_members)
     if (step >= sim2gse_blocks.size())

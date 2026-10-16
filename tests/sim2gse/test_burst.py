@@ -518,8 +518,10 @@ def character_seed_boundary(*, native_flags=None):
 
         def character_reference(*args, **kwargs):
             result = reference(*args, **kwargs)
-            result.update(native, unavailable_actions=[dict(kind='item', slot=slot,
-                reason='passive_item') for slot in (13, 14)])
+            result['identity'].update(native.get('identity', {}))
+            result.update({key: value for key, value in native.items() if key != 'identity'},
+                          unavailable_actions=[dict(kind='item', slot=slot,
+                              reason='passive_item') for slot in (13, 14)])
             result['identity']['data_version'] = definition['data_version']
             return result
 

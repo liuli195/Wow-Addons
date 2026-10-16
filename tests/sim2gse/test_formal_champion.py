@@ -158,19 +158,26 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    inspect = engine.inspect
+    import search
+    inspect, initial_programs = engine.inspect, search.initial_programs
     stale_ids = set()
     waiting, release = threading.Event(), threading.Event()
     api = result_store._api()
 
-    def native_order(native, folder, **kwargs):
+    def observe_stale_run(native, folder, **kwargs):
         capabilities = inspect(native, folder, **kwargs)
         folder = Path(folder)
-        if 'fresh' in folder.parts:
-            capabilities['actions'] = list(reversed(capabilities['actions']))
         if 'stale' in folder.parts:
             stale_ids.add(json.loads((folder.parent / 'profile.json').read_text(encoding='utf-8'))['run_id'])
         return capabilities
+
+    def another_native_start(capabilities, *args, **kwargs):
+        from program import canonicalize_search_program
+        starts = initial_programs(capabilities, *args, **kwargs)
+        assert len(starts) > 1
+        assert canonicalize_search_program(starts[0], capabilities)['identity'] != (
+            canonicalize_search_program(starts[1], capabilities)['identity'])
+        return starts[1:] + starts[:1]
 
     def held_result_write(root, table, key, rows, **kwargs):
         if table == 'runs' and key in stale_ids and not release.is_set():
@@ -179,13 +186,14 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
                 raise AssertionError('fresh task did not publish')
         return api['write'](root, table, key, rows, **kwargs)
 
-    with patch.object(engine, 'inspect', native_order), \
+    with patch.object(engine, 'inspect', observe_stale_run), \
          patch.object(result_store, '_api', return_value=dict(api, write=held_result_write)), \
          ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(dual_result, tmp_path / 'stale', raw, 1)
         try:
             assert waiting.wait(20)
-            fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1)
+            with patch.object(search, 'initial_programs', side_effect=another_native_start):
+                fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1)
         finally:
             release.set()
         stale = pending.result(20)
@@ -283,20 +291,25 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     api = result_store._api()
-    real_rules, inspect, evaluate = task._rule_hashes, engine.inspect, sequence.evaluate
+    import search
+    from program import canonicalize_search_program
+    real_rules, initial_programs, evaluate = task._rule_hashes, search.initial_programs, sequence.evaluate
+    higher_behaviors = set()
     original = real_rules()
     monkeypatch.setattr(task, '_rule_hashes', lambda **kwargs: dict(original,
         **{str(Path(task.__file__).resolve()): 'f' * 64}))
 
-    def source_catalogue(native, folder, **kwargs):
-        capabilities = inspect(native, folder, **kwargs)
-        if 'high' in Path(folder).parts:
-            capabilities['actions'] = list(reversed(capabilities['actions']))
-        return capabilities
+    def higher_native_start(capabilities, *args, **kwargs):
+        starts = initial_programs(capabilities, *args, **kwargs)
+        assert len(starts) > 1
+        key = canonicalize_search_program(starts[1], capabilities)['identity']
+        assert key != canonicalize_search_program(starts[0], capabilities)['identity']
+        higher_behaviors.add(key)
+        return starts[1:] + starts[:1]
 
     def source_scores(profile, candidate, folder, **kwargs):
         result = evaluate(profile, candidate, folder, **kwargs)
-        score = 300. if 'high' in Path(profile).parts else 200.
+        score = 300. if sequence.behavior_key(candidate) in higher_behaviors else 200.
         result['summary']['dps'] = score
         sim = result['report']['sim']
         sim['statistics']['raid_dps']['mean'] = sim['players'][0]['collected_data']['dps']['mean'] = score
@@ -308,10 +321,10 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
         return api['write'](root, table, key, rows, **kwargs)
 
     with patch.object(result_store, '_api', return_value=dict(api, write=no_initial_champion)), \
-         patch.object(engine, 'inspect', side_effect=source_catalogue), \
          patch.object(sequence, 'evaluate', side_effect=source_scores):
         low = dual_result(tmp_path / 'low', raw, candidate_limit=1)
-        high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
+        with patch.object(search, 'initial_programs', side_effect=higher_native_start):
+            high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
     monkeypatch.setattr(task, '_rule_hashes', real_rules)
     low_id, high_id = [state['scenes'][0]['formal_champion_publication']['source_run_id'] for state in (low, high)]
     def normalized(row):

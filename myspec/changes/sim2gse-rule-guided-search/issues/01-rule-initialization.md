@@ -61,3 +61,13 @@ Blocked by: 无其他开发票。依据已确认规则及专精分层；缺必�
 - Putrefy 仅首次静态满充能证据标为静态分支估计；按静态 CD 间距安排的后续尝试明确记录充能消耗/恢复及窗口未知。固定源码 sc_death_knight.cpp:12244–12255 的 putrid_echoes 可额外消耗充能，不能用一次重充推断已满。不增加充能模拟器或跨轮就绪门槛。
 - 两片公开 task.run_task 红绿：低位身份2项先失败后通过；重复充能1项先失败后通过。含既有HTTP和起点边界的定向集合17项通过，证据 `.local/tests/rule-initialization/review-red-01-low-spender.txt`、`review-green-01-low-spender.txt`、`review-red-02-repeated-charge.txt`、`review-green-02-repeated-charge.txt`、`review-final-targeted.txt`。
 - 原生 getter 的嵌套观察副作用、传入空 action_state 的安全性与真实生命周期字段仍是 Windows 实际验证项；不凭函数签名或构造用例宣称纯读取安全。C++编译、真实角色验收和固定基线正式验证状态未改变。
+
+
+### 2026-10-16 Windows 首轮验证回归修复（待复审及重跑）
+
+- 已收到 Windows 三目标 C++ 构建成功及真实角色初始化→锁定 Lua 导出结果：123顶层节点、396展开点击，约0.64秒；有效 GCD 为 Festering Strike 827ms、其他动作1240ms，Putrefy CD30s、DND25s，初始符能0/100、符文6/6、符文重充8272.916ms/3槽，疾病持续18s。首次三目标构建实耗302.724秒；17项定向通过。该结果不代表正式验证通过。
+- 固定基线快速 verify 首轮40.979秒退出1：523 passed、20 failed、150 subtests。已按20项映射修复：7项局部报告合并丢失race；2项WaitClicks旧目录缺生成动作及多Pause/GCD构造假设；2项不可用最高训练冠军夹具删除唯一生成动作；5项冠军评分/来源/冲突夹具依赖旧均匀起点；1项原生报告比较未扣除新增静态元数据。浏览器、硬退出和受控爆发序列三项保留原断言，需验证是否随原生长度缺陷修复恢复。
+- 产品修正仅为既有长度合同：128约束源节点，4096约束每条独立宏的展开点击。controller接收普通/爆发展开计划，现分别检查每段1..4096，双段可合计8192；burst_offset仍限4096，输入时刻/来源/反馈一一对应、动作成员、施法序列索引等校验保留。Python公开sequence入口同步提前拒绝任一段超过4096；原顶层128、每宏4096及搜索预算未改。更新controlled源身份散列；需重建后验证。
+- 冠军用例保持生产CAS、晋级和可信报告保护：恢复评分按明确行为身份固定100/200/300；不同赢家场景局部从真实生成列表选另一合法起点并断言行为不同；三来源合并使用公开initial_programs的实际规则起点，不再硬编码旧均匀排列。没有修改生产冠军逻辑。
+- 本轮云端公开接缝红绿：race 1红→1绿；WaitClicks超限1红→1绿；sequence超限3子项红→2 passed/7 subtests；冠军5项原失败重现→7 passed/3 subtests（包含最高冠军不可用两项）。最终初始化/sequence/网页必要集合23 passed、7 subtests；冠军必要集合7 passed、3 subtests。证据见 `.local/tests/rule-initialization/native-review-*.txt` 及 `native-review-report.md`。
+- 云端冠军诊断仅在忽略目录runner构造外部engine identity，复用原有Linux测试进程适配；不验证本机身份、锁、进程树或引擎。真正Windows仍须：重建controlled并核验身份；新增129普通点击及独立爆发的原生公开sequence测试；旧20失败组特别是300/600ms真实WaitClicks、浏览器、硬退出；原版/基准/禁用controller仅扣除新增静态元数据后所有战斗字段逐值一致。不能因去掉snapshot字段便宣称getter无副作用。票据仍in-progress，验收未勾选。

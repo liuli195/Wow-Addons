@@ -70,7 +70,7 @@ class NativeIdentityTests(unittest.TestCase):
 # 仅移除本项目明确添加的报告字段；战斗数据逐值比较。
 REPORT_METADATA = {
     'sim2gse_class', 'sim2gse_class_id', 'sim2gse_spec_id', 'sim2gse_spec',
-    'sim2gse_resource', 'sim2gse_actions_protocol', 'sim2gse_actions',
+    'sim2gse_resource', 'sim2gse_actions_protocol', 'sim2gse_actions', 'sim2gse_static_snapshot',
     'sim2gse_apl_actions_protocol', 'sim2gse_apl_actions', 'sim2gse_precombat_actions',
     'sim2gse_items', 'sim2gse_actor_index', 'sim2gse_actor_name', 'sim2gse_owner_type',
     'sim2gse_availability_protocol', 'sim2gse_unavailable_actions', 'sim2gse_skipped_commands',

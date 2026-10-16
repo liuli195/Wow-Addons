@@ -475,18 +475,19 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    template, rows = completed_training(tmp_path, 1, [([['outbreak']], [100.] * 3),
-                                                        ([['scourge_strike']], [200.] * 3)])
+    # Remove a non-generator: the character must still support a legal rule start.
+    template, rows = completed_training(tmp_path, 1, [([['death_coil']], [100.] * 3),
+                                                        ([['outbreak']], [200.] * 3)])
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     inspect = engine.inspect
     def current_catalogue(*args, **kwargs):
         capabilities = inspect(*args, **kwargs)
         capabilities['actions'] = [action for action in capabilities['actions']
-                                   if action['simc_action'] != 'scourge_strike']
+                                   if action['simc_action'] != 'outbreak']
         if static_proof:
             capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
-                action_initialized=True, available=False, data_valid=True, data_id=1003,
-                signature='scourge_strike', name='scourge_strike', gcd_ms=1500))
+                action_initialized=True, available=False, data_valid=True, data_id=1001,
+                signature='outbreak', name='outbreak', gcd_ms=1500))
         return capabilities
     with patch.object(engine, 'inspect', current_catalogue):
         scene = dual_result(tmp_path, raw)['scenes'][0]
@@ -504,9 +505,18 @@ def test_dual_merges_equivalent_native_selected_and_training_champion_sources(tm
     import result_store
     import seed_training
     definition, raw = reviewed_fixture()
-    burst.publish(definition)
+    definition = burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    program = [['outbreak'], ['death_coil'], ['scourge_strike']]
+    from search import initial_programs
+    from runtime import TaskRuntime
+    from task import parse_character
+    probe = tmp_path / 'native-start.simc'
+    probe.write_text(raw, encoding='utf-8')
+    character = parse_character(raw)
+    native = engine.reference(probe, tmp_path / 'native-reference', character)
+    _, capabilities, context = engine.prepare_loop(native, character, tmp_path / 'native-start',
+        TaskRuntime(600), definition=definition, interval_ms=200)
+    program = initial_programs(capabilities, native, input_interval_ms=200, burst=context)[0]
     template, rows = completed_training(tmp_path, 1, [(program, [200.] * 3)])
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}

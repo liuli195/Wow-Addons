@@ -33,6 +33,9 @@ def select(capabilities, program=None):
 
 def compiled_program(candidate):
     """解释已通过上游编译检查的命令，核对实际消费顺序。"""
+    # 128 constrains source nodes; this seam consumes expanded clicks, per independent macro.
+    if not 1 <= len(candidate.get('compiled_steps', [])) <= 4096:
+        raise ValueError('每条独立序列展开后必须包含 1 至 4096 次按键')
     shared = candidate.get("compiled_program")
     if shared is not None:
         clicks = []

@@ -34,6 +34,40 @@ def imported_sequence(name, actions):
 class NativeTraceContractTests(unittest.TestCase):
     """固定原生交换报告，检查公开评估入口的轨迹身份契约；不冒称引擎验收。"""
 
+    def test_expanded_click_limit_applies_to_each_independent_sequence(self):
+        """公开 sequence 接缝核验参数；模拟边界仅截获调用，不冒称原生执行。"""
+        command = dict(kind='spell', spell_id=77575, name='Outbreak', simc_action='outbreak')
+        def candidate(count):
+            return dict(blocks=[[command]] * count,
+                        compiled_steps=[dict(type='spell', spell=77575)] * count)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'profile.simc'
+            source.write_text(sample_profile(), encoding='utf-8')
+            character = parse_character(sample_profile())
+            for loop, burst in ((129, 0), (4096, 0), (129, 2), (4096, 4096)):
+                with self.subTest(loop=loop, burst=burst):
+                    def boundary(profile, folder, *args, **kwargs):
+                        options = dict(line.split('=', 1) for line in profile.read_text().splitlines()
+                                       if line.startswith('sim2gse_'))
+                        self.assertEqual(len(options['sim2gse_steps'].split('/')), loop + burst)
+                        if burst:
+                            self.assertEqual(options['sim2gse_burst_offset'], str(loop))
+                            self.assertEqual(options['sim2gse_sources'], 'loop/burst')
+                        raise RuntimeError('native boundary reached')
+                    with patch('sequence.run', side_effect=boundary), self.assertRaisesRegex(
+                            RuntimeError, 'native boundary reached'):
+                        evaluate(source, candidate(loop), root / f'{loop}-{burst}', character=character,
+                            input_times=[0, 300], burst_candidate=candidate(burst) if burst else None,
+                            input_sources=['loop', 'burst'] if burst else None)
+            for loop, burst in ((4097, 0), (4097, 1), (1, 4097)):
+                with self.subTest(loop=loop, burst=burst), patch('sequence.run') as native:
+                    with self.assertRaisesRegex(ValueError, '4096'):
+                        evaluate(source, candidate(loop), root / 'overflow', character=character,
+                            input_times=[0, 300], burst_candidate=candidate(burst) if burst else None,
+                            input_sources=['loop', 'burst'] if burst else None)
+                    native.assert_not_called()
+
     def test_replacement_castsequence_keeps_issued_signature_and_actual_action(self):
         raw = sample_profile()
         character = parse_character(raw)
@@ -136,6 +170,29 @@ class SequenceSimulationTests(unittest.TestCase):
                          [('dark_transformation', 'dark_transformation', 0),
                           ('blightfall', 'dark_transformation', 1)])
         self.assertTrue(result['consistent'])
+
+    def test_expanded_loop_over_128_clicks_runs_with_separate_burst(self):
+        from program import compile_program, from_search_program
+        source, character, native, capabilities = self.prepared
+        capabilities = dict(capabilities, precombat_actions=[])
+        with tempfile.TemporaryDirectory(prefix='expanded-sequence-') as directory:
+            root = Path(directory)
+            ordinary = from_search_program([
+                dict(kind='Loop', blocks=[['outbreak']], count=129)], capabilities)
+            burst = from_search_program([['death_coil'], ['scourge_strike']], capabilities)
+            candidate = compile_program(ordinary, root / 'ordinary',
+                identity=native['identity'], capabilities=capabilities)
+            burst_candidate = compile_program(burst, root / 'burst',
+                identity=native['identity'], capabilities=capabilities)
+            for independent_burst in (False, True):
+                with self.subTest(independent_burst=independent_burst):
+                    result = evaluate(source, candidate, root / str(independent_burst),
+                        character=character, iterations=1, input_times=[0, 300, 600],
+                        burst_candidate=burst_candidate if independent_burst else None,
+                        input_sources=['loop', 'burst', 'loop'] if independent_burst else None)
+                    self.assertTrue(result['consistent'])
+                    self.assertEqual(len(result['native_blocks']), 131 if independent_burst else 129)
+                    self.assertEqual(result['blocks'], result['native_blocks'])
 
     def test_long_search_castsequence_compiles_and_runs_with_member_limits(self):
         from program import compile_program, from_search_program

@@ -2431,12 +2431,17 @@ class InterfaceTests(unittest.TestCase):
                      gcd_ms=1500, base_spell_id=77575),
                 dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
                      gcd_ms=1500, base_spell_id=47541),
+                dict(kind="spell", spell_id=55090, simc_action="scourge_strike", name="Scourge Strike",
+                     gcd_ms=1500, base_spell_id=55090),
             ],
             "precombat_actions": [], "sources": [], "protocol": 3,
             "scope": "test", "coverage": "constructed-test-boundary",
         }
 
         def inspect(_reference, folder):
+            # Constructed static GCD supports both requested intervals without one-empty-click syntax.
+            for action in _reference['static_snapshot']['actions']:
+                action['gcd_ms'] = 1500
             folder = Path(folder)
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
@@ -2577,7 +2582,10 @@ class InterfaceTests(unittest.TestCase):
             pause_index = int(wait["source"]["gse_path"]) - 1
             self.assertEqual(actions[pause_index][b"Type"], b"Pause")
             self.assertEqual(actions[pause_index][b"Clicks"], wait["clicks"])
-            compiled_empty = [step for step in candidate["compiled_steps"] if step["type"] == "click"]
+            all_empty = [step for step in candidate["compiled_steps"] if step["type"] == "click"]
+            self.assertEqual(len(all_empty), sum(node["clicks"] for node in candidate["program"]["nodes"]
+                                                if node["kind"] == "Pause"))
+            compiled_empty = [step for step in all_empty if step["blockPath"] == wait["source"]["gse_path"]]
             self.assertEqual(len(compiled_empty), wait["clicks"])
             self.assertEqual([step["blockPath"] for step in compiled_empty],
                              [wait["source"]["gse_path"]] * wait["clicks"])
@@ -2594,6 +2602,8 @@ class InterfaceTests(unittest.TestCase):
                      gcd_ms=1500, base_spell_id=77575),
                 dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
                      gcd_ms=1500, base_spell_id=47541),
+                dict(kind="spell", spell_id=55090, simc_action="scourge_strike", name="Scourge Strike",
+                     gcd_ms=1500, base_spell_id=55090),
             ],
             "precombat_actions": [], "sources": [], "protocol": 3,
             "scope": "test", "coverage": "constructed-test-boundary",
@@ -2651,7 +2661,8 @@ class InterfaceTests(unittest.TestCase):
 
         self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
         self.assertTrue(overflow_attempts, "公开搜索入口没有试图编译超限候选")
-        self.assertEqual(evaluated_waits, [], "超限 WaitClicks 候选到达了原生评价")
+        self.assertTrue(evaluated_waits, "合法规则起点的空点击未被评价")
+        self.assertNotIn(4096, evaluated_waits, "超限 WaitClicks 候选到达了原生评价")
 
     def test_old_incomplete_result_still_reports_the_seed_it_selected(self) -> None:
         destination = Path(self.directory.name) / "旧任务"
