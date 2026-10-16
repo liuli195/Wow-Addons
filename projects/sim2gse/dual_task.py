@@ -277,7 +277,7 @@ def cancel_saved(destination):
     return read(destination)
 
 
-def read(destination, *, active=None):
+def read(destination, *, active=None, include_rule_initialization=True):
     destination = Path(destination).resolve()
     row = _load(destination)
     recoverable = row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
@@ -295,13 +295,14 @@ def read(destination, *, active=None):
                      input_sha256=row['input_sha256'], total_budget_seconds=row['config']['total_budget_seconds'],
                      elapsed_seconds=0., progress=0.)
         if (child_path / 'profile.json').exists():
-            child = task.read_task(child_path)
+            child = task.read_task(child_path, include_rule_initialization=include_rule_initialization)
             scene['elapsed_seconds'] = float(child.get('elapsed_seconds', 0))
             scene['progress'] = min(1., scene['elapsed_seconds'] / scene['total_budget_seconds'])
             if child.get('search_result'):
                 scene['search_result'] = child['search_result']
-            if child.get('rule_initialization'):
-                scene['rule_initialization'] = child['rule_initialization']
+            for name in ('rule_initialization', 'has_rule_initialization', 'rule_initialization_identity'):
+                if name in child:
+                    scene[name] = child[name]
             search = child.get('search') or child
             for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
                          'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',

@@ -147,6 +147,20 @@ class NativeCatalogueTests(unittest.TestCase):
             self.assertEqual(dbc['Live']['build_level'], 69933,
                              '角色目录仍使用旧客户端数据，未适配已核实的正式客户端')
             self.assertTrue(capabilities['actions'])
+            snapshot = native['static_snapshot']
+            strikes = [row for row in snapshot['actions'] if row['spell_id'] == 85948]
+            self.assertTrue(strikes)
+            for row in strikes:
+                self.assertEqual(row['gain_timing'], 'on_hit')
+                self.assertEqual(row['gain_status'], 'known')
+                self.assertGreater(row['gains']['runic_power'], 0)
+            if snapshot['parameters']['festering_scythe']:
+                scythes = [row for row in snapshot['actions'] if row['spell_id'] == 458128]
+                self.assertTrue(scythes, '已构造的替换动作必须独立采集，不能继承基础按钮收益')
+                for row in scythes:
+                    self.assertEqual(row['gain_timing'], 'none')
+                    self.assertEqual(row['gain_status'], 'known_zero')
+                    self.assertEqual(row['gains'], {})
             for mode in ('baseline', 'controlled'):
                 with self.subTest(mode=mode):
                     _, manifest = engine.identity(mode)

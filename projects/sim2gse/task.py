@@ -426,6 +426,10 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'no_improvement_round_limit')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
+    if initialization:
+        search_metrics['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
+            initialization.get('compilation', 'pending'))
     if state is not None:
         for name in ('seed_adaptations', 'training_champion_snapshot',
                      'training_champion_adaptation', 'start_sources', 'formal_champion_snapshot',
@@ -440,7 +444,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     record = dict(
         run_id=run_id, status=result.get('status', 'failed'), phase=result.get('phase', 'done'),
         burst=burst_record or None,
-        rule_initialization=result.get('rule_initialization') or (state or {}).get('rule_initialization'),
+        rule_initialization=initialization,
         profile=profile, identity=profile.get('identity', {}),
         input_original=original, input_effective=effective,
         config=result.get('config') or (state or {}).get('config', {}),
@@ -1855,11 +1859,13 @@ def resume_task(output_root, **kwargs):
         return _resume_task(output_root, **kwargs)
 
 
-def read_task(output_root, *, include_search_records=False, include_reports=False):
+def read_task(output_root, *, include_search_records=False, include_reports=False,
+              include_rule_initialization=True):
     from result_store import DataReadError
     try:
         return _read_task(output_root, include_search_records=include_search_records,
-                          include_reports=include_reports)
+                          include_reports=include_reports,
+                          include_rule_initialization=include_rule_initialization)
     except DataReadError as error:
         raise TaskError(str(error)) from error
 
@@ -1893,7 +1899,8 @@ def _batch_locations(destination, keys):
     return locations
 
 
-def _read_task(output_root, *, include_search_records=False, include_reports=False):
+def _read_task(output_root, *, include_search_records=False, include_reports=False,
+               include_rule_initialization=True):
     destination = Path(output_root).resolve()
     progress_path = destination / 'progress.json'
     progress = None
@@ -1918,9 +1925,11 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
     if not run_id:
         return pointer
 
-    from result_store import read_many, one as read_record
+    from result_store import RUN_SCHEMA, read_many, one as read_record
 
-    saved = read_record('runs', 'run_id', run_id)
+    columns = None if include_rule_initialization else [
+        name for name in RUN_SCHEMA if name != 'rule_initialization']
+    saved = read_record('runs', 'run_id', run_id, columns=columns)
     if saved is None:
         return pointer
 
@@ -1967,10 +1976,18 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         locked_candidate_key=saved['locked_candidate_key'], improvement=saved['improvement'],
         independent_validation_complete=saved['independent_validation_complete'],
         native_reference=decode(saved['reference_summary']), search=search,
-        rule_initialization=decode(saved.get('rule_initialization')),
         final=dict(dataset='final', status=saved['final_status'],
                    scenarios=decode(saved['final_scenarios']) or {}),
         error=saved['error'], output_root=destination)
+    if include_rule_initialization:
+        task_result['rule_initialization'] = decode(saved.get('rule_initialization'))
+    initialization_identity = search.get('rule_initialization_identity')
+    if not initialization_identity and task_result.get('rule_initialization'):
+        initialization = task_result['rule_initialization']
+        initialization_identity = (initialization['behavior_identity'] + ':' +
+                                   initialization.get('compilation', 'pending'))
+    task_result.update(has_rule_initialization=bool(initialization_identity),
+                       rule_initialization_identity=initialization_identity)
     if saved['search_observability']:
         task_result['search_observability'] = decode(saved['search_observability'])
     if saved.get('burst'):

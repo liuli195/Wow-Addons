@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from result_store import DataReadError
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 import uuid
 
 from simulation_config import config_for as simulation_config_for
@@ -119,10 +119,19 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 _, destination = self.server.task_paths(task_id)
                 with self.server.tasks_lock:
                     entry = self.server.tasks.get(task_id)
-                state = self._read_public_state(destination, entry)
+                details = parse_qs(urlsplit(self.path).query).get('details') == ['rule_initialization']
+                state = self._read_public_state(destination, entry, include_rule_initialization=details)
             except (TaskError, OSError, ValueError) as error:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
                 return
+            for view in [state, *state.get('scenes', [])]:
+                initialization = view.get('rule_initialization')
+                if initialization:
+                    view['has_rule_initialization'] = True
+                    view['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
+                        initialization.get('compilation', 'pending'))
+                    if not details:
+                        del view['rule_initialization']
             self._send_json(HTTPStatus.OK, state)
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "页面不存在"})
@@ -239,18 +248,20 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, {"task_id": task_id, "status": "starting"})
 
-    def _read_public_state(self, destination: Path, entry) -> dict:
+    def _read_public_state(self, destination: Path, entry, *, include_rule_initialization=False) -> dict:
         handle = entry[1] if entry else None
         try:
             if handle is not None and handle.done and handle.error is not None:
                 raise TaskError(str(handle.error)) from handle.error
             if (destination / 'dual.json').exists():
                 from dual_task import read
-                state = read(destination, active=not handle.done if handle else None)
+                state = read(destination, active=not handle.done if handle else None,
+                             include_rule_initialization=include_rule_initialization)
                 if state.get('error'):
                     state['error'] = _friendly_error(TaskError(state['error']))
                 return state
-            return _public_state(read_task(destination, include_reports=False), destination)
+            return _public_state(read_task(destination, include_reports=False,
+                include_rule_initialization=include_rule_initialization), destination)
         except (TaskError, DataReadError) as error:
             if _is_storage_error(error) or '共享存储' in str(error):
                 active = handle is not None and not handle.done
@@ -363,8 +374,9 @@ def _public_state(state: dict, destination: Path) -> dict:
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
-    if state.get('rule_initialization'):
-        response['rule_initialization'] = state['rule_initialization']
+    for name in ('rule_initialization', 'has_rule_initialization', 'rule_initialization_identity'):
+        if name in state:
+            response[name] = state[name]
     search = state.get("search") or state
     metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
                     "canonicalized_duplicates")

@@ -2193,7 +2193,26 @@ class InterfaceTests(unittest.TestCase):
                     break
                 time.sleep(.01)
         self.assertEqual(state['status'], 'completed', state)
-        initialization = state['rule_initialization']
+        self.server.tasks[created['task_id']][1].join(5)
+        import result_store
+        # Observe the installed external storage API, while retaining actual disk reads.
+        reads = []
+        read_key = result_store._SKILL_API['read_key']
+        def audited_read(root, table, key, **options):
+            if table == 'runs':
+                reads.append(options.get('columns'))
+            return read_key(root, table, key, **options)
+        with patch.dict(result_store._SKILL_API, {'read_key': audited_read}):
+            state = self._json_request('GET', '/api/tasks/' + created['task_id'])
+        self.assertTrue(reads)
+        self.assertTrue(all(columns is not None and 'rule_initialization' not in columns
+                            for columns in reads), '默认摘要不得向存储读取完整初始化列')
+        self.assertNotIn('rule_initialization', state, '500ms进度轮询不应携带完整初始化详情')
+        self.assertTrue(state['has_rule_initialization'])
+        detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
+        initialization = detail['rule_initialization']
+        self.assertEqual(state['rule_initialization_identity'],
+                         initialization['behavior_identity'] + ':' + initialization['compilation'])
         self.assertTrue(initialization['export_text'].startswith('!GSE3!'))
         self.assertEqual(initialization['compilation'], 'passed_with_client_boundary_stubs')
         self.assertTrue(initialization['click_mapping'])
@@ -2997,6 +3016,64 @@ class InterfaceTests(unittest.TestCase):
             "native_batch_starts": 7,
             "canonicalized_duplicates": 4,
         })
+
+    def test_browser_reloads_rule_details_after_summary_storage_recovers(self):
+        self._check_browser_rule_details_recovery('summary')
+
+    def test_browser_reloads_rule_details_after_detail_storage_recovers(self):
+        self._check_browser_rule_details_recovery('detail')
+
+    def _check_browser_rule_details_recovery(self, failure):
+        # 页面及轮询真实执行，仅在 HTTP 系统边界构造短暂不可读及恢复响应。
+        env = os.environ.copy()
+        env.setdefault('NODE_PATH', str(Path.home() /
+            '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'))
+        script = r'''
+const {chromium}=require('playwright'),assert=require('node:assert/strict');
+(async()=>{
+ const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
+ const browser=await chromium.launch({channel:'msedge',headless:true});
+ try{
+  for(const failure of [input.failure]){
+   const context=await browser.newContext(),page=await context.newPage();
+   let unavailable=false,detailReads=0;
+   const summary={status:'running',phase:'aoe',result_ready:true,result_note:'已有单场结果',
+    exports:{},collection_ready:false,scenes:[
+     {purpose:'single_target',status:'completed',total_budget_seconds:600,
+      has_rule_initialization:true,rule_initialization_identity:'rule-a:compiled'},
+     {purpose:'aoe',status:'running',total_budget_seconds:600}]};
+   const unavailableState={status:'running',phase:'storage_unavailable',
+    storage_unavailable:true,recoverable:true,error:'存储暂时不可读取'};
+   await page.route('**/api/tasks/saved-rule-task*',async route=>{
+    const details=new URL(route.request().url()).searchParams.has('details');
+    let body=unavailable?unavailableState:summary;
+    if(details){
+     detailReads++;
+     body=failure==='detail'&&detailReads===1?unavailableState:{...summary,scenes:[
+      {...summary.scenes[0],rule_initialization:{behavior_identity:'rule-a',
+       compilation:'compiled',evidence:'restored_rule_details'}},summary.scenes[1]]};
+    }
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
+   });
+   await page.addInitScript(()=>localStorage.setItem('sim2gse-task','saved-rule-task'));
+   await page.goto(input.url);
+   await page.locator('#ruleInitialization summary').click();
+   if(failure==='summary'){
+    await page.waitForFunction(()=>document.getElementById('ruleInitializationText').textContent.includes('restored_rule_details'),null,{timeout:5000});
+    unavailable=true;
+    await page.waitForFunction(()=>document.getElementById('ruleInitialization').hidden,null,{timeout:5000});
+    unavailable=false;
+   }
+   await page.waitForFunction(()=>document.getElementById('ruleInitializationText').textContent.includes('restored_rule_details'),null,{timeout:5000});
+   assert.equal(detailReads,2,failure+' 恢复后应重新取详情');
+   await context.close();
+  }
+ }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+        result = subprocess.run(['node', '-e', script], input=json.dumps({'url': self.url, 'failure': failure}),
+            text=True, encoding='utf-8', capture_output=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_browser_computes_copies_and_clears_real_candidate(self):
         # 一次真实180ms双场任务覆盖计算、复制和清旧；200ms保页面初始默认值。

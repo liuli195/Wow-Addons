@@ -18,7 +18,7 @@ BINDINGS = [{'id': 'unholy.high_priority.3',
   'signature': 'festering_strike,target_if=min:health.pct,if=talent.festering_scythe&(buff.festering_scythe.up&(buff.festering_scythe.remains<=3*gcd|buff.festering_scythe_tt.remains<3*gcd)|!buff.festering_scythe.up&buff.festering_scythe_tt.remains<3*gcd)',
   'source': '362',
   'yields_to': ['default.racials', 'default.high_priority', 'default.trinkets', 'default.cooldowns'],
-  'rules': []},
+  'rules': ['maintenance']},
  {'id': 'unholy.aoe.2',
   'action': 'putrefy',
   'parent': 'call_action_list,name=aoe,if=active_enemies>=3',
@@ -76,7 +76,7 @@ BINDINGS = [{'id': 'unholy.high_priority.3',
                 'unholy.aoe.2',
                 'unholy.aoe.3',
                 'unholy.aoe.4'],
-  'rules': []},
+  'rules': ['maintenance']},
  {'id': 'unholy.aoe.6',
   'action': 'scourge_strike',
   'parent': 'call_action_list,name=aoe,if=active_enemies>=3',
@@ -177,7 +177,7 @@ BINDINGS = [{'id': 'unholy.high_priority.3',
   'signature': 'festering_strike,if=talent.festering_scythe&fight_remains>10&(buff.festering_scythe.up&(buff.festering_scythe.remains<=3|buff.festering_scythe_tt.remains<3)|!buff.festering_scythe.up&buff.festering_scythe_tt.remains<3)',
   'source': '386',
   'yields_to': ['default.racials', 'default.high_priority', 'default.trinkets', 'default.cooldowns'],
-  'rules': []},
+  'rules': ['maintenance']},
  {'id': 'unholy.single_target.2',
   'action': 'soul_reaper',
   'parent': 'call_action_list,name=single_target,if=active_enemies<3',
@@ -352,38 +352,76 @@ BINDINGS = [{'id': 'unholy.high_priority.3',
                 'unholy.single_target.8',
                 'unholy.single_target.9',
                 'unholy.single_target.10'],
-  'rules': []}]
+  'rules': ['maintenance']}]
 
 
-def bind(capabilities, snapshot, target_count):
+def bind(capabilities, snapshot, target_count, *, spec_id):
+    if not isinstance(snapshot, dict):
+        raise ValueError('规则起点缺少真实角色静态快照，请重新构建引擎')
+    if not isinstance(snapshot.get('parameters'), dict):
+        raise ValueError('规则起点缺少静态字段: parameters')
+    if spec_id != 252:
+        raise ValueError('当前专精尚无已审核的规则起点绑定')
+    for key in ('cycle_of_death', 'festering_scythe'):
+        if type(snapshot['parameters'].get(key)) is not bool:
+            raise ValueError('规则起点缺少静态天赋字段: ' + key)
     available = {row['simc_action'] for row in capabilities['actions']}
     params = snapshot['parameters']
     branch = 'aoe' if target_count >= 3 else 'single_target'
     spender = 'epidemic' if target_count >= 3 and 'epidemic' in available else 'death_coil'
-    generators = [name for name in ('festering_strike', 'scourge_strike') if name in available]
+    generators = [name for name in ('scourge_strike',) if name in available]
+    buff_actions = ['festering_strike'] if 'festering_strike' in available else []
+    stacks = params.get('lesser_ghoul_ready_stacks')
+    if buff_actions and (type(stacks) not in (int, float) or not 0 <= stacks):
+        raise ValueError('规则起点缺少静态增益字段: lesser_ghoul_ready_stacks')
     cooldowns = [name for name in ('putrefy',) if name in available]
     if target_count >= 3 and params['cycle_of_death'] and 'death_and_decay' in available:
         cooldowns.append('death_and_decay')
-    return dict(resource='runic_power', constrained_resource='rune',
+    high_id = f'unholy.{branch}.'+('4' if spender == 'epidemic' else '7' if branch == 'aoe' else '5')
+    low_id = f'unholy.{branch}.'+('8' if spender == 'epidemic' else '9')
+
+    def spending_decisions(balances, capacities, *, uncertain):
+        deficit = capacities['runic_power'] - balances['runic_power']
+        high = (deficit < 15 or balances['rune'] < 2) if branch == 'aoe' else deficit <= 10
+        low = branch == 'aoe' or deficit < 50
+        return dict(high=dict(eligible=high, rule='near_cap', binding=high_id,
+            condition_status='dynamic_condition_unknown' if uncertain else 'static_branch_estimate',
+            condition_basis=('runic_power.deficit<15 OR rune<2；其余动态分支和前序让位未知'
+                             if branch == 'aoe' else 'runic_power.deficit<=10；sudden_doom及前序让位未知')),
+            low=dict(eligible=low, rule='low_priority_spend' if branch == 'aoe' else 'reserve',
+                binding=low_id,
+                condition_status=('dynamic_condition_unknown' if uncertain or branch == 'aoe'
+                                  else 'static_branch_estimate'),
+                condition_basis=('低位条目的epidemic_prio及前序让位未知，仅作静态尝试'
+                                 if branch == 'aoe' else 'runic_power.deficit<50；Army剩余及前序让位未知')))
+
+    return dict(resource='runic_power',
+        recovery=dict(model='parallel_discrete', resource='rune',
+                      interval_ms=params.get('rune_recharge_ms'), slots=params.get('rune_recharge_slots')),
         generators=generators, spender=spender, cooldowns=cooldowns,
+        buff_actions=buff_actions,
+        buff_demo_needed=bool(buff_actions) and stacks < (3 if branch == 'aoe' else 1),
+        buff_demo_binding=f'unholy.{branch}.'+('5' if branch == 'aoe' else '11'),
+        burst_alignment=[('putrefy', 'dark_transformation')],
         cooldowns_before_spender=branch == 'aoe',
         full_charge_action='putrefy' if branch == 'aoe' else None,
         periodic_action='outbreak' if 'outbreak' in available else None,
-        interval_parameter='dread_plague_duration_ms',
-        near_cap_deficit=15 if branch == 'aoe' else 10,
-        near_cap_inclusive=branch == 'single_target',
-        near_cap_runes=2 if branch == 'aoe' else None,
-        short_window_action='scourge_strike',
-        high_spender_binding=f'unholy.{branch}.'+('4' if spender == 'epidemic' else '7' if branch == 'aoe' else '5'),
-        low_spender_binding=f'unholy.{branch}.'+('8' if spender == 'epidemic' else '9'),
-        reserve_deficit=50 if branch == 'single_target' else None,
+        periodic_interval_ms=params.get('dread_plague_duration_ms'),
+        periodic_interval_source='dread_plague_duration_ms',
+        spending_decisions=spending_decisions,
         bindings=[dict(row, source=APL_SOURCE+'#L'+row['source']) for row in BINDINGS
                   if row['list'] in ('high_priority', 'cooldowns', branch)],
-        parameter_sources=dict(dread_plague_duration_ms=
+        parameter_sources=dict(lesser_ghoul_ready_stacks=
+            'sc_death_knight.cpp:buffs.lesser_ghoul_ready->check(); initialized before actions',
+            dread_plague_duration_ms=
             'sc_death_knight.cpp:outbreak_t::impact -> background_actions.dread_plague::composite_dot_duration',
             rune_recharge_ms='sc_death_knight.cpp:death_knight_t::runes_per_second',
             rune_recharge_slots='sc_death_knight.cpp:MAX_REGENERATING_RUNES'),
+        approximate=['以原生疾病持续时间作为低频间隔，不保证全场疾病状态',
+                     '初始缺层时每循环一次FS增益维护示范，不保证持续增益',
+                     '固定爆发不推断Army冷却或Buff生效'],
         unknown=['完整APL动态条件与前序让位未由静态排列实现',
+                 'FS仅在初始缺层时示范一次增益维护；后续随机层数、Scythe替换和持续维护未知，不设固定比例/周期',
                  '疾病、伤口、随机触发、Buff反应历史及替换形态的战斗相位',
                  '爆发尝试不证明成功；爆发实际资源消费和增益相位未预测',
                  '目标选择条件不能由普通固定按钮保证',

@@ -71,7 +71,8 @@ unsigned base_spell_id( const player_t& p, unsigned id )
 }
 
 // Called once after native precombat initialization, before pre-pull callbacks/actions.
-// This records existing arithmetic only: no ready(), execute(), event, or RNG calls.
+// Uses native virtual getters, not ready()/execute(). Getter side effects and null-state
+// safety must also be checked by the original/baseline/disabled combat comparison.
 void capture_static_snapshot( player_t& p, const std::vector<std::string>& names,
                               const std::map<std::string, double>& parameters,
                               const std::map<std::string, bool>& talents )
@@ -99,13 +100,14 @@ void capture_static_snapshot( player_t& p, const std::vector<std::string>& names
   actions.make_array();
   for ( const auto* action : p.action_list )
   {
-    if ( action->is_precombat || action->background || !action->initialized ||
+    if ( action->is_precombat || !action->initialized ||
          range::find( names, action->name_str ) == names.end() ) continue;
     auto row = actions.add();
     row[ "name" ] = action->name_str;
     row[ "signature" ] = action->signature_str;
     row[ "action_list" ] = action->action_list ? action->action_list->name_str : "";
     row[ "spell_id" ] = action->data().id();
+    row[ "background" ] = action->background;
     row[ "gcd_ms" ] = action->gcd().total_millis();
     row[ "cooldown_ms" ] = action->cooldown_duration().total_millis();
     row[ "cast_ms" ] = action->execute_time().total_millis();
@@ -116,10 +118,20 @@ void capture_static_snapshot( player_t& p, const std::vector<std::string>& names
     if ( action->current_resource() != RESOURCE_NONE )
       costs[ util::resource_type_string( action->current_resource() ) ] = action->cost();
     auto gains = row[ "gains" ];
-    if ( action->energize_type_() == action_energize::ON_CAST &&
-         action->energize_resource_() != RESOURCE_NONE )
+    const auto timing = action->energize_type_();
+    row[ "gain_timing" ] = timing == action_energize::ON_CAST ? "on_cast" :
+                            timing == action_energize::ON_HIT ? "on_hit" :
+                            timing == action_energize::NONE ? "none" : "unknown";
+    row[ "gain_status" ] = "unknown";
+    if ( timing == action_energize::NONE )
+      row[ "gain_status" ] = "known_zero";
+    else if ( ( timing == action_energize::ON_CAST || timing == action_energize::ON_HIT ) &&
+              action->energize_resource_() != RESOURCE_NONE )
+    {
       gains[ util::resource_type_string( action->energize_resource_() ) ] =
         action->composite_energize_amount( nullptr );
+      row[ "gain_status" ] = "known";
+    }
   }
   rapidjson::StringBuffer buffer;
   rapidjson::Writer<rapidjson::StringBuffer> writer( buffer );

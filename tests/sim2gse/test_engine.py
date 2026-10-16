@@ -21,7 +21,9 @@ def static_snapshot():
                        'dread_plague_duration_ms': 24000, 'cycle_of_death': False,
                        'festering_scythe': False},
         'actions': [dict(name=name, gcd_ms=1000, cooldown_ms=0, cast_ms=0,
-                         channeled=False, costs=costs, gains=gains)
+                         channeled=False, costs=costs, gains=gains,
+                         gain_status='known' if gains else 'known_zero',
+                         gain_timing='on_cast' if gains else 'none')
                     for name, costs, gains in [
                         ('outbreak', {'rune': 1}, {'runic_power': 10}),
                         ('scourge_strike', {'rune': 1}, {'runic_power': 10}),

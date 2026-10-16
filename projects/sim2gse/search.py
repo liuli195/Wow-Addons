@@ -145,7 +145,10 @@ def initial_programs(capabilities, reference, seed=20260912, *, input_interval_m
                      target_count=1, burst=None, initialization=None):
     """从四个来源产生稳定合法的起点，而不读派生或宠物动作。"""
     from rule_initialization import generate
-    rule_start = generate(capabilities, reference, input_interval_ms=input_interval_ms,
+    from unholy_rules import bind
+    binding = bind(capabilities, reference.get('static_snapshot'), target_count,
+                   spec_id=reference.get('identity', {}).get('spec_id'))
+    rule_start = generate(capabilities, reference, binding=binding, input_interval_ms=input_interval_ms,
                           target_count=target_count, burst=burst)
     if initialization is not None:
         initialization.update(rule_start)
@@ -1865,6 +1868,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             # Export the rule start even when a frozen champion is searched first.
             # The ordinary candidate cache reuses this compilation; no extra simulation.
             compiled = candidate(initialization['program'])
+            for position in initialization['positions']:
+                if position['kind'] != 'action':
+                    continue
+                click = compiled['compiled_program']['clicks'][position['click_position']]
+                if click.get('commands') != [position['action']] or click['source'] != position['source']:
+                    raise ValueError('规则起点位置与实际编译点击不一致')
             initialization.update(export_text=compiled['text'],
                                   compilation=compiled['upstream_compilation'],
                                   click_mapping=compiled['compiled_program']['clicks'])

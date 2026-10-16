@@ -204,10 +204,10 @@ def _apl_task_boundary(native=None):
         player.update(sim2gse_actions_protocol=1, sim2gse_actions=native['executed_actions'],
                       sim2gse_apl_actions_protocol=native.get('apl_actions_protocol'),
                       sim2gse_apl_actions=native.get('apl_actions'),
-                      sim2gse_items=[], sim2gse_precombat_actions=[],
+                      sim2gse_items=[], sim2gse_precombat_actions=native.get('precombat_definitions', []),
                       sim2gse_static_snapshot=native.get('static_snapshot'))
         player['collected_data'].update(action_sequence=native['action_sequence'],
-                                         action_sequence_precombat=[])
+                                         action_sequence_precombat=native.get('precombat_sequence', []))
         report_name = next(value.split('=', 1)[1] for value in command if value.startswith('json2='))
         (Path(folder) / report_name).write_text(json.dumps(report), encoding='utf-8')
         return SimpleNamespace(returncode=0, stdout=b'', stderr=b'', elapsed_seconds=0.01)

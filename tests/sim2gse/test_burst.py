@@ -493,7 +493,7 @@ def test_public_search_skips_entire_forbidden_history_structure(
 
 
 @contextmanager
-def character_seed_boundary(*, native_flags=None):
+def character_seed_boundary(*, native_flags=None, native_reference=None):
     """构造原生目录及外部成绩；角色映射、任务及程序校验保持真实。"""
     import engine
     import sequence
@@ -502,7 +502,7 @@ def character_seed_boundary(*, native_flags=None):
     from test_search import _fast_search_boundary
 
     definition, _ = reviewed_fixture()
-    native = apl_pool_reference()
+    native = native_reference if native_reference is not None else apl_pool_reference()
     template = native['apl_actions'][0]
     auto = dict(template, name='auto_attack', signature='auto_attack',
                 data_id=6603, base_spell_id=6603, gcd_ms=0)
@@ -566,10 +566,26 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
                 created = json.load(response)
             handle = server.tasks[created['task_id']][1]
             handle.join(20)
-            with urlopen(base + '/api/tasks/' + created['task_id'], timeout=3) as response:
-                state = json.load(response)
+            reads = []
+            storage_api = result_store._api()
+            read_key = storage_api['read_key']
+            def audited_read(root, table, key, **options):
+                if table == 'runs':
+                    reads.append(options.get('columns'))
+                return read_key(root, table, key, **options)
+            with patch.dict(storage_api, {'read_key': audited_read}):
+                with urlopen(base + '/api/tasks/' + created['task_id'], timeout=3) as response:
+                    state = json.load(response)
             assert state['status'] == 'completed', state
             assert [scene['target_count'] for scene in state['scenes']] == [1, 5]
+            assert reads and all(columns is not None and 'rule_initialization' not in columns
+                                 for columns in reads), '双场摘要不得向存储读取完整初始化列'
+            assert all(scene['has_rule_initialization'] and 'rule_initialization' not in scene
+                       for scene in state['scenes'])
+            with urlopen(base + '/api/tasks/' + created['task_id'] +
+                         '?details=rule_initialization', timeout=3) as response:
+                detail = json.load(response)
+            assert all(scene['rule_initialization'] for scene in detail['scenes'])
             _, destination = server.task_paths(created['task_id'])
             saved = task.read_task(destination / 'aoe', include_search_records=True)
             assert any([[command['simc_action'] for command in node['commands']]
