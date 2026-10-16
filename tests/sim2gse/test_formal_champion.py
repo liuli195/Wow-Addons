@@ -252,6 +252,7 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
+    assert first['input_interval_ms'] == 200
     originals = {scene['formal_champion_snapshot']['condition_key']:
         result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
         for scene in first['scenes']}
@@ -265,12 +266,15 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
                 elif change == 'equipment':
                     case_raw = raw.replace('id=273795', 'id=273795,bonus_id=1')
                 elif change == 'cadence':
-                    interval = 400
+                    # 250ms keeps the 1000ms fixture GCD and burst pause representable.
+                    # 400ms would leave one empty input at 2800ms before the 4000ms resume.
+                    interval = 250
                 else:
                     condition_patches.enter_context(patch.object(engine, 'identity', lambda *args, **kwargs:
                         (lambda value: (value[0], dict(value[1], constructed_identity='different')))(identity(*args, **kwargs))))
                 second = dual_result(tmp_path / ('second-' + change), case_raw,
                     candidate_limit=1, interval_ms=interval)
+                assert second['input_interval_ms'] == interval
                 assert all(scene['formal_champion_snapshot']['status'] == 'absent' for scene in second['scenes'])
                 assert [scene['formal_champion_snapshot']['condition_key'] for scene in first['scenes']] != [
                     scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]

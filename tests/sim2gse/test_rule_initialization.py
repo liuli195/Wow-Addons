@@ -16,6 +16,23 @@ def test_task_rejects_missing_static_character_snapshot(tmp_path):
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
 
+def test_task_stops_skeleton_after_one_bound_spender_attempt(tmp_path):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    snapshot = native['static_snapshot']
+    snapshot['resources']['runic_power']['current'] = 100
+    next(row for row in snapshot['actions'] if row['name'] == 'death_coil')['costs'] = {'runic_power': 35}
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1))
+    # The binding's spender is already affordable: one 35-unit attempt, not 100 units.
+    assert result['rule_initialization']['skeleton'] == dict(
+        duration_ms=1000, consumption=35, demonstrated=[])
+
+
 def test_task_exports_a_resource_skeleton_using_effective_gcd(tmp_path):
     from test_engine import apl_pool_reference
     from task import read_task
@@ -32,7 +49,7 @@ def test_task_exports_a_resource_skeleton_using_effective_gcd(tmp_path):
     initialization = result['rule_initialization']
     assert initialization == saved['rule_initialization']
     assert initialization['resource'] == 'runic_power'
-    assert initialization['skeleton']['consumption'] >= 100
+    assert initialization['skeleton']['consumption'] == 30
     assert initialization['program'][1] == {'kind': 'WaitClicks', 'clicks': 4}
     assert len(initialization['rules']) == 8
     assert initialization['unknown']
@@ -49,7 +66,7 @@ def test_native_integral_resource_slots_are_accepted_as_json_numbers(tmp_path):
     with _apl_task_boundary(native):
         result = run_task(source, tmp_path / 'task', search_config=dict(
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-    assert result['rule_initialization']['skeleton']['consumption'] >= 100
+    assert result['rule_initialization']['skeleton']['consumption'] == 30
 
 
 @pytest.mark.parametrize('fault,message', [
@@ -96,8 +113,40 @@ def test_full_charge_rule_keeps_aoe_priority_and_long_cd_only_needs_one_demo(tmp
     assert [row['action'] for row in actions[:3]] == ['outbreak', 'putrefy', 'epidemic']
     assert actions[1]['rule'] == 'window_or_full'
     assert initialization['skeleton']['demonstrated'] == ['putrefy']
-    assert initialization['skeleton']['duration_ms'] < 45000
-    assert initialization['skeleton']['consumption'] >= 100
+    assert initialization['skeleton']['duration_ms'] == 2000
+    assert initialization['skeleton']['consumption'] == 30
+
+
+@pytest.mark.parametrize('talent,available', [(True, True), (False, True), (True, False)])
+def test_task_demonstrates_available_talented_cooldown_in_single_target(tmp_path, talent, available):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    for row in native['apl_actions']:
+        if row['name'] == 'death_and_decay':
+            row['available'] = available
+    snapshot = native['static_snapshot']
+    snapshot['parameters']['cycle_of_death'] = talent
+    snapshot['resources']['runic_power']['maximum'] = 30
+    snapshot['actions'].append(dict(name='death_and_decay', gcd_ms=1000, cooldown_ms=12000,
+        cast_ms=0, channeled=False, costs={'rune': 1}, gains={'runic_power': 10},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    attempts = [row for row in report['positions'] if row.get('action') == 'death_and_decay']
+    assert len(attempts) == int(talent and available)
+    assert report['skeleton']['demonstrated'] == (['death_and_decay'] if talent and available else [])
+    if attempts:
+        assert attempts[0]['bindings'] == ['unholy.cooldowns.2']
+        binding = next(row for row in report['bindings'] if row['id'] == 'unholy.cooldowns.2')
+        assert 'active_enemies>=3' in binding['signature']
+        assert binding['source'].endswith('#L373')
+        assert binding['initialization_coverage']['basis'] == 'user_approved_single_target_demo'
+        assert binding['initialization_coverage']['upstream_applicable'] is False
 
 
 def test_periodic_spacing_survives_fixed_burst_pause_without_modifying_burst(tmp_path):
@@ -313,6 +362,44 @@ def test_task_does_not_treat_conditional_or_unknown_gains_as_known_zero(
     assert all(row['resource_balance_status'] == 'unknown_unaccounted_gain' for row in later)
     assert all(row['condition_status'] == 'dynamic_condition_unknown' for row in later
                if row['action'] in ('death_coil', 'epidemic'))
+
+
+def test_task_replaces_known_resource_work_after_an_uncertain_gain(tmp_path):
+    native = buff_native_reference()
+    snapshot = native['static_snapshot']
+    snapshot['resources']['runic_power']['maximum'] = 60
+    snapshot['parameters']['dread_plague_duration_ms'] = 3000
+    next(row for row in snapshot['actions'] if row['name'] == 'death_coil')['costs'] = {'runic_power': 60}
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    # Six 10-unit fillers and one 60-unit consumer form the 7s skeleton.
+    # Each maintenance supplies the same known 10-unit contribution as one filler.
+    # The earlier conditional 20-unit gain stays unaccounted throughout.
+    assert report['skeleton']['duration_ms'] == 7000
+    assert report['program'] == [
+        ['outbreak'], {'kind': 'WaitClicks', 'clicks': 4},
+        ['festering_strike'], {'kind': 'WaitClicks', 'clicks': 4},
+        ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
+        ['outbreak'], {'kind': 'WaitClicks', 'clicks': 4},
+        ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
+        ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
+        ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
+        ['death_coil'], {'kind': 'WaitClicks', 'clicks': 4}]
+    assert report['duration_ms'] == 8000
+    assert report['periodic_edits'] == [dict(action='outbreak', operation='remove_redundant_tail',
+                                            restored_skeleton_actions=['scourge_strike'])]
+    actions = [row for row in report['positions'] if row['kind'] == 'action']
+    assert all(row['resource_balance_status'] == 'unknown_unaccounted_gain'
+               for row in actions[1:])
+    assert all(row['replaced_skeleton_actions'] == ['scourge_strike']
+               for row in actions if row['action'] == 'outbreak')
+    assert all(row['condition_status'] == 'dynamic_condition_unknown'
+               for row in actions if row['action'] == 'death_coil')
 
 
 @pytest.mark.parametrize('include_dt', [True, False])

@@ -140,6 +140,7 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
         next_cd = {name: aligned_release.get(name, 0) for name in required}
         demonstrated = set()
         buff_demonstrated = set()
+        spender_demonstrated = False
         consumption = 0.0
         unaccounted_gain = False
         program, positions = [], []
@@ -167,11 +168,13 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                 balances[constraint] += len(ready)
             regeneration[:] = [end for end in regeneration if end > now]
             complete = (not pending if pending is not None else
-                        set(binding['cooldowns']) <= demonstrated and consumption >= capacities[resource])
+                        set(binding['cooldowns']) <= demonstrated and spender_demonstrated)
             if complete:
                 return dict(program=program, positions=positions, duration_ms=now,
                             consumption=consumption, demonstrated=sorted(demonstrated), clicks=click)
             def eligible(name):
+                if pending is None and name == binding['spender']:
+                    return not spender_demonstrated
                 return pending is None or any(row['action'] == name for row in pending)
             def affordable(name):
                 return next_cd[name] <= now and all(balances[kind] >= amount
@@ -255,8 +258,10 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                     balances[kind] = min(capacities[kind], balances[kind]+amount)
             elif row['gain_status'] != 'known_zero':
                 unaccounted_gain = True
-            if pending is not None and not replay and name == periodic and not unaccounted_gain:
-                # A known same-resource ON_CAST contribution can replace resource-only work.
+            if (pending is not None and not replay and name == periodic
+                    and row['gain_status'] == 'known' and row['gain_timing'] == 'on_cast'):
+                # Credit belongs only to this known contribution in the conservative ledger;
+                # earlier unaccounted gains keep the balance unknown, not this contribution.
                 # Conditional gains, extra resource costs, or slower actions are not equivalent.
                 credit = balances[resource] - before[resource] + row['costs'].get(resource, 0)
                 for entry in list(pending):
@@ -276,6 +281,8 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
             next_cd[name] = now + row['cooldown_ms']
             if name in binding['cooldowns']:
                 demonstrated.add(name)
+            if name == binding['spender']:
+                spender_demonstrated = True
             if name == periodic:
                 last_periodic = click
             program.append([name])

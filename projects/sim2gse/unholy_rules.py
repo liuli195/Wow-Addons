@@ -375,7 +375,7 @@ def bind(capabilities, snapshot, target_count, *, spec_id):
     if buff_actions and (type(stacks) not in (int, float) or not 0 <= stacks):
         raise ValueError('规则起点缺少静态增益字段: lesser_ghoul_ready_stacks')
     cooldowns = [name for name in ('putrefy',) if name in available]
-    if target_count >= 3 and params['cycle_of_death'] and 'death_and_decay' in available:
+    if params['cycle_of_death'] and 'death_and_decay' in available:
         cooldowns.append('death_and_decay')
     high_id = f'unholy.{branch}.'+('4' if spender == 'epidemic' else '7' if branch == 'aoe' else '5')
     low_id = f'unholy.{branch}.'+('8' if spender == 'epidemic' else '9')
@@ -395,6 +395,14 @@ def bind(capabilities, snapshot, target_count, *, spec_id):
                 condition_basis=('低位条目的epidemic_prio及前序让位未知，仅作静态尝试'
                                  if branch == 'aoe' else 'runic_power.deficit<50；Army剩余及前序让位未知')))
 
+    bindings = [dict(row, source=APL_SOURCE+'#L'+row['source']) for row in BINDINGS
+                if row['list'] in ('high_priority', 'cooldowns', branch)]
+    if branch == 'single_target' and 'death_and_decay' in cooldowns:
+        next(row for row in bindings if row['id'] == 'unholy.cooldowns.2')['initialization_coverage'] = dict(
+            basis='user_approved_single_target_demo', upstream_applicable=False,
+            note='用户批准单体初始化示范一次枯萎凋零；原APL至少3目标条件不成立，'
+                 '此处不是上游单体推荐，不推断减CD或固定周期')
+
     return dict(resource='runic_power',
         recovery=dict(model='parallel_discrete', resource='rune',
                       interval_ms=params.get('rune_recharge_ms'), slots=params.get('rune_recharge_slots')),
@@ -409,8 +417,7 @@ def bind(capabilities, snapshot, target_count, *, spec_id):
         periodic_interval_ms=params.get('dread_plague_duration_ms'),
         periodic_interval_source='dread_plague_duration_ms',
         spending_decisions=spending_decisions,
-        bindings=[dict(row, source=APL_SOURCE+'#L'+row['source']) for row in BINDINGS
-                  if row['list'] in ('high_priority', 'cooldowns', branch)],
+        bindings=bindings,
         parameter_sources=dict(lesser_ghoul_ready_stacks=
             'sc_death_knight.cpp:buffs.lesser_ghoul_ready->check(); initialized before actions',
             dread_plague_duration_ms=
