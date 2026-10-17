@@ -96,3 +96,39 @@ Blocked by: 完整序列与初始化动作说明仍待用户审阅，天灾打�
 - 本机回传：私有真实角色固定输入摘要与旧验收匹配，经公开task.run_task重跑ST1/AOE5，各1候选、2迭代、180秒，均completed且原生检查通过，各18节点/60点击；首次Army为5.000秒、DT为5.200秒，用时3.984/3.797秒。本机跟踪工作区干净，本轮临时目录均在仓库内；仅记录安全汇总，不上传角色原文。证据.local/tests/rule-initialization/ticket01-private-20261018-030603-4013/review-safe.txt。上述三个本机回传来自任务01a14ab0-5ec0-7128-8d30-c22110769001，不将公开投影结果当成私有输入结果。
 - 用户19:05:55 UTC消息Sentinel_65c75e5ba1a48191a5a8f49ff73557cf接受已展示初始化起点中的第6/7步单体死亡缠绕、AOE扩散，明确后续仍需搜索优化。该确认仅覆盖已展示的初始化起点，不扩大为全部技术验收或私有输入结果通过；其后天灾打击及替换形态疑问仍待核对，用户尚未最终验收，不勾选未确认条件。
 - 本轮最小收尾只删除已取消双命令方案专属的unknown（未知项）；真实动态费用及条件未知保留。既有默认公开run_task四组合回归新增输出断言，先4失败（旧unknown仍输出，3.65秒），删该单条配置后同组4通过（1.86秒）；连同替换形态费用及规则CLI回归最终7通过、126取消选中（4.04秒）。证据review14-red-obsolete-unknown.txt、review14-green-obsolete-unknown.txt、review14-final-targeted.txt均在.local/tests/rule-initialization/。78项预存修改SHA256逐项一致，规则结构比较确认只移除该unknown，限定差异空白检查通过。以上为Linux定向诊断，不替代Windows正式整套验证。未改初始化算法、策略或引擎，未删除旧测试，未开始后置全局清理；最终验收及清理方案Astra审核仍待后续闭环。
+
+### 2026-10-17 19:25 UTC 后置最小清理（待独立审查，不是最终验收）
+
+先由GPT-6-A（gpt-6-astra，xhigh）对固定提交5c2b7dc432afc1e540527f53b06645dff80d1845的清单只读审核并有条件放行，再沿本票实施。以下旧行号均指该提交；不将失败当成废弃依据，删除依据是本票已取消的八规则、APL精细条件指导初始化、强制供资/消费/预消费/CD各一次、周期收尾和两层填充。未新增票据或正式规格，未改02/03实现、生成算法、原生引擎及默认策略。
+
+清理映射：
+- 26个旧业务函数删除：旧行19、347、464、543、758、802、899、1045、1163、1195、1222、1254的供资/预消费/二层/周期骨架；99、130、162、203、283、304、418、573、592、996、1023的八规则/自动CD示范/APL分支与兜底；503的普通Putrefy自动等待DT；678的initialize count/priority/template/override驱动；820的旧funding第二专精。重复步骤、未知传播、结构合法性、来源人工差异、独立宏和第二专精保护先迁移至当前有序起手覆盖再删。
+- 原16个混合函数保留当前保护并改写/合并：40保留公开run_task/read_task完整初始化重读、真实有效GCD、WaitClicks和GSE导出；64改为显式integer事实仍接受原生3.0；79保留缺GCD、单空点击及真实跨度越界；377保留编译战前前缀及点击/时间映射；437保留两种未知/条件收益、未知余额None向后传播和不声称成功；617仅保留恢复声明及显式顺序，不再插入自动供资等待；723迁移10种引用/环/类型/单位/参数/非法操作/数量/来源步骤保护；865以显式起手验证原生事实映射同一既有按钮；886以配置明确required_facts保留缺失/负值拒绝；972保留并发CAS，改用当前O模板；1078迁移13种有效恢复字段引用/类型/单位/阶段及已引用、未引用diagnose/edits/features坏保存原子性；1132保留同步/异步预算与配置恰好一次读取。
+- 混合函数中的247暂停/宏不变保护并入原1543：按当前冻结t0检查普通动作避开独立爆发窗口、编译宏动作列表及原定义不变。655/783/922并入原1596：完整初始化快照、旧输出可读、有效保存后新任务完整pack、摘要冲突、变规拒恢复、坏JSON与重复键保存均不替换。四函数8、269、644、955原样保留。原1296以后17函数/31参数例全保留；真实默认四组合明确指定DEFAULT_PATH，避免构造外部报告的最小配置接缝覆盖默认文件。
+- buff_native_reference最后三个调用者迁移/删除后移除；test_engine.static_snapshot/apl_pool_reference原样保留，其目录消费者仍有效。共享构造报告接缝和相邻父快照/冠军身份数据由本轮独立文件实施者修复，另列实测，不把它们当作默认指南角色。
+- rule_config.py删除无执行消费者的plan.*骨架保留上下文和单位特判、initialize默认合并、initialize.* overrides及旧initialize/extra_initializations的skeleton/fill/cross_cycle执行契约。模板、共享binding和最终binding中的旧执行字段明确拒绝；同时按审核追加明确拒绝旧general.initialization和专精initialization.funding。共享binding展开、参数表达式类型/单位/阶段、依赖环、diagnose/edits/features及recovery、estimate事实、initialization_coverage保持。未引入兼容执行器或通用新schema，其他边界不明字段未扩大清理。
+
+实测与数量：
+- 清理前test_rule_initialization.py为1871行、63测试函数，真实收集133参数例（0.33秒）；只做收集，未把收集当作通过，也未据此声称清理前运行耗时或加速。旧段46函数/102例、新段17函数/31例是审核分类。
+- P2快照覆盖补强后当前该文件1024行、34测试函数，83参数例，新增9例公开旧字段拒绝代表；净减847行（215增、1062删）。此前首轮清理为1009行、净减862行，该旧数字不再作为本轮最终差异数量。rule_config.py为578→528行，净减50行（12增、62删）。
+- 公开rules-check/rules-save先红：原5类旧模板/binding执行字段被接受且可替换有效配置，5失败/1通过/74取消选中，0.90秒；共享binding继承路径补红1失败/80取消选中，0.56秒；旧general.initialization/funding补红2失败/81取消选中，1.21秒。删除死分支并加最小明确拒绝后，对应代表及保存/宏回归13通过/70取消选中，3.68秒。
+- 整文件首轮2失败/79通过/0跳过，32.06秒；两项是新增测试误从已发布定义读取candidate字段的KeyError，修正为公开结果真实编译动作列表断言，未删除、跳过或修改产品来掩盖。
+- P2快照覆盖补强前的完整test_rule_initialization.py：83通过、0失败、0跳过，22.77秒。覆盖完整新31例、CAS并发、坏保存原子性、完整冻结快照、旧输出/变规拒恢复、同步异步预算/一次读取、未知传播、硬合法性、独立专精/别名、真实默认四组合。
+- 云端沿既有.local/tests/rule-initialization/run_targeted.py运行；该适配器仅用于Linux定向诊断，不代表Windows锁/进程正式验证、60秒整套预算、私人真实角色或游戏验收。证据为同目录cleanup-before-collect.txt、cleanup-retired-red.txt、cleanup-shared-legacy-red.txt、cleanup-policy-legacy-red.txt、cleanup-repair-green.txt、cleanup-main-pass1.txt、cleanup-main-final.txt。
+- 78项预存无关资产按review13-preserved-before.json逐项SHA256核对全部一致；正式规格无差异。未提交或推送，由主代理限定差异独立审查、协调邻接验证及提交；本票仍为in-progress，未替用户宣告最终验收。
+
+#### 19:28 UTC 独立审查P2覆盖修复
+
+独立审查指出原655非空两库元数据冻结保护合入1596后，构造配置的general.templates、专精templates及bindings为空，完整pack相等断言不足以证明实际规则内容冻结。仅在现有保存/旧任务快照用例补一项非空通用模板、一项非空专精共享定义及其绑定，保存时同时编辑两项intent和共享定义source；保留旧/新完整pack及旧任务完整初始化重读，补新任务完整初始化重读、旧/新报告字面intent及展开后绑定source断言。未改产品、未增测试函数或框架。该用例定向1通过、82取消选中、0跳过，4.92秒（cleanup-nonempty-snapshot-review-green.txt）；原83例整文件22.77秒证据在此测试补强前，本次补强后的全文件以主代理后续验证为准。
+
+
+#### 19:32 UTC 共享构造接缝与相邻回归汇总（独立审查收尾中）
+
+已读取cleanup-fixture-verification.json、cleanup-shared-fixtures.diff及对应原始日志，以下为各次云端定向实测，不汇总成整仓全通过：
+- search（搜索）代表：64通过、8子测试通过、1失败、0跳过，53.23秒。唯一失败为test_search_resumes_without_resetting_budget_or_batches的同进程“正在运行”互斥断言（未抛TaskError）；既有Linux lockf适配器按进程加锁，不能等同Windows真实msvcrt描述符锁冲突。本次保留原测试、原失败和原适配器，未放宽产品或断言，待Windows真锁复核。原始日志cleanup-fixture-search-regression.txt。
+- interface（界面）代表：23通过、2子测试通过、0失败、0跳过，26.42秒；包含受影响来源显示、双场父快照等现有接缝，原始日志cleanup-fixture-interface-regression.txt。
+- test_training_champion.py（训练冠军）整文件：37通过、0失败、0跳过，44.29秒，原始日志cleanup-fixture-champions-final.txt。直接冠军查询明确single_target场景、能力移除样例使用本地合法有序起手，保留当前v2身份拒绝旧v1结果的原意；这是既有构造引擎身份边界诊断，不是实际原生验收。
+- 三文件测试函数全部保留：test_search.py为90→90、2741→2766行；test_interface.py为107→107、3376→3384行；test_training_champion.py为11→11、640→650行。最小配置仅在构造外部报告的局部上下文且无显式规则路径时使用；已有配置优先，退出恢复环境；未全局autouse覆盖、未mock真实load/bind/generate，其他三个起点黄金断言保留。
+- 5个依赖Windows/真实原生的用例本轮未运行，未以skip记作通过：test_search.py中的test_public_entry_runs_multi_start_search_with_isolated_validation、test_native_global_failure_stops_task、test_search_deadline_terminates_a_hung_native_batch；test_interface.py中的test_public_search_generates_exports_and_native_evaluates_castsequence_reset、test_public_search_generates_and_evaluates_wait_clicks。完整节点与限制保存在cleanup-fixture-verification.json的windows_native_not_run。
+- 初始化整文件83通过/22.77秒发生在19:28 P2补强前；随后非空两库/共享定义/绑定完整快照补强的现有1例通过/4.92秒，未声称补强后再次整文件重跑。当前测试差异为净减847行；83参数例和34函数不变。
+- 19:32逐项重核78项预存资产SHA256仍全部一致。当前独立审查尚在收尾，Linux唯一锁失败、5例原生未跑及Windows正式入口/60秒总预算验证边界明确保留；本票仍in-progress，不宣称本轮全通过、清理最终完成或用户最终验收。此次仅更新本票验证记录，不改代码/测试，不提交推送。

@@ -433,7 +433,7 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
         else:
             # 字段边界复用正式初始化的同一查询，三类结果仍经真实双场 HTTP。
             champion = seed_training.training_champion('deathknight', 'unholy',
-                simulation_config_for({'target_count': 1}),
+                simulation_config_for({'target_count': 1, 'scene': 'single_target'}),
                 engines={mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')},
                 input_interval_ms=200, use_burst=True,
                 burst_identity=dict(spec_id=definition['spec_id'], definition_id=definition['definition_id']))
@@ -441,7 +441,9 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
         assert champion['status'] == 'absent'
         assert champion['excluded']
         if fault == 'legacy_unapproved_hash':
-            assert any('旧训练源码凭据不兼容' in excluded['reason'] for excluded in champion['excluded'])
+            # 当前v2先拒绝v1旧身份，不再进入旧源码hash（摘要）检查分支。
+            assert any('旧训练条件凭据缺失或不是已审核基线' in excluded['reason']
+                       for excluded in champion['excluded'])
     else:
         assert champion['candidate_id'] == rows[0]['candidate_id']
         excluded = next(row for row in champion['excluded'] if row['candidate_id'] == high['candidate_id'])
@@ -478,27 +480,35 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    # Remove a non-generator: the character must still support a legal rule start.
-    template, rows = completed_training(tmp_path, 1, [([['death_coil']], [100.] * 3),
-                                                        ([['outbreak']], [200.] * 3)])
-    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-    inspect = engine.inspect
-    def current_catalogue(*args, **kwargs):
-        capabilities = inspect(*args, **kwargs)
-        capabilities['actions'] = [action for action in capabilities['actions']
-                                   if action['simc_action'] != 'outbreak']
-        if static_proof:
-            capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
-                action_initialized=True, available=False, data_valid=True, data_id=1001,
-                signature='outbreak', name='outbreak', gcd_ms=1500))
-        return capabilities
-    with patch.object(engine, 'inspect', current_catalogue):
-        scene = dual_result(tmp_path, raw)['scenes'][0]
-    assert scene['training_champion_snapshot']['candidate_id'] == rows[1]['candidate_id']
-    assert scene['training_champion_adaptation']['status'] == 'rejected'
-    assert scene['training_champion_adaptation']['reason']
-    assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
-                   for source in group)
+    from test_search import _minimal_rule_pack
+    pack = _minimal_rule_pack()
+    pack['specializations']['252']['initialization']['openers'][0]['steps'] = [
+        dict(action='scourge_strike', source_step=1)]
+    rules = tmp_path / 'available-opener.json'
+    rules.write_text(json.dumps(pack), encoding='utf-8')
+    with monkeypatch.context() as configuration:
+        configuration.setenv('SIM2GSE_RULE_CONFIG', str(rules))
+        # 冠军按钮被移除时，当前配置仍保留合法的独立起手。
+        template, rows = completed_training(tmp_path, 1, [([['death_coil']], [100.] * 3),
+                                                            ([['outbreak']], [200.] * 3)])
+        monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
+        inspect = engine.inspect
+        def current_catalogue(*args, **kwargs):
+            capabilities = inspect(*args, **kwargs)
+            capabilities['actions'] = [action for action in capabilities['actions']
+                                       if action['simc_action'] != 'outbreak']
+            if static_proof:
+                capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
+                    action_initialized=True, available=False, data_valid=True, data_id=1001,
+                    signature='outbreak', name='outbreak', gcd_ms=1500))
+            return capabilities
+        with patch.object(engine, 'inspect', current_catalogue):
+            scene = dual_result(tmp_path, raw)['scenes'][0]
+        assert scene['training_champion_snapshot']['candidate_id'] == rows[1]['candidate_id']
+        assert scene['training_champion_adaptation']['status'] == 'rejected'
+        assert scene['training_champion_adaptation']['reason']
+        assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
+                       for source in group)
 
 
 def test_dual_merges_equivalent_native_selected_and_training_champion_sources(tmp_path, monkeypatch,
@@ -619,11 +629,11 @@ def test_dual_rejects_training_champion_from_previous_rule_configuration(
     import burst
     import engine
     import result_store
-    from rule_config import DEFAULT_PATH
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    from test_search import _minimal_rule_pack
+    pack = _minimal_rule_pack()
     rules = tmp_path / 'rules.json'
     rules.write_text(json.dumps(pack), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
@@ -632,7 +642,7 @@ def test_dual_rejects_training_champion_from_previous_rule_configuration(
     with _fast_initialization(), page_task_boundary(), patch.object(engine, 'check_report', REAL_CHECK_REPORT):
         template, rows = completed_training(tmp_path, 1, [([['death_coil']], [190., 200., 210.])])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-        pack['general']['templates']['near_cap']['intent'] += '，已编辑'
+        pack['specializations']['252']['initialization']['openers'][0]['source'] += '，已编辑'
         rules.write_text(json.dumps(pack), encoding='utf-8')
         state = dual_result(tmp_path, raw, candidate_limit=1)
     champion = state['scenes'][0]['training_champion_snapshot']

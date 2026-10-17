@@ -163,10 +163,6 @@ def bind(capabilities, snapshot, target_count, *, spec_id, rule_snapshot, scene=
 
 
 _CONTEXT = {
-    **{key: {'plan', 'candidate'} for key in (
-        'plan.required_attempts_remaining', 'plan.pending_attempts_remaining',
-        'plan.qualified_credit', 'plan.target_cost', 'plan.edits_applied')},
-    'plan.current_action_attempts': {'candidate'},
     'interval.attempt_count': {'02', '03'},
     'finding.source_position': {'02', '03'},
     'finding.opportunity_position': {'02', '03'},
@@ -231,8 +227,7 @@ def _typed(value, facts, expected=None, parameters=None):
     if isinstance(value, dict):
         operation, args = next(iter(value.items()))
         if operation == 'fact':
-            row = facts.get(args, {'type': 'number', 'unit':
-                'primary_resource' if args in ('plan.qualified_credit', 'plan.target_cost') else 'count'})
+            row = facts.get(args, {'type': 'number', 'unit': 'count'})
             kind, unit = row['type'], row.get('unit')
             result = ('number' if kind == 'integer' else kind, unit)
         elif operation == 'param':
@@ -312,9 +307,11 @@ def _substitute(value, arguments):
 
 
 def _expand_binding(row, templates, actions, facts):
+    if {'initialize', 'extra_initializations', 'overrides'} & row.keys():
+        raise ValueError('旧初始化执行字段已取消，请使用initialization.openers')
     arguments = row.get('arguments', {})
     result = _substitute(row, arguments)
-    defaults, contracts, binding_defaults = {}, [], {}
+    contracts, binding_defaults = [], {}
     for identity in row['rules']:
         template = templates[identity]
         for name, kind in template.get('parameters', {}).items():
@@ -339,29 +336,10 @@ def _expand_binding(row, templates, actions, facts):
             if field in binding_defaults and binding_defaults[field] != value and field not in row:
                 raise ValueError('共享定义字段冲突: ' + field)
             binding_defaults[field] = value
-        for key, value in expanded.get('initialize', {}).items():
-            if key in defaults and defaults[key] != value and key not in row.get('initialize', {}):
-                raise ValueError('模板初始化默认值冲突: ' + key)
-            defaults[key] = value
         contracts.append(dict(template=identity, **{key: expanded[key] for key in
             ('diagnose', 'edits', 'features') if key in expanded}))
     result = dict(binding_defaults, **result)
-    if row.get('initialize') is not None:
-        result['initialize'] = dict(defaults, **_substitute(row['initialize'], arguments))
     result['stage_contracts'] = contracts  # 02/03只保存并校验，不在01执行。
-    paths = set()
-    for override in row.get('overrides', []):
-        path = override.get('path', '')
-        if not override.get('source') or path in paths:
-            raise ValueError('人工覆盖缺少来源或同路径冲突: ' + path)
-        paths.add(path)
-        parts = path.split('.')
-        if not (len(parts) == 2 and parts[0] == 'initialize'):
-            raise ValueError('未支持覆盖路径: ' + path)
-        target = result.get(parts[0], {})
-        if parts[1] not in target:
-            raise ValueError('覆盖路径不存在: ' + path)
-        target[parts[1]] = copy.deepcopy(override['value'])
     return result
 
 
@@ -369,6 +347,8 @@ def _validate_templates(templates, facts, actions=None):
     for key, row in templates.items():
         if not isinstance(key, str) or not key or not isinstance(row, dict):
             raise ValueError('模板身份无效')
+        if {'initialize', 'extra_initializations', 'overrides'} & row.keys():
+            raise ValueError('旧初始化执行字段已取消，请使用initialization.openers')
         for field in ('intent', 'scope', 'modifications'):
             if not isinstance(row.get(field), str):
                 raise ValueError('模板缺少说明: ' + key)
@@ -385,18 +365,13 @@ def _validate_templates(templates, facts, actions=None):
         shared = row.get('binding', {})
         if not isinstance(shared, dict):
             raise ValueError('共享定义字段必须是对象')
+        if {'initialize', 'extra_initializations', 'overrides'} & shared.keys():
+            raise ValueError('旧初始化执行字段已取消，请使用initialization.openers')
         if actions is not None and 'action' in shared and shared['action'] not in actions:
             raise ValueError('共享定义动作引用失效: ' + key)
         for field in ('scope', 'condition'):
             if field in shared:
                 _check(shared[field], facts, '02', 'boolean', parameters=parameters)
-        for key in ('coverage_when', 'when', 'priority', 'interval_ms', 'condition_status'):
-            if key in row.get('initialize', {}):
-                _check(row['initialize'][key], facts,
-                       'candidate' if key in ('when', 'condition_status') else 'bind',
-                       'boolean' if key in ('coverage_when', 'when') else
-                       'number' if key in ('priority', 'interval_ms') else 'string',
-                       'ms' if key == 'interval_ms' else None, parameters=parameters)
 
 
 def validate(pack):
@@ -406,6 +381,8 @@ def validate(pack):
             or not isinstance(pack.get('specializations'), dict)):
         raise ValueError('schema_version/general/specializations无效')
     general = pack['general']
+    if 'initialization' in general:
+        raise ValueError('旧通用初始化骨架已取消，请使用专精initialization.openers')
     templates = general.get('templates')
     if not isinstance(templates, dict) or not 0 <= len(templates) <= 128:
         raise ValueError('通用模板数量无效')
@@ -430,6 +407,8 @@ def validate(pack):
                 if native_targets.setdefault(name, action['button']) != action['button']:
                     raise ValueError('同一原生动作映射多个按钮: ' + name)
         policy = spec['initialization']
+        if 'funding' in policy:
+            raise ValueError('旧初始化供资字段已取消，请使用initialization.openers')
         recovery = policy['recovery']
         if recovery.get('model') not in ('none', 'parallel_discrete'):
             raise ValueError('未支持的恢复模型')
@@ -540,35 +519,6 @@ def validate(pack):
                         raise ValueError('顺序引用失效: ' + other)
                     left, right = (other, row['id']) if field == 'before' else (row['id'], other)
                     dependencies[left].add(right)
-            for init in ([row['initialize']] if row.get('initialize') else []) + row.get('extra_initializations', []):
-                if init.get('attempt') not in actions:
-                    raise ValueError('初始化动作引用失效')
-                if type(init.get('count')) is not int or not 0 <= init['count'] <= 128:
-                    raise ValueError('次数必须为0到128的整数')
-                if type(init.get('required')) is not bool or not isinstance(init.get('coverage_id'), str):
-                    raise ValueError('覆盖身份或必需标记无效')
-                if set(init.get('phases', [])) - {'skeleton', 'fill'}:
-                    raise ValueError('初始化阶段无效')
-                if init.get('unknown') not in ('error', 'record_not_applied', 'attempt_with_report'):
-                    raise ValueError('初始化unknown策略无效')
-                if init['unknown'] == 'attempt_with_report' and not init.get('basis'):
-                    raise ValueError('未知条件示范缺少批准依据')
-                for key in ('coverage_when', 'when', 'priority', 'interval_ms', 'condition_status'):
-                    if key in init:
-                        _check(init[key], facts,
-                               'candidate' if key in ('when', 'condition_status') else 'bind',
-                               'boolean' if key in ('coverage_when', 'when') else
-                               'number' if key in ('priority', 'interval_ms') else 'string',
-                               'ms' if key == 'interval_ms' else None)
-                if init.get('cross_cycle') not in (None, 'remove_redundant_tail_or_pad'):
-                    raise ValueError('未支持跨循环编辑操作')
-                for key in init.get('required_facts', []):
-                    if key not in facts:
-                        raise ValueError('初始化必需事实未声明: ' + key)
-                    _check({'fact': key}, facts, 'bind')
-                for name in init.get('replace_actions', []):
-                    if name not in actions:
-                        raise ValueError('替换动作引用失效')
         remaining = set(ids)
         while remaining:
             ready = {key for key in remaining if not dependencies[key] & remaining}

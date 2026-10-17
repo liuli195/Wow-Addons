@@ -2208,11 +2208,18 @@ class InterfaceTests(unittest.TestCase):
         self.assertGreater(state["elapsed_seconds"], 0)
 
     def test_rule_start_and_sources_are_visible_through_page_and_task_api(self):
-        from test_search import _apl_task_boundary
+        from test_search import _apl_task_boundary, _minimal_rule_pack
+        pack = _minimal_rule_pack()
+        spec = pack['specializations']['252']
+        spec['facts']['initial_runic_power'] = dict(type='number', unit='count',
+            **{'from': 'static.resource.current'}, resource='runic_power')
+        spec['initialization']['required_facts'] = ['initial_runic_power']
+        rules = Path(self.directory.name) / 'rules.json'
+        rules.write_text(json.dumps(pack), encoding='utf-8')
         self.server.task_options = {'search_config': dict(
             candidate_limit=1, batch_targets=(2,), iterations=2,
             validation_batches=1, input_interval_ms=200)}
-        with _apl_task_boundary():
+        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), _apl_task_boundary():
             page = urlopen(self.url).read().decode('utf-8')
             created = self._json_request('POST', '/api/tasks', {'profile': sample_profile(),
                                        'input_interval_ms': 200, 'target_count': 1})
@@ -2246,7 +2253,8 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(initialization['export_text'].startswith('!GSE3!'))
         self.assertEqual(initialization['compilation'], 'passed_with_client_boundary_stubs')
         self.assertTrue(initialization['click_mapping'])
-        self.assertTrue(initialization['parameter_sources'])
+        self.assertEqual(initialization['parameter_sources']['initial_runic_power']['from'],
+                         'static.resource.current')
         self.assertIn('ruleInitialization', page)
         self.assertIn('state.rule_initialization', page)
 
@@ -3339,13 +3347,12 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         result_store.DATA_ROOT.mkdir(exist_ok=True)
         import sequence
         import burst
-        from rule_config import DEFAULT_PATH
         from test_burst import page_task_boundary, reviewed_fixture
-        from test_search import _fast_initialization
+        from test_search import _fast_initialization, _minimal_rule_pack
         definition, profile = reviewed_fixture()
         burst.publish(definition)
-        pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
-        original_intent = pack['general']['templates']['near_cap']['intent']
+        pack = _minimal_rule_pack()
+        original_source = pack['specializations']['252']['initialization']['openers'][0]['source']
         path = Path(self.directory.name) / 'rules.json'
         path.write_text(json.dumps(pack), encoding='utf-8')
         self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
@@ -3355,7 +3362,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             evaluate = sequence.evaluate
             def edit_after_start(*args, **kwargs):
                 if not edited:
-                    pack['general']['templates']['near_cap']['intent'] = 'next task only'
+                    pack['specializations']['252']['initialization']['openers'][0]['source'] = 'next task only'
                     path.write_text(json.dumps(pack), encoding='utf-8')
                     edited.append(True)
                 return evaluate(*args, **kwargs)
@@ -3369,7 +3376,8 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         reports = [scene['rule_initialization'] for scene in detail['scenes']]
         self.assertEqual(reports[0]['rule_config_digest'], reports[1]['rule_config_digest'])
         for report in reports:
-            self.assertEqual(report['rule_snapshot']['pack']['general']['templates']['near_cap']['intent'], original_intent)
+            self.assertEqual(report['rule_snapshot']['pack']['specializations']['252']
+                             ['initialization']['openers'][0]['source'], original_source)
 
 
 if __name__ == "__main__":

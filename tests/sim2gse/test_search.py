@@ -6,7 +6,8 @@ import tempfile
 import time
 import shutil
 import hashlib
-from contextlib import contextmanager, nullcontext
+import os
+from contextlib import contextmanager, nullcontext, ExitStack
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,18 @@ from test_character_export import sample_profile
 from test_engine import apl_pool_reference, static_snapshot
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
 from search import initial_programs, mutate, TaskStore
+
+
+def _minimal_rule_pack():
+    """构造报告只覆盖这份有序起手，不冒充完整指南角色。"""
+    names = ('outbreak', 'scourge_strike', 'death_coil', 'epidemic')
+    return dict(schema_version=1, general=dict(templates={}), specializations={
+        '252': dict(actions={name: dict(button=name, native_action=name) for name in names},
+            facts={}, bindings=[], initialization=dict(resource='runic_power',
+                recovery=dict(model='none'), openers=[dict(id='fixture', scope=True,
+                    source='fixture: ordered task boundary', steps=[
+                        dict(action=name, source_step=index)
+                        for index, name in enumerate(names[:3], 1)])]))})
 
 
 def _fast_capabilities():
@@ -145,13 +158,21 @@ def _fast_initialization(*, real_engine=False):
     identity = lambda mode, runtime=None: (Path("simc-test.exe"),
         {"mode": mode, "upstream_commit": "test", "build_options": []})
     identity_boundary = nullcontext() if real_engine else patch.object(engine, "identity", side_effect=identity)
-    with identity_boundary, \
-         patch.object(engine, "reference", side_effect=_fast_reference), \
-         patch.object(engine, "inspect", side_effect=lambda reference, folder:
-                      _fast_inspect(reference, folder, include_item=not real_engine)), \
-         patch.object(engine, "check_report", side_effect=check_report), \
-         patch.object(codec, "run_command", side_effect=compiler):
-        yield
+    with ExitStack() as boundary:
+        if 'SIM2GSE_RULE_CONFIG' not in os.environ:
+            root = REPOSITORY / '.local/tests'
+            root.mkdir(parents=True, exist_ok=True)
+            folder = boundary.enter_context(tempfile.TemporaryDirectory(prefix='sim2gse-ordered-rules-', dir=root))
+            path = Path(folder) / 'rules.json'
+            path.write_text(json.dumps(_minimal_rule_pack()), encoding='utf-8')
+            boundary.enter_context(patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(path)}))
+        with identity_boundary, \
+             patch.object(engine, "reference", side_effect=_fast_reference), \
+             patch.object(engine, "inspect", side_effect=lambda reference, folder:
+                          _fast_inspect(reference, folder, include_item=not real_engine)), \
+             patch.object(engine, "check_report", side_effect=check_report), \
+             patch.object(codec, "run_command", side_effect=compiler):
+            yield
 
 
 @contextmanager
@@ -350,7 +371,8 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(result['status'], 'completed')
         self.assertEqual([row['simc_action'] for row in result['capabilities']['actions']],
                          ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
-        self.assertEqual(initial_programs(result['capabilities'], native)[1:], [
+        self.assertEqual(initial_programs(result['capabilities'], native,
+                         rule_snapshot=result['rule_initialization']['rule_snapshot'])[1:], [
             [['outbreak'], ['outbreak'], ['death_coil']],
             [['outbreak'], ['death_coil'], ['outbreak'], ['death_coil']],
             [['scourge_strike'], ['death_coil'], ['outbreak']],
@@ -1744,7 +1766,9 @@ class SearchAndValidationTests(TestCase):
             [["scourge_strike"], ["death_coil"], ["outbreak"]],
         ]
 
-        self.assertEqual(initial_programs(capabilities, reference, seed=20260912)[1:], expected)
+        with _fast_initialization():
+            starts = initial_programs(capabilities, reference, seed=20260912)
+        self.assertEqual(starts[1:], expected)
         from search import input_times
         first = input_times("jitter", seed=20260912)
         self.assertEqual(first, input_times("jitter", seed=20260912))
@@ -1868,10 +1892,11 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(search_seeds & validation_seeds or search_seeds & final_seeds or validation_seeds & final_seeds)
 
     def test_reference_start_keeps_executed_active_items(self):
-        starts = initial_programs(_fast_capabilities(), dict(identity={"spec_id": 252},
-            static_snapshot=static_snapshot(), action_sequence=[
-            dict(name="use_item,slot=trinket1", queue_failed=False),
-        ]))
+        with _fast_initialization():
+            starts = initial_programs(_fast_capabilities(), dict(identity={"spec_id": 252},
+                static_snapshot=static_snapshot(), action_sequence=[
+                dict(name="use_item,slot=trinket1", queue_failed=False),
+            ]))
         self.assertEqual(starts[1], [["use_item,slot=trinket1"]])
 
     def test_search_winner_is_not_replaced_by_a_final_comparison(self):
