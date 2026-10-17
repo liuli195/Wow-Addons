@@ -169,9 +169,7 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
             regeneration[:] = [end for end in regeneration if end > now]
             complete = (not pending if pending is not None else
                         set(binding['cooldowns']) <= demonstrated and spender_demonstrated)
-            buff_complete = (not fill or not binding['buff_demo_needed'] or
-                             set(binding['buff_actions']) <= buff_demonstrated)
-            if complete and buff_complete:
+            if complete:
                 return dict(program=program, positions=positions, duration_ms=now,
                             consumption=consumption, demonstrated=sorted(demonstrated), clicks=click)
             def eligible(name):
@@ -185,12 +183,6 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
             periodic = binding['periodic_action'] if fill else None
             if periodic and (not replay or eligible(periodic)) and (last_periodic is None or (click - last_periodic) * input_interval_ms >= period) and affordable(periodic):
                 name, reason = periodic, 'maintenance'
-            if name is None and fill and binding['buff_demo_needed']:
-                name = next((candidate for candidate in binding['buff_actions']
-                             if candidate not in buff_demonstrated and (not replay or eligible(candidate))
-                             and affordable(candidate)), None)
-                if name is not None:
-                    reason = 'buff_maintenance_demo'
             spender = binding['spender']
             spending = binding['spending_decisions'](balances, capacities, uncertain=unaccounted_gain)
             selected_spend = None
@@ -208,6 +200,12 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
             if name is None and eligible(spender) and affordable(spender) and spending['low']['eligible']:
                 selected_spend = spending['low']
                 name, reason = spender, selected_spend['rule']
+            if name is None and fill and binding['buff_demo_needed']:
+                name = next((candidate for candidate in binding['buff_actions']
+                             if candidate not in buff_demonstrated and (not replay or eligible(candidate))
+                             and affordable(candidate)), None)
+                if name is not None:
+                    reason = 'buff_maintenance_demo'
             if name is None:
                 generators = binding['generators']
                 ordered = generators[generator_index:] + generators[:generator_index]
