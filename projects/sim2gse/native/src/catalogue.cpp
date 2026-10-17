@@ -170,7 +170,6 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
       if ( entry.cost_action->current_resource() != RESOURCE_NONE )
         costs[ util::resource_type_string( entry.cost_action->current_resource() ) ] = action->cost();
     }
-    auto gains = row[ "gains" ];
     const auto timing = action->energize_type_();
     row[ "gain_timing" ] = timing == action_energize::ON_CAST ? "on_cast" :
                             timing == action_energize::ON_HIT ? "on_hit" :
@@ -178,6 +177,8 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
     row[ "gain_status" ] = "unknown";
     // This is only the action's direct energize, never passive/pet/random resource income.
     row[ "gain_scope" ] = "direct_action";
+    // Acquire the child only after adding parent members: AddMember can relocate them.
+    auto gains = row[ "gains" ];
     if ( known( "gains" ) && timing == action_energize::NONE )
       row[ "gain_status" ] = "known_zero";
     else if ( known( "gains" ) && ( timing == action_energize::ON_CAST || timing == action_energize::ON_HIT ) &&

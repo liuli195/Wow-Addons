@@ -171,6 +171,9 @@ class NativeCatalogueTests(unittest.TestCase):
             self.assertTrue(capabilities['actions'])
             snapshot = native['static_snapshot']
             self.assertIs(type(snapshot['parameters']['blightburst']), bool)
+            for row in snapshot['actions']:
+                if row['gain_status'] == 'known':
+                    self.assertTrue(row['gains'], row['name'] + ' 已知直接收益不能丢失资源条目')
             original_actions = {'outbreak', 'putrefy', 'death_and_decay', 'death_coil',
                                 'epidemic', 'festering_strike', 'festering_scythe',
                                 'scourge_strike', 'soul_reaper'}
