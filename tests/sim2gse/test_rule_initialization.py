@@ -417,6 +417,62 @@ def test_task_keeps_festering_strike_as_one_buff_demo_not_resource_fill(tmp_path
     assert any(row['action'] == 'scourge_strike' for row in actions)
 
 
+@pytest.mark.parametrize('targets,capacity', [(1, 100), (5, 30)])
+@pytest.mark.parametrize('needs_preparation', [True, False])
+def test_task_keeps_required_buff_preparation_before_burst_when_cooldowns_supply_resources(
+        tmp_path, targets, capacity, needs_preparation):
+    import copy
+    import burst, result_store
+    from test_burst import reviewed_fixture, character_seed_boundary
+    result_store.DATA_ROOT.mkdir()
+    definition, raw = reviewed_fixture()
+    definition = burst.publish(definition)
+    protected = copy.deepcopy(definition)
+    native = buff_native_reference()
+    template = native['apl_actions'][0]
+    native['precombat_definitions'] = [dict(template, name='raise_dead', signature='raise_dead',
+        data_id=46585, base_spell_id=46585, precombat=True, gcd_ms=0)]
+    native['precombat_sequence'] = [dict(name='raise_dead')]
+    snapshot = native['static_snapshot']
+    snapshot['parameters'].update(blightburst=True, cycle_of_death=True,
+        lesser_ghoul_ready_stacks=0 if needs_preparation else 3)
+    snapshot['resources']['runic_power']['maximum'] = capacity
+    for name, spell_id in [('putrefy', 10042), ('soul_reaper', 343294)]:
+        native['apl_actions'].append(dict(template, name=name, signature=name,
+            data_id=spell_id, base_spell_id=spell_id))
+    for name in ('putrefy', 'death_and_decay', 'soul_reaper'):
+        snapshot['actions'].append(dict(name=name, gcd_ms=1500, cooldown_ms=60000,
+            cast_ms=0, channeled=False, costs={'rune': 1}, gains={'runic_power': 10},
+            gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    for row in snapshot['actions']:
+        row['gcd_ms'] = 1500
+    source = tmp_path / 'role.simc'
+    source.write_text(raw, encoding='utf-8')
+    with character_seed_boundary(native_reference=native):
+        result = run_task(source, tmp_path / 'task', use_burst=True,
+            simulation_config={'target_count': targets}, search_config=dict(
+                input_interval_ms=300, candidate_limit=1, batch_targets=(2,),
+                iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    actions = [row for row in report['positions'] if row['kind'] == 'action']
+    preparations = [row for row in actions if row['rule'] == 'buff_maintenance_demo']
+    assert len(preparations) == int(needs_preparation)
+    if needs_preparation:
+        assert preparations[0]['action'] == 'festering_strike'
+        assert preparations[0]['estimated_ms'] == 300
+        assert preparations[0]['estimated_ms'] < definition['plan']['start_ms']
+        assert preparations[0]['condition_status'] == 'dynamic_condition_unknown'
+    else:
+        assert not any(row['action'] == 'festering_strike' for row in actions)
+    assert report['skeleton']['demonstrated'] == ['death_and_decay', 'putrefy', 'soul_reaper']
+    assert all(sum(row['action'] == name for row in actions) == 1
+               for name in ('death_and_decay', 'putrefy', 'soul_reaper'))
+    assert sum(row['action'] in ('death_coil', 'epidemic') for row in actions) == 1
+    assert burst.load(252) == protected
+    if targets == 5:
+        assert not any(row['action'] == 'scourge_strike' for row in actions)
+
+
 @pytest.mark.parametrize('gain_status,gain_timing,gains', [
     ('known', 'on_hit', {'runic_power': 20}), ('unknown', 'unknown', {})])
 def test_task_does_not_treat_conditional_or_unknown_gains_as_known_zero(

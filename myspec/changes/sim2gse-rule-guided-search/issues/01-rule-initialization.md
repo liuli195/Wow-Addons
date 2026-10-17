@@ -158,3 +158,10 @@ Blocked by: 无其他开发票。依据已确认规则及专精分层；缺必�
 - 公开task.run_task接缝使用独立构造数据：单体/5目标可用两例先因零次收割失败，不可用两例通过；最小修改后四例全部通过。另核对1200ms构造GCD对应200ms输入后的5空点击、完整源条件和unknown。初次绿灯尝试发现原24秒疾病尾等待合并影响GCD断言，将该独立mock疾病间隔设为3秒以隔离目标，未放宽5空点击断言，未改产品周期行为。最终同四例加载固定5c43c8de旧绑定仍为2 failed/2 passed，证据review10-red-final-case-fixed-base.txt。证据：review10-red-soul-reaper.txt、review10-intermediate-period-isolation.txt、review10-green-soul-reaper.txt，均在既有忽略目录.local/tests/rule-initialization/。
 - 较宽初始化/目录集合53 passed、7 subtests；另外2项因云端缺baseline/build.json无法运行，不记为通过。日志review10-final-targeted.txt；排除这两项原生环境依赖后，同集合53 passed、7 subtests（24.66秒），review10-final-supported.txt。两套补丁链日志review10-native-patch-check.txt。原生reference既有契约已补可用收割必须提供静态参数的检查，等待Windows旧binary红、新binary绿，云端不冒称原生验证。
 - 独审后需Windows重建baseline/controlled，核验新增原生字段及原版/基准/禁用控制器战斗字段一致，执行固定基线快速verify，再从现有入口生成真实单体和AOE初始化，逐步分别列出技能尝试和随后空点击。真实序列及01验收仍待完成，02/03未开始。
+
+### 2026-10-17 修复CD产资源挤走初始增益维护（待独审及真实序列重生成）
+
+- Windows已确认8253709的原生收割字段及快速验证通过，但真实单体脓疮推迟到首爆发后，AOE完全遗漏脓疮；因此不能以收割新增测试通过宣告十条规则已符合。根因是第二层只按有限骨架待办完成退出，初始增益维护不计入完成条件，又排在普通CD和消费之后；CD资源足够时便不再进入维护/填充路径。
+- 仅修通用现有过程：绑定已声明需要的初始增益维护也必须完成，疾病维护之后先安排它，再处理普通CD/消费。不把动态维护统一提权，不新增每类填充必一次，不改骨架一次CD/消费、资源未知处理或固定爆发。没有新增配置字段、技能名特判、调度框架或C++改动。
+- 沿已确认task.run_task公开接缝使用独立mock：1500ms GCD、300ms输入、预战前缀、三个产资源CD；单体容量100时旧维护位于5.7秒，AOE容量30时旧维护0次，两个红灯均保存。修后两场所需维护均在首个普通输入0.3秒，早于保持不变的3秒爆发；再以初始层数已够的两场控制确认不额外插入维护。CD与消费各一次，AOE无缺口时不强塞天灾，所有动态适用性仍unknown。
+- 相关维护/未知收益回归8 passed（6.73秒）；完整初始化45 passed（22.52秒），review11-final-initialization.txt。文档377份、Python编译和差异空白检查通过。证据为既有.local/tests/rule-initialization/review11-red-buff-preparation.txt、review11-green-buff-preparation.txt；未复制真实角色参数作为构造用例。独审后复用8253709已验收原生二进制与现有真实输入，重生成单体/AOE并逐步核对首次维护位置，无需因本轮Python改动重建C++。01仍未最终验收，02/03未开始。
