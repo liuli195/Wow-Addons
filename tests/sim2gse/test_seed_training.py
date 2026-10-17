@@ -1409,6 +1409,14 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
         definition['excluded_spell_ids'] = [1002]
         original = [['death_coil'], ['dark_transformation'], ['outbreak']]
         expected = [['dark_transformation'], ['outbreak']]
+        from test_search import _minimal_rule_pack
+        rules = _minimal_rule_pack()
+        # 本构造把death_coil交给独立爆发，普通起手不能再包含它。
+        rules['specializations']['252']['initialization']['openers'][0]['steps'] = [
+            dict(action=name, source_step=index) for index, name in enumerate(('outbreak', 'scourge_strike'), 1)]
+        rules_path = tmp_path / 'rules.json'
+        rules_path.write_text(json.dumps(rules), encoding='utf-8')
+        monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules_path))
     elif case == 'empty':
         original = [dict(kind='Loop', count=3, blocks=[['army_of_the_dead'], ['dark_transformation']]),
                     dict(kind='WaitClicks', clicks=2)]
@@ -2054,6 +2062,14 @@ def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definit
     definition['blocks'] = [[dict(kind='spell', simc_action='death_coil', name='死亡缠绕', spell_id=1002)]]
     definition['excluded_spell_ids'] = [1002]
     published = burst.publish(definition)
+    from test_search import _minimal_rule_pack
+    rules = _minimal_rule_pack()
+    # 本定义特意包含death_coil，局部普通起手须与独立爆发动作隔离。
+    rules['specializations']['252']['initialization']['openers'][0]['steps'] = [
+        dict(action=name, source_step=index) for index, name in enumerate(('outbreak', 'scourge_strike'), 1)]
+    rules_path = tmp_path / 'rules.json'
+    rules_path.write_text(json.dumps(rules), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules_path))
     material = tmp_path / 'material.json'
     material.write_text(json.dumps(dict(label='ordinary-loop', class_name='deathknight', spec='unholy',
         source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],

@@ -2217,7 +2217,8 @@ class SearchAndValidationTests(TestCase):
             code=("import sys,json,runpy;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
                   "import result_store;result_store.DATA_ROOT=Path(sys.argv[5]);"
                   "result_store._SKILL_API=runpy.run_path(sys.argv[6]);"
-                  "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]))")
+                  "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]),"
+                  "simulation_config=dict(scene='single_target'))")
             process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),
                                       str(source),str(destination),json.dumps(config),str(result_store.DATA_ROOT),
                                       str(Path(os.environ['DATA_STORE_TEST_SKILL'])/'scripts/data_store.py')])
@@ -2244,7 +2245,7 @@ class SearchAndValidationTests(TestCase):
                 self.assertEqual(kernel.WaitForSingleObject(owner,2000),0,'实际任务进程尚未退出，不能恢复')
                 self.assertEqual(kernel.WaitForSingleObject(held,2000),0,'任务退出后仍有所属模拟进程')
                 before=state['elapsed_seconds']
-                resumed=resume_task(destination)
+                resumed=resume_task(destination, simulation_config=dict(scene='single_target'))
                 self.assertGreaterEqual(resumed['elapsed_seconds'],before)
                 self.assertGreaterEqual(resumed['completed_batches'], state['completed_batches'])
             finally:

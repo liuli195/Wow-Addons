@@ -369,8 +369,16 @@ def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
     assert quiet['consistent'] and not quiet['trace']
 
 
-def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path, memory_result_center):
+def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path, monkeypatch, memory_result_center):
     import burst
+    from test_search import _minimal_rule_pack
+    pack = _minimal_rule_pack()
+    pack['specializations']['252']['initialization']['openers'][0]['steps'] = [
+        dict(action='scourge_strike', source_step=1)]
+    rules = tmp_path / 'rules.json'
+    rules.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
+    simulation = dict(target_count=1, scene='single_target')
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     profile = tmp_path / 'character.simc'
@@ -378,14 +386,15 @@ def test_public_search_excludes_current_burst_content_and_changes_with_definitio
     config = dict(candidate_limit=1, batch_targets=(2,), iterations=2,
                   validation_batches=2, final_batches=1, final_iterations=2,
                   scenarios=('nominal',), diagnostic_logging=True)
-    result = task.run_task(profile, tmp_path / 'search', use_burst=True, search_config=config)
+    result = task.run_task(profile, tmp_path / 'search', use_burst=True, search_config=config,
+                           simulation_config=simulation)
     names = {action['simc_action'] for action in result['capabilities']['actions']}
     assert not names.intersection({'army_of_the_dead', 'dark_transformation', 'potion',
                                   'use_item,slot=trinket1', 'use_item,slot=trinket2'})
     assert result['burst']['definition_id']
     saved = task.read_task(tmp_path / 'search', include_search_records=True)
     assert saved['burst']['candidate']['text'] == result['burst']['candidate']['text']
-    resumed = task.resume_task(tmp_path / 'search')
+    resumed = task.resume_task(tmp_path / 'search', simulation_config=simulation)
     assert resumed['burst']['definition_id'] == result['burst']['definition_id']
     # An independently reviewed definition containing only Outbreak changes the
     # exclusion scope: the former burst buttons must become available again.
@@ -395,14 +404,15 @@ def test_public_search_excludes_current_burst_content_and_changes_with_definitio
                               spell_id=77575, slot=None, item_id=None)]]
     revised['excluded_spell_ids'] = [77575]
     burst.publish(revised)
-    changed = task.run_task(profile, tmp_path / 'changed', use_burst=True, search_config=config)
+    changed = task.run_task(profile, tmp_path / 'changed', use_burst=True, search_config=config,
+                           simulation_config=simulation)
     changed_names = {action['simc_action'] for action in changed['capabilities']['actions']}
     assert 'outbreak' not in changed_names
     assert {'army_of_the_dead', 'dark_transformation', 'use_item,slot=trinket1',
             'use_item,slot=trinket2'} <= changed_names
     assert changed['burst']['definition_id'] != result['burst']['definition_id']
     with pytest.raises(task.TaskError, match='爆发定义已变化'):
-        task.resume_task(tmp_path / 'search')
+        task.resume_task(tmp_path / 'search', simulation_config=simulation)
 
 
 def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training(tmp_path):
@@ -732,9 +742,13 @@ def test_public_search_freezes_deduplicated_seed_adaptations_on_resume(
 
 
 @pytest.mark.parametrize('recover_first', [False, True])
-def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, recover_first):
+def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, monkeypatch, recover_first):
     import burst
     import time
+    from test_search import _minimal_rule_pack
+    rules = tmp_path / 'rules.json'
+    rules.write_text(json.dumps(_minimal_rule_pack()), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     profile = tmp_path / 'character.simc'
@@ -845,7 +859,15 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
     assert restored['status'] == 'completed', (restored, dual_task._load(destination)['error'])
     assert restored['collection_ready'] and len(restored['exports']) == 3
     assert calls.count('single_target') == 1
-    assert definition['instructions'] == restored['burst_instructions']
+    parent = dual_task._load(destination)
+    children = [task.read_task(destination / parent[purpose + '_path']) for purpose in ('single_target', 'aoe')]
+    instructions = '\n'.join(label + '：' + child['burst']['instructions']
+        for label, child in zip(('单体', '群体'), children, strict=True))
+    assert restored['burst_instructions'] == instructions
+    from gse_import import decode_import
+    exported = next(iter(decode_import(restored['exports']['burst'])['sequences'].values()))
+    assert exported['MetaData']['Help'].partition('爆发按法：')[2] == instructions
+    assert burst.load(252)['instructions'] == definition['instructions']
     if fault == 'preparation':
         assert (destination / 'single_target/preserved.txt').read_text() == 'preparation evidence'
         assert any(name.startswith('s-') for name in calls)

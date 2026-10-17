@@ -186,11 +186,11 @@ class SimulationConfigTests(unittest.TestCase):
                 run_task(source, destination, search_config=_fast_search_config(),
                          simulation_config=config_for({"enable_omnium_talents": False}))
 
-            with patch.object(task, "run_task", side_effect=AssertionError("SimC must not start")) as rerun:
-                with self.assertRaisesRegex(TaskError, "恢复模拟配置"):
-                    resume_task(destination,
-                                simulation_config=config_for({"enable_omnium_talents": True}))
-            rerun.assert_not_called()
+                with patch.object(task, "run_task", side_effect=AssertionError("SimC must not start")) as rerun:
+                    with self.assertRaisesRegex(TaskError, "恢复模拟配置"):
+                        resume_task(destination,
+                                    simulation_config=config_for({"enable_omnium_talents": True}))
+                rerun.assert_not_called()
 
     def test_baseline_and_controlled_engines_share_target_options(self) -> None:
         import engine

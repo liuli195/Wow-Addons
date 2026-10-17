@@ -123,7 +123,8 @@ def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_bud
                 assert reads == {'baseline': 3, 'controlled': 3}
                 assert previous['scenes'][0]['elapsed_seconds'] >= 17.
                 folder = next((tmp_path / 'fresh/page/tasks').iterdir()) / 'single_target'
-                resumed = task.resume_task(folder)
+                simulation = task.read_task(folder)['simulation_config']
+                resumed = task.resume_task(folder, simulation_config=simulation)
                 assert resumed['status'] == 'completed'
                 assert resumed['elapsed_seconds'] >= 17.
                 assert reads == {'baseline': 4, 'controlled': 4}

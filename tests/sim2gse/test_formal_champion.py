@@ -339,7 +339,8 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
                  for run_id in (low_id, high_id)}
     profile = tmp_path / 'current.simc'
     profile.write_bytes(raw.encode('utf-8'))
-    options = dict(use_burst=True, search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+    options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
         validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
     for fault in ('profile', 'source_batch_forged'):
         with subtests.test(fault=fault):
