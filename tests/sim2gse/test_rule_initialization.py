@@ -28,9 +28,13 @@ def test_task_stops_skeleton_after_one_bound_spender_attempt(tmp_path):
         result = run_task(source, tmp_path / 'task', search_config=dict(
             input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
             iterations=2, validation_batches=1))
-    # The binding's spender is already affordable: one 35-unit attempt, not 100 units.
-    assert result['rule_initialization']['skeleton'] == dict(
-        duration_ms=1000, consumption=35, demonstrated=[])
+    # 满资源仅先消费一次腾空间，之后4次生成的有效收益35才完成目标消费。
+    skeleton = result['rule_initialization']['skeleton']
+    assert skeleton['consumption'] == 70
+    assert skeleton['funding']['completed'] == 1
+    assert skeleton['funding']['credited'] == 35
+    assert skeleton['funding']['preconsumption_attempts'] == 1
+    assert skeleton['duration_ms'] == 6000
 
 
 def test_task_exports_a_resource_skeleton_using_effective_gcd(tmp_path):
@@ -100,8 +104,10 @@ def test_full_charge_rule_keeps_aoe_priority_and_long_cd_only_needs_one_demo(tmp
                                       data_id=10042, base_spell_id=10042))
     snapshot = native['static_snapshot']
     snapshot['resources']['runic_power']['current'] = 80
+    # 保留近满+满充能竞争；费用10使CD后的剩余10空间足以由生成动作供给。
+    next(row for row in snapshot['actions'] if row['name'] == 'epidemic')['costs'] = {'runic_power': 10}
     snapshot['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=120000,
-        cast_ms=0, channeled=False, costs={}, gains={'runic_power': 10}, charges=2, max_charges=2))
+        cast_ms=0, channeled=False, costs={}, gains={'runic_power': 10}, gain_status='known', gain_timing='on_cast', charges=2, max_charges=2))
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native):
@@ -113,8 +119,8 @@ def test_full_charge_rule_keeps_aoe_priority_and_long_cd_only_needs_one_demo(tmp
     assert [row['action'] for row in actions[:3]] == ['outbreak', 'putrefy', 'epidemic']
     assert actions[1]['rule'] == 'window_or_full'
     assert initialization['skeleton']['demonstrated'] == ['putrefy']
-    assert initialization['skeleton']['duration_ms'] == 2000
-    assert initialization['skeleton']['consumption'] == 30
+    assert initialization['skeleton']['duration_ms'] == 3000
+    assert initialization['skeleton']['consumption'] == 10
 
 
 @pytest.mark.parametrize('talent,available', [(True, True), (False, True), (True, False)])
@@ -126,7 +132,7 @@ def test_task_demonstrates_available_talented_cooldown_in_single_target(tmp_path
             row['available'] = available
     snapshot = native['static_snapshot']
     snapshot['parameters']['cycle_of_death'] = talent
-    snapshot['resources']['runic_power']['maximum'] = 30
+    snapshot['resources']['runic_power']['maximum'] = 40  # 覆盖CD10之外仍留生成30的空间
     snapshot['actions'].append(dict(name='death_and_decay', gcd_ms=1000, cooldown_ms=12000,
         cast_ms=0, channeled=False, costs={'rune': 1}, gains={'runic_power': 10},
         gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
@@ -158,7 +164,8 @@ def test_task_demonstrates_available_soul_reaper_without_claiming_dynamic_condit
     native['apl_actions'].append(dict(template, name='soul_reaper', signature='soul_reaper',
         data_id=343294, base_spell_id=343294, available=available))
     snapshot = native['static_snapshot']
-    snapshot['resources']['runic_power']['current'] = 100
+    # 本例只验证CD覆盖；满资源+CD挤占来源额度另有明确失败回归。
+    snapshot['resources']['runic_power']['current'] = 0
     snapshot['parameters']['dread_plague_duration_ms'] = 3000
     snapshot['actions'].append(dict(name='soul_reaper', gcd_ms=1200, cooldown_ms=60000,
         cast_ms=0, channeled=False, costs={'rune': 1}, gains={'runic_power': 10},
@@ -197,7 +204,7 @@ def test_task_uses_confirmed_alternative_disease_maintenance(tmp_path, blightbur
     native['apl_actions'].append(dict(template, name='putrefy', signature='putrefy',
         data_id=10042, base_spell_id=10042, available=available))
     snapshot = native['static_snapshot']
-    snapshot['resources']['runic_power']['maximum'] = 30
+    snapshot['resources']['runic_power']['maximum'] = 40  # 留出CD10+生成30；不再让CD收益替代来源目标
     snapshot['parameters']['dread_plague_duration_ms'] = 6000
     if blightburst is not None:
         snapshot['parameters']['blightburst'] = blightburst
@@ -217,8 +224,11 @@ def test_task_uses_confirmed_alternative_disease_maintenance(tmp_path, blightbur
             ['putrefy'], {'kind': 'WaitClicks', 'clicks': 4},
             ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
             ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4},
-            ['death_coil'], {'kind': 'WaitClicks', 'clicks': 4}]
-        assert report['duration_ms'] == 4000
+            ['death_coil'], {'kind': 'WaitClicks', 'clicks': 4},
+            ['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4}]
+        # 二层可把消费前移；最终排列不被最初来源目标强行锁定。
+        assert report['skeleton']['funding']['completed'] == 1
+        assert report['duration_ms'] == 5000
         assert report['periodic_edits'] == []
         binding = next(row for row in report['bindings'] if row['id'] == 'unholy.cooldowns.1')
         assert 'time<5' in binding['signature']
@@ -296,8 +306,10 @@ def test_task_does_not_claim_repeated_cooldown_is_full_charge(tmp_path):
                                       data_id=10042, base_spell_id=10042))
     snapshot = native['static_snapshot']
     snapshot['resources']['runic_power']['current'] = 80
+    # 此例观察充能证据；初始20空间可完成独立的20费用来源目标。
+    next(row for row in snapshot['actions'] if row['name'] == 'epidemic')['costs'] = {'runic_power': 20}
     snapshot['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=3000,
-        cast_ms=0, channeled=False, costs={}, gains={}, charges=2, max_charges=2))
+        cast_ms=0, channeled=False, costs={}, gains={}, gain_status='known_zero', gain_timing='none', charges=2, max_charges=2))
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native):
@@ -516,6 +528,9 @@ def test_task_aligns_first_putrefy_only_with_an_actual_dt_burst_input(tmp_path, 
     # 1000ms GCD at 200ms inputs spans five clicks; DT pause releases at 4000ms.
     assert first['estimated_ms'] == (4000 if include_dt else 1000)
     assert burst.load(252) == protected
+    rule = next(row for row in report['rules'] if row['id'] == 'protected_burst')
+    assert rule['application_status'] == ('approximate_applied' if include_dt else 'unknown_not_applied')
+    assert ('protected_burst' in first['applied_rules']) is include_dt
     if include_dt:
         assert first['condition_status'] == 'dynamic_condition_unknown'
         assert '输入尝试' in first['condition_basis']
@@ -621,3 +636,519 @@ def test_task_exposes_selected_resource_recovery_model_and_its_actual_wait(tmp_p
         ['death_coil'], {'kind': 'WaitClicks', 'clicks': 4}]
     assert [row['estimated_ms'] for row in report['positions'] if row['kind'] == 'action'] == [0, 5000, 6000]
     assert report['duration_ms'] == 7000
+
+
+def test_task_rejects_invalid_edited_rule_pack_before_initialization(tmp_path, monkeypatch):
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    config = tmp_path / 'rules.json'
+    config.write_text('{broken', encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(config))
+    with _apl_task_boundary(), pytest.raises(TaskError, match='规则配置'):
+        run_task(source, tmp_path / 'task', search_config=dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+
+
+def test_task_freezes_edited_two_library_pack_and_reports_its_digest(tmp_path, monkeypatch):
+    import json
+    from rule_config import DEFAULT_PATH
+    from task import read_task
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    config = tmp_path / 'rules.json'
+    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    pack['general']['templates']['near_cap']['intent'] = '测试改名：近满及时消费'
+    config.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(config))
+    with _apl_task_boundary():
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+        saved = read_task(tmp_path / 'task')
+    report = result['rule_initialization']
+    assert next(row for row in report['rules'] if row['id'] == 'near_cap')['intent'] == '测试改名：近满及时消费'
+    assert report['rule_snapshot']['pack'] == pack
+    assert len(report['rule_config_digest']) == 64
+    assert saved['rule_initialization']['rule_snapshot'] == report['rule_snapshot']
+
+
+@pytest.mark.parametrize('origin', ['binding', 'template', 'override', 'priority'])
+def test_configured_cooldown_count_changes_public_initialization_without_code_changes(tmp_path, monkeypatch, origin):
+    import json
+    from rule_config import DEFAULT_PATH
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    template = native['apl_actions'][0]
+    native['apl_actions'].append(dict(template, name='soul_reaper', signature='soul_reaper',
+        data_id=343294, base_spell_id=343294, available=True))
+    native['static_snapshot']['actions'].append(dict(name='soul_reaper', gcd_ms=1000,
+        cooldown_ms=15000, cast_ms=0, channeled=False, costs={'rune': 1},
+        gains={'runic_power': 10}, gain_status='known', gain_timing='on_cast',
+        charges=1, max_charges=1))
+    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    row = next(row for row in pack['specializations']['252']['bindings']
+               if row['id'] == 'unholy.single_target.2')
+    if origin == 'priority':
+        row['initialize']['priority'] = -20
+    elif origin == 'binding':
+        row['initialize'] = dict(row.get('initialize', {}), count=2)
+    elif origin == 'template':
+        row['initialize'].pop('count', None)
+        pack['general']['templates']['ordinary_cooldown']['initialize']['count'] = 2
+    else:
+        row.setdefault('overrides', []).append(dict(path='initialize.count', value=2,
+                                 source='fixture: approved count edit'))
+    path = tmp_path / 'rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(path))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1))
+    attempts = [row for row in result['rule_initialization']['positions']
+                if row.get('action') == 'soul_reaper']
+    if origin == 'priority':
+        assert len(attempts) == 1
+        assert result['rule_initialization']['positions'][0]['action'] == 'soul_reaper'
+    else:
+        assert len(attempts) == 2
+        assert attempts[1]['estimated_ms'] - attempts[0]['estimated_ms'] >= 15000
+
+
+@pytest.mark.parametrize('fault', ['action', 'fact', 'cycle', 'count', 'operation', 'type', 'unit', 'parameter', 'override', 'edit_limit'])
+def test_task_rejects_invalid_rule_references_before_running(tmp_path, monkeypatch, fault):
+    import json
+    from rule_config import DEFAULT_PATH
+    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    row = next(row for row in pack['specializations']['252']['bindings'] if row.get('initialize'))
+    if fault == 'type':
+        row['initialize']['when'] = {'add': [True, 1]}
+    elif fault == 'unit':
+        row['initialize']['when'] = {'lt': [{'fact': 'rune_recharge_ms'}, {'fact': 'lesser_ghoul_ready_stacks'}]}
+    elif fault == 'parameter':
+        row.pop('arguments', None)
+    elif fault == 'override':
+        row['overrides'] = [dict(path='condition', value=True, source='fixture')]
+    elif fault == 'edit_limit':
+        pack['general']['initialization']['edit_limit'] = -1
+    elif fault == 'action':
+        row['initialize']['attempt'] = 'missing_action'
+    elif fault == 'fact':
+        row['initialize']['when'] = {'fact': 'undeclared_fact'}
+    elif fault == 'cycle':
+        row['after'] = [row['id']]
+    elif fault == 'count':
+        row['initialize']['count'] = -1
+    else:
+        row['initialize']['when'] = {'python': 'lambda: True'}
+    config = tmp_path / 'rules.json'
+    config.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(config))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(), pytest.raises(TaskError, match='规则配置'):
+        run_task(source, tmp_path / 'task', search_config=dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+
+
+def test_incidental_cooldown_resource_cannot_complete_generator_funded_skeleton(tmp_path):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    native['static_snapshot']['parameters']['blightburst'] = True
+    template = native['apl_actions'][0]
+    native['apl_actions'].append(dict(template, name='putrefy', signature='putrefy',
+        data_id=10042, base_spell_id=10042, available=True))
+    native['static_snapshot']['actions'].append(dict(name='putrefy', gcd_ms=1000,
+        cooldown_ms=15000, cast_ms=0, channeled=False, costs={}, gains={'runic_power':30},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count':5},
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    assert report['skeleton']['funding']['credited'] == 30
+    assert report['skeleton']['funding']['completed'] == 1
+    assert [row['action'] for row in report['skeleton']['attempts']] == [
+        'putrefy', 'scourge_strike', 'scourge_strike', 'scourge_strike', 'epidemic']
+    assert report['skeleton']['consumption'] == 30
+
+
+def test_task_refuses_resume_after_rule_file_edit_even_for_completed_result(tmp_path, monkeypatch):
+    import json
+    from rule_config import DEFAULT_PATH
+    from task import resume_task
+    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    path = tmp_path / 'rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(path))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary():
+        run_task(source, tmp_path / 'task', search_config=dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+        pack['general']['templates']['near_cap']['intent'] += ' edited'
+        path.write_text(json.dumps(pack), encoding='utf-8')
+        with pytest.raises(TaskError, match='规则.*变化.*新任务'):
+            resume_task(tmp_path / 'task')
+
+
+def test_full_resource_with_incidental_gain_reports_one_clear_is_insufficient(tmp_path):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    native['static_snapshot']['resources']['runic_power']['current'] = 100
+    template = native['apl_actions'][0]
+    native['apl_actions'].append(dict(template, name='soul_reaper', signature='soul_reaper',
+        data_id=343294, base_spell_id=343294, available=True))
+    native['static_snapshot']['actions'].append(dict(name='soul_reaper', gcd_ms=1000,
+        cooldown_ms=15000, cast_ms=0, channeled=False, costs={'rune':1}, gains={'runic_power':10},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native), pytest.raises(TaskError, match='来源额度.*不可达'):
+        run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1))
+
+
+def test_public_task_runs_second_synthetic_spec_without_business_names(tmp_path, monkeypatch):
+    import json
+    from test_engine import apl_pool_reference
+    template = apl_pool_reference()['apl_actions'][0]
+    native = dict(apl_pool_reference(), identity={'spec_id':71,'class_id':1})
+    native['executed_actions'] = native['apl_actions'] = [
+        dict(template, name=name, signature=name, data_id=spell, base_spell_id=spell)
+        for name, spell in [('spark',1001),('drain',1002)]]
+    native['action_sequence'] = [{'name':'spark'},{'name':'drain'}]
+    native['static_snapshot'] = dict(protocol=1, stage='precombat_initialized_before_actions',
+        resources={'energy':{'current':0,'maximum':100}}, parameters={}, actions=[
+        dict(name=name, gcd_ms=1000, cooldown_ms=0, cast_ms=0, channeled=False, costs=cost,
+             gains=gain, gain_status='known' if gain else 'known_zero', gain_timing='on_cast' if gain else 'none')
+        for name,cost,gain in [('spark',{}, {'energy':12}),('drain',{'energy':24},{})]])
+    entry = lambda action, required, count, priority: dict(
+        coverage_id='completion' if required else 'optional', required=required, count=count,
+        coverage_when=True, when=True, attempt=action, priority=priority, phases=['skeleton','fill'],
+        insert=False, reason='custom', rules=['custom_rule'], unknown='record_not_applied',basis='synthetic')
+    pack = dict(schema_version=1, general=dict(templates={'custom_rule':dict(intent='测试',scope='测试',
+        modifications='测试',unknown='record_not_applied')}, initialization=dict(
+        stop={'eq':[{'fact':'plan.required_attempts_remaining'},0]},
+        edit_stop={'eq':[{'fact':'plan.pending_attempts_remaining'},0]}, edit_limit=128)),
+        specializations={'71':dict(source_revision='synthetic',
+            actions={'gain':{'native_action':'spark','button':'spark'}, 'spend':{'native_action':'drain','button':'drain'}},
+            facts={}, initialization=dict(resource='energy', recovery={'model':'none'},
+                funding=dict(enabled=True, resource='energy',actions=['gain'],coverage_id='completion',
+                    gain_policy='known_on_cast_effective_after_cap',
+                    preconsumption_coverage='room', completion={'gte':[{'fact':'plan.qualified_credit'},{'fact':'plan.target_cost'}]}),
+                approximate=[],unknown=[]),
+            bindings=[dict(id='renamed_gain', action='gain', rules=['custom_rule'], scope=True, condition=True, initialize=entry('gain',False,8,20)),
+                      dict(id='renamed_spend', action='spend', rules=['custom_rule'], scope=True, condition=True, initialize=entry('spend',True,1,10))])})
+    path = tmp_path / 'rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(path))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile().replace('deathknight=', 'warrior=').replace('spec=unholy','spec=arms'), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,),iterations=2,validation_batches=1))
+    report = result['rule_initialization']
+    assert report['resource'] == 'energy'
+    assert [row['action'] for row in report['positions'] if row['kind']=='action'] == ['spark','spark','drain']
+    assert report['skeleton']['funding']['credited'] == 24
+
+
+def test_task_maps_configured_native_facts_to_existing_button(tmp_path, monkeypatch):
+    import json
+    from rule_config import DEFAULT_PATH
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    next(row for row in native['static_snapshot']['actions'] if row['name'] == 'scourge_strike')['name'] = 'native_builder'
+    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    pack['specializations']['252']['actions']['scourge_strike']['native_action'] = 'native_builder'
+    path = tmp_path / 'rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(path))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+    assert any(row.get('action') == 'scourge_strike' for row in result['rule_initialization']['positions'])
+    assert 'native_builder' not in result['candidate']['text']
+
+
+@pytest.mark.parametrize('value', [None, -1])
+def test_task_rejects_missing_or_negative_initial_maintenance_stacks(tmp_path, value):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    native['static_snapshot']['parameters']['lesser_ghoul_ready_stacks'] = value
+    native['apl_actions'].append(dict(native['apl_actions'][0], name='festering_strike',
+        signature='festering_strike', data_id=85948, base_spell_id=85948))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native), pytest.raises(TaskError, match='层数|unknown|事实'):
+        run_task(source, tmp_path / 'task', search_config=dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+
+
+def test_configured_zero_edit_limit_preserves_first_layer_without_maintenance(tmp_path, monkeypatch):
+    import json
+    from rule_config import DEFAULT_PATH
+    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    pack['general']['initialization']['edit_limit'] = 0
+    path = tmp_path / 'rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(path))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    native['static_snapshot']['resources']['runic_power']['maximum'] = 30
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    assert [row['action'] for row in report['positions'] if row['kind'] == 'action'] == [
+        'scourge_strike', 'scourge_strike', 'scourge_strike', 'death_coil']
+    assert report['duration_ms'] == report['skeleton']['duration_ms']
+    assert report['periodic_edits'] == []
+
+
+def test_rule_cli_validates_saves_atomically_and_new_task_loads_saved_pack(tmp_path, monkeypatch, capsys):
+    import json
+    from rule_config import DEFAULT_PATH
+    from task import main
+    current = tmp_path / 'rules.json'
+    current.write_bytes(DEFAULT_PATH.read_bytes())
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(current))
+    assert main(['rules-check', str(current)]) == 0
+    original = json.loads(capsys.readouterr().out)
+    before = current.read_bytes()
+    draft = tmp_path / 'draft.json'
+    draft.write_text('{invalid', encoding='utf-8')
+    assert main(['rules-save', str(draft), '--expected-digest', original['rule_config_digest']]) == 2
+    assert '规则配置' in capsys.readouterr().err
+    assert current.read_bytes() == before
+    pack = json.loads(before)
+    pack['general']['templates']['near_cap']['intent'] = '保存后生效'
+    draft.write_text(json.dumps(pack), encoding='utf-8')
+    assert main(['rules-save', str(draft), '--expected-digest', 'stale']) == 2
+    assert '冲突' in capsys.readouterr().err
+    assert current.read_bytes() == before
+    assert main(['rules-save', str(draft), '--expected-digest', original['rule_config_digest']]) == 0
+    saved = json.loads(capsys.readouterr().out)
+    assert saved['rule_config_digest'] != original['rule_config_digest']
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary():
+        result = run_task(source, tmp_path / 'task', search_config=dict(
+            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+    assert result['rule_initialization']['rule_config_digest'] == saved['rule_config_digest']
+    assert next(row for row in result['rule_initialization']['rules'] if row['id'] == 'near_cap')['intent'] == '保存后生效'
+
+
+def test_rule_cli_rejects_duplicate_json_keys_without_replacing_valid_file(tmp_path, monkeypatch, capsys):
+    import json
+    from rule_config import DEFAULT_PATH
+    from task import main
+    target = tmp_path / 'rules.json'
+    target.write_bytes(DEFAULT_PATH.read_bytes())
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
+    assert main(['rules-check', str(target)]) == 0
+    identity = json.loads(capsys.readouterr().out)['rule_config_digest']
+    before = target.read_bytes()
+    draft = tmp_path / 'draft.json'
+    draft.write_text(before.decode().replace('"schema_version": 1,', '"schema_version": 2, "schema_version": 1,', 1), encoding='utf-8')
+    assert main(['rules-save', str(draft), '--expected-digest', identity]) == 2
+    assert '重复' in capsys.readouterr().err
+    assert target.read_bytes() == before
+
+
+def test_rule_cli_concurrent_writers_cannot_overwrite_the_same_expected_version(tmp_path, monkeypatch, capsys):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from rule_config import DEFAULT_PATH
+    from task import main
+    target = tmp_path / 'rules.json'
+    target.write_bytes(DEFAULT_PATH.read_bytes())
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
+    assert main(['rules-check', str(target)]) == 0
+    identity = json.loads(capsys.readouterr().out)['rule_config_digest']
+    paths = []
+    for index in range(2):
+        pack = json.loads(target.read_bytes())
+        pack['general']['templates']['near_cap']['intent'] = f'writer {index}'
+        draft = tmp_path / f'draft-{index}.json'
+        draft.write_text(json.dumps(pack), encoding='utf-8')
+        paths.append(draft)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda path: main(['rules-save', str(path), '--expected-digest', identity]), paths))
+    assert sorted(outcomes) == [0, 2]
+    assert '冲突' in capsys.readouterr().err
+    assert main(['rules-check', str(target)]) == 0
+
+
+def test_task_retains_dynamic_apl_targets_and_parent_contract_without_static_substitution(tmp_path):
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary():
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count': 5},
+            search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    bindings = {row['id']: row for row in report['bindings']}
+    # Fixed APL line364 chooses the first boss target, not the current target.
+    assert bindings['unholy.aoe.3']['target'] == {'mode':'first','fact':'apl_is_boss','phase':'02'}
+    facts = report['rule_snapshot']['resolved']['252']['facts']
+    assert facts['apl_is_boss'] == {'type':'boolean','from':'student.apl_fact','key':'is_boss','phase':'02'}
+    def refs(value):
+        if isinstance(value, dict):
+            return {value['fact']} if set(value) == {'fact'} else set().union(*(refs(v) for v in value.values()))
+        if isinstance(value, list):
+            return set().union(*(refs(v) for v in value))
+        return set()
+    # APL line406 uses actual active_enemies, including after targets die.
+    for identity in ('unholy.aoe.4', 'unholy.aoe.7', 'unholy.aoe.8'):
+        assert 'apl_active_enemies' in refs(bindings[identity]['condition'])
+        assert 'targets' not in refs(bindings[identity]['condition'])
+        assert bindings[identity]['parent_condition'] == {'gte':[{'fact':'apl_active_enemies'},3]}
+    assert report['skeleton']['funding']['completed'] == 1
+
+
+@pytest.mark.parametrize('targets', [1, 5])
+def test_task_does_not_claim_burst_rule_without_burst_inputs(tmp_path, targets):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    native['apl_actions'].append(dict(native['apl_actions'][0], name='putrefy', signature='putrefy',
+                                     data_id=10042, base_spell_id=10042))
+    native['static_snapshot']['actions'].append(dict(name='putrefy', gcd_ms=1000,
+        cooldown_ms=120000, cast_ms=0, channeled=False, costs={}, gains={'runic_power':10},
+        gain_status='known', gain_timing='on_cast', charges=2, max_charges=2))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count':targets},
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    assert any(row.get('action') == 'putrefy' for row in report['positions'])
+    rule = next(row for row in report['rules'] if row['id'] == 'protected_burst')
+    assert rule['application_status'] == 'unknown_not_applied'
+    assert rule['applied_positions'] == []
+
+
+@pytest.mark.parametrize('attempt_limit', [128, 3, 2])
+def test_task_evaluates_current_action_attempt_count_before_each_candidate(tmp_path, monkeypatch, attempt_limit):
+    import json
+    from rule_config import DEFAULT_PATH
+    pack = json.loads(DEFAULT_PATH.read_bytes())
+    for row in pack['specializations']['252']['bindings']:
+        if row.get('arguments', {}).get('action') == 'scourge_strike' and row.get('initialize'):
+            row['initialize']['when'] = {'lt':[{'fact':'plan.current_action_attempts'}, attempt_limit]}
+            row['initialize']['unknown'] = 'error'
+    path = tmp_path / 'rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(path))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    native['static_snapshot']['resources']['runic_power']['maximum'] = 30
+    with _apl_task_boundary(native):
+        if attempt_limit == 2:
+            with pytest.raises(TaskError, match='来源额度.*不可达'):
+                run_task(source, tmp_path / 'task', search_config=dict(
+                    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+        else:
+            result = run_task(source, tmp_path / 'task', search_config=dict(
+                candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+            attempts = result['rule_initialization']['skeleton']['attempts']
+            assert sum(row['action'] == 'scourge_strike' for row in attempts) == 3
+
+
+@pytest.mark.parametrize('fault', [
+    'recovery_reference', 'recovery_operation', 'recovery_type', 'recovery_unit',
+    'recovery_phase', 'stop_phase', 'stop_candidate_count', 'when_student_fact',
+    'coverage_estimate', 'scope_plan', 'funding_finding', 'feature_plan', 'diagnose_type',
+    'unused_diagnose_type', 'unused_edit_type', 'unused_feature_type'])
+def test_rule_cli_rejects_invalid_execution_fields_without_overwriting_valid_pack(
+        tmp_path, monkeypatch, capsys, fault):
+    import json
+    from rule_config import DEFAULT_PATH
+    from task import main
+    target = tmp_path / 'rules.json'
+    target.write_bytes(DEFAULT_PATH.read_bytes())
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
+    assert main(['rules-check', str(target)]) == 0
+    identity = json.loads(capsys.readouterr().out)['rule_config_digest']
+    before = target.read_bytes()
+    pack = json.loads(before)
+    spec = pack['specializations']['252']
+    recovery = spec['initialization']['recovery']
+    init = next(row['initialize'] for row in spec['bindings'] if row.get('initialize'))
+    if fault.startswith('recovery_'):
+        recovery['interval_ms'] = {
+            'recovery_reference': {'fact':'missing_recharge'},
+            'recovery_operation': {'unregistered_operation':[1,2]},
+            'recovery_type': True,
+            'recovery_unit': {'fact':'rune_recharge_slots'},
+            'recovery_phase': {'fact':'interval.attempt_count'},
+        }[fault]
+    elif fault in ('stop_phase', 'stop_candidate_count'):
+        fact = 'interval.attempt_count' if fault == 'stop_phase' else 'plan.current_action_attempts'
+        pack['general']['initialization']['stop'] = {'eq':[{'fact':fact},0]}
+    elif fault == 'when_student_fact':
+        init['when'] = {'gte':[{'fact':'apl_active_enemies'},3]}
+    elif fault == 'coverage_estimate':
+        init['coverage_when'] = {'gt':[{'fact':'deficit'},0]}
+    elif fault == 'scope_plan':
+        spec['bindings'][0]['scope'] = {'eq':[{'fact':'plan.required_attempts_remaining'},0]}
+    elif fault == 'funding_finding':
+        spec['initialization']['funding']['completion'] = {'eq':[{'fact':'finding.source_position'},0]}
+    elif fault == 'feature_plan':
+        pack['general']['templates']['window_or_full']['features'][0]['value'] = {'fact':'plan.current_action_attempts'}
+    elif fault == 'diagnose_type':
+        pack['general']['templates']['window_or_full']['diagnose']['when'] = 3
+    elif fault == 'unused_diagnose_type':
+        pack['general']['templates']['avoid_idle']['diagnose']['when'] = 3
+    elif fault == 'unused_edit_type':
+        pack['general']['templates']['avoid_idle']['edits'][0]['when'] = 3
+    elif fault == 'unused_feature_type':
+        pack['general']['templates']['avoid_idle']['features'][0]['value'] = 'not_numeric'
+    draft = tmp_path / 'draft.json'
+    draft.write_text(json.dumps(pack), encoding='utf-8')
+    assert main(['rules-save', str(draft), '--expected-digest', identity]) == 2
+    assert '规则配置' in capsys.readouterr().err
+    assert target.read_bytes() == before
+    assert main(['rules-check', str(target)]) == 0
+    assert json.loads(capsys.readouterr().out)['rule_config_digest'] == identity
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_public_task_budget_includes_configuration_read_and_validation(tmp_path, monkeypatch, asynchronous):
+    import time
+    from pathlib import Path
+    from rule_config import DEFAULT_PATH
+    from task import start_task
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    clock = time.monotonic
+    original_open = Path.open
+    delay = [0.0]
+    def timed_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        if path.resolve() == DEFAULT_PATH.resolve():
+            delay[0] += 2.0  # 外部文件读取耗时；不替换校验或执行层。
+        return handle
+    monkeypatch.setattr(time, 'monotonic', lambda: clock() + delay[0])
+    monkeypatch.setattr(Path, 'open', timed_open)
+    with _apl_task_boundary():
+        config = dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1)
+        if asynchronous:
+            handle = start_task(source, tmp_path / 'task', search_config=config)
+            result = handle.join(30)
+            assert handle.done and handle.error is None
+        else:
+            result = run_task(source, tmp_path / 'task', search_config=config)
+    assert delay[0] == 2.0
+    assert result['elapsed_seconds'] >= 2.0

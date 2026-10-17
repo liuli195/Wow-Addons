@@ -1201,6 +1201,36 @@ class InterfaceTests(unittest.TestCase):
             self.assertFalse(state['result_ready'])
             self.assertEqual(checkpoint.read_bytes(), b'{"preserved":true}')
 
+    def test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume(self):
+        import result_store
+        from dual_task import PARENT_SCHEMA
+        from test_search import _apl_task_boundary
+        from urllib.error import HTTPError
+        task_id = 'b' * 32
+        _, destination = self.server.task_paths(task_id)
+        destination.mkdir()
+        pointer = json.dumps(dict(parent_id=task_id))
+        (destination / 'dual.json').write_text(pointer, encoding='utf-8')
+        schema = {key: value for key, value in PARENT_SCHEMA.items() if key != 'rule_snapshot'}
+        row = dict.fromkeys(schema)
+        row.update(parent_id=task_id, status='cancelled', phase='single_target', error='old cancellation',
+                   input_sha256='frozen', definition_id='reviewed', spec_id=252,
+                   config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
+                   rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
+                   single_target_path='single_target', aoe_path='aoe',
+                   single_target_status='cancelled', aoe_status='pending', burst_instructions='')
+        result_store.write('dual_tasks', task_id, [row], schema=schema)
+        state = self._json_request('GET', '/api/tasks/' + task_id)
+        self.assertEqual(state['status'], 'cancelled')
+        self.assertEqual(state['scenes'][0]['status'], 'cancelled')
+        self.assertEqual(state['scenes'][1]['status'], 'pending')
+        with _apl_task_boundary(), self.assertRaises(HTTPError) as raised:
+            self._json_request('POST', '/api/tasks/' + task_id + '/resume', {})
+        failure = json.loads(raised.exception.read().decode('utf-8'))
+        self.assertIn('缺少规则配置快照', failure['error'])
+        self.assertEqual((destination / 'dual.json').read_text(encoding='utf-8'), pointer)
+        self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
+
     def test_homepage_is_the_real_three_step_shell(self) -> None:
         with urlopen(self.url, timeout=2) as response:
             page = response.read().decode("utf-8")
@@ -3301,6 +3331,45 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
                 self.assertNotIn('\\', message)
                 self.assertLess(len(message), 161)
         self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
+
+
+    def test_dual_freezes_one_rule_pack_even_when_file_changes_between_scenes(self):
+        import os
+        import result_store
+        result_store.DATA_ROOT.mkdir(exist_ok=True)
+        import sequence
+        import burst
+        from rule_config import DEFAULT_PATH
+        from test_burst import page_task_boundary, reviewed_fixture
+        from test_search import _fast_initialization
+        definition, profile = reviewed_fixture()
+        burst.publish(definition)
+        pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+        original_intent = pack['general']['templates']['near_cap']['intent']
+        path = Path(self.directory.name) / 'rules.json'
+        path.write_text(json.dumps(pack), encoding='utf-8')
+        self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1, input_interval_ms=200)}
+        edited = []
+        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(path)}), _fast_initialization(), page_task_boundary():
+            evaluate = sequence.evaluate
+            def edit_after_start(*args, **kwargs):
+                if not edited:
+                    pack['general']['templates']['near_cap']['intent'] = 'next task only'
+                    path.write_text(json.dumps(pack), encoding='utf-8')
+                    edited.append(True)
+                return evaluate(*args, **kwargs)
+            with patch.object(sequence, 'evaluate', side_effect=edit_after_start):
+                created = self._json_request('POST', '/api/tasks', {'profile':profile, 'mode':'dual',
+                    'input_interval_ms':200})
+                self.server.tasks[created['task_id']][1].join(20)
+                detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
+        self.assertEqual(detail['status'], 'completed', detail)
+        self.assertTrue(edited)
+        reports = [scene['rule_initialization'] for scene in detail['scenes']]
+        self.assertEqual(reports[0]['rule_config_digest'], reports[1]['rule_config_digest'])
+        for report in reports:
+            self.assertEqual(report['rule_snapshot']['pack']['general']['templates']['near_cap']['intent'], original_intent)
 
 
 if __name__ == "__main__":

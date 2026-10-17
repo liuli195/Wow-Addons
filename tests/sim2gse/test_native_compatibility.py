@@ -133,6 +133,28 @@ class NativeComparisonTests(unittest.TestCase):
 
 
 class NativeCatalogueTests(unittest.TestCase):
+    def test_reference_collects_initialized_action_outside_old_nine_actions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            text = (sample_profile() + '\nactions=chains_of_ice,if=0\n'
+                    'actions+=/festering_strike\nactions+=/death_coil\n')
+            profile = folder / 'sample.simc'
+            profile.write_text(text, encoding='utf-8')
+            native = engine.reference(profile, folder / 'reference',
+                                      parse_character(sample_profile()), iterations=2,
+                                      simulation_config={'target_count': 1})
+            rows = [row for row in native['static_snapshot']['actions']
+                    if row['name'] == 'chains_of_ice']
+            self.assertTrue(rows, '已初始化的受支持普通动作不能被原九技能白名单排除')
+            self.assertFalse(any(row['name'] == 'chains_of_ice'
+                                 for row in native['executed_actions']))
+            for row in rows:
+                self.assertGreater(row['gcd_ms'], 0)
+                self.assertGreater(row['costs']['rune'], 0)
+                self.assertEqual(row['gain_status'], 'known')
+                self.assertEqual(row['gain_scope'], 'direct_action')
+                self.assertGreater(row['gains']['runic_power'], 0)
+
     def test_reference_uses_the_confirmed_live_client_data(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
@@ -149,6 +171,19 @@ class NativeCatalogueTests(unittest.TestCase):
             self.assertTrue(capabilities['actions'])
             snapshot = native['static_snapshot']
             self.assertIs(type(snapshot['parameters']['blightburst']), bool)
+            original_actions = {'outbreak', 'putrefy', 'death_and_decay', 'death_coil',
+                                'epidemic', 'festering_strike', 'festering_scythe',
+                                'scourge_strike', 'soul_reaper'}
+            available = {row['simc_action'] for row in capabilities['actions']}
+            for name in original_actions & available:
+                rows = [row for row in snapshot['actions'] if row['name'] == name]
+                self.assertTrue(rows, name + ' 缺少原生静态参数')
+                for row in rows:
+                    for field in ('gcd_ms', 'cooldown_ms', 'cast_ms'):
+                        self.assertGreaterEqual(row[field], 0, (name, field, row.get('unknown')))
+                    self.assertIsInstance(row['costs'], dict)
+                    self.assertIsInstance(row['gains'], dict)
+                    self.assertEqual(row['gain_scope'], 'direct_action')
             if any(row['simc_action'] == 'soul_reaper' for row in capabilities['actions']):
                 reapers = [row for row in snapshot['actions'] if row['name'] == 'soul_reaper']
                 self.assertTrue(reapers, '可用灵魂收割必须提供真实静态参数供初始化CD示范')

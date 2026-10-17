@@ -609,3 +609,29 @@ def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failure
         assert champion['excluded'][0]['status'] == 'invalid'
     else:
         assert '不可读' in state['error']
+
+
+def test_dual_rejects_training_champion_from_previous_rule_configuration(
+        tmp_path, monkeypatch, memory_result_center):
+    import burst
+    import engine
+    import result_store
+    from rule_config import DEFAULT_PATH
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    rules = tmp_path / 'rules.json'
+    rules.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
+    from test_search import _fast_initialization
+    from test_burst import page_task_boundary
+    with _fast_initialization(), page_task_boundary(), patch.object(engine, 'check_report', REAL_CHECK_REPORT):
+        template, rows = completed_training(tmp_path, 1, [([['death_coil']], [190., 200., 210.])])
+        monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
+        pack['general']['templates']['near_cap']['intent'] += '，已编辑'
+        rules.write_text(json.dumps(pack), encoding='utf-8')
+        state = dual_result(tmp_path, raw, candidate_limit=1)
+    champion = state['scenes'][0]['training_champion_snapshot']
+    assert champion['status'] == 'absent'
+    assert any('身份' in row['reason'] for row in champion['excluded'])

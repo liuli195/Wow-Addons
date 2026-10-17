@@ -473,11 +473,13 @@ def semantic_versions():
                 statistics=STATS_VERSION, behavior=BEHAVIOR_IDENTITY_VERSION)
 
 
-def training_condition_input(template_sha, engines, config, simulation_config, *, burst_context=None):
+def training_condition_input(template_sha, engines, config, simulation_config, *, burst_context=None, rule_snapshot=None):
     """完整输入保留源码出处；执行并发不再直接决定成绩身份。"""
     from engine import ROOT, COMMON
     from task import _rule_hashes
-    return dict(version=TRAINING_VERSION, template=template_sha, engines=engines,
+    from rule_config import load
+    rule_snapshot = rule_snapshot if rule_snapshot is not None else load()
+    return dict(rule_config_digest=rule_snapshot['rule_config_digest'], version=TRAINING_VERSION, template=template_sha, engines=engines,
                        config=config, simulation=simulation_config, retest=RETEST_SEEDS,
                        effective_options=COMMON, rules=_rule_hashes(relative_to=ROOT),
                        **(dict(task_category='burst_free_training', burst=burst_context)
@@ -578,11 +580,11 @@ def _validate_identity(batch, manifest, current_input, *, processed=(), selected
 
 
 def validate_training_identity(batch, template_sha, engines, config, simulation_config, *,
-                               burst_context=None, processed=(), selected=()):
+                               burst_context=None, processed=(), selected=(), rule_snapshot=None):
     """升级后核查与训练入口共用的只读核验，不放宽原评分批次验真。"""
     manifest = _read_identity(Path(batch) / 'identity.json')
     current_input = training_condition_input(template_sha, engines, config, simulation_config,
-                                             burst_context=burst_context)
+                                             burst_context=burst_context, rule_snapshot=rule_snapshot)
     return _validate_identity(batch, manifest, current_input, processed=processed, selected=selected)
 
 
@@ -678,8 +680,10 @@ def selected_materials(candidate_ids, *, sources=None):
 
 
 def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None,
-                     burst_identity=None, verified_engines=None):
+                     burst_identity=None, verified_engines=None, rule_snapshot=None):
     from engine import identity
+    from rule_config import load
+    rule_snapshot = rule_snapshot if rule_snapshot is not None else load()
     _check_cancelled(cancel_event)
     if max_processes is None:
         from simulation_config import load_training_config
@@ -706,7 +710,7 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
                 raise ValueError('当前标准角色职业或专精不适用冻结爆发定义')
         config = config_for(dict(config, input_interval_ms=200), training=True)
     return dict(text=text, character=character, scope=scope, config=config, simulation_config=simulation_config,
-                engines=engines, template_sha=template_sha, definition=definition)
+                engines=engines, template_sha=template_sha, definition=definition, rule_snapshot=rule_snapshot)
 
 
 def source_relationships(sources, initial, final):
@@ -730,6 +734,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                                      row['spec'] != character.spec for row in materials):
         raise ValueError('训练材料与标准角色职业或专精不一致')
     preparation_input = dict(version=PREPARATION_VERSION, template=template_sha, engines=engines,
+        rule_config_digest=inputs['rule_snapshot']['rule_config_digest'],
         simulation=simulation_config, definition=definition, semantics=semantic_versions(),
         config={key: value for key, value in config.items() if key != 'max_processes'})
     config_key = digest(preparation_input)
@@ -768,7 +773,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         all_capabilities, capabilities, burst_context = prepare_loop(native, actual_character, setup, runtime,
                                                      definition=definition, interval_ms=config['input_interval_ms'])
         current_input = training_condition_input(template_sha, engines, config, simulation_config,
-                                                 burst_context=burst_context)
+                                                 burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
         reference_key = digest(dict(condition=semantic_condition(current_input, semantic_versions()),
                                     purpose='seed_reference'))
         result_store.write_batch(reference_key, dict(batch_key=reference_key, run_id=config_key,
@@ -780,7 +785,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     if context:
         from engine import ROOT
         from task import _rule_hashes
-        context = dict(context, preparation_input=preparation_input, rules=_rule_hashes(relative_to=ROOT))
+        context = dict(context, preparation_input=preparation_input, rules=_rule_hashes(relative_to=ROOT),
+                       rule_snapshot=inputs['rule_snapshot'])
     previous = {row['source_id']: row for row in cached if row.get('kind') == 'source'}
     entries, rebuilt = [], 0
     for source in sources:
@@ -921,7 +927,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 stored_burst['definition_id'] != definition['definition_id']):
             continue
         current_input = training_condition_input(template_sha, engines, config, simulation_config,
-                                                 burst_context=stored_burst)
+                                                 burst_context=stored_burst, rule_snapshot=inputs['rule_snapshot'])
         if semantic_condition(current_input, semantic_versions()) == manifest['semantic_condition']:
             _validate_identity(path.parent, manifest, current_input,
                                processed=processed, selected=all_selected)
@@ -972,13 +978,14 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
             row['comparison'] = comparison
     _check_cancelled(cancel_event)
     current_input = training_condition_input(template_sha, engines, config, simulation_config,
-                                             burst_context=burst_context)
+                                             burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
     if manifest:
         _validate_identity(batch, manifest, current_input, processed=processed, selected=all_selected)
     else:
         condition = semantic_condition(current_input, semantic_versions())
         batch = workspace.resolve() / str(targets) / condition[:12]
         manifest = dict(format=1, condition=condition, condition_input=current_input, input_sha256=digest(current_input),
+                        rule_snapshot=inputs['rule_snapshot'],
                         semantic_versions=semantic_versions(), semantic_condition=condition, executions=[])
     selected = [row for row in all_selected if row['condition'] == condition]
     source_groups = {row['candidate_id']: row['sources'] for row in ready['queue']}
@@ -1068,6 +1075,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 if store.state.get('starts') not in (None, [row['program']]):
                     raise ValueError('训练初始表示与恢复检查点不一致')
                 store.state.update(training_condition=condition, config=config, capabilities=capabilities,
+                                   rule_snapshot=inputs['rule_snapshot'],
                                    training_candidate_id=row['candidate_id'],
                                    run_id=store.state.get('run_id', uuid.uuid4().hex),
                                    starts=store.state.get('starts', [row['program']]),
@@ -1246,7 +1254,7 @@ def check_training(template=None, *, use_burst=True):
 
 
 def training_champion(class_name, spec, simulation_config, *, engines, input_interval_ms,
-                      use_burst=False, burst_identity=None):
+                      use_burst=False, burst_identity=None, rule_snapshot=None):
     """只读全部已完成最终成果及三份原复测，不训练、不补算、不改库。"""
     from program import canonicalize_search_program
     from search import _validate_saved_batch, STATS_VERSION
@@ -1262,7 +1270,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
     if not rows:
         return snapshot
     inputs = _training_inputs(_training_template(engines['baseline']), simulation_config['target_count'],
-                              use_burst=use_burst, verified_engines=engines)
+                              use_burst=use_burst, verified_engines=engines, rule_snapshot=rule_snapshot)
     definition = inputs['definition']
     training_burst_identity = (dict(spec_id=definition['spec_id'], definition_id=definition['definition_id'])
                                if definition else None)
@@ -1292,7 +1300,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                         context['interval_ms'] != input_interval_ms))):
                     raise ValueError('训练爆发内容或按法不适用')
                 manifest = validate_training_identity(batch, inputs['template_sha'], engines,
-                    inputs['config'], simulation_config, burst_context=context)
+                    inputs['config'], simulation_config, burst_context=context, rule_snapshot=inputs['rule_snapshot'])
                 batches[batch] = manifest
             manifest = batches[batch]
             if row['condition'] != manifest['condition']:

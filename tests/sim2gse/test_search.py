@@ -201,6 +201,8 @@ def _apl_task_boundary(native=None):
         targets = int(next(value.split('=', 1)[1] for value in command if value.startswith('desired_targets=')))
         report['sim']['targets'] = [dict(name=f'Damage_Dummy_{i}', level=90) for i in range(targets)]
         player = report['sim']['players'][0]
+        player['sim2gse_spec_id'] = native.get('identity', {}).get('spec_id', player['sim2gse_spec_id'])
+        player['sim2gse_class_id'] = native.get('identity', {}).get('class_id', player['sim2gse_class_id'])
         player.update(sim2gse_actions_protocol=1, sim2gse_actions=native['executed_actions'],
                       sim2gse_apl_actions_protocol=native.get('apl_actions_protocol'),
                       sim2gse_apl_actions=native.get('apl_actions'),

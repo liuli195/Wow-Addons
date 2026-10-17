@@ -16,7 +16,7 @@ from simulation_config import config_for as simulation_config_for
 SCENES = (('single_target', 1), ('aoe', 5))
 PARENT_SCHEMA = dict(parent_id='VARCHAR', status='VARCHAR', phase='VARCHAR', error='VARCHAR',
     input_sha256='VARCHAR', definition_id='VARCHAR', spec_id='UBIGINT', config='JSON',
-    simulation_config='JSON', rules='JSON', engines='JSON', preparation_seconds='DOUBLE',
+    simulation_config='JSON', rules='JSON', rule_snapshot='JSON', engines='JSON', preparation_seconds='DOUBLE',
     packaging_seconds='DOUBLE', single_target_status='VARCHAR', aoe_status='VARCHAR',
     single_target_export='VARCHAR', aoe_export='VARCHAR', burst_export='VARCHAR',
     collection_text='VARCHAR', burst_instructions='VARCHAR',
@@ -49,11 +49,18 @@ def _load(destination):
     row = rows[0]
     for key in ('config', 'simulation_config', 'rules', 'engines'):
         row[key] = _decode(row[key])
+    row['rule_snapshot'] = _decode(row.get('rule_snapshot'))
     return row
 
 
-def _verify(row, destination, identities):
+def _verify(row, destination, identities, *, current_rules=False):
     from burst import load
+    if not row.get('rule_snapshot'):
+        raise task.TaskError('双场任务缺少规则配置快照，请创建新任务')
+    if current_rules:
+        from rule_config import load as load_rules
+        if load_rules()['rule_config_digest'] != row['rule_snapshot']['rule_config_digest']:
+            raise task.TaskError('双场任务的规则配置已变化，请创建新任务')
     if hashlib.sha256((destination / 'input.original.simc').read_bytes()).hexdigest() != row['input_sha256']:
         raise task.TaskError('双场任务的冻结输入已变化，请创建新任务')
     if load(row['spec_id'])['definition_id'] != row['definition_id']:
@@ -92,6 +99,7 @@ def _child_matches(row, child, targets):
     if (child['profile']['input_original_sha256'] != row['input_sha256']
             or child['simulation_config'] != dict(row['simulation_config'], target_count=targets)
             or config_for(child['config']) != config_for(row['config'])
+            or (child.get('rule_initialization') or {}).get('rule_config_digest') != row['rule_snapshot']['rule_config_digest']
             or (child.get('burst') or {}).get('definition_id') != row['definition_id']):
         raise task.TaskError('父任务与子任务的冻结条件不一致')
 
@@ -148,10 +156,12 @@ def _worker(handle):
                     if (child.get('status') != 'completed' or
                             child.get('search', {}).get('formal_champion_publication', {}).get('status') == 'pending'):
                         child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
-                            simulation_config=dict(row['simulation_config'], target_count=targets))
+                            simulation_config=dict(row['simulation_config'], target_count=targets),
+                            _rule_snapshot=row['rule_snapshot'])
                 elif (child_path / 'task.sqlite3').exists():
                     child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
-                        simulation_config=dict(row['simulation_config'], target_count=targets))
+                        simulation_config=dict(row['simulation_config'], target_count=targets),
+                            _rule_snapshot=row['rule_snapshot'])
                 else:
                     if child_path.exists():
                         # Preparation stopped before the durable search state existed. Preserve its files.
@@ -164,7 +174,8 @@ def _worker(handle):
                     child = task.run_task(destination / 'input.original.simc', child_path,
                         use_burst=True, burst_identity={key: row[key] for key in ('spec_id', 'definition_id')},
                         cancel_event=handle.cancel_event, search_config=row['config'], _runtime=runtime,
-                        simulation_config=dict(row['simulation_config'], target_count=targets))
+                        simulation_config=dict(row['simulation_config'], target_count=targets),
+                            _rule_snapshot=row['rule_snapshot'])
                 if child.get('status') == 'cancelled':
                     raise TaskCancelled('已取消；已完成的场景保留')
                 if child.get('status') != 'completed' or not child.get('candidate'):
@@ -218,6 +229,8 @@ def _worker(handle):
 
 def start(input_path, destination, *, search_config=None, simulation_config=None):
     started = time.monotonic()
+    from rule_config import load as load_rules
+    rule_snapshot = load_rules()
     from burst import select_definition
     from engine import identity
     destination = Path(destination).resolve()
@@ -230,7 +243,7 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     row = dict(parent_id=uuid.uuid4().hex, status='starting', phase='prepare', error=None,
                input_sha256=hashlib.sha256(original).hexdigest(), definition_id=definition['definition_id'],
                spec_id=definition['spec_id'], config=config, simulation_config=simulation_config,
-               rules=task._rule_hashes(), engines={mode: entry[1] for mode, entry in identities.items()},
+               rules=task._rule_hashes(), rule_snapshot=rule_snapshot, engines={mode: entry[1] for mode, entry in identities.items()},
                preparation_seconds=time.monotonic() - started, packaging_seconds=0., collection_text=None,
                burst_instructions=definition['instructions'], single_target_path='single_target', aoe_path='aoe',
                single_target_status='pending', aoe_status='pending', single_target_export=None,
@@ -255,7 +268,7 @@ def resume(destination):
     with task._task_lease(destination):
         row = _load(destination)
         identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
-        _verify(row, destination, identities)
+        _verify(row, destination, identities, current_rules=True)
     return _launch(destination, identities)
 
 

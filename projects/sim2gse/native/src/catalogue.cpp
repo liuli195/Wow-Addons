@@ -1,6 +1,7 @@
 // 本模块不创建动作、不推进战斗、不更改执行计数。
 #include "sim2gse/catalogue.hpp"
 #include "simulationcraft.hpp"
+#include "action/parse_effects.hpp"
 #include <set>
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -70,12 +71,50 @@ unsigned base_spell_id( const player_t& p, unsigned id )
   return 0;
 }
 
-// Called once after native precombat initialization, before pre-pull callbacks/actions.
-// Uses native virtual getters, not ready()/execute(). Getter side effects and null-state
-// safety must also be checked by the original/baseline/disabled combat comparison.
-void capture_static_snapshot( player_t& p, const std::vector<std::string>& names,
+bool action_available( const action_t& action )
+{
+  const auto& p = *action.player;
+  const unsigned spell_id = action.data().id();
+  if ( !spell_id || !action.data().ok() || !action.data().is_level( p.true_level ) ) return false;
+  bool available = false, unselected = false;
+  for ( const unsigned id : { spell_id, base_spell_id( p, spell_id ) } )
+  {
+    if ( !id ) continue;
+    const auto* name = p.find_spell( id )->name_cstr();
+    available = available || p.find_class_spell( name, p.specialization() )->id() == id ||
+      p.find_specialization_spell( id, p.specialization() )->id() == id ||
+      p.find_racial_spell( name )->id() == id;
+    for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
+    {
+      const auto talent = p.find_talent_spell( tree, id, p.specialization() );
+      if ( talent.invalid() ) continue;
+      available = available || talent.enabled();
+      unselected = unselected || !talent.enabled();
+    }
+  }
+  return available && !unselected;
+}
+
+// eed909156 parse_effects.cpp: callbacks run before the inactive-buff shortcut.
+// Full evaluation can mutate callback_idx; benefit=true also records buff usage.
+bool static_effects_safe( const std::vector<player_effect_t>& effects, bool benefit )
+{
+  for ( const auto& effect : effects )
+  {
+    if ( effect.func || effect.value_func || ( benefit && effect.buff ) ) return false;
+    if ( effect.simple ) continue;
+    if ( effect.buff && !effect.buff->check() ) continue;
+    if ( effect.idx || effect.mastery || ( effect.buff && ( effect.type & USE_CURRENT ) ) ) return false;
+  }
+  return true;
+}
+
+// The pinned class adapter certifies each getter before this serializer calls it.
+// This runs once after native precombat initialization, before pre-pull actions.
+void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& entries,
                               const std::map<std::string, double>& parameters,
-                              const std::map<std::string, bool>& talents )
+                              const std::map<std::string, bool>& talents,
+                              const std::map<std::string, std::string>& parameter_unknown )
 {
   if ( !p.sim2gse_static_snapshot_json.empty() || p.is_pet() ) return;
   rapidjson::Document document;
@@ -96,40 +135,61 @@ void capture_static_snapshot( player_t& p, const std::vector<std::string>& names
   auto values = root[ "parameters" ];
   for ( const auto& entry : parameters ) values[ entry.first ] = entry.second;
   for ( const auto& entry : talents ) values[ entry.first ] = entry.second;
+  for ( const auto& entry : parameter_unknown ) root[ "parameter_unknown" ][ entry.first ] = entry.second;
   auto actions = root[ "actions" ];
   actions.make_array();
-  for ( const auto* action : p.action_list )
+  for ( const auto& entry : entries )
   {
-    if ( action->is_precombat || !action->initialized ||
-         range::find( names, action->name_str ) == names.end() ) continue;
+    auto* action = entry.action;
+    const auto known = [ &entry ]( const char* field ) { return !entry.unknown.count( field ); };
     auto row = actions.add();
     row[ "name" ] = action->name_str;
     row[ "signature" ] = action->signature_str;
     row[ "action_list" ] = action->action_list ? action->action_list->name_str : "";
     row[ "spell_id" ] = action->data().id();
+    row[ "base_spell_id" ] = base_spell_id( p, action->data().id() );
     row[ "background" ] = action->background;
-    row[ "gcd_ms" ] = action->gcd().total_millis();
-    row[ "cooldown_ms" ] = action->cooldown_duration().total_millis();
-    row[ "cast_ms" ] = action->execute_time().total_millis();
+    for ( const auto& unknown : entry.unknown ) row[ "unknown" ][ unknown.first ] = unknown.second;
+    if ( known( "gcd_ms" ) ) row[ "gcd_ms" ] = action->gcd().total_millis();
+    if ( known( "cooldown_ms" ) ) row[ "cooldown_ms" ] = action->cooldown_duration().total_millis();
+    if ( known( "cast_ms" ) ) row[ "cast_ms" ] = action->execute_time().total_millis();
     row[ "channeled" ] = action->channeled;
-    row[ "charges" ] = action->cooldown->current_charge;
-    row[ "max_charges" ] = action->cooldown->charges;
-    auto costs = row[ "costs" ];
-    if ( action->current_resource() != RESOURCE_NONE )
-      costs[ util::resource_type_string( action->current_resource() ) ] = action->cost();
+    if ( action->cooldown )
+    {
+      row[ "charges" ] = action->cooldown->current_charge;
+      row[ "max_charges" ] = action->cooldown->charges;
+    }
+    else
+    {
+      row[ "unknown" ][ "charges" ] = "missing_cooldown";
+      row[ "unknown" ][ "max_charges" ] = "missing_cooldown";
+    }
+    if ( known( "costs" ) )
+    {
+      auto costs = row[ "costs" ];
+      if ( entry.cost_action->current_resource() != RESOURCE_NONE )
+        costs[ util::resource_type_string( entry.cost_action->current_resource() ) ] = action->cost();
+    }
     auto gains = row[ "gains" ];
     const auto timing = action->energize_type_();
     row[ "gain_timing" ] = timing == action_energize::ON_CAST ? "on_cast" :
                             timing == action_energize::ON_HIT ? "on_hit" :
                             timing == action_energize::NONE ? "none" : "unknown";
     row[ "gain_status" ] = "unknown";
-    if ( timing == action_energize::NONE )
+    // This is only the action's direct energize, never passive/pet/random resource income.
+    row[ "gain_scope" ] = "direct_action";
+    if ( known( "gains" ) && timing == action_energize::NONE )
       row[ "gain_status" ] = "known_zero";
-    else if ( ( timing == action_energize::ON_CAST || timing == action_energize::ON_HIT ) &&
+    else if ( known( "gains" ) && ( timing == action_energize::ON_CAST || timing == action_energize::ON_HIT ) &&
               action->energize_resource_() != RESOURCE_NONE )
     {
+      auto* state = action->get_state();
+      state->target = action->target;
+      state->n_targets = 1;
+      state->chain_target = 0;
       gains[ util::resource_type_string( action->energize_resource_() ) ] =
-        action->composite_energize_amount( nullptr );
+        action->composite_energize_amount( state );
+      action_state_t::release( state );
       row[ "gain_status" ] = "known";
     }
   }

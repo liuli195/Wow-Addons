@@ -1,0 +1,4028 @@
+{
+  "schema_version": 1,
+  "general": {
+    "templates": {
+      "window_or_full": {
+        "intent": "窗口或满充能释放",
+        "scope": "CD/充能及窗口",
+        "modifications": "前移或补尝试",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "move"
+          },
+          {
+            "operation": "insert"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ]
+      },
+      "reserve": {
+        "intent": "低优先消费预留",
+        "scope": "指定低位条目及完整OR条件",
+        "modifications": "减少或后移低位消费",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "move"
+          },
+          {
+            "operation": "remove"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ]
+      },
+      "near_cap": {
+        "intent": "近满资源消费",
+        "scope": "资源缺口、完整条件和前序让位",
+        "modifications": "前移或补消费",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "move"
+          },
+          {
+            "operation": "insert"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ]
+      },
+      "short_window": {
+        "intent": "短窗口指定动作",
+        "scope": "指定Buff及动作GCD",
+        "modifications": "分散指定按钮尝试",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "move"
+          },
+          {
+            "operation": "insert"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ]
+      },
+      "protected_burst": {
+        "intent": "普通循环配合固定爆发",
+        "scope": "冻结爆发输入和普通位置",
+        "modifications": "只调整普通排列",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "move"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ]
+      },
+      "ordinary_cooldown": {
+        "intent": "普通CD按源条件尝试",
+        "scope": "完整条件及前序让位",
+        "modifications": "前移或补普通CD",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "move"
+          },
+          {
+            "operation": "insert"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ],
+        "initialize": {
+          "attempt": {
+            "param": "action"
+          },
+          "count": 1,
+          "required": true,
+          "unknown": "error"
+        }
+      },
+      "maintenance": {
+        "intent": "持续效果按条件补齐",
+        "scope": "完整持续效果条件及有来源间隔",
+        "modifications": "低频或间隔安排",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "move"
+          },
+          {
+            "operation": "insert"
+          },
+          {
+            "operation": "remove"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ]
+      },
+      "avoid_idle": {
+        "intent": "减少可避免GCD空闲",
+        "scope": "前七项及具体可用动作证据",
+        "modifications": "仅减少已证多余等待",
+        "parameters": {
+          "action": "action_ref",
+          "condition": "predicate"
+        },
+        "unknown": "record_not_applied",
+        "diagnose": {
+          "when": {
+            "param": "condition"
+          },
+          "observe": "proven_opportunity_interval",
+          "action": {
+            "param": "action"
+          }
+        },
+        "edits": [
+          {
+            "operation": "reduce_wait"
+          },
+          {
+            "operation": "move"
+          },
+          {
+            "operation": "insert"
+          }
+        ],
+        "features": [
+          {
+            "name": "attempt_count",
+            "value": {
+              "fact": "interval.attempt_count"
+            }
+          }
+        ]
+      }
+    },
+    "initialization": {
+      "stop": {
+        "eq": [
+          {
+            "fact": "plan.required_attempts_remaining"
+          },
+          0
+        ]
+      },
+      "edit_stop": {
+        "eq": [
+          {
+            "fact": "plan.pending_attempts_remaining"
+          },
+          0
+        ]
+      },
+      "edit_limit": 128
+    }
+  },
+  "specializations": {
+    "252": {
+      "source_revision": "eed909156d8eccbfca0f284cc271c080949d6a20",
+      "actions": {
+        "outbreak": {
+          "native_action": "outbreak",
+          "button": "outbreak",
+          "variants": []
+        },
+        "putrefy": {
+          "native_action": "putrefy",
+          "button": "putrefy",
+          "variants": []
+        },
+        "death_and_decay": {
+          "native_action": "death_and_decay",
+          "button": "death_and_decay",
+          "variants": []
+        },
+        "soul_reaper": {
+          "native_action": "soul_reaper",
+          "button": "soul_reaper",
+          "variants": []
+        },
+        "death_coil": {
+          "native_action": "death_coil",
+          "button": "death_coil",
+          "variants": []
+        },
+        "epidemic": {
+          "native_action": "epidemic",
+          "button": "epidemic",
+          "variants": []
+        },
+        "festering_strike": {
+          "native_action": "festering_strike",
+          "button": "festering_strike",
+          "variants": [
+            "festering_scythe"
+          ]
+        },
+        "scourge_strike": {
+          "native_action": "scourge_strike",
+          "button": "scourge_strike",
+          "variants": [
+            "vampiric_strike"
+          ]
+        }
+      },
+      "facts": {
+        "targets": {
+          "type": "integer",
+          "unit": "count",
+          "from": "scenario.target_count",
+          "minimum": 0
+        },
+        "available_outbreak": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "outbreak"
+        },
+        "available_putrefy": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "putrefy"
+        },
+        "available_death_and_decay": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "death_and_decay"
+        },
+        "available_soul_reaper": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "soul_reaper"
+        },
+        "available_death_coil": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "death_coil"
+        },
+        "available_epidemic": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "epidemic"
+        },
+        "available_festering_strike": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "festering_strike"
+        },
+        "available_scourge_strike": {
+          "type": "boolean",
+          "from": "capability.available",
+          "action": "scourge_strike"
+        },
+        "cycle_of_death": {
+          "type": "boolean",
+          "from": "static.parameter",
+          "key": "cycle_of_death"
+        },
+        "festering_scythe": {
+          "type": "boolean",
+          "from": "static.parameter",
+          "key": "festering_scythe"
+        },
+        "blightburst": {
+          "type": "boolean",
+          "from": "static.parameter",
+          "key": "blightburst"
+        },
+        "lesser_ghoul_ready_stacks": {
+          "type": "number",
+          "from": "static.parameter",
+          "key": "lesser_ghoul_ready_stacks",
+          "unit": "count",
+          "minimum": 0
+        },
+        "rune_recharge_ms": {
+          "type": "number",
+          "from": "static.parameter",
+          "key": "rune_recharge_ms",
+          "unit": "ms",
+          "minimum": 0
+        },
+        "rune_recharge_slots": {
+          "type": "number",
+          "from": "static.parameter",
+          "key": "rune_recharge_slots",
+          "unit": "count",
+          "minimum": 0
+        },
+        "dread_plague_duration_ms": {
+          "type": "number",
+          "from": "static.parameter",
+          "key": "dread_plague_duration_ms",
+          "unit": "ms",
+          "minimum": 0
+        },
+        "deficit": {
+          "type": "number",
+          "unit": "runic_power",
+          "from": "estimate.resource.deficit",
+          "resource": "runic_power",
+          "minimum": 0
+        },
+        "runes": {
+          "type": "number",
+          "unit": "rune",
+          "from": "estimate.resource.current",
+          "resource": "rune",
+          "minimum": 0
+        },
+        "apl_buff_vampiric_strike_up": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.vampiric_strike.up",
+          "phase": "02"
+        },
+        "apl_buff_essence_of_the_blood_queen_up": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.essence_of_the_blood_queen.up",
+          "phase": "02"
+        },
+        "apl_buff_essence_of_the_blood_queen_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "buff.essence_of_the_blood_queen.remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_gcd": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "gcd",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_talent_festering_scythe": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "talent.festering_scythe",
+          "phase": "02"
+        },
+        "apl_buff_festering_scythe_up": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.festering_scythe.up",
+          "phase": "02"
+        },
+        "apl_buff_festering_scythe_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "buff.festering_scythe.remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_buff_festering_scythe_tt_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "buff.festering_scythe_tt.remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_buff_dark_transformation_up": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.dark_transformation.up",
+          "phase": "02"
+        },
+        "apl_charges": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "charges",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_max_charges": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "max_charges",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_cooldown_dark_transformation_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "cooldown.dark_transformation.remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_target_health_pct": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "target.health.pct",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "percent"
+        },
+        "apl_buff_forbidden_knowledge_up": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.forbidden_knowledge.up",
+          "phase": "02"
+        },
+        "apl_buff_sudden_doom_react": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.sudden_doom.react",
+          "phase": "02"
+        },
+        "apl_runic_power_deficit": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "runic_power.deficit",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "runic_power"
+        },
+        "apl_buff_essence_of_the_blood_queen_stack": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "buff.essence_of_the_blood_queen.stack",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_buff_essence_of_the_blood_queen_max_stack": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "buff.essence_of_the_blood_queen.max_stack",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_buff_vampiric_strike_react": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.vampiric_strike.react",
+          "phase": "02"
+        },
+        "apl_rune": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "rune",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "rune"
+        },
+        "apl_buff_lesser_ghoul_ready_stack": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "buff.lesser_ghoul_ready.stack",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_talent_blightburst": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "talent.blightburst",
+          "phase": "02"
+        },
+        "apl_cooldown_putrefy_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "cooldown.putrefy.remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_gcd_max": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "gcd.max",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_time": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "time",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_dot_dread_plague_active_dots": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "dot.dread_plague.active_dots",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_fight_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "fight_remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_raid_event_adds_exists": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "raid_event.adds.exists",
+          "phase": "02"
+        },
+        "apl_raid_event_adds_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "raid_event.adds.remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_active_enemies": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "active_enemies",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_talent_cycle_of_death": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "talent.cycle_of_death",
+          "phase": "02"
+        },
+        "apl_buff_festering_scythe_tt_up": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.festering_scythe_tt.up",
+          "phase": "02"
+        },
+        "apl_cooldown_putrefy_charges": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "cooldown.putrefy.charges",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_cooldown_putrefy_max_charges": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "cooldown.putrefy.max_charges",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_duration": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "duration",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "apl_raid_event_adds_count": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "raid_event.adds.count",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "count"
+        },
+        "apl_buff_blighted_up": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "buff.blighted.up",
+          "phase": "02"
+        },
+        "apl_cooldown_army_of_the_dead_remains": {
+          "type": "number",
+          "from": "student.apl_fact",
+          "key": "cooldown.army_of_the_dead.remains",
+          "phase": "02",
+          "minimum": 0,
+          "unit": "s"
+        },
+        "initial_resource": {
+          "type": "number",
+          "unit": "runic_power",
+          "from": "static.resource.current",
+          "resource": "runic_power",
+          "minimum": 0
+        },
+        "maximum_resource": {
+          "type": "number",
+          "unit": "runic_power",
+          "from": "static.resource.maximum",
+          "resource": "runic_power",
+          "minimum": 0
+        },
+        "apl_is_boss": {
+          "type": "boolean",
+          "from": "student.apl_fact",
+          "key": "is_boss",
+          "phase": "02"
+        }
+      },
+      "initialization": {
+        "resource": "runic_power",
+        "recovery": {
+          "model": "parallel_discrete",
+          "resource": "rune",
+          "interval_ms": {
+            "fact": "rune_recharge_ms"
+          },
+          "slots": {
+            "fact": "rune_recharge_slots"
+          }
+        },
+        "funding": {
+          "coverage_id": "funded_consumer",
+          "actions": [
+            "scourge_strike"
+          ],
+          "resource": "runic_power",
+          "enabled": true,
+          "completion": {
+            "gte": [
+              {
+                "fact": "plan.qualified_credit"
+              },
+              {
+                "fact": "plan.target_cost"
+              }
+            ]
+          },
+          "preconsumption_coverage": "opening_space",
+          "gain_policy": "known_on_cast_effective_after_cap"
+        },
+        "required_facts": [
+          "cycle_of_death",
+          "festering_scythe"
+        ],
+        "approximate": [
+          "以原生疾病持续时间作为低频间隔，不保证全场疾病状态",
+          "初始缺层时FS可选一次维护，不保证持续增益",
+          "固定爆发不推断Army冷却或Buff生效"
+        ],
+        "unknown": [
+          "完整APL动态条件与前序让位未由静态排列实现",
+          "未知/ON_HIT收益不证明真实余额或来源完成",
+          "FS后续随机层数与替换形态未知",
+          "固定爆发尝试不证明动作成功",
+          "目标选择不能由固定按钮保证",
+          "Putrefy额外充能消耗及满充能恢复未知"
+        ]
+      },
+      "bindings": [
+        {
+          "id": "unholy.high_priority.3",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=high_priority",
+          "priority": 3,
+          "list": "high_priority",
+          "signature": "scourge_strike,if=buff.vampiric_strike.up&buff.essence_of_the_blood_queen.up&buff.essence_of_the_blood_queen.remains<gcd*3",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L360",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "unholy.high_priority.1",
+                "unholy.high_priority.2"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "short_window"
+          ],
+          "scope": true,
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "scourge_strike",
+            "condition": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "fact": "apl_buff_vampiric_strike_up"
+                    },
+                    {
+                      "fact": "apl_buff_essence_of_the_blood_queen_up"
+                    }
+                  ]
+                },
+                {
+                  "lt": [
+                    {
+                      "fact": "apl_buff_essence_of_the_blood_queen_remains"
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "fact": "apl_gcd"
+                        },
+                        3
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": true
+        },
+        {
+          "id": "unholy.aoe.1",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 1,
+          "list": "aoe",
+          "signature": "festering_strike,target_if=min:health.pct,if=talent.festering_scythe&(buff.festering_scythe.up&(buff.festering_scythe.remains<=3*gcd|buff.festering_scythe_tt.remains<3*gcd)|!buff.festering_scythe.up&buff.festering_scythe_tt.remains<3*gcd)",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L362",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "maintenance"
+          ],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "festering_strike",
+            "condition": {
+              "and": [
+                {
+                  "fact": "apl_talent_festering_scythe"
+                },
+                {
+                  "or": [
+                    {
+                      "and": [
+                        {
+                          "fact": "apl_buff_festering_scythe_up"
+                        },
+                        {
+                          "or": [
+                            {
+                              "lte": [
+                                {
+                                  "fact": "apl_buff_festering_scythe_remains"
+                                },
+                                {
+                                  "multiply": [
+                                    3,
+                                    {
+                                      "fact": "apl_gcd"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "lt": [
+                                {
+                                  "fact": "apl_buff_festering_scythe_tt_remains"
+                                },
+                                {
+                                  "multiply": [
+                                    3,
+                                    {
+                                      "fact": "apl_gcd"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "and": [
+                        {
+                          "not": {
+                            "fact": "apl_buff_festering_scythe_up"
+                          }
+                        },
+                        {
+                          "lt": [
+                            {
+                              "fact": "apl_buff_festering_scythe_tt_remains"
+                            },
+                            {
+                              "multiply": [
+                                3,
+                                {
+                                  "fact": "apl_gcd"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "target": {
+            "mode": "min",
+            "fact": "apl_target_health_pct",
+            "phase": "02",
+            "unknown": "target_selection_not_encoded_by_fixed_button"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.2",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 2,
+          "list": "aoe",
+          "signature": "putrefy,if=buff.dark_transformation.up|charges=max_charges",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L363",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "window_or_full",
+            "protected_burst"
+          ],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "putrefy",
+            "condition": {
+              "or": [
+                {
+                  "fact": "apl_buff_dark_transformation_up"
+                },
+                {
+                  "eq": [
+                    {
+                      "fact": "apl_charges"
+                    },
+                    {
+                      "fact": "apl_max_charges"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.aoe.2",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "gte": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_putrefy"
+                }
+              ]
+            },
+            "when": true,
+            "attempt": "putrefy",
+            "priority": 20,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "window_or_full",
+            "rules": [
+              "window_or_full"
+            ],
+            "unknown": "attempt_with_report",
+            "basis": "首次采用初始满充能；后续仅按CD间距尝试，不证明恢复至满充能",
+            "burst_action": "dark_transformation",
+            "alignment_rules": [
+              "protected_burst"
+            ],
+            "condition_status": {
+              "select": [
+                {
+                  "when": {
+                    "eq": [
+                      {
+                        "fact": "plan.current_action_attempts"
+                      },
+                      0
+                    ]
+                  },
+                  "value": "static_branch_estimate"
+                },
+                {
+                  "when": true,
+                  "value": "dynamic_condition_unknown"
+                }
+              ]
+            },
+            "require_full_charges": true,
+            "report_demonstrated": true
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.3",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 3,
+          "list": "aoe",
+          "signature": "soul_reaper,target_if=is_boss,if=buff.dark_transformation.up&cooldown.dark_transformation.remains<38|target.health.pct<35",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L364",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1",
+                "unholy.aoe.2"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "ordinary_cooldown"
+          ],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "soul_reaper",
+            "condition": {
+              "or": [
+                {
+                  "and": [
+                    {
+                      "fact": "apl_buff_dark_transformation_up"
+                    },
+                    {
+                      "lt": [
+                        {
+                          "fact": "apl_cooldown_dark_transformation_remains"
+                        },
+                        38
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "lt": [
+                    {
+                      "fact": "apl_target_health_pct"
+                    },
+                    35
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.aoe.3",
+            "coverage_when": {
+              "and": [
+                {
+                  "gte": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_soul_reaper"
+                }
+              ]
+            },
+            "when": {
+              "param": "condition"
+            },
+            "priority": 22,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "ordinary_cooldown",
+            "rules": [
+              "ordinary_cooldown"
+            ],
+            "basis": "user_approved_soul_reaper_demo",
+            "require_full_charges": true,
+            "report_demonstrated": true
+          },
+          "initialization_coverage": {
+            "basis": "user_approved_soul_reaper_demo",
+            "coverage": "unknown",
+            "note": "可用时普通CD示范；动态条件与成功仍未知"
+          },
+          "target": {
+            "mode": "first",
+            "fact": "apl_is_boss",
+            "phase": "02"
+          },
+          "overrides": [
+            {
+              "path": "initialize.when",
+              "value": {
+                "fact": "available_soul_reaper"
+              },
+              "source": {
+                "kind": "user_approval",
+                "decision": "可用灵魂收割ST/AOE普通CD示范一次；动态条件保留02"
+              },
+              "report": "initialization_demo; dynamic_applicability_unknown"
+            }
+          ],
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.4",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 4,
+          "list": "aoe",
+          "signature": "epidemic,if=variable.epidemic_prio&(buff.sudden_doom.react|runic_power.deficit<15|buff.essence_of_the_blood_queen.stack>=buff.essence_of_the_blood_queen.max_stack-1|buff.essence_of_the_blood_queen.remains<7&!buff.vampiric_strike.react|rune<2)",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L365",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1",
+                "unholy.aoe.2",
+                "unholy.aoe.3"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "near_cap"
+          ],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "epidemic",
+            "condition": {
+              "and": [
+                {
+                  "or": [
+                    {
+                      "and": [
+                        {
+                          "gte": [
+                            {
+                              "fact": "apl_active_enemies"
+                            },
+                            3
+                          ]
+                        },
+                        {
+                          "not": {
+                            "fact": "apl_buff_forbidden_knowledge_up"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "and": [
+                        {
+                          "gte": [
+                            {
+                              "fact": "apl_active_enemies"
+                            },
+                            4
+                          ]
+                        },
+                        {
+                          "fact": "apl_buff_forbidden_knowledge_up"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "or": [
+                    {
+                      "or": [
+                        {
+                          "or": [
+                            {
+                              "or": [
+                                {
+                                  "fact": "apl_buff_sudden_doom_react"
+                                },
+                                {
+                                  "lt": [
+                                    {
+                                      "fact": "apl_runic_power_deficit"
+                                    },
+                                    15
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "gte": [
+                                {
+                                  "fact": "apl_buff_essence_of_the_blood_queen_stack"
+                                },
+                                {
+                                  "subtract": [
+                                    {
+                                      "fact": "apl_buff_essence_of_the_blood_queen_max_stack"
+                                    },
+                                    1
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "and": [
+                            {
+                              "lt": [
+                                {
+                                  "fact": "apl_buff_essence_of_the_blood_queen_remains"
+                                },
+                                7
+                              ]
+                            },
+                            {
+                              "not": {
+                                "fact": "apl_buff_vampiric_strike_react"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "lt": [
+                        {
+                          "fact": "apl_rune"
+                        },
+                        2
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "funded_consumer",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "gte": [
+                        {
+                          "fact": "targets"
+                        },
+                        3
+                      ]
+                    },
+                    {
+                      "fact": "available_epidemic"
+                    }
+                  ]
+                },
+                {
+                  "fact": "available_epidemic"
+                }
+              ]
+            },
+            "when": {
+              "or": [
+                {
+                  "lt": [
+                    {
+                      "fact": "deficit"
+                    },
+                    15
+                  ]
+                },
+                {
+                  "lt": [
+                    {
+                      "fact": "runes"
+                    },
+                    2
+                  ]
+                }
+              ]
+            },
+            "attempt": "epidemic",
+            "priority": 30,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "near_cap",
+            "rules": [
+              "near_cap"
+            ],
+            "unknown": "attempt_with_report",
+            "basis": "runic_power.deficit<15 OR rune<2；其余动态条件与前序未知",
+            "condition_status": "static_branch_estimate",
+            "status_uses_resource_balance": true
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.5",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 5,
+          "list": "aoe",
+          "signature": "festering_strike,target_if=min:health.pct,if=buff.lesser_ghoul_ready.stack<3",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L366",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1",
+                "unholy.aoe.2",
+                "unholy.aoe.3",
+                "unholy.aoe.4"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "maintenance"
+          ],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "festering_strike",
+            "condition": {
+              "lt": [
+                {
+                  "fact": "apl_buff_lesser_ghoul_ready_stack"
+                },
+                3
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.aoe.5",
+            "required": false,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "gte": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_festering_strike"
+                }
+              ]
+            },
+            "when": {
+              "lt": [
+                {
+                  "fact": "lesser_ghoul_ready_stacks"
+                },
+                3
+              ]
+            },
+            "attempt": "festering_strike",
+            "priority": 60,
+            "phases": [
+              "fill"
+            ],
+            "insert": true,
+            "reason": "buff_maintenance_demo",
+            "rules": [
+              "maintenance"
+            ],
+            "unknown": "error",
+            "basis": "preserved_static_initialization_approximation",
+            "required_facts": [
+              "lesser_ghoul_ready_stacks"
+            ]
+          },
+          "target": {
+            "mode": "min",
+            "fact": "apl_target_health_pct",
+            "phase": "02",
+            "unknown": "target_selection_not_encoded_by_fixed_button"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.6",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 6,
+          "list": "aoe",
+          "signature": "scourge_strike,target_if=min:health.pct,if=buff.lesser_ghoul_ready.stack>=1",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L367",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1",
+                "unholy.aoe.2",
+                "unholy.aoe.3",
+                "unholy.aoe.4",
+                "unholy.aoe.5"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "scourge_strike",
+            "condition": {
+              "gte": [
+                {
+                  "fact": "apl_buff_lesser_ghoul_ready_stack"
+                },
+                1
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.aoe.6",
+            "required": false,
+            "count": 128,
+            "coverage_when": {
+              "and": [
+                {
+                  "gte": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_scourge_strike"
+                }
+              ]
+            },
+            "when": {
+              "gt": [
+                {
+                  "fact": "deficit"
+                },
+                0
+              ]
+            },
+            "attempt": "scourge_strike",
+            "priority": 70,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "resource_fill",
+            "rules": [],
+            "unknown": "attempt_with_report",
+            "basis": "preserved_static_initialization_approximation"
+          },
+          "target": {
+            "mode": "min",
+            "fact": "apl_target_health_pct",
+            "phase": "02",
+            "unknown": "target_selection_not_encoded_by_fixed_button"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.7",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 7,
+          "list": "aoe",
+          "signature": "death_coil,target_if=min:health.pct,if=!variable.epidemic_prio&(buff.sudden_doom.react|runic_power.deficit<15|buff.essence_of_the_blood_queen.stack>=buff.essence_of_the_blood_queen.max_stack-1|buff.essence_of_the_blood_queen.remains<7&!buff.vampiric_strike.react|rune<2)",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L368",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1",
+                "unholy.aoe.2",
+                "unholy.aoe.3",
+                "unholy.aoe.4",
+                "unholy.aoe.5",
+                "unholy.aoe.6"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "near_cap"
+          ],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "death_coil",
+            "condition": {
+              "and": [
+                {
+                  "not": {
+                    "or": [
+                      {
+                        "and": [
+                          {
+                            "gte": [
+                              {
+                                "fact": "apl_active_enemies"
+                              },
+                              3
+                            ]
+                          },
+                          {
+                            "not": {
+                              "fact": "apl_buff_forbidden_knowledge_up"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "and": [
+                          {
+                            "gte": [
+                              {
+                                "fact": "apl_active_enemies"
+                              },
+                              4
+                            ]
+                          },
+                          {
+                            "fact": "apl_buff_forbidden_knowledge_up"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "or": [
+                    {
+                      "or": [
+                        {
+                          "or": [
+                            {
+                              "or": [
+                                {
+                                  "fact": "apl_buff_sudden_doom_react"
+                                },
+                                {
+                                  "lt": [
+                                    {
+                                      "fact": "apl_runic_power_deficit"
+                                    },
+                                    15
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "gte": [
+                                {
+                                  "fact": "apl_buff_essence_of_the_blood_queen_stack"
+                                },
+                                {
+                                  "subtract": [
+                                    {
+                                      "fact": "apl_buff_essence_of_the_blood_queen_max_stack"
+                                    },
+                                    1
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "and": [
+                            {
+                              "lt": [
+                                {
+                                  "fact": "apl_buff_essence_of_the_blood_queen_remains"
+                                },
+                                7
+                              ]
+                            },
+                            {
+                              "not": {
+                                "fact": "apl_buff_vampiric_strike_react"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "lt": [
+                        {
+                          "fact": "apl_rune"
+                        },
+                        2
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "funded_consumer",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "gte": [
+                        {
+                          "fact": "targets"
+                        },
+                        3
+                      ]
+                    },
+                    {
+                      "not": {
+                        "fact": "available_epidemic"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "fact": "available_death_coil"
+                }
+              ]
+            },
+            "when": {
+              "or": [
+                {
+                  "lt": [
+                    {
+                      "fact": "deficit"
+                    },
+                    15
+                  ]
+                },
+                {
+                  "lt": [
+                    {
+                      "fact": "runes"
+                    },
+                    2
+                  ]
+                }
+              ]
+            },
+            "attempt": "death_coil",
+            "priority": 30,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "near_cap",
+            "rules": [
+              "near_cap"
+            ],
+            "unknown": "attempt_with_report",
+            "basis": "runic_power.deficit<15 OR rune<2；其余动态条件与前序未知",
+            "condition_status": "static_branch_estimate",
+            "status_uses_resource_balance": true
+          },
+          "target": {
+            "mode": "min",
+            "fact": "apl_target_health_pct",
+            "phase": "02",
+            "unknown": "target_selection_not_encoded_by_fixed_button"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.8",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 8,
+          "list": "aoe",
+          "signature": "epidemic,if=variable.epidemic_prio",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L369",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1",
+                "unholy.aoe.2",
+                "unholy.aoe.3",
+                "unholy.aoe.4",
+                "unholy.aoe.5",
+                "unholy.aoe.6",
+                "unholy.aoe.7"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "epidemic",
+            "condition": {
+              "or": [
+                {
+                  "and": [
+                    {
+                      "gte": [
+                        {
+                          "fact": "apl_active_enemies"
+                        },
+                        3
+                      ]
+                    },
+                    {
+                      "not": {
+                        "fact": "apl_buff_forbidden_knowledge_up"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "and": [
+                    {
+                      "gte": [
+                        {
+                          "fact": "apl_active_enemies"
+                        },
+                        4
+                      ]
+                    },
+                    {
+                      "fact": "apl_buff_forbidden_knowledge_up"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "funded_consumer",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "gte": [
+                        {
+                          "fact": "targets"
+                        },
+                        3
+                      ]
+                    },
+                    {
+                      "fact": "available_epidemic"
+                    }
+                  ]
+                },
+                {
+                  "fact": "available_epidemic"
+                }
+              ]
+            },
+            "when": true,
+            "attempt": "epidemic",
+            "priority": 50,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "low_priority_spend",
+            "rules": [],
+            "unknown": "attempt_with_report",
+            "basis": "epidemic_prio及前序未知，仅静态尝试",
+            "condition_status": "dynamic_condition_unknown",
+            "status_uses_resource_balance": true
+          },
+          "extra_initializations": [
+            {
+              "coverage_id": "opening_space",
+              "required": true,
+              "count": 1,
+              "coverage_when": {
+                "and": [
+                  {
+                    "and": [
+                      {
+                        "and": [
+                          {
+                            "gte": [
+                              {
+                                "fact": "targets"
+                              },
+                              3
+                            ]
+                          },
+                          {
+                            "fact": "available_epidemic"
+                          }
+                        ]
+                      },
+                      {
+                        "fact": "available_epidemic"
+                      }
+                    ]
+                  },
+                  {
+                    "eq": [
+                      {
+                        "fact": "initial_resource"
+                      },
+                      {
+                        "fact": "maximum_resource"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "when": true,
+              "attempt": "epidemic",
+              "priority": -10,
+              "phases": [
+                "skeleton",
+                "fill"
+              ],
+              "insert": false,
+              "reason": "opening_space",
+              "rules": [],
+              "unknown": "attempt_with_report",
+              "basis": "user_approved_one_initial_full_resource_consumption",
+              "condition_status": "dynamic_condition_unknown",
+              "status_uses_resource_balance": false
+            }
+          ],
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.aoe.9",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=aoe,if=active_enemies>=3",
+          "priority": 9,
+          "list": "aoe",
+          "signature": "death_coil,target_if=min:health.pct",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L370",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.aoe.1",
+                "unholy.aoe.2",
+                "unholy.aoe.3",
+                "unholy.aoe.4",
+                "unholy.aoe.5",
+                "unholy.aoe.6",
+                "unholy.aoe.7",
+                "unholy.aoe.8"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [],
+          "scope": {
+            "gte": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "death_coil",
+            "condition": true
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "funded_consumer",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "gte": [
+                        {
+                          "fact": "targets"
+                        },
+                        3
+                      ]
+                    },
+                    {
+                      "not": {
+                        "fact": "available_epidemic"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "fact": "available_death_coil"
+                }
+              ]
+            },
+            "when": true,
+            "attempt": "death_coil",
+            "priority": 50,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "low_priority_spend",
+            "rules": [],
+            "unknown": "attempt_with_report",
+            "basis": "epidemic_prio及前序未知，仅静态尝试",
+            "condition_status": "dynamic_condition_unknown",
+            "status_uses_resource_balance": true
+          },
+          "extra_initializations": [
+            {
+              "coverage_id": "opening_space",
+              "required": true,
+              "count": 1,
+              "coverage_when": {
+                "and": [
+                  {
+                    "and": [
+                      {
+                        "and": [
+                          {
+                            "gte": [
+                              {
+                                "fact": "targets"
+                              },
+                              3
+                            ]
+                          },
+                          {
+                            "not": {
+                              "fact": "available_epidemic"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "fact": "available_death_coil"
+                      }
+                    ]
+                  },
+                  {
+                    "eq": [
+                      {
+                        "fact": "initial_resource"
+                      },
+                      {
+                        "fact": "maximum_resource"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "when": true,
+              "attempt": "death_coil",
+              "priority": -10,
+              "phases": [
+                "skeleton",
+                "fill"
+              ],
+              "insert": false,
+              "reason": "opening_space",
+              "rules": [],
+              "unknown": "attempt_with_report",
+              "basis": "user_approved_one_initial_full_resource_consumption",
+              "condition_status": "dynamic_condition_unknown",
+              "status_uses_resource_balance": false
+            }
+          ],
+          "target": {
+            "mode": "min",
+            "fact": "apl_target_health_pct",
+            "phase": "02",
+            "unknown": "target_selection_not_encoded_by_fixed_button"
+          },
+          "parent_condition": {
+            "gte": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.cooldowns.1",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=cooldowns",
+          "priority": 1,
+          "list": "cooldowns",
+          "signature": "outbreak,if=(!talent.blightburst|talent.blightburst&(cooldown.putrefy.remains>gcd.max*2|time<5))&dot.dread_plague.active_dots=0&(fight_remains>gcd.max*2&!raid_event.adds.exists|raid_event.adds.exists&raid_event.adds.remains>gcd.max*2)",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L372",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "maintenance"
+          ],
+          "scope": true,
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "outbreak",
+            "condition": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "or": [
+                        {
+                          "not": {
+                            "fact": "apl_talent_blightburst"
+                          }
+                        },
+                        {
+                          "and": [
+                            {
+                              "fact": "apl_talent_blightburst"
+                            },
+                            {
+                              "or": [
+                                {
+                                  "gt": [
+                                    {
+                                      "fact": "apl_cooldown_putrefy_remains"
+                                    },
+                                    {
+                                      "multiply": [
+                                        {
+                                          "fact": "apl_gcd_max"
+                                        },
+                                        2
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "lt": [
+                                    {
+                                      "fact": "apl_time"
+                                    },
+                                    5
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "eq": [
+                        {
+                          "fact": "apl_dot_dread_plague_active_dots"
+                        },
+                        0
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "or": [
+                    {
+                      "and": [
+                        {
+                          "gt": [
+                            {
+                              "fact": "apl_fight_remains"
+                            },
+                            {
+                              "multiply": [
+                                {
+                                  "fact": "apl_gcd_max"
+                                },
+                                2
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "not": {
+                            "fact": "apl_raid_event_adds_exists"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "and": [
+                        {
+                          "fact": "apl_raid_event_adds_exists"
+                        },
+                        {
+                          "gt": [
+                            {
+                              "fact": "apl_raid_event_adds_remains"
+                            },
+                            {
+                              "multiply": [
+                                {
+                                  "fact": "apl_gcd_max"
+                                },
+                                2
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.cooldowns.1",
+            "required": false,
+            "count": 128,
+            "coverage_when": {
+              "fact": "available_outbreak"
+            },
+            "when": true,
+            "attempt": "outbreak",
+            "priority": 0,
+            "phases": [
+              "fill"
+            ],
+            "insert": true,
+            "reason": "maintenance",
+            "rules": [
+              "maintenance"
+            ],
+            "unknown": "attempt_with_report",
+            "basis": "preserved_static_initialization_approximation",
+            "interval_ms": {
+              "fact": "dread_plague_duration_ms"
+            },
+            "replace_actions": [
+              "scourge_strike"
+            ],
+            "cross_cycle": "remove_redundant_tail_or_pad"
+          },
+          "initialization_coverage": {
+            "basis": "user_approved_alternative_disease_maintenance",
+            "provider": "putrefy",
+            "coverage": "unknown",
+            "note": "明确Blightburst且腐化可用才省略Outbreak；未知保留"
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "overrides": [
+            {
+              "path": "initialize.coverage_when",
+              "value": {
+                "and": [
+                  {
+                    "fact": "available_outbreak"
+                  },
+                  {
+                    "not": {
+                      "and": [
+                        {
+                          "fact": "blightburst"
+                        },
+                        {
+                          "fact": "available_putrefy"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "source": {
+                "kind": "user_approval",
+                "decision": "明确Blightburst且腐化可用时替代疾病维护；未知保留爆发"
+              }
+            }
+          ],
+          "parent_condition": true
+        },
+        {
+          "id": "unholy.cooldowns.2",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=cooldowns",
+          "priority": 2,
+          "list": "cooldowns",
+          "signature": "death_and_decay,if=active_enemies>=3&talent.cycle_of_death&(buff.festering_scythe_tt.up|!talent.festering_scythe)&(cooldown.putrefy.charges<cooldown.putrefy.max_charges&(raid_event.adds.exists&raid_event.adds.remains>=duration*0.75|!raid_event.adds.exists&fight_remains>=duration*0.75)&(raid_event.adds.exists&raid_event.adds.count<active_enemies|!raid_event.adds.exists|charges=max_charges))",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L373",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "unholy.cooldowns.1"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "ordinary_cooldown"
+          ],
+          "scope": true,
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "death_and_decay",
+            "condition": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "and": [
+                        {
+                          "gte": [
+                            {
+                              "fact": "apl_active_enemies"
+                            },
+                            3
+                          ]
+                        },
+                        {
+                          "fact": "apl_talent_cycle_of_death"
+                        }
+                      ]
+                    },
+                    {
+                      "or": [
+                        {
+                          "fact": "apl_buff_festering_scythe_tt_up"
+                        },
+                        {
+                          "not": {
+                            "fact": "apl_talent_festering_scythe"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "and": [
+                    {
+                      "and": [
+                        {
+                          "lt": [
+                            {
+                              "fact": "apl_cooldown_putrefy_charges"
+                            },
+                            {
+                              "fact": "apl_cooldown_putrefy_max_charges"
+                            }
+                          ]
+                        },
+                        {
+                          "or": [
+                            {
+                              "and": [
+                                {
+                                  "fact": "apl_raid_event_adds_exists"
+                                },
+                                {
+                                  "gte": [
+                                    {
+                                      "fact": "apl_raid_event_adds_remains"
+                                    },
+                                    {
+                                      "multiply": [
+                                        {
+                                          "fact": "apl_duration"
+                                        },
+                                        0.75
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "and": [
+                                {
+                                  "not": {
+                                    "fact": "apl_raid_event_adds_exists"
+                                  }
+                                },
+                                {
+                                  "gte": [
+                                    {
+                                      "fact": "apl_fight_remains"
+                                    },
+                                    {
+                                      "multiply": [
+                                        {
+                                          "fact": "apl_duration"
+                                        },
+                                        0.75
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "or": [
+                        {
+                          "or": [
+                            {
+                              "and": [
+                                {
+                                  "fact": "apl_raid_event_adds_exists"
+                                },
+                                {
+                                  "lt": [
+                                    {
+                                      "fact": "apl_raid_event_adds_count"
+                                    },
+                                    {
+                                      "fact": "apl_active_enemies"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "not": {
+                                "fact": "apl_raid_event_adds_exists"
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "eq": [
+                            {
+                              "fact": "apl_charges"
+                            },
+                            {
+                              "fact": "apl_max_charges"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.cooldowns.2",
+            "coverage_when": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "fact": "available_death_and_decay"
+                    },
+                    {
+                      "fact": "cycle_of_death"
+                    }
+                  ]
+                },
+                {
+                  "gte": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                }
+              ]
+            },
+            "when": true,
+            "priority": {
+              "select": [
+                {
+                  "when": {
+                    "gte": [
+                      {
+                        "fact": "targets"
+                      },
+                      3
+                    ]
+                  },
+                  "value": 21
+                },
+                {
+                  "when": {
+                    "lt": [
+                      {
+                        "fact": "targets"
+                      },
+                      3
+                    ]
+                  },
+                  "value": 31
+                }
+              ]
+            },
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "ordinary_cooldown",
+            "rules": [
+              "ordinary_cooldown"
+            ],
+            "basis": "preserved_static_initialization_approximation",
+            "require_full_charges": true,
+            "report_demonstrated": true
+          },
+          "initialization_coverage": {
+            "basis": "user_approved_single_target_demo",
+            "upstream_applicable": {
+              "gte": [
+                {
+                  "fact": "targets"
+                },
+                3
+              ]
+            },
+            "note": "单体可用且对应天赋开启时亦覆盖，原APL条件保留"
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "overrides": [
+            {
+              "path": "initialize.coverage_when",
+              "value": {
+                "and": [
+                  {
+                    "fact": "available_death_and_decay"
+                  },
+                  {
+                    "fact": "cycle_of_death"
+                  }
+                ]
+              },
+              "source": {
+                "kind": "user_approval",
+                "decision": "单体也覆盖可用且有Cycle天赋的枯萎凋零"
+              }
+            }
+          ],
+          "parent_condition": true
+        },
+        {
+          "id": "unholy.single_target.1",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 1,
+          "list": "single_target",
+          "signature": "festering_strike,if=talent.festering_scythe&fight_remains>10&(buff.festering_scythe.up&(buff.festering_scythe.remains<=3|buff.festering_scythe_tt.remains<3)|!buff.festering_scythe.up&buff.festering_scythe_tt.remains<3)",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L386",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "maintenance"
+          ],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "festering_strike",
+            "condition": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "fact": "apl_talent_festering_scythe"
+                    },
+                    {
+                      "gt": [
+                        {
+                          "fact": "apl_fight_remains"
+                        },
+                        10
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "or": [
+                    {
+                      "and": [
+                        {
+                          "fact": "apl_buff_festering_scythe_up"
+                        },
+                        {
+                          "or": [
+                            {
+                              "lte": [
+                                {
+                                  "fact": "apl_buff_festering_scythe_remains"
+                                },
+                                3
+                              ]
+                            },
+                            {
+                              "lt": [
+                                {
+                                  "fact": "apl_buff_festering_scythe_tt_remains"
+                                },
+                                3
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "and": [
+                        {
+                          "not": {
+                            "fact": "apl_buff_festering_scythe_up"
+                          }
+                        },
+                        {
+                          "lt": [
+                            {
+                              "fact": "apl_buff_festering_scythe_tt_remains"
+                            },
+                            3
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.2",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 2,
+          "list": "single_target",
+          "signature": "soul_reaper,target_if=min:health.pct,if=buff.dark_transformation.up&cooldown.dark_transformation.remains<38|target.health.pct<35",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L387",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "ordinary_cooldown"
+          ],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "soul_reaper",
+            "condition": {
+              "or": [
+                {
+                  "and": [
+                    {
+                      "fact": "apl_buff_dark_transformation_up"
+                    },
+                    {
+                      "lt": [
+                        {
+                          "fact": "apl_cooldown_dark_transformation_remains"
+                        },
+                        38
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "lt": [
+                    {
+                      "fact": "apl_target_health_pct"
+                    },
+                    35
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.single_target.2",
+            "coverage_when": {
+              "and": [
+                {
+                  "lt": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_soul_reaper"
+                }
+              ]
+            },
+            "when": {
+              "param": "condition"
+            },
+            "priority": 32,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "ordinary_cooldown",
+            "rules": [
+              "ordinary_cooldown"
+            ],
+            "basis": "user_approved_soul_reaper_demo",
+            "require_full_charges": true,
+            "report_demonstrated": true
+          },
+          "initialization_coverage": {
+            "basis": "user_approved_soul_reaper_demo",
+            "coverage": "unknown",
+            "note": "可用时普通CD示范；动态条件与成功仍未知"
+          },
+          "target": {
+            "mode": "min",
+            "fact": "apl_target_health_pct",
+            "phase": "02",
+            "unknown": "target_selection_not_encoded_by_fixed_button"
+          },
+          "overrides": [
+            {
+              "path": "initialize.when",
+              "value": {
+                "fact": "available_soul_reaper"
+              },
+              "source": {
+                "kind": "user_approval",
+                "decision": "可用灵魂收割ST/AOE普通CD示范一次；动态条件保留02"
+              },
+              "report": "initialization_demo; dynamic_applicability_unknown"
+            }
+          ],
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.3",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 3,
+          "list": "single_target",
+          "signature": "putrefy,if=buff.dark_transformation.up&runic_power.deficit>10",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L388",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "window_or_full",
+            "protected_burst"
+          ],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "putrefy",
+            "condition": {
+              "and": [
+                {
+                  "fact": "apl_buff_dark_transformation_up"
+                },
+                {
+                  "gt": [
+                    {
+                      "fact": "apl_runic_power_deficit"
+                    },
+                    10
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.single_target.3",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "lt": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_putrefy"
+                }
+              ]
+            },
+            "when": true,
+            "attempt": "putrefy",
+            "priority": 30,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "window_or_full",
+            "rules": [
+              "window_or_full"
+            ],
+            "unknown": "attempt_with_report",
+            "basis": "preserved_static_initialization_approximation",
+            "burst_action": "dark_transformation",
+            "alignment_rules": [
+              "protected_burst"
+            ],
+            "condition_status": "dynamic_condition_unknown",
+            "require_full_charges": true,
+            "report_demonstrated": true
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.4",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 4,
+          "list": "single_target",
+          "signature": "scourge_strike,if=runic_power.deficit<90&buff.essence_of_the_blood_queen.up&buff.essence_of_the_blood_queen.stack<buff.essence_of_the_blood_queen.max_stack",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L389",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "scourge_strike",
+            "condition": {
+              "and": [
+                {
+                  "and": [
+                    {
+                      "lt": [
+                        {
+                          "fact": "apl_runic_power_deficit"
+                        },
+                        90
+                      ]
+                    },
+                    {
+                      "fact": "apl_buff_essence_of_the_blood_queen_up"
+                    }
+                  ]
+                },
+                {
+                  "lt": [
+                    {
+                      "fact": "apl_buff_essence_of_the_blood_queen_stack"
+                    },
+                    {
+                      "fact": "apl_buff_essence_of_the_blood_queen_max_stack"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.5",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 5,
+          "list": "single_target",
+          "signature": "death_coil,if=buff.sudden_doom.react|runic_power.deficit<=10",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L390",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3",
+                "unholy.single_target.4"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "near_cap"
+          ],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "death_coil",
+            "condition": {
+              "or": [
+                {
+                  "fact": "apl_buff_sudden_doom_react"
+                },
+                {
+                  "lte": [
+                    {
+                      "fact": "apl_runic_power_deficit"
+                    },
+                    10
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "funded_consumer",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "lt": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_death_coil"
+                }
+              ]
+            },
+            "when": {
+              "lte": [
+                {
+                  "fact": "deficit"
+                },
+                10
+              ]
+            },
+            "attempt": "death_coil",
+            "priority": 20,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "near_cap",
+            "rules": [
+              "near_cap"
+            ],
+            "unknown": "attempt_with_report",
+            "basis": "runic_power.deficit<=10；触发及前序未知",
+            "condition_status": "static_branch_estimate",
+            "status_uses_resource_balance": true
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.6",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 6,
+          "list": "single_target",
+          "signature": "putrefy,if=buff.dark_transformation.up",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L391",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3",
+                "unholy.single_target.4",
+                "unholy.single_target.5"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "window_or_full",
+            "protected_burst"
+          ],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "putrefy",
+            "condition": {
+              "fact": "apl_buff_dark_transformation_up"
+            }
+          },
+          "unknown": "record_not_applied",
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.7",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 7,
+          "list": "single_target",
+          "signature": "death_coil,if=buff.dark_transformation.up|buff.forbidden_knowledge.up|buff.essence_of_the_blood_queen.remains<5&!buff.vampiric_strike.react",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L392",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3",
+                "unholy.single_target.4",
+                "unholy.single_target.5",
+                "unholy.single_target.6"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "death_coil",
+            "condition": {
+              "or": [
+                {
+                  "or": [
+                    {
+                      "fact": "apl_buff_dark_transformation_up"
+                    },
+                    {
+                      "fact": "apl_buff_forbidden_knowledge_up"
+                    }
+                  ]
+                },
+                {
+                  "and": [
+                    {
+                      "lt": [
+                        {
+                          "fact": "apl_buff_essence_of_the_blood_queen_remains"
+                        },
+                        5
+                      ]
+                    },
+                    {
+                      "not": {
+                        "fact": "apl_buff_vampiric_strike_react"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.8",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 8,
+          "list": "single_target",
+          "signature": "scourge_strike,if=buff.lesser_ghoul_ready.stack>=1&buff.blighted.up",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L393",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3",
+                "unholy.single_target.4",
+                "unholy.single_target.5",
+                "unholy.single_target.6",
+                "unholy.single_target.7"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "scourge_strike",
+            "condition": {
+              "and": [
+                {
+                  "gte": [
+                    {
+                      "fact": "apl_buff_lesser_ghoul_ready_stack"
+                    },
+                    1
+                  ]
+                },
+                {
+                  "fact": "apl_buff_blighted_up"
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.9",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 9,
+          "list": "single_target",
+          "signature": "death_coil,if=cooldown.army_of_the_dead.remains>5|runic_power.deficit<50",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L394",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3",
+                "unholy.single_target.4",
+                "unholy.single_target.5",
+                "unholy.single_target.6",
+                "unholy.single_target.7",
+                "unholy.single_target.8"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "reserve"
+          ],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "death_coil",
+            "condition": {
+              "or": [
+                {
+                  "gt": [
+                    {
+                      "fact": "apl_cooldown_army_of_the_dead_remains"
+                    },
+                    5
+                  ]
+                },
+                {
+                  "lt": [
+                    {
+                      "fact": "apl_runic_power_deficit"
+                    },
+                    50
+                  ]
+                }
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "funded_consumer",
+            "required": true,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "lt": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_death_coil"
+                }
+              ]
+            },
+            "when": {
+              "lt": [
+                {
+                  "fact": "deficit"
+                },
+                50
+              ]
+            },
+            "attempt": "death_coil",
+            "priority": 50,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "reserve",
+            "rules": [
+              "reserve"
+            ],
+            "unknown": "attempt_with_report",
+            "basis": "runic_power.deficit<50；Army剩余及前序让位未知",
+            "condition_status": "static_branch_estimate",
+            "status_uses_resource_balance": true
+          },
+          "extra_initializations": [
+            {
+              "coverage_id": "opening_space",
+              "required": true,
+              "count": 1,
+              "coverage_when": {
+                "and": [
+                  {
+                    "and": [
+                      {
+                        "lt": [
+                          {
+                            "fact": "targets"
+                          },
+                          3
+                        ]
+                      },
+                      {
+                        "fact": "available_death_coil"
+                      }
+                    ]
+                  },
+                  {
+                    "eq": [
+                      {
+                        "fact": "initial_resource"
+                      },
+                      {
+                        "fact": "maximum_resource"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "when": true,
+              "attempt": "death_coil",
+              "priority": -10,
+              "phases": [
+                "skeleton",
+                "fill"
+              ],
+              "insert": false,
+              "reason": "opening_space",
+              "rules": [],
+              "unknown": "attempt_with_report",
+              "basis": "user_approved_one_initial_full_resource_consumption",
+              "condition_status": "static_branch_estimate",
+              "status_uses_resource_balance": false
+            }
+          ],
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.10",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 10,
+          "list": "single_target",
+          "signature": "scourge_strike,if=buff.lesser_ghoul_ready.stack>=1",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L395",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3",
+                "unholy.single_target.4",
+                "unholy.single_target.5",
+                "unholy.single_target.6",
+                "unholy.single_target.7",
+                "unholy.single_target.8",
+                "unholy.single_target.9"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "scourge_strike",
+            "condition": {
+              "gte": [
+                {
+                  "fact": "apl_buff_lesser_ghoul_ready_stack"
+                },
+                1
+              ]
+            }
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.single_target.10",
+            "required": false,
+            "count": 128,
+            "coverage_when": {
+              "and": [
+                {
+                  "lt": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_scourge_strike"
+                }
+              ]
+            },
+            "when": {
+              "gt": [
+                {
+                  "fact": "deficit"
+                },
+                0
+              ]
+            },
+            "attempt": "scourge_strike",
+            "priority": 70,
+            "phases": [
+              "skeleton",
+              "fill"
+            ],
+            "insert": false,
+            "reason": "resource_fill",
+            "rules": [],
+            "unknown": "attempt_with_report",
+            "basis": "preserved_static_initialization_approximation"
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        },
+        {
+          "id": "unholy.single_target.11",
+          "action": {
+            "param": "action"
+          },
+          "parent": "call_action_list,name=single_target,if=active_enemies<3",
+          "priority": 11,
+          "list": "single_target",
+          "signature": "festering_strike",
+          "source": "https://github.com/simulationcraft/simc/blob/eed909156d8eccbfca0f284cc271c080949d6a20/engine/class_modules/apl/apl_death_knight.cpp#L396",
+          "yields_to": [
+            {
+              "source_entries": [
+                "default.racials",
+                "default.high_priority",
+                "default.trinkets",
+                "default.cooldowns",
+                "unholy.single_target.1",
+                "unholy.single_target.2",
+                "unholy.single_target.3",
+                "unholy.single_target.4",
+                "unholy.single_target.5",
+                "unholy.single_target.6",
+                "unholy.single_target.7",
+                "unholy.single_target.8",
+                "unholy.single_target.9",
+                "unholy.single_target.10"
+              ],
+              "when": {
+                "unknown": "preceding_runtime_eligibility_not_observed"
+              }
+            }
+          ],
+          "rules": [
+            "maintenance"
+          ],
+          "scope": {
+            "lt": [
+              {
+                "fact": "targets"
+              },
+              3
+            ]
+          },
+          "condition": {
+            "param": "condition"
+          },
+          "arguments": {
+            "action": "festering_strike",
+            "condition": true
+          },
+          "unknown": "record_not_applied",
+          "initialize": {
+            "coverage_id": "unholy.single_target.11",
+            "required": false,
+            "count": 1,
+            "coverage_when": {
+              "and": [
+                {
+                  "lt": [
+                    {
+                      "fact": "targets"
+                    },
+                    3
+                  ]
+                },
+                {
+                  "fact": "available_festering_strike"
+                }
+              ]
+            },
+            "when": {
+              "lt": [
+                {
+                  "fact": "lesser_ghoul_ready_stacks"
+                },
+                1
+              ]
+            },
+            "attempt": "festering_strike",
+            "priority": 60,
+            "phases": [
+              "fill"
+            ],
+            "insert": true,
+            "reason": "buff_maintenance_demo",
+            "rules": [
+              "maintenance"
+            ],
+            "unknown": "error",
+            "basis": "preserved_static_initialization_approximation",
+            "required_facts": [
+              "lesser_ghoul_ready_stacks"
+            ]
+          },
+          "target": {
+            "mode": "current",
+            "phase": "02"
+          },
+          "parent_condition": {
+            "lt": [
+              {
+                "fact": "apl_active_enemies"
+              },
+              3
+            ]
+          }
+        }
+      ],
+      "external_entries": {
+        "default.cooldowns": {
+          "phase": "02",
+          "unknown": "preceding_entry_not_bound"
+        },
+        "default.high_priority": {
+          "phase": "02",
+          "unknown": "preceding_entry_not_bound"
+        },
+        "default.racials": {
+          "phase": "02",
+          "unknown": "preceding_entry_not_bound"
+        },
+        "default.trinkets": {
+          "phase": "02",
+          "unknown": "preceding_entry_not_bound"
+        },
+        "unholy.high_priority.1": {
+          "phase": "02",
+          "unknown": "preceding_entry_not_bound"
+        },
+        "unholy.high_priority.2": {
+          "phase": "02",
+          "unknown": "preceding_entry_not_bound"
+        }
+      }
+    }
+  }
+}

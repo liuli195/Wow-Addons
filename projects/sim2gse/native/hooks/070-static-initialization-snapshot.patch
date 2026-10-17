@@ -10,15 +10,17 @@
  
 --- a/engine/class_modules/sc_death_knight.cpp
 +++ b/engine/class_modules/sc_death_knight.cpp
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,9 @@
  #include "report/highchart.hpp"
  
  #include "simulationcraft.hpp"
 +#include "sim2gse/catalogue.hpp"
++#include <typeinfo>
++#include <set>
  
  namespace
  {  // UNNAMED NAMESPACE
-@@ -2014,6 +2015,7 @@
+@@ -2014,6 +2016,7 @@
    bool validate_actor() override;
    double composite_attribute( attribute_e ) const override;
    double composite_bonus_armor() const override;
@@ -26,29 +28,161 @@
    void combat_begin() override;
    void activate() override;
    void moving() override;
-@@ -16778,6 +16780,27 @@
+@@ -16778,6 +16781,159 @@
    return a;
  }
  
-+// Specialization parameters stay in the native specialization binding.
++// This adapter is audited against eed909156. It supports existing ordinary instant GCD
++// DK attack/spell instances, not arbitrary future subclasses or rule-specific names.
++static const parse_action_base_t* sim2gse_static_dk_action( const action_t* a )
++{
++  if ( !a || !a->initialized || a->player->is_pet() || a->is_precombat || a->background ||
++       a->quiet || !a->harmful || !a->special || a->repeating || a->is_interrupt || a->channeled ||
++       a->data().flags( SX_PASSIVE ) || a->trigger_gcd <= 0_ms || a->base_execute_time.base != 0_ms ||
++       a->base_execute_time.flat_add != 0_ms || !sim2gse::action_available( *a ) ||
++       dynamic_cast<const death_knight_empowered_charge_spell_t*>( a ) ||
++       dynamic_cast<const death_knight_empowered_release_spell_t*>( a ) ) return nullptr;
++  if ( const auto* spell = dynamic_cast<const death_knight_spell_t*>( a ) ) return spell;
++  return dynamic_cast<const death_knight_melee_attack_t*>( a );
++}
++
++static bool sim2gse_static_buff_value( const buff_t* buff )
++{
++  // These exact classes inherit buff_t::check_value without an override. Unknown
++  // equipment/custom buff subclasses must not be called even while inactive.
++  return !buff || typeid( *buff ) == typeid( buff_t ) || typeid( *buff ) == typeid( stat_buff_t ) ||
++    typeid( *buff ) == typeid( death_knight_buff_base_t<> );
++}
++
++static bool sim2gse_static_haste( const death_knight_t& p )
++{
++  for ( const auto* effects : { &p.haste_effects, &p.melee_haste_effects, &p.spell_haste_effects,
++                               &p.auto_attack_speed_effects, &p.rating_multiplier_effects } )
++    if ( !sim2gse::static_effects_safe( *effects ) ) return false;
++  for ( const auto* buff : p.player_t::buffs.stat_pct_buffs[ STAT_PCT_BUFF_HASTE ] )
++    if ( !sim2gse_static_buff_value( buff ) ) return false;
++  // The native base getters below use virtual check_value/check_stack_value.
++  const auto& buffs = p.player_t::buffs;
++  for ( const auto* buff : { buffs.nefarious_pact, buffs.devils_due } )
++    if ( !sim2gse_static_buff_value( buff ) ) return false;
++  for ( const auto* buff : { buffs.bloodlust, buffs.galeforce_striking, buffs.delirious_frenzy,
++                            buffs.way_of_controlled_currents } )
++    if ( buff && buff->check() && !sim2gse_static_buff_value( buff ) ) return false;
++  return true;
++}
++
++template <typename T>
++static const action_t* sim2gse_active_replacement( const T* a )
++{
++  return a->replacement_action && ( a->always_replace ||
++    ( a->replacement_action_buff && a->replacement_action_buff->check() ) ) ? a->replacement_action : a;
++}
++
++static const action_t* sim2gse_static_cost_action( const action_t* action )
++{
++  std::set<const action_t*> seen;
++  while ( action && seen.insert( action ).second )
++  {
++    const auto* parsed = sim2gse_static_dk_action( action );
++    if ( !parsed ) return nullptr;
++    const action_t* next = nullptr;
++    if ( const auto* spell = dynamic_cast<const death_knight_spell_t*>( action ) )
++      next = sim2gse_active_replacement( spell );
++    else
++      next = sim2gse_active_replacement( static_cast<const death_knight_melee_attack_t*>( action ) );
++    if ( next != action ) { action = next; continue; }
++    if ( !sim2gse::static_effects_safe( parsed->cost_effects ) ||
++         !sim2gse::static_effects_safe( parsed->flat_cost_effects ) ) return nullptr;
++    // The audited native cost getter consumes current_resource only. Do not
++    // silently claim that additional positive resource costs were exported.
++    for ( resource_e r = RESOURCE_NONE; r < RESOURCE_MAX; r++ )
++      if ( r != action->current_resource() && ( action->base_costs[ r ] > 0 || action->max_base_costs[ r ] > 0 ) )
++        return nullptr;
++    return action;
++  }
++  return nullptr;
++}
++
++template <typename T>
++static bool sim2gse_static_energize( const T* action )
++{
++  return action->rp_per_tick == 0 && ( action->energize_type_() == action_energize::NONE ||
++    ( sim2gse::static_effects_safe( action->runic_power_multiplier_effects ) &&
++      sim2gse::static_effects_safe( action->runic_power_flat_effects ) ) );
++}
++
 +void death_knight_t::precombat_init()
 +{
 +  player_t::precombat_init();
 +  if ( specialization() != DEATH_KNIGHT_UNHOLY || !sim2gse_static_snapshot_json.empty() ) return;
++  const bool haste_safe = sim2gse_static_haste( *this );
++  std::vector<sim2gse::static_action_t> actions;
++  for ( auto* action : action_list )
++  {
++    const auto* parsed = sim2gse_static_dk_action( action );
++    if ( !parsed ) continue;
++    sim2gse::static_action_t entry{ action, sim2gse_static_cost_action( action ), {} };
++    if ( !haste_safe || !sim2gse::static_effects_safe( parsed->gcd_effects ) )
++      entry.unknown[ "gcd_ms" ] = "unsafe_haste_or_gcd_effect";
++    if ( !haste_safe || !sim2gse::static_effects_safe( parsed->execute_time_effects, true ) ||
++         !sim2gse::static_effects_safe( parsed->flat_execute_time_effects, true ) ||
++         ( dynamic_cast<const death_knight_spell_t*>( action ) &&
++           !sim2gse_static_buff_value( player_t::buffs.chilled_clarity ) ) )
++      entry.unknown[ "cast_ms" ] = "unsafe_haste_or_cast_effect";
++    if ( !entry.cost_action ) entry.unknown[ "costs" ] = "unsafe_cost_or_replacement";
++    else if ( entry.cost_action != action )
++      entry.unknown[ "costs" ] = "active_replacement_requires_its_own_snapshot_row";
++    // cooldown_duration may query another action sharing the same cooldown.
++    const auto* cd = action->cooldown;
++    if ( !cd )
++      entry.unknown[ "cooldown_ms" ] = "missing_cooldown";
++    else if ( !cd->ongoing() && cd->action )
++    {
++      const auto* owner = sim2gse_static_dk_action( cd->action );
++      if ( !owner || ( cd->hasted && !haste_safe ) ||
++           !sim2gse::static_effects_safe( owner->recharge_multiplier_effects ) ||
++           !sim2gse::static_effects_safe( owner->recharge_rate_effects ) )
++        entry.unknown[ "cooldown_ms" ] = "unsafe_cooldown_owner_or_effect";
++    }
++    bool gains_safe = false;
++    if ( const auto* spell = dynamic_cast<const death_knight_spell_t*>( action ) )
++      gains_safe = sim2gse_static_energize( spell );
++    else
++      gains_safe = sim2gse_static_energize( static_cast<const death_knight_melee_attack_t*>( action ) );
++    const auto timing = action->energize_type_();
++    if ( !gains_safe || ( timing != action_energize::NONE && ( !action->target ||
++         action->energize_resource_() == RESOURCE_NONE ||
++         ( timing != action_energize::ON_CAST && timing != action_energize::ON_HIT ) ) ) )
++      entry.unknown[ "gains" ] = "unsafe_energize_effect_target_or_timing";
++    actions.push_back( std::move( entry ) );
++  }
++
++  // These are the finite, existing specialization facts, independent of rule IDs.
 +  std::map<std::string, double> parameters = {
-+    { "rune_recharge_ms", 1000.0 / runes_per_second() },
 +    { "rune_recharge_slots", static_cast<double>( MAX_REGENERATING_RUNES ) },
 +    { "lesser_ghoul_ready_stacks", static_cast<double>( buffs.lesser_ghoul_ready->check() ) }
 +  };
-+  if ( background_actions.dread_plague )
-+    parameters[ "dread_plague_duration_ms" ] =
-+      background_actions.dread_plague->composite_dot_duration( nullptr ).total_millis();
-+  sim2gse::capture_static_snapshot( *this,
-+    { "outbreak", "putrefy", "death_and_decay", "death_coil", "epidemic",
-+      "festering_strike", "festering_scythe", "scourge_strike", "soul_reaper" }, parameters,
++  std::map<std::string, std::string> unknown;
++  if ( haste_safe ) parameters[ "rune_recharge_ms" ] = 1000.0 / runes_per_second();
++  else unknown[ "rune_recharge_ms" ] = "unsafe_player_haste";
++  action_t* disease_action = background_actions.dread_plague;
++  auto* disease = dynamic_cast<dread_plague_t*>( disease_action );
++  if ( disease && disease->initialized && disease->data().ok() && disease->target && !disease->hasted_dot_duration &&
++       sim2gse::static_effects_safe( disease->dot_duration_effects ) &&
++       sim2gse::static_effects_safe( disease->flat_dot_duration_effects ) )
++  {
++    auto* state = disease->get_state();
++    state->target = disease->target;
++    state->n_targets = 1;
++    state->chain_target = 0;
++    parameters[ "dread_plague_duration_ms" ] = disease->composite_dot_duration( state ).total_millis();
++    action_state_t::release( state );
++  }
++  else unknown[ "dread_plague_duration_ms" ] = "unsupported_disease_state_or_duration_effect";
++  sim2gse::capture_static_snapshot( *this, actions, parameters,
 +    { { "cycle_of_death", talent.unholy.cycle_of_death.ok() },
 +      { "blightburst", talent.unholy.blightburst.ok() },
-+      { "festering_scythe", talent.unholy.festering_scythe.ok() } } );
++      { "festering_scythe", talent.unholy.festering_scythe.ok() } }, unknown );
 +}
 +
  // death_knight_t::combat_begin =============================================

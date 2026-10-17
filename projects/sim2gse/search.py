@@ -142,14 +142,16 @@ def _unique_names(names, available):
 
 
 def initial_programs(capabilities, reference, seed=20260912, *, input_interval_ms=300,
-                     target_count=1, burst=None, initialization=None):
+                     target_count=1, burst=None, initialization=None, rule_snapshot=None):
     """从四个来源产生稳定合法的起点，而不读派生或宠物动作。"""
     from rule_initialization import generate
-    from unholy_rules import bind
+    from rule_config import load
+    rule_snapshot = rule_snapshot or load()
+    from rule_config import bind
     binding = bind(capabilities, reference.get('static_snapshot'), target_count,
-                   spec_id=reference.get('identity', {}).get('spec_id'))
+                   spec_id=reference.get('identity', {}).get('spec_id'), rule_snapshot=rule_snapshot)
     rule_start = generate(capabilities, reference, binding=binding, input_interval_ms=input_interval_ms,
-                          target_count=target_count, burst=burst)
+                          target_count=target_count, burst=burst, rule_snapshot=rule_snapshot)
     if initialization is not None:
         initialization.update(rule_start)
     baseline_actions = capabilities.get('baseline_actions', capabilities['actions'])

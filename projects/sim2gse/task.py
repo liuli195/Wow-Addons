@@ -1239,8 +1239,10 @@ def _publish_formal_champion(store, destination):
 
 
 def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False,
-                  burst_identity=None, formal_source_run_ids=None):
+                  burst_identity=None, formal_source_run_ids=None, rule_snapshot=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
+    from rule_config import load
+    rule_snapshot = rule_snapshot or load()
     from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
     state = store.state
@@ -1312,7 +1314,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                                     options=[*COMMON, *engine_options(simulation_config)],
                                     config=condition_config, simulation_config=simulation_config,
                                     cbor2=version('cbor2'),
-                                    rules=rules, **(dict(task_category='burst_free_loop',
+                                    rules=rules, rule_config_digest=rule_snapshot['rule_config_digest'], **(dict(task_category='burst_free_loop',
                                                         burst_definition_id=definition['definition_id'])
                                                    if use_burst else {})))
             base_condition = condition
@@ -1329,6 +1331,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             if state.get('condition') and state['condition'] != condition:
                 raise TaskError('恢复任务的版本、配置或角色身份已变化，请创建新任务')
             state.update(condition=condition, config=config, rules=rules, engines=identities,
+                         rule_snapshot=rule_snapshot,
                          use_burst=use_burst,
                          simulation_config=simulation_config,
                          simulation_options=engine_options(simulation_config))
@@ -1344,7 +1347,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     from seed_training import training_champion
                     state['training_champion_snapshot'] = training_champion(
                         character.class_name, character.spec, simulation_config, engines=identities,
-                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
+                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst, rule_snapshot=rule_snapshot,
                         burst_identity=(dict(spec_id=definition['spec_id'],
                                              definition_id=definition['definition_id']) if definition else None))
                 # 冠军与代表快照随 inflight 同一事务冻结，先于任何原生评分。
@@ -1400,7 +1403,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 starts = initial_programs(capabilities, native, config['random_seed'],
                     input_interval_ms=config['input_interval_ms'],
                     target_count=simulation_config['target_count'], burst=state.get('burst'),
-                    initialization=state.setdefault('rule_initialization', {}))
+                    initialization=state.setdefault('rule_initialization', {}), rule_snapshot=rule_snapshot)
                 state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
                     targets=simulation_config['target_count'], engines=identities,
@@ -1545,8 +1548,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
 
 
 @contextmanager
-def _task_lease(destination):
-    with (destination/'.runner.lock').open('a+b') as lock:
+def _task_lease(destination, *, lock_name='.runner.lock', conflict_message='任务正在运行，不能同时恢复'):
+    with (destination/lock_name).open('a+b') as lock:
         if lock.tell()==0:
             lock.write(b'0')
             lock.flush()
@@ -1554,7 +1557,7 @@ def _task_lease(destination):
         try:
             msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
         except OSError as error:
-            raise TaskError('任务正在运行，不能同时恢复') from error
+            raise TaskError(conflict_message) from error
         try:
             yield
         finally:
@@ -1566,7 +1569,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
              version=None, gse_context=None, use_burst=False, burst_identity=None,
-             _formal_source_run_ids=None) -> dict:
+             _formal_source_run_ids=None, _rule_snapshot=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
@@ -1659,7 +1662,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
         try:
             return _run_optimize(destination, character, config=config, runtime=runtime,
                                  simulation_config=simulation_config, use_burst=use_burst, burst_identity=burst_identity,
-                                 formal_source_run_ids=_formal_source_run_ids)
+                                 formal_source_run_ids=_formal_source_run_ids, rule_snapshot=_rule_snapshot)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _save_failure(destination, state)
@@ -1673,20 +1676,31 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False, burst_identity=None) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None, _rule_snapshot=None) -> dict:
+    if mode == 'optimize':
+        from search import config_for
+        _runtime = _runtime or TaskRuntime(config_for(search_config)['total_budget_seconds'],
+                                           cancel_event=cancel_event)
+        from rule_config import load
+        try:
+            _rule_snapshot = _rule_snapshot or load()
+        except ValueError as error:
+            raise TaskError(str(error)) from error
     if mode != 'optimize' or _lease:
         return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
                          search_config=search_config, simulation_config=simulation_config,
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity)
+                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                         _rule_snapshot=_rule_snapshot)
     from seed_activity import foreground_search
     with foreground_search():
         return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
                          search_config=search_config, simulation_config=simulation_config,
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity)
+                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                         _rule_snapshot=_rule_snapshot)
 
 
 class TaskHandle:
@@ -1715,6 +1729,9 @@ def start_task(input_path, output_root, **kwargs):
     config = kwargs.get("search_config")
     from search import config_for
     runtime = TaskRuntime(config_for(config)["total_budget_seconds"] if kwargs.get("mode", "optimize") == "optimize" else 600)
+    if kwargs.get('mode', 'optimize') == 'optimize':
+        from rule_config import load
+        kwargs['_rule_snapshot'] = load()
     handle = TaskHandle(None, runtime, output_root)
 
     def worker():
@@ -1764,6 +1781,15 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination)
         try:
             state = store.state
+            from rule_config import load
+            try:
+                current_rules = kwargs.pop('_rule_snapshot', None) or load()
+            except ValueError as error:
+                raise TaskError(str(error)) from error
+            if ((state.get('rule_snapshot') or {}).get('rule_config_digest') !=
+                    current_rules['rule_config_digest']):
+                raise TaskError('恢复任务的规则配置已变化，请创建新任务')
+            kwargs['_rule_snapshot'] = current_rules
             if 'formal_champion_publication' in state:
                 try:
                     _formal_publication_metadata(state['formal_champion_publication'])
@@ -2086,12 +2112,31 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
     return task_result
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ('rules-check', 'rules-save'):
+        parser = argparse.ArgumentParser(description='校验或保存两库规则；不启动模拟')
+        parser.add_argument('command', choices=('rules-check', 'rules-save'))
+        parser.add_argument('file', type=Path)
+        parser.add_argument('--expected-digest', required=argv[0] == 'rules-save')
+        args = parser.parse_args(argv)
+        try:
+            from rule_config import load, save
+            if args.command == 'rules-save':
+                result = save(args.file, args.expected_digest)
+            else:
+                snapshot = load(args.file)
+                result = dict(status='valid', rule_config_digest=snapshot['rule_config_digest'], source=snapshot['source'])
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        except (TaskError, ValueError, OSError) as error:
+            print(str(error), file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(description='从单个角色文件生成本机离线序列')
     parser.add_argument('input',type=Path,nargs='?',help='角色导出文件')
     parser.add_argument('--resume',action='store_true',help='按原有清单和预算恢复任务')
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         simulation_config = load_config()
         if args.resume:

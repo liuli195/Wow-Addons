@@ -413,8 +413,8 @@ def test_training_entry_reads_internal_concurrency_and_reuses_complete_scores(
     assert any(row['status'] == 'failed' for row in changed)
 
 
-def legacy_batch_fixture(tmp_path, *, mutate_input=lambda payload: None, burst_context=None):
-    """构造完整旧条件/检查点/成绩证据；不冒充本机真实成绩。"""
+def training_batch_fixture(tmp_path, *, mutate_input=lambda payload: None, burst_context=None, legacy=True):
+    """构造完整条件/检查点/成绩证据；旧版本不伪造新的配置摘要。"""
     import hashlib
     import result_store
     from engine import identity
@@ -439,15 +439,22 @@ def legacy_batch_fixture(tmp_path, *, mutate_input=lambda payload: None, burst_c
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
     payload = training_condition_input(hashlib.sha256(text.encode()).hexdigest(), engines, config,
                                        dict(target_count=1, enable_omnium_talents=True), burst_context=burst_context)
-    payload['rules'].update({key: values[0] for key, values in LEGACY_EXECUTION_RULES.items()})
+    if legacy:
+        payload.pop('rule_config_digest')  # 旧提交从未读取两库配置，不制造兼容证据。
+        payload['rules'].update({key: values[0] for key, values in LEGACY_EXECUTION_RULES.items()})
     payload = json.loads(json.dumps(payload))
     mutate_input(payload)
-    condition = digest(payload)
+    from seed_training import semantic_condition, semantic_versions
+    condition = digest(payload) if legacy else semantic_condition(payload, semantic_versions())
     batch = tmp_path / 'work' / '1' / condition[:12]
     folder = batch / candidate['candidate_id'][:12]
     folder.mkdir(parents=True)
     (batch / 'standard.simc').write_text(text, encoding='utf-8')
     (batch / 'condition.txt').write_text(condition, encoding='ascii')
+    if not legacy:
+        manifest = dict(format=1, condition=condition, condition_input=payload, input_sha256=digest(payload),
+            semantic_versions=semantic_versions(), semantic_condition=condition, executions=[])
+        (batch / 'identity.json').write_text(json.dumps(manifest), encoding='utf-8')
     store = TaskStore(folder)
     store.state.update(training_condition=condition, training_candidate_id=candidate['candidate_id'],
                        config=payload['config'], capabilities=_fast_capabilities(), phase='done',
@@ -463,8 +470,8 @@ def legacy_batch_fixture(tmp_path, *, mutate_input=lambda payload: None, burst_c
         batch_requests=11, cache_hits=1)
     result_store.write('seed_processed', 'deathknight-unholy-1' + ('-burst' if burst_context else ''),
                        [row], schema=PROCESSED_SCHEMA)
-    evidence = dict(condition_input=payload, source_commit=LEGACY_SOURCE_COMMIT,
-                    semantic_versions=LEGACY_SEMANTIC_VERSIONS)
+    evidence = dict(condition_input=payload, semantic_versions=(LEGACY_SEMANTIC_VERSIONS if legacy else semantic_versions()),
+                    **({'source_commit': LEGACY_SOURCE_COMMIT} if legacy else {}))
     return template, batch, evidence
 
 
@@ -474,35 +481,31 @@ def legacy_engine_boundary(monkeypatch):
         yield scoped
 
 
-def test_training_entry_reuses_verified_legacy_namespace_without_retraining(tmp_path, monkeypatch, capsys,
-                                                                          legacy_engine_boundary):
+def test_training_entry_keeps_real_legacy_history_without_claiming_current_rule_identity(
+        tmp_path, monkeypatch, capsys, legacy_engine_boundary):
     import result_store
     import sequence
-    from seed_training import adopt_legacy_condition, validate_training_identity
-    template, batch, evidence = legacy_batch_fixture(tmp_path)
+    from seed_training import adopt_legacy_condition
+    template, batch, evidence = training_batch_fixture(tmp_path)
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
-            '--max-processes', '4']
-    legacy_engine_boundary.setattr(sequence, 'evaluate', lambda *a, **kw: pytest.fail('完整旧成绩不能重算'))
-    assert command(tmp_path, args) == 2
-    assert '缺少完整身份凭据' in capsys.readouterr().err
-    before = (Path(processed[0]['task_path']) / 'task.sqlite3').read_bytes()
-    # 原Python输入可能是tuple，检查点/JSON凭据是list，规范摘要仍相同。
+    checkpoint = Path(processed[0]['task_path']) / 'task.sqlite3'
+    before = checkpoint.read_bytes()
+    assert 'rule_config_digest' not in evidence['condition_input']
+    legacy_engine_boundary.setattr(sequence, 'evaluate', lambda *a, **kw: pytest.fail('身份不兼容不能自动重训'))
+    # 新合同：旧源码凭据真实，也不能证明它使用过当前可编辑规则。
     evidence['condition_input']['config']['batch_targets'] = tuple(evidence['condition_input']['config']['batch_targets'])
-    manifest = adopt_legacy_condition(batch, evidence, processed=processed, selected=[])
-    assert command(tmp_path, args) == 0
-    assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == processed
-    assert (Path(processed[0]['task_path']) / 'task.sqlite3').read_bytes() == before
-    assert manifest['condition'] == processed[0]['condition'] != manifest['semantic_condition']
-    assert manifest['executions'][0]['config']['max_processes'] == 2
-    payload = evidence['condition_input']
-    validated = validate_training_identity(batch, payload['template'], payload['engines'],
-        dict(payload['config'], max_processes=4), payload['simulation'])
-    assert validated['condition'] == processed[0]['condition']
-    assert result_store.read_records('seed_selected', 'deathknight-unholy-1')[0]['condition'] == processed[0]['condition']
+    with pytest.raises(ValueError, match='语义身份'):
+        adopt_legacy_condition(batch, evidence, processed=processed, selected=[])
+    assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+        '--workspace', str(tmp_path / 'work'), '--max-processes', '4']) == 2
+    assert '缺少完整身份凭据' in capsys.readouterr().err
+    assert not (batch / 'identity.json').exists()
+    assert checkpoint.read_bytes() == before
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1]) == processed
 
 
-def test_training_entry_reuses_real_legacy_program_digest_without_retraining(
+def test_real_legacy_program_digest_does_not_supply_missing_rule_configuration_identity(
         tmp_path, memory_result_center, legacy_engine_boundary):
     import hashlib
     import result_store
@@ -516,23 +519,25 @@ def test_training_entry_reuses_real_legacy_program_digest_without_retraining(
     if b'\r\n' in (ROOT / key).read_bytes():
         blob = blob.replace(b'\n', b'\r\n')
     old_digest = hashlib.sha256(blob).hexdigest()
-    template, batch, evidence = legacy_batch_fixture(tmp_path,
+    template, batch, evidence = training_batch_fixture(tmp_path,
         mutate_input=lambda payload: payload['rules'].update({key: old_digest}))
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     checkpoint = Path(processed[0]['task_path']) / 'task.sqlite3'
     before = checkpoint.read_bytes()
     legacy_engine_boundary.setattr(sequence, 'evaluate',
         lambda *args, **kwargs: pytest.fail('可靠完成训练不能重训或复测'))
-    manifest = adopt_legacy_condition(batch, evidence, processed=processed, selected=[])
-    assert manifest['condition_input']['rules'][key] == old_digest
+    assert evidence['condition_input']['rules'][key] == old_digest
+    with pytest.raises(ValueError, match='语义身份'):
+        adopt_legacy_condition(batch, evidence, processed=processed, selected=[])
+    assert not (batch / 'identity.json').exists()
     assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
-        '--workspace', str(tmp_path / 'work'), '--max-processes', '4']) == 0
+        '--workspace', str(tmp_path / 'work'), '--max-processes', '4']) == 2
     assert checkpoint.read_bytes() == before
     assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == processed
 
 
 @pytest.mark.parametrize('fault', ['none', 'missing_source', 'changed_source', 'changed_legacy_content', 'changed_current'])
-def test_training_entry_reuses_legacy_only_with_checked_original_line_endings(tmp_path, fault,
+def test_legacy_source_line_endings_never_forge_current_rule_identity(tmp_path, fault,
                                                                             legacy_engine_boundary,
                                                                             monkeypatch):
     import hashlib
@@ -556,7 +561,7 @@ def test_training_entry_reuses_legacy_only_with_checked_original_line_endings(tm
         source.write_bytes(original)
         original_rules[key] = hashlib.sha256(original).hexdigest()
         normalized_hashes[key] = hashlib.sha256(normalized).hexdigest()
-    template, batch, evidence = legacy_batch_fixture(tmp_path,
+    template, batch, evidence = training_batch_fixture(tmp_path,
         mutate_input=lambda payload: payload['rules'].update(original_rules))
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     original_payload = json.loads(json.dumps(evidence['condition_input']))
@@ -573,20 +578,18 @@ def test_training_entry_reuses_legacy_only_with_checked_original_line_endings(tm
         assert not (batch / 'identity.json').exists()
         assert checkpoint.read_bytes() == before
         return
-    manifest = adopt_legacy_condition(batch, evidence, processed=processed, selected=[], source_root=source_root)
-    assert evidence['condition_input'] == original_payload == manifest['condition_input']
-    assert manifest['condition'] == processed[0]['condition']
-    assert manifest['legacy_line_endings'] == {key: dict(raw_sha256=original_rules[key],
-        normalized_sha256=normalized_hashes[key]) for key in keys}
-    legacy_engine_boundary.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('可靠完整旧成绩不能重算'))
+    legacy_engine_boundary.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('旧配置未知不能重算'))
     if fault == 'changed_current':
         original_read = Path.read_bytes
         changed_path = (ROOT / keys[0]).resolve()
         monkeypatch.setattr(Path, 'read_bytes', lambda path: original_read(path).replace(
             b'import hashlib', b'import random as hashlib', 1)
             if path.resolve() == changed_path else original_read(path))
-    assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
-        '--workspace', str(tmp_path / 'work'), '--max-processes', '4']) == (2 if fault == 'changed_current' else 0)
+    # 源码换行验证仍执行，但正确原件也不能补出旧任务从未记录的规则摘要。
+    with pytest.raises(ValueError, match='语义身份'):
+        adopt_legacy_condition(batch, evidence, processed=processed, selected=[], source_root=source_root)
+    assert evidence['condition_input'] == original_payload
+    assert not (batch / 'identity.json').exists()
     assert checkpoint.read_bytes() == before
     assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == processed
 
@@ -596,7 +599,7 @@ def test_training_entry_can_start_changed_template_without_borrowing_unproven_le
     import result_store
     import sequence
     from unittest.mock import patch
-    template, _, _ = legacy_batch_fixture(tmp_path)
+    template, _, _ = training_batch_fixture(tmp_path)
     original = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
     template.write_text(template.read_text(encoding='utf-8') + '\n# new role revision\n', encoding='utf-8')
     with patch.object(sequence, 'evaluate', side_effect=ValueError('新模板重新评分')):
@@ -617,7 +620,7 @@ def test_legacy_adoption_refuses_incomplete_or_unknown_proof(tmp_path, fault, le
             payload['rules'].pop('projects/sim2gse/engine.py')
         elif fault == 'changed_rule':
             payload['rules']['projects/sim2gse/engine.py'] = 'unreviewed'
-    template, batch, evidence = legacy_batch_fixture(tmp_path, mutate_input=mutate)
+    template, batch, evidence = training_batch_fixture(tmp_path, mutate_input=mutate)
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     if fault == 'source':
         evidence['source_commit'] = 'unknown'
@@ -646,7 +649,7 @@ def test_legacy_adoption_refuses_incomplete_or_unknown_proof(tmp_path, fault, le
 def test_training_condition_excludes_only_execution_and_keeps_real_inputs(tmp_path, legacy_engine_boundary):
     from copy import deepcopy
     from seed_training import semantic_condition, semantic_versions
-    _, _, evidence = legacy_batch_fixture(tmp_path)
+    _, _, evidence = training_batch_fixture(tmp_path, legacy=False)
     payload, versions = evidence['condition_input'], semantic_versions()
     expected = semantic_condition(payload, versions)
     execution = deepcopy(payload)
@@ -654,7 +657,7 @@ def test_training_condition_excludes_only_execution_and_keeps_real_inputs(tmp_pa
     execution['rules']['projects/sim2gse/seed_training.py'] = 'logging-only-source-change'
     assert semantic_condition(execution, versions) == expected
     for field, value in [('template', 'new-role'), ('engines', {'baseline': 'new-engine'}),
-                         ('retest', [20261011]), ('effective_options', ['threads=2'])]:
+                         ('retest', [20261011]), ('effective_options', ['threads=2']), ('rule_config_digest', 'new-rules')]:
         assert semantic_condition(dict(payload, **{field: value}), versions) != expected
     for key in ('random_seed', 'iterations', 'no_improvement_rounds', 'input_interval_ms'):
         changed = deepcopy(payload)
@@ -664,19 +667,19 @@ def test_training_condition_excludes_only_execution_and_keeps_real_inputs(tmp_pa
 
 
 @pytest.mark.parametrize('grouped', [False, True], ids=['legacy-single', 'real-group'])
-def test_upgrade_postcheck_accepts_legacy_identity_and_keeps_retest_key_checks(tmp_path, legacy_engine_boundary,
+def test_upgrade_postcheck_checks_current_rule_identity_and_retest_keys(tmp_path, legacy_engine_boundary,
                                                                             grouped):
     import result_store
     import runpy
     from search import digest
     from program import canonicalize_search_program
-    from seed_training import adopt_legacy_condition, RETEST_SEEDS, PROCESSED_SCHEMA
+    from seed_training import RETEST_SEEDS, PROCESSED_SCHEMA
     from test_search import _fast_capabilities
-    _, batch, evidence = legacy_batch_fixture(tmp_path, burst_context={'definition_id': 'test-definition'})
+    _, batch, evidence = training_batch_fixture(tmp_path, burst_context={'definition_id': 'test-definition'}, legacy=False)
     scope = 'deathknight-unholy-1-burst'
     rows = result_store.read_records('seed_processed', scope)
     row = rows[0]
-    adopt_legacy_condition(batch, evidence, processed=rows, selected=[])
+    # 当前配置身份另立；保留原六次复测和组键核验，不借用旧commit名义。
     for candidate_id in ('rejected-a', 'rejected-b'):
         rows.append(dict(row, candidate_id=candidate_id, status='rejected', error='explicit rejection'))
     for item in rows:
@@ -730,17 +733,11 @@ def test_upgrade_postcheck_accepts_legacy_identity_and_keeps_retest_key_checks(t
 
 def test_training_entry_resumes_two_to_four_preserving_successful_batches(
         tmp_path, monkeypatch, memory_training_center):
-    import hashlib
     import result_store
     import sequence
     import seed_activity
     import threading
-    import types
-    import task
-    import engine
-    from engine import ROOT
-    from seed_training import (_checkpoint_states, adopt_legacy_condition, training_condition_input,
-        LEGACY_SOURCE_COMMIT, LEGACY_EXECUTION_RULES, LEGACY_SEMANTIC_VERSIONS)
+    from seed_training import _checkpoint_states
     from test_character_export import sample_profile
     from unittest.mock import patch
     source = tmp_path / 'candidate.json'
@@ -758,20 +755,8 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
         yield cancelled
     monkeypatch.setattr(seed_activity, 'training_activity', activity)
     requests = []
-    # 原固定提交的公开命令生成真实旧请求键；只替换文件来源和外部引擎边界。
-    baseline = types.ModuleType('seed_training_baseline')
-    baseline.__file__ = str(ROOT / 'projects/sim2gse/seed_training.py')
-    old_source = subprocess.check_output(['git', 'show', LEGACY_SOURCE_COMMIT + ':projects/sim2gse/seed_training.py'],
-                                         cwd=ROOT).decode('utf-8')
-    exec(compile(old_source, baseline.__file__, 'exec'), baseline.__dict__)
-    # 仅旧生成器补显式 runs 范围；历史源码、请求键和真实点读/写入保持原样。
-    legacy_api = dict(vars(result_store))
-    legacy_api.update(query=lambda sql, parameters=None: result_store.query(sql, parameters, tables=['runs']),
-        iter_rows=lambda sql, parameters=None: result_store.iter_rows(sql, parameters, tables=['runs']))
-    baseline.result_store = types.SimpleNamespace(**legacy_api)
-    old_rules = task._rule_hashes(relative_to=ROOT)
-    old_rules.update({key: values[0] for key, values in LEGACY_EXECUTION_RULES.items()})
-    with training_boundary(), patch.object(task, '_rule_hashes', return_value=old_rules):
+    # 同一当前规则快照下，只改并发2→4仍可恢复；旧无摘要任务另测拒绝。
+    with training_boundary():
         evaluate = sequence.evaluate
         def interrupt(profile, candidate, folder, **kwargs):
             requests.append(Path(folder).name)
@@ -780,7 +765,7 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
                 cancelled.set()
             return result
         with patch.object(sequence, 'evaluate', side_effect=interrupt):
-            assert baseline.main(['--project', str(tmp_path), *args, '--legacy']) == 2
+            assert command(tmp_path, args + ['--max-processes', '2']) == 2
     failed = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
     batch = Path(failed['task_path']).parent
     before = next(iter(_checkpoint_states(batch).values()))
@@ -789,15 +774,6 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
         saved = {key: value for key, value in database.execute('SELECT key,value FROM batches')
                  if json.loads(value).get('status') == 'success'}
     assert saved
-    with training_boundary():
-        engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
-        payload = training_condition_input(hashlib.sha256(template.read_text(encoding='utf-8').encode()).hexdigest(),
-            engines, before['config'], {'target_count': 1, 'enable_omnium_talents': True})
-        payload['rules'] = old_rules
-        evidence = dict(condition_input=payload, source_commit=LEGACY_SOURCE_COMMIT,
-                        semantic_versions=LEGACY_SEMANTIC_VERSIONS)
-        adopt_legacy_condition(batch, evidence,
-            processed=result_store.read_records('seed_processed', 'deathknight-unholy-1'), selected=[])
     cancelled.clear()
     resumed = []
     with training_boundary():
