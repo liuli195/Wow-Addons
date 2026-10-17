@@ -201,7 +201,9 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                 name = entry['action']
                 if phase not in entry['phases'] or counts.get(entry['coverage_id'], 0) <= 0:
                     continue
-                if pending is not None and not any(row['action'] == name for row in pending):
+                if pending is not None and not any(
+                        row['action'] == name and row['coverage_id'] == entry['coverage_id']
+                        for row in pending):
                     if replay or not entry.get('insert'):
                         continue
                 if (entry.get('interval_ms') and name in last_attempt and
@@ -233,7 +235,8 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                 click = after
                 continue
             first_aligned_attempt = name in aligned_release and name not in demonstrated
-            pending_entry = next((row for row in pending or [] if row['action'] == name), None)
+            pending_entry = next((row for row in pending or []
+                                  if row['action'] == name and row['coverage_id'] == selected['coverage_id']), None)
             if pending is not None and not replay:
                 edits_applied += int(pending_entry is None or pending[0] is not pending_entry)
                 if edits_applied > binding['initialization']['edit_limit']:
@@ -241,6 +244,7 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
             if pending_entry is not None:
                 pending.remove(pending_entry)
             replaced_actions = list((pending_entry or {}).get('replaced_skeleton_actions', []))
+            replaced_attempts = list((pending_entry or {}).get('replaced_skeleton_attempts', []))
             row = stats[name]
             # Reuse wall-clock input slots: burst pauses already supply elapsed GCD time.
             span = max(1, bisect_left(times, now + row['gcd_ms'], lo=click+1) - click)
@@ -302,6 +306,7 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                             raise ValueError('二层编辑达到配置上限，不能继续修改')
                         pending.remove(entry)
                         replaced_actions.append(entry['action'])
+                        replaced_attempts.append({key: entry[key] for key in ('action', 'coverage_id', 'rule')})
                         credit -= gain
             counts[selected['coverage_id']] -= 1
             funded_completed += int(qualifies)
@@ -321,7 +326,8 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                 resource_balance_status=('unknown_unaccounted_gain' if unaccounted_gain
                                          else 'estimated_known_on_cast'),
                 estimated_resources_after=dict(balances),
-                replaced_skeleton_actions=replaced_actions, bindings=[selected['binding']],
+                replaced_skeleton_actions=replaced_actions, replaced_skeleton_attempts=replaced_attempts,
+                bindings=[selected['binding']],
                 condition_status=('dynamic_condition_unknown' if unaccounted_gain and selected.get('status_uses_resource_balance') else
                                   evaluate(selected.get('condition_status', 'dynamic_condition_unknown'), values)),
                 condition_basis=selected['basis']))
@@ -353,8 +359,7 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
         if final['edits_applied'] + len(periodic_edits) >= limit:
             raise ValueError('跨循环编辑达到配置上限')
         if len(periodic_rows) > 1:
-            restored = [dict(action=name, rule='resource_fill')
-                        for name in last['replaced_skeleton_actions']]
+            restored = [dict(entry) for entry in last['replaced_skeleton_attempts']]
             index = actions.index(last)
             actions[index:index+1] = restored
             periodic_edits.append(dict(action=last['action'], operation='remove_redundant_tail',

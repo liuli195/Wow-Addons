@@ -2089,25 +2089,18 @@
           "extra_initializations": [
             {
               "coverage_id": "opening_space",
-              "required": true,
+              "required": false,
               "count": 1,
               "coverage_when": {
                 "and": [
                   {
                     "and": [
                       {
-                        "and": [
+                        "gte": [
                           {
-                            "gte": [
-                              {
-                                "fact": "targets"
-                              },
-                              3
-                            ]
+                            "fact": "targets"
                           },
-                          {
-                            "fact": "available_epidemic"
-                          }
+                          3
                         ]
                       },
                       {
@@ -2116,18 +2109,42 @@
                     ]
                   },
                   {
-                    "eq": [
+                    "fact": "available_epidemic"
+                  }
+                ]
+              },
+              "when": {
+                "and": [
+                  {
+                    "or": [
                       {
-                        "fact": "initial_resource"
+                        "gt": [
+                          {
+                            "fact": "plan.pending_attempts_remaining"
+                          },
+                          0
+                        ]
                       },
                       {
-                        "fact": "maximum_resource"
+                        "eq": [
+                          {
+                            "fact": "plan.qualified_credit"
+                          },
+                          0
+                        ]
                       }
+                    ]
+                  },
+                  {
+                    "eq": [
+                      {
+                        "fact": "plan.current_action_attempts"
+                      },
+                      0
                     ]
                   }
                 ]
               },
-              "when": true,
               "attempt": "epidemic",
               "priority": -10,
               "phases": [
@@ -2137,8 +2154,8 @@
               "insert": false,
               "reason": "opening_space",
               "rules": [],
-              "unknown": "attempt_with_report",
-              "basis": "user_approved_one_initial_full_resource_consumption",
+              "unknown": "record_not_applied",
+              "basis": "user_approved_one_available_resource_preconsumption_before_generator_funding",
               "condition_status": "dynamic_condition_unknown",
               "status_uses_resource_balance": false
             }
@@ -2250,47 +2267,64 @@
           "extra_initializations": [
             {
               "coverage_id": "opening_space",
-              "required": true,
+              "required": false,
               "count": 1,
               "coverage_when": {
                 "and": [
                   {
                     "and": [
                       {
-                        "and": [
+                        "gte": [
                           {
-                            "gte": [
-                              {
-                                "fact": "targets"
-                              },
-                              3
-                            ]
+                            "fact": "targets"
                           },
-                          {
-                            "not": {
-                              "fact": "available_epidemic"
-                            }
-                          }
+                          3
                         ]
                       },
                       {
-                        "fact": "available_death_coil"
+                        "not": {
+                          "fact": "available_epidemic"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "fact": "available_death_coil"
+                  }
+                ]
+              },
+              "when": {
+                "and": [
+                  {
+                    "or": [
+                      {
+                        "gt": [
+                          {
+                            "fact": "plan.pending_attempts_remaining"
+                          },
+                          0
+                        ]
+                      },
+                      {
+                        "eq": [
+                          {
+                            "fact": "plan.qualified_credit"
+                          },
+                          0
+                        ]
                       }
                     ]
                   },
                   {
                     "eq": [
                       {
-                        "fact": "initial_resource"
+                        "fact": "plan.current_action_attempts"
                       },
-                      {
-                        "fact": "maximum_resource"
-                      }
+                      0
                     ]
                   }
                 ]
               },
-              "when": true,
               "attempt": "death_coil",
               "priority": -10,
               "phases": [
@@ -2300,8 +2334,8 @@
               "insert": false,
               "reason": "opening_space",
               "rules": [],
-              "unknown": "attempt_with_report",
-              "basis": "user_approved_one_initial_full_resource_consumption",
+              "unknown": "record_not_applied",
+              "basis": "user_approved_one_available_resource_preconsumption_before_generator_funding",
               "condition_status": "dynamic_condition_unknown",
               "status_uses_resource_balance": false
             }
@@ -3720,38 +3754,55 @@
           "extra_initializations": [
             {
               "coverage_id": "opening_space",
-              "required": true,
+              "required": false,
               "count": 1,
               "coverage_when": {
                 "and": [
                   {
-                    "and": [
+                    "lt": [
                       {
-                        "lt": [
+                        "fact": "targets"
+                      },
+                      3
+                    ]
+                  },
+                  {
+                    "fact": "available_death_coil"
+                  }
+                ]
+              },
+              "when": {
+                "and": [
+                  {
+                    "or": [
+                      {
+                        "gt": [
                           {
-                            "fact": "targets"
+                            "fact": "plan.pending_attempts_remaining"
                           },
-                          3
+                          0
                         ]
                       },
                       {
-                        "fact": "available_death_coil"
+                        "eq": [
+                          {
+                            "fact": "plan.qualified_credit"
+                          },
+                          0
+                        ]
                       }
                     ]
                   },
                   {
                     "eq": [
                       {
-                        "fact": "initial_resource"
+                        "fact": "plan.current_action_attempts"
                       },
-                      {
-                        "fact": "maximum_resource"
-                      }
+                      0
                     ]
                   }
                 ]
               },
-              "when": true,
               "attempt": "death_coil",
               "priority": -10,
               "phases": [
@@ -3761,8 +3812,8 @@
               "insert": false,
               "reason": "opening_space",
               "rules": [],
-              "unknown": "attempt_with_report",
-              "basis": "user_approved_one_initial_full_resource_consumption",
+              "unknown": "record_not_applied",
+              "basis": "user_approved_one_available_resource_preconsumption_before_generator_funding",
               "condition_status": "static_branch_estimate",
               "status_uses_resource_balance": false
             }

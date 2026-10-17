@@ -104,7 +104,7 @@ def test_full_charge_rule_keeps_aoe_priority_and_long_cd_only_needs_one_demo(tmp
                                       data_id=10042, base_spell_id=10042))
     snapshot = native['static_snapshot']
     snapshot['resources']['runic_power']['current'] = 80
-    # 保留近满+满充能竞争；费用10使CD后的剩余10空间足以由生成动作供给。
+    # 保留近满+满充能竞争；初始资源已够10费用，先预消耗，再独立筹资一次。
     next(row for row in snapshot['actions'] if row['name'] == 'epidemic')['costs'] = {'runic_power': 10}
     snapshot['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=120000,
         cast_ms=0, channeled=False, costs={}, gains={'runic_power': 10}, gain_status='known', gain_timing='on_cast', charges=2, max_charges=2))
@@ -116,11 +116,14 @@ def test_full_charge_rule_keeps_aoe_priority_and_long_cd_only_needs_one_demo(tmp
                                iterations=2, validation_batches=1))
     initialization = result['rule_initialization']
     actions = [row for row in initialization['positions'] if row['kind'] == 'action']
-    assert [row['action'] for row in actions[:3]] == ['outbreak', 'putrefy', 'epidemic']
-    assert actions[1]['rule'] == 'window_or_full'
+    assert [row['action'] for row in actions] == ['epidemic', 'outbreak', 'putrefy', 'epidemic']
+    assert actions[2]['rule'] == 'window_or_full'
+    assert [row['coverage_id'] for row in actions if row['action'] == 'epidemic'] == [
+        'opening_space', 'funded_consumer']
     assert initialization['skeleton']['demonstrated'] == ['putrefy']
-    assert initialization['skeleton']['duration_ms'] == 3000
-    assert initialization['skeleton']['consumption'] == 10
+    assert initialization['skeleton']['duration_ms'] == 4000
+    assert initialization['skeleton']['consumption'] == 20
+    assert initialization['skeleton']['funding'] == dict(completed=1, credited=10.0, preconsumption_attempts=1)
 
 
 @pytest.mark.parametrize('talent,available', [(True, True), (False, True), (True, False)])
@@ -771,9 +774,10 @@ def test_incidental_cooldown_resource_cannot_complete_generator_funded_skeleton(
     report = result['rule_initialization']
     assert report['skeleton']['funding']['credited'] == 30
     assert report['skeleton']['funding']['completed'] == 1
+    assert report['skeleton']['funding']['preconsumption_attempts'] == 1
     assert [row['action'] for row in report['skeleton']['attempts']] == [
-        'putrefy', 'scourge_strike', 'scourge_strike', 'scourge_strike', 'epidemic']
-    assert report['skeleton']['consumption'] == 30
+        'putrefy', 'epidemic', 'scourge_strike', 'scourge_strike', 'scourge_strike', 'epidemic']
+    assert report['skeleton']['consumption'] == 60
 
 
 def test_task_refuses_resume_after_rule_file_edit_even_for_completed_result(tmp_path, monkeypatch):
@@ -1152,3 +1156,138 @@ def test_public_task_budget_includes_configuration_read_and_validation(tmp_path,
             result = run_task(source, tmp_path / 'task', search_config=config)
     assert delay[0] == 2.0
     assert result['elapsed_seconds'] >= 2.0
+
+
+@pytest.mark.parametrize('targets,spender,epidemic_available', [
+    (1, 'death_coil', True), (5, 'epidemic', True), (5, 'death_coil', False)])
+def test_task_prespends_sufficient_cooldown_income_then_funds_a_distinct_consumer(
+        tmp_path, targets, spender, epidemic_available):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    snapshot = native['static_snapshot']
+    snapshot['parameters']['blightburst'] = True
+    snapshot['resources']['runic_power']['maximum'] = 60
+    next(row for row in native['apl_actions'] if row['name'] == 'epidemic')['available'] = epidemic_available
+    native['apl_actions'].append(dict(native['apl_actions'][0], name='putrefy', signature='putrefy',
+                                     data_id=10042, base_spell_id=10042))
+    snapshot['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=15000,
+        cast_ms=0, channeled=False, costs={}, gains={'runic_power':30},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count':targets},
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    expected = ['putrefy', spender, 'scourge_strike', 'scourge_strike', 'scourge_strike', spender]
+    assert [row['action'] for row in report['skeleton']['attempts']] == expected
+    assert report['skeleton']['funding'] == dict(completed=1, credited=30.0, preconsumption_attempts=1)
+    actions = [row for row in report['positions'] if row['kind'] == 'action']
+    assert [row['action'] for row in actions] == expected
+    assert [row['coverage_id'] for row in actions if row['action'] == spender] == [
+        'opening_space', 'funded_consumer']
+    assert report['skeleton']['consumption'] == 60
+
+
+@pytest.mark.parametrize('targets,spender', [(1, 'death_coil'), (5, 'epidemic')])
+@pytest.mark.parametrize('income', [0, 20])
+def test_task_does_not_relabel_funded_pending_as_same_button_preconsumption(tmp_path, targets, spender, income):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    native['static_snapshot']['parameters']['blightburst'] = True
+    native['static_snapshot']['resources']['runic_power']['maximum'] = 60
+    native['apl_actions'].append(dict(native['apl_actions'][0], name='putrefy', signature='putrefy',
+                                     data_id=10042, base_spell_id=10042))
+    native['static_snapshot']['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=15000,
+        cast_ms=0, channeled=False, costs={}, gains={'runic_power':income},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count':targets},
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    assert report['skeleton']['funding']['preconsumption_attempts'] == 0
+    assert report['skeleton']['funding']['completed'] == 1
+    assert report['skeleton']['funding']['credited'] == 30
+    consumers = [row for row in report['positions'] if row.get('action') == spender]
+    assert [row['coverage_id'] for row in consumers] == ['funded_consumer']
+
+
+@pytest.mark.parametrize('gain_status,gain_timing,gains,fillers', [
+    ('known', 'on_cast', {'runic_power': 15}, 2),
+    ('unknown', 'unknown', {}, 3)])
+def test_task_keeps_preconsumption_eligible_after_second_layer_maintenance(
+        tmp_path, gain_status, gain_timing, gains, fillers):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    snapshot = native['static_snapshot']
+    snapshot['resources']['runic_power']['maximum'] = 60
+    next(row for row in snapshot['actions'] if row['name'] == 'outbreak').update(
+        gains=gains, gain_status=gain_status, gain_timing=gain_timing)
+    native['apl_actions'].append(dict(native['apl_actions'][0], name='putrefy', signature='putrefy',
+                                     data_id=10042, base_spell_id=10042))
+    snapshot['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=15000,
+        cast_ms=0, channeled=False, costs={}, gains={'runic_power': 30},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count': 5},
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    assert report['skeleton']['funding'] == dict(completed=1, credited=30.0, preconsumption_attempts=1)
+    actions = [row for row in report['positions'] if row['kind'] == 'action']
+    assert [row['action'] for row in actions] == [
+        'outbreak', 'putrefy', 'epidemic', *(['scourge_strike'] * fillers), 'epidemic']
+    assert [row['coverage_id'] for row in actions if row['action'] == 'epidemic'] == [
+        'opening_space', 'funded_consumer']
+    if gain_status == 'unknown':
+        assert all(row['resource_balance_status'] == 'unknown_unaccounted_gain' for row in actions)
+    else:
+        assert actions[0]['replaced_skeleton_actions'] == ['scourge_strike']
+
+
+def test_task_keeps_repeated_consumer_occurrences_and_renamed_coverage_identities(tmp_path, monkeypatch):
+    import json
+    from rule_config import DEFAULT_PATH
+    from test_engine import apl_pool_reference
+    pack = json.loads(DEFAULT_PATH.read_bytes())
+    spec = pack['specializations']['252']
+    names = {'opening_space':'first_attempt', 'funded_consumer':'later_attempts'}
+    funding = spec['initialization']['funding']
+    funding['coverage_id'] = names[funding['coverage_id']]
+    funding['preconsumption_coverage'] = names[funding['preconsumption_coverage']]
+    for row in spec['bindings']:
+        for init in ([row['initialize']] if row.get('initialize') else []) + row.get('extra_initializations', []):
+            if init['coverage_id'] in names:
+                old = init['coverage_id']
+                init['coverage_id'] = names[old]
+                if old == 'funded_consumer':
+                    init['count'] = 2
+    config_path = tmp_path / 'rules.json'
+    config_path.write_text(json.dumps(pack), encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(config_path))
+    native = apl_pool_reference()
+    snapshot = native['static_snapshot']
+    snapshot['parameters']['blightburst'] = True
+    snapshot['resources']['runic_power']['maximum'] = 60
+    native['apl_actions'].append(dict(native['apl_actions'][0], name='putrefy', signature='putrefy',
+                                     data_id=10042, base_spell_id=10042))
+    snapshot['actions'].append(dict(name='putrefy', gcd_ms=1000, cooldown_ms=15000,
+        cast_ms=0, channeled=False, costs={}, gains={'runic_power':30},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count':5},
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    assert report['skeleton']['funding'] == dict(completed=2, credited=60.0, preconsumption_attempts=1)
+    consumers = [row for row in report['positions'] if row.get('action') == 'epidemic']
+    assert [row['coverage_id'] for row in consumers] == ['first_attempt', 'later_attempts', 'later_attempts']
+    assert len(report['program']) <= 128
