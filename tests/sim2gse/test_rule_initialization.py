@@ -1489,6 +1489,8 @@ def test_task_uses_default_putrefy_opener_after_legacy_single_precombat(tmp_path
             search_config=dict(input_interval_ms=200,candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     report=result['rule_initialization']
     assert len(report['source_steps'])==steps
+    assert '开场两命令实际GCD/开战边界和原生逐命令guard待核验' not in report['unknown']
+    assert '战前快照不能证明FK窗口费用；动态诊断留待02' in report['unknown']
     assert report['source_steps'][0]['source_action']=='outbreak'
     assert next(row for row in report['positions'] if row['kind']=='action')['action']=='putrefy'
     expected='death_coil' if scene=='single_target' else 'epidemic'
