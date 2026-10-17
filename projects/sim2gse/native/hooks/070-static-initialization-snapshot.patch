@@ -28,16 +28,16 @@
    void combat_begin() override;
    void activate() override;
    void moving() override;
-@@ -16778,6 +16781,159 @@
+@@ -16778,6 +16781,170 @@
    return a;
  }
  
 +// This adapter is audited against eed909156. It supports existing ordinary instant GCD
 +// DK attack/spell instances, not arbitrary future subclasses or rule-specific names.
-+static const parse_action_base_t* sim2gse_static_dk_action( const action_t* a )
++static const parse_action_base_t* sim2gse_static_dk_action( const action_t* a, bool precombat = false )
 +{
-+  if ( !a || !a->initialized || a->player->is_pet() || a->is_precombat || a->background ||
-+       a->quiet || !a->harmful || !a->special || a->repeating || a->is_interrupt || a->channeled ||
++  if ( !a || !a->initialized || a->player->is_pet() || a->is_precombat != precombat || a->background ||
++       a->quiet || ( !precombat && !a->harmful ) || !a->special || a->repeating || a->is_interrupt || a->channeled ||
 +       a->data().flags( SX_PASSIVE ) || a->trigger_gcd <= 0_ms || a->base_execute_time.base != 0_ms ||
 +       a->base_execute_time.flat_add != 0_ms || !sim2gse::action_available( *a ) ||
 +       dynamic_cast<const death_knight_empowered_charge_spell_t*>( a ) ||
@@ -163,6 +163,17 @@
 +    { "lesser_ghoul_ready_stacks", static_cast<double>( buffs.lesser_ghoul_ready->check() ) }
 +  };
 +  std::map<std::string, std::string> unknown;
++  std::vector<const action_t*> precombat_actions;
++  for ( const auto* action : precombat_action_list )
++  {
++    // Native zero-GCD preparation facilities need no virtual getter.
++    if ( action->trigger_gcd <= 0_ms ) continue;
++    const auto* parsed = sim2gse_static_dk_action( action, true );
++    if ( !parsed || !haste_safe || !sim2gse::static_effects_safe( parsed->gcd_effects ) )
++      unknown[ "precombat_gcd_ms" ] = "unsafe_precombat_action_haste_or_gcd_effect";
++    else
++      precombat_actions.push_back( action );
++  }
 +  if ( haste_safe ) parameters[ "rune_recharge_ms" ] = 1000.0 / runes_per_second();
 +  else unknown[ "rune_recharge_ms" ] = "unsafe_player_haste";
 +  action_t* disease_action = background_actions.dread_plague;
@@ -179,7 +190,7 @@
 +    action_state_t::release( state );
 +  }
 +  else unknown[ "dread_plague_duration_ms" ] = "unsupported_disease_state_or_duration_effect";
-+  sim2gse::capture_static_snapshot( *this, actions, parameters,
++  sim2gse::capture_static_snapshot( *this, actions, precombat_actions, parameters,
 +    { { "cycle_of_death", talent.unholy.cycle_of_death.ok() },
 +      { "blightburst", talent.unholy.blightburst.ok() },
 +      { "festering_scythe", talent.unholy.festering_scythe.ok() } }, unknown );

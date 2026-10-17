@@ -23,6 +23,7 @@ bool static_effects_safe( const std::vector<player_effect_t>& effects, bool bene
 std::string unavailable_reason( const player_t& player, const std::string& signature,
                                 const std::vector<unsigned>& spell_ids = {} );
 void capture_static_snapshot( player_t& player, const std::vector<static_action_t>& actions,
+                              const std::vector<const action_t*>& precombat_actions,
                               const std::map<std::string, double>& parameters,
                               const std::map<std::string, bool>& talents,
                               const std::map<std::string, std::string>& parameter_unknown );

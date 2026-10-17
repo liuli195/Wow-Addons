@@ -112,6 +112,7 @@ bool static_effects_safe( const std::vector<player_effect_t>& effects, bool bene
 // The pinned class adapter certifies each getter before this serializer calls it.
 // This runs once after native precombat initialization, before pre-pull actions.
 void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& entries,
+                              const std::vector<const action_t*>& precombat_actions,
                               const std::map<std::string, double>& parameters,
                               const std::map<std::string, bool>& talents,
                               const std::map<std::string, std::string>& parameter_unknown )
@@ -124,6 +125,9 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
   root[ "stage" ] = "precombat_initialized_before_actions";
   root[ "collected_at_ms" ] = p.sim->current_time().total_millis();
   root[ "source" ] = "native initialized actor; action_t virtual arithmetic";
+  auto hero_subtrees = root[ "hero_subtree_ids" ];
+  hero_subtrees.make_array();
+  for ( const auto id : p.player_sub_trees ) hero_subtrees.add( id );
   auto resources = root[ "resources" ];
   for ( resource_e resource = RESOURCE_NONE; resource < RESOURCE_MAX; resource++ )
   {
@@ -134,6 +138,13 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
   }
   auto values = root[ "parameters" ];
   for ( const auto& entry : parameters ) values[ entry.first ] = entry.second;
+  if ( !parameter_unknown.count( "precombat_gcd_ms" ) )
+  {
+    double gcd_ms = 0;
+    for ( const auto* action : precombat_actions )
+      gcd_ms = std::max( gcd_ms, static_cast<double>( action->gcd().total_millis() ) );
+    values[ "precombat_gcd_ms" ] = gcd_ms;
+  }
   for ( const auto& entry : talents ) values[ entry.first ] = entry.second;
   for ( const auto& entry : parameter_unknown ) root[ "parameter_unknown" ][ entry.first ] = entry.second;
   auto actions = root[ "actions" ];

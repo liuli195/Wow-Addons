@@ -107,7 +107,7 @@ def prepare_loop(native, character, folder, runtime, *, definition=None, interva
     # 在编译与过滤前核对同一角色、版本及按法，不由各入口自行拼装。
     input_times(definition, interval_ms)
     context = compile_context(definition, character, all_capabilities, native['identity'],
-                              folder / 'burst-export', runtime)
+                              folder / 'burst-export', runtime, interval_ms=interval_ms)
     context['interval_ms'] = interval_ms
     return all_capabilities, search_capabilities(all_capabilities, context['candidate']['blocks']), context
 
@@ -145,6 +145,15 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     return log
 
 
+def native_button_definition(row):
+    """共享目录分类：原生准备设施不成为GSE按钮，未知伤害代理仍须拒绝。"""
+    name = row['signature'].split(',', 1)[0]
+    return bool(row['signature'] and row['player_owned']
+        and (not row['background'] or name == 'use_item') and not row['quiet'] and not row['passive']
+        and row['type'] not in ('call_action_list', 'action_variable', 'sequence') and name != 'use_items'
+        and (row['data_id'] > 0 or row['harmful'] or name in ('auto_attack', 'use_item')))
+
+
 def inspect(reference, folder):
     """完整战斗 APL 决定搜索范围，已执行目录保留原有起点。"""
     if reference.get('actions_protocol') != 1:
@@ -174,8 +183,7 @@ def inspect(reference, folder):
         row['catalogue'] = origin
         sources.append(row)
         name = row['signature'].split(',', 1)[0]
-        if (not row['signature'] or not row['player_owned'] or (row['background'] and name != 'use_item') or row['quiet'] or row['passive'] or
-                row['type'] in ('call_action_list', 'action_variable', 'sequence') or name == 'use_items'):
+        if not native_button_definition(row):
             row['status'] = 'native_non_button'
             continue
         if origin == 'apl' and (row['precombat'] or row.get('action_initialized') is not True

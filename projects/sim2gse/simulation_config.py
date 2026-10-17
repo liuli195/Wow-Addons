@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / ".local" / "sim2gse" / "config.toml"
 DEFAULT_CONFIG = {
     "target_count": 1,
+    "scene": None,
     "enable_omnium_talents": True,
 }
 _CONFIG_KEYS = frozenset(DEFAULT_CONFIG)
@@ -28,6 +29,8 @@ def config_for(values: dict | None = None) -> dict:
     config.update(values)
     if type(config["target_count"]) is not int or config["target_count"] <= 0:
         raise ValueError("模拟目标数必须是正整数")
+    if config["scene"] not in (None, "single_target", "aoe"):
+        raise ValueError("模拟场景必须为single_target或aoe；未指定时不猜测目标数阈值")
     if type(config["enable_omnium_talents"]) is not bool:
         raise ValueError("万奥宝典开关必须是布尔值")
     return config

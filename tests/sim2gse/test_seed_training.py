@@ -2199,3 +2199,52 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(tmp_p
         assert {row['source_id'] for row in active} == {before['candidate_id'], 'history:valid'}
         assert set(fallback_keys) == ({'valid_candidate', 'affected_candidate'}
                                       if failure in ('missing', 'duplicate', 'mixed-duplicate') else set())
+
+
+def test_training_prepare_freezes_opener_aligned_burst_through_public_cli(tmp_path, monkeypatch, capsys):
+    import burst
+    from test_burst import reviewed_fixture,character_seed_boundary
+    definition,raw=reviewed_fixture()
+    published=burst.publish(definition)
+    pack=dict(schema_version=1,general=dict(templates={}),specializations={
+        '252':dict(actions={'tap':dict(button='scourge_strike',native_action='scourge_strike'),
+                          'big':dict(button='army_of_the_dead',native_action='army_of_the_dead')},
+            facts={},bindings=[],initialization=dict(resource='runic_power',recovery=dict(model='none'),
+                openers=[dict(id='training',scope=True,source='fixture: shared ordered initialization',first_burst_step=3,
+                    steps=[dict(action='tap',source_step=1),dict(action='tap',source_step=2),
+                           dict(action='big',source_step=3,mapping='burst'),dict(action='tap',source_step=4)])]))})
+    path=tmp_path/'rules.json';path.write_text(json.dumps(pack),encoding='utf-8')
+    monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(path))
+    material=tmp_path/'material.json'
+    material.write_text(json.dumps(dict(label='ordinary',class_name='deathknight',spec='unholy',source='fixture',
+        original='fixture',instructions='repeat',semantic='preserved',changes=[],family='plain',core=[],
+        program=[['scourge_strike']])),encoding='utf-8')
+    assert command(tmp_path,['register',str(material)])==0
+    capsys.readouterr()
+    template=tmp_path/'standard.simc';template.write_text(raw,encoding='utf-8')
+    with character_seed_boundary() as engines:
+        assert command(tmp_path,['prepare','--template',str(template),'--targets','1',
+            '--workspace',str(tmp_path/'work'),'--use-burst'])==0
+    prepared=json.loads(capsys.readouterr().out)[0]
+    assert command(tmp_path,['list','--state','prepared','--config-key',prepared['config_key'],'--use-burst'])==0
+    rows=json.loads(capsys.readouterr().out)
+    context=next(row['context'] for row in rows if row['kind']=='context')
+    context=json.loads(context) if isinstance(context,str) else context
+    assert context['burst']['plan']==dict(published['plan'],start_ms=2000)
+    assert context['rule_initialization']['first_burst_ms']==2000
+    assert context['preparation_input']['simulation']['scene']=='single_target'
+    assert context['rule_snapshot']['pack']==pack
+    assert burst.load(252)==published
+    from test_training_champion import completed_training
+    from seed_training import training_champion
+    import engine
+    with character_seed_boundary():
+        champion_template,completed=completed_training(tmp_path,1,[([['scourge_strike']],[110.,120.,130.])],
+            prepared_context=context)
+        monkeypatch.setattr(engine,'_training_template',lambda manifest:champion_template)
+        champion=training_champion('deathknight','unholy',context['preparation_input']['simulation'],
+            engines=engines,input_interval_ms=200,use_burst=True,
+            burst_identity=dict(spec_id=252,definition_id=published['definition_id']),rule_snapshot=context['rule_snapshot'])
+    assert champion['status']=='selected',champion
+    assert champion['candidate_id']==completed[0]['candidate_id']
+    assert champion['condition_input']['burst']['plan']['start_ms']==2000

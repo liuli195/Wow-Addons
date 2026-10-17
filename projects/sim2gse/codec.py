@@ -122,6 +122,18 @@ def lua_literal(value):
     return '{' + ','.join(f'[{lua_literal(k)}]={lua_literal(v)}' for k, v in items) + '}'
 
 
+def precombat_prefix_count(blocks):
+    """只有完整、连续的nocombat前缀才可转换为原生战前准备。"""
+    count = 0
+    for index, block in enumerate(blocks):
+        flags = [command.get('condition') == 'nocombat' for command in block]
+        if any(flags):
+            if not all(flags) or index != count:
+                raise ValueError('nocombat必须覆盖完整有序战前前缀，不能混入战斗命令')
+            count += 1
+    return count
+
+
 def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start=None, purpose=None,
            instructions=None):
     """同一动作块产生编码对象和编译断言，不改变块顺序。"""
@@ -254,8 +266,7 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
     if 'PASS\t' not in log:
         raise ValueError('上游编译校验没有成功记录')
     return dict(text=text, name=name, blocks=blocks, compiled_steps=steps,
-                precombat_count=sum(bool(block) and all(c.get('condition') == 'nocombat' for c in block)
-                                    for block in blocks),
+                precombat_count=precombat_prefix_count(blocks),
                 simulation='not_run', game_validation='not_run',
                 targeting_build=targeting['client_build'], ground_location='player',
                 encoding='raw_deflate_cbor_bytes_client_vector', upstream_compilation='passed_with_client_boundary_stubs')

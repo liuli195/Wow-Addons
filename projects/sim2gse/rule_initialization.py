@@ -1,426 +1,205 @@
-"""通用规则契约和有界静态排位过程；不执行APL、不模拟战斗。"""
+"""按可编辑有序起手生成循环候选；静态估计不是成功施放证据。"""
+import copy
 from bisect import bisect_left
 import math
 
-VERSION = 'static-rule-start-v1'
+VERSION = 'ordered-guide-start-v2'
 
 
-
-def _number(value, label, *, positive=False):
-    if (type(value) not in (int, float) or not math.isfinite(value)
-            or value < 0 or positive and value == 0):
+def _number(value, label):
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
         raise ValueError('规则起点缺少有效静态字段: ' + label)
     return value
 
 
-def generate(capabilities, reference, *, binding, input_interval_ms=300, target_count=1, burst=None, rule_snapshot=None):
-    from rule_config import evaluate
-    rules = tuple((key, row['intent'], row['scope'], row['modifications'])
-                   for key, row in rule_snapshot['pack']['general']['templates'].items())
+def generate(capabilities, reference, *, binding, input_interval_ms=300, target_count=1,
+             burst=None, rule_snapshot=None):
+    from program import canonicalize_search_program
     snapshot = reference.get('static_snapshot')
     if (not isinstance(snapshot, dict) or snapshot.get('protocol') != 1
             or snapshot.get('stage') != 'precombat_initialized_before_actions'):
         raise ValueError('规则起点缺少真实角色静态快照，请重新构建引擎')
-    for key in ('resources', 'actions'):
-        if key not in snapshot:
-            raise ValueError('规则起点缺少静态字段: ' + key)
-    resource = binding['resource']
-    recovery = binding.get('recovery')
-    if not isinstance(recovery, dict) or recovery.get('model') not in ('none', 'parallel_discrete'):
-        raise ValueError('规则起点尚不支持绑定的资源恢复模型')
-    constraint = recovery.get('resource') if recovery['model'] == 'parallel_discrete' else None
-    if recovery['model'] == 'parallel_discrete' and (not constraint or constraint == resource):
-        raise ValueError('离散恢复模型缺少独立资源身份')
-    resources = (resource, constraint) if constraint is not None else (resource,)
-    initial = {}
-    capacities = {}
-    for name in resources:
-        row = snapshot['resources'].get(name, {})
-        initial[name] = _number(row.get('current'), name+'.current')
-        capacities[name] = _number(row.get('maximum'), name+'.maximum', positive=True)
-        if initial[name] > capacities[name]:
-            raise ValueError('静态资源初值超过容量: ' + name)
-    recharge, slots = 0, 0
-    if recovery['model'] == 'parallel_discrete':
-        recharge = _number(recovery.get('interval_ms'), 'recovery.interval_ms', positive=True)
-        slots = _number(recovery.get('slots'), 'recovery.slots', positive=True)
-        if (slots != int(slots) or not 1 <= slots <= capacities[constraint]
-                or capacities[constraint] != int(capacities[constraint])):
-            raise ValueError('离散恢复模型需要整数资源容量及有效并行槽位')
-        slots = int(slots)
-        if initial[constraint] != capacities[constraint]:
-            raise ValueError('离散恢复模型初值非满且缺少逐单位恢复状态: ' + constraint)
-    required = {entry['action'] for entry in binding['entries']}
-    if binding['periodic_action']:
-        required.add(binding['periodic_action'])
-    native_buttons = {entry['native_action']: entry['button']
-                      for entry in binding['spec']['actions'].values() if entry['button'] in required}
+    if not isinstance(snapshot.get('resources'), dict) or not isinstance(snapshot.get('actions'), list):
+        raise ValueError('规则起点缺少静态字段: resources/actions')
+    opener = binding['opener']
+    actions = binding['spec']['actions']
     stats = {}
     for row in snapshot['actions']:
-        name = native_buttons.get(row.get('name'))
-        if name in required:
-            values = {key: row.get(key) for key in ('gcd_ms', 'cooldown_ms', 'cast_ms', 'channeled', 'costs', 'gains', 'gain_status', 'gain_timing', 'charges', 'max_charges')}
-            if name in stats and stats[name] != values:
-                raise ValueError('同一按钮静态字段不一致: '+name)
-            stats[name] = values
-    for name in required:
-        if name not in stats:
+        values = {key: row.get(key) for key in ('gcd_ms', 'cast_ms', 'channeled', 'costs',
+                   'gains', 'gain_status', 'gain_timing')}
+        if row.get('name') in stats and stats[row['name']] != values:
+            raise ValueError('同一动作静态字段不一致: ' + row['name'])
+        stats[row.get('name')] = values
+    program, positions, source_steps = [], [], []
+    unknown = list(binding['unknown'])
+    balances = {key: _number(row.get('current'), key+'.current')
+                for key, row in snapshot['resources'].items()}
+    capacities = {key: _number(row.get('maximum'), key+'.maximum')
+                  for key, row in snapshot['resources'].items()}
+    if any(value > capacities[key] for key, value in balances.items()):
+        raise ValueError('原生当前资源超过上限，不能生成起手')
+
+    def action_stats(name, base=None):
+        row = stats.get(name)
+        if row is None and base is not None and base != name:
+            row = dict(action_stats(base), costs=None, gains=None, gain_status='unknown',
+                       gcd_basis='base_button_static_approximation')
+            note = name + ': 替换形态GCD/费用/收益未知；仅用基础按钮静态GCD估计，不替代真实扣费'
+            if note not in unknown:
+                unknown.append(note)
+        if row is None:
             raise ValueError('规则起点缺少动作静态字段: ' + name)
-        row = stats[name]
-        for key in ('gcd_ms', 'cooldown_ms', 'cast_ms'):
-            _number(row[key], name+'.'+key)
-        if row['channeled'] is not False or row['cast_ms'] != 0:
+        _number(row.get('gcd_ms'), name+'.gcd_ms')
+        if row.get('channeled') is not False or _number(row.get('cast_ms'), name+'.cast_ms') != 0:
             raise ValueError('规则起点尚不支持施法或引导静态排位: ' + name)
         for key in ('costs', 'gains'):
-            if not isinstance(row[key], dict) or set(row[key]) - set(resources):
+            if row.get('gcd_basis') and row.get(key) is None:
+                continue
+            if not isinstance(row.get(key), dict) or set(row[key]) - set(balances):
                 raise ValueError('缺少或不支持的静态多资源字段: '+name+'.'+key)
-            for kind, amount in row[key].items():
-                _number(amount, name+'.'+key+'.'+kind)
-        row['gain_status'] = row['gain_status'] or 'unknown'
-        row['gain_timing'] = row['gain_timing'] or 'unknown'
-        if name in binding['generators'] and (row['gain_status'] != 'known' or
-                row['gain_timing'] != 'on_cast' or row['gains'].get(resource, 0) <= 0):
-            raise ValueError('资源填充动作缺少已知ON_CAST收益: '+name)
-        if any(entry['action'] == name and entry.get('require_full_charges') for entry in binding['entries']):
-            charges = _number(row['charges'], name+'.charges', positive=True)
-            maximum = _number(row['max_charges'], name+'.max_charges', positive=True)
-            if charges != int(charges) or maximum != int(maximum) or charges != maximum:
-                raise ValueError('普通CD初始非满充能且缺少逐充能恢复状态: '+name)
-        if row['gains'].get(constraint, 0):
-            raise ValueError('静态离散资源返还尚无明确过程: '+name)
-        if math.ceil(row['gcd_ms'] / input_interval_ms) == 2:
-            raise ValueError('单空点击无法由现有WaitClicks表达: ' + name)
-    if not binding['generators'] or stats[binding['spender']]['costs'].get(resource, 0) <= 0:
-        raise ValueError('规则起点缺少资源生成或消费动作')
-    period = (_number(binding['periodic_interval_ms'], binding['periodic_interval_source'], positive=True)
-              if binding['periodic_action'] else 0)
-    from program import canonicalize_search_program
-    # Program owns the precombat prefix; it consumes ordinary inputs even when /nocombat skips it.
-    prefix_clicks = len(canonicalize_search_program(
-        [[binding['spender']]], capabilities)['form']['clicks']) - 1
+            for resource, amount in row[key].items():
+                _number(amount, name+'.'+key+'.'+resource)
+        return row
+
+    def consume(row):
+        if row['costs'] is None:
+            balances.update({key: None for key in balances})
+        for resource, amount in (row['costs'] or {}).items():
+            balance = balances[resource]
+            balances[resource] = balance - amount if balance is not None and balance >= amount else None
+        if row.get('gain_status') == 'known' and row.get('gain_timing') == 'on_cast':
+            for resource, amount in row['gains'].items():
+                if balances[resource] is not None:
+                    balances[resource] = min(capacities[resource], balances[resource]+amount)
+        elif row.get('gain_status') != 'known_zero':
+            for resource in row['gains'] or [binding['resource']]:
+                balances[resource] = None
+
+    prefix = len(capabilities.get('precombat_actions', []))
+    precombat_gcd = snapshot.get('parameters', {}).get('precombat_gcd_ms') if prefix else 0
+    if precombat_gcd is None:
+        raise ValueError('战前有效GCD未知：缺少安全原生静态占用，无法估计起手及首次爆发')
+    _number(precombat_gcd, 'precombat_gcd_ms')
+    click = max(prefix, math.ceil(precombat_gcd / input_interval_ms))
+    elapsed = click * input_interval_ms
+    precombat_occupancy = dict(gcd_ms=precombat_gcd, first_loop_ms=elapsed, precision='native_static_estimate')
+    padding = click - prefix
+    if padding == 1:
+        raise ValueError('单空点击无法由现有WaitClicks表达: 战前占用')
+    if padding:
+        program.append(dict(kind='WaitClicks', clicks=padding))
+        positions.append(dict(kind='wait', position=0, clicks=padding,
+                              basis='native_precombat_gcd', precision='approximate'))
+    first_burst_ms = None
+    if burst and 'first_burst_step' in opener:
+        estimate = elapsed
+        for step in opener['steps']:
+            if step['source_step'] == opener['first_burst_step']:
+                first_burst_ms = estimate
+                break
+            if step.get('mapping', 'loop') != 'loop':
+                raise ValueError('首次爆发前的独立映射不可静默略过')
+            action = actions[step['action']]
+            name = step.get('native_form', action['native_action'])
+            row = action_stats(name, action['native_action'])
+            estimate += max(1, math.ceil(_number(row.get('gcd_ms'), name+'.gcd_ms') /
+                                         input_interval_ms)) * input_interval_ms
+        if first_burst_ms is None or not 0 < first_burst_ms < 180000:
+            raise ValueError('首次爆发时点超出已有输入计划范围')
+        from search import digest
+        plan = dict(burst['plan'], start_ms=int(first_burst_ms))
+        aligned = dict(opener_id=opener['id'], rule_config_digest=rule_snapshot['rule_config_digest'],
+                       first_burst_ms=first_burst_ms, plan_digest=digest(plan))
+        if burst.get('initialization_alignment') not in (None, aligned):
+            raise ValueError('本任务已冻结的爆发输入计划不一致，请创建新任务')
+        burst.update(plan=plan, initialization_alignment=aligned)
     times = list(range(0, 180000, input_interval_ms))
+    burst_locations = {}
     if burst:
-        from burst import combined_inputs
+        from burst import combined_inputs, input_times
+        from sequence import compiled_program
+        burst_times = input_times(burst, input_interval_ms)
+        for block_index, block in enumerate(compiled_program(burst['candidate'])):
+            for command_index, name in enumerate(block):
+                burst_locations.setdefault(name, dict(native_action=name, block=block_index,
+                    command=command_index, input_ms=burst_times[block_index]))
         combined, sources = combined_inputs(times, burst, input_interval_ms)
         times = [at for at, source in zip(combined, sources) if source == 'loop']
-    aligned_release = {}
-    if burst:
-        from burst import input_times as burst_input_times
-        compiled = burst.get('candidate')
-        if compiled:
-            from sequence import compiled_program
-            burst_clicks = compiled_program(compiled)
-            blocks = compiled['blocks']
-        else:
-            blocks = burst.get('blocks', [])
-            burst_clicks = [[command['simc_action'] for command in block] for block in blocks]
-        burst_times = burst_input_times(burst, input_interval_ms)
-        for ordinary_action, burst_action in binding['burst_alignment']:
-            if ordinary_action not in required:
-                continue
-            if not any(command['simc_action'] == burst_action and not command.get('unavailable')
-                       for block in blocks for command in block):
-                continue
-            first = next((index for index, commands in enumerate(burst_clicks)
-                          if burst_action in commands), None)
-            if first is not None and first < len(burst_times):
-                index = bisect_left(times, burst_times[first])
-                if index < len(times):
-                    aligned_release[ordinary_action] = times[index]
-    # Both passes use the existing input plan. Values below are estimates of successful actions,
-    # never evidence that an attempted action actually consumed resources or satisfied its APL.
-    def arrange(*, fill=False, work=None, replay=False):
-        pending = [dict(row) for row in work] if work is not None else None
-        balances = dict(initial)
-        regeneration = []
-        lanes = [0.0] * slots
-        next_cd = {name: aligned_release.get(name, 0) for name in required}
-        demonstrated = set()
-        counts = {}
-        for entry in binding['entries']:
-            if ('fill' if fill else 'skeleton') in entry['phases']:
-                counts.setdefault(entry['coverage_id'], entry['count'])
-        attempted = {}
-        last_attempt = {}
-        consumption = 0.0
-        unaccounted_gain = False
-        credit = credited = 0.0
-        funded_completed = preconsumption_attempts = edits_applied = 0
-        funding = binding['funding']
-        program, positions = [], []
-        click = prefix_clicks
-        last_periodic = None  # ordinary-input click index; burst pauses only lengthen the gap
-
-
-        def wait(count):
-            if not count:
-                return
-            if program and isinstance(program[-1], dict) and program[-1].get('kind') == 'WaitClicks':
-                program[-1]['clicks'] += count
-                positions[-1]['clicks'] += count
-            elif count == 1:
-                raise ValueError('单空点击无法由现有WaitClicks表达')
-            else:
-                program.append(dict(kind='WaitClicks', clicks=count))
-                positions.append(dict(position=len(program)-1, kind='wait', clicks=count,
-                                      basis='static_effective_gcd_or_resource_recovery', precision='approximate'))
-
-        while len(program) <= 128 and click < min(len(times), 4096):
-            now = times[click]
-            ready = [end for end in regeneration if end <= now]
-            if constraint is not None:
-                balances[constraint] += len(ready)
-            regeneration[:] = [end for end in regeneration if end > now]
-            phase = 'fill' if fill else 'skeleton'
-            values = dict(binding['facts'])
-            for key, fact in binding['spec']['facts'].items():
-                if fact['from'].startswith('estimate.resource.'):
-                    resource_key = fact['resource']
-                    values[key] = (balances[resource_key] if fact['from'].endswith('.current')
-                                   else capacities[resource_key] - balances[resource_key])
-            required_ids = {entry['coverage_id'] for entry in binding['entries']
-                            if entry['required'] and phase in entry['phases']}
-            values.update({'plan.qualified_credit': None if unaccounted_gain else credit,
-                           'plan.target_cost': stats[binding['spender']]['costs'].get(resource, 0),
-                           'plan.required_attempts_remaining': sum(counts[key] for key in required_ids),
-                           'plan.pending_attempts_remaining': len(pending or []),
-                           'plan.edits_applied': edits_applied})
-            stop = binding['initialization']['edit_stop' if fill else 'stop']
-            if evaluate(stop, values) is True:
-                if fill and pending:
-                    raise ValueError('二层停止条件早于剩余待办完成；不能交付截断序列')
-                return dict(program=program, positions=positions, duration_ms=now,
-                            consumption=consumption, demonstrated=sorted(demonstrated), clicks=click, edits_applied=edits_applied,
-                            funding=dict(completed=funded_completed, credited=credited,
-                                         preconsumption_attempts=preconsumption_attempts))
-            def affordable(name):
-                return next_cd[name] <= now and all(balances[kind] >= amount
-                         for kind, amount in stats[name]['costs'].items())
-            selected = None
-            for entry in binding['entries']:
-                name = entry['action']
-                if phase not in entry['phases'] or counts.get(entry['coverage_id'], 0) <= 0:
-                    continue
-                if pending is not None and not any(
-                        row['action'] == name and row['coverage_id'] == entry['coverage_id']
-                        for row in pending):
-                    if replay or not entry.get('insert'):
-                        continue
-                if (entry.get('interval_ms') and name in last_attempt and
-                        (click - last_attempt[name]) * input_interval_ms < entry['interval_ms']):
-                    continue
-                values['plan.current_action_attempts'] = attempted.get(name, 0)
-                applicable = evaluate(entry['when'], values)
-                if applicable is None and entry['unknown'] == 'error':
-                    raise ValueError('规则配置动作条件unknown: ' + entry['binding'])
-                if applicable is not True and not (applicable is None and entry['unknown'] == 'attempt_with_report'):
-                    continue
-                if (not fill and funding['enabled'] and entry['coverage_id'] == funding['coverage_id']
-                        and evaluate(funding['completion'], values) is not True):
-                    continue
-                if affordable(name):
-                    selected = entry
-                    break
-            name = selected['action'] if selected else None
-            reason = selected['reason'] if selected else None
-            periodic = binding['periodic_action'] if fill else None
-            if name is None:
-                future = [*regeneration, *(next_cd[entry['action']] for entry in binding['entries']
-                          if next_cd[entry['action']] > now and counts.get(entry['coverage_id'], 0) > 0
-                          and phase in entry['phases'])]
-                if not future:
-                    raise ValueError('静态资源约束下无法完成规则骨架：无法证明来源额度或剩余动作不可达')
-                after = bisect_left(times, min(future), lo=click+1)
-                wait(after-click)
-                click = after
-                continue
-            first_aligned_attempt = name in aligned_release and name not in demonstrated
-            pending_entry = next((row for row in pending or []
-                                  if row['action'] == name and row['coverage_id'] == selected['coverage_id']), None)
-            if pending is not None and not replay:
-                edits_applied += int(pending_entry is None or pending[0] is not pending_entry)
-                if edits_applied > binding['initialization']['edit_limit']:
-                    raise ValueError('二层编辑达到配置上限，不能继续修改')
-            if pending_entry is not None:
-                pending.remove(pending_entry)
-            replaced_actions = list((pending_entry or {}).get('replaced_skeleton_actions', []))
-            replaced_attempts = list((pending_entry or {}).get('replaced_skeleton_attempts', []))
-            row = stats[name]
-            # Reuse wall-clock input slots: burst pauses already supply elapsed GCD time.
-            span = max(1, bisect_left(times, now + row['gcd_ms'], lo=click+1) - click)
-            if click + span >= len(times):
-                raise ValueError('规则起点超过现有点击或场景边界')
-            if span == 2 and any(action not in demonstrated and release == times[click + span]
-                                 for action, release in aligned_release.items()):
-                # Keep the next aligned opportunity instead of emitting an unrepresentable
-                # filler + one-empty pair. These are two deliberate pre-window empty inputs.
-                if pending_entry is not None:
-                    pending.insert(0, pending_entry)
-                wait(span)
-                click += span
-                continue
-            before = dict(balances)
-            qualifies = (not fill and funding['enabled'] and
-                         selected['coverage_id'] == funding['coverage_id'] and
-                         evaluate(funding['completion'], values) is True)
-            for kind, amount in row['costs'].items():
-                balances[kind] -= amount
-                if kind == resource:
-                    consumption += amount
-                    credit = max(0, credit - amount)
-                elif kind == constraint:
-                    if amount != int(amount):
-                        raise ValueError('静态离散资源费用不是整数')
-                    for _ in range(int(amount)):
-                        lane = min(range(slots), key=lanes.__getitem__)
-                        lanes[lane] = max(now, lanes[lane]) + recharge
-                        regeneration.append(lanes[lane])
-            if row['gain_status'] == 'known' and row['gain_timing'] == 'on_cast':
-                for kind, amount in row['gains'].items():
-                    effective_gain = min(capacities[kind]-balances[kind], amount)
-                    balances[kind] += effective_gain
-                    if not fill and funding['enabled'] and kind == resource and name in binding['generators']:
-                        if unaccounted_gain:
-                            raise ValueError('资源来源unknown：此前未知/ON_HIT收益，不能证明容量余量及来源完成')
-                        credit += effective_gain
-                        credited += effective_gain
-            elif row['gain_status'] != 'known_zero':
-                unaccounted_gain = True
-            if (pending is not None and not replay and selected.get('replace_actions')
-                    and row['gain_status'] == 'known' and row['gain_timing'] == 'on_cast'):
-                # Credit belongs only to this known contribution in the conservative ledger;
-                # earlier unaccounted gains keep the balance unknown, not this contribution.
-                # Conditional gains, extra resource costs, or slower actions are not equivalent.
-                credit = balances[resource] - before[resource] + row['costs'].get(resource, 0)
-                for entry in list(pending):
-                    candidate = stats[entry['action']]
-                    gain = candidate['gains'].get(resource, 0)
-                    if (entry['action'] in selected['replace_actions'] and gain > 0 and credit >= gain
-                            and candidate['gain_status'] == 'known' and candidate['gain_timing'] == 'on_cast'
-                            and set(candidate['gains']) == {resource} and set(row['gains']) == {resource}
-                            and all(row['costs'].get(kind, 0) <= candidate['costs'].get(kind, 0)
-                                    for kind in resources)
-                            and row['gcd_ms'] <= candidate['gcd_ms']):
-                        edits_applied += 1
-                        if edits_applied > binding['initialization']['edit_limit']:
-                            raise ValueError('二层编辑达到配置上限，不能继续修改')
-                        pending.remove(entry)
-                        replaced_actions.append(entry['action'])
-                        replaced_attempts.append({key: entry[key] for key in ('action', 'coverage_id', 'rule')})
-                        credit -= gain
-            counts[selected['coverage_id']] -= 1
-            funded_completed += int(qualifies)
-            if selected['coverage_id'] == funding['preconsumption_coverage']:
-                preconsumption_attempts += 1
-            attempted[name] = attempted.get(name, 0) + 1
-            last_attempt[name] = click
-            next_cd[name] = now + row['cooldown_ms']
-            if selected.get('report_demonstrated'):
-                demonstrated.add(name)
-            program.append([name])
-            positions.append(dict(position=len(program)-1, kind='action', action=name,
-                estimated_ms=now, click_position=click, effective_gcd_ms=row['gcd_ms'], clicks=span,
-                rule=reason, applied_rules=list(selected['rules']), coverage_id=selected['coverage_id'],
-                precision='approximate', resources_before=before,
-                gain_status=row['gain_status'], gain_timing=row['gain_timing'], static_gains=row['gains'],
-                resource_balance_status=('unknown_unaccounted_gain' if unaccounted_gain
-                                         else 'estimated_known_on_cast'),
-                estimated_resources_after=dict(balances),
-                replaced_skeleton_actions=replaced_actions, replaced_skeleton_attempts=replaced_attempts,
-                bindings=[selected['binding']],
-                condition_status=('dynamic_condition_unknown' if unaccounted_gain and selected.get('status_uses_resource_balance') else
-                                  evaluate(selected.get('condition_status', 'dynamic_condition_unknown'), values)),
-                condition_basis=selected['basis']))
-            if first_aligned_attempt:
-                positions[-1]['applied_rules'].extend(selected.get('alignment_rules', []))
-                positions[-1]['condition_basis'] = '对齐固定爆发中的关联输入尝试；未证明该动作成功或Buff生效'
-            wait(span-1)
-            click += span
-        raise ValueError('规则起点超过现有128节点/4096点击或场景边界')
-
-    skeleton = arrange()
-    limit = binding['initialization']['edit_limit']
-    disabled = not limit or evaluate(binding['initialization']['edit_stop'], {
-        'plan.edits_applied': 0, 'plan.pending_attempts_remaining':
-        sum(row['kind'] == 'action' for row in skeleton['positions'])}) is True
-    final = skeleton if disabled else arrange(fill=True, work=[row for row in skeleton['positions'] if row['kind'] == 'action'])
-    periodic_edits = []
-    cross_cycle = next((entry.get('cross_cycle') for entry in binding['entries']
-                        if entry['action'] == binding['periodic_action']), None)
-    while not disabled and cross_cycle == 'remove_redundant_tail_or_pad':
-        actions = [row for row in final['positions'] if row['kind'] == 'action']
-        periodic_rows = [row for row in actions if row['action'] == binding['periodic_action']]
-        if not periodic_rows:
-            break
-        first, last = periodic_rows[0], periodic_rows[-1]
-        gap = final['clicks'] - last['click_position'] + first['click_position']
-        if gap * input_interval_ms >= period:
-            break
-        if final['edits_applied'] + len(periodic_edits) >= limit:
-            raise ValueError('跨循环编辑达到配置上限')
-        if len(periodic_rows) > 1:
-            restored = [dict(entry) for entry in last['replaced_skeleton_attempts']]
-            index = actions.index(last)
-            actions[index:index+1] = restored
-            periodic_edits.append(dict(action=last['action'], operation='remove_redundant_tail',
-                                       restored_skeleton_actions=last['replaced_skeleton_actions']))
-            # Reuse the same estimates/input clock. No capacity gate and no new insertions.
-            final = arrange(fill=True, work=actions, replay=True)
+    elapsed = times[click]
+    for step in opener['steps']:
+        action = actions[step['action']]
+        name = step.get('native_form', action['native_action'])
+        mapped = dict(copy.deepcopy(step), button=action['button'], native_action=name,
+                      estimated_ms=elapsed, source=opener['source'])
+        source_steps.append(mapped)
+        if step['source_step'] == opener.get('first_burst_step') and first_burst_ms is None:
+            first_burst_ms = elapsed
+        if step.get('mapping', 'loop') == 'burst':
+            mapped['mapping_status'] = 'independent_burst' if burst else 'independent_burst_disabled'
+            if burst:
+                names = [actions[row['action']]['native_action'] for row in
+                         step.get('commands', [dict(action=step['action'])])]
+                missing = [name for name in names if name not in burst_locations]
+                if missing:
+                    raise ValueError('独立爆发宏未包含来源动作: ' + ','.join(missing))
+                mapped['burst_mapping'] = [dict(burst_locations[name]) for name in names]
+                mapped['estimated_ms'] = min(row['input_ms'] for row in mapped['burst_mapping'])
+                mapped['mapping_loss'] = '映射到现有独立宏的实际块/命令及输入时刻；源顺序不改变宏内顺序，尝试不代表成功'
             continue
-        missing = math.ceil(period / input_interval_ms) - gap
-        if final['clicks'] + missing >= min(len(times), 4096):
-            raise ValueError('配置间距超过现有点击或场景边界')
-        if final['program'] and isinstance(final['program'][-1], dict):
-            final['program'][-1]['clicks'] += missing
-            final['positions'][-1]['clicks'] += missing
-            final['positions'][-1]['basis'] = 'periodic_cross_cycle_spacing'
-        elif missing == 1:
-            raise ValueError('单空点击无法由现有WaitClicks表达')
-        else:
-            final['program'].append(dict(kind='WaitClicks', clicks=missing))
-            final['positions'].append(dict(position=len(final['program'])-1, kind='wait', clicks=missing,
-                                           basis='periodic_cross_cycle_spacing', precision='approximate'))
-        final['positions'][-1]['applied_rules'] = next(
-            entry['rules'] for entry in binding['entries'] if entry['action'] == binding['periodic_action'])
-        final['clicks'] += missing
-        final['duration_ms'] = times[final['clicks']]
-        periodic_edits.append(dict(action=last['action'], operation='extend_single_period', clicks=missing))
-        break
-    canonical = canonicalize_search_program(final['program'], capabilities)
-    for row in final['positions']:
-        row['source'] = canonical['program']['nodes'][prefix_clicks + row['position']]['source']
+        row = action_stats(name, action['native_action'])
+        gcd = row['gcd_ms']
+        span = max(1, bisect_left(times, elapsed + gcd, lo=click+1) - click)
+        if span == 2:
+            raise ValueError('单空点击无法由现有WaitClicks表达: ' + name)
+        before = dict(balances)
+        consume(row)
+        mapped.update(mapping_status='loop_attempt', position=len(program), click_position=click)
+        program.append([action['button']])
+        positions.append(dict(kind='action', position=len(program)-1, action=action['button'],
+            native_action=name, source_step=step['source_step'], source=opener['source'],
+            estimated_ms=elapsed, click_position=click,
+            effective_gcd_ms=(None if row.get('gcd_basis') else gcd),
+            estimated_gcd_ms=gcd, gcd_basis=row.get('gcd_basis', 'native_static_snapshot'), clicks=span,
+            precision='approximate', costs=copy.deepcopy(row['costs']), resources_before=before,
+            estimated_resources_after=dict(balances),
+            parameter_stage=snapshot['stage'], condition_status='dynamic_condition_unknown',
+            condition_basis='按源顺序尝试；战前费用和收益不能证明战中替换形态或成功',
+            applied_rules=[], bindings=[]))
+        if span > 1:
+            program.append(dict(kind='WaitClicks', clicks=span-1))
+            positions.append(dict(kind='wait', position=len(program)-1, clicks=span-1,
+                basis='static_effective_gcd', precision='approximate'))
+        click += span
+        if click >= len(times):
+            raise ValueError('规则起点超过现有点击或场景边界')
+        elapsed = times[click]
+        if len(program) > 128 or click > 4096 or elapsed >= 180000:
+            raise ValueError('规则起点超过现有128节点/4096点击或场景边界')
+    if not program:
+        raise ValueError('起手没有可表达的普通循环动作')
+    canonical = canonicalize_search_program(program, capabilities)
+    for row in positions:
+        row['guide_source'] = opener['source']
+        row['source'] = canonical['program']['nodes'][prefix + row['position']]['source']
+        if row['kind'] == 'action':
+            row['commands'] = canonical['form']['clicks'][row['click_position']]
     return dict(version=VERSION, rule_snapshot=rule_snapshot,
-        rule_config_digest=rule_snapshot['rule_config_digest'] if rule_snapshot else None,
-        resource=resource, program=final['program'],
-        precombat_clicks=prefix_clicks, recovery=recovery,
-        behavior_identity=canonical['identity'], positions=final['positions'],
-        skeleton=dict({key: skeleton[key] for key in ('duration_ms', 'consumption', 'demonstrated', 'funding')},
-                      attempts=[dict(action=row['action'], rule=row['rule'], estimated_ms=row['estimated_ms'])
-                                for row in skeleton['positions'] if row['kind'] == 'action']),
-        duration_ms=final['duration_ms'], static_snapshot=snapshot,
+        rule_config_digest=rule_snapshot['rule_config_digest'], resource=binding['resource'],
+        program=program, positions=positions, source_steps=source_steps,
+        opener_id=opener['id'], precombat_clicks=prefix, precombat_occupancy=precombat_occupancy, duration_ms=elapsed,
+        first_burst_ms=first_burst_ms, recovery=binding['recovery'],
+        behavior_identity=canonical['identity'], static_snapshot=snapshot,
         input_interval_ms=input_interval_ms, target_count=target_count,
-        protected_burst=({key: burst[key] for key in ('definition_id', 'plan') if key in burst}
-                         if burst else None),
-        periodic_edits=periodic_edits,
+        protected_burst=({key: burst[key] for key in ('definition_id', 'plan') if key in burst} if burst else None),
         parameter_sources=binding['parameter_sources'], bindings=binding['bindings'],
         action_mapping=binding['native_buttons'],
-        rules=[dict(id=rule, intent=intent, scope=scope, modifications=modifications,
-                    application_status=('approximate_applied' if any(
-                        rule in row.get('applied_rules', []) for row in final['positions']) else 'unknown_not_applied'),
-                    applied_positions=[row['position'] for row in final['positions']
-                                       if rule in row.get('applied_rules', [])],
-                    condition='见完整专精绑定',
-                    bindings=[row['id'] for row in binding['bindings'] if rule in row['rules']],
-                    source='绑定中固定提交及行号；静态快照保留采集阶段',
-                    priority='保留父列表及前序让位；第8项最后',
-                    use='静态初始化近似；不声明学生诊断已完成',
-                    expressiveness='固定尝试排列，不能执行动态APL条件')
-               for rule, intent, scope, modifications in rules],
-        exact=['原生静态字段及采集时点', '普通/爆发输入暂停与位置语义', '现有GSE硬合法性'],
-        approximate=['预计成功的保守排位账只累计已知ON_CAST收益；ON_HIT/未知收益未计入，不能据此证明真实余额、未溢出或资源条件成立',
-                     '普通CD示范和绑定要求的增益维护尝试，不保证持续增益',
-                     '固定爆发仅确定普通输入暂停及关联尝试，不推断动作成功或增益生效',
-                     '短窗口动态状态未知：尚未据此独立调序；资源填充不冒称已执行短窗口规则',
-                     '向上取整有效GCD点击跨度；每机会额外等待小于一个点击间隔',
-                     *binding['approximate']],
-        unknown=binding['unknown'])
+        rules=[dict(id=key, intent=row['intent'], scope=row['scope'], modifications=row['modifications'],
+                    application_status='declared_not_diagnosed', applied_positions=[],
+                    source=row.get('binding', {}).get('source', ''),
+                    bindings=[entry['id'] for entry in binding['bindings'] if key in entry['rules']])
+               for key, row in dict(rule_snapshot['pack']['general']['templates'],
+                                    **binding['spec'].get('templates', {})).items()],
+        exact=['源顺序、重复次数、按钮映射和现有GSE硬合法性'],
+        approximate=['有效GCD按输入间隔向上取整；静态资源账不足或动态收益时保留未知',
+                     '起手映射为可搜索循环，不能保证一次性或指南动态条件', *binding['approximate']],
+        unknown=unknown)

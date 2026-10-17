@@ -693,7 +693,9 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
     config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
                          'no_improvement_rounds': 2, 'max_processes': max_processes}, training=True)
-    simulation_config = {'target_count': targets, 'enable_omnium_talents': True}
+    from dual_task import SCENES
+    simulation_config = {'target_count': targets, 'enable_omnium_talents': True,
+                         'scene': next((scene for scene, count in SCENES if count == targets), None)}
     engines = (verified_engines if verified_engines is not None else
                {mode: identity(mode)[1] for mode in ('baseline', 'controlled')})
     template_sha = hashlib.sha256(text.encode()).hexdigest()
@@ -772,6 +774,17 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         actual_character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
         all_capabilities, capabilities, burst_context = prepare_loop(native, actual_character, setup, runtime,
                                                      definition=definition, interval_ms=config['input_interval_ms'])
+        from rule_config import bind
+        from rule_initialization import generate
+        binding = bind(capabilities, native.get('static_snapshot'), targets,
+            spec_id=native['identity']['spec_id'], rule_snapshot=inputs['rule_snapshot'],
+            scene=simulation_config.get('scene'))
+        rule_initialization = generate(capabilities, native, binding=binding,
+            input_interval_ms=config['input_interval_ms'], target_count=targets,
+            burst=burst_context, rule_snapshot=inputs['rule_snapshot'])
+        if burst_context:
+            from burst import refresh_context_instructions
+            refresh_context_instructions(burst_context, native['identity'], setup / 'aligned-burst-export', runtime)
         current_input = training_condition_input(template_sha, engines, config, simulation_config,
                                                  burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
         reference_key = digest(dict(condition=semantic_condition(current_input, semantic_versions()),
@@ -781,7 +794,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
             report=json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))))
         (setup / 'reference/native.json').unlink()
         context = dict(native=native, all_capabilities=all_capabilities, capabilities=capabilities,
-                       burst=burst_context, representations={})
+                       burst=burst_context, rule_initialization=rule_initialization, representations={})
     if context:
         from engine import ROOT
         from task import _rule_hashes
@@ -1296,9 +1309,17 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                 context = manifest['condition_input'].get('burst')
                 if (bool(context) != use_burst or (use_burst and (
                         context['definition_id'] != definition['definition_id'] or
-                        context['plan'] != inputs['definition']['plan'] or
+                        dict(context['plan'], start_ms=definition['plan']['start_ms']) != definition['plan'] or
                         context['interval_ms'] != input_interval_ms))):
                     raise ValueError('训练爆发内容或按法不适用')
+                if use_burst and context['plan']['start_ms'] != definition['plan']['start_ms']:
+                    alignment = context.get('initialization_alignment') or {}
+                    if (alignment.get('rule_config_digest') != inputs['rule_snapshot']['rule_config_digest']
+                            or alignment.get('first_burst_ms') != context['plan']['start_ms']
+                            or alignment.get('plan_digest') != digest(context['plan'])
+                            or alignment.get('opener_id') not in {entry['id'] for entry in
+                                inputs['rule_snapshot']['resolved'][str(definition['spec_id'])]['initialization']['openers']}):
+                        raise ValueError('训练爆发首次时点缺少相符的冻结起手凭据')
                 manifest = validate_training_identity(batch, inputs['template_sha'], engines,
                     inputs['config'], simulation_config, burst_context=context, rule_snapshot=inputs['rule_snapshot'])
                 batches[batch] = manifest

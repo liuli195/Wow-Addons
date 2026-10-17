@@ -1392,6 +1392,16 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     state['burst'] = context
                     condition = digest(dict(base=base_condition, burst=context))
                     state['condition'] = condition
+                starts = initial_programs(capabilities, native, config['random_seed'],
+                    input_interval_ms=config['input_interval_ms'],
+                    target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'),
+                    initialization=state.setdefault('rule_initialization', {}), rule_snapshot=rule_snapshot)
+                if use_burst:
+                    from burst import refresh_context_instructions
+                    refresh_context_instructions(state['burst'], native['identity'],
+                        destination / 'aligned-burst-export', runtime)
+                    condition = digest(dict(base=base_condition, burst=state['burst']))
+                    state['condition'] = condition
                 if 'formal_champion_snapshot' not in state:
                     snapshot = _freeze_formal_champion(state, character, native, capabilities)
                     if state.get('formal_history_scope'):
@@ -1400,10 +1410,6 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         snapshot = _historical_formal_champion(state, checked_character, native, capabilities, snapshot)
                     state['formal_champion_snapshot'] = snapshot
                     store.save()
-                starts = initial_programs(capabilities, native, config['random_seed'],
-                    input_interval_ms=config['input_interval_ms'],
-                    target_count=simulation_config['target_count'], burst=state.get('burst'),
-                    initialization=state.setdefault('rule_initialization', {}), rule_snapshot=rule_snapshot)
                 state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
                     targets=simulation_config['target_count'], engines=identities,

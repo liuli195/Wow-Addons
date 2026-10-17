@@ -106,7 +106,7 @@ def test_champion_engine_scans_each_rule_root_once_per_test(page_task_engine):
             assert scans.call_args_list == [call(relative_to=None), call(relative_to=engine.ROOT)] * (activation + 1)
 
 
-def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0):
+def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0, prepared_context=None):
     """构造完整最终成绩凭据，不启动训练或原生计算。"""
     from contextlib import closing
     import shutil
@@ -126,10 +126,13 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
     character = inputs['character']
     batch = tmp_path / 'custom-training' / str(targets) / name
     batch.mkdir(parents=True)
-    native = engine.reference(template, batch / 'reference', character,
-                              simulation_config=inputs['simulation_config'])
-    _, capabilities, context = engine.prepare_loop(native, character, batch, TaskRuntime(600),
-        definition=inputs['definition'], interval_ms=200)
+    if prepared_context is not None:
+        capabilities, context = prepared_context['capabilities'], prepared_context['burst']
+    else:
+        native = engine.reference(template, batch / 'reference', character,
+                                  simulation_config=inputs['simulation_config'])
+        _, capabilities, context = engine.prepare_loop(native, character, batch, TaskRuntime(600),
+            definition=inputs['definition'], interval_ms=200)
     payload = seed_training.training_condition_input(inputs['template_sha'], inputs['engines'],
         inputs['config'], inputs['simulation_config'], burst_context=context)
     condition = seed_training.semantic_condition(payload, seed_training.semantic_versions())

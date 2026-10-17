@@ -1517,7 +1517,8 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(loop["identity"], expanded["identity"])
         self.assertEqual(loop["form"]["clicks"],
                          [["outbreak"], ["use_item,slot=trinket1"]])
-        self.assertEqual(loop["form"]["version"], "sim2gse-search-behavior-v1")
+        self.assertEqual(loop["form"]["version"], "sim2gse-search-behavior-v2")
+        self.assertEqual(loop["form"]["precombat_count"], 0)
         self.assertEqual(loop["program"]["nodes"][0]["kind"], "Loop")
         self.assertNotEqual(loop["program"]["nodes"][0]["source"],
                             expanded["program"]["nodes"][0]["source"])

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import re
 from collections import Counter
-from engine import run, check_report, player_report, CandidateError
+from engine import run, check_report, player_report, CandidateError, native_button_definition
 from runtime import replace_file
 from runtime import TaskRuntime
 from simulation_config import config_for
@@ -70,7 +70,8 @@ def compiled_identity(candidate):
     blocks = compiled_program(candidate)
     castsequences = candidate.get("compiled_program", {}).get("castsequences", [])
     from program import canonical_behavior_form
-    return canonical_behavior_form(blocks, castsequences)
+    return canonical_behavior_form(blocks, castsequences,
+                                   precombat_count=candidate.get("precombat_count", 0))
 
 
 def behavior_key(candidate):
@@ -190,6 +191,9 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         source_counts[source] += 1
         source_origins.append(source_counts[source])
     precombat_count = candidate.get('precombat_count', 0)
+    from codec import precombat_prefix_count
+    if precombat_count != precombat_prefix_count(candidate['blocks']):
+        raise ValueError('战前前缀声明与完整有序命令不一致')
     if not 0 <= precombat_count < len(blocks):
         raise ValueError('战前动作块数量无效')
     runtime_blocks = [[] if index < precombat_count else block for index, block in enumerate(blocks)]
@@ -243,7 +247,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             rows.append(f"{step}:" + ','.join(str(pool.index(member) + 1) for member in members)
                         + timeout_ms)
         castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
-    generated.write_text(Path(profile).read_text(encoding='utf-8') + '\n'
+    profile_text = Path(profile).read_text(encoding='utf-8')
+    generated.write_text(profile_text + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
                          + ('sim2gse_optional_spells=' + ','.join(value for value in sorted({
                              str(command['spell_id']) + ':' + command['simc_action']
@@ -310,6 +315,11 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     report = pending_report
     if player_report(report, character).get('sim2gse_skipped_commands', []) != skipped_commands:
         raise ValueError('原生报告与跳过日志不一致')
+    expected_precombat = [name for block in blocks[:precombat_count] for name in block]
+    native_precombat = player_report(report, character).get('sim2gse_precombat_actions', [])
+    if expected_precombat and [row.get('signature') for row in native_precombat
+                              if native_button_definition(row)] != expected_precombat:
+        raise ValueError('原生完整战前命令定义与GSE战前前缀不一致')
     measured = (report['sim']['statistics']['raid_dps'] if len(report['sim']['players']) > 1
                 else player_report(report, character)['collected_data']['dps'])
     if measured['mean'] == 0:
@@ -361,7 +371,6 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                  e['signature'] != by_step[e['step']][e['sequence_member']]))
                for e in events if e['step'] in by_step):
             raise ValueError('/castsequence 原生成员轨迹与编译定义不一致')
-        expected_precombat = [block[0] for block in blocks[:precombat_count]]
         if expected_precombat:
             battles = {e['battle'] for e in events if e['event'] == 'input'}
             for battle in battles:
@@ -381,6 +390,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             raise ValueError('原生派发与实际执行轨迹不一致')
     replace_file(folder / 'native.pending.json', folder / 'native.json')
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
+                precombat_commands=native_precombat,
                 skipped_commands=skipped_commands, effective_blocks=effective_blocks,
                 input_sources=input_sources, burst_offset=(burst_offset if input_sources is not None else None),
                 gcd_states=gcd_states, failed_actions=failed_actions,

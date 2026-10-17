@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Literal, NotRequired, TypedDict
 
-from codec import export
+from codec import export, precombat_prefix_count
 
 
 class SourcePosition(TypedDict):
@@ -292,14 +292,15 @@ def _search_expanded_nodes(program):
     return expanded
 
 
-BEHAVIOR_IDENTITY_VERSION = "sim2gse-search-behavior-v1"
+BEHAVIOR_IDENTITY_VERSION = "sim2gse-search-behavior-v2"
 
 
-def canonical_behavior_form(clicks, castsequences=()):
+def canonical_behavior_form(clicks, castsequences=(), *, precombat_count=0):
     """生成不包含来源位置和展示信息的版本化点击行为。"""
     return {
         "version": BEHAVIOR_IDENTITY_VERSION,
         "start_step": 1,
+        "precombat_count": precombat_count,
         "sequence_reset": "end",
         "clicks": clicks,
         "castsequences": [
@@ -365,7 +366,8 @@ def canonicalize_search_program(search_program, capabilities):
     if not has_action:
         source = expanded[0].get("source", {}).get("path", "clicks[0]")
         raise ValueError(f"{source}: 候选仅含空点击，没有可执行动作")
-    form = canonical_behavior_form(clicks, castsequences)
+    form = canonical_behavior_form(clicks, castsequences,
+                                   precombat_count=precombat_prefix_count(_search_blocks(mapped)))
     return {"identity": canonical_behavior_key(form), "form": form, "program": mapped}
 
 

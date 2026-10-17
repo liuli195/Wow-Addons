@@ -95,9 +95,9 @@ def _publish_export(row, purpose, compiled):
     _save(row)
 
 
-def _child_matches(row, child, targets):
+def _child_matches(row, child, targets, scene):
     if (child['profile']['input_original_sha256'] != row['input_sha256']
-            or child['simulation_config'] != dict(row['simulation_config'], target_count=targets)
+            or child['simulation_config'] != dict(row['simulation_config'], target_count=targets, scene=scene)
             or config_for(child['config']) != config_for(row['config'])
             or (child.get('rule_initialization') or {}).get('rule_config_digest') != row['rule_snapshot']['rule_config_digest']
             or (child.get('burst') or {}).get('definition_id') != row['definition_id']):
@@ -156,11 +156,11 @@ def _worker(handle):
                     if (child.get('status') != 'completed' or
                             child.get('search', {}).get('formal_champion_publication', {}).get('status') == 'pending'):
                         child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
-                            simulation_config=dict(row['simulation_config'], target_count=targets),
+                            simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
                             _rule_snapshot=row['rule_snapshot'])
                 elif (child_path / 'task.sqlite3').exists():
                     child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
-                        simulation_config=dict(row['simulation_config'], target_count=targets),
+                        simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
                             _rule_snapshot=row['rule_snapshot'])
                 else:
                     if child_path.exists():
@@ -174,13 +174,13 @@ def _worker(handle):
                     child = task.run_task(destination / 'input.original.simc', child_path,
                         use_burst=True, burst_identity={key: row[key] for key in ('spec_id', 'definition_id')},
                         cancel_event=handle.cancel_event, search_config=row['config'], _runtime=runtime,
-                        simulation_config=dict(row['simulation_config'], target_count=targets),
+                        simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
                             _rule_snapshot=row['rule_snapshot'])
                 if child.get('status') == 'cancelled':
                     raise TaskCancelled('已取消；已完成的场景保留')
                 if child.get('status') != 'completed' or not child.get('candidate'):
                     raise task.TaskError('当前场景尚未完成有效搜索')
-                _child_matches(row, child, targets)
+                _child_matches(row, child, targets, purpose)
                 row[purpose + '_status'] = 'completed'
                 _save(row)
                 runtime = TaskRuntime(600, cancel_event=handle.cancel_event)
@@ -190,8 +190,13 @@ def _worker(handle):
                                    destination / 'exports' / purpose, runtime)
                 _publish_export(row, purpose, compiled)
                 compiled_exports[purpose] = compiled
-                if 'burst' not in compiled_exports:
-                    compiled = _export(child['burst']['candidate'], 'burst', native_identity,
+                instructions = ('单体' if purpose == 'single_target' else '群体') + '：' + child['burst']['instructions']
+                row['burst_instructions'] = (instructions if purpose == 'single_target'
+                                              else row['burst_instructions'] + '\n' + instructions)
+                if 'burst' not in compiled_exports or purpose == SCENES[-1][0]:
+                    candidate = copy.deepcopy(child['burst']['candidate'])
+                    candidate['program']['metadata']['instructions'] = row['burst_instructions']
+                    compiled = _export(candidate, 'burst', native_identity,
                                        destination / 'exports' / 'burst', runtime)
                     _publish_export(row, 'burst', compiled)
                     compiled_exports['burst'] = compiled

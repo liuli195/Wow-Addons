@@ -192,8 +192,9 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
+        simulation = options.get("simulation_config") or {}
         options["simulation_config"] = simulation_config_for(dict(
-            options.get("simulation_config") or {}, target_count=target_count))
+            simulation, target_count=target_count, scene=value.get("scene", simulation.get("scene"))))
         options['search_config'] = dict(
             options.get('search_config') or {}, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)

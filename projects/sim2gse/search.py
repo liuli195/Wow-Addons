@@ -142,14 +142,14 @@ def _unique_names(names, available):
 
 
 def initial_programs(capabilities, reference, seed=20260912, *, input_interval_ms=300,
-                     target_count=1, burst=None, initialization=None, rule_snapshot=None):
+                     target_count=1, burst=None, initialization=None, rule_snapshot=None, scene=None):
     """从四个来源产生稳定合法的起点，而不读派生或宠物动作。"""
     from rule_initialization import generate
     from rule_config import load
     rule_snapshot = rule_snapshot or load()
     from rule_config import bind
     binding = bind(capabilities, reference.get('static_snapshot'), target_count,
-                   spec_id=reference.get('identity', {}).get('spec_id'), rule_snapshot=rule_snapshot)
+                   spec_id=reference.get('identity', {}).get('spec_id'), rule_snapshot=rule_snapshot, scene=scene)
     rule_start = generate(capabilities, reference, binding=binding, input_interval_ms=input_interval_ms,
                           target_count=target_count, burst=burst, rule_snapshot=rule_snapshot)
     if initialization is not None:
@@ -1528,7 +1528,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     if starts is None:
         starts = initial_programs(capabilities, reference, config['random_seed'],
             input_interval_ms=config['input_interval_ms'],
-            target_count=simulation_config['target_count'], burst=state.get('burst'),
+            target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'),
             initialization=state.setdefault('rule_initialization', {}))
     observable_flags = tuple(name for name in ('target', 'combat', 'shift', 'ctrl', 'alt')
                              if any(kind == name for _, kind in config['reset_events']))
@@ -1874,7 +1874,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if position['kind'] != 'action':
                     continue
                 click = compiled['compiled_program']['clicks'][position['click_position']]
-                if click.get('commands') != [position['action']] or click['source'] != position['source']:
+                if click.get('commands') != position['commands'] or click['source'] != position['source']:
                     raise ValueError('规则起点位置与实际编译点击不一致')
             initialization.update(export_text=compiled['text'],
                                   compilation=compiled['upstream_compilation'],
