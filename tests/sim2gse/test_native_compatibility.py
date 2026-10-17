@@ -149,6 +149,12 @@ class NativeCatalogueTests(unittest.TestCase):
             self.assertTrue(capabilities['actions'])
             snapshot = native['static_snapshot']
             self.assertIs(type(snapshot['parameters']['blightburst']), bool)
+            if any(row['simc_action'] == 'soul_reaper' for row in capabilities['actions']):
+                reapers = [row for row in snapshot['actions'] if row['name'] == 'soul_reaper']
+                self.assertTrue(reapers, '可用灵魂收割必须提供真实静态参数供初始化CD示范')
+                for row in reapers:
+                    self.assertGreater(row['gcd_ms'], 0)
+                    self.assertGreater(row['cooldown_ms'], 0)
             strikes = [row for row in snapshot['actions'] if row['spell_id'] == 85948]
             self.assertTrue(strikes)
             for row in strikes:

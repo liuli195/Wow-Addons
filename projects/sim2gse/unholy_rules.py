@@ -45,7 +45,7 @@ BINDINGS = [{'id': 'unholy.high_priority.3',
                 'default.cooldowns',
                 'unholy.aoe.1',
                 'unholy.aoe.2'],
-  'rules': []},
+  'rules': ['ordinary_cooldown']},
  {'id': 'unholy.aoe.4',
   'action': 'epidemic',
   'parent': 'call_action_list,name=aoe,if=active_enemies>=3',
@@ -190,7 +190,7 @@ BINDINGS = [{'id': 'unholy.high_priority.3',
                 'default.trinkets',
                 'default.cooldowns',
                 'unholy.single_target.1'],
-  'rules': []},
+  'rules': ['ordinary_cooldown']},
  {'id': 'unholy.single_target.3',
   'action': 'putrefy',
   'parent': 'call_action_list,name=single_target,if=active_enemies<3',
@@ -377,6 +377,8 @@ def bind(capabilities, snapshot, target_count, *, spec_id):
     cooldowns = [name for name in ('putrefy',) if name in available]
     if params['cycle_of_death'] and 'death_and_decay' in available:
         cooldowns.append('death_and_decay')
+    if 'soul_reaper' in available:
+        cooldowns.append('soul_reaper')
     high_id = f'unholy.{branch}.'+('4' if spender == 'epidemic' else '7' if branch == 'aoe' else '5')
     low_id = f'unholy.{branch}.'+('8' if spender == 'epidemic' else '9')
 
@@ -397,6 +399,11 @@ def bind(capabilities, snapshot, target_count, *, spec_id):
 
     bindings = [dict(row, source=APL_SOURCE+'#L'+row['source']) for row in BINDINGS
                 if row['list'] in ('high_priority', 'cooldowns', branch)]
+    if 'soul_reaper' in cooldowns:
+        next(row for row in bindings if row['action'] == 'soul_reaper')['initialization_coverage'] = dict(
+            basis='user_approved_soul_reaper_demo', coverage='unknown',
+            note='用户批准可用灵魂收割作为普通CD示范一次；不以动态斩杀/黑暗突变条件排除，'
+                 '原完整条件保留，不证明尝试时满足条件或施放成功')
     periodic_action = 'outbreak' if 'outbreak' in available else None
     alternative_maintenance = params.get('blightburst') is True and 'putrefy' in cooldowns
     if alternative_maintenance:

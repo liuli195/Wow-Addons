@@ -149,6 +149,46 @@ def test_task_demonstrates_available_talented_cooldown_in_single_target(tmp_path
         assert binding['initialization_coverage']['upstream_applicable'] is False
 
 
+@pytest.mark.parametrize('targets,available', [(1, True), (5, True), (1, False), (5, False)])
+def test_task_demonstrates_available_soul_reaper_without_claiming_dynamic_conditions(
+        tmp_path, targets, available):
+    from test_engine import apl_pool_reference
+    native = apl_pool_reference()
+    template = native['apl_actions'][0]
+    native['apl_actions'].append(dict(template, name='soul_reaper', signature='soul_reaper',
+        data_id=343294, base_spell_id=343294, available=available))
+    snapshot = native['static_snapshot']
+    snapshot['resources']['runic_power']['current'] = 100
+    snapshot['parameters']['dread_plague_duration_ms'] = 3000
+    snapshot['actions'].append(dict(name='soul_reaper', gcd_ms=1200, cooldown_ms=60000,
+        cast_ms=0, channeled=False, costs={'rune': 1}, gains={'runic_power': 10},
+        gain_status='known', gain_timing='on_cast', charges=1, max_charges=1))
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    with _apl_task_boundary(native):
+        result = run_task(source, tmp_path / 'task', simulation_config={'target_count': targets},
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+    report = result['rule_initialization']
+    attempts = [row for row in report['positions'] if row.get('action') == 'soul_reaper']
+    assert len(attempts) == int(available)
+    assert report['skeleton']['demonstrated'] == (['soul_reaper'] if available else [])
+    if available:
+        attempt = attempts[0]
+        assert attempt['effective_gcd_ms'] == 1200
+        assert report['program'][attempt['position'] + 1] == {'kind': 'WaitClicks', 'clicks': 5}
+        assert attempt['condition_status'] == 'dynamic_condition_unknown'
+        binding = next(row for row in report['bindings'] if row['action'] == 'soul_reaper')
+        assert attempt['bindings'] == [binding['id']]
+        assert binding['signature'].endswith(
+            'buff.dark_transformation.up&cooldown.dark_transformation.remains<38|target.health.pct<35')
+        assert binding['initialization_coverage']['basis'] == 'user_approved_soul_reaper_demo'
+        assert binding['initialization_coverage']['coverage'] == 'unknown'
+        rule = next(row for row in report['rules'] if row['id'] == 'ordinary_cooldown')
+        assert binding['id'] in rule['bindings']
+        assert attempt['position'] in rule['applied_positions']
+
+
 @pytest.mark.parametrize('blightburst,available', [(True, True), (False, True), (None, True), (True, False)])
 def test_task_uses_confirmed_alternative_disease_maintenance(tmp_path, blightburst, available):
     from test_engine import apl_pool_reference

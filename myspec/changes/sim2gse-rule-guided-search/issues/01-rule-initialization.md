@@ -24,6 +24,7 @@ Blocked by: 无其他开发票。依据已确认规则及专精分层；缺必�
 - [ ] 骨架使用各CD一次示范及绑定资源消费动作一次示范，不累计一份容量；消费总量只作报告，第二层不把示范次数硬锁为最终要求。邪DK单体按用户批准覆盖一次可用且对应天赋开启的枯萎凋零，原APL至少3目标条件与来源保留并明确初始化例外。
 - [ ] 真实GSE、合法导出、逐位置映射、参数来源及精确/近似/unknown清单可供审阅；修复后以真实角色重跑初始化，完整列出每节点技能/WaitClicks、理由及编译输入映射，不混用构造样例。
 - [ ] 第4条静态初始化保留完整绑定及unknown、未应用说明；不要求动态短窗口独立调序，不冒称该规则已经执行。
+- [ ] 按2026-10-17用户批准，可用灵魂收割在单体和AOE中均纳入普通CD一次示范；使用真实静态参数，保留完整动态条件及unknown，不固定斩杀/黑暗突变时点。
 - [ ] 固定爆发不变；单空点击、缺字段、结构超限明确失败，不扩语法或静默回退。
 - [ ] 复用task.run_task集成接缝及现有程序测试；构造样例不冒充真实角色产物；检查与独立审查证据记录完整。
 
@@ -149,3 +150,11 @@ Blocked by: 无其他开发票。依据已确认规则及专精分层；缺必�
 - 既有NativeCatalogue/reference测试新增明确bool契约。旧本地真实快照缺字段红只证明旧协议缺口，不是C++执行红；Windows须用旧binary的同一reference值先确认缺字段，再重建baseline/controlled并运行契约绿及原版/基准/禁用控制器战斗字段对照。证据位于原忽略目录：review9-red/green-alternative-maintenance、review9-red-native-field-captured、review9-native-patch-check、review9-final-targeted、review9-final-supported。
 - Wowhead本轮仅核对只读索引，英雄切换与正文未全文核实，尚未接入完整指南规则。用户要求先列实际指南条目核对，后续另按确认范围处理；本片仅依据明确替代授权及固定源码。
 - 独审后一次同步Windows重建、固定基线快速verify，并分别生成保存真实单体和AoE初始化，明确目标数，提供完整中文节点/等待/理由/映射供用户审阅；不新建训练批次，不用mock替代真实产物。01仍未最终验收。
+
+### 2026-10-17 用户批准灵魂收割纳入CD示范（待独审及Windows重建）
+
+- 用户明确要求灵魂收割即使不能动态处理，也必须作为CD技能放进初始化序列。本次只在角色能力可用时追加普通CD清单，单体/AOE共用现有排位；完整APL斩杀/黑暗突变条件、父入口和优先保留，并报告用户批准的静态示范及动态unknown。未增加固定施放时点或改冻结爆发，通用生成器不变。
+- 原生070采集白名单只追加soul_reaper，复用既有有效GCD/CD、费用、充能及收益字段；没有猜数值。baseline/controlled两套补丁链适用，通过既有脚本更新070和受影响DK源码锁散列；尚未构建新C++。
+- 公开task.run_task接缝使用独立构造数据：单体/5目标可用两例先因零次收割失败，不可用两例通过；最小修改后四例全部通过。另核对1200ms构造GCD对应200ms输入后的5空点击、完整源条件和unknown。初次绿灯尝试发现原24秒疾病尾等待合并影响GCD断言，将该独立mock疾病间隔设为3秒以隔离目标，未放宽5空点击断言，未改产品周期行为。最终同四例加载固定5c43c8de旧绑定仍为2 failed/2 passed，证据review10-red-final-case-fixed-base.txt。证据：review10-red-soul-reaper.txt、review10-intermediate-period-isolation.txt、review10-green-soul-reaper.txt，均在既有忽略目录.local/tests/rule-initialization/。
+- 较宽初始化/目录集合53 passed、7 subtests；另外2项因云端缺baseline/build.json无法运行，不记为通过。日志review10-final-targeted.txt；排除这两项原生环境依赖后，同集合53 passed、7 subtests（24.66秒），review10-final-supported.txt。两套补丁链日志review10-native-patch-check.txt。原生reference既有契约已补可用收割必须提供静态参数的检查，等待Windows旧binary红、新binary绿，云端不冒称原生验证。
+- 独审后需Windows重建baseline/controlled，核验新增原生字段及原版/基准/禁用控制器战斗字段一致，执行固定基线快速verify，再从现有入口生成真实单体和AOE初始化，逐步分别列出技能尝试和随后空点击。真实序列及01验收仍待完成，02/03未开始。

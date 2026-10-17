@@ -45,7 +45,7 @@
 +      background_actions.dread_plague->composite_dot_duration( nullptr ).total_millis();
 +  sim2gse::capture_static_snapshot( *this,
 +    { "outbreak", "putrefy", "death_and_decay", "death_coil", "epidemic",
-+      "festering_strike", "festering_scythe", "scourge_strike" }, parameters,
++      "festering_strike", "festering_scythe", "scourge_strike", "soul_reaper" }, parameters,
 +    { { "cycle_of_death", talent.unholy.cycle_of_death.ok() },
 +      { "blightburst", talent.unholy.blightburst.ok() },
 +      { "festering_scythe", talent.unholy.festering_scythe.ok() } } );
