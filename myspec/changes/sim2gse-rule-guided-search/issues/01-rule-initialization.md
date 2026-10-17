@@ -242,3 +242,10 @@ Blocked by: 无其他开发票；本次配置化修订的保存形式、生效�
 - 公开task回归先记录足额CD附赠ST/AOE的2红→2绿；零/不足CD附赠的同按钮目标误标预消费4红→含既有维护回归11绿。接替核查另发现二层维护已知15留下5额度、或unknown时会使已有预消费待办不可达；新增同一公开入口2红，配置复用pending事实修后与身份/重复覆盖/维护删尾共12绿（6.47秒）。重命名预消费/目标覆盖并把目标次数改2仍保留三次独立消费；AOE回退也补入足额CD用例。
 - 两项原失败按新已批准语义修正，保留原测试目的：近满80/消费10、满充能长CD例仍只示范一次Putrefy且先于目标消费，现另有一次独立预消费，骨架4秒/总消费20、合格额度10；CD附赠30例仍要求3次指定生成提供30额度，现先预消费再目标消费，总消费60。没有改初值、删生成断言或把CD收益计为合格来源。
 - 初始化全组102 passed（28.11秒），日志preconsumption-final-initialization.txt；既有HTTP公开详情、双场同快照及旧记录可读/拒恢复3 passed（3.42秒），preconsumption-final-http.txt。骨架CD的unknown/ON_HIT两项独立公开task探测仍明确拒绝来源证明，preconsumption-unknown-skeleton.txt；py_compile、JSON解析及限定diff-check通过。红绿、身份及维护证据均在既有.local/tests/rule-initialization/preconsumption-*.txt；云端使用既有Linux诊断适配器，只证明公开业务路径，不代替Windows锁/进程、固定基线正式验证、真实ST1/AOE5中文完整序列或用户审阅。本轮尚未提交，01不勾选验收。
+
+
+### 2026-10-17 提交90f6dfb本机复验回传（待用户序列审阅）
+
+- 据既有Windows线程回传，实际运行HEAD为90f6dfbdcbbb566b963b1370e9c410c7c047fbd6，与云端独审9efbf67的树同为ad2c2d6d2213e8379fdac56d7d52d5f9cdd8c15e；原生hash不变。固定基线fast（快速）正式验证首次受沙箱WinError10013/socket及联接权限限制，46.71秒、106 failed/541 passed；同一命令取得权限后重跑退出0，640 passed、162 subtests，52.38秒，在既有60秒预算内。
+- 真实角色ST1/AOE5生成分别耗时0.500/0.484秒，动作、点击、时间及编译输入映射均通过。ST1为25节点、68点击、21.6秒，预消费1次、目标消费1次、合格生成credited=60；AOE5为19节点、43点击、14.1秒，预消费1次、目标消费1次、credited=30。
+- 证据为本机.local/retest-90f6dfb/acceptance.json；以上来自本机回传，云端未直接读取该私人产物。两场完整中文序列仍待交用户审阅，01保持in-progress且不勾选最终验收；不是实际游戏验证或DPS收益结论，不启动02/03。
