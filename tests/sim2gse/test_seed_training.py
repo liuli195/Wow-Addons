@@ -25,7 +25,8 @@ def training_boundary(damage_for=lambda candidate: 100.):
 
 
 @contextmanager
-def guided_training_boundary(directory, damage_for, *, known_inputs=None, insert_only=False, move_to_front=False):
+def guided_training_boundary(directory, damage_for, *, known_inputs=None, insert_only=False,
+                             move_to_front=False, all_actions=False):
     """迁移旧算子替身：真实配置、诊断/全池/Coba，仅构造原外部评分事实。"""
     import os
     from unittest.mock import patch
@@ -33,6 +34,16 @@ def guided_training_boundary(directory, damage_for, *, known_inputs=None, insert
     from test_rule_diagnostics import _condition_pack, _observed_evaluate
 
     pack = _condition_pack()
+    actions = {'first': 'outbreak', 'consumer': 'death_coil', 'filler': 'scourge_strike'}
+    if all_actions:
+        import copy
+        objects = pack['object_sets']['sample']
+        objects['filler'] = dict(kind='action', native_action='scourge_strike',
+            base_button='scourge_strike', native_forms=['scourge_strike'])
+        priority = pack['configurations'][0]['states']['only']['priority']
+        binding = priority[0]
+        priority[:] = [dict(copy.deepcopy(binding), name=f'available {name}',
+            arguments=dict(binding['arguments'], action=name)) for name in actions]
     if insert_only:
         template = pack['general']['templates']['renamed-template']
         template['edits'] = [edit for edit in template['edits'] if edit['operation'] == 'insert']
@@ -52,6 +63,10 @@ def guided_training_boundary(directory, damage_for, *, known_inputs=None, insert
         kwargs['score'] = damage_for(args[1])
         result = _observed_evaluate(*args, **kwargs)
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+        if all_actions:
+            payload['action_observations'] = [dict(row, object=name, actual_form=action,
+                base_button=action) for row in payload['action_observations']
+                for name, action in actions.items()]
         for name in ('inputs', 'action_observations', 'state_observations'):
             for row in payload[name]:
                 row['source_step'] = row['input_index'] % len(program)
@@ -63,6 +78,11 @@ def guided_training_boundary(directory, damage_for, *, known_inputs=None, insert
     with patch.dict(os.environ, SIM2GSE_RULE_CONFIG=str(path)), training_boundary(), \
             patch.object(sequence, 'evaluate', side_effect=observed):
         yield
+
+
+def training_round_boundary(directory, damage_for=lambda candidate: 100.):
+    """提供各源位置的三动作机会，轮次、并发及停止仍由真实训练入口执行。"""
+    return guided_training_boundary(directory, damage_for, known_inputs=len, all_actions=True)
 
 import pytest
 
@@ -316,18 +336,18 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
         if table == 'seed_selected':
             raise PermissionError('发布目标暂时不可写')
         return real_write(table, key, rows, **kwargs)
-    with training_boundary(), patch.object(result_store, 'write', side_effect=failing_publish):
+    with training_round_boundary(tmp_path), patch.object(result_store, 'write', side_effect=failing_publish):
         assert command(tmp_path, args) == 2
     assert not result_store.read_records('seed_selected', 'deathknight-unholy-1')
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     assert len(processed) == 1
     assert processed[0]['rounds'] == 2
     assert processed[0]['stop_reason'] == 'no_improvement'
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
         assert command(tmp_path, args) == 0
     assert command(tmp_path, ['list', '--state', 'selected', '--targets', '1']) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
         assert command(tmp_path, args) == 0
 
 
@@ -410,13 +430,14 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
     assert result_store.read_search_learner(selector.MODEL_KEY) == model
 
 
-def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys,
+def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys, monkeypatch,
                                                                           memory_training_center,
                                                                           four_candidate_training_rounds):
     from test_character_export import sample_profile
-    from test_search import _fast_evaluate
     from unittest.mock import patch
     import sequence
+    import result_store
+    import selector
     import threading
     import time
 
@@ -430,7 +451,11 @@ def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_
     assert command(tmp_path, ['register', str(source)]) == 0
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
     observations = []
+    model_key = selector.MODEL_KEY
     for workers in (None, 4):
+        # 两个调度实验各从空经验开始，仍运行真实 Coba 并保存完整共享模型。
+        monkeypatch.setattr(selector, 'MODEL_KEY', f'{model_key}_parallel_{workers or 2}')
+        assert result_store.read_search_learner(selector.MODEL_KEY) is None
         active = peak = 0
         requests = []
         lock = threading.Lock()
@@ -443,20 +468,17 @@ def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_
                 requests.append((candidate['blocks'], kwargs['iterations'], kwargs['seed']))
             try:
                 time.sleep(.02)  # 外部引擎边界等待，确保同层请求确实重叠。
-                result = _fast_evaluate(profile, candidate, folder, **kwargs)
-                result['summary']['dps'] = 100.
-                result['report']['sim']['statistics']['raid_dps']['mean'] = 100.
-                result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = 100.
-                Path(folder, 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
-                return result
+                return native(profile, candidate, folder, **kwargs)
             finally:
                 with lock:
                     active -= 1
 
         workspace = tmp_path / ('work-2' if workers is None else 'work-4')
         run_args = args[:-1] + [str(workspace)]
-        with training_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-            assert command(tmp_path, run_args + ([] if workers is None else ['--max-processes', str(workers)])) == 0
+        with training_round_boundary(tmp_path):
+            native = sequence.evaluate
+            with patch.object(sequence, 'evaluate', side_effect=evaluate):
+                assert command(tmp_path, run_args + ([] if workers is None else ['--max-processes', str(workers)])) == 0
         assert peak == (2 if workers is None else 4)
         assert command(tmp_path, ['list', '--state', 'processed']) == 0
         rows = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -470,7 +492,7 @@ def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_
     for field in ('initial_program', 'program', 'scores', 'initial_scores', 'native_batch_starts', 'batch_requests'):
         assert first[0][field] == second[0][field]
     assert first[1] == second[1]
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
         assert command(tmp_path, run_args + ['--max-processes', '2']) == 0
         assert command(tmp_path, run_args + ['--max-processes', '4']) == 0
 
@@ -498,7 +520,7 @@ def test_training_entry_reads_internal_concurrency_and_reuses_complete_scores(
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
     active = peak = 0
     lock = threading.Lock()
-    with training_boundary():
+    with training_round_boundary(tmp_path):
         native = sequence.evaluate
         def observed(*args, **kwargs):
             nonlocal active, peak
@@ -518,14 +540,14 @@ def test_training_entry_reads_internal_concurrency_and_reuses_complete_scores(
     before = json.loads(capsys.readouterr().out.splitlines()[-1])
     settings.write_text('[simulation]\ntarget_count=3\n[training]\nmax_trainings=1\nmax_processes=16\n', encoding='utf-8')
     assert simulation_config.load_config()['target_count'] == 3
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复训练或复测')):
+    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复训练或复测')):
         assert command(tmp_path, args) == 0
         assert command(tmp_path, args + ['--max-processes', '2']) == 0
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1]) == before
     import search
     monkeypatch.setattr(search, 'SEARCH_ALGORITHM', 'changed-search-semantics')
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=ValueError('真实语义变化重新评分')):
+    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=ValueError('真实语义变化重新评分')):
         assert command(tmp_path, args) == 2
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     changed = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -855,6 +877,7 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
         tmp_path, monkeypatch, memory_training_center):
     import result_store
     import sequence
+    import selector
     import seed_activity
     import threading
     from seed_training import _checkpoint_states
@@ -876,7 +899,7 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
     monkeypatch.setattr(seed_activity, 'training_activity', activity)
     requests = []
     # 同一当前规则快照下，只改并发2→4仍可恢复；旧无摘要任务另测拒绝。
-    with training_boundary():
+    with training_round_boundary(tmp_path):
         evaluate = sequence.evaluate
         def interrupt(profile, candidate, folder, **kwargs):
             requests.append(Path(folder).name)
@@ -889,27 +912,63 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
     failed = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
     batch = Path(failed['task_path']).parent
     before = next(iter(_checkpoint_states(batch).values()))
-    assert before['phase'] == 'search' and before['pending'] and before['rng']
+    assert before['phase'] == 'search' and before['pending']
+    # 新选择器的随机进度与已预留决策保存在共享模型，任务保留对应原回执。
+    learner_before = result_store.read_search_learner(selector.MODEL_KEY)
+    assert type(learner_before['rng_state']) is int and 0 <= learner_before['rng_state'] < 2**30
+    decisions = {work['rule_step']['operation']['operation_id']: work['rule_step']['selection']
+                 for work in before['pending']}
+    assert decisions and all(receipt in learner_before['reservations'] for receipt in decisions.values())
+    saved_scores = {row['data_key']: row for work in before['pending']
+                    for row in work.get('score_batches', [])}
+    assert saved_scores
     with sqlite3.connect(Path(failed['task_path']) / 'task.sqlite3') as database:
         saved = {key: value for key, value in database.execute('SELECT key,value FROM batches')
                  if json.loads(value).get('status') == 'success'}
     assert saved
     cancelled.clear()
     resumed = []
-    with training_boundary():
+    with training_round_boundary(tmp_path):
         evaluate = sequence.evaluate
         def observe(profile, candidate, folder, **kwargs):
+            if not resumed:
+                learner = result_store.read_search_learner(selector.MODEL_KEY)
+                assert learner['rng_state'] == learner_before['rng_state']
+                assert learner['reservations'] == learner_before['reservations']
             resumed.append(Path(folder).name)
             return evaluate(profile, candidate, folder, **kwargs)
         with patch.object(sequence, 'evaluate', side_effect=observe):
             assert command(tmp_path, args + ['--max-processes', '4']) == 0
     complete = result_store.read_records('seed_processed', 'deathknight-unholy-1')[0]
     assert complete['condition'] == failed['condition'] and complete['task_path'] == failed['task_path']
-    assert complete['status'] == 'completed' and complete['cache_hits'] > 0
+    assert complete['status'] == 'completed'
     assert not set(saved) & set(resumed)
     with sqlite3.connect(Path(complete['task_path']) / 'task.sqlite3') as database:
         after = dict(database.execute('SELECT key,value FROM batches'))
     assert all(after[key] == value for key, value in saved.items())
+    after_state = next(iter(_checkpoint_states(batch).values()))
+    # cache_hits只计额外缓存查找；pending直接续用成功结果不增加该计数。
+    archived_scores = {row['data_key']: row for record in after_state['archive'] for row in record['batches']}
+    for key, receipt in saved_scores.items():
+        archived = archived_scores[key]
+        native_fields = receipt.keys() - {'rule_diagnostics'}
+        assert {field: archived[field] for field in native_fields} == {
+            field: receipt[field] for field in native_fields}
+        diagnostic = receipt.get('rule_diagnostics')
+        if diagnostic:
+            restored = archived['rule_diagnostics']
+            for field in ('version', 'parent_identity', 'evidence', 'parent', 'observation_scope'):
+                assert restored[field] == diagnostic[field]
+            assert restored['pool']['complete'] is True
+            if not diagnostic['pool']['complete']:
+                # 取消可留下不完整派生诊断；只允许从同一已存报告补回完整池。
+                assert archived['diagnostics_replayed'] is True
+            else:
+                assert {field: value for field, value in restored.items() if field != 'costs'} == {
+                    field: value for field, value in diagnostic.items() if field != 'costs'}
+    for operation_id, receipt in decisions.items():
+        selection = after_state['rule_steps'][operation_id]['selection']
+        assert {key: selection[key] for key in receipt} == receipt
     manifest = json.loads((batch / 'identity.json').read_text(encoding='utf-8'))
     assert [segment['config']['max_processes'] for segment in manifest['executions']] == [2, 4]
     segment = manifest['executions'][-1]
@@ -998,7 +1057,6 @@ def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
     from runtime import BudgetExceeded
     import result_store
     import sequence
-    from test_search import _fast_evaluate
 
     source = tmp_path / 'candidate.json'
     source.write_text(json.dumps(dict(label='budget', class_name='deathknight', spec='unholy',
@@ -1010,18 +1068,22 @@ def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
     assert command(tmp_path, ['register', str(source)]) == 0
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
             '--max-processes', str(max_processes)]
-    with training_boundary():
+    with training_round_boundary(tmp_path):
         assert command(tmp_path, args) == 0
     previous = result_store.read_records('seed_selected', 'deathknight-unholy-1')
     assert previous
     template.write_text(sample_profile() + '\n# changed template\n', encoding='utf-8')
     def budget_on_first_round(*args, **kwargs):
-        if kwargs.get('trace') and kwargs.get('iterations') == 2:
+        program = [[action['simc_action'] for action in block] for block in args[1]['blocks']]
+        if (kwargs.get('rule_observation_request') is not None and
+                program != [['outbreak'], ['death_coil'], ['scourge_strike']]):
             raise BudgetExceeded('训练预算耗尽')
-        return _fast_evaluate(*args, **kwargs)
+        return native(*args, **kwargs)
 
-    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=budget_on_first_round):
-        assert command(tmp_path, args) == 2
+    with training_round_boundary(tmp_path):
+        native = sequence.evaluate
+        with patch.object(sequence, 'evaluate', side_effect=budget_on_first_round):
+            assert command(tmp_path, args) == 2
     assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == previous
     processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     failed = next(row for row in processed if row['status'] == 'failed')
@@ -1071,7 +1133,7 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
+    with training_round_boundary(tmp_path), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, ['prepare', *args[1:]]) == 0
     # Reproduce the inactive derived source left by the previous score-quality gate.
     source = result_store.read_records('seed_candidates', 'registry')[0]
@@ -1079,7 +1141,7 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(
                   changes=['历史缺少可靠最佳候选或有效成绩'], unavailable_reason='历史缺少可靠最佳候选或有效成绩')
     result_store.write('seed_candidates', 'registry', [source], schema=SOURCE_SCHEMA)
     # 三种旧成绩均真实同步并恢复来源；完整训练/变模板仅保留一个代表。
-    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
+    with training_round_boundary(tmp_path), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, args if historic_dps == 90. else ['prepare', *args[1:]]) == 0
     source = next(row for row in result_store.read_records('seed_candidates', 'registry')
                   if row['source_id'] == 'history:historic-1')
@@ -1100,12 +1162,12 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(
     assert len(retests) == 6 and all(row['iterations'] == 128 for row in retests)
     assert {row['seed'] for row in retests} == {20261008, 20261009, 20261010}
     before = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
+    with training_round_boundary(tmp_path), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
             patch.object(sequence, 'evaluate', side_effect=AssertionError('可靠完整路径不能重训')):
         assert command(tmp_path, args) == 0
     assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == before
     template.write_text(sample_profile() + '\n# new template revision\n', encoding='utf-8')
-    with training_boundary(), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
+    with training_round_boundary(tmp_path), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
             patch.object(sequence, 'evaluate', side_effect=ValueError('新条件重新计算')):
         assert command(tmp_path, args) == 2
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
@@ -1136,7 +1198,7 @@ def test_training_trains_history_matching_completed_final_and_reuses_only_initia
             ['outbreak'], ['death_coil'], ['scourge_strike']] else 110.
 
     assert search.config_for(training=True)['round_candidate_limit'] == 16
-    with training_boundary(plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
+    with training_round_boundary(tmp_path, plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, args) == 0
 
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
@@ -1187,7 +1249,7 @@ def test_training_trains_history_matching_completed_final_and_reuses_only_initia
             program=shared_program(program))], schema=result_store.CANDIDATE_SCHEMA)
 
     # 模拟旧覆盖政策留下的动态免训记录：必须补完整独立路径，不动A可靠成果。
-    with training_boundary(plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
+    with training_round_boundary(tmp_path, plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, ['prepare', *args[1:]]) == 0
     registry = result_store.read_records('seed_candidates', 'registry')
     old_id = next(row['candidate_id'] for row in registry if row['source_id'] == 'history:history-final')
@@ -1199,7 +1261,7 @@ def test_training_trains_history_matching_completed_final_and_reuses_only_initia
     original = dict(completed, initial_program=initial, program=final, comparison=json.loads(completed['comparison']))
     result_store.write('seed_processed', 'deathknight-unholy-1', [original, old_skip],
                        schema=__import__('seed_training').PROCESSED_SCHEMA)
-    with training_boundary(plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
+    with training_round_boundary(tmp_path, plateau), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
         assert command(tmp_path, args) == 0
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     assert search.config_for(training=True)['round_candidate_limit'] == 16
@@ -1334,16 +1396,18 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
         failed_id = next(row['candidate_id'] for row in registry if row['source_id'] == '0')
         current_id = next(row['candidate_id'] for row in registry if row['source_id'] == '1')
         def stop_search(*args, **kwargs):
-            if kwargs.get('trace') and kwargs.get('iterations') == 2:
+            program = [[action['simc_action'] for action in block] for block in args[1]['blocks']]
+            if kwargs.get('rule_observation_request') is not None and program != programs[0]:
                 raise BudgetExceeded('原A路径未收敛')
             return native(*args, **kwargs)
-        with training_boundary():
+        with training_round_boundary(tmp_path):
             native = sequence.evaluate
             with patch.object(sequence, 'evaluate', side_effect=stop_search):
                 assert command(tmp_path, args + ['--candidate-id', failed_id]) == 2
         failed = next(row for row in result_store.read_records('seed_processed', 'deathknight-unholy-1')
                       if row['candidate_id'] == failed_id)
         assert failed['status'] == 'failed'
+        assert failed['stop_reason'] == 'search_deadline'
         path = tmp_path / 'source-0.json'
         path.write_text(json.dumps(dict(json.loads(path.read_text()), active=False)), encoding='utf-8')
         assert command(tmp_path, ['register', str(path)]) == 0
@@ -1354,14 +1418,14 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
                 publish_attempts.append(True)
                 raise PermissionError('仅最终发布暂时不可写')
             return real_write(table, key, rows, **kwargs)
-        with training_boundary(), patch.object(result_store, 'write', side_effect=fail_publish):
+        with training_round_boundary(tmp_path), patch.object(result_store, 'write', side_effect=fail_publish):
             assert command(tmp_path, args + ['--candidate-id', current_id]) == 2
         records = result_store.read_records('seed_processed', 'deathknight-unholy-1')
         assert next(row for row in records if row['candidate_id'] == current_id)['status'] == 'completed'
         assert publish_attempts == [True], '停用的旧A失败不应阻挡B完整成果发布'
         assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == previous
         capsys.readouterr()
-        with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('B完整成果只重试发布')):
+        with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('B完整成果只重试发布')):
             assert command(tmp_path, args + ['--candidate-id', current_id]) == 0
         assert json.loads(capsys.readouterr().out)[0]['status'] == 'restored'
         assert result_store.read_records('seed_selected', 'deathknight-unholy-1')
@@ -1378,7 +1442,7 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
         if interruption == 'store_failure' and table == 'seed_processed' and any(row['status'] == 'completed' for row in rows):
             raise PermissionError('父级汇总暂时不可写')
         return real_write(table, key, rows, **kwargs)
-    with training_boundary():
+    with training_round_boundary(tmp_path):
         native = sequence.evaluate
         def observed(*args, **kwargs):
             nonlocal active, child
@@ -1916,7 +1980,7 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     gate = threading.Barrier(outer * inner)
     gated = {}
     ids = {row['candidate_id'][:12] for row in result_store.read_records('seed_candidates', 'registry')}
-    with training_boundary():
+    with training_round_boundary(tmp_path):
         native = sequence.evaluate
         def observed(profile, candidate, folder, **kwargs):
             nonlocal active, peak, overlap

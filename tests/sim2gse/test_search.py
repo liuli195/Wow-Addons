@@ -261,6 +261,20 @@ def _apl_task_boundary(native=None):
 
 
 @contextmanager
+def _initialized_starts(starts):
+    """指定起点仍由真实初始化先冻结对应配置与来源证据。"""
+    import search
+    original = search.initial_programs
+
+    def initialized(*args, **kwargs):
+        original(*args, **kwargs)
+        return starts
+
+    with patch.object(search, 'initial_programs', side_effect=initialized):
+        yield
+
+
+@contextmanager
 def _guided_search_boundary(directory, starts, *, evaluate=None, pack=None):
     """保留真实初始化、规则池和选择器，只构造既有引擎报告边界。"""
     import search
@@ -273,16 +287,9 @@ def _guided_search_boundary(directory, starts, *, evaluate=None, pack=None):
     native = apl_pool_reference()
     for action in native['static_snapshot']['actions']:
         action['gcd_ms'] = 200
-    real_initial_programs = search.initial_programs
-
-    def initialized_starts(*args, **kwargs):
-        # 起点替身仍须让真实初始化写入冻结配置，不能留下空 rule_initialization。
-        real_initial_programs(*args, **kwargs)
-        return starts
-
     with patch.dict(os.environ, SIM2GSE_RULE_CONFIG=str(path)), \
             _apl_task_boundary(native), \
-            patch.object(search, 'initial_programs', side_effect=initialized_starts), \
+            _initialized_starts(starts), \
             patch.object(sequence, 'evaluate', side_effect=evaluate or _observed_evaluate):
         yield
 
@@ -507,7 +514,7 @@ class SearchAndValidationTests(TestCase):
             config = dict(total_budget_seconds=60, candidate_limit=2, batch_targets=(2,),
                           iterations=2, validation_batches=2, max_processes=2)
             with _fast_search_boundary(), \
-                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]], [["death_coil"]]]), \
+                    _initialized_starts([[["outbreak"]], [["death_coil"]]]), \
                     patch.object(search, 'paired_ci', wraps=search.paired_ci) as intervals:
                 result = run_task(source, Path(directory) / 'task', search_config=config)
             comparisons = [row[key]['comparison'] for row in result['search']['records']
@@ -932,8 +939,7 @@ class SearchAndValidationTests(TestCase):
                           diagnostic_logging=True, search_observability="full")
             with _fast_initialization(), \
                     patch.object(sequence, "evaluate", side_effect=stop_on_second_batch), \
-                    patch.object(search, "initial_programs",
-                                 return_value=[[['outbreak']], [['death_coil']]]):
+                    _initialized_starts([[['outbreak']], [['death_coil']]]):
                 result = run_task(source, root / "task", search_config=config)
 
         observation = result["search"]["observability"]
@@ -1029,8 +1035,7 @@ class SearchAndValidationTests(TestCase):
                     patch.object(search, "TaskStore", LockedStore), \
                     patch.object(search, "_new_search_observability",
                                  side_effect=locked_observability), \
-                    patch.object(search, "initial_programs",
-                                 return_value=[[['outbreak']], [['death_coil']]]), \
+                    _initialized_starts([[['outbreak']], [['death_coil']]]), \
                     patch.object(sequence, "evaluate", side_effect=cancel_after_first):
                 stopped = run_task(source, destination, search_config=config, _runtime=runtime)
                 resumed = run_task(source, destination, search_config=config, resume=True,
@@ -1059,8 +1064,7 @@ class SearchAndValidationTests(TestCase):
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=37,
                           diagnostic_logging=True, search_observability="full")
-            with _fast_search_boundary(), patch.object(
-                    search, "initial_programs", return_value=[[['outbreak']]]):
+            with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
                 completed = run_task(source, destination, search_config=config)
 
             database = sqlite3.connect(destination / "task.sqlite3")
@@ -1168,8 +1172,7 @@ class SearchAndValidationTests(TestCase):
                           diagnostic_logging=True, search_observability="full")
             with _fast_initialization(), \
                     patch.object(sequence, "evaluate", side_effect=cancel_observation), \
-                    patch.object(search, "initial_programs",
-                                 return_value=[[['outbreak']], [['death_coil']]]):
+                    _initialized_starts([[['outbreak']], [['death_coil']]]):
                 result = run_task(source, root / "task", search_config=config,
                                   _runtime=runtime)
 
@@ -1208,8 +1211,7 @@ class SearchAndValidationTests(TestCase):
                           diagnostic_logging=True, search_observability="full")
             with _fast_search_boundary(), \
                     patch.object(sequence, "evaluate", side_effect=stop_during_promotion), \
-                    patch.object(search, "initial_programs",
-                                 return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
+                    _initialized_starts([[['use_item,slot=trinket1']], [['death_coil']]]):
                 result = run_task(source, root / "task", search_config=config,
                                   _runtime=runtime)
 
@@ -1275,7 +1277,7 @@ class SearchAndValidationTests(TestCase):
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=37)
             with _fast_search_boundary(), \
-                    patch.object(search, "initial_programs", return_value=equivalent_programs), \
+                    _initialized_starts(equivalent_programs), \
                     patch.object(codec, "run_command", side_effect=compiler), \
                     patch.object(sequence, "evaluate", side_effect=evaluate):
                 result = run_task(source, Path(directory) / "task", search_config=config)
@@ -1368,8 +1370,7 @@ class SearchAndValidationTests(TestCase):
                 if mode is not None:
                     options["search_observability"] = mode
                     options["diagnostic_logging"] = True
-                with _fast_search_boundary(), patch.object(
-                        search, "initial_programs", return_value=[[['outbreak']]]):
+                with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
                     result = run_task(source, destination, search_config=options)
                 database = sqlite3.connect(destination / "task.sqlite3")
                 try:
@@ -1418,8 +1419,7 @@ class SearchAndValidationTests(TestCase):
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=37,
                           diagnostic_logging=True, search_observability="full")
-            with _fast_search_boundary(), patch.object(
-                    search, "initial_programs", return_value=[[['outbreak']]]):
+            with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
                 result = run_task(source, root / "task", search_config=config,
                                   _runtime=runtime)
 
@@ -1439,14 +1439,12 @@ class SearchAndValidationTests(TestCase):
                           candidate_limit=2, batch_targets=(2,), iterations=2,
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1)
-            with _fast_search_boundary(), patch.object(
-                    search, "initial_programs",
-                    return_value=[[['outbreak']], [['death_coil']]]):
+            with _fast_search_boundary(), _initialized_starts([[['outbreak']], [['death_coil']]]):
                 result = run_task(source, destination, search_config=config)
 
             record_keys = {record["key"] for record in result["search"]["records"]}
             export_keys = {path.name for path in (destination / "exports").iterdir()}
-            self.assertEqual(export_keys, record_keys)
+            self.assertEqual(export_keys, record_keys | {result["rule_initialization"]["behavior_identity"]})
             self.assertIn(result["locked_candidate_key"], record_keys)
             for record in result["search"]["records"]:
                 for row in record["batches"]:
@@ -1516,9 +1514,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-memory-reuse-') as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            with _fast_search_boundary(), patch.object(
-                    search, 'initial_programs',
-                    return_value=[[['outbreak']], [['death_coil']], [['scourge_strike']]]), \
+            with _fast_search_boundary(), _initialized_starts([[['outbreak']], [['death_coil']], [['scourge_strike']]]), \
                     patch.object(result_store, 'one', side_effect=unavailable_batch), \
                     patch.object(search.sqlite3, 'connect', side_effect=traced_connect):
                 result = run_task(source, Path(directory) / 'task', search_config=dict(
@@ -1598,8 +1594,7 @@ class SearchAndValidationTests(TestCase):
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=41)
             with _fast_search_boundary(), \
-                    patch.object(search, "initial_programs",
-                                 return_value=[[['outbreak']], [['death_coil']]]), \
+                    _initialized_starts([[['outbreak']], [['death_coil']]]), \
                     patch.object(program_module, "canonicalize_search_program",
                                  side_effect=canonicalize), \
                     patch.object(sequence, "evaluate", side_effect=evaluate):
@@ -2292,7 +2287,7 @@ class SearchAndValidationTests(TestCase):
                         if child in descendants and name=='simc.exe']
             finally:
                 kernel.CloseHandle(snapshot)
-        with tempfile.TemporaryDirectory(prefix='sim2gse-crash-') as directory:
+        with tempfile.TemporaryDirectory(prefix='sim2gse-crash-') as directory, ExitStack() as outputs:
             source=Path(directory)/'role.simc';destination=Path(directory)/'task'
             source.write_text(sample_profile(),encoding='utf-8')
             config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=20,
@@ -2304,12 +2299,17 @@ class SearchAndValidationTests(TestCase):
                   "result_store._SKILL_API=runpy.run_path(sys.argv[6]);"
                   "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]),"
                   "simulation_config=dict(scene='single_target'))")
+            stdout_path, stderr_path = [Path(directory) / name for name in ('child.stdout', 'child.stderr')]
+            stdout = outputs.enter_context(stdout_path.open('wb'))
+            stderr = outputs.enter_context(stderr_path.open('wb'))
             process=subprocess.Popen([sys.executable,'-c',code,str(REPOSITORY/'projects/sim2gse'),
                                       str(source),str(destination),json.dumps(config),str(result_store.DATA_ROOT),
-                                      str(Path(os.environ['DATA_STORE_TEST_SKILL'])/'scripts/data_store.py')])
+                                      str(Path(os.environ['DATA_STORE_TEST_SKILL'])/'scripts/data_store.py')],
+                                     stdout=stdout, stderr=stderr)
             held=owner=None
             try:
-                deadline=time.monotonic()+45
+                started=time.monotonic()
+                deadline=started+45
                 state={}
                 while time.monotonic()<deadline and process.poll() is None:
                     try: state=read_task(destination)
@@ -2325,7 +2325,18 @@ class SearchAndValidationTests(TestCase):
                                 held=None
                     if held: break
                     time.sleep(0.02)
-                self.assertIsNotNone(held,'没有在已完成批次检查点后观察到真实引擎进程')
+                failure_context = {}
+                if held is None:
+                    failure_context = dict(returncode=process.poll(), elapsed=time.monotonic()-started,
+                        state={key: state.get(key) for key in ('status', 'phase', 'completed_batches',
+                            'elapsed_seconds', 'stop_reason')})
+                    for name, path in (('stdout_tail', stdout_path), ('stderr_tail', stderr_path)):
+                        with path.open('rb') as output:
+                            output.seek(0, os.SEEK_END)
+                            output.seek(max(0, output.tell()-4096))
+                            failure_context[name] = output.read().decode('utf-8', errors='replace')
+                self.assertIsNotNone(held,'没有在已完成批次检查点后观察到真实引擎进程: ' +
+                                     json.dumps(failure_context, ensure_ascii=False))
                 process.kill();process.wait(timeout=5)
                 self.assertEqual(kernel.WaitForSingleObject(owner,2000),0,'实际任务进程尚未退出，不能恢复')
                 self.assertEqual(kernel.WaitForSingleObject(held,2000),0,'任务退出后仍有所属模拟进程')

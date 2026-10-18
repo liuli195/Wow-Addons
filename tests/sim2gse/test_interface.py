@@ -1148,11 +1148,11 @@ class ImportInspectionTests(unittest.TestCase):
 class InterfaceTests(unittest.TestCase):
     def setUp(self) -> None:
         global _friendly_error, _public_state, create_server, run_task
-        global sample_profile, _fast_evaluate, _fast_search_boundary
+        global sample_profile, _fast_evaluate, _fast_search_boundary, _initialized_starts
         from interface import _friendly_error, _public_state, create_server
         from task import run_task
         from test_character_export import sample_profile
-        from test_search import _fast_evaluate, _fast_search_boundary
+        from test_search import _fast_evaluate, _fast_search_boundary, _initialized_starts
 
         self.directory = tempfile.TemporaryDirectory(prefix="sim2gse-ui-")
         self.server = create_server(Path(self.directory.name) / "输出", port=0)
@@ -1837,7 +1837,8 @@ class InterfaceTests(unittest.TestCase):
             "scenarios": ("nominal",), "max_processes": 1,
         }}
         with _fast_search_boundary():
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             deadline = time.monotonic() + 30
             state = {}
             while time.monotonic() < deadline:
@@ -1872,7 +1873,7 @@ class InterfaceTests(unittest.TestCase):
             scenarios=('nominal',), max_processes=1, diagnostic_logging=True, diagnostics='full')}
         with _fast_search_boundary():
             created = self._json_request('POST', '/api/tasks', {
-                'profile': sample_profile(), 'diagnostic_logging': True})
+                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 state = self._task_state_request(created['task_id'], deadline)
@@ -1929,7 +1930,7 @@ class InterfaceTests(unittest.TestCase):
         with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
             with patch.object(result_store, 'write', side_effect=publish_then_interrupt):
                 created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'diagnostic_logging': True})
+                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     state = self._task_state_request(created['task_id'], deadline)
@@ -1973,7 +1974,8 @@ class InterfaceTests(unittest.TestCase):
 
         with _fast_search_boundary():
             with patch.object(result_store, 'write', side_effect=publish_then_damage):
-                created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                created = self._json_request('POST', '/api/tasks', {
+                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     state = self._task_state_request(created['task_id'], deadline)
@@ -2033,7 +2035,7 @@ class InterfaceTests(unittest.TestCase):
             with patch.object(TaskStore, 'stage_report', seed_legacy_last_report), patch.object(
                     TaskStore, '_commit_report_group', interrupt_after_commit):
                 created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'diagnostic_logging': True})
+                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
                 _, handle = self.server.tasks[created['task_id']]
                 handle.join(30)
                 self.assertTrue(interrupted)
@@ -2063,7 +2065,8 @@ class InterfaceTests(unittest.TestCase):
             scenarios=('nominal',), max_processes=1)}
         original_url = self.url
         with _fast_search_boundary():
-            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+            created = self._json_request('POST', '/api/tasks', {
+                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
             _, handle = self.server.tasks[created['task_id']]
             handle.join(30)
             self.assertIsNone(handle.error)
@@ -2083,7 +2086,8 @@ class InterfaceTests(unittest.TestCase):
                     thread.start()
                     try:
                         self.url = f'http://127.0.0.1:{server.server_port}/'
-                        created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+                        created = self._json_request('POST', '/api/tasks', {
+                            'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
                         _, second = server.tasks[created['task_id']]
                         second.join(30)
                         state = self._json_request('GET', '/api/tasks/' + created['task_id'])
@@ -2140,7 +2144,8 @@ class InterfaceTests(unittest.TestCase):
                 created = []
                 for url in urls:
                     self.url = url
-                    created.append((url, self._json_request('POST', '/api/tasks', {'profile': sample_profile()})))
+                    created.append((url, self._json_request('POST', '/api/tasks', {
+                        'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})))
                 deadline = time.monotonic() + 30
                 for url, task in created:
                     self.url = url
@@ -2188,7 +2193,8 @@ class InterfaceTests(unittest.TestCase):
             }
         }
         with _fast_search_boundary():
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             self.assertEqual(created["status"], "starting")
             task_id = created["task_id"]
             deadline = time.monotonic() + 30
@@ -2198,7 +2204,7 @@ class InterfaceTests(unittest.TestCase):
                 if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
                     break
                 time.sleep(0.1)
-        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["status"], "completed", state)
         self.assertTrue(state["result_ready"])
         self.assertEqual(state["evidence_status"], "search_result")
         self.assertTrue(state["candidate_text"].startswith("!GSE3!"))
@@ -2272,7 +2278,8 @@ class InterfaceTests(unittest.TestCase):
             batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
             final_iterations=2, scenarios=("nominal",), max_processes=1)}
         with _fast_search_boundary(), patch.object(task, "_task_lease", side_effect=fail_unlock):
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 state = self._task_state_request(created["task_id"], deadline)
@@ -2293,25 +2300,27 @@ class InterfaceTests(unittest.TestCase):
         self._check_adaptive_round(invalid_variance=True)
 
     def _check_adaptive_round(self, *, grouped=False, invalid_variance=False):
-        import search
-        import sequence
-        from test_search import _fast_initialization
+        from task import read_task
+        from test_rule_diagnostics import _observed_evaluate
+        from test_search import _guided_search_boundary
 
         calls = []
-        children = iter(([["death_coil"]], [["outbreak"], ["death_coil"]]))
+        initial = ("outbreak", "death_coil")
+        better = ("death_coil", "outbreak")
+        worse = ("death_coil", "outbreak", "death_coil")
 
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(action["simc_action"] for block in candidate["blocks"] for action in block)
-            wanted = {("outbreak",): 90, ("death_coil",): 120,
-                      ("outbreak", "death_coil"): 80}[actions]
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            wanted = {initial: 90, better: 120, worse: 80}[actions]
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
             damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
             damage.update(mean=wanted, variance=1)
             result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
-            if grouped:
+            # 父保留可诊断的受控actor；两个实际子报告按整组伤害和方差比较。
+            if grouped and actions != initial:
                 result["report"]["sim"]["players"].append({"name": "Companion"})
                 result["report"]["sim"]["statistics"]["raid_dps"]["variance"] = 1000000
-            if invalid_variance and actions == ("outbreak", "death_coil"):
+            if invalid_variance and actions == worse:
                 damage.pop("variance")
             result["summary"]["dps"] = wanted
             (Path(folder) / "native.json").write_text(json.dumps(result["report"]), encoding="utf-8")
@@ -2321,11 +2330,11 @@ class InterfaceTests(unittest.TestCase):
         self.server.task_options = {"search_config": dict(
             total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
             no_improvement_rounds=1, batch_targets=(32, 128, 512),
-            iterations=2, validation_batches=2, max_processes=2)}
-        with _fast_initialization(), patch.object(sequence, "evaluate", side_effect=evaluate), \
-                patch.object(search, "initial_programs", return_value=[[["outbreak"]]]), \
-                patch.object(search, "mutate", side_effect=lambda *args, **kwargs: next(children)):
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            input_interval_ms=200, iterations=2, validation_batches=2, max_processes=2)}
+        with _guided_search_boundary(self.directory.name, [[[name] for name in initial]], evaluate=evaluate):
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
+                "input_interval_ms": 200})
             deadline = time.monotonic() + 30
             while True:
                 state = self._task_state_request(created["task_id"], deadline)
@@ -2336,29 +2345,43 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(state["result_ready"])
         search_calls = [(actions, count) for actions, count, seed in calls if seed < 20260912 + 100000]
         expected = [32, 96, 384] if grouped else [32]
-        self.assertEqual([n for a, n in search_calls if a == ("outbreak", "death_coil")], expected)
-        self.assertEqual([n for a, n in search_calls if a == ("death_coil",)], expected)
+        self.assertEqual([n for a, n in search_calls if a == worse], expected)
+        self.assertEqual([n for a, n in search_calls if a == better], expected)
         self.assertEqual(state["search_result"]["dps"], 120)
+        _, handle = self.server.tasks[created["task_id"]]
+        handle.join(5)
+        result = read_task(handle.output_root, include_search_records=True)
+        steps = list(result['search']['rule_steps'].values())
+        self.assertEqual(len(steps), 2)
+        parent_keys = {step['parent_candidate_key'] for step in steps}
+        self.assertEqual(len(parent_keys), 1)
+        parent = next(row for row in result['search']['records'] if row['key'] in parent_keys)
+        pool = parent['rule_diagnostics']['pool']
+        self.assertTrue(pool['complete'])
+        self.assertEqual({step['operation']['operation'] for step in steps}, {'move', 'insert'})
+        self.assertEqual({step['selection']['operation_id'] for step in steps},
+                         {operation['operation_id'] for operation in pool['operations']})
 
 
 
     @pytest.mark.usefixtures('memory_result_center')
-    def test_public_search_generates_exports_and_native_evaluates_castsequence_reset(self) -> None:
+    def test_public_search_preserves_exports_and_native_evaluates_castsequence_reset(self) -> None:
         import cbor2
         import codec
         import engine
         import search
         import sequence
-        from test_search import _fast_evaluate, _fast_initialization
+        from test_search import _fast_initialization
 
         real_evaluate = sequence.evaluate
-        real_mutate = search.mutate
         capabilities = {
             "actions": [
                 dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
                      gcd_ms=1500, base_spell_id=77575),
                 dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
                      gcd_ms=1500, base_spell_id=47541),
+                dict(kind="spell", spell_id=55090, simc_action="scourge_strike", name="Scourge Strike",
+                     gcd_ms=1500, base_spell_id=55090),
             ],
             "precombat_actions": [], "sources": [], "protocol": 3,
             "scope": "test", "coverage": "constructed-test-boundary",
@@ -2370,28 +2393,8 @@ class InterfaceTests(unittest.TestCase):
             (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
             return capabilities
 
-        class CastSequenceFirst:
-            def __init__(self, source):
-                self.source = source
-
-            def choice(self, values):
-                if "castsequence" in values:
-                    return "castsequence"
-                return self.source.choice(values)
-
-            def __getattr__(self, name):
-                return getattr(self.source, name)
-
         castsequence_evaluations = []
         native_evaluations = []
-
-        def mutate_castsequence(program, caps, rng, *, feedback=None, reset_flags=(), excluded_programs=()):
-            changed = real_mutate(program, caps, CastSequenceFirst(rng), feedback=None,
-                                  reset_flags=reset_flags)
-            for segment in changed:
-                if isinstance(segment, dict) and segment.get("kind") == "CastSequence":
-                    segment["reset"] = {"timeout_seconds": 2, "flags": ["target"]}
-            return changed
 
         def evaluate(profile, candidate, folder, **kwargs):
             castsequence_nodes = [
@@ -2404,8 +2407,7 @@ class InterfaceTests(unittest.TestCase):
                 result = real_evaluate(profile, candidate, folder, **kwargs)
                 native_evaluations.append((candidate, result))
                 return result
-            kwargs.pop("reset_events", None)
-            return _fast_evaluate(profile, candidate, folder, **kwargs)
+            raise AssertionError("搜索丢失了已提供的 /castsequence 起点")
 
         self.server.task_options = {
             "search_config": {
@@ -2431,10 +2433,11 @@ class InterfaceTests(unittest.TestCase):
              patch.object(sequence, "check_report", new=engine.check_report), \
              patch.object(search, "DEFAULT_SCENARIOS", ("nominal",)), \
              patch.dict(search.DEFAULT_CONFIG, {"final_batches": 2, "final_iterations": 2}), \
-             patch.object(search, "initial_programs", return_value=[[["outbreak"], ["death_coil"]]]), \
-             patch.object(search, "mutate", side_effect=mutate_castsequence), \
+             _initialized_starts([[dict(kind="CastSequence", members=["outbreak", "death_coil"],
+                                       reset={"timeout_seconds": 2, "flags": ["target"]})]]), \
              patch.object(sequence, "evaluate", side_effect=evaluate):
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             deadline = time.monotonic() + 45
             state = {}
             while time.monotonic() < deadline:
@@ -2444,7 +2447,7 @@ class InterfaceTests(unittest.TestCase):
                 time.sleep(0.05)
 
         self.assertEqual(state["status"], "completed", state)
-        self.assertTrue(castsequence_evaluations, "自动搜索没有生成并评价 /castsequence 候选")
+        self.assertTrue(castsequence_evaluations, "公开搜索没有保留并评价 /castsequence 起点")
         self.assertTrue(native_evaluations, "/castsequence 没有通过真实原生受控评价")
         selected = next((row for row in castsequence_evaluations
                          if row[0]["text"] == state["candidate_text"]), None)
@@ -2470,17 +2473,18 @@ class InterfaceTests(unittest.TestCase):
                          ["outbreak", "death_coil"])
 
     @pytest.mark.usefixtures('memory_result_center')
-    def test_public_search_generates_and_evaluates_wait_clicks(self) -> None:
+    def test_public_search_reduces_wait_clicks_and_native_evaluates_both_intervals(self) -> None:
         import cbor2
         import codec
         import engine
         import search
         import sequence
-        from test_search import _fast_evaluate, _fast_initialization
+        from rule_config import DEFAULT_PATH
+        from task import read_task
+        from test_rule_diagnostics import _condition_pack, _observed_evaluate
+        from test_search import _fast_initialization
 
         real_evaluate = sequence.evaluate
-        real_mutate = search.mutate
-        mutation_count = 0
         capabilities = {
             "actions": [
                 dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
@@ -2503,32 +2507,22 @@ class InterfaceTests(unittest.TestCase):
             (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
             return capabilities
 
-        class WaitClicksFirst:
-            def __init__(self, source, clicks):
-                self.source = source
-                self.clicks = clicks
-
-            def choice(self, values):
-                if "wait_clicks" in values:
-                    return "wait_clicks"
-                if self.clicks in values and values and all(type(value) is int for value in values):
-                    return self.clicks
-                if values and all(type(value) is int for value in values):
-                    return max(values)
-                return self.source.choice(values)
-
-            def __getattr__(self, name):
-                return getattr(self.source, name)
+        pack = _condition_pack()
+        pack['general']['templates'] = {'idle-renamed':
+            json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['可避免空闲']}
+        pack['object_sets']['sample'].update(
+            occupancy=dict(kind='state', native_identity='controlled_input.occupancy'),
+            reservations=dict(kind='policy', value='effective_execution_constraints'))
+        pack['configurations'][0]['states']['only']['priority'] = [dict(name='idle input',
+            template='idle-renamed', arguments=dict(priority_refs=[], edit_range='editable',
+                allowed_actions=['consumer'], occupancy='occupancy', reservations='reservations', wait_delta=1))]
+        rules = Path(self.directory.name) / 'wait-rules.json'
+        rules.write_text(json.dumps(pack), encoding='utf-8')
+        initial = [["outbreak"], dict(kind="WaitClicks", clicks=3), ["death_coil"]]
 
         wait_candidates = {300: {}, 600: {}}
         native_evaluations = []
         active_interval = 300
-
-        def mutate_wait_clicks(program, caps, rng, *, feedback=None, excluded_programs=()):
-            nonlocal mutation_count
-            clicks = (2, 3, 4)[mutation_count % 3]
-            mutation_count += 1
-            return real_mutate(program, caps, WaitClicksFirst(rng, clicks), feedback=None)
 
         def evaluate(profile, candidate, folder, **kwargs):
             blocks = [[action["simc_action"] for action in block]
@@ -2540,7 +2534,7 @@ class InterfaceTests(unittest.TestCase):
                 interval = active_interval
                 counts = tuple(node["clicks"] for node in waits)
                 wait_candidates[interval].setdefault(counts, candidate)
-                if interval not in {row[0] for row in native_evaluations}:
+                if counts == (2,) and interval not in {row[0] for row in native_evaluations}:
                     self.assertEqual(kwargs["input_times"][:3], [0, interval, interval * 2])
                     result = real_evaluate(profile, candidate, folder, **kwargs)
                     native_evaluations.append((interval, candidate, result))
@@ -2550,15 +2544,27 @@ class InterfaceTests(unittest.TestCase):
                     native_interval == interval and native_candidate["text"] == candidate["text"]
                     for native_interval, native_candidate, _ in native_evaluations
                 ) else 0
-                return _fast_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
-            return _fast_evaluate(profile, candidate, folder, **kwargs)
+                # 与原用例相同：实际原生核回放，搜索分差由构造评分边界控制。
+                result = _observed_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
+            else:
+                result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+            for collection in ('inputs', 'action_observations'):
+                for row in payload[collection]:
+                    row['source_step'] = row['input_index'] % len(blocks)
+            for row in payload['inputs']:
+                row['occupancy'] = dict(empty=row['input_index'] == 1, gcd=False,
+                    casting=False, channeling=False, queue_committed=False)
+            payload['state_observations'] = [dict(row, object='occupancy', value=row['occupancy'])
+                                             for row in payload['inputs']]
+            return result
 
         self.server.task_options = {
             "search_config": {
                 "total_budget_seconds": 60,
                 "search_budget_seconds": 30,
-                "candidate_limit": 8,
-                "round_candidate_limit": 8,
+                "candidate_limit": 3,
+                "round_candidate_limit": 2,
                 "batch_targets": (2,),
                 "validation_batches": 2,
                 "final_batches": 20,
@@ -2570,17 +2576,20 @@ class InterfaceTests(unittest.TestCase):
             }
         }
         real_gse_runner = codec.run_command
-        with _fast_initialization(real_engine=True), \
+        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), \
+             _fast_initialization(real_engine=True), \
              patch.object(codec, "run_command", side_effect=real_gse_runner), \
              patch.object(engine, "inspect", side_effect=inspect), \
              patch.object(sequence, "check_report", new=engine.check_report), \
-             patch.object(search, "mutate", side_effect=mutate_wait_clicks), \
+             _initialized_starts([initial]), \
              patch.object(sequence, "evaluate", side_effect=evaluate):
             states = {}
+            saved = {}
             for interval in (300, 600):
                 active_interval = interval
                 created = self._json_request("POST", "/api/tasks", {
-                    "profile": sample_profile(), "input_interval_ms": interval,
+                    "profile": sample_profile(), "target_count": 1, "scene": "single_target",
+                    "input_interval_ms": interval,
                 })
                 deadline = time.monotonic() + 45
                 state = {}
@@ -2590,11 +2599,23 @@ class InterfaceTests(unittest.TestCase):
                         break
                     time.sleep(0.05)
                 states[interval] = state
+                handle = self.server.tasks[created["task_id"]][1]
+                handle.join(5)
+                saved[interval] = read_task(handle.output_root, include_search_records=True)
 
         for interval, state in states.items():
             self.assertEqual(state["status"], "completed", state)
             self.assertEqual(state["evidence_status"], "search_result")
             self.assertEqual(state["input_interval_ms"], interval)
+            reduced = [step for step in saved[interval]['search']['rule_steps'].values()
+                       if step['operation']['operation'] == 'reduce_wait']
+            self.assertEqual(len(reduced), 1)
+            self.assertEqual(reduced[0]['operation']['source_path'], [1])
+            self.assertEqual(reduced[0]['operation']['count'], 1)
+            self.assertEqual(reduced[0]['selection']['operation_id'], reduced[0]['request']['operation_id'])
+            self.assertEqual(reduced[0]['candidate_key'], saved[interval]['selected_candidate_key'])
+            self.assertEqual(reduced[0]['candidate_key'], saved[interval]['locked_candidate_key'])
+            self.assertEqual(saved[interval]['candidate']['text'], state['candidate_text'])
             self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
             self.assertGreaterEqual(len(wait_candidates[interval]), 2,
                                     "不同 WaitClicks 次数未作为不同候选评价")
@@ -2604,6 +2625,7 @@ class InterfaceTests(unittest.TestCase):
                                   if candidate["text"] == state["candidate_text"]), None)
             self.assertIsNotNone(selected_wait,
                                  f"公开任务在 {interval} 毫秒间隔没有选择 WaitClicks 候选")
+            self.assertEqual(saved[interval]['candidate']['program'], selected_wait['program'])
             native_wait = next((candidate for native_interval, candidate, _ in native_evaluations
                                 if native_interval == interval), None)
             self.assertIsNotNone(native_wait,
@@ -2647,66 +2669,29 @@ class InterfaceTests(unittest.TestCase):
                              [wait["source"]["gse_path"]] * wait["clicks"])
 
     def test_public_search_rejects_wait_clicks_over_4096_before_evaluation(self) -> None:
-        import engine
-        import search
-        import sequence
-        from test_search import _fast_evaluate, _fast_initialization
+        from task import read_task
+        from test_rule_diagnostics import _observed_evaluate
+        from test_search import _guided_search_boundary
 
-        capabilities = {
-            "actions": [
-                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
-                     gcd_ms=1500, base_spell_id=77575),
-                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
-                     gcd_ms=1500, base_spell_id=47541),
-                dict(kind="spell", spell_id=55090, simc_action="scourge_strike", name="Scourge Strike",
-                     gcd_ms=1500, base_spell_id=55090),
-            ],
-            "precombat_actions": [], "sources": [], "protocol": 3,
-            "scope": "test", "coverage": "constructed-test-boundary",
-        }
-
-        def inspect(_reference, folder):
-            folder = Path(folder)
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
-            return capabilities
-
-        overflow_attempts = []
+        # 4096次合法父输入再插入一个动作将变成4097次；真实池必须先拒绝。
+        initial = [["outbreak"], {"kind": "WaitClicks", "clicks": 4095}]
         evaluated_waits = []
-
-        def overflow(program, _caps, _rng, *, feedback=None, excluded_programs=()):
-            action = next((list(segment) for segment in program if isinstance(segment, list)),
-                          ["outbreak"])
-            overflow_attempts.append(action)
-            return [action, {"kind": "WaitClicks", "clicks": 4096}]
+        evaluated_texts = []
 
         def evaluate(profile, candidate, folder, **kwargs):
             waits = [node for node in candidate["program"]["nodes"] if node["kind"] == "Pause"]
             evaluated_waits.extend(node["clicks"] for node in waits)
-            return _fast_evaluate(profile, candidate, folder, **kwargs)
+            evaluated_texts.append(candidate["text"])
+            return _observed_evaluate(profile, candidate, folder, **kwargs)
 
-        self.server.task_options = {
-            "search_config": {
-                "total_budget_seconds": 60,
-                "search_budget_seconds": 30,
-                "candidate_limit": 8,
-                "round_candidate_limit": 1,
-                "no_improvement_rounds": 1,
-                "batch_targets": (2,),
-                "validation_batches": 1,
-                "final_batches": 1,
-                "iterations": 2,
-                "final_iterations": 2,
-                "scenarios": ("nominal",),
-                "max_processes": 1,
-                "random_seed": 20260926,
-            }
-        }
-        with _fast_initialization(), \
-             patch.object(engine, "inspect", side_effect=inspect), \
-             patch.object(search, "mutate", side_effect=overflow), \
-             patch.object(sequence, "evaluate", side_effect=evaluate):
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+        self.server.task_options = {"search_config": dict(
+            total_budget_seconds=60, candidate_limit=8, round_candidate_limit=1,
+            no_improvement_rounds=1, batch_targets=(2,), validation_batches=1,
+            iterations=2, max_processes=1, random_seed=20260926, input_interval_ms=200)}
+        with _guided_search_boundary(self.directory.name, [initial], evaluate=evaluate):
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
+                "input_interval_ms": 200})
             deadline = time.monotonic() + 45
             state = {}
             while time.monotonic() < deadline:
@@ -2714,10 +2699,21 @@ class InterfaceTests(unittest.TestCase):
                 if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
                     break
                 time.sleep(0.05)
-
         self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
-        self.assertTrue(overflow_attempts, "公开搜索入口没有试图编译超限候选")
+        _, handle = self.server.tasks[created["task_id"]]
+        handle.join(5)
+        result = read_task(handle.output_root, include_search_records=True)
+        parent = result['search']['records'][0]
+        diagnosis = parent['rule_diagnostics']
+        self.assertTrue(diagnosis['pool']['complete'])
+        self.assertGreater(diagnosis['pool']['rejections'].get('existing_program_legality', 0), 0,
+                           "公开搜索入口没有经原有合法性检查拒绝超限单步")
+        self.assertEqual(diagnosis['pool']['operations'], [])
+        self.assertEqual(result['search'].get('rule_steps', {}), {})
+        self.assertEqual(result['search']['candidate_count'], 1)
+        self.assertEqual(set(evaluated_texts), {parent['candidate']['text']})
         self.assertTrue(evaluated_waits, "合法规则起点的空点击未被评价")
+        self.assertEqual(set(evaluated_waits), {4095})
         self.assertNotIn(4096, evaluated_waits, "超限 WaitClicks 候选到达了原生评价")
 
     def test_old_incomplete_result_still_reports_the_seed_it_selected(self) -> None:
@@ -2766,7 +2762,8 @@ class InterfaceTests(unittest.TestCase):
         )}
         with _fast_search_boundary():
             created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "diagnostic_logging": False,
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
+                "diagnostic_logging": False,
                 "search_observability": "full",
             })
             deadline = time.monotonic() + 30
@@ -2796,7 +2793,8 @@ class InterfaceTests(unittest.TestCase):
                 (folder / name).write_text("temporary engine output", encoding="utf-8")
             return result
         with _fast_search_boundary(), patch.object(sequence, "evaluate", side_effect=engine_output):
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 state = self._task_state_request(created["task_id"], deadline)
@@ -2816,7 +2814,8 @@ class InterfaceTests(unittest.TestCase):
             validation_batches=2, max_processes=1,
         )}
         with _fast_search_boundary():
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 state = self._task_state_request(created["task_id"], deadline)
@@ -2845,7 +2844,8 @@ class InterfaceTests(unittest.TestCase):
             kwargs['runtime'].used_seconds = 450
             return result
         with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=after_seven_minutes):
-            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+            created = self._json_request('POST', '/api/tasks', {
+                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 state = self._task_state_request(created['task_id'], deadline)
@@ -2870,7 +2870,8 @@ class InterfaceTests(unittest.TestCase):
             (folder / 'native.txt').write_text('private action trace', encoding='utf-8')
             raise ValueError('test engine failure')
         with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=fail_with_trace):
-            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile()})
+            created = self._json_request('POST', '/api/tasks', {
+                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 state = self._task_state_request(created['task_id'], deadline)
@@ -2882,18 +2883,19 @@ class InterfaceTests(unittest.TestCase):
         self.assertFalse(list(destination.rglob('native.txt')))
 
     def test_public_task_can_return_opted_in_search_observability(self) -> None:
-        import search
-        import sequence
+        from task import read_task
+        from test_rule_diagnostics import _observed_evaluate
+        from test_search import _guided_search_boundary
 
         self.server.task_options = {"search_config": dict(
             total_budget_seconds=60, search_budget_seconds=30, candidate_limit=3,
             round_candidate_limit=1, batch_targets=(2,), iterations=2,
             validation_batches=1, final_batches=1, final_iterations=2,
-            scenarios=("nominal",), max_processes=1, random_seed=37,
+            scenarios=("nominal",), max_processes=1, random_seed=37, input_interval_ms=200,
         )}
 
         def evaluate_with_positions(*args, **kwargs):
-            result = _fast_evaluate(*args, **kwargs)
+            result = _observed_evaluate(*args, **kwargs)
             if kwargs.get("trace"):
                 events = []
                 for step, block in enumerate(result["blocks"]):
@@ -2907,12 +2909,11 @@ class InterfaceTests(unittest.TestCase):
                 result["trace"] = events
             return result
 
-        with _fast_search_boundary(), \
-                patch.object(sequence, "evaluate", side_effect=evaluate_with_positions), \
-                patch.object(search, "initial_programs",
-                             return_value=[[['outbreak']], [['outbreak'], ['outbreak']]]):
+        with _guided_search_boundary(self.directory.name,
+                [[['outbreak']], [['outbreak'], ['outbreak']]], evaluate=evaluate_with_positions):
             created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "diagnostic_logging": True,
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
+                "diagnostic_logging": True, "input_interval_ms": 200,
                 "search_observability": "full",
             })
             deadline = time.monotonic() + 45
@@ -2926,15 +2927,23 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
         observation = state["search_observability"]
         self.assertEqual(observation["mode"], "full")
-        self.assertGreater(observation["summary"]["mutation_attempts"], 0)
+        self.assertEqual(observation["summary"]["mutation_attempts"], 0)
+        self.assertGreater(observation["summary"]["rule_steps"], 0)
         self.assertGreater(observation["summary"]["score_completed"], 0)
         self.assertTrue(observation["summary"]["positions"])
         self.assertTrue(observation["details"])
         scored = next(row for row in observation["details"]
                       if row["score_completed"] and row["parent_identity"])
         self.assertTrue(scored["parent_identity"])
-        self.assertTrue(scored["sampled_mutation"])
-        self.assertTrue(scored["actual_mutation"])
+        self.assertIsNone(scored["sampled_mutation"])
+        self.assertEqual(scored["actual_mutation"], "rule_step:insert")
+        _, handle = self.server.tasks[created["task_id"]]
+        handle.join(5)
+        result = read_task(handle.output_root, include_search_records=True)
+        steps = list(result['search']['rule_steps'].values())
+        self.assertEqual(len(steps), observation['summary']['rule_steps'])
+        self.assertTrue(all(step['selection']['operation_id'] == step['request']['operation_id']
+                            for step in steps))
         self.assertIn("legal", scored)
         self.assertIn("illegal_reason", scored)
         self.assertIn("duplicate_reason", scored)
@@ -2990,11 +2999,11 @@ class InterfaceTests(unittest.TestCase):
             if waiting.is_set():
                 heartbeat.set()
 
-        with _fast_search_boundary(), patch.object(
-                search, "initial_programs", return_value=[[['outbreak']]]), \
+        with _fast_search_boundary(), _initialized_starts([[['outbreak']]]), \
                 patch.object(task, "_store_run", side_effect=held_result), \
                 patch.object(search.TaskStore, "publish", published_heartbeat):
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             handle = self.server.tasks[created["task_id"]][1]
             try:
                 self.assertTrue(waiting.wait(5), "task never reached result persistence")
@@ -3018,9 +3027,9 @@ class InterfaceTests(unittest.TestCase):
             batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
             final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=37,
         )}
-        with _fast_search_boundary(), patch.object(
-                search, "initial_programs", return_value=[[['outbreak']]]):
-            created = self._json_request("POST", "/api/tasks", {"profile": sample_profile()})
+        with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
             deadline = time.monotonic() + 45
             state = {}
             while time.monotonic() < deadline:

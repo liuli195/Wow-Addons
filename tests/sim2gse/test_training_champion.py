@@ -531,7 +531,8 @@ def test_dual_merges_equivalent_native_selected_and_training_champion_sources(tm
     native = engine.reference(probe, tmp_path / 'native-reference', character)
     _, capabilities, context = engine.prepare_loop(native, character, tmp_path / 'native-start',
         TaskRuntime(600), definition=definition, interval_ms=200)
-    program = initial_programs(capabilities, native, input_interval_ms=200, burst=context)[0]
+    program = initial_programs(capabilities, native, input_interval_ms=200, burst=context,
+                               scene='single_target')[0]
     template, rows = completed_training(tmp_path, 1, [(program, [200.] * 3)])
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}

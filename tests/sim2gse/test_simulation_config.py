@@ -302,7 +302,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_count": 2})
+        simulation = config_for({"target_count": 2, "scene": "aoe"})
         search = _fast_search_config()
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
@@ -337,7 +337,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_count": 2})
+        simulation = config_for({"target_count": 2, "scene": "aoe"})
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
@@ -354,7 +354,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_count": 2})
+        simulation = config_for({"target_count": 2, "scene": "aoe"})
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
@@ -382,7 +382,7 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_count": 2})
+        simulation = config_for({"target_count": 2, "scene": "aoe"})
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"

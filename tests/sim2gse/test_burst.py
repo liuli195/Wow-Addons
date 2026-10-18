@@ -375,8 +375,12 @@ def test_public_search_excludes_current_burst_content_and_changes_with_definitio
     pack = _minimal_rule_pack()
     # 固定sample_profile的真实原生子树；其余快速报告使用构造身份17。
     pack['identity_mappings']['hero_talents']['sample_hero'] = 32
+    pack['object_sets']['sample']['raise_dead'] = dict(kind='action', native_action='raise_dead',
+        base_button='raise_dead', native_forms=['raise_dead'])
     for configuration in pack['configurations']:
         opener = configuration['opener']
+        opener['precombat'] = [dict(action='raise_dead', command_count=1,
+            condition='out_of_combat', path='existing_supported_path')]
         opener['source_steps'] = ['scourge_strike']
         opener['ordinary_steps'] = [dict(opener['ordinary_steps'][1], source_step=1)]
     rules = tmp_path / 'rules.json'

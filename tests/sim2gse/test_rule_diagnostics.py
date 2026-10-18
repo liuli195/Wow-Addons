@@ -1430,16 +1430,23 @@ def test_public_search_reuses_parent_score_feedback_without_diagnostic_simulatio
             search_config=dict(input_interval_ms=200, candidate_limit=5, batch_targets=(2,),
                                iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
                                scenarios=('nominal',)))
+        saved = read_task(tmp_path / 'task', include_search_records=True)
     assert traced == []
     assert result['search']['candidate_count'] == 5
-    chains = [row for row in result['search']['chains'] if row.get('feedback_source')]
-    assert chains
-    for chain in chains:
-        parent = next(row for row in result['search']['records'] if row['key'] == chain['feedback_source'])
-        assert chain['feedback_evidence']['batch_key'] == parent['batches'][0]['data_key']
-        assert chain['feedback_evidence']['availability'] == 'same_scoring_batch'
-        assert chain['feedback']['attempts'] == {parent['candidate']['blocks'][0][0]['simc_action']: 1}
-        assert chain['feedback']['positions'][0]['source_position'] == dict(segment=0)
+    steps = list(saved['search']['rule_steps'].values())
+    assert steps
+    for step in steps:
+        parent = next(row for row in result['search']['records']
+                      if row['key'] == step['parent_candidate_key'])
+        batch = parent['batches'][0]
+        assert batch['feedback_evidence']['batch_key'] == batch['data_key']
+        assert batch['feedback_evidence']['availability'] == 'same_scoring_batch'
+        assert batch['feedback']['attempts'] == {parent['candidate']['blocks'][0][0]['simc_action']: 1}
+        position = batch['position_summary'][0]
+        assert position['candidate_identity'] == parent['key']
+        assert position['click_position'] == position['action_position'] == 0
+        assert position['action'] == parent['program'][0][0]
+        assert position['failures'] == {'dispatch_failed': 1}
 
 
 @pytest.mark.parametrize('missing_events,lifecycle_complete', [(False, True), (True, None), (False, False), (False, None)])
