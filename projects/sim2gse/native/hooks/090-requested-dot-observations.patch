@@ -1,0 +1,187 @@
+--- a/engine/action/dot.cpp
++++ b/engine/action/dot.cpp
+@@ -12,6 +12,14 @@
+ #include "sim/sim.hpp"
+ #include "sim/event.hpp"
+ #include "util/rng.hpp"
++
++static unsigned sim2gse_observe_dot( dot_t* dot, const char* event, unsigned token = 0,
++                                      event_t* expiration = nullptr )
++{
++  if ( dot->source->sim2gse_control.enabled() )
++    return dot->source->sim2gse_control.observe_dot(*dot, event, token, expiration);
++  return 0;
++}
+
+ // Dot events
+
+@@ -77,6 +85,7 @@
+   if ( !ticking )
+     return;
+
++  sim2gse_observe_dot(this, "cancel");
+   last_tick();
+   reset();
+ }
+@@ -135,6 +144,8 @@
+     end_event = make_event<dot_end_event_t>( sim, this, new_remains );
+   }
+
++  if ( new_remains != remains ) sim2gse_observe_dot(this, "extend");
++
+   if ( count_as_refresh )
+     current_action->stats->add_refresh( state->target );
+
+@@ -163,6 +174,7 @@
+  */
+ void dot_t::reset()
+ {
++  sim2gse_observe_dot(this, "reset_begin");
+   if ( ticking )
+     source->remove_active_dot( this );
+
+@@ -174,6 +186,7 @@
+   extra_time       = 0_ms;
+   ticking          = false;
+   current_duration = timespan_t::min();
++  sim2gse_observe_dot(this, "reset");
+   if ( state )
+     action_state_t::release( state );
+ }
+@@ -203,6 +216,7 @@
+   if ( max_stack == 0 || stack <= 0 )
+     return;
+
++  sim2gse_observe_dot(this, "unsupported");
+   if ( stacks == 0 || stack <= stacks )
+   {
+     cancel();
+@@ -222,6 +236,7 @@
+   if (max_stack == 0 || stack <= 0 || stack == max_stack)
+     return;
+
++  sim2gse_observe_dot(this, "unsupported");
+   if ( stack + stacks > max_stack )
+   {
+     stack = max_stack;
+@@ -287,6 +302,7 @@
+   // well as the remaining duration, and the remaining ongoing tick time.
+   else
+   {
++    sim2gse_observe_dot(other_dot, "unsupported");
+     timespan_t new_duration;
+     timespan_t old_remains;
+
+@@ -795,9 +811,11 @@
+  */
+ void dot_t::last_tick()
+ {
++  const auto sim2gse_token = sim2gse_observe_dot(this, "last_tick_begin");
+   sim.print_debug( "{} fades from {}", *this, *state->target );
+
+   current_action->last_tick( this );
++  sim2gse_observe_dot(this, "last_tick_end", sim2gse_token);
+   reset();
+
+   // If channeled, bring player back to life
+@@ -924,6 +942,7 @@
+   stack   = 1;
+
+   end_event = make_event<dot_end_event_t>( sim, this, current_duration );
++  sim2gse_observe_dot(this, "apply");
+
+   sim.print_debug( "{} starts {} on {} with duration={}", *source, *this, *target, duration );
+
+@@ -959,6 +978,7 @@
+     end_event = make_event<dot_end_event_t>( sim, this, current_duration );
+   }
+
++  sim2gse_observe_dot(this, "refresh");
+   check_tick_zero( false );
+
+   if ( sim.debug )
+@@ -1025,6 +1045,7 @@
+   if ( !ticking )
+     return;
+
++  sim2gse_observe_dot(this, "unsupported");
+   timespan_t new_tick_remains = time_to_next_full_tick() * coefficient;
+   timespan_t new_dot_remains  = remains() * coefficient;
+   timespan_t new_duration     = current_duration * coefficient;
+@@ -1056,6 +1077,7 @@
+   if ( !ticking || target->is_sleeping() )
+     return;
+
++  sim2gse_observe_dot(this, "unsupported");
+   // Always at least 1 tick left (even if we would round down before the last partial)
+   int rounded_full_ticks_left = std::max( static_cast<int>( std::round( current_duration / current_action -> tick_time( state ) ) ) - current_tick, 1 );
+
+@@ -1154,6 +1176,7 @@
+
+ void dot_t::dot_end_event_t::execute()
+ {
++  sim2gse_observe_dot(dot, "natural_begin", 0, this);
+   dot->end_event = nullptr;
+
+   assert( dot->tick_event );
+@@ -1168,8 +1191,10 @@
+   // If consume_cost_per_tick expires the DoT it also calls last_tick so we don't need to do it again
+   if ( dot->state )
+   {
++    sim2gse_observe_dot(dot, "natural_prepare", 0, this);
+     dot->last_tick();
+   }
++  sim2gse_observe_dot(dot, "natural_end");
+ }
+
+ void sc_format_to( const dot_t& dot, fmt::format_context::iterator out )
+--- a/engine/player/player.hpp
++++ b/engine/player/player.hpp
+@@ -1172,6 +1172,7 @@
+   virtual void precombat_init();
+   virtual void sim2gse_capture_static_snapshot();
+   virtual void sim2gse_read_rule_action( action_t&, js::JsonOutput ) const;
++  virtual bool sim2gse_read_rule_effect_qualification( const action_t&, const std::string&, bool& ) const;
+   virtual void merge( player_t& other );
+   virtual void datacollection_begin();
+   virtual void datacollection_end();
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -6155,6 +6155,11 @@
+ {
+ }
+
++bool player_t::sim2gse_read_rule_effect_qualification( const action_t&, const std::string&, bool& ) const
++{
++  return false;
++}
++
+ void player_t::sim2gse_capture_static_snapshot()
+ {
+   sim2gse::capture_static_snapshot( *this, {}, {}, {}, {} );
+--- a/engine/class_modules/sc_death_knight.cpp
++++ b/engine/class_modules/sc_death_knight.cpp
+@@ -2018,6 +2018,7 @@
+   double composite_attribute( attribute_e ) const override;
+   double composite_bonus_armor() const override;
+   void sim2gse_read_rule_action( action_t&, js::JsonOutput ) const override;
++  bool sim2gse_read_rule_effect_qualification( const action_t&, const std::string&, bool& ) const override;
+   void sim2gse_capture_static_snapshot() override;
+   void combat_begin() override;
+   void activate() override;
+@@ -16958,6 +16959,15 @@
+   }
+ }
+
++bool death_knight_t::sim2gse_read_rule_effect_qualification( const action_t& source,
++    const std::string& identity, bool& value ) const
++{
++  if ( specialization() != DEATH_KNIGHT_UNHOLY || typeid(source) != typeid(putrefy_t) ||
++       identity != "native.putrefy.disease_application_qualification" ) return false;
++  value = talent.unholy.blightburst.ok(); // Necessary native branch, not readiness or target qualification.
++  return true;
++}
++
+ void death_knight_t::sim2gse_capture_static_snapshot()
+ {
+   if ( !sim2gse_static_snapshot_json.empty() ) return;

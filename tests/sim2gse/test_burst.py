@@ -373,8 +373,12 @@ def test_public_search_excludes_current_burst_content_and_changes_with_definitio
     import burst
     from test_search import _minimal_rule_pack
     pack = _minimal_rule_pack()
-    pack['specializations']['252']['initialization']['openers'][0]['steps'] = [
-        dict(action='scourge_strike', source_step=1)]
+    # 固定sample_profile的真实原生子树；其余快速报告使用构造身份17。
+    pack['identity_mappings']['hero_talents']['sample_hero'] = 32
+    for configuration in pack['configurations']:
+        opener = configuration['opener']
+        opener['source_steps'] = ['scourge_strike']
+        opener['ordinary_steps'] = [dict(opener['ordinary_steps'][1], source_step=1)]
     rules = tmp_path / 'rules.json'
     rules.write_text(json.dumps(pack), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
@@ -754,8 +758,10 @@ def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, 
     profile = tmp_path / 'character.simc'
     profile.write_text(raw, encoding='utf-8')
     output = tmp_path / 'cancel-initialize'
+    simulation = dict(scene='single_target')
     handle = task.start_task(profile, output, use_burst=True,
-                             search_config=dict(iterations=512, candidate_limit=1, batch_targets=(2,)))
+                             search_config=dict(iterations=512, candidate_limit=1, batch_targets=(2,)),
+                             simulation_config=simulation)
     deadline = time.monotonic() + 20
     while not (output / 'reference').exists() and not handle.done and time.monotonic() < deadline:
         time.sleep(0.001)
@@ -765,14 +771,14 @@ def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, 
     assert handle.done and handle.error is None
     if recover_first:
         with page_task_boundary():
-            recovered = task.resume_task(output)
+            recovered = task.resume_task(output, simulation_config=simulation)
         assert recovered['burst']['definition_id']
     revised = copy.deepcopy(definition)
     revised['version'] += '-new-plan'
     revised['plan']['start_ms'] = 4000
     burst.publish(revised)
     with pytest.raises(task.TaskError, match='爆发定义已变化'):
-        task.resume_task(output)
+        task.resume_task(output, simulation_config=simulation)
 
 
 @pytest.mark.parametrize('fault', ['aoe', 'collection', 'registration', 'cancel', 'preparation'])
@@ -956,3 +962,69 @@ def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path,
     with pytest.raises(task.TaskError, match='爆发定义已变化'):
         task.run_task(profile, tmp_path / 'changed', use_burst=True,
                       burst_identity={'spec_id': reviewed['spec_id'], 'definition_id': reviewed['definition_id']})
+
+
+def test_dual_children_automatically_learn_with_one_frozen_rule_pack(tmp_path, monkeypatch):
+    import burst
+    import dual_task
+    import result_store
+    import selector
+    import sequence
+    from test_engine import apl_pool_reference
+    from test_rule_diagnostics import _condition_pack, _observed_evaluate
+    from test_rule_initialization import _configure_opener
+
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    pack = _condition_pack()
+    pack['object_sets']['sample']['big'] = dict(kind='action', native_action='army_of_the_dead',
+        base_button='army_of_the_dead', native_forms=['army_of_the_dead'])
+    pack['execution_evidence']['fixture_macro'] = dict(blocks=[['big']])
+    configured = pack['configurations'][0]
+    configured['opener'].update(source_steps=['ordinary first', 'ordinary consumer', 'independent burst'],
+        independent_burst_source_steps=[dict(source_step=3, action='big', mapping='burst')],
+        burst_anchor=dict(source_step=3, freeze_per_task=True))
+    configured['execution_ref'] = 'fixture_macro'
+    aoe = copy.deepcopy(configured)
+    aoe['key']['target_type'] = 'aoe'
+    pack['configurations'].append(aoe)
+    _configure_opener(tmp_path, monkeypatch, pack)
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(raw, encoding='utf-8')
+    requests = []
+    def observed(*args, **kwargs):
+        if kwargs.get('rule_observation_request') is not None:
+            requests.append(kwargs['simulation_config']['scene'])
+        kwargs.pop('input_sources', None)
+        kwargs.pop('burst_candidate', None)
+        kwargs['score'] = 100.0
+        return _observed_evaluate(*args, **kwargs)
+    with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=observed):
+        handle = dual_task.start(source, tmp_path / 'dual', search_config=dict(total_budget_seconds=60,
+            input_interval_ms=200, candidate_limit=5, round_candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',)))
+        handle.join(30)
+        assert handle.done
+        saved = dual_task.read(handle.output_root)
+        assert saved['status'] == 'completed', (saved, handle.error)
+        children = [task.read_task(handle.output_root / scene, include_search_records=True)
+                    for scene in ('single_target', 'aoe')]
+        assert {row['rule_initialization']['rule_config_digest'] for row in children} == {
+            children[0]['rule_initialization']['rule_config_digest']}
+        assert [row['rule_initialization']['configuration_key']['target_type'] for row in children] == [
+            'single_target', 'aoe']
+        assert set(requests) == {'single_target', 'aoe'}
+        assert all(row['search']['rule_steps'] for row in children)
+        choices = [step['selection'] for row in children for step in row['search']['rule_steps'].values()]
+        assert all(row['feedback']['status'] == 'learned' for row in choices)
+        model = result_store.read_search_learner(selector.MODEL_KEY)
+        assert set(model['settled']) == {row['run_id'] for row in children}
+        assert model['reservations'] == []
+        assert set(saved['exports']) == {'single_target', 'aoe', 'burst'}
+        with patch.object(sequence, 'evaluate', side_effect=AssertionError('双场完成恢复不能补评分')):
+            resumed = dual_task.resume(handle.output_root)
+            resumed.join(20)
+            assert resumed.done and dual_task.read(handle.output_root)['status'] == 'completed'
+        assert result_store.read_search_learner(selector.MODEL_KEY) == model

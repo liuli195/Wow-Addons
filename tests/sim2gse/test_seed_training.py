@@ -23,6 +23,47 @@ def training_boundary(damage_for=lambda candidate: 100.):
     with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
         yield
 
+
+@contextmanager
+def guided_training_boundary(directory, damage_for, *, known_inputs=None, insert_only=False, move_to_front=False):
+    """迁移旧算子替身：真实配置、诊断/全池/Coba，仅构造原外部评分事实。"""
+    import os
+    from unittest.mock import patch
+    import sequence
+    from test_rule_diagnostics import _condition_pack, _observed_evaluate
+
+    pack = _condition_pack()
+    if insert_only:
+        template = pack['general']['templates']['renamed-template']
+        template['edits'] = [edit for edit in template['edits'] if edit['operation'] == 'insert']
+    if move_to_front:
+        template = pack['general']['templates']['renamed-template']
+        move, = [edit for edit in template['edits'] if edit['operation'] == 'move']
+        move['destination'] = dict(op='filter', args=[move['destination'],
+            dict(op='eq', args=[{'var': 'gap.source_position'}, [0]])], **{'as': 'gap'})
+        template['edits'] = [move]
+    path = directory / 'guided-rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+
+    def observed(*args, **kwargs):
+        program = [[action['simc_action'] for action in block] for block in args[1]['blocks']]
+        kwargs.pop('input_sources', None)
+        kwargs.pop('burst_candidate', None)
+        kwargs['score'] = damage_for(args[1])
+        result = _observed_evaluate(*args, **kwargs)
+        payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+        for name in ('inputs', 'action_observations', 'state_observations'):
+            for row in payload[name]:
+                row['source_step'] = row['input_index'] % len(program)
+        count = known_inputs(program) if known_inputs else 1
+        for row in payload['state_observations']:
+            row['value'] = int(row['input_index'] < count)
+        return result
+
+    with patch.dict(os.environ, SIM2GSE_RULE_CONFIG=str(path)), training_boundary(), \
+            patch.object(sequence, 'evaluate', side_effect=observed):
+        yield
+
 import pytest
 
 
@@ -288,6 +329,85 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
     assert json.loads(capsys.readouterr().out.splitlines()[-1])
     with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
         assert command(tmp_path, args) == 0
+
+
+def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
+        tmp_path, capsys, monkeypatch):
+    from unittest.mock import patch
+    from test_character_export import sample_profile
+    from test_rule_diagnostics import _condition_pack, _observed_evaluate
+    from test_rule_initialization import _configure_opener
+    import result_store
+    import sequence
+    import selector
+    from search import TaskStore
+
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    starts = [[['outbreak'], ['death_coil']], [['death_coil'], ['outbreak']]]
+    for index, program in enumerate(starts):
+        source = tmp_path / f'source-{index}.json'
+        source.write_text(json.dumps(dict(label=str(index), source_id=str(index),
+            class_name='deathknight', spec='unholy', source='constructed-boundary',
+            original='preserved input', instructions='repeat', semantic='preserved',
+            changes=[], family=str(index), core=program[:1], program=program)), encoding='utf-8')
+        assert command(tmp_path, ['register', str(source)]) == 0
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    args = ['run', '--template', str(template), '--targets', '1',
+            '--workspace', str(tmp_path / 'work')]
+    requests = []
+
+    def observed(*args, **kwargs):
+        if kwargs.get('rule_observation_request') is not None:
+            requests.append(kwargs['rule_observation_request'])
+        kwargs.pop('input_sources', None)
+        kwargs.pop('burst_candidate', None)
+        kwargs['score'] = 100.0  # Equal real boundary scores keep this finite; no learner stub.
+        return _observed_evaluate(*args, **kwargs)
+
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=observed):
+        assert command(tmp_path, args) == 0
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    processed = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert len(processed) == 2 and all(row['status'] == 'completed' for row in processed)
+    assert sorted(json.loads(row['initial_program']) for row in processed) == sorted(starts)
+    batches = list(result_store.iter_rows(
+        "SELECT batch_key,candidate_key FROM batches WHERE purpose='search' AND batch_index=0",
+        tables=['batches']))
+    assert len(batches) == len(requests) > len(starts)
+    diagnostics = []
+    for batch in batches:
+        saved = result_store.one('batches', 'batch_key', batch['batch_key'])
+        diagnostic = json.loads(saved['rule_diagnostics'])
+        assert diagnostic['evidence']['batch_key'] == batch['batch_key']
+        assert diagnostic['parent']['behavior_identity'] == batch['candidate_key']
+        assert [row['name'] for row in diagnostic['rules']] == [
+            'supported opportunity', 'inactive condition']
+        assert diagnostic['pool']['complete'] is True
+        assert len(diagnostic['selection_context']['values']) == 50
+        diagnostics.append(diagnostic)
+    assert len({row['parent_identity'] for row in diagnostics}) == len(batches)
+    learned = []
+    for material in processed:
+        store = TaskStore(Path(material['task_path']))
+        try:
+            assert store.state['starts'] == [json.loads(material['initial_program'])]
+            choices = [row['selection'] for row in store.state['rule_steps'].values()]
+            assert choices
+            assert all(row['feedback']['status'] == 'learned' and row['feedback']['reward'] == 0
+                       for row in choices)
+            learned.extend(choices)
+        finally:
+            store.close()
+    model = result_store.read_search_learner(selector.MODEL_KEY)
+    assert model['reservations'] == []
+    assert sum(model['settled'].values()) == len(learned)
+    assert len(model['settled']) == len(starts)
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
+        assert command(tmp_path, args) == 0
+    assert [json.loads(result_store.one('batches', 'batch_key', row['batch_key'])['rule_diagnostics'])
+            for row in batches] == diagnostics
+    assert result_store.read_search_learner(selector.MODEL_KEY) == model
 
 
 def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys,
@@ -824,46 +944,36 @@ def test_training_improvements_reset_stagnation_and_can_exceed_five_rounds(tmp_p
     import result_store
     import search
 
+    initial = [['outbreak'], ['death_coil'], ['scourge_strike'],
+               ['outbreak'], ['scourge_strike'], ['outbreak']]
     source = tmp_path / 'candidate.json'
     source.write_text(json.dumps(dict(label='improving', class_name='deathknight', spec='unholy',
-        source='constructed-test', original='three actions', instructions='repeat',
+        source='constructed-test', original='ordered material', instructions='repeat',
         semantic='preserved', changes=[], family='plain', core=[['outbreak']],
-        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
+        program=initial)), encoding='utf-8')
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
     round_size = 2
     assert search.config_for(training=True)['round_candidate_limit'] == 16
-    proposals = {}
     scores = {}
-
-    def growing_program(parent, *args, **kwargs):
-        size = len(parent) + 4
-        positions = [(a, b) for a in range(size) for b in range(size) if a != b]
-        key = json.dumps(parent, sort_keys=True)
-        index = proposals.get(key, 0)
-        round_index = sum(proposals.values()) // round_size
-        proposals[key] = index + 1
-        if partial_improvement and len(parent) == 3 and index >= round_size + round_size // 2:
-            return None
-        a, b = positions[index % len(positions)]
-        program = [['outbreak'] for _ in range(size)]
-        program[a], program[b] = ['death_coil'], ['scourge_strike']
-        if partial_improvement:
-            score = 103. if len(parent) == 3 and index < round_size else 107.
-        else:
-            score = (103., 107., 107., 111., 113., 113., 113.)[round_index]
-        scores[json.dumps(program)] = score
-        return program
 
     def damage_for(candidate):
         program = [[action['simc_action'] for action in block] for block in candidate['blocks']]
-        return scores.get(json.dumps(program), 103.)
+        if program == initial:
+            return 103.
+        key = json.dumps(program)
+        if key not in scores:
+            round_index = len(scores) // round_size
+            scores[key] = ((103. if len(scores) < round_size else 107.) if partial_improvement else
+                           (103., 107., 107., 111., 113., 113., 113.)[min(round_index, 6)])
+        return scores[key]
 
-    with training_boundary(damage_for), \
-            patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=round_size), \
-            patch.object(search, 'mutate', side_effect=growing_program), \
-            patch.object(search.random, 'Random', NoFallbackShuffle):
+    # 初始三个合法结果中先取两项；余下一项构成真实partial round，
+    # 改善后新父有更大的合法池。选择及学习始终由真实Coba执行。
+    supported_inputs = lambda program: 4 if partial_improvement and program == initial else len(program)
+    with guided_training_boundary(tmp_path, damage_for, known_inputs=supported_inputs, insert_only=True), \
+            patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=round_size):
         assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
                                   '--workspace', str(tmp_path / 'work')]) == 0
     assert search.config_for(training=True)['round_candidate_limit'] == 16
@@ -1412,8 +1522,10 @@ def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(
         from test_search import _minimal_rule_pack
         rules = _minimal_rule_pack()
         # 本构造把death_coil交给独立爆发，普通起手不能再包含它。
-        rules['specializations']['252']['initialization']['openers'][0]['steps'] = [
-            dict(action=name, source_step=index) for index, name in enumerate(('outbreak', 'scourge_strike'), 1)]
+        for configuration in rules['configurations']:
+            opener = configuration['opener']
+            opener['source_steps'] = opener['source_steps'][:2]
+            opener['ordinary_steps'] = opener['ordinary_steps'][:2]
         rules_path = tmp_path / 'rules.json'
         rules_path.write_text(json.dumps(rules), encoding='utf-8')
         monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules_path))
@@ -1865,8 +1977,10 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
     import search
     import sequence
     import threading
-    target = [['death_coil'], ['scourge_strike'], ['outbreak'], ['dark_transformation'], ['use_item,slot=trinket1']]
-    for index, program in enumerate(([['outbreak'], ['death_coil']], [['death_coil'], ['outbreak']])):
+    target = [['death_coil'], ['outbreak'], ['scourge_strike'], ['outbreak']]
+    starts = ([['outbreak'], ['death_coil'], ['scourge_strike'], ['outbreak']],
+              [['outbreak'], ['scourge_strike'], ['death_coil'], ['outbreak']])
+    for index, program in enumerate(starts):
         path = tmp_path / f'source-{index}.json'
         path.write_text(json.dumps(dict(label=str(index), source_id=str(index), class_name='deathknight',
             spec='unholy', source='fixture', original='fixture', instructions='repeat', semantic='preserved',
@@ -1876,38 +1990,38 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
     template.write_text(sample_profile(), encoding='utf-8')
     def plateau(candidate):
         return 120. if [[action['simc_action'] for action in block] for block in candidate['blocks']] == target else 100.
-    gates = {32: threading.Barrier(2), 2: threading.Barrier(2)}
+    gate = threading.Barrier(2)
     gated = set()
     calls = []
     lock = threading.Lock()
-    # Only the common improvement is needed for this real transaction/trace boundary.
-    with training_boundary(plateau), patch.object(search, 'mutate', return_value=target), \
-            patch.object(search.random, 'Random', NoFallbackShuffle):
+    # 配置仅允许把消费动作移至首位：两材料各有一个真实合法操作到同一程序。
+    # 使用正常首批实际trace，不恢复已移除的index99额外诊断批次。
+    with guided_training_boundary(tmp_path, plateau, move_to_front=True):
         native = sequence.evaluate
         def observed(*args, **kwargs):
             candidate, folder = args[1], Path(args[2])
             iterations = kwargs.get('iterations', 100)
-            commands = [[action['simc_action'] for action in block] for block in candidate['blocks']]
-            gate = None
+            wait = False
             with lock:
                 calls.append(str(folder))
-                token = (folder.parents[1], iterations)
-                if ('batches' in folder.parts and commands == target and iterations in gates and
-                        token not in gated and kwargs.get('trace') == (iterations == 2)):
+                token = folder.parents[1]
+                if ('batches' in folder.parts and iterations == 32 and kwargs.get('trace') and
+                        token not in gated):
                     gated.add(token)
-                    gate = gates[iterations]
-            if gate:
+                    wait = True
+            if wait:
                 gate.wait(15)
             return native(*args, **kwargs)
         with patch.object(sequence, 'evaluate', side_effect=observed):
             assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
                                       '--workspace', str(tmp_path / 'work')]) == 0
-    assert len(gated) == 4
+    assert len(gated) == 2
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     records = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert len(records) == 2 and all(row['status'] == 'completed' for row in records)
     local_batches = []
     runs = []
+    trace_origins = []
     for row in records:
         folder = Path(row['task_path'])
         assert folder.parent.joinpath('cache.sqlite3').is_file()
@@ -1916,37 +2030,53 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
             runs.append(state['run_id'])
             batches = {key: json.loads(value) for key, value in database.execute('SELECT key,value FROM batches')}
             local_batches.append(batches)
+            traced = [(key, row['trace_source']) for key, row in batches.items()
+                      if row.get('status') == 'success' and row['request']['trace']]
+            assert traced
+            for key, origin in traced:
+                assert origin['run_id'] == state['run_id'] and origin['batch_key'] == key
+                trace_origins.append(origin)
     common = set(local_batches[0]) & set(local_batches[1])
-    trace_key = next(key for key in common if local_batches[0][key]['status'] == 'success' and
-                     local_batches[0][key]['request']['trace'] and local_batches[0][key]['dps'] == 120.)
-    traces = list(result_store.iter_rows('SELECT run_id,batch_key FROM traces WHERE batch_key = ?', [trace_key], tables=['traces']))
-    assert {row['run_id'] for row in traces} == set(runs)
+    shared_key = next(key for key in common if local_batches[0][key]['status'] == 'success' and
+                      not local_batches[0][key]['request']['trace'] and
+                      local_batches[0][key]['request']['purpose'] == 'search' and
+                      local_batches[0][key]['dps'] == 120.)
+    assert all('trace_source' not in batches[shared_key] for batches in local_batches)
+    for origin in trace_origins:
+        traces = result_store.read_records('traces', origin['storage_key'])
+        assert traces and {row['run_id'] for row in traces} == {origin['run_id']}
+        assert {row['batch_key'] for row in traces} == {origin['batch_key']}
     assert all(result_store.one('batches', 'batch_key', key) is not None for key in common
                if local_batches[0][key]['status'] == 'success')
     assert sum(row['native_batch_starts'] for row in records) == len(calls)
     assert all(row['batch_requests'] == row['native_batch_starts'] + row['cache_hits'] for row in records)
-    for batches in local_batches:
-        assert batches[trace_key]['trace_source']['run_id'] in runs
-        assert batches[trace_key]['trace_source']['batch_key'] == trace_key
-
-    # 同请求随后真正命中缓存：保留原轨迹出处，不重算或冒标成本run新轨迹。
+    # 第三材料也有一个合法单步到共同目标；首父真实trace不能冒标给目标缓存。
     source = tmp_path / 'cached-trace-source.json'
+    third_start = [['outbreak'], ['scourge_strike'], ['outbreak'], ['death_coil']]
     source.write_text(json.dumps(dict(label='cached', source_id='2', class_name='deathknight', spec='unholy',
         source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
-        family='cached', core=[], program=target)), encoding='utf-8')
+        family='cached', core=[], program=third_start)), encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0
-    with training_boundary(plateau), patch.object(search, 'mutate', return_value=target), \
-            patch.object(search.random, 'Random', NoFallbackShuffle):
-        assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
-                                  '--workspace', str(tmp_path / 'work')]) == 0
+    with guided_training_boundary(tmp_path, plateau, move_to_front=True):
+        native = sequence.evaluate
+        def reject_repeated_target(*args, **kwargs):
+            commands = [[action['simc_action'] for action in block] for block in args[1]['blocks']]
+            if commands == target and kwargs.get('iterations') == 32 and not kwargs.get('trace'):
+                raise AssertionError('共同目标的已验证成功缓存不得重新评分')
+            return native(*args, **kwargs)
+        with patch.object(sequence, 'evaluate', side_effect=reject_repeated_target):
+            assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+                                      '--workspace', str(tmp_path / 'work')]) == 0
     records = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-    recovered = next(row for row in records if json.loads(row['initial_program']) == target)
+    recovered = next(row for row in records if json.loads(row['initial_program']) == third_start)
     with sqlite3.connect(Path(recovered['task_path']) / 'task.sqlite3') as database:
         state = __import__('search').TaskStore.load_state(database)
-        cached = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (trace_key,)).fetchone()[0])
-    assert cached['trace_source']['run_id'] in runs and cached['trace_source']['run_id'] != state['run_id']
-    origin = result_store.read_records('traces', cached['trace_source']['storage_key'])
-    assert origin and {row['run_id'] for row in origin} == {cached['trace_source']['run_id']}
+        cached = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (shared_key,)).fetchone()[0])
+    assert cached['status'] == 'success' and not cached['request']['trace'] and 'trace_source' not in cached
+    assert recovered['cache_hits'] > 0
+    for origin in trace_origins:
+        original = result_store.read_records('traces', origin['storage_key'])
+        assert original and {row['run_id'] for row in original} == {origin['run_id']}
 
 
 def test_training_prepare_batches_known_history_candidates_without_unrelated_reads(tmp_path, capsys, monkeypatch):
@@ -2065,8 +2195,10 @@ def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definit
     from test_search import _minimal_rule_pack
     rules = _minimal_rule_pack()
     # 本定义特意包含death_coil，局部普通起手须与独立爆发动作隔离。
-    rules['specializations']['252']['initialization']['openers'][0]['steps'] = [
-        dict(action=name, source_step=index) for index, name in enumerate(('outbreak', 'scourge_strike'), 1)]
+    for configuration in rules['configurations']:
+        opener = configuration['opener']
+        opener['source_steps'] = opener['source_steps'][:2]
+        opener['ordinary_steps'] = opener['ordinary_steps'][:2]
     rules_path = tmp_path / 'rules.json'
     rules_path.write_text(json.dumps(rules), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules_path))
@@ -2222,13 +2354,29 @@ def test_training_prepare_freezes_opener_aligned_burst_through_public_cli(tmp_pa
     from test_burst import reviewed_fixture,character_seed_boundary
     definition,raw=reviewed_fixture()
     published=burst.publish(definition)
-    pack=dict(schema_version=1,general=dict(templates={}),specializations={
-        '252':dict(actions={'tap':dict(button='scourge_strike',native_action='scourge_strike'),
-                          'big':dict(button='army_of_the_dead',native_action='army_of_the_dead')},
-            facts={},bindings=[],initialization=dict(resource='runic_power',recovery=dict(model='none'),
-                openers=[dict(id='training',scope=True,source='fixture: shared ordered initialization',first_burst_step=3,
-                    steps=[dict(action='tap',source_step=1),dict(action='tap',source_step=2),
-                           dict(action='big',source_step=3,mapping='burst'),dict(action='tap',source_step=4)])]))})
+    pack = dict(schema_version=2, general=dict(templates={}),
+        identity_mappings=dict(hero_talents={'sample_hero': 17}),
+        object_sets={'sample': {
+            'tap': dict(kind='action', native_action='scourge_strike', base_button='scourge_strike',
+                        native_forms=['scourge_strike']),
+            'big': dict(kind='action', native_action='army_of_the_dead', base_button='army_of_the_dead',
+                        native_forms=['army_of_the_dead'])}},
+        configurations=[dict(key=dict(specialization_id=252, hero_talent='sample_hero',
+            target_type='single_target'), objects_ref='sample', execution_ref='fixture_macro',
+            states={'only': dict(effect=None, expected=True, priority=[])},
+            opener=dict(source_basis='fixture: shared ordered initialization',
+                source_steps=['tap', 'tap', 'big', 'tap'], precombat=[],
+                burst_anchor=dict(source_step=3, estimation='preceding_steps_effective_gcd_and_input_interval',
+                                  freeze_per_task=True),
+                independent_burst_source_steps=[dict(action='big', source_step=3, mapping='burst')],
+                ordinary_steps=[dict(action='tap', source_step=index, source_form='scourge_strike',
+                    attribute_query=dict(native_form='scourge_strike', base_button='scourge_strike',
+                                         missing='unknown_no_base_cost_fallback')) for index in (1, 2, 4)]))],
+        execution_evidence={'fixture_macro': dict(
+            blocks=[[command['simc_action'] for command in block] for block in definition['blocks']],
+            repeat_ms=45000, input_window_ms=1000, pause_ordinary=True,
+            resume_same_position=True, preserve_burst_position_across_windows=True,
+            protected_actions_from='actual_configured_execution_blocks')})
     path=tmp_path/'rules.json';path.write_text(json.dumps(pack),encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(path))
     material=tmp_path/'material.json'

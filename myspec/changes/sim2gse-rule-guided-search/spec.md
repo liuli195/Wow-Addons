@@ -33,8 +33,8 @@ Triage: ready-for-agent
 ### 共用流程与真实进度
 
 - 用户消息 `Sentinel_d1d53044578c8191a12ffb8d6bbb3f07`明确：“那就都用gpt-6-astra xhigh吧。确认进入开发。”；消息 `Sentinel_bbf2b06935408191bd5f7d3e4be48fc7`进一步明确01/02/03共用开发门禁，不重复逐票开工确认。沿同一功能分支串行TDD（测试驱动开发）及每票独立审查，最后统一规格与交付。最新催办已要求把确认内容同步四文档并推进，不把剩余具体参数问题扩大为全案暂停。
-- 同一云端工作树，分支 `codex/sim2gse-rule-guided-search`；本次文档同步前HEAD为 `d980af4a311238a1e55fa4b3b68b3a8206bfd62c`。正式差异验证固定基线仍为 `5d7165b798d8a7555a74006a1206bd60d8db4331`。本轮仅同步这四文件，不改产品、测试或正式规格，不提交/推送。
-- 01旧版有序起手、清理及已发现失败此前已定向闭环，历史标记implemented不代表本版完成。本轮新增三键配置/通用时序/公共快照尚待实施，01恢复为in-progress；02完整模板/同次诊断/单步接口未交付，按依赖继续；03仍待02交付。没有本版整套verify、收益或游戏验收通过声明。
+- 同一云端工作树，分支 `codex/sim2gse-rule-guided-search`；初版本轮文档同步起点为 `d980af4a311238a1e55fa4b3b68b3a8206bfd62c`，随后产品按共同门禁实施。正式差异验证固定基线仍为 `5d7165b798d8a7555a74006a1206bd60d8db4331`。Git由主代理统一固定审查范围；正式规格待最终门禁处理。
+- 01初始化/配置/原生时序及02同次诊断/合法单步已完成限定实施与独立审查，状态implemented；03自动Coba选择、共享恢复与真实功能链已完成限定审查，用户选择A的四项性能/原义修复已完成分片独审及26例合并验证，统一正式验证仍待。最终旧/新各600秒一次比较为141201.9448/134389.7783 DPS（新低4.8244%），不能称收益通过；没有本版整套verify或游戏验收通过声明。
 - 八模板、单模板绑定、四项通用算法、相对DPS评分与Coba LinUCB已确定。三组use_position默认均已确认：瘟疫降临last、单体收割突变窗first、末日突降消费first；不存在剩余算法/默认值审批阻塞。其他外围存放讨论本轮无具体迁移项目，不是阻塞项。
 
 ### 已确认决定的依据
@@ -87,6 +87,27 @@ Triage: ready-for-agent
 | 通用代码 | 三值表达式、有限记录读取/关联/过滤/区间/首末/位置映射及现有编辑原语 | 按模板ID、职业、英雄或技能分派业务算法 |
 
 一个JSON足够，不按职业或配置组合新建服务。本文件附录B的完整 JSON 用 key.specialization_id、key.hero_talent、key.target_type 明确三个键；英雄天赋用能力目录核定的稳定标识，目标类型由任务明确选择。当前示例使用sanlayn、rider_of_the_apocalypse及single_target、aoe，仅作为绑定数据，不是允许值的全职业硬编码枚举。必须校验三元组唯一；无匹配或多匹配明确报配置不一致，不默认另一英雄或场景。对象集合只作显式共享引用，每套起手和优先顺序完整保存。
+### schema2运行包与已有接口的最小接合
+
+附录B仍是完整设计资料，含来源、确认记录和验证说明；生产 `rules.json` 只提取下表运行必需块，不能把整篇方案的讨论、验证报告或哈希带入运行配置。字段拼写与01当前schema2小步一致；保留现有单JSON读取、rules-check/save、摘要、原子保存、任务冻结及导出接缝，不另建第二套兼容执行框架。旧任务结果保留只读，新任务使用schema2，规则/执行语义不同不混用成绩。
+
+| 运行字段 | 精确保存内容 | 01责任及后续边界 |
+| --- | --- | --- |
+| `schema_version` | 整数 `2` | 表明本轮运行契约，不凭缺字段回退旧格式执行。 |
+| `identity_mappings.hero_talents` | `{ "sanlayn": 31, "rider_of_the_apocalypse": 32 }` | 复用原已确认配置的原生子树ID；将快照hero_subtree_ids与稳定字符串键关联。程序读取映射，不硬编码两英雄或ID。新专精新增映射数据，不要求这两个值。 |
+| `general.templates` | 本文件8个模板本体完整保存 | 01校验形参/引用/结构并原样冻结，不求值读取、诊断或编辑表达式；02才解释执行。其他general设计说明不作为01运行字段。 |
+| `object_sets` | 两个首MVP对象集合及其原生动作、基础按钮、替换形态、效果、资源和范围引用 | 直接复用附录对象数据，不按技能名写分派；其他配置可声明自己的对象集合。 |
+| `configurations[]` | 每条的 `key`、`objects_ref`、`opener`、`states`、`execution_ref`、`edit_range_ref` | 四实例完整起手与79条规则参数保持；`example_group`只作展示，不进入运行包。状态完整保存，初始化不提前运行状态规则。 |
+| `execution_evidence` | 当前所引用、已确认执行契约所需的数据 | 仅关联现有独立爆发定义及保护身份；移除status/anchor说明/configuration_group/scope等展示元数据，不复制一套调度器。固定宏、周期、窗口、暂停与续接执行原样复用。 |
+
+确认消息、源码证据、完整验证样例、讨论与选择器研究说明仍在本文件内；01运行包不包含document_status、format_status、execution_approval、decisions、confirmed_decisions、validation_fixtures、implementation_increment等展示/研究内容。selector的产品接入由03完成，01不提前实现学习器。
+
+英雄映射中的31/32只是首MVP已有配置数据，不是所有专精的固定值。绑定使用真实专精身份、显式目标类型和原生hero_subtree_ids，经结构化映射唯一确定三键配置；缺失或多匹配报错，不把unknown当false或默认英雄。主资源报告直接沿已有 `native.identity.resource`，多资源当前值/上限/费用继续来自snapshot.resources及费用map，不复活旧recovery供资模型。
+
+`opener.source_steps` 的中文列表只用于展示，不能解析中文识别技能。`ordinary_steps` 已保存机器可读action/source_form；`independent_burst_source_steps` 现补为结构化记录，原样承接此前已批准的源映射：源4大军、5突变、6药水、7饰品项映射到两个装备槽命令。每条含source_step/action/mapping，饰品项另含commands。普通记录与这些独立记录按source_step合成完整14/12步；每个action/commands引用须属于当前对象集合，不能在程序中写死该四步。source_step缺失、重复或不在完整来源范围，以及源映射无法对应既有宏时明确报告。
+
+这里补齐的是已确认数据的机器表达，未改变来源动作、次序、次数或实际宏。实际块/command位置仍由既有宏解析，来源“突变→药水→饰品”与实际宏“药水/饰品→突变”的差异继续展示。战前声明沿既有单命令路径核对实际前缀；不引入新战前执行方式。初始化仅把选定起手映射到现有generate及报告，模板完整声明仍显示“未诊断”。
+
 ## 八个共用通用模板
 | 模板中文名 | 预声明参数 | 读与判定 | 诊断 | 允许单步修改 |
 | --- | --- | --- | --- | --- |
@@ -102,18 +123,17 @@ Triage: ready-for-agent
 资源预留、资源近满与溢出处理、可避免空闲保留为完整可编辑模板样本；当前来源没有确认的具体绑定条件或阈值，因此本次场景不暗中启用，不为凑满八类给专精添加新规则。
 ### 通用结构化表达的执行含义
 本文件附录B的完整 JSON 的每个模板均标明 application_phase＝post_simulation_diagnosis_and_next_candidate，并有 parameters、reads、diagnose.let、diagnose.for_each、diagnose.cases、diagnose.export_trigger_records、edits。读取统一以 run_id、sample_id、input_index 对齐；同次状态在输入排队决策前取样，实际执行和效果事件保留独立时刻与同源身份。按本状态声明顺序完整计算每条诊断：先读该动作自身已有或必要事实，再把此前条目的同次trigger记录以any3归约成高位证据，且严格只许引用此前条目，构成无环依赖，也不把高位规则排名当操作选择权重。
-三值真值为 true、false、unknown。用户已选择数据支持的试探修改：不要求百分百证明未来施放成功。每个模板先报告实际问题/状态事实，再用同次CD、资源、GCD及已知原生限制界定数据支持的机会集合；完整native资格未知时可保留明确标注的假说候选。无任何相关事实不能乱改；已知原生禁止、越权和结构非法仍拒绝。首末均只指该数据支持集合，不宣称穷尽全部原生可行机会。空集合是已知“没有”，unknown 是“缺证”，两者不能混同。数据记录按 reads 的 as 保留来源命名空间；同名字段不得静默覆盖。join保留顶层run_id/sample_id/input_index及明确声明的目标/组件键，并保留所有来源命名空间；目标组件行的target_id不能被action.target_id覆盖。pair_intervals保留group_by路径和对象实例身份。join_interval以已有原生事件顺序处理同刻终止，实际消费者的同源输入包含在被它消费的Buff实例内，不被半开区间机械排除。每个模板的有限记录上下文通过有限map/filter的as变量及for_each明示：区间内的 window、相邻锚点的 boundary、已选记录 chosen、同次高位记录 higher 和诊断记录 finding 都来自前序有限读取/关联结果，不能由代码另加业务推断。effect_completion_time为该动作实际利用Buff/施加维护效果的完成时刻，不含成功之后无关的GCD尾段；occupancy_end为GCD/施法/队列占用结束。短期Buff用前者与结束时刻比较，准备防耽误爆发用后者。瞬发成功消费与Buff结束同刻可通过，不因后续GCD判失败。模板所有诊断匹配分支均输出，可同时有事实和假说，不以第一个命中就提前结束；编辑池由有实际问题、必要事实支持且范围允许的分支产生，不能把假说当确定违规或施放成功保证。first_true/last_true先通过is_true形成有数据支持的集合，只在该集合选首末；unknown_evidence保留未判定记录并单独报告，不能抹掉已有支持候选，也不能把未判定记录称为非法或宣称所选为全部原生机会的首末。
+三值真值为 true、false、unknown。布尔运算仅接受布尔值，数值、文本或结构不能借Python真值成为资格。资格state对象可声明representation为boolean或positive_stack_presence；后者仅将已审非负整数层数按大于0判断存在，布尔值、负数、非整数及缺证仍未知。持续维护模板用声明的有限表示归一资格；未声明或类型不符不自动转换，其他state数值保持原含义。用户已选择数据支持的试探修改：不要求百分百证明未来施放成功。每个模板先报告实际问题/状态事实，再用同次CD、资源、GCD及已知原生限制界定数据支持的机会集合；完整native资格未知时可保留明确标注的假说候选。支持公式的完整资格正证分支用is_true(native_qualified)，与未知资格的必要事实分支分开；资格未知但CD、资源或已知原生要求明确为false时，该机会为false，不让eq(unknown,true)把已证负事实抹成unknown。无任何相关事实不能乱改；已知原生禁止、越权和结构非法仍拒绝。首末均只指该数据支持集合，不宣称穷尽全部原生可行机会。空集合是已知“没有”，unknown 是“缺证”，两者不能混同。数据记录按 reads 的 as 保留来源命名空间；同名字段不得静默覆盖。join保留顶层run_id/sample_id/input_index及明确声明的目标/组件键，并保留所有来源命名空间；目标组件行的target_id不能被action.target_id覆盖。pair_intervals保留group_by路径和对象实例身份。join_interval以已有原生事件顺序处理同刻终止，实际消费者的同源输入包含在被它消费的Buff实例内，不被半开区间机械排除。每个模板的有限记录上下文通过有限map/filter的as变量及for_each明示：区间内的 window、相邻锚点的 boundary、已选记录 chosen、同次高位记录 higher 和诊断记录 finding 都来自前序有限读取/关联结果，不能由代码另加业务推断。effect_completion_time为该动作实际利用Buff/施加维护效果的完成时刻，不含成功之后无关的GCD尾段；occupancy_end为GCD/施法/队列占用结束。短期Buff用有限usage_time_basis声明execution或effect_completion：本轮单体收割绑定execution，其余保effect_completion。execution的未来机会读取已审cast_ms与current_state_estimate精度，以earliest_execute加cast_ms比较结束，不含GCD尾；实际利用只用同run/sample/input唯一真实execute事件的time/event_index/actual_form，不借成功汇总或输入时刻生成。窗前输入但窗内执行可报告实际利用，窗内排队而窗外执行不算；缺失或歧义执行记录保持未知，已证未尝试可为false；未知执行的可能输入上界仍按原(time,event_index)不晚于窗口终止，不能让已在同毫秒终止之后的输入污染历史利用；消费实例要求仍单独关联。effect_completion字段不被使用时点或估计回填。准备防耽误爆发用occupancy_end。瞬发成功消费与Buff结束同刻可通过，不因后续GCD判失败。模板所有诊断匹配分支均输出，可同时有事实和假说，不以第一个命中就提前结束；编辑池由有实际问题、必要事实支持且范围允许的分支产生，不能把假说当确定违规或施放成功保证。first_true/last_true先通过is_true形成有数据支持的集合，只在该集合选首末；unknown_evidence保留未判定记录并单独报告，不能抹掉已有支持候选，也不能把未判定记录称为非法或宣称所选为全部原生机会的首末。
+集合求值分别保留已知成员与未判定成员：map/filter不能丢掉仍可能相关的成员，any3有已知true即true，无true但相关成员仍未判定则unknown，仅完整全false或已证空为false；empty/count不能把未判定成员当成空或0；存在性声明用not(empty)或any3保留已证存在，精确count仍未知。按区间/锚点选择chosen的模板在chosen未知时，显式携带原可行谓词筛出的related_inputs；导出trigger仅关联这些同input身份，不能用未知chosen索引污染无关输入，也不能将相关未知成员空化为false。未判定实例不得伪造窗口或进入first/last支持集合；短期模板context显式携带related_inputs，chosen未知时export仅按这些同input记录归约，并保留trigger未知，不将身份存在当成true。逐对象完整覆盖由同次scope.effect_events_complete的对象别名布尔项声明；缺项/false时须保留该对象可能遗漏实例的未知，即使已有完整实例也不能代表全覆盖；已知实例支持仍保留，不能用战斗scope.complete代替。lifecycle_complete逐实例守门，已有可信时间边界仅用于排除不相交输入，不补未知起止，也不把敌方action.target_id等同玩家Buff目标。
+持续维护的条件区间显式声明event_rows、event_group_by、bounds、state_field及输入时间/事件序字段，只按同次实际生命周期边沿求值，不对点击active快照插值。逐对象coverage与逐实例完整性分别守门；simulation_end正栈仅作右删失，不生成到期。已证初始无前一区间用空对象，前区间未知仍为unknown。原始absence保留逐输入required/applicable身份：稳定self范围且当前状态有已证需求点才称覆盖缺口，动态目标范围无连续需求证据时仅报效果absence及需求区间未知。实际应用/刷新/延长的covered只关联真实效果事件及其来源，不用点击快照的applied标记替代。效果事件先校验同一计分sample，应用再按run/sample与来源输入关联；到期前机会同毫秒按原event_index判断先后。已知到期前支持优先；前段仅未知时仍可采用已知断档内支持，前后都无已知而仍有未知时不能报无机会。准备模板chosen未知时，related_inputs还须合该input原库存compare/threshold，已知条件false不构成高位未知。持续维护的未来机会比较单独读取estimated_effect_completion_time及effect_completion_estimate；只在effect_id与当前组件、整数target/source与效果对象、actual_form与当前叶形态及绑定动作、current_state_estimate精度一致且延迟/时点字段有效时使用，绝不广播至该动作其他效果。实际effect_completion_time与效果应用/source仍保持历史事实；已知原生禁止继续拒绝，整体资格未知但必要同次事实支持可产待评分假说。缺实际或预计效果完成仍保留未知，不借occupancy_end补齐。
 有限原语分三组：
-- 数据与计算：read、field、arg、var、and/or/not、eq/neq/lt/lte/gt/gte、compare、加减及有限数值计算、known/unknown/empty、select。
+- 数据与计算：read、field、arg、var、and/or/not、eq/neq/lt/lte/gt/gte、compare、加减及有限数值计算、known/unknown/empty、is_number/is_integer、select。
 - 有界集合与时间：join（同次键）、filter、contains/overlap/count、first/last、first_true/last_true、adjacent、pair_intervals、join_interval、interval_select。区间选择按已确认算法：任一关联Buff有效即纳入，只在当前有效集合取最早结束者，不认识职业或效果名。
 - 结构与编辑：gaps、block、resolve_edit_gaps源位置映射、move、insert、remove、reduce_wait、remove_wait；完整枚举允许范围内的具体参数。object_field 只读取已声明对象字段，block/blocks 把相应基础键组成整块。等待删减只在可避免空闲模板中，由真实空输入、无GCD/施法/队列占用及有合格允许动作的表达式触发，不接受文字‘已证明’布尔作为捷径。
 SourcePosition（源位置）是路径，不能作平面数字或字典序比较；resolve_edit_gaps只用已有同次展开映射把目标input_index映射到允许结构间隙，方向按该次展开位置判断，完整枚举允许且不同的中间单移位置（如前移一位、两位），不只投到一个目标点；每次仍只做一个操作，路径含糊或不可无损映射则unsupported；同次高位/低位动作的占用域相交及实际占用时段重叠只构成挤占假说，不能仅凭文字标签或历史失败推定。若有限表达无法表达所需数据支持，该编辑分支为 unsupported，不能在代码里补一个模板专用函数。原语上限和现有结构上限继续受校验，不加入任意脚本、递归查询或完整 APL 解释器。
-### 完整结构化模板示例
-以下直接摘自本文件附录B的完整 JSON 的“爆发前准备”。其中 last_true 取最后合法完成机会的通用诊断算法已获确认，动作与阈值仍由绑定填入；参数值不改变该通用模板代码。完整其余七个模板也在本文件附录B的完整 JSON 中以相同结构给出。
-完整结构化示例是本文件附录B的完整JSON的 general.templates[爆发前准备]，从parameters、reads到diagnose.let/for_each/cases/export_trigger_records和edits全部可核验，不以中文intent替代。为便于正文审阅，此处列字段及原样有限表达摘录；全文本体在本文件附录B的完整JSON。
-```json
-{"application_phase":"post_simulation_diagnosis_and_next_candidate","parameters":{"action":{"type":"action_ref"},"priority_refs":{"type":"rule_ref_array"},"edit_range":{"type":"range_ref"},"stock":{"type":"state_ref"},"compare":{"type":"enum","values":["eq","lt","lte","gt","gte"]},"threshold":{"type":"number","minimum":0},"anchor":{"type":"plan_ref"}},"reads":[{"as":"action_states","from":"student.action_observations","object":{"arg":"action"},"fields":["input_index","time","input_source","actual_form","native_qualified","input_allowed","earliest_execute","effect_completion_time","occupancy_start","occupancy_end","occupancy_domains","cooldown_remaining","charges_current","charges_maximum","has_cooldown","resource_costs","resource_balances","known_native_requirements","attempt","success","failure_reason","source_position","target_id","base_button","run_id","sample_id","event_index"],"same_run":true,"on_declared_null_object":"not_applicable_identity_rows"},{"as":"prior_states","from":"evaluation.prior_rule_trigger_records","object":{"arg":"priority_refs"},"fields":["input_index","trigger","rule_name","earliest_execute","occupancy_domains"],"same_run":true,"on_declared_null_object":"not_applicable_identity_rows"},{"as":"program","from":"candidate.structure","object":null,"fields":["source_position","unit","actions","wait_clicks"],"same_run":true,"on_declared_null_object":"not_applicable_identity_rows"},{"as":"position_map","from":"candidate.expanded_position_map","object":null,"fields":["input_index","source_position","parent_path","occurrence","gap_before","gap_after"],"same_run":true,"on_declared_null_object":"not_applicable_identity_rows"},{"as":"inputs","from":"student.inputs","object":null,"fields":["input_index","time","input_source","source_position"],"same_run":true,"on_declared_null_object":"not_applicable_identity_rows"},{"as":"stock","from":"student.state_observations","object":{"arg":"stock"},"fields":["input_index","value"],"same_run":true,"on_declared_null_object":"not_applicable_identity_rows"},{"as":"anchors","from":"frozen.inputs","object":{"arg":"anchor"},"fields":["time"],"same_run":true,"on_declared_null_object":"not_applicable_identity_rows"}],"diagnose":{"let":[{"name":"boundaries","value":{"op":"adjacent","args":[{"var":"anchors"}],"left_edge":"observation_start"}},{"name":"contexts","value":{"op":"map","args":[{"var":"boundaries"},{"op":"record","fields":{"input_index":{"var":"chosen.action.input_index"},"earliest_execute":{"var":"chosen.action.earliest_execute"},"occupancy_domains":{"var":"chosen.action.occupancy_domains"},"target_position":{"var":"chosen.action.source_position"},"chosen":{"var":"chosen"},"threshold_met":{"op":"compare","args":[{"var":"chosen.stock.value"},{"arg":"compare"},{"arg":"threshold"}]},"completed":{"var":"chosen.action.success"},"anchor":{"var":"b.right"},"trigger":{"op":"and","args":[{"op":"not","args":[{"op":"empty","args":[{"var":"chosen"}]}]},{"op":"compare","args":[{"var":"chosen.stock.value"},{"arg":"compare"},{"arg":"threshold"}]},true]}}}],"as":"b","let":[{"name":"ordinary","value":{"op":"filter","args":[{"var":"inputs"},{"op":"and","args":[{"op":"eq","args":[{"var":"i.input_source"},"loop"]},{"op":"gte","args":[{"var":"i.time"},{"var":"b.left"}]},{"op":"lt","args":[{"var":"i.time"},{"var":"b.right"}]}]}],"as":"i"}},{"name":"rows","value":{"op":"map","args":[{"op":"join","args":[{"as":"input","rows":{"var":"ordinary"}},{"as":"action","rows":{"var":"action_states"}},{"as":"stock","rows":{"var":"stock"}}],"keys":["run_id","sample_id","input_index"],"preserve_aliases":true},{"op":"merge","args":[{"var":"q"},{"op":"record","fields":{"higher":{"op":"any3","args":[{"op":"map","args":[{"arg":"priority_refs"},{"op":"lookup_unique","args":[{"var":"prior_states"},{"op":"record","fields":{"rule_name":{"var":"r"},"input_index":{"var":"q.action.input_index"}}}],"value_field":"trigger","missing":"unknown","duplicate":"error"}],"as":"r"}]}}}]}],"as":"q"}},{"name":"chosen","value":{"op":"last_true","args":[{"op":"filter","args":[{"var":"rows"},{"op":"is_true","args":[{"op":"and","args":[{"op":"and","args":[{"op":"or","args":[{"op":"eq","args":[{"var":"x.action.native_qualified"},true]},{"op":"and","args":[{"op":"unknown","args":[{"var":"x.action.native_qualified"}]},{"op":"select","args":[{"var":"x.action.has_cooldown"},{"op":"or","args":[{"op":"lte","args":[{"var":"x.action.cooldown_remaining"},0]},{"op":"gt","args":[{"var":"x.action.charges_current"},0]}]},true]},{"op":"all3","args":[{"op":"map","args":[{"op":"entries","args":[{"var":"x.action.resource_costs"}]},{"op":"gte","args":[{"op":"lookup","args":[{"var":"x.action.resource_balances"},{"var":"cost.key"}]},{"var":"cost.value"}]}],"as":"cost"}]},{"op":"is_number","args":[{"var":"x.action.earliest_execute"}]},{"op":"is_number","args":[{"var":"x.action.occupancy_end"}]},{"op":"not","args":[{"op":"any3","args":[{"op":"map","args":[{"var":"x.action.known_native_requirements"},{"op":"eq","args":[{"var":"req.value"},false]}],"as":"req"}]}]}]}]},{"var":"x.action.input_allowed"},{"op":"not","args":[{"var":"x.higher"}]}]},{"op":"lte","args":[{"var":"x.action.occupancy_end"},{"var":"b.right"}]}]}]}],"as":"x"},true],"as":"x","order_by":"action.time","reject_later_unknown":false,"unknown_evidence":{"op":"filter","args":[{"var":"rows"},{"op":"unknown","args":[{"op":"and","args":[{"op":"and","args":[{"op":"or","args":[{"op":"eq","args":[{"var":"x.action.native_qualified"},true]},{"op":"and","args":[{"op":"unknown","args":[{"var":"x.action.native_qualified"}]},{"op":"select","args":[{"var":"x.action.has_cooldown"},{"op":"or","args":[{"op":"lte","args":[{"var":"x.action.cooldown_remaining"},0]},{"op":"gt","args":[{"var":"x.action.charges_current"},0]}]},true]},{"op":"all3","args":[{"op":"map","args":[{"op":"entries","args":[{"var":"x.action.resource_costs"}]},{"op":"gte","args":[{"op":"lookup","args":[{"var":"x.action.resource_balances"},{"var":"cost.key"}]},{"var":"cost.value"}]}],"as":"cost"}]},{"op":"is_number","args":[{"var":"x.action.earliest_execute"}]},{"op":"is_number","args":[{"var":"x.action.occupancy_end"}]},{"op":"not","args":[{"op":"any3","args":[{"op":"map","args":[{"var":"x.action.known_native_requirements"},{"op":"eq","args":[{"var":"req.value"},false]}],"as":"req"}]}]}]}]},{"var":"x.action.input_allowed"},{"op":"not","args":[{"var":"x.higher"}]}]},{"op":"lte","args":[{"var":"x.action.occupancy_end"},{"var":"b.right"}]}]}]}],"as":"x"},"emit_unknown_separately":true,"candidate_universe":"supported_records_only","reject_earlier_unknown":false}}]}}],"for_each":{"var":"contexts"},"as":"c","cases":[{"kind":"unknown","when":{"op":"unknown","args":[{"var":"c.chosen"},{"var":"c.threshold_met"}]},"certainty":"unknown","evidence":{"anchor":{"var":"c.anchor"}}},{"kind":"no_opportunity","when":{"op":"empty","args":[{"var":"c.chosen"}]},"certainty":"observed_fact","evidence":{"anchor":{"var":"c.anchor"}}},{"kind":"covered","when":{"var":"c.completed"},"certainty":"observed_fact","evidence":{"target_position":{"var":"c.target_position"}}},{"kind":"attempt_failed","when":{"op":"and","args":[{"var":"c.chosen.action.attempt"},{"op":"not","args":[{"var":"c.chosen.action.success"}]}]},"certainty":"observed_fact","evidence":{"reason":{"var":"c.chosen.action.failure_reason"},"target_position":{"var":"c.target_position"}}},{"kind":"missed_preparation","when":{"op":"and","args":[{"var":"c.trigger"},{"op":"not","args":[{"var":"c.completed"}]}]},"certainty":"hypothesis","evidence":{"target_position":{"var":"c.target_position"},"input_index":{"var":"c.input_index"},"anchor":{"var":"c.anchor"}}},{"kind":"not_triggered","when":{"op":"not","args":[{"var":"c.threshold_met"}]},"certainty":"observed_fact","evidence":{"anchor":{"var":"c.anchor"}}}],"export_trigger_records":{"op":"map","args":[{"var":"action_states"},{"op":"record","fields":{"input_index":{"var":"input.input_index"},"trigger":{"op":"any3","args":[{"op":"map","args":[{"var":"contexts"},{"op":"and","args":[{"var":"c.trigger"},{"op":"eq","args":[{"var":"c.input_index"},{"var":"input.input_index"}]}]}],"as":"c"}]},"earliest_execute":{"var":"input.earliest_execute"},"occupancy_domains":{"var":"input.occupancy_domains"}}}],"as":"input"}},"edits":[{"when":{"op":"contains","args":[["missed_preparation"],{"var":"finding.kind"}]},"operation":"move","unit":"action_block","source":{"op":"filter","args":[{"var":"program"},{"op":"and","args":[{"op":"contains","args":[{"var":"s.actions"},{"op":"object_field","args":[{"arg":"action"},"base_button"]}]},{"op":"contains","args":[{"arg":"edit_range"},{"var":"s.source_position"}]}]}],"as":"s"},"destination":{"op":"resolve_edit_gaps","args":[{"var":"position_map"},{"var":"source.source_position"},{"var":"finding.input_index"},{"arg":"edit_range"}],"operation":"move","require_unique_mapping":true,"preserve_block":true,"enumerate":"all_distinct_supported_intermediate_gaps","ambiguous":"unsupported"},"count":1,"reported_delta":{"op":"record","fields":{"source_path":{"var":"source.source_position"},"destination_path":{"var":"destination.source_position"},"unit_count":1}}},{"when":{"op":"contains","args":[["missed_preparation"],{"var":"finding.kind"}]},"operation":"insert","unit":"action_block","source":{"op":"block","args":[{"op":"object_field","args":[{"arg":"action"},"base_button"]}]},"destination":{"op":"resolve_edit_gaps","args":[{"var":"position_map"},null,{"var":"finding.input_index"},{"arg":"edit_range"}],"operation":"insert","require_unique_mapping":true,"preserve_block":true,"enumerate":"all_distinct_supported_intermediate_gaps","ambiguous":"unsupported"},"count":1}]}
-```
+### 完整结构化模板定义
+八模板完整且唯一权威的结构化定义保存在本文件附录B完整JSON的general.templates；每个模板均含parameters、reads、diagnose及edits，本文自包含，不依赖外部附件。爆发前准备的完整实例位于general.templates[爆发前准备]，其last_true选择最后有数据支持且不耽误固定爆发的完成机会，动作与阈值仅由绑定填入。
+
 ## 通用初始化与事实接口
 
 每个选中配置保存自己的有序起手，可以有重复动作、空战前列表，也可以没有独立爆发。初始化使用动作的真实基础按钮、源形态和实际形态资料查询费用、有效GCD、读条、完整引导、队列与作用完成时刻。本轮接通读条和完整引导占用；不新增蓄力阶段、提前释放或裁剪引导策略。GCD结束、读条/引导占用结束和效果生效并非同一个时刻；不能把非瞬发动作当瞬发来排空点击。
@@ -124,7 +144,7 @@ SourcePosition（源位置）是路径，不能作平面数字或字典序比较
 
 ### 本轮明确实施的两项初始化优化
 
-用户已确认：固定爆发按法、周期和宏执行保持；初始化偏瞬发、原生快照只绑定邪DK两项本轮优化。这里写的是待开发的明确改动，不再只把读条、引导及非DK快照列为未来限制。方案尚未实现，不承诺全部专精只换配置就已能运行。
+用户已确认：固定爆发按法、周期和宏执行保持；初始化偏瞬发、原生快照只绑定邪DK两项本轮优化。这里写的是待开发的明确改动，不再只把读条、引导及非DK快照列为未来限制。本轮两项已实施并完成云端定向验证，范围证据见01；仍不承诺全部专精只换配置就已能运行。
 
 | 改动 | 现有接缝与最小修改 | 完成边界 |
 | --- | --- | --- |
@@ -176,9 +196,11 @@ Coba的context（上下文）包含当前候选全部适用诊断，action（备
 | 经验复用项 | 具体约定 | 最小技术验证 |
 | --- | --- | --- |
 | 共享范围 | 一个兼容feature/reward版本共享学习器，跨角色、专精和任务复用；编辑配置摘要不自动另起模型。 | 核对特征含义/维度、反馈版本和学习器状态格式；不兼容时明确拒绝混用。 |
-| 真实模型保存 | 保存真实Coba学习器状态和必要随机进度，复用现有任务存储与短锁；不假装只存统计摘要即可恢复。 | 先做小型roundtrip：构造特征→predict/learn数次→保存重读→核对下一次预测/更新，库持久化API未核，不能声称开箱全包。 |
+| 真实模型保存 | 保存真实Coba学习器状态和必要随机进度，复用现有任务存储与短锁；不假装只存统计摘要即可恢复。 | 先做小型roundtrip：构造特征→predict/learn数次→保存重读→核对下一次预测/更新，已核固定Coba8.1.0无原生save/load，以本轮有限状态/RNG薄适配完成roundtrip，不声称库开箱全包。 |
 | 一次反馈 | 使用原共同批次真实相对DPS；同一task/decision反馈去重与模型保存可靠关联。 | 复用原store事务/版本检查；崩溃后既不漏保存也不重复学习，不持锁跑模拟。 |
 | 并发与任务恢复 | 任务保存当时决策/操作/反馈身份；恢复读取最新共享模型，不能用旧任务快照覆盖更新的全局经验。 | 构造两任务交错学习和旧任务恢复；已完成真实评分不因补保存再跑。 |
+
+03已审最小实施契约：固定官方Coba8.1.0及numpy2.4.4，使用原生predict(context,actions)和learn(context,selected_action,reward,probability)，同特征操作以独立dense对象身份回映具体operation_id。初版context50维、action21维、原生默认交叉后1072维；计数归一/valid及固定字段顺序见03票Implementation contract，不把79规则或900输入逐项展开成特征。真实_theta/A_inv及原生RNG整数游标用固定版本薄适配，不pickle重置进度、不重写学习公式。共享状态沿既有共同数据中心单逻辑key原子替换，模型/RNG/未结算decision/反馈水位同一权威记录、现短锁/CAS；task保存可重试意图，不能拿双WAL ATTACH声称跨文件原子。intent先flush_reports后save，逐decision立即入原pending；共享写异常重读提交身份，task/训练recover_reports后且终态/预算早返前补发冻结反馈。共同评分request只删program、behavior_identity和纯观察trace，其余条件严格相同；暂取消不伪零、不封未完pending，原seen/同轮结果过滤后剩余完整池全给Coba。
 
 上述调用与存储验证只用小型构造数据，不是新增收益实验或额外战斗模拟。Coba若没有可直接使用的持久化入口，只在所选库与现有存储之间做最小已验证适配，不另选学习算法或搭经验平台。
 ## 首个MVP配置实例 邪恶死亡骑士
@@ -440,6 +462,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
 ## 性能验证与收益验收
 先用有限构造记录及现有原评分接缝验证：声明读取集合有界；一次评分只诊断一次；池生成不重复编译或模拟；只选中候选进入原编译评分；选择/学习/锁等待及诊断均计入原任务预算。开启/关闭详细诊断不得改变同输入、同样本、同随机条件下的执行和伤害。记录必要的读数据、解释、池生成、选择/学习耗时和峰值临时记录数，避免逐点击完整APL扫描。
 首个邪DK MVP的收益验收只按用户既定口径：同条件旧方案与新方案各600秒，比较最终输出DPS。保留原内部评分、样本、早筛和晋级规则，不增加100场模拟、消融、多算法比较、统计显著性、额外复测或新收益门槛。云端能完成的工作在云端完成；真正依赖本机引擎或硬件的步骤另按具体授权，不因长时间或验证提高本机模型强度。
+
+2026-10-18用户已选择并授权A（Sentinel_b40b9eb423088191b2ee3270621ea83e），B（base64矩阵）未授权、不实施；没有新数值达标门槛。已审效果索引d45f121保持同raw完整诊断/有序池，单次3.148→2.384秒；typed模型版本/兼容列点读缓存8be35a1保持成熟模型6阶段操作/概率/完整状态相同，全读6→1而原子写仍6次，两热轮中位1.694→1.163秒（仅小样本）；checkpoint去重cd65965只去顶层/首批等价副本，中心原来源证据仍保留，66归档94.04→48.59MB且全状态相等、首次save3.362→1.913秒。三片均已双轴0/0，不据这些局部成本外推整体任务达标，详见03票证据。
+
+报告原义修复仅限既有观察适配：state.value空record用明确版本2标签，旧v1照读；resource_costs在action_observations及action_events中保存原键集合和missing/null/record，仍有类型映射，旧无标记不猜失去的信息，其他统计空对象仍按原NULL约定。不扫描整report空路径，不改_report_columns或原报告文件/旧任务身份。308受影响15例8.14秒绿；同一保留raw经真实中心往返，2344个已知空费用恢复，旧adapter读回重算0池、修后165池与raw165池同诊断/有序操作/证据，仅已有其他STRUCT补null导致的observation_digest及派生ID不同，逐路径披露而不吞其它差异。新适配每次还原约0.102秒（原0.006秒）；一次整读增大与一轮热读方向不同，不把噪声算加速。原义切片7635888已双轴0/0；A最小合并310为26例40.74秒绿、0native，四项A均已实施/限定独审通过，局部改善不等于整搜索达标。正式统一验证及已知旧fixture接缝收口仍待，不新跑600秒。
+
 ## 非DK构造数据的通用性检查
 
 本文件附录B的完整JSON的validation_fixtures.non_dk_synthetic内嵌完整测试专用构造数据，不对应真实专精推荐策略，也不证明任何实际职业已运行。它复用同一批模板，以能量和计数两种资源的费用表、多充能、友方效果目标及另一个受控来源、单组件持续效果、单个状态列表、空战前和空独立计划绑定，并显式包含2秒读条及3秒引导。构造快照取绝对4000毫秒，此时引导从2000毫秒持续至5000毫秒、GCD已结束，channeling位仍阻止‘可避免空闲’判定，不引入裁剪引导策略。
@@ -464,9 +491,9 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
 
 | 票据 | 当前状态 | 已有与未完成 | 下一步 |
 | --- | --- | --- | --- |
-| [01 可编辑配置、通用时序初始化与合法导出](issues/01-rule-initialization.md) | in-progress | 旧有序起手链已实施；本轮三键/实际读条引导/公共快照差量未实施。 | 先完成公开入口TDD和最小原生时序接入，当前无默认值审批阻塞。 |
-| [02 通用模板诊断与合法单步修改](issues/02-diagnostic-edits.md) | in-progress | 来源及本版设计审查完成；产品完整模板/事实/池接缝未完成。 | 复用01配置和事实接口；三组默认均已批准；按依赖落实共用能力与各绑定。 |
-| [03 单操作自适应搜索与共享恢复](issues/03-adaptive-search.md) | draft | Coba LinUCB已选；依赖02，未实现共享学习链。 | 02交付后沿同一operation身份自动单选和真实反馈。 |
+| [01 可编辑配置、通用时序初始化与合法导出](issues/01-rule-initialization.md) | implemented | 配置/通用时序/公共快照、四实例导出及收尾已完成限定实施审查。 | 三票统一正式验证及最终规格/交付仍待。 |
+| [02 通用模板诊断与合法单步修改](issues/02-diagnostic-edits.md) | implemented | 同次诊断/完整池/单步评分及四配置限定验收已通过；未审异步等保unknown。 | 三票统一正式验证；不能把允许unknown称全79分支全功能。 |
+| [03 单操作自适应搜索与共享恢复](issues/03-adaptive-search.md) | in-progress | 自动单选/共享学习恢复及最后训练测试迁移已通过限定审查；比较旧141201.9448、新134389.7783 DPS（-4.8244%），当前未胜。A四项修复已完成独审及26例合并验证。 | 统一正式验证及已知旧fixture接缝收口；不据局部成本宣布整体吞吐/收益达标，B未执行。 |
 
 ### 历史实现证据的保留范围
 
@@ -480,7 +507,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
 
 ## 附录B 完整结构化配置示例
 
-以下从独立审查过的设计快照完整内嵌，三组默认均在confirmed_decisions保留各自确认来源，execution_approval/decisions无未决业务项。它是可审的数据契约，不是现有产品可直接加载的API；实现时接入现有单JSON，而非新建配置平台。所有模板本体、首MVP四套起手和79条有序绑定、对象及执行来源、选择器特征、初始化契约与非DK构造例均在本文件内，无研究文件依赖。
+以下从独立审查过的设计快照完整内嵌，三组默认均在confirmed_decisions保留各自确认来源，execution_approval/decisions无未决业务项。它是包含运行数据和说明元数据的完整设计资料；生产文件按上文schema2白名单提取，不能将整份附录直接当产品运行包。实现时复用现有单JSON，而非新建配置平台。所有模板本体、首MVP四套起手和79条有序绑定、对象及执行来源、选择器特征、初始化契约与非DK构造例均在本文件内，无研究文件依赖。
 
 ```json
 {
@@ -917,12 +944,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                           "op": "or",
                           "args": [
                             {
-                              "op": "eq",
+                              "op": "is_true",
                               "args": [
                                 {
                                   "var": "x.action.native_qualified"
-                                },
-                                true
+                                }
                               ]
                             },
                             {
@@ -1734,12 +1760,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                           "op": "or",
                           "args": [
                             {
-                              "op": "eq",
+                              "op": "is_true",
                               "args": [
                                 {
                                   "var": "x.action.native_qualified"
-                                },
-                                true
+                                }
                               ]
                             },
                             {
@@ -2486,6 +2511,221 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                           },
                           true
                         ]
+                      },
+                      "related_inputs": {
+                        "op": "map",
+                        "args": [
+                          {
+                            "op": "filter",
+                            "args": [
+                              {
+                                "var": "rows"
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "op": "and",
+                                    "args": [
+                                      {
+                                        "op": "and",
+                                        "args": [
+                                          {
+                                            "op": "or",
+                                            "args": [
+                                              {
+                                                "op": "is_true",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.native_qualified"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "and",
+                                                "args": [
+                                                  {
+                                                    "op": "unknown",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.native_qualified"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "select",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.has_cooldown"
+                                                      },
+                                                      {
+                                                        "op": "or",
+                                                        "args": [
+                                                          {
+                                                            "op": "lte",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.cooldown_remaining"
+                                                              },
+                                                              0
+                                                            ]
+                                                          },
+                                                          {
+                                                            "op": "gt",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.charges_current"
+                                                              },
+                                                              0
+                                                            ]
+                                                          }
+                                                        ]
+                                                      },
+                                                      true
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "all3",
+                                                    "args": [
+                                                      {
+                                                        "op": "map",
+                                                        "args": [
+                                                          {
+                                                            "op": "entries",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.resource_costs"
+                                                              }
+                                                            ]
+                                                          },
+                                                          {
+                                                            "op": "gte",
+                                                            "args": [
+                                                              {
+                                                                "op": "lookup",
+                                                                "args": [
+                                                                  {
+                                                                    "var": "x.action.resource_balances"
+                                                                  },
+                                                                  {
+                                                                    "var": "cost.key"
+                                                                  }
+                                                                ]
+                                                              },
+                                                              {
+                                                                "var": "cost.value"
+                                                              }
+                                                            ]
+                                                          }
+                                                        ],
+                                                        "as": "cost"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "is_number",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.earliest_execute"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "is_number",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.occupancy_end"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "not",
+                                                    "args": [
+                                                      {
+                                                        "op": "any3",
+                                                        "args": [
+                                                          {
+                                                            "op": "map",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.known_native_requirements"
+                                                              },
+                                                              {
+                                                                "op": "eq",
+                                                                "args": [
+                                                                  {
+                                                                    "var": "req.value"
+                                                                  },
+                                                                  false
+                                                                ]
+                                                              }
+                                                            ],
+                                                            "as": "req"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "var": "x.action.input_allowed"
+                                          },
+                                          {
+                                            "op": "not",
+                                            "args": [
+                                              {
+                                                "var": "x.higher"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "lte",
+                                        "args": [
+                                          {
+                                            "var": "x.action.occupancy_end"
+                                          },
+                                          {
+                                            "var": "b.right"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "compare",
+                                    "args": [
+                                      {
+                                        "var": "x.stock.value"
+                                      },
+                                      {
+                                        "arg": "compare"
+                                      },
+                                      {
+                                        "arg": "threshold"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ],
+                            "as": "x"
+                          },
+                          {
+                            "op": "record",
+                            "args": [],
+                            "fields": {
+                              "input_index": {
+                                "var": "x.action.input_index"
+                              }
+                            }
+                          }
+                        ],
+                        "as": "x"
                       }
                     }
                   }
@@ -2651,12 +2891,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                           "op": "or",
                                           "args": [
                                             {
-                                              "op": "eq",
+                                              "op": "is_true",
                                               "args": [
                                                 {
                                                   "var": "x.action.native_qualified"
-                                                },
-                                                true
+                                                }
                                               ]
                                             },
                                             {
@@ -2843,12 +3082,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                         "op": "or",
                                         "args": [
                                           {
-                                            "op": "eq",
+                                            "op": "is_true",
                                             "args": [
                                               {
                                                 "var": "x.action.native_qualified"
-                                              },
-                                              true
+                                              }
                                             ]
                                           },
                                           {
@@ -3173,19 +3411,71 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                             "var": "contexts"
                           },
                           {
-                            "op": "and",
+                            "op": "select",
                             "args": [
                               {
-                                "var": "c.trigger"
-                              },
-                              {
-                                "op": "eq",
+                                "op": "unknown",
                                 "args": [
                                   {
-                                    "var": "c.input_index"
+                                    "var": "c.chosen"
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "var": "c.trigger"
                                   },
                                   {
-                                    "var": "input.input_index"
+                                    "op": "any3",
+                                    "args": [
+                                      {
+                                        "op": "map",
+                                        "args": [
+                                          {
+                                            "var": "c.related_inputs"
+                                          },
+                                          {
+                                            "op": "and",
+                                            "args": [
+                                              {
+                                                "op": "eq",
+                                                "args": [
+                                                  {
+                                                    "var": "related.input_index"
+                                                  },
+                                                  {
+                                                    "var": "input.input_index"
+                                                  }
+                                                ]
+                                              },
+                                              true
+                                            ]
+                                          }
+                                        ],
+                                        "as": "related"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "var": "c.trigger"
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "c.input_index"
+                                      },
+                                      {
+                                        "var": "input.input_index"
+                                      }
+                                    ]
                                   }
                                 ]
                               }
@@ -3383,6 +3673,13 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
           },
           "consume_required": {
             "type": "boolean"
+          },
+          "usage_time_basis": {
+            "type": "enum",
+            "values": [
+              "execution",
+              "effect_completion"
+            ]
           }
         },
         "reads": [
@@ -3419,7 +3716,12 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
               "base_button",
               "run_id",
               "sample_id",
-              "event_index"
+              "event_index",
+              "cast_ms",
+              "timing_precision",
+              "execution_time",
+              "execution_event_index",
+              "execution_actual_form"
             ],
             "same_run": true,
             "on_declared_null_object": "not_applicable_identity_rows"
@@ -3497,6 +3799,121 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
         ],
         "diagnose": {
           "let": [
+            {
+              "name": "timed_action_states",
+              "value": {
+                "op": "map",
+                "args": [
+                  {
+                    "var": "action_states"
+                  },
+                  {
+                    "op": "merge",
+                    "args": [
+                      {
+                        "var": "a"
+                      },
+                      {
+                        "op": "record",
+                        "fields": {
+                          "usage_completion_time": {
+                            "op": "select",
+                            "args": [
+                              {
+                                "op": "eq",
+                                "args": [
+                                  {
+                                    "arg": "usage_time_basis"
+                                  },
+                                  "execution"
+                                ]
+                              },
+                              {
+                                "op": "select",
+                                "args": [
+                                  {
+                                    "op": "and",
+                                    "args": [
+                                      {
+                                        "op": "eq",
+                                        "args": [
+                                          {
+                                            "var": "a.timing_precision"
+                                          },
+                                          "current_state_estimate"
+                                        ]
+                                      },
+                                      {
+                                        "op": "is_number",
+                                        "args": [
+                                          {
+                                            "var": "a.cast_ms"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "gte",
+                                        "args": [
+                                          {
+                                            "var": "a.cast_ms"
+                                          },
+                                          0
+                                        ]
+                                      },
+                                      {
+                                        "op": "is_number",
+                                        "args": [
+                                          {
+                                            "var": "a.earliest_execute"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "matches_native_object",
+                                        "args": [
+                                          {
+                                            "var": "a.actual_form"
+                                          },
+                                          {
+                                            "arg": "action"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "subtract",
+                                    "args": [
+                                      {
+                                        "var": "a.earliest_execute"
+                                      },
+                                      {
+                                        "op": "subtract",
+                                        "args": [
+                                          0,
+                                          {
+                                            "var": "a.cast_ms"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "var": "a.effect_completion_time"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "as": "a"
+              }
+            },
             {
               "name": "events_applicable",
               "value": {
@@ -3589,6 +4006,23 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                             ]
                           }
                         ]
+                      },
+                      "related_inputs": {
+                        "op": "map",
+                        "args": [
+                          {
+                            "var": "feasible"
+                          },
+                          {
+                            "op": "record",
+                            "fields": {
+                              "input_index": {
+                                "var": "q.action.input_index"
+                              }
+                            }
+                          }
+                        ],
+                        "as": "q"
                       }
                     }
                   }
@@ -3604,7 +4038,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                           "op": "join_interval",
                           "args": [
                             {
-                              "var": "action_states"
+                              "var": "timed_action_states"
                             },
                             {
                               "var": "w"
@@ -3686,12 +4120,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                   "op": "or",
                                   "args": [
                                     {
-                                      "op": "eq",
+                                      "op": "is_true",
                                       "args": [
                                         {
                                           "var": "x.action.native_qualified"
-                                        },
-                                        true
+                                        }
                                       ]
                                     },
                                     {
@@ -3840,7 +4273,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "op": "lte",
                               "args": [
                                 {
-                                  "var": "x.action.effect_completion_time"
+                                  "var": "x.action.usage_completion_time"
                                 },
                                 {
                                   "var": "w.end"
@@ -3889,12 +4322,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                               "op": "or",
                                               "args": [
                                                 {
-                                                  "op": "eq",
+                                                  "op": "is_true",
                                                   "args": [
                                                     {
                                                       "var": "x.action.native_qualified"
-                                                    },
-                                                    true
+                                                    }
                                                   ]
                                                 },
                                                 {
@@ -4043,7 +4475,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                           "op": "lte",
                                           "args": [
                                             {
-                                              "var": "x.action.effect_completion_time"
+                                              "var": "x.action.usage_completion_time"
                                             },
                                             {
                                               "var": "w.end"
@@ -4081,12 +4513,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                             "op": "or",
                                             "args": [
                                               {
-                                                "op": "eq",
+                                                "op": "is_true",
                                                 "args": [
                                                   {
                                                     "var": "x.action.native_qualified"
-                                                  },
-                                                  true
+                                                  }
                                                 ]
                                               },
                                               {
@@ -4235,7 +4666,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                         "op": "lte",
                                         "args": [
                                           {
-                                            "var": "x.action.effect_completion_time"
+                                            "var": "x.action.usage_completion_time"
                                           },
                                           {
                                             "var": "w.end"
@@ -4275,12 +4706,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                               "op": "or",
                                               "args": [
                                                 {
-                                                  "op": "eq",
+                                                  "op": "is_true",
                                                   "args": [
                                                     {
                                                       "var": "x.action.native_qualified"
-                                                    },
-                                                    true
+                                                    }
                                                   ]
                                                 },
                                                 {
@@ -4429,7 +4859,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                           "op": "lte",
                                           "args": [
                                             {
-                                              "var": "x.action.effect_completion_time"
+                                              "var": "x.action.usage_completion_time"
                                             },
                                             {
                                               "var": "w.end"
@@ -4467,12 +4897,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                             "op": "or",
                                             "args": [
                                               {
-                                                "op": "eq",
+                                                "op": "is_true",
                                                 "args": [
                                                   {
                                                     "var": "x.action.native_qualified"
-                                                  },
-                                                  true
+                                                  }
                                                 ]
                                               },
                                               {
@@ -4621,7 +5050,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                         "op": "lte",
                                         "args": [
                                           {
-                                            "var": "x.action.effect_completion_time"
+                                            "var": "x.action.usage_completion_time"
                                           },
                                           {
                                             "var": "w.end"
@@ -4645,41 +5074,191 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                   {
                     "name": "successes",
                     "value": {
-                      "op": "filter",
+                      "op": "select",
                       "args": [
                         {
-                          "var": "rows"
-                        },
-                        {
-                          "op": "and",
+                          "op": "eq",
                           "args": [
                             {
-                              "var": "x.action.success"
+                              "arg": "usage_time_basis"
                             },
+                            "execution"
+                          ]
+                        },
+                        {
+                          "op": "filter",
+                          "args": [
                             {
-                              "op": "matches_native_object",
+                              "op": "join_interval",
                               "args": [
                                 {
-                                  "var": "x.action.actual_form"
+                                  "op": "map",
+                                  "args": [
+                                    {
+                                      "op": "filter",
+                                      "args": [
+                                        {
+                                          "var": "timed_action_states"
+                                        },
+                                        {
+                                          "op": "and",
+                                          "args": [
+                                            {
+                                              "op": "not",
+                                              "args": [
+                                                {
+                                                  "op": "eq",
+                                                  "args": [
+                                                    {
+                                                      "var": "a.success"
+                                                    },
+                                                    false
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "or",
+                                              "args": [
+                                                {
+                                                  "op": "lt",
+                                                  "args": [
+                                                    {
+                                                      "var": "a.time"
+                                                    },
+                                                    {
+                                                      "var": "w.end"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "and",
+                                                  "args": [
+                                                    {
+                                                      "op": "eq",
+                                                      "args": [
+                                                        {
+                                                          "var": "a.time"
+                                                        },
+                                                        {
+                                                          "var": "w.end"
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "lte",
+                                                      "args": [
+                                                        {
+                                                          "var": "a.event_index"
+                                                        },
+                                                        {
+                                                          "var": "w.end_event_index"
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ],
+                                      "as": "a"
+                                    },
+                                    {
+                                      "op": "merge",
+                                      "args": [
+                                        {
+                                          "var": "a"
+                                        },
+                                        {
+                                          "op": "record",
+                                          "fields": {
+                                            "time": {
+                                              "var": "a.execution_time"
+                                            },
+                                            "event_index": {
+                                              "var": "a.execution_event_index"
+                                            },
+                                            "actual_form": {
+                                              "var": "a.execution_actual_form"
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ],
+                                  "as": "a"
                                 },
                                 {
-                                  "arg": "action"
+                                  "var": "w"
+                                }
+                              ],
+                              "time_field": "time",
+                              "alias": "action",
+                              "include_terminating_source_event": true,
+                              "same_timestamp_order": "existing_native_event_index"
+                            },
+                            {
+                              "op": "and",
+                              "args": [
+                                {
+                                  "var": "x.action.success"
+                                },
+                                {
+                                  "op": "matches_native_object",
+                                  "args": [
+                                    {
+                                      "var": "x.action.actual_form"
+                                    },
+                                    {
+                                      "arg": "action"
+                                    }
+                                  ]
                                 }
                               ]
                             }
-                          ]
+                          ],
+                          "as": "x"
+                        },
+                        {
+                          "op": "filter",
+                          "args": [
+                            {
+                              "var": "rows"
+                            },
+                            {
+                              "op": "and",
+                              "args": [
+                                {
+                                  "var": "x.action.success"
+                                },
+                                {
+                                  "op": "matches_native_object",
+                                  "args": [
+                                    {
+                                      "var": "x.action.actual_form"
+                                    },
+                                    {
+                                      "arg": "action"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ],
+                          "as": "x"
                         }
-                      ],
-                      "as": "x"
+                      ]
                     }
                   },
                   {
                     "name": "blocked",
                     "value": {
-                      "op": "gt",
+                      "op": "not",
                       "args": [
                         {
-                          "op": "count",
+                          "op": "empty",
                           "args": [
                             {
                               "op": "filter",
@@ -4694,12 +5273,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                       "op": "or",
                                       "args": [
                                         {
-                                          "op": "eq",
+                                          "op": "is_true",
                                           "args": [
                                             {
                                               "var": "x.action.native_qualified"
-                                            },
-                                            true
+                                            }
                                           ]
                                         },
                                         {
@@ -4845,8 +5423,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "as": "x"
                             }
                           ]
-                        },
-                        0
+                        }
                       ]
                     }
                   },
@@ -4957,17 +5534,16 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                       "op": "and",
                       "args": [
                         {
-                          "op": "gt",
+                          "op": "not",
                           "args": [
                             {
-                              "op": "count",
+                              "op": "empty",
                               "args": [
                                 {
                                   "var": "successes"
                                 }
                               ]
-                            },
-                            0
+                            }
                           ]
                         },
                         {
@@ -4977,17 +5553,16 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "arg": "consume_required"
                             },
                             {
-                              "op": "gt",
+                              "op": "not",
                               "args": [
                                 {
-                                  "op": "count",
+                                  "op": "empty",
                                   "args": [
                                     {
                                       "var": "own_consumptions"
                                     }
                                   ]
-                                },
-                                0
+                                }
                               ]
                             },
                             true
@@ -5002,16 +5577,87 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                       "op": "and",
                       "args": [
                         {
-                          "var": "chosen.action.success"
-                        },
-                        {
-                          "op": "matches_native_object",
+                          "op": "select",
                           "args": [
                             {
-                              "var": "chosen.action.actual_form"
+                              "op": "eq",
+                              "args": [
+                                {
+                                  "arg": "usage_time_basis"
+                                },
+                                "execution"
+                              ]
                             },
                             {
-                              "arg": "action"
+                              "op": "any3",
+                              "args": [
+                                {
+                                  "op": "map",
+                                  "args": [
+                                    {
+                                      "var": "successes"
+                                    },
+                                    {
+                                      "op": "and",
+                                      "args": [
+                                        {
+                                          "op": "eq",
+                                          "args": [
+                                            {
+                                              "var": "s.action.run_id"
+                                            },
+                                            {
+                                              "var": "chosen.action.run_id"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "eq",
+                                          "args": [
+                                            {
+                                              "var": "s.action.sample_id"
+                                            },
+                                            {
+                                              "var": "chosen.action.sample_id"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "eq",
+                                          "args": [
+                                            {
+                                              "var": "s.action.input_index"
+                                            },
+                                            {
+                                              "var": "chosen.action.input_index"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ],
+                                  "as": "s"
+                                }
+                              ]
+                            },
+                            {
+                              "op": "and",
+                              "args": [
+                                {
+                                  "var": "chosen.action.success"
+                                },
+                                {
+                                  "op": "matches_native_object",
+                                  "args": [
+                                    {
+                                      "var": "chosen.action.actual_form"
+                                    },
+                                    {
+                                      "arg": "action"
+                                    }
+                                  ]
+                                }
+                              ]
                             }
                           ]
                         },
@@ -5022,10 +5668,10 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "arg": "consume_required"
                             },
                             {
-                              "op": "gt",
+                              "op": "not",
                               "args": [
                                 {
-                                  "op": "count",
+                                  "op": "empty",
                                   "args": [
                                     {
                                       "op": "filter",
@@ -5048,8 +5694,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                       "as": "e"
                                     }
                                   ]
-                                },
-                                0
+                                }
                               ]
                             },
                             true
@@ -5238,7 +5883,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
             "op": "map",
             "args": [
               {
-                "var": "action_states"
+                "var": "timed_action_states"
               },
               {
                 "op": "record",
@@ -5256,19 +5901,71 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                             "var": "contexts"
                           },
                           {
-                            "op": "and",
+                            "op": "select",
                             "args": [
                               {
-                                "var": "c.trigger"
-                              },
-                              {
-                                "op": "eq",
+                                "op": "unknown",
                                 "args": [
                                   {
-                                    "var": "c.input_index"
+                                    "var": "c.chosen"
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "var": "c.trigger"
                                   },
                                   {
-                                    "var": "input.input_index"
+                                    "op": "any3",
+                                    "args": [
+                                      {
+                                        "op": "map",
+                                        "args": [
+                                          {
+                                            "var": "c.related_inputs"
+                                          },
+                                          {
+                                            "op": "and",
+                                            "args": [
+                                              {
+                                                "op": "eq",
+                                                "args": [
+                                                  {
+                                                    "var": "related.input_index"
+                                                  },
+                                                  {
+                                                    "var": "input.input_index"
+                                                  }
+                                                ]
+                                              },
+                                              true
+                                            ]
+                                          }
+                                        ],
+                                        "as": "related"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "var": "c.trigger"
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "c.input_index"
+                                      },
+                                      {
+                                        "var": "input.input_index"
+                                      }
+                                    ]
                                   }
                                 ]
                               }
@@ -5480,6 +6177,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
               "input_allowed",
               "earliest_execute",
               "effect_completion_time",
+              "estimated_effect_completion_time",
+              "effect_completion_estimate",
               "occupancy_start",
               "occupancy_end",
               "occupancy_domains",
@@ -5543,6 +6242,30 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
               "occurrence",
               "gap_before",
               "gap_after"
+            ],
+            "same_run": true,
+            "on_declared_null_object": "not_applicable_identity_rows"
+          },
+          {
+            "as": "effect_events",
+            "from": "student.effect_events",
+            "object": {
+              "arg": "effect"
+            },
+            "fields": [
+              "time",
+              "event_index",
+              "effect_id",
+              "instance_id",
+              "target_id",
+              "source_id",
+              "kind",
+              "stacks",
+              "start",
+              "end",
+              "end_reason",
+              "source_input_index",
+              "source_actual_action"
             ],
             "same_run": true,
             "on_declared_null_object": "not_applicable_identity_rows"
@@ -5665,6 +6388,355 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
               }
             },
             {
+              "name": "owned_events",
+              "value": {
+                "op": "map",
+                "args": [
+                  {
+                    "op": "filter",
+                    "args": [
+                      {
+                        "var": "effect_events"
+                      },
+                      {
+                        "op": "matches_native_object",
+                        "args": [
+                          {
+                            "var": "e.source_id"
+                          },
+                          {
+                            "arg": "source"
+                          }
+                        ]
+                      }
+                    ],
+                    "as": "e"
+                  },
+                  {
+                    "op": "merge",
+                    "args": [
+                      {
+                        "var": "e"
+                      },
+                      {
+                        "op": "record",
+                        "args": [],
+                        "fields": {
+                          "effect": {
+                            "op": "record",
+                            "args": [],
+                            "fields": {
+                              "component_id": {
+                                "var": "e.effect_id"
+                              },
+                              "target_id": {
+                                "var": "e.target_id"
+                              },
+                              "source_id": {
+                                "var": "e.source_id"
+                              },
+                              "active": {
+                                "op": "select",
+                                "args": [
+                                  {
+                                    "op": "and",
+                                    "args": [
+                                      {
+                                        "op": "is_integer",
+                                        "args": [
+                                          {
+                                            "var": "e.stacks"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "gte",
+                                        "args": [
+                                          {
+                                            "var": "e.stacks"
+                                          },
+                                          0
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "gt",
+                                    "args": [
+                                      {
+                                        "var": "e.stacks"
+                                      },
+                                      0
+                                    ]
+                                  },
+                                  {
+                                    "op": "lookup",
+                                    "args": [
+                                      {},
+                                      "unknown"
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "as": "e"
+              }
+            },
+            {
+              "name": "qualified_effect_qualification",
+              "value": {
+                "op": "map",
+                "args": [
+                  {
+                    "var": "effect_qualification"
+                  },
+                  {
+                    "op": "merge",
+                    "args": [
+                      {
+                        "var": "fact"
+                      },
+                      {
+                        "op": "record",
+                        "fields": {
+                          "value": {
+                            "op": "select",
+                            "args": [
+                              {
+                                "op": "eq",
+                                "args": [
+                                  {
+                                    "op": "object_field",
+                                    "args": [
+                                      {
+                                        "arg": "effect_qualification"
+                                      },
+                                      "representation"
+                                    ]
+                                  },
+                                  "boolean"
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  true,
+                                  {
+                                    "var": "fact.value"
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "select",
+                                "args": [
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "op": "object_field",
+                                        "args": [
+                                          {
+                                            "arg": "effect_qualification"
+                                          },
+                                          "representation"
+                                        ]
+                                      },
+                                      "positive_stack_presence"
+                                    ]
+                                  },
+                                  {
+                                    "op": "select",
+                                    "args": [
+                                      {
+                                        "op": "and",
+                                        "args": [
+                                          {
+                                            "op": "is_integer",
+                                            "args": [
+                                              {
+                                                "var": "fact.value"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "op": "gte",
+                                            "args": [
+                                              {
+                                                "var": "fact.value"
+                                              },
+                                              0
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "gt",
+                                        "args": [
+                                          {
+                                            "var": "fact.value"
+                                          },
+                                          0
+                                        ]
+                                      },
+                                      {
+                                        "op": "lookup",
+                                        "args": [
+                                          {},
+                                          "unknown"
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "lookup",
+                                    "args": [
+                                      {},
+                                      "unknown"
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "as": "fact"
+              }
+            },
+            {
+              "name": "qualified_replacement_qualification",
+              "value": {
+                "op": "map",
+                "args": [
+                  {
+                    "var": "replacement_qualification"
+                  },
+                  {
+                    "op": "merge",
+                    "args": [
+                      {
+                        "var": "fact"
+                      },
+                      {
+                        "op": "record",
+                        "fields": {
+                          "value": {
+                            "op": "select",
+                            "args": [
+                              {
+                                "op": "eq",
+                                "args": [
+                                  {
+                                    "op": "object_field",
+                                    "args": [
+                                      {
+                                        "arg": "replacement_qualification"
+                                      },
+                                      "representation"
+                                    ]
+                                  },
+                                  "boolean"
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  true,
+                                  {
+                                    "var": "fact.value"
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "select",
+                                "args": [
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "op": "object_field",
+                                        "args": [
+                                          {
+                                            "arg": "replacement_qualification"
+                                          },
+                                          "representation"
+                                        ]
+                                      },
+                                      "positive_stack_presence"
+                                    ]
+                                  },
+                                  {
+                                    "op": "select",
+                                    "args": [
+                                      {
+                                        "op": "and",
+                                        "args": [
+                                          {
+                                            "op": "is_integer",
+                                            "args": [
+                                              {
+                                                "var": "fact.value"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "op": "gte",
+                                            "args": [
+                                              {
+                                                "var": "fact.value"
+                                              },
+                                              0
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "gt",
+                                        "args": [
+                                          {
+                                            "var": "fact.value"
+                                          },
+                                          0
+                                        ]
+                                      },
+                                      {
+                                        "op": "lookup",
+                                        "args": [
+                                          {},
+                                          "unknown"
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "lookup",
+                                    "args": [
+                                      {},
+                                      "unknown"
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "as": "fact"
+              }
+            },
+            {
               "name": "player_rows",
               "value": {
                 "op": "map",
@@ -5681,13 +6753,13 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                       {
                         "as": "effect_qualification",
                         "rows": {
-                          "var": "effect_qualification"
+                          "var": "qualified_effect_qualification"
                         }
                       },
                       {
                         "as": "replacement_qualification",
                         "rows": {
-                          "var": "replacement_qualification"
+                          "var": "qualified_replacement_qualification"
                         }
                       }
                     ],
@@ -5836,12 +6908,163 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
               }
             },
             {
+              "name": "estimated_rows",
+              "value": {
+                "op": "map",
+                "args": [
+                  {
+                    "var": "rows"
+                  },
+                  {
+                    "op": "merge",
+                    "args": [
+                      {
+                        "var": "q"
+                      },
+                      {
+                        "op": "record",
+                        "args": [],
+                        "fields": {
+                          "estimated_effect_completion_time": {
+                            "op": "select",
+                            "args": [
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "op": "is_integer",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.target_id"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "is_integer",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.source_id"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.effect_id"
+                                      },
+                                      {
+                                        "var": "q.effect.component_id"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.target_id"
+                                      },
+                                      {
+                                        "var": "q.effect.target_id"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.source_id"
+                                      },
+                                      {
+                                        "var": "q.effect.source_id"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.actual_form"
+                                      },
+                                      {
+                                        "var": "q.action.actual_form"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "matches_native_object",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.actual_form"
+                                      },
+                                      {
+                                        "arg": "action"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.precision"
+                                      },
+                                      "current_state_estimate"
+                                    ]
+                                  },
+                                  {
+                                    "op": "is_number",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.effect_delay_ms"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "gte",
+                                    "args": [
+                                      {
+                                        "var": "q.action.effect_completion_estimate.effect_delay_ms"
+                                      },
+                                      0
+                                    ]
+                                  },
+                                  {
+                                    "op": "is_number",
+                                    "args": [
+                                      {
+                                        "var": "q.action.estimated_effect_completion_time"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "var": "q.action.estimated_effect_completion_time"
+                              },
+                              {
+                                "op": "lookup",
+                                "args": [
+                                  {},
+                                  "unknown"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "as": "q"
+              }
+            },
+            {
               "name": "required_rows",
               "value": {
                 "op": "filter",
                 "args": [
                   {
-                    "var": "rows"
+                    "var": "estimated_rows"
                   },
                   {
                     "op": "and",
@@ -5882,7 +7105,24 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                   "effect.source_id"
                 ],
                 "include_preceding_interval": true,
-                "preserve_group_paths": true
+                "preserve_group_paths": true,
+                "event_rows": {
+                  "var": "owned_events"
+                },
+                "event_group_by": [
+                  "run_id",
+                  "sample_id",
+                  "effect_id",
+                  "instance_id",
+                  "target_id",
+                  "source_id"
+                ],
+                "bounds": {
+                  "var": "bounds"
+                },
+                "state_field": "effect.active",
+                "input_time_field": "action.time",
+                "input_event_index_field": "action.event_index"
               }
             },
             {
@@ -5935,358 +7175,39 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                             ]
                           }
                         ]
-                      }
-                    }
-                  }
-                ],
-                "as": "g",
-                "let": [
-                  {
-                    "name": "scope_rows",
-                    "value": {
-                      "op": "filter",
-                      "args": [
-                        {
-                          "var": "required_rows"
-                        },
-                        {
-                          "op": "and",
-                          "args": [
-                            {
-                              "op": "eq",
-                              "args": [
-                                {
-                                  "var": "x.effect.component_id"
-                                },
-                                {
-                                  "var": "g.effect.component_id"
-                                }
-                              ]
-                            },
-                            {
-                              "op": "eq",
-                              "args": [
-                                {
-                                  "var": "x.effect.target_id"
-                                },
-                                {
-                                  "var": "g.effect.target_id"
-                                }
-                              ]
-                            },
-                            {
-                              "op": "eq",
-                              "args": [
-                                {
-                                  "var": "x.effect.source_id"
-                                },
-                                {
-                                  "var": "g.effect.source_id"
-                                }
-                              ]
-                            },
-                            {
-                              "op": "gte",
-                              "args": [
-                                {
-                                  "var": "x.action.time"
-                                },
-                                {
-                                  "op": "select",
-                                  "args": [
-                                    {
-                                      "op": "empty",
-                                      "args": [
-                                        {
-                                          "var": "g.preceding_interval"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "var": "bounds.start"
-                                    },
-                                    {
-                                      "var": "g.preceding_interval.start"
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "lte",
-                              "args": [
-                                {
-                                  "var": "x.action.time"
-                                },
-                                {
-                                  "var": "g.end"
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ],
-                      "as": "x"
-                    }
-                  },
-                  {
-                    "name": "before",
-                    "value": {
-                      "op": "last_true",
-                      "args": [
-                        {
-                          "op": "filter",
-                          "args": [
-                            {
-                              "var": "scope_rows"
-                            },
-                            {
-                              "op": "is_true",
-                              "args": [
-                                {
-                                  "op": "and",
-                                  "args": [
-                                    {
-                                      "var": "x.effect.active"
-                                    },
-                                    {
-                                      "var": "x.effect_qualification.value"
-                                    },
-                                    {
-                                      "var": "x.replacement_qualification.value"
-                                    },
-                                    {
-                                      "op": "and",
-                                      "args": [
-                                        {
-                                          "op": "or",
-                                          "args": [
-                                            {
-                                              "op": "eq",
-                                              "args": [
-                                                {
-                                                  "var": "x.action.native_qualified"
-                                                },
-                                                true
-                                              ]
-                                            },
-                                            {
-                                              "op": "and",
-                                              "args": [
-                                                {
-                                                  "op": "unknown",
-                                                  "args": [
-                                                    {
-                                                      "var": "x.action.native_qualified"
-                                                    }
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "select",
-                                                  "args": [
-                                                    {
-                                                      "var": "x.action.has_cooldown"
-                                                    },
-                                                    {
-                                                      "op": "or",
-                                                      "args": [
-                                                        {
-                                                          "op": "lte",
-                                                          "args": [
-                                                            {
-                                                              "var": "x.action.cooldown_remaining"
-                                                            },
-                                                            0
-                                                          ]
-                                                        },
-                                                        {
-                                                          "op": "gt",
-                                                          "args": [
-                                                            {
-                                                              "var": "x.action.charges_current"
-                                                            },
-                                                            0
-                                                          ]
-                                                        }
-                                                      ]
-                                                    },
-                                                    true
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "all3",
-                                                  "args": [
-                                                    {
-                                                      "op": "map",
-                                                      "args": [
-                                                        {
-                                                          "op": "entries",
-                                                          "args": [
-                                                            {
-                                                              "var": "x.action.resource_costs"
-                                                            }
-                                                          ]
-                                                        },
-                                                        {
-                                                          "op": "gte",
-                                                          "args": [
-                                                            {
-                                                              "op": "lookup",
-                                                              "args": [
-                                                                {
-                                                                  "var": "x.action.resource_balances"
-                                                                },
-                                                                {
-                                                                  "var": "cost.key"
-                                                                }
-                                                              ]
-                                                            },
-                                                            {
-                                                              "var": "cost.value"
-                                                            }
-                                                          ]
-                                                        }
-                                                      ],
-                                                      "as": "cost"
-                                                    }
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "is_number",
-                                                  "args": [
-                                                    {
-                                                      "var": "x.action.earliest_execute"
-                                                    }
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "is_number",
-                                                  "args": [
-                                                    {
-                                                      "var": "x.action.occupancy_end"
-                                                    }
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "not",
-                                                  "args": [
-                                                    {
-                                                      "op": "any3",
-                                                      "args": [
-                                                        {
-                                                          "op": "map",
-                                                          "args": [
-                                                            {
-                                                              "var": "x.action.known_native_requirements"
-                                                            },
-                                                            {
-                                                              "op": "eq",
-                                                              "args": [
-                                                                {
-                                                                  "var": "req.value"
-                                                                },
-                                                                false
-                                                              ]
-                                                            }
-                                                          ],
-                                                          "as": "req"
-                                                        }
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "var": "x.action.input_allowed"
-                                        },
-                                        {
-                                          "op": "not",
-                                          "args": [
-                                            {
-                                              "var": "x.higher"
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "op": "lt",
-                                      "args": [
-                                        {
-                                          "var": "x.action.time"
-                                        },
-                                        {
-                                          "var": "g.start"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "op": "lte",
-                                      "args": [
-                                        {
-                                          "var": "x.action.effect_completion_time"
-                                        },
-                                        {
-                                          "var": "g.start"
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ],
-                          "as": "x"
-                        },
-                        true
-                      ],
-                      "as": "x",
-                      "order_by": "action.time",
-                      "reject_later_unknown": false,
-                      "unknown_evidence": {
-                        "op": "filter",
+                      },
+                      "related_inputs": {
+                        "op": "map",
                         "args": [
                           {
-                            "var": "scope_rows"
-                          },
-                          {
-                            "op": "unknown",
+                            "op": "filter",
                             "args": [
                               {
-                                "op": "and",
+                                "var": "scope_rows"
+                              },
+                              {
+                                "op": "or",
                                 "args": [
-                                  {
-                                    "var": "x.effect.active"
-                                  },
-                                  {
-                                    "var": "x.effect_qualification.value"
-                                  },
-                                  {
-                                    "var": "x.replacement_qualification.value"
-                                  },
                                   {
                                     "op": "and",
                                     "args": [
                                       {
-                                        "op": "or",
+                                        "var": "x.effect.active"
+                                      },
+                                      {
+                                        "var": "x.effect_qualification.value"
+                                      },
+                                      {
+                                        "var": "x.replacement_qualification.value"
+                                      },
+                                      {
+                                        "op": "and",
                                         "args": [
                                           {
-                                            "op": "eq",
+                                            "op": "or",
                                             "args": [
                                               {
-                                                "var": "x.action.native_qualified"
-                                              },
-                                              true
-                                            ]
-                                          },
-                                          {
-                                            "op": "and",
-                                            "args": [
-                                              {
-                                                "op": "unknown",
+                                                "op": "is_true",
                                                 "args": [
                                                   {
                                                     "var": "x.action.native_qualified"
@@ -6294,116 +7215,183 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                                 ]
                                               },
                                               {
-                                                "op": "select",
+                                                "op": "and",
                                                 "args": [
                                                   {
-                                                    "var": "x.action.has_cooldown"
-                                                  },
-                                                  {
-                                                    "op": "or",
+                                                    "op": "unknown",
                                                     "args": [
                                                       {
-                                                        "op": "lte",
-                                                        "args": [
-                                                          {
-                                                            "var": "x.action.cooldown_remaining"
-                                                          },
-                                                          0
-                                                        ]
-                                                      },
-                                                      {
-                                                        "op": "gt",
-                                                        "args": [
-                                                          {
-                                                            "var": "x.action.charges_current"
-                                                          },
-                                                          0
-                                                        ]
+                                                        "var": "x.action.native_qualified"
                                                       }
                                                     ]
                                                   },
-                                                  true
-                                                ]
-                                              },
-                                              {
-                                                "op": "all3",
-                                                "args": [
                                                   {
-                                                    "op": "map",
+                                                    "op": "select",
                                                     "args": [
                                                       {
-                                                        "op": "entries",
-                                                        "args": [
-                                                          {
-                                                            "var": "x.action.resource_costs"
-                                                          }
-                                                        ]
+                                                        "var": "x.action.has_cooldown"
                                                       },
                                                       {
-                                                        "op": "gte",
+                                                        "op": "or",
                                                         "args": [
                                                           {
-                                                            "op": "lookup",
+                                                            "op": "lte",
                                                             "args": [
                                                               {
-                                                                "var": "x.action.resource_balances"
+                                                                "var": "x.action.cooldown_remaining"
                                                               },
-                                                              {
-                                                                "var": "cost.key"
-                                                              }
+                                                              0
                                                             ]
                                                           },
                                                           {
-                                                            "var": "cost.value"
+                                                            "op": "gt",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.charges_current"
+                                                              },
+                                                              0
+                                                            ]
                                                           }
                                                         ]
-                                                      }
-                                                    ],
-                                                    "as": "cost"
-                                                  }
-                                                ]
-                                              },
-                                              {
-                                                "op": "is_number",
-                                                "args": [
+                                                      },
+                                                      true
+                                                    ]
+                                                  },
                                                   {
-                                                    "var": "x.action.earliest_execute"
-                                                  }
-                                                ]
-                                              },
-                                              {
-                                                "op": "is_number",
-                                                "args": [
-                                                  {
-                                                    "var": "x.action.occupancy_end"
-                                                  }
-                                                ]
-                                              },
-                                              {
-                                                "op": "not",
-                                                "args": [
-                                                  {
-                                                    "op": "any3",
+                                                    "op": "all3",
                                                     "args": [
                                                       {
                                                         "op": "map",
                                                         "args": [
                                                           {
-                                                            "var": "x.action.known_native_requirements"
-                                                          },
-                                                          {
-                                                            "op": "eq",
+                                                            "op": "entries",
                                                             "args": [
                                                               {
-                                                                "var": "req.value"
+                                                                "var": "x.action.resource_costs"
+                                                              }
+                                                            ]
+                                                          },
+                                                          {
+                                                            "op": "gte",
+                                                            "args": [
+                                                              {
+                                                                "op": "lookup",
+                                                                "args": [
+                                                                  {
+                                                                    "var": "x.action.resource_balances"
+                                                                  },
+                                                                  {
+                                                                    "var": "cost.key"
+                                                                  }
+                                                                ]
                                                               },
-                                                              false
+                                                              {
+                                                                "var": "cost.value"
+                                                              }
                                                             ]
                                                           }
                                                         ],
-                                                        "as": "req"
+                                                        "as": "cost"
                                                       }
                                                     ]
+                                                  },
+                                                  {
+                                                    "op": "is_number",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.earliest_execute"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "is_number",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.occupancy_end"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "not",
+                                                    "args": [
+                                                      {
+                                                        "op": "any3",
+                                                        "args": [
+                                                          {
+                                                            "op": "map",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.known_native_requirements"
+                                                              },
+                                                              {
+                                                                "op": "eq",
+                                                                "args": [
+                                                                  {
+                                                                    "var": "req.value"
+                                                                  },
+                                                                  false
+                                                                ]
+                                                              }
+                                                            ],
+                                                            "as": "req"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "var": "x.action.input_allowed"
+                                          },
+                                          {
+                                            "op": "not",
+                                            "args": [
+                                              {
+                                                "var": "x.higher"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "or",
+                                        "args": [
+                                          {
+                                            "op": "lt",
+                                            "args": [
+                                              {
+                                                "var": "x.action.time"
+                                              },
+                                              {
+                                                "var": "g.start"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "op": "and",
+                                            "args": [
+                                              {
+                                                "op": "eq",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.time"
+                                                  },
+                                                  {
+                                                    "var": "g.start"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "lt",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.event_index"
+                                                  },
+                                                  {
+                                                    "var": "g.start_event_index"
                                                   }
                                                 ]
                                               }
@@ -6412,302 +7400,18 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                         ]
                                       },
                                       {
-                                        "var": "x.action.input_allowed"
-                                      },
-                                      {
-                                        "op": "not",
+                                        "op": "lte",
                                         "args": [
                                           {
-                                            "var": "x.higher"
+                                            "var": "x.estimated_effect_completion_time"
+                                          },
+                                          {
+                                            "var": "g.start"
                                           }
                                         ]
                                       }
                                     ]
                                   },
-                                  {
-                                    "op": "lt",
-                                    "args": [
-                                      {
-                                        "var": "x.action.time"
-                                      },
-                                      {
-                                        "var": "g.start"
-                                      }
-                                    ]
-                                  },
-                                  {
-                                    "op": "lte",
-                                    "args": [
-                                      {
-                                        "var": "x.action.effect_completion_time"
-                                      },
-                                      {
-                                        "var": "g.start"
-                                      }
-                                    ]
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        ],
-                        "as": "x"
-                      },
-                      "emit_unknown_separately": true,
-                      "candidate_universe": "supported_records_only",
-                      "reject_earlier_unknown": false
-                    }
-                  },
-                  {
-                    "name": "chosen",
-                    "value": {
-                      "op": "select",
-                      "args": [
-                        {
-                          "op": "not",
-                          "args": [
-                            {
-                              "op": "empty",
-                              "args": [
-                                {
-                                  "var": "before"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "var": "before"
-                        },
-                        {
-                          "op": "first_true",
-                          "args": [
-                            {
-                              "op": "filter",
-                              "args": [
-                                {
-                                  "var": "scope_rows"
-                                },
-                                {
-                                  "op": "is_true",
-                                  "args": [
-                                    {
-                                      "op": "and",
-                                      "args": [
-                                        {
-                                          "op": "not",
-                                          "args": [
-                                            {
-                                              "var": "x.effect.active"
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "var": "x.effect_qualification.value"
-                                        },
-                                        {
-                                          "var": "x.replacement_qualification.value"
-                                        },
-                                        {
-                                          "op": "and",
-                                          "args": [
-                                            {
-                                              "op": "or",
-                                              "args": [
-                                                {
-                                                  "op": "eq",
-                                                  "args": [
-                                                    {
-                                                      "var": "x.action.native_qualified"
-                                                    },
-                                                    true
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "and",
-                                                  "args": [
-                                                    {
-                                                      "op": "unknown",
-                                                      "args": [
-                                                        {
-                                                          "var": "x.action.native_qualified"
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "select",
-                                                      "args": [
-                                                        {
-                                                          "var": "x.action.has_cooldown"
-                                                        },
-                                                        {
-                                                          "op": "or",
-                                                          "args": [
-                                                            {
-                                                              "op": "lte",
-                                                              "args": [
-                                                                {
-                                                                  "var": "x.action.cooldown_remaining"
-                                                                },
-                                                                0
-                                                              ]
-                                                            },
-                                                            {
-                                                              "op": "gt",
-                                                              "args": [
-                                                                {
-                                                                  "var": "x.action.charges_current"
-                                                                },
-                                                                0
-                                                              ]
-                                                            }
-                                                          ]
-                                                        },
-                                                        true
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "all3",
-                                                      "args": [
-                                                        {
-                                                          "op": "map",
-                                                          "args": [
-                                                            {
-                                                              "op": "entries",
-                                                              "args": [
-                                                                {
-                                                                  "var": "x.action.resource_costs"
-                                                                }
-                                                              ]
-                                                            },
-                                                            {
-                                                              "op": "gte",
-                                                              "args": [
-                                                                {
-                                                                  "op": "lookup",
-                                                                  "args": [
-                                                                    {
-                                                                      "var": "x.action.resource_balances"
-                                                                    },
-                                                                    {
-                                                                      "var": "cost.key"
-                                                                    }
-                                                                  ]
-                                                                },
-                                                                {
-                                                                  "var": "cost.value"
-                                                                }
-                                                              ]
-                                                            }
-                                                          ],
-                                                          "as": "cost"
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "is_number",
-                                                      "args": [
-                                                        {
-                                                          "var": "x.action.earliest_execute"
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "is_number",
-                                                      "args": [
-                                                        {
-                                                          "var": "x.action.occupancy_end"
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "not",
-                                                      "args": [
-                                                        {
-                                                          "op": "any3",
-                                                          "args": [
-                                                            {
-                                                              "op": "map",
-                                                              "args": [
-                                                                {
-                                                                  "var": "x.action.known_native_requirements"
-                                                                },
-                                                                {
-                                                                  "op": "eq",
-                                                                  "args": [
-                                                                    {
-                                                                      "var": "req.value"
-                                                                    },
-                                                                    false
-                                                                  ]
-                                                                }
-                                                              ],
-                                                              "as": "req"
-                                                            }
-                                                          ]
-                                                        }
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            },
-                                            {
-                                              "var": "x.action.input_allowed"
-                                            },
-                                            {
-                                              "op": "not",
-                                              "args": [
-                                                {
-                                                  "var": "x.higher"
-                                                }
-                                              ]
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "op": "gte",
-                                          "args": [
-                                            {
-                                              "var": "x.action.time"
-                                            },
-                                            {
-                                              "var": "g.start"
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "op": "lte",
-                                          "args": [
-                                            {
-                                              "var": "x.action.effect_completion_time"
-                                            },
-                                            {
-                                              "var": "g.end"
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ],
-                              "as": "x"
-                            },
-                            true
-                          ],
-                          "as": "x",
-                          "order_by": "action.time",
-                          "reject_earlier_unknown": false,
-                          "unknown_evidence": {
-                            "op": "filter",
-                            "args": [
-                              {
-                                "var": "scope_rows"
-                              },
-                              {
-                                "op": "unknown",
-                                "args": [
                                   {
                                     "op": "and",
                                     "args": [
@@ -6732,12 +7436,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                             "op": "or",
                                             "args": [
                                               {
-                                                "op": "eq",
+                                                "op": "is_true",
                                                 "args": [
                                                   {
                                                     "var": "x.action.native_qualified"
-                                                  },
-                                                  true
+                                                  }
                                                 ]
                                               },
                                               {
@@ -6897,7 +7600,1057 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                         "op": "lte",
                                         "args": [
                                           {
-                                            "var": "x.action.effect_completion_time"
+                                            "var": "x.estimated_effect_completion_time"
+                                          },
+                                          {
+                                            "var": "g.end"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ],
+                            "as": "x"
+                          },
+                          {
+                            "op": "record",
+                            "args": [],
+                            "fields": {
+                              "input_index": {
+                                "var": "x.action.input_index"
+                              }
+                            }
+                          }
+                        ],
+                        "as": "x"
+                      }
+                    }
+                  }
+                ],
+                "as": "g",
+                "let": [
+                  {
+                    "name": "scope_rows",
+                    "value": {
+                      "op": "filter",
+                      "args": [
+                        {
+                          "var": "required_rows"
+                        },
+                        {
+                          "op": "and",
+                          "args": [
+                            {
+                              "op": "eq",
+                              "args": [
+                                {
+                                  "var": "x.effect.component_id"
+                                },
+                                {
+                                  "var": "g.effect.component_id"
+                                }
+                              ]
+                            },
+                            {
+                              "op": "eq",
+                              "args": [
+                                {
+                                  "var": "x.effect.target_id"
+                                },
+                                {
+                                  "var": "g.effect.target_id"
+                                }
+                              ]
+                            },
+                            {
+                              "op": "eq",
+                              "args": [
+                                {
+                                  "var": "x.effect.source_id"
+                                },
+                                {
+                                  "var": "g.effect.source_id"
+                                }
+                              ]
+                            },
+                            {
+                              "op": "gte",
+                              "args": [
+                                {
+                                  "var": "x.action.time"
+                                },
+                                {
+                                  "op": "select",
+                                  "args": [
+                                    {
+                                      "op": "empty",
+                                      "args": [
+                                        {
+                                          "var": "g.preceding_interval"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "var": "bounds.start"
+                                    },
+                                    {
+                                      "var": "g.preceding_interval.start"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "lte",
+                              "args": [
+                                {
+                                  "var": "x.action.time"
+                                },
+                                {
+                                  "var": "g.end"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ],
+                      "as": "x"
+                    }
+                  },
+                  {
+                    "name": "before",
+                    "value": {
+                      "op": "last_true",
+                      "args": [
+                        {
+                          "op": "filter",
+                          "args": [
+                            {
+                              "var": "scope_rows"
+                            },
+                            {
+                              "op": "is_true",
+                              "args": [
+                                {
+                                  "op": "and",
+                                  "args": [
+                                    {
+                                      "var": "x.effect.active"
+                                    },
+                                    {
+                                      "var": "x.effect_qualification.value"
+                                    },
+                                    {
+                                      "var": "x.replacement_qualification.value"
+                                    },
+                                    {
+                                      "op": "and",
+                                      "args": [
+                                        {
+                                          "op": "or",
+                                          "args": [
+                                            {
+                                              "op": "is_true",
+                                              "args": [
+                                                {
+                                                  "var": "x.action.native_qualified"
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "and",
+                                              "args": [
+                                                {
+                                                  "op": "unknown",
+                                                  "args": [
+                                                    {
+                                                      "var": "x.action.native_qualified"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "select",
+                                                  "args": [
+                                                    {
+                                                      "var": "x.action.has_cooldown"
+                                                    },
+                                                    {
+                                                      "op": "or",
+                                                      "args": [
+                                                        {
+                                                          "op": "lte",
+                                                          "args": [
+                                                            {
+                                                              "var": "x.action.cooldown_remaining"
+                                                            },
+                                                            0
+                                                          ]
+                                                        },
+                                                        {
+                                                          "op": "gt",
+                                                          "args": [
+                                                            {
+                                                              "var": "x.action.charges_current"
+                                                            },
+                                                            0
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    true
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "all3",
+                                                  "args": [
+                                                    {
+                                                      "op": "map",
+                                                      "args": [
+                                                        {
+                                                          "op": "entries",
+                                                          "args": [
+                                                            {
+                                                              "var": "x.action.resource_costs"
+                                                            }
+                                                          ]
+                                                        },
+                                                        {
+                                                          "op": "gte",
+                                                          "args": [
+                                                            {
+                                                              "op": "lookup",
+                                                              "args": [
+                                                                {
+                                                                  "var": "x.action.resource_balances"
+                                                                },
+                                                                {
+                                                                  "var": "cost.key"
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "var": "cost.value"
+                                                            }
+                                                          ]
+                                                        }
+                                                      ],
+                                                      "as": "cost"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "is_number",
+                                                  "args": [
+                                                    {
+                                                      "var": "x.action.earliest_execute"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "is_number",
+                                                  "args": [
+                                                    {
+                                                      "var": "x.action.occupancy_end"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "not",
+                                                  "args": [
+                                                    {
+                                                      "op": "any3",
+                                                      "args": [
+                                                        {
+                                                          "op": "map",
+                                                          "args": [
+                                                            {
+                                                              "var": "x.action.known_native_requirements"
+                                                            },
+                                                            {
+                                                              "op": "eq",
+                                                              "args": [
+                                                                {
+                                                                  "var": "req.value"
+                                                                },
+                                                                false
+                                                              ]
+                                                            }
+                                                          ],
+                                                          "as": "req"
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "var": "x.action.input_allowed"
+                                        },
+                                        {
+                                          "op": "not",
+                                          "args": [
+                                            {
+                                              "var": "x.higher"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "or",
+                                      "args": [
+                                        {
+                                          "op": "lt",
+                                          "args": [
+                                            {
+                                              "var": "x.action.time"
+                                            },
+                                            {
+                                              "var": "g.start"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "and",
+                                          "args": [
+                                            {
+                                              "op": "eq",
+                                              "args": [
+                                                {
+                                                  "var": "x.action.time"
+                                                },
+                                                {
+                                                  "var": "g.start"
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "lt",
+                                              "args": [
+                                                {
+                                                  "var": "x.action.event_index"
+                                                },
+                                                {
+                                                  "var": "g.start_event_index"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "lte",
+                                      "args": [
+                                        {
+                                          "var": "x.estimated_effect_completion_time"
+                                        },
+                                        {
+                                          "var": "g.start"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ],
+                          "as": "x"
+                        },
+                        true
+                      ],
+                      "as": "x",
+                      "order_by": "action.time",
+                      "reject_later_unknown": false,
+                      "unknown_evidence": {
+                        "op": "filter",
+                        "args": [
+                          {
+                            "var": "scope_rows"
+                          },
+                          {
+                            "op": "unknown",
+                            "args": [
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "var": "x.effect.active"
+                                  },
+                                  {
+                                    "var": "x.effect_qualification.value"
+                                  },
+                                  {
+                                    "var": "x.replacement_qualification.value"
+                                  },
+                                  {
+                                    "op": "and",
+                                    "args": [
+                                      {
+                                        "op": "or",
+                                        "args": [
+                                          {
+                                            "op": "is_true",
+                                            "args": [
+                                              {
+                                                "var": "x.action.native_qualified"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "op": "and",
+                                            "args": [
+                                              {
+                                                "op": "unknown",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.native_qualified"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "select",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.has_cooldown"
+                                                  },
+                                                  {
+                                                    "op": "or",
+                                                    "args": [
+                                                      {
+                                                        "op": "lte",
+                                                        "args": [
+                                                          {
+                                                            "var": "x.action.cooldown_remaining"
+                                                          },
+                                                          0
+                                                        ]
+                                                      },
+                                                      {
+                                                        "op": "gt",
+                                                        "args": [
+                                                          {
+                                                            "var": "x.action.charges_current"
+                                                          },
+                                                          0
+                                                        ]
+                                                      }
+                                                    ]
+                                                  },
+                                                  true
+                                                ]
+                                              },
+                                              {
+                                                "op": "all3",
+                                                "args": [
+                                                  {
+                                                    "op": "map",
+                                                    "args": [
+                                                      {
+                                                        "op": "entries",
+                                                        "args": [
+                                                          {
+                                                            "var": "x.action.resource_costs"
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "op": "gte",
+                                                        "args": [
+                                                          {
+                                                            "op": "lookup",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.resource_balances"
+                                                              },
+                                                              {
+                                                                "var": "cost.key"
+                                                              }
+                                                            ]
+                                                          },
+                                                          {
+                                                            "var": "cost.value"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ],
+                                                    "as": "cost"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "is_number",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.earliest_execute"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "is_number",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.occupancy_end"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "not",
+                                                "args": [
+                                                  {
+                                                    "op": "any3",
+                                                    "args": [
+                                                      {
+                                                        "op": "map",
+                                                        "args": [
+                                                          {
+                                                            "var": "x.action.known_native_requirements"
+                                                          },
+                                                          {
+                                                            "op": "eq",
+                                                            "args": [
+                                                              {
+                                                                "var": "req.value"
+                                                              },
+                                                              false
+                                                            ]
+                                                          }
+                                                        ],
+                                                        "as": "req"
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "var": "x.action.input_allowed"
+                                      },
+                                      {
+                                        "op": "not",
+                                        "args": [
+                                          {
+                                            "var": "x.higher"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "or",
+                                    "args": [
+                                      {
+                                        "op": "lt",
+                                        "args": [
+                                          {
+                                            "var": "x.action.time"
+                                          },
+                                          {
+                                            "var": "g.start"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "and",
+                                        "args": [
+                                          {
+                                            "op": "eq",
+                                            "args": [
+                                              {
+                                                "var": "x.action.time"
+                                              },
+                                              {
+                                                "var": "g.start"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "op": "lt",
+                                            "args": [
+                                              {
+                                                "var": "x.action.event_index"
+                                              },
+                                              {
+                                                "var": "g.start_event_index"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "op": "lte",
+                                    "args": [
+                                      {
+                                        "var": "x.estimated_effect_completion_time"
+                                      },
+                                      {
+                                        "var": "g.start"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ],
+                        "as": "x"
+                      },
+                      "emit_unknown_separately": true,
+                      "candidate_universe": "supported_records_only",
+                      "reject_earlier_unknown": false
+                    }
+                  },
+                  {
+                    "name": "after",
+                    "value": {
+                      "op": "select",
+                      "args": [
+                        {
+                          "op": "is_true",
+                          "args": [
+                            {
+                              "op": "not",
+                              "args": [
+                                {
+                                  "op": "empty",
+                                  "args": [
+                                    {
+                                      "var": "before"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {},
+                        {
+                          "op": "first_true",
+                          "args": [
+                            {
+                              "op": "filter",
+                              "args": [
+                                {
+                                  "var": "scope_rows"
+                                },
+                                {
+                                  "op": "is_true",
+                                  "args": [
+                                    {
+                                      "op": "and",
+                                      "args": [
+                                        {
+                                          "op": "not",
+                                          "args": [
+                                            {
+                                              "var": "x.effect.active"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "var": "x.effect_qualification.value"
+                                        },
+                                        {
+                                          "var": "x.replacement_qualification.value"
+                                        },
+                                        {
+                                          "op": "and",
+                                          "args": [
+                                            {
+                                              "op": "or",
+                                              "args": [
+                                                {
+                                                  "op": "is_true",
+                                                  "args": [
+                                                    {
+                                                      "var": "x.action.native_qualified"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "and",
+                                                  "args": [
+                                                    {
+                                                      "op": "unknown",
+                                                      "args": [
+                                                        {
+                                                          "var": "x.action.native_qualified"
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "select",
+                                                      "args": [
+                                                        {
+                                                          "var": "x.action.has_cooldown"
+                                                        },
+                                                        {
+                                                          "op": "or",
+                                                          "args": [
+                                                            {
+                                                              "op": "lte",
+                                                              "args": [
+                                                                {
+                                                                  "var": "x.action.cooldown_remaining"
+                                                                },
+                                                                0
+                                                              ]
+                                                            },
+                                                            {
+                                                              "op": "gt",
+                                                              "args": [
+                                                                {
+                                                                  "var": "x.action.charges_current"
+                                                                },
+                                                                0
+                                                              ]
+                                                            }
+                                                          ]
+                                                        },
+                                                        true
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "all3",
+                                                      "args": [
+                                                        {
+                                                          "op": "map",
+                                                          "args": [
+                                                            {
+                                                              "op": "entries",
+                                                              "args": [
+                                                                {
+                                                                  "var": "x.action.resource_costs"
+                                                                }
+                                                              ]
+                                                            },
+                                                            {
+                                                              "op": "gte",
+                                                              "args": [
+                                                                {
+                                                                  "op": "lookup",
+                                                                  "args": [
+                                                                    {
+                                                                      "var": "x.action.resource_balances"
+                                                                    },
+                                                                    {
+                                                                      "var": "cost.key"
+                                                                    }
+                                                                  ]
+                                                                },
+                                                                {
+                                                                  "var": "cost.value"
+                                                                }
+                                                              ]
+                                                            }
+                                                          ],
+                                                          "as": "cost"
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "is_number",
+                                                      "args": [
+                                                        {
+                                                          "var": "x.action.earliest_execute"
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "is_number",
+                                                      "args": [
+                                                        {
+                                                          "var": "x.action.occupancy_end"
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "not",
+                                                      "args": [
+                                                        {
+                                                          "op": "any3",
+                                                          "args": [
+                                                            {
+                                                              "op": "map",
+                                                              "args": [
+                                                                {
+                                                                  "var": "x.action.known_native_requirements"
+                                                                },
+                                                                {
+                                                                  "op": "eq",
+                                                                  "args": [
+                                                                    {
+                                                                      "var": "req.value"
+                                                                    },
+                                                                    false
+                                                                  ]
+                                                                }
+                                                              ],
+                                                              "as": "req"
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "var": "x.action.input_allowed"
+                                            },
+                                            {
+                                              "op": "not",
+                                              "args": [
+                                                {
+                                                  "var": "x.higher"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "gte",
+                                          "args": [
+                                            {
+                                              "var": "x.action.time"
+                                            },
+                                            {
+                                              "var": "g.start"
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "lte",
+                                          "args": [
+                                            {
+                                              "var": "x.estimated_effect_completion_time"
+                                            },
+                                            {
+                                              "var": "g.end"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ],
+                              "as": "x"
+                            },
+                            true
+                          ],
+                          "as": "x",
+                          "order_by": "action.time",
+                          "reject_earlier_unknown": false,
+                          "unknown_evidence": {
+                            "op": "filter",
+                            "args": [
+                              {
+                                "var": "scope_rows"
+                              },
+                              {
+                                "op": "unknown",
+                                "args": [
+                                  {
+                                    "op": "and",
+                                    "args": [
+                                      {
+                                        "op": "not",
+                                        "args": [
+                                          {
+                                            "var": "x.effect.active"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "var": "x.effect_qualification.value"
+                                      },
+                                      {
+                                        "var": "x.replacement_qualification.value"
+                                      },
+                                      {
+                                        "op": "and",
+                                        "args": [
+                                          {
+                                            "op": "or",
+                                            "args": [
+                                              {
+                                                "op": "is_true",
+                                                "args": [
+                                                  {
+                                                    "var": "x.action.native_qualified"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "op": "and",
+                                                "args": [
+                                                  {
+                                                    "op": "unknown",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.native_qualified"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "select",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.has_cooldown"
+                                                      },
+                                                      {
+                                                        "op": "or",
+                                                        "args": [
+                                                          {
+                                                            "op": "lte",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.cooldown_remaining"
+                                                              },
+                                                              0
+                                                            ]
+                                                          },
+                                                          {
+                                                            "op": "gt",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.charges_current"
+                                                              },
+                                                              0
+                                                            ]
+                                                          }
+                                                        ]
+                                                      },
+                                                      true
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "all3",
+                                                    "args": [
+                                                      {
+                                                        "op": "map",
+                                                        "args": [
+                                                          {
+                                                            "op": "entries",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.resource_costs"
+                                                              }
+                                                            ]
+                                                          },
+                                                          {
+                                                            "op": "gte",
+                                                            "args": [
+                                                              {
+                                                                "op": "lookup",
+                                                                "args": [
+                                                                  {
+                                                                    "var": "x.action.resource_balances"
+                                                                  },
+                                                                  {
+                                                                    "var": "cost.key"
+                                                                  }
+                                                                ]
+                                                              },
+                                                              {
+                                                                "var": "cost.value"
+                                                              }
+                                                            ]
+                                                          }
+                                                        ],
+                                                        "as": "cost"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "is_number",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.earliest_execute"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "is_number",
+                                                    "args": [
+                                                      {
+                                                        "var": "x.action.occupancy_end"
+                                                      }
+                                                    ]
+                                                  },
+                                                  {
+                                                    "op": "not",
+                                                    "args": [
+                                                      {
+                                                        "op": "any3",
+                                                        "args": [
+                                                          {
+                                                            "op": "map",
+                                                            "args": [
+                                                              {
+                                                                "var": "x.action.known_native_requirements"
+                                                              },
+                                                              {
+                                                                "op": "eq",
+                                                                "args": [
+                                                                  {
+                                                                    "var": "req.value"
+                                                                  },
+                                                                  false
+                                                                ]
+                                                              }
+                                                            ],
+                                                            "as": "req"
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "var": "x.action.input_allowed"
+                                          },
+                                          {
+                                            "op": "not",
+                                            "args": [
+                                              {
+                                                "var": "x.higher"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "gte",
+                                        "args": [
+                                          {
+                                            "var": "x.action.time"
+                                          },
+                                          {
+                                            "var": "g.start"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "op": "lte",
+                                        "args": [
+                                          {
+                                            "var": "x.estimated_effect_completion_time"
                                           },
                                           {
                                             "var": "g.end"
@@ -6919,12 +8672,76 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                     }
                   },
                   {
+                    "name": "chosen",
+                    "value": {
+                      "op": "select",
+                      "args": [
+                        {
+                          "op": "unknown",
+                          "args": [
+                            {
+                              "var": "before"
+                            }
+                          ]
+                        },
+                        {
+                          "op": "select",
+                          "args": [
+                            {
+                              "op": "is_true",
+                              "args": [
+                                {
+                                  "op": "not",
+                                  "args": [
+                                    {
+                                      "op": "empty",
+                                      "args": [
+                                        {
+                                          "var": "after"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "var": "after"
+                            },
+                            {
+                              "var": "before"
+                            }
+                          ]
+                        },
+                        {
+                          "op": "select",
+                          "args": [
+                            {
+                              "op": "empty",
+                              "args": [
+                                {
+                                  "var": "before"
+                                }
+                              ]
+                            },
+                            {
+                              "var": "after"
+                            },
+                            {
+                              "var": "before"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
                     "name": "applications_at_chosen",
                     "value": {
                       "op": "filter",
                       "args": [
                         {
-                          "var": "scope_rows"
+                          "var": "owned_events"
                         },
                         {
                           "op": "and",
@@ -6933,7 +8750,29 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "op": "eq",
                               "args": [
                                 {
-                                  "var": "x.effect.source_input_index"
+                                  "var": "x.run_id"
+                                },
+                                {
+                                  "var": "chosen.action.run_id"
+                                }
+                              ]
+                            },
+                            {
+                              "op": "eq",
+                              "args": [
+                                {
+                                  "var": "x.sample_id"
+                                },
+                                {
+                                  "var": "chosen.action.sample_id"
+                                }
+                              ]
+                            },
+                            {
+                              "op": "eq",
+                              "args": [
+                                {
+                                  "var": "x.source_input_index"
                                 },
                                 {
                                   "var": "chosen.action.input_index"
@@ -6944,7 +8783,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "op": "eq",
                               "args": [
                                 {
-                                  "var": "x.effect.target_id"
+                                  "var": "x.target_id"
                                 },
                                 {
                                   "var": "g.effect.target_id"
@@ -6955,7 +8794,18 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "op": "eq",
                               "args": [
                                 {
-                                  "var": "x.effect.component_id"
+                                  "var": "x.source_id"
+                                },
+                                {
+                                  "var": "g.effect.source_id"
+                                }
+                              ]
+                            },
+                            {
+                              "op": "eq",
+                              "args": [
+                                {
+                                  "var": "x.effect_id"
                                 },
                                 {
                                   "var": "g.effect.component_id"
@@ -6963,16 +8813,15 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               ]
                             },
                             {
-                              "op": "or",
+                              "op": "contains",
                               "args": [
+                                [
+                                  "apply",
+                                  "refresh",
+                                  "extend"
+                                ],
                                 {
-                                  "var": "x.effect.applied"
-                                },
-                                {
-                                  "var": "x.effect.refreshed"
-                                },
-                                {
-                                  "var": "x.effect.extended"
+                                  "var": "x.kind"
                                 }
                               ]
                             },
@@ -6983,7 +8832,7 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "op": "matches_native_object",
                               "args": [
                                 {
-                                  "var": "chosen.action.actual_form"
+                                  "var": "x.source_actual_action"
                                 },
                                 {
                                   "arg": "action"
@@ -6999,17 +8848,16 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                   {
                     "name": "covered",
                     "value": {
-                      "op": "gt",
+                      "op": "not",
                       "args": [
                         {
-                          "op": "count",
+                          "op": "empty",
                           "args": [
                             {
                               "var": "applications_at_chosen"
                             }
                           ]
-                        },
-                        0
+                        }
                       ]
                     }
                   }
@@ -7024,8 +8872,110 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
           "cases": [
             {
               "kind": "actual_coverage_gap",
-              "when": true,
+              "when": {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "op": "object_field",
+                        "args": [
+                          {
+                            "arg": "target_scope"
+                          },
+                          "value"
+                        ]
+                      },
+                      "controlled_player"
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "op": "empty",
+                        "args": [
+                          {
+                            "var": "c.gap.required_inputs"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
               "certainty": "observed_fact",
+              "evidence": {
+                "gap": {
+                  "var": "c.gap"
+                },
+                "target": {
+                  "var": "c.target"
+                },
+                "component": {
+                  "var": "c.component"
+                }
+              }
+            },
+            {
+              "kind": "effect_absence",
+              "when": {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "op": "object_field",
+                        "args": [
+                          {
+                            "arg": "target_scope"
+                          },
+                          "value"
+                        ]
+                      },
+                      "controlled_player"
+                    ]
+                  }
+                ]
+              },
+              "certainty": "observed_fact",
+              "evidence": {
+                "gap": {
+                  "var": "c.gap"
+                },
+                "target": {
+                  "var": "c.target"
+                },
+                "component": {
+                  "var": "c.component"
+                }
+              }
+            },
+            {
+              "kind": "requirement_interval_unknown",
+              "when": {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "op": "object_field",
+                        "args": [
+                          {
+                            "arg": "target_scope"
+                          },
+                          "value"
+                        ]
+                      },
+                      "controlled_player"
+                    ]
+                  }
+                ]
+              },
+              "certainty": "unknown",
               "evidence": {
                 "gap": {
                   "var": "c.gap"
@@ -7153,19 +9103,71 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                             "var": "contexts"
                           },
                           {
-                            "op": "and",
+                            "op": "select",
                             "args": [
                               {
-                                "var": "c.trigger"
-                              },
-                              {
-                                "op": "eq",
+                                "op": "unknown",
                                 "args": [
                                   {
-                                    "var": "c.input_index"
+                                    "var": "c.chosen"
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "var": "c.trigger"
                                   },
                                   {
-                                    "var": "input.input_index"
+                                    "op": "any3",
+                                    "args": [
+                                      {
+                                        "op": "map",
+                                        "args": [
+                                          {
+                                            "var": "c.related_inputs"
+                                          },
+                                          {
+                                            "op": "and",
+                                            "args": [
+                                              {
+                                                "op": "eq",
+                                                "args": [
+                                                  {
+                                                    "var": "related.input_index"
+                                                  },
+                                                  {
+                                                    "var": "input.input_index"
+                                                  }
+                                                ]
+                                              },
+                                              true
+                                            ]
+                                          }
+                                        ],
+                                        "as": "related"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "op": "and",
+                                "args": [
+                                  {
+                                    "var": "c.trigger"
+                                  },
+                                  {
+                                    "op": "eq",
+                                    "args": [
+                                      {
+                                        "var": "c.input_index"
+                                      },
+                                      {
+                                        "var": "input.input_index"
+                                      }
+                                    ]
                                   }
                                 ]
                               }
@@ -8194,12 +10196,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                                 "op": "or",
                                 "args": [
                                   {
-                                    "op": "eq",
+                                    "op": "is_true",
                                     "args": [
                                       {
                                         "var": "x.action.native_qualified"
-                                      },
-                                      true
+                                      }
                                     ]
                                   },
                                   {
@@ -8992,12 +10993,11 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                               "op": "or",
                               "args": [
                                 {
-                                  "op": "eq",
+                                  "op": "is_true",
                                   "args": [
                                     {
                                       "var": "z.action.native_qualified"
-                                    },
-                                    true
+                                    }
                                   ]
                                 },
                                 {
@@ -9193,17 +11193,16 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                           ]
                         },
                         {
-                          "op": "gt",
+                          "op": "not",
                           "args": [
                             {
-                              "op": "count",
+                              "op": "empty",
                               "args": [
                                 {
                                   "var": "fillers_at_input"
                                 }
                               ]
-                            },
-                            0
+                            }
                           ]
                         }
                       ]
@@ -9802,7 +11801,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
       },
       "scythe_qualification": {
         "kind": "state",
-        "native_identity": "festering_scythe"
+        "native_identity": "festering_scythe",
+        "representation": "positive_stack_presence"
       },
       "stock": {
         "kind": "state",
@@ -9822,11 +11822,13 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
       },
       "always_qualified": {
         "kind": "state",
-        "native_identity": "literal.true"
+        "native_identity": "literal.true",
+        "representation": "boolean"
       },
       "blightburst_qualification": {
         "kind": "state",
-        "native_identity": "native.putrefy.disease_application_qualification"
+        "native_identity": "native.putrefy.disease_application_qualification",
+        "representation": "boolean"
       },
       "active_trinket_effects": {
         "kind": "effect",
@@ -10046,7 +12048,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
       },
       "scythe_qualification": {
         "kind": "state",
-        "native_identity": "festering_scythe"
+        "native_identity": "festering_scythe",
+        "representation": "positive_stack_presence"
       },
       "stock": {
         "kind": "state",
@@ -10066,11 +12069,13 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
       },
       "always_qualified": {
         "kind": "state",
-        "native_identity": "literal.true"
+        "native_identity": "literal.true",
+        "representation": "boolean"
       },
       "blightburst_qualification": {
         "kind": "state",
-        "native_identity": "native.putrefy.disease_application_qualification"
+        "native_identity": "native.putrefy.disease_application_qualification",
+        "representation": "boolean"
       },
       "active_trinket_effects": {
         "kind": "effect",
@@ -10280,10 +12285,34 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
           "freeze_per_task": true
         },
         "independent_burst_source_steps": [
-          4,
-          5,
-          6,
-          7
+          {
+            "action": "army_of_the_dead",
+            "source_step": 4,
+            "mapping": "burst"
+          },
+          {
+            "action": "dark_transformation",
+            "source_step": 5,
+            "mapping": "burst"
+          },
+          {
+            "action": "potion",
+            "source_step": 6,
+            "mapping": "burst"
+          },
+          {
+            "action": "trinket1",
+            "source_step": 7,
+            "mapping": "burst",
+            "commands": [
+              {
+                "action": "trinket1"
+              },
+              {
+                "action": "trinket2"
+              }
+            ]
+          }
         ],
         "manual_differences": [
           "首步爆发改腐化",
@@ -10341,7 +12370,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "last_finishable",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -10399,7 +12429,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "execution"
               }
             },
             {
@@ -10487,7 +12518,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": true
+                "consume_required": true,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -10603,7 +12635,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "last_finishable",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -10621,7 +12654,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "execution"
               }
             },
             {
@@ -10895,10 +12929,34 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
           "freeze_per_task": true
         },
         "independent_burst_source_steps": [
-          4,
-          5,
-          6,
-          7
+          {
+            "action": "army_of_the_dead",
+            "source_step": 4,
+            "mapping": "burst"
+          },
+          {
+            "action": "dark_transformation",
+            "source_step": 5,
+            "mapping": "burst"
+          },
+          {
+            "action": "potion",
+            "source_step": 6,
+            "mapping": "burst"
+          },
+          {
+            "action": "trinket1",
+            "source_step": 7,
+            "mapping": "burst",
+            "commands": [
+              {
+                "action": "trinket1"
+              },
+              {
+                "action": "trinket2"
+              }
+            ]
+          }
         ],
         "manual_differences": [
           "首步爆发改腐化",
@@ -10940,7 +12998,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "last_finishable",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -11078,7 +13137,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": true
+                "consume_required": true,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -11175,7 +13235,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "last_finishable",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -11437,10 +13498,34 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
           "freeze_per_task": true
         },
         "independent_burst_source_steps": [
-          4,
-          5,
-          6,
-          7
+          {
+            "action": "army_of_the_dead",
+            "source_step": 4,
+            "mapping": "burst"
+          },
+          {
+            "action": "dark_transformation",
+            "source_step": 5,
+            "mapping": "burst"
+          },
+          {
+            "action": "potion",
+            "source_step": 6,
+            "mapping": "burst"
+          },
+          {
+            "action": "trinket1",
+            "source_step": 7,
+            "mapping": "burst",
+            "commands": [
+              {
+                "action": "trinket1"
+              },
+              {
+                "action": "trinket2"
+              }
+            ]
+          }
         ],
         "manual_differences": [
           "首步爆发改腐化",
@@ -11535,7 +13620,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "execution"
               }
             },
             {
@@ -11619,7 +13705,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": true
+                "consume_required": true,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -11715,7 +13802,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": false
+                "consume_required": false,
+                "usage_time_basis": "execution"
               }
             },
             {
@@ -11955,10 +14043,34 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
           "freeze_per_task": true
         },
         "independent_burst_source_steps": [
-          4,
-          5,
-          6,
-          7
+          {
+            "action": "army_of_the_dead",
+            "source_step": 4,
+            "mapping": "burst"
+          },
+          {
+            "action": "dark_transformation",
+            "source_step": 5,
+            "mapping": "burst"
+          },
+          {
+            "action": "potion",
+            "source_step": 6,
+            "mapping": "burst"
+          },
+          {
+            "action": "trinket1",
+            "source_step": 7,
+            "mapping": "burst",
+            "commands": [
+              {
+                "action": "trinket1"
+              },
+              {
+                "action": "trinket2"
+              }
+            ]
+          }
         ],
         "manual_differences": [
           "首步爆发改腐化",
@@ -12114,7 +14226,8 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
                 ],
                 "window_selection": "earliest_end",
                 "use_position": "first_eligible",
-                "consume_required": true
+                "consume_required": true,
+                "usage_time_basis": "effect_completion"
               }
             },
             {
@@ -12838,6 +14951,13 @@ native_qualified 不是可直接调用原生 ready/action_ready 的黑盒。下�
       }
     ]
   },
-  "other_constraints_status": "本轮无新确认外围迁移项目；稳定技术校验沿现有代码，固定爆发机制冻结。存放清单透明但不是开工门禁。"
+  "other_constraints_status": "本轮无新确认外围迁移项目；稳定技术校验沿现有代码，固定爆发机制冻结。存放清单透明但不是开工门禁。",
+  "schema_version": 2,
+  "identity_mappings": {
+    "hero_talents": {
+      "sanlayn": 31,
+      "rider_of_the_apocalypse": 32
+    }
+  }
 }
 ```

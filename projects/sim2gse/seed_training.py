@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import threading
 from contextlib import contextmanager
@@ -491,12 +492,6 @@ def semantic_condition(payload, versions):
                                     if key != 'max_processes'}, semantic_versions=versions)
     semantic.pop('rules')
     return digest(semantic)
-
-
-def training_condition(template_sha, engines, config, simulation_config, *, burst_context=None):
-    """训练与升级核验共用的语义条件计算；不启动计算、不读取历史。"""
-    return semantic_condition(training_condition_input(template_sha, engines, config, simulation_config,
-                              burst_context=burst_context), semantic_versions())
 
 
 def _checkpoint_states(batch):
@@ -1089,6 +1084,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     raise ValueError('训练初始表示与恢复检查点不一致')
                 store.state.update(training_condition=condition, config=config, capabilities=capabilities,
                                    rule_snapshot=inputs['rule_snapshot'],
+                                   rule_initialization=store.state.get('rule_initialization') or
+                                       copy.deepcopy(context['rule_initialization']),
                                    training_candidate_id=row['candidate_id'],
                                    run_id=store.state.get('run_id', uuid.uuid4().hex),
                                    starts=store.state.get('starts', [row['program']]),
@@ -1107,6 +1104,9 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     verify_behavior_identity_state(store.state)
                     store.character, store.simulation_config = character, simulation_config
                     store.recover_reports(character, simulation_config)
+                    from search import reconcile_selection_feedback
+                    reconcile_selection_feedback(store,
+                        finalizing=store.state.get('stop_reason') == 'search_deadline', cancel_event=cancel_event)
                     best = next(item for item in store.state['archive']
                                 if item['key'] == store.state['locked_candidate_key'])
                     prepared_best = canonicalize_search_program(best['program'], capabilities)
@@ -1317,8 +1317,10 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                     if (alignment.get('rule_config_digest') != inputs['rule_snapshot']['rule_config_digest']
                             or alignment.get('first_burst_ms') != context['plan']['start_ms']
                             or alignment.get('plan_digest') != digest(context['plan'])
-                            or alignment.get('opener_id') not in {entry['id'] for entry in
-                                inputs['rule_snapshot']['resolved'][str(definition['spec_id'])]['initialization']['openers']}):
+                            or alignment.get('opener_id') not in {
+                                digest(entry['key']) for entry in inputs['rule_snapshot']['resolved']
+                                if entry['key']['specialization_id'] == definition['spec_id']
+                                and entry['key']['target_type'] == simulation_config['scene']}):
                         raise ValueError('训练爆发首次时点缺少相符的冻结起手凭据')
                 manifest = validate_training_identity(batch, inputs['template_sha'], engines,
                     inputs['config'], simulation_config, burst_context=context, rule_snapshot=inputs['rule_snapshot'])

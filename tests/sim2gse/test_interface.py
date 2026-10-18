@@ -2210,10 +2210,8 @@ class InterfaceTests(unittest.TestCase):
     def test_rule_start_and_sources_are_visible_through_page_and_task_api(self):
         from test_search import _apl_task_boundary, _minimal_rule_pack
         pack = _minimal_rule_pack()
-        spec = pack['specializations']['252']
-        spec['facts']['initial_runic_power'] = dict(type='number', unit='count',
-            **{'from': 'static.resource.current'}, resource='runic_power')
-        spec['initialization']['required_facts'] = ['initial_runic_power']
+        configuration = pack['configurations'][0]
+        configuration['opener']['source_basis'] = 'fixture: explicit page opener source'
         rules = Path(self.directory.name) / 'rules.json'
         rules.write_text(json.dumps(pack), encoding='utf-8')
         self.server.task_options = {'search_config': dict(
@@ -2222,7 +2220,7 @@ class InterfaceTests(unittest.TestCase):
         with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), _apl_task_boundary():
             page = urlopen(self.url).read().decode('utf-8')
             created = self._json_request('POST', '/api/tasks', {'profile': sample_profile(),
-                                       'input_interval_ms': 200, 'target_count': 1})
+                                       'input_interval_ms': 200, 'target_count': 1, 'scene': 'single_target'})
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 state = self._task_state_request(created['task_id'], deadline)
@@ -2253,8 +2251,9 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(initialization['export_text'].startswith('!GSE3!'))
         self.assertEqual(initialization['compilation'], 'passed_with_client_boundary_stubs')
         self.assertTrue(initialization['click_mapping'])
-        self.assertEqual(initialization['parameter_sources']['initial_runic_power']['from'],
-                         'static.resource.current')
+        self.assertEqual(initialization['configuration_key'], configuration['key'])
+        self.assertEqual(initialization['source_opener']['source_basis'],
+                         configuration['opener']['source_basis'])
         self.assertIn('ruleInitialization', page)
         self.assertIn('state.rule_initialization', page)
 
@@ -3352,7 +3351,7 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         definition, profile = reviewed_fixture()
         burst.publish(definition)
         pack = _minimal_rule_pack()
-        original_source = pack['specializations']['252']['initialization']['openers'][0]['source']
+        original_source = pack['configurations'][0]['opener']['source_basis']
         path = Path(self.directory.name) / 'rules.json'
         path.write_text(json.dumps(pack), encoding='utf-8')
         self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
@@ -3362,7 +3361,8 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
             evaluate = sequence.evaluate
             def edit_after_start(*args, **kwargs):
                 if not edited:
-                    pack['specializations']['252']['initialization']['openers'][0]['source'] = 'next task only'
+                    for configuration in pack['configurations']:
+                        configuration['opener']['source_basis'] = 'next task only'
                     path.write_text(json.dumps(pack), encoding='utf-8')
                     edited.append(True)
                 return evaluate(*args, **kwargs)
@@ -3376,8 +3376,8 @@ off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
         reports = [scene['rule_initialization'] for scene in detail['scenes']]
         self.assertEqual(reports[0]['rule_config_digest'], reports[1]['rule_config_digest'])
         for report in reports:
-            self.assertEqual(report['rule_snapshot']['pack']['specializations']['252']
-                             ['initialization']['openers'][0]['source'], original_source)
+            self.assertTrue(all(configuration['opener']['source_basis'] == original_source
+                                for configuration in report['rule_snapshot']['pack']['configurations']))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@
 #include "simulationcraft.hpp"
 #include "action/parse_effects.hpp"
 #include <set>
+#include <typeinfo>
+#include <cmath>
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 
@@ -109,10 +111,50 @@ bool static_effects_safe( const std::vector<player_effect_t>& effects, bool bene
   return true;
 }
 
-// The pinned class adapter certifies each getter before this serializer calls it.
+bool static_buff_value_safe( const buff_t* buff )
+{
+  return !buff || typeid( *buff ) == typeid( buff_t ) || typeid( *buff ) == typeid( stat_buff_t );
+}
+
+// Only audited exact native types call this bridge. In particular it does not
+// infer the absence of overrides from a parse_action_base_t dynamic cast.
+void read_static_spell_timing( static_action_t& entry, const spell_base_t& spell,
+                               const parse_action_base_t& parsed, bool haste_safe )
+{
+  if ( haste_safe && static_effects_safe( parsed.gcd_effects ) )
+  {
+    entry.timing[ "gcd_ms" ] = spell.gcd().total_millis();
+    entry.unknown.erase( "gcd_ms" );
+  }
+  if ( haste_safe && static_buff_value_safe( spell.player->buffs.chilled_clarity ) &&
+       static_effects_safe( parsed.execute_time_effects ) &&
+       static_effects_safe( parsed.flat_execute_time_effects ) )
+  {
+    // action_t::execute_time arithmetic, with the same standard spell base but
+    // read-only parse effects. The normal parse getter uses benefit=true.
+    auto base = spell.base_execute_time.base + spell.base_execute_time.flat_add;
+    auto mul = spell.base_execute_time.pct_mul * spell.spell_base_t::execute_time_pct_multiplier();
+    for ( const auto& effect : parsed.execute_time_effects )
+      mul *= 1.0 + parsed.get_effect_value( effect, false );
+    double flat = 0;
+    for ( const auto& effect : parsed.flat_execute_time_effects )
+      flat += parsed.get_effect_value( effect, false );
+    base += timespan_t::from_millis( flat );
+    entry.timing[ "cast_ms" ] = base <= 0_ms || mul <= 0 ? 0 :
+      std::round( static_cast<double>( base.total_millis() ) * mul );
+    entry.unknown.erase( "cast_ms" );
+  }
+  if ( !spell.channeled )
+  {
+    entry.timing[ "channel_ms" ] = 0;
+    entry.unknown.erase( "channel_ms" );
+  }
+}
+
+// The pinned class adapter supplies certified values; unknown getters are never
+// called by this serializer merely because an unknown-map key was absent.
 // This runs once after native precombat initialization, before pre-pull actions.
 void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& entries,
-                              const std::vector<const action_t*>& precombat_actions,
                               const std::map<std::string, double>& parameters,
                               const std::map<std::string, bool>& talents,
                               const std::map<std::string, std::string>& parameter_unknown )
@@ -121,10 +163,10 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
   rapidjson::Document document;
   document.SetObject();
   js::JsonOutput root( document, document );
-  root[ "protocol" ] = 1;
+  root[ "protocol" ] = 2;
   root[ "stage" ] = "precombat_initialized_before_actions";
   root[ "collected_at_ms" ] = p.sim->current_time().total_millis();
-  root[ "source" ] = "native initialized actor; action_t virtual arithmetic";
+  root[ "source" ] = "native initialized actor; audited read-only action arithmetic";
   auto hero_subtrees = root[ "hero_subtree_ids" ];
   hero_subtrees.make_array();
   for ( const auto id : p.player_sub_trees ) hero_subtrees.add( id );
@@ -138,20 +180,29 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
   }
   auto values = root[ "parameters" ];
   for ( const auto& entry : parameters ) values[ entry.first ] = entry.second;
-  if ( !parameter_unknown.count( "precombat_gcd_ms" ) )
-  {
-    double gcd_ms = 0;
-    for ( const auto* action : precombat_actions )
-      gcd_ms = std::max( gcd_ms, static_cast<double>( action->gcd().total_millis() ) );
-    values[ "precombat_gcd_ms" ] = gcd_ms;
-  }
   for ( const auto& entry : talents ) values[ entry.first ] = entry.second;
   for ( const auto& entry : parameter_unknown ) root[ "parameter_unknown" ][ entry.first ] = entry.second;
   auto actions = root[ "actions" ];
   actions.make_array();
+  std::map<const action_t*, const static_action_t*> adapted;
   for ( const auto& entry : entries )
   {
-    auto* action = entry.action;
+    adapted[ entry.action ] = &entry;
+    if ( !entry.action->is_precombat ) continue;
+    const auto& timing = entry.timing;
+    if ( timing.count( "gcd_ms" ) && timing.count( "cast_ms" ) && timing.count( "channel_ms" ) )
+      p.sim2gse_static_precombat_timing[ entry.action ] =
+        { timing.at( "gcd_ms" ), std::max( timing.at( "gcd_ms" ),
+            timing.at( "cast_ms" ) + timing.at( "channel_ms" ) ) };
+  }
+  for ( auto* action : p.action_list )
+  {
+    if ( !action->initialized || action->is_precombat || action->background || action->quiet ||
+         !action->data().ok() ) continue;
+    static_action_t unsupported{ action, nullptr, {
+      { "costs", "unadapted_native_action" }, { "gains", "unadapted_native_action" }
+    }, {} };
+    const auto& entry = adapted.count( action ) ? *adapted.at( action ) : unsupported;
     const auto known = [ &entry ]( const char* field ) { return !entry.unknown.count( field ); };
     auto row = actions.add();
     row[ "name" ] = action->name_str;
@@ -160,10 +211,14 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
     row[ "spell_id" ] = action->data().id();
     row[ "base_spell_id" ] = base_spell_id( p, action->data().id() );
     row[ "background" ] = action->background;
-    for ( const auto& unknown : entry.unknown ) row[ "unknown" ][ unknown.first ] = unknown.second;
-    if ( known( "gcd_ms" ) ) row[ "gcd_ms" ] = action->gcd().total_millis();
-    if ( known( "cooldown_ms" ) ) row[ "cooldown_ms" ] = action->cooldown_duration().total_millis();
-    if ( known( "cast_ms" ) ) row[ "cast_ms" ] = action->execute_time().total_millis();
+    for ( const auto& unknown : entry.unknown )
+      if ( unknown.first != "channel_ms" || action->channeled )
+        row[ "unknown" ][ unknown.first ] = unknown.second;
+    row[ "precision" ] = "native_static_estimate";
+    for ( const auto* field : { "gcd_ms", "cooldown_ms", "cast_ms", "channel_ms" } )
+      if ( std::string( field ) == "channel_ms" && !action->channeled ) row[ field ] = 0;
+      else if ( entry.timing.count( field ) ) row[ field ] = entry.timing.at( field );
+      else if ( !entry.unknown.count( field ) ) row[ "unknown" ][ field ] = "unadapted_native_field";
     row[ "channeled" ] = action->channeled;
     if ( action->cooldown )
     {
@@ -209,6 +264,52 @@ void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& e
   rapidjson::Writer<rapidjson::StringBuffer> writer( buffer );
   document.Accept( writer );
   p.sim2gse_static_snapshot_json.assign( buffer.GetString(), buffer.GetSize() );
+}
+
+void finish_static_precombat_snapshot( player_t& p, const std::vector<const action_t*>& executed )
+{
+  if ( p.sim2gse_static_snapshot_json.empty() ) return;
+  double gcd_ms = 0, occupancy_ms = 0;
+  unsigned occupied = 0;
+  std::string unknown;
+  for ( const auto* action : executed )
+  {
+    // Match the existing public precombat button catalogue. Native bookkeeping
+    // facilities are not GSE commands and do not add an input-prefix position.
+    if ( action->background || action->quiet || ( !action->data().id() && !action->harmful ) ) continue;
+    const auto found = p.sim2gse_static_precombat_timing.find( action );
+    if ( found == p.sim2gse_static_precombat_timing.end() )
+    {
+      unknown = "executed_precombat_action_timing_unknown";
+      break;
+    }
+    gcd_ms = std::max( gcd_ms, found->second.first );
+    if ( found->second.second > 0 )
+    {
+      occupancy_ms = found->second.second;
+      if ( ++occupied > 1 ) unknown = "multiple_precombat_actions_without_serial_timeline";
+    }
+  }
+  rapidjson::Document document;
+  document.Parse( p.sim2gse_static_snapshot_json.c_str() );
+  js::JsonOutput root( document, document );
+  root[ "precombat_precision" ] = "native_static_estimate";
+  root[ "precombat_source" ] = "executed_precombat_buttons_plus_initialized_timing";
+  if ( unknown.empty() )
+  {
+    root[ "parameters" ][ "precombat_gcd_ms" ] = gcd_ms;
+    root[ "parameters" ][ "precombat_occupancy_ms" ] = occupancy_ms;
+  }
+  else
+  {
+    root[ "parameter_unknown" ][ "precombat_gcd_ms" ] = unknown;
+    root[ "parameter_unknown" ][ "precombat_occupancy_ms" ] = unknown;
+  }
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer( buffer );
+  document.Accept( writer );
+  p.sim2gse_static_snapshot_json.assign( buffer.GetString(), buffer.GetSize() );
+  p.sim2gse_static_precombat_timing.clear();
 }
 
 void write_player_report( js::JsonOutput root, const player_t& p, bool include_apl )

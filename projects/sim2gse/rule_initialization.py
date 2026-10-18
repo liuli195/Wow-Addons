@@ -16,7 +16,8 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
              burst=None, rule_snapshot=None):
     from program import canonicalize_search_program
     snapshot = reference.get('static_snapshot')
-    if (not isinstance(snapshot, dict) or snapshot.get('protocol') != 1
+    if (not isinstance(snapshot, dict) or type(snapshot.get('protocol')) is not int
+            or snapshot['protocol'] not in (1, 2)
             or snapshot.get('stage') != 'precombat_initialized_before_actions'):
         raise ValueError('规则起点缺少真实角色静态快照，请重新构建引擎')
     if not isinstance(snapshot.get('resources'), dict) or not isinstance(snapshot.get('actions'), list):
@@ -25,8 +26,9 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
     actions = binding['spec']['actions']
     stats = {}
     for row in snapshot['actions']:
-        values = {key: row.get(key) for key in ('gcd_ms', 'cast_ms', 'channeled', 'costs',
+        values = {key: row.get(key) for key in ('gcd_ms', 'cast_ms', 'channel_ms', 'channeled', 'costs',
                    'gains', 'gain_status', 'gain_timing')}
+        values['unknown'] = row.get('unknown', {})
         if row.get('name') in stats and stats[row['name']] != values:
             raise ValueError('同一动作静态字段不一致: ' + row['name'])
         stats[row.get('name')] = values
@@ -39,21 +41,27 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
     if any(value > capacities[key] for key, value in balances.items()):
         raise ValueError('原生当前资源超过上限，不能生成起手')
 
-    def action_stats(name, base=None):
+    def action_stats(name):
         row = stats.get(name)
-        if row is None and base is not None and base != name:
-            row = dict(action_stats(base), costs=None, gains=None, gain_status='unknown',
-                       gcd_basis='base_button_static_approximation')
-            note = name + ': 替换形态GCD/费用/收益未知；仅用基础按钮静态GCD估计，不替代真实扣费'
-            if note not in unknown:
-                unknown.append(note)
         if row is None:
             raise ValueError('规则起点缺少动作静态字段: ' + name)
         _number(row.get('gcd_ms'), name+'.gcd_ms')
-        if row.get('channeled') is not False or _number(row.get('cast_ms'), name+'.cast_ms') != 0:
-            raise ValueError('规则起点尚不支持施法或引导静态排位: ' + name)
+        cast_ms = _number(row.get('cast_ms'), name+'.cast_ms')
+        if type(row.get('channeled')) is not bool:
+            raise ValueError('规则起点缺少有效静态字段: ' + name + '.channeled')
+        channel_ms = row.get('channel_ms')
+        if (channel_ms is None and snapshot['protocol'] == 1 and not row['channeled']
+                and cast_ms == 0 and 'channel_ms' not in row['unknown']):
+            channel_ms = 0  # 旧协议只支持明确的非引导瞬发动作。
+        row['channel_ms'] = _number(channel_ms, name+'.channel_ms')
+        if not row['channeled'] and row['channel_ms'] != 0:
+            raise ValueError('非引导动作时长矛盾: ' + name + '.channel_ms')
+        row['occupancy_ms'] = max(row['gcd_ms'], cast_ms + row['channel_ms'])
         for key in ('costs', 'gains'):
-            if row.get('gcd_basis') and row.get(key) is None:
+            if row.get(key) is None and key in row['unknown']:
+                note = name + '.' + key + ': ' + str(row['unknown'][key])
+                if note not in unknown:
+                    unknown.append(note)
                 continue
             if not isinstance(row.get(key), dict) or set(row[key]) - set(balances):
                 raise ValueError('缺少或不支持的静态多资源字段: '+name+'.'+key)
@@ -72,24 +80,36 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                 if balances[resource] is not None:
                     balances[resource] = min(capacities[resource], balances[resource]+amount)
         elif row.get('gain_status') != 'known_zero':
-            for resource in row['gains'] or [binding['resource']]:
+            for resource in row['gains'] or balances:
                 balances[resource] = None
 
     prefix = len(capabilities.get('precombat_actions', []))
-    precombat_gcd = snapshot.get('parameters', {}).get('precombat_gcd_ms') if prefix else 0
-    if precombat_gcd is None:
-        raise ValueError('战前有效GCD未知：缺少安全原生静态占用，无法估计起手及首次爆发')
-    _number(precombat_gcd, 'precombat_gcd_ms')
-    click = max(prefix, math.ceil(precombat_gcd / input_interval_ms))
+    parameters = snapshot.get('parameters', {})
+    precombat_gcd = parameters.get('precombat_gcd_ms') if prefix else 0
+    if precombat_gcd is not None:
+        _number(precombat_gcd, 'precombat_gcd_ms')
+    precombat_ms = 0
+    if prefix:
+        # 新字段来自已有战前实际输出；旧协议仅认证过瞬发战前动作。
+        if 'precombat_occupancy_ms' in snapshot.get('parameter_unknown', {}):
+            precombat_ms = None
+        else:
+            precombat_ms = parameters.get('precombat_occupancy_ms',
+                precombat_gcd if snapshot['protocol'] == 1 else None)
+        if precombat_ms is None:
+            raise ValueError('战前有效GCD或实际占用未知：无法估计起手及首次爆发')
+        _number(precombat_ms, 'precombat_occupancy_ms')
+    click = max(prefix, math.ceil(precombat_ms / input_interval_ms))
     elapsed = click * input_interval_ms
-    precombat_occupancy = dict(gcd_ms=precombat_gcd, first_loop_ms=elapsed, precision='native_static_estimate')
+    precombat_occupancy = dict(gcd_ms=precombat_gcd, occupancy_ms=precombat_ms,
+                              first_loop_ms=elapsed, precision='native_static_estimate')
     padding = click - prefix
     if padding == 1:
         raise ValueError('单空点击无法由现有WaitClicks表达: 战前占用')
     if padding:
         program.append(dict(kind='WaitClicks', clicks=padding))
         positions.append(dict(kind='wait', position=0, clicks=padding,
-                              basis='native_precombat_gcd', precision='approximate'))
+                              basis='native_precombat_occupancy', precision='approximate'))
     first_burst_ms = None
     if burst and 'first_burst_step' in opener:
         estimate = elapsed
@@ -101,8 +121,8 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                 raise ValueError('首次爆发前的独立映射不可静默略过')
             action = actions[step['action']]
             name = step.get('native_form', action['native_action'])
-            row = action_stats(name, action['native_action'])
-            estimate += max(1, math.ceil(_number(row.get('gcd_ms'), name+'.gcd_ms') /
+            row = action_stats(name)
+            estimate += max(1, math.ceil(row['occupancy_ms'] /
                                          input_interval_ms)) * input_interval_ms
         if first_burst_ms is None or not 0 < first_burst_ms < 180000:
             raise ValueError('首次爆发时点超出已有输入计划范围')
@@ -146,9 +166,9 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                 mapped['estimated_ms'] = min(row['input_ms'] for row in mapped['burst_mapping'])
                 mapped['mapping_loss'] = '映射到现有独立宏的实际块/命令及输入时刻；源顺序不改变宏内顺序，尝试不代表成功'
             continue
-        row = action_stats(name, action['native_action'])
+        row = action_stats(name)
         gcd = row['gcd_ms']
-        span = max(1, bisect_left(times, elapsed + gcd, lo=click+1) - click)
+        span = max(1, bisect_left(times, elapsed + row['occupancy_ms'], lo=click+1) - click)
         if span == 2:
             raise ValueError('单空点击无法由现有WaitClicks表达: ' + name)
         before = dict(balances)
@@ -158,8 +178,9 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
         positions.append(dict(kind='action', position=len(program)-1, action=action['button'],
             native_action=name, source_step=step['source_step'], source=opener['source'],
             estimated_ms=elapsed, click_position=click,
-            effective_gcd_ms=(None if row.get('gcd_basis') else gcd),
-            estimated_gcd_ms=gcd, gcd_basis=row.get('gcd_basis', 'native_static_snapshot'), clicks=span,
+            effective_gcd_ms=gcd,
+            estimated_gcd_ms=gcd, gcd_basis='native_static_snapshot', clicks=span,
+            cast_ms=row['cast_ms'], channel_ms=row['channel_ms'], occupancy_ms=row['occupancy_ms'],
             precision='approximate', costs=copy.deepcopy(row['costs']), resources_before=before,
             estimated_resources_after=dict(balances),
             parameter_stage=snapshot['stage'], condition_status='dynamic_condition_unknown',
@@ -168,7 +189,7 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
         if span > 1:
             program.append(dict(kind='WaitClicks', clicks=span-1))
             positions.append(dict(kind='wait', position=len(program)-1, clicks=span-1,
-                basis='static_effective_gcd', precision='approximate'))
+                basis='static_action_occupancy', precision='approximate'))
         click += span
         if click >= len(times):
             raise ValueError('规则起点超过现有点击或场景边界')
@@ -184,22 +205,21 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
         if row['kind'] == 'action':
             row['commands'] = canonical['form']['clicks'][row['click_position']]
     return dict(version=VERSION, rule_snapshot=rule_snapshot,
-        rule_config_digest=rule_snapshot['rule_config_digest'], resource=binding['resource'],
+        rule_config_digest=rule_snapshot['rule_config_digest'],
+        configuration_key=binding['configuration_key'], states=binding['states'],
+        source_opener=binding['configuration']['opener'],
+        resource=reference.get('identity', {}).get('resource'),
         program=program, positions=positions, source_steps=source_steps,
         opener_id=opener['id'], precombat_clicks=prefix, precombat_occupancy=precombat_occupancy, duration_ms=elapsed,
-        first_burst_ms=first_burst_ms, recovery=binding['recovery'],
+        first_burst_ms=first_burst_ms,
         behavior_identity=canonical['identity'], static_snapshot=snapshot,
         input_interval_ms=input_interval_ms, target_count=target_count,
         protected_burst=({key: burst[key] for key in ('definition_id', 'plan') if key in burst} if burst else None),
         parameter_sources=binding['parameter_sources'], bindings=binding['bindings'],
         action_mapping=binding['native_buttons'],
-        rules=[dict(id=key, intent=row['intent'], scope=row['scope'], modifications=row['modifications'],
-                    application_status='declared_not_diagnosed', applied_positions=[],
-                    source=row.get('binding', {}).get('source', ''),
-                    bindings=[entry['id'] for entry in binding['bindings'] if key in entry['rules']])
-               for key, row in dict(rule_snapshot['pack']['general']['templates'],
-                                    **binding['spec'].get('templates', {})).items()],
+        rules=[dict(id=key, application_status='declared_not_diagnosed', applied_positions=[])
+               for key in rule_snapshot['pack']['general']['templates']],
         exact=['源顺序、重复次数、按钮映射和现有GSE硬合法性'],
-        approximate=['有效GCD按输入间隔向上取整；静态资源账不足或动态收益时保留未知',
+        approximate=['动作占用按输入间隔向上取整；静态资源账不足或动态收益时保留未知',
                      '起手映射为可搜索循环，不能保证一次性或指南动态条件', *binding['approximate']],
         unknown=unknown)

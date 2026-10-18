@@ -124,7 +124,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
              failure_events=None, reset_events=None,
              runtime=None, simulation_config=None, on_native_start=None,
-             burst_candidate=None, input_sources=None):
+             burst_candidate=None, input_sources=None, rule_observation_request=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
@@ -269,6 +269,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     start_callback = {'on_start': on_native_start} if on_native_start is not None else {}
     log = run(generated, folder, mode,
               [f'iterations={iterations}', f'seed={seed}', 'json2=native.pending.json',
+               *([] if rule_observation_request is None else ['sim2gse_rule_observations=' +
+                    json.dumps(rule_observation_request, ensure_ascii=False, separators=(',', ':'))]),
                *(['potion=potion_of_recklessness', 'override.allow_potions=1']
                  if any(c['kind'] == 'potion' for b in all_commands for c in b) else []),
                'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', True) else os.devnull)], runtime=runtime,

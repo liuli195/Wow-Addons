@@ -482,8 +482,10 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     from test_search import _minimal_rule_pack
     pack = _minimal_rule_pack()
-    pack['specializations']['252']['initialization']['openers'][0]['steps'] = [
-        dict(action='scourge_strike', source_step=1)]
+    for configuration in pack['configurations']:
+        opener = configuration['opener']
+        opener['source_steps'] = ['scourge_strike']
+        opener['ordinary_steps'] = [dict(opener['ordinary_steps'][1], source_step=1)]
     rules = tmp_path / 'available-opener.json'
     rules.write_text(json.dumps(pack), encoding='utf-8')
     with monkeypatch.context() as configuration:
@@ -642,7 +644,8 @@ def test_dual_rejects_training_champion_from_previous_rule_configuration(
     with _fast_initialization(), page_task_boundary(), patch.object(engine, 'check_report', REAL_CHECK_REPORT):
         template, rows = completed_training(tmp_path, 1, [([['death_coil']], [190., 200., 210.])])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-        pack['specializations']['252']['initialization']['openers'][0]['source'] += '，已编辑'
+        for configuration in pack['configurations']:
+            configuration['opener']['source_basis'] += '，已编辑'
         rules.write_text(json.dumps(pack), encoding='utf-8')
         state = dual_result(tmp_path, raw, candidate_limit=1)
     champion = state['scenes'][0]['training_champion_snapshot']

@@ -47,6 +47,13 @@ SEARCH_CHAMPION_SCHEMA = dict(
     source_condition_key="VARCHAR", score="DOUBLE", samples="UBIGINT", batch_keys="VARCHAR[]",
     promotion_evidence="JSON", source_evidence="JSON",
 )
+SEARCH_LEARNER_SCHEMA = dict(
+    model_key='VARCHAR', version='UBIGINT', state_version='UBIGINT',
+    feature_version='VARCHAR', reward_version='VARCHAR', coba_version='VARCHAR',
+    numpy_version='VARCHAR', dimension='UBIGINT', alpha='DOUBLE', features='JSON',
+    seed='BIGINT', rng_state='BIGINT', theta='DOUBLE[]', a_inv='DOUBLE[][]',
+    reservations='JSON', settled='JSON',
+)
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
 _PUBLICATION_LOCK = threading.RLock()
@@ -262,6 +269,85 @@ def publish_search_champion(record, expected_version, *, expected_incumbent=None
         return dict(status='published', version=record['version'], source_run_id=record['source_run_id'])
 
 
+@contextmanager
+def search_learner_lock(runtime=None):
+    """One short cross-process lock protects the shared learner's atomic record."""
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 30
+    while True:
+        if runtime is not None:
+            runtime.check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DataReadError('等待共享选择器保存锁超时')
+        if _PUBLICATION_LOCK.acquire(timeout=min(.05, remaining)):
+            break
+    try:
+        with (DATA_ROOT / '.search-learners.lock').open('a+b') as lease:
+            if lease.tell() == 0:
+                lease.write(b'0')
+                lease.flush()
+            while True:
+                if runtime is not None:
+                    runtime.check()
+                lease.seek(0)
+                try:
+                    msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise DataReadError('等待共享选择器保存锁超时')
+                    time.sleep(.05)
+            try:
+                yield
+            finally:
+                lease.seek(0)
+                msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        _PUBLICATION_LOCK.release()
+
+
+def read_search_learner_metadata(model_key):
+    """Caller holds the shared lock; inspect the same record's version and parameters."""
+    rows = read_records('search_learners', model_key, columns=[
+        'model_key', 'version', 'state_version', 'feature_version', 'reward_version',
+        'coba_version', 'numpy_version', 'dimension', 'alpha', 'features', 'seed'])
+    if not rows:
+        return None
+    if (len(rows) != 1 or rows[0].get('model_key') != model_key
+            or type(rows[0].get('version')) is not int or rows[0]['version'] < 0):
+        raise InvalidRecordError('共享选择器记录身份或版本无效')
+    record = rows[0]
+    if isinstance(record.get('features'), str):
+        try:
+            record['features'] = json.loads(record['features'])
+        except ValueError as error:
+            raise InvalidRecordError('共享选择器元数据损坏') from error
+    return record
+
+
+def read_search_learner(model_key):
+    """Only absence is empty; a read or schema failure never resets experience."""
+    rows = read_records('search_learners', model_key)
+    if not rows:
+        return None
+    if len(rows) != 1 or rows[0].get('model_key') != model_key:
+        raise InvalidRecordError('共享选择器记录身份不唯一或不符')
+    record = rows[0]
+    for field in ('features', 'reservations', 'settled'):
+        if isinstance(record.get(field), str):
+            try:
+                record[field] = json.loads(record[field])
+            except ValueError as error:
+                raise InvalidRecordError('共享选择器元数据损坏') from error
+    return record
+
+
+def write_search_learner(record):
+    """Caller holds search_learner_lock; one atomic replacement includes all state."""
+    return write('search_learners', record['model_key'], [record], schema=SEARCH_LEARNER_SCHEMA)
+
+
 def _report_columns(value):
     # SimC emits empty objects for absent statistics; Parquet represents these as NULL.
     if isinstance(value, dict):
@@ -269,6 +355,106 @@ def _report_columns(value):
     if isinstance(value, list):
         return [_report_columns(item) for item in value]
     return value
+
+
+def _state_value_report(report, *, restore=False):
+    """仅适配规则观察的异构值与费用映射；统计空对象仍沿原约定。"""
+    players = []
+    fields = {'boolean': bool, 'integer': int, 'number': float, 'record': dict}
+    for player in report['sim']['players']:
+        payload = player.get('sim2gse_rule_observations')
+        if not isinstance(payload, dict):
+            players.append(player)
+            continue
+        states = []
+        original_states = payload.get('state_observations')
+        for original in original_states if isinstance(original_states, list) else []:
+            row = dict(original)
+            stored = row.pop('value_storage', None)
+            if stored is not None:
+                if isinstance(stored, dict) and type(stored.get('version')) is int and stored['version'] > 2:
+                    raise DataReadError('状态值存储版本尚未支持，保留原成功记录')
+                if (not isinstance(stored, dict) or type(stored.get('version')) is not int
+                        or stored['version'] not in (1, 2) or not isinstance(stored.get('kind'), str)
+                        or stored['kind'] not in {*fields, 'unknown', 'missing', 'empty_record'}
+                        or stored['kind'] == 'empty_record' and stored['version'] != 2
+                        or set(stored) - {'version', 'kind', *fields} or row.get('value') is not None):
+                    raise InvalidRecordError('状态值存储版本、标签或原值冲突')
+                kind = stored['kind']
+                value = stored.get(kind) if kind in fields else None
+                if (kind in fields and type(value) is not fields[kind]
+                        or any(stored.get(name) is not None for name in fields if name != kind)):
+                    raise InvalidRecordError('状态值存储类型或占位字段无效')
+                if restore:
+                    if kind == 'missing': row.pop('value', None)
+                    else: row['value'] = {} if kind == 'empty_record' else value
+                else:
+                    row.pop('value', None)  # 混读旧分片时DuckDB可能补出该NULL列。
+                    row['value_storage'] = stored
+            elif not restore:
+                missing = 'value' not in row
+                value = row.pop('value', None)
+                kind = ('empty_record' if type(value) is dict and not value else
+                        next((name for name, expected in fields.items() if type(value) is expected), None))
+                if value is not None and kind is None:
+                    raise ValueError('不支持的状态值存储类型')
+                stored = dict(version=2 if kind == 'empty_record' else 1,
+                              kind='missing' if missing else kind or 'unknown', **dict.fromkeys(fields))
+                if kind in fields: stored[kind] = value
+                row['value_storage'] = stored
+            states.append(row)
+        observed = dict(payload)
+        if isinstance(original_states, list):
+            observed['state_observations'] = states
+        for collection in ('action_observations', 'action_events'):
+            if isinstance(payload.get(collection), list):
+                observed[collection] = [_resource_cost_row(row, restore=restore) for row in payload[collection]]
+        players.append(dict(player, sim2gse_rule_observations=observed))
+    return dict(report, sim=dict(report['sim'], players=players))
+
+
+def _resource_cost_row(original, *, restore):
+    row = dict(original)
+    stored = row.pop('resource_costs_storage', None)
+    if stored is None:
+        if not restore:
+            value = row.get('resource_costs')
+            if (value is not None and not isinstance(value, dict)
+                    or isinstance(value, dict) and any(not isinstance(key, str) or not key for key in value)):
+                raise ValueError('费用映射存储类型无效')
+            row['resource_costs_storage'] = dict(version=1,
+                kind='missing' if 'resource_costs' not in row else 'unknown' if value is None else 'record',
+                keys=list(value) if isinstance(value, dict) else [])
+        return row
+    if isinstance(stored, dict) and type(stored.get('version')) is int and stored['version'] > 1:
+        raise DataReadError('费用映射存储版本尚未支持，保留原成功记录')
+    if (not isinstance(stored, dict) or set(stored) != {'version', 'kind', 'keys'}
+            or type(stored['version']) is not int or stored['version'] != 1
+            or stored['kind'] not in ('record', 'unknown', 'missing')
+            or not isinstance(stored['keys'], list)
+            or any(not isinstance(key, str) or not key for key in stored['keys'])
+            or len(set(stored['keys'])) != len(stored['keys'])
+            or stored['kind'] != 'record' and stored['keys']):
+        raise InvalidRecordError('费用映射存储版本、标签或键无效')
+    value = row.get('resource_costs')
+    if stored['kind'] == 'record':
+        if value is None and not stored['keys']: value = {}
+        if (not isinstance(value, dict) or any(key not in value for key in stored['keys'])
+                or any(item is not None for key, item in value.items() if key not in stored['keys'])):
+            raise InvalidRecordError('费用映射存储键或原值冲突')
+        if restore: row['resource_costs'] = {key: value[key] for key in stored['keys']}
+    elif value is not None:
+        raise InvalidRecordError('费用映射存储标签与原值冲突')
+    elif restore:
+        if stored['kind'] == 'missing': row.pop('resource_costs', None)
+        else: row['resource_costs'] = None
+    if not restore:
+        row['resource_costs_storage'] = stored
+    return row
+
+
+def _restore_batch(row):
+    return dict(row, report=_state_value_report(row['report'], restore=True)) if isinstance(row.get('report'), dict) else row
 
 
 def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
@@ -285,7 +471,7 @@ def prepare_batch(row: dict, *, diagnostic_logging=False) -> dict:
                     if name not in {'action_sequence', 'action_sequence_precombat'}})
                    for player in report['sim']['players']]
         row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
-    return dict(row, report=_report_columns(row['report']))
+    return dict(row, report=_report_columns(_state_value_report(row['report'])))
 
 def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -> int:
     if not events:
@@ -327,13 +513,16 @@ def _read_records(operation, table, keys, *, columns, filters):
             options['filters'] = filters
         with api[operation](DATA_ROOT, table, keys, **options) as cursor:
             names = [column[0] for column in cursor.description]
-            return [dict(zip(names, row)) for row in cursor.fetchall()]
+            rows = [dict(zip(names, row)) for row in cursor.fetchall()]
+            return [_restore_batch(row) for row in rows] if table == 'batches' else rows
     except api['MissingKeyError'] as error:
         if operation == "read_key":
             return []
         raise DataReadError('数据中心指定记录组缺失') from error
     except api['CorruptDataError'] as error:
         raise InvalidRecordError('数据中心目标记录损坏') from error
+    except InvalidRecordError:
+        raise
     except Exception as error:
         raise DataReadError(f'数据中心记录不可读: {error}') from error
 
@@ -378,7 +567,8 @@ def one(table: str, field: str, value, *, group_key=None, columns=None):
     if len(rows) != 1:
         return None
     record = dict(zip(columns, rows[0]))
-    return record if record.get(field) == value else None
+    if record.get(field) != value: return None
+    return _restore_batch(record) if table == 'batches' else record
 
 
 def iter_rows(sql: str, parameters=None, *, tables, batch_size: int = 500):

@@ -340,10 +340,6 @@ def _discard_native_exchange(folder: Path, *, keep_valid=False) -> None:
             path.unlink(missing_ok=True)
 
 
-def _json_result(result: dict) -> dict:
-    return {key: value for key, value in result.items() if key not in ("character", "output_root")}
-
-
 def _store_candidate(run_id: str, candidate: dict, *, search_order=None) -> tuple[str, str]:
     from result_store import CANDIDATE_SCHEMA, write as write_records
     from search import digest
@@ -424,8 +420,15 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         if isinstance(data_key, str):
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                           'canonicalized_duplicates', 'no_improvement_round_limit')
+                           'canonicalized_duplicates', 'no_improvement_round_limit', 'rule_diagnostics',
+                           'rule_diagnostics_version')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    if state and state.get('rule_steps'):
+        search_metrics['rule_steps'] = state['rule_steps']
+    replays = {row['key']: dict(batch_key=row['batches'][0]['data_key'], diagnostic=row['rule_diagnostics'])
+               for row in (state or {}).get('archive', []) if row.get('diagnostics_replayed')}
+    if replays:
+        search_metrics['rule_diagnostic_replays'] = replays
     initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
     if initialization:
         search_metrics['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
@@ -433,7 +436,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     if state is not None:
         for name in ('seed_adaptations', 'training_champion_snapshot',
                      'training_champion_adaptation', 'start_sources', 'formal_champion_snapshot',
-                     'formal_champion_adaptation', 'formal_champion_publication'):
+                     'formal_champion_adaptation', 'formal_champion_publication',
+                     'selection_feedback_incomplete'):
             if name in state:
                 search_metrics[name] = state[name]
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
@@ -915,6 +919,12 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
         request = dict(condition=binding['condition'], program=form, behavior_identity=canonical_behavior_key(form),
             purpose=purpose, seed=seed, input_seed=seed + 500000, iterations=iterations,
             times=times, stats=STATS_VERSION, trace=row['trace'], reset_events=[list(item) for item in config['reset_events']])
+        if row.get('rule_observations') is not None:
+            from rule_diagnostics import observation_request, VERSION as RULE_DIAGNOSTICS_VERSION
+            expected = dict(version=RULE_DIAGNOSTICS_VERSION, request=observation_request(state['rule_initialization']))
+            if decode(row['rule_observations']) != expected:
+                raise InvalidRecordError('正式冠军原报告规则观察请求不符')
+            request['rule_observations'] = expected
         if state.get('burst'):
             from burst import combined_inputs
             context = state['burst']
@@ -1239,7 +1249,7 @@ def _publish_formal_champion(store, destination):
 
 
 def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False,
-                  burst_identity=None, formal_source_run_ids=None, rule_snapshot=None):
+                  burst_identity=None, formal_source_run_ids=None, rule_snapshot=None, rule_step=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
     from rule_config import load
     rule_snapshot = rule_snapshot or load()
@@ -1481,7 +1491,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                               capabilities=state['capabilities'], reference=state['native'],
                               destination=destination, runtime=runtime, config=config,
                               condition_key=condition, store=store,
-                              simulation_config=simulation_config)
+                              simulation_config=simulation_config, rule_step=rule_step)
             result.update(config=config, simulation_config=simulation_config,
                               character=character, output_root=destination,capabilities=state['capabilities'],
                               profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
@@ -1575,10 +1585,12 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
              version=None, gse_context=None, use_burst=False, burst_identity=None,
-             _formal_source_run_ids=None, _rule_snapshot=None) -> dict:
+             _formal_source_run_ids=None, _rule_snapshot=None, rule_step=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
+    if rule_step is not None and (mode != 'optimize' or not resume):
+        raise TaskError('规则单步需要恢复已有已评分父任务')
     if burst_identity is not None:
         if not use_burst or mode != 'optimize' or resume:
             raise TaskError('冻结爆发身份仅用于新的爆发优化任务')
@@ -1601,7 +1613,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
             if current_original != saved_original:
                 raise TaskError('恢复任务的原始输入已变化，请创建新任务')
         return resume_task(destination, search_config=search_config, simulation_config=simulation_config,
-                           _runtime=_runtime, cancel_event=cancel_event)
+                           _runtime=_runtime, cancel_event=cancel_event, rule_step=rule_step)
     if mode=='optimize' and (program is not None or phase_ms!=0):
         raise TaskError('优化入口自动选择动作，手工程序仅用于单次评估')
     if mode not in ("optimize", "single", "import"):
@@ -1668,7 +1680,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
         try:
             return _run_optimize(destination, character, config=config, runtime=runtime,
                                  simulation_config=simulation_config, use_burst=use_burst, burst_identity=burst_identity,
-                                 formal_source_run_ids=_formal_source_run_ids, rule_snapshot=_rule_snapshot)
+                                 formal_source_run_ids=_formal_source_run_ids, rule_snapshot=_rule_snapshot,
+                                 rule_step=rule_step)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _save_failure(destination, state)
@@ -1682,7 +1695,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False, burst_identity=None, _rule_snapshot=None) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None, _rule_snapshot=None,
+             rule_step=None) -> dict:
     if mode == 'optimize':
         from search import config_for
         _runtime = _runtime or TaskRuntime(config_for(search_config)['total_budget_seconds'],
@@ -1698,7 +1712,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
                          gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
-                         _rule_snapshot=_rule_snapshot)
+                         _rule_snapshot=_rule_snapshot, rule_step=rule_step)
     from seed_activity import foreground_search
     with foreground_search():
         return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
@@ -1706,7 +1720,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                          cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                          gse_text=gse_text, sequence_name=sequence_name, version=version,
                          gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
-                         _rule_snapshot=_rule_snapshot)
+                         _rule_snapshot=_rule_snapshot, rule_step=rule_step)
 
 
 class TaskHandle:
@@ -1841,22 +1855,85 @@ def _resume_task(output_root, **kwargs):
             except (ValueError, OSError) as error:
                 raise TaskError(str(error)) from error
             used = float(state.get('elapsed_seconds',0))
+            terminal_rule_step = False
+            if kwargs.get('rule_step') is not None:
+                from rule_diagnostics import enqueue
+                try:
+                    step_status = enqueue(state, kwargs['rule_step'], config, used)
+                except ValueError as error:
+                    raise TaskError(str(error)) from error
+                store.save()
+                terminal_rule_step = (step_status in ('scored', 'failed', 'duplicate') and not any(
+                    work.get('rule_step', {}).get('request') == kwargs['rule_step']
+                    for work in state.get('pending', [])))
+            feedback_accounted_seconds = 0
             if state.get('native'):
                 character = parse_character((destination / 'input.simc').read_text(encoding='utf-8-sig'))
                 character = replace(character, spec_id=state['native']['identity']['spec_id'],
                                     race=state['native']['identity']['race'])
                 store.recover_reports(character, simulation_config)
+                from search import reconcile_selection_feedback
+                reconcile_selection_feedback(store,
+                    finalizing=used >= config['total_budget_seconds'] or state.get('stop_reason') == 'search_deadline',
+                    cancel_event=kwargs.get('cancel_event') or getattr(kwargs.get('_runtime'), 'cancel_event', None))
+                feedback_accounted_seconds = max(0, state.get('elapsed_seconds', used) - used)
+            used = float(state.get('elapsed_seconds', used))
             if state.get('status') == 'running':
                 penalty = max((max(0, r['allowance'] - max(0,used-r['start']))
                                for r in state.get('inflight',{}).values()),default=0)
-                used = min(config['total_budget_seconds'],used+min(30,penalty))
+                used += min(30, penalty, max(0, config['total_budget_seconds']-used))
                 state.update(elapsed_seconds=used,status='interrupted',inflight={})
                 store.save()  # 扣除与恢复标记同一事务，重复恢复不会再次扣除。
             if state.get('formal_champion_publication_intent'):
                 _restore_formal_result(store, destination, character)
                 _publish_formal_champion(store, destination)
+            if terminal_rule_step:
+                # 操作终态幂等仍须补发可靠结果；不能绕过上次中断后的中心/指针/进度同步。
+                chosen = next((row for row in state.get('archive', [])
+                               if row['key'] == state.get('locked_candidate_key', state.get('best'))), {})
+                search = dict(state, records=state.get('archive', []),
+                    candidate_count=len(state.get('evaluated_keys', [])),
+                    unique_candidates=len(state.get('seen', [])),
+                    partial_round=bool(state.get('pending')) or not state.get('full_round', True),
+                    rule_diagnostics=chosen.get('rule_diagnostics'))
+                if search['rule_diagnostics']:
+                    search['rule_diagnostics_version'] = search['rule_diagnostics']['version']
+                fields = (state.get('formal_champion_publication_intent') or {}).get('result_fields', {})
+                search.update({key: value for key, value in fields.get('search', {}).items() if key == 'no_improvement_round_limit'})
+                result = dict(fields, status=state['status'], phase=state['phase'], search=search,
+                    validation=dict(dataset='validation', records=[row[name] for row in state.get('archive', [])
+                        for name in ('validation', 'global_validation') if name in row]),
+                    independent_validation_complete=False, improvement='search_result',
+                    final=fields.get('final', dict(dataset='final', status='not_requested', scenarios={})))
+                observation = state.get('search_observability')
+                if observation and observation.get('mode') != 'off':
+                    result['search_observability'] = _export_search_observability(
+                        observation, include_details=observation.get('mode') == 'full')
+                pointer = _store_run(destination, result, state=state)
+                _write_json(destination/'result.json', pointer, atomic=True)
+                store.publish()
+                return read_task(destination)
             if (destination / 'result.json').is_file():
                 if state.get('status') == 'completed':
+                    from result_store import RUN_SCHEMA, one, write
+                    started = time.monotonic()
+                    try:
+                        published = one('runs', 'run_id', state['run_id'])
+                        if published is None:
+                            raise TaskError('已完成任务的中心结果缺失')
+                        published = {name: json.loads(value) if RUN_SCHEMA.get(name) == 'JSON'
+                                     and isinstance(value, str) else value
+                                     for name, value in published.items()}
+                        metrics = dict(published.get('search_metrics') or {})
+                        metrics.update(rule_steps=state.get('rule_steps', {}),
+                            selection_feedback_incomplete=state.get('selection_feedback_incomplete', False))
+                        if metrics != published.get('search_metrics') or used != published['elapsed_seconds']:
+                            published.update(search_metrics=metrics,
+                                elapsed_seconds=used + time.monotonic()-started)
+                            write('runs', state['run_id'], [published], schema=RUN_SCHEMA)
+                    finally:
+                        state['elapsed_seconds'] = used + time.monotonic()-started
+                        store.save()
                     store.publish()
                     return read_task(destination)
             if used >= config['total_budget_seconds']:
@@ -1875,7 +1952,12 @@ def _resume_task(output_root, **kwargs):
                 return read_task(destination)
         finally:
             store.close()
-        runtime = kwargs.pop('_runtime',None) or TaskRuntime(config['total_budget_seconds'],cancel_event=kwargs.pop('cancel_event',None))
+        runtime = kwargs.pop('_runtime', None)
+        if runtime is not None:
+            # used已含补发实耗；外传时钟亦在运行，仅消除这一段重复计时。
+            runtime.started += feedback_accounted_seconds
+        else:
+            runtime = TaskRuntime(config['total_budget_seconds'], cancel_event=kwargs.pop('cancel_event', None))
         kwargs.pop('cancel_event',None)
         runtime.identities.update(verified)
         runtime.used_seconds=used
@@ -2070,6 +2152,8 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         columns = ['batch_key', 'candidate_key', 'purpose', 'condition_key', 'program_identity',
                    'batch_index', 'scenario', 'stats_version', 'seed', 'input_seed', 'iterations',
                    'times', 'trace', 'dps', 'samples', 'variance', 'requested_iterations']
+        if search.get('rule_diagnostics_version'):
+            columns += ['rule_diagnostics', 'rule_observations']
         batches = {row['batch_key']: row for row in read_many('batches', groups, columns=columns)
                    if row['batch_key'] in wanted}
         candidate_keys = list(dict.fromkeys(row['candidate_key'] for row in batches.values()
@@ -2095,7 +2179,20 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
                          dps=row['dps'], samples=row['samples'], variance=row['variance'],
                          requested_iterations=row['requested_iterations'], batch_index=row['batch_index'],
                          scenario=row['scenario'])
+            if row.get('rule_observations') is not None:
+                request['rule_observations'] = decode(row['rule_observations'])
             record = grouped.setdefault(key, dict(key=key, batches=[]))
+            if row.get('rule_diagnostics') is not None:
+                from rule_diagnostics import rebind
+                record['rule_diagnostics'] = rebind(decode(row['rule_diagnostics']), run_id,
+                    diagnostic_logging=task_result['config'].get('diagnostic_logging', False))
+            if key in search.get('rule_diagnostic_replays', {}):
+                replay = search['rule_diagnostic_replays'][key]
+                if replay['batch_key'] == row['batch_key']:
+                    record['rule_diagnostics'] = replay['diagnostic']
+            for step in search.get('rule_steps', {}).values():
+                if step.get('candidate_key') == key:
+                    record['rule_step'] = step
             record['batches'].append(batch)
             if candidate is not None:
                 record['program'] = decode(candidate['program'])

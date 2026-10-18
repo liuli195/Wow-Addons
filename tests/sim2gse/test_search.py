@@ -27,14 +27,27 @@ from search import initial_programs, mutate, TaskStore
 
 def _minimal_rule_pack():
     """构造报告只覆盖这份有序起手，不冒充完整指南角色。"""
+    from copy import deepcopy
+
     names = ('outbreak', 'scourge_strike', 'death_coil', 'epidemic')
-    return dict(schema_version=1, general=dict(templates={}), specializations={
-        '252': dict(actions={name: dict(button=name, native_action=name) for name in names},
-            facts={}, bindings=[], initialization=dict(resource='runic_power',
-                recovery=dict(model='none'), openers=[dict(id='fixture', scope=True,
-                    source='fixture: ordered task boundary', steps=[
-                        dict(action=name, source_step=index)
-                        for index, name in enumerate(names[:3], 1)])]))})
+    pack = dict(schema_version=2,
+        identity_mappings=dict(hero_talents={'sample_hero': 17}),
+        general=dict(templates={}), execution_evidence={},
+        object_sets={'sample': {name: dict(kind='action', native_action=name,
+            base_button=name, native_forms=[name]) for name in names}},
+        configurations=[dict(key=dict(specialization_id=252, hero_talent='sample_hero',
+            target_type='single_target'), objects_ref='sample', execution_ref=None,
+            states={'only': dict(effect=None, expected=True, priority=[])},
+            opener=dict(source_basis='fixture: ordered task boundary', source_steps=list(names[:3]),
+                precombat=[], burst_anchor=None, independent_burst_source_steps=[],
+                ordinary_steps=[dict(action=name, source_step=index, source_form=name,
+                    attribute_query=dict(native_form=name, base_button=name,
+                                         missing='unknown_no_base_cost_fallback'))
+                    for index, name in enumerate(names[:3], 1)]))])
+    aoe = deepcopy(pack['configurations'][0])
+    aoe['key']['target_type'] = 'aoe'
+    pack['configurations'].append(aoe)
+    return pack
 
 
 def _fast_capabilities():
@@ -98,7 +111,7 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None, score=None):
+                   on_native_start=None, score=None, rule_observation_request=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -137,9 +150,10 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
 
 @contextmanager
 def _fast_initialization(*, real_engine=False):
-    """跳过与状态、缓存和进程故障断言无关的原生初始化。"""
+    """提供明确单目标测试配置，跳过与状态、缓存和进程故障断言无关的原生初始化。"""
     import codec
     import engine
+    import simulation_config
 
     def compiler(command, *args, **kwargs):
         if kwargs.get("on_start") is not None:
@@ -159,6 +173,7 @@ def _fast_initialization(*, real_engine=False):
         {"mode": mode, "upstream_commit": "test", "build_options": []})
     identity_boundary = nullcontext() if real_engine else patch.object(engine, "identity", side_effect=identity)
     with ExitStack() as boundary:
+        boundary.enter_context(patch.dict(simulation_config.DEFAULT_CONFIG, scene='single_target'))
         if 'SIM2GSE_RULE_CONFIG' not in os.environ:
             root = REPOSITORY / '.local/tests'
             root.mkdir(parents=True, exist_ok=True)
@@ -224,6 +239,7 @@ def _apl_task_boundary(native=None):
         player = report['sim']['players'][0]
         player['sim2gse_spec_id'] = native.get('identity', {}).get('spec_id', player['sim2gse_spec_id'])
         player['sim2gse_class_id'] = native.get('identity', {}).get('class_id', player['sim2gse_class_id'])
+        player['sim2gse_resource'] = native.get('identity', {}).get('resource', player['sim2gse_resource'])
         player.update(sim2gse_actions_protocol=1, sim2gse_actions=native['executed_actions'],
                       sim2gse_apl_actions_protocol=native.get('apl_actions_protocol'),
                       sim2gse_apl_actions=native.get('apl_actions'),
@@ -241,6 +257,33 @@ def _apl_task_boundary(native=None):
             patch.object(engine, 'check_report', side_effect=real_check_report), \
             patch.object(engine, 'run_command', side_effect=native_process), \
             patch.object(sequence, 'evaluate', side_effect=_fast_evaluate):
+        yield
+
+
+@contextmanager
+def _guided_search_boundary(directory, starts, *, evaluate=None, pack=None):
+    """保留真实初始化、规则池和选择器，只构造既有引擎报告边界。"""
+    import search
+    import sequence
+    from test_rule_diagnostics import _condition_pack, _observed_evaluate
+
+    pack = _condition_pack() if pack is None else pack
+    path = Path(directory) / 'rules.json'
+    path.write_text(json.dumps(pack), encoding='utf-8')
+    native = apl_pool_reference()
+    for action in native['static_snapshot']['actions']:
+        action['gcd_ms'] = 200
+    real_initial_programs = search.initial_programs
+
+    def initialized_starts(*args, **kwargs):
+        # 起点替身仍须让真实初始化写入冻结配置，不能留下空 rule_initialization。
+        real_initial_programs(*args, **kwargs)
+        return starts
+
+    with patch.dict(os.environ, SIM2GSE_RULE_CONFIG=str(path)), \
+            _apl_task_boundary(native), \
+            patch.object(search, 'initial_programs', side_effect=initialized_starts), \
+            patch.object(sequence, 'evaluate', side_effect=evaluate or _observed_evaluate):
         yield
 
 
@@ -372,7 +415,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual([row['simc_action'] for row in result['capabilities']['actions']],
                          ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
         self.assertEqual(initial_programs(result['capabilities'], native,
-                         rule_snapshot=result['rule_initialization']['rule_snapshot'])[1:], [
+                         rule_snapshot=result['rule_initialization']['rule_snapshot'], scene='single_target')[1:], [
             [['outbreak'], ['outbreak'], ['death_coil']],
             [['outbreak'], ['death_coil'], ['outbreak'], ['death_coil']],
             [['scourge_strike'], ['death_coil'], ['outbreak']],
@@ -381,34 +424,38 @@ class SearchAndValidationTests(TestCase):
                          [['outbreak'], ['death_coil'], ['scourge_strike']])
 
     def test_task_mutates_unexecuted_apl_button_and_scores_exports_it(self):
-        import random
-        import search
         from sequence import compiled_program
+        from test_rule_diagnostics import _condition_pack, _observed_evaluate
 
-        class EpidemicChoice(random.Random):
-            def choice(self, values):
-                if 'insert' in values:
-                    return 'insert'
-                if 'epidemic' in values:
-                    return 'epidemic'
-                return super().choice(values)
+        pack = _condition_pack()
+        consumer = pack['object_sets']['sample']['consumer']
+        consumer.update(native_action='epidemic', base_button='epidemic', native_forms=['epidemic'])
+        ordinary = pack['configurations'][0]['opener']['ordinary_steps'][1]
+        ordinary['source_form'] = 'epidemic'
+        ordinary['attribute_query'].update(native_form='epidemic', base_button='epidemic')
 
-            def random(self):
-                return 0.75
-
-            def randrange(self, start, *args):
-                return 1 if start == 16 and not args else super().randrange(start, *args)
+        def evaluate(*args, **kwargs):
+            result = _observed_evaluate(*args, **kwargs)
+            observations = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+            for row in observations['action_observations']:
+                row.update(actual_form='epidemic', base_button='epidemic')
+            return result
 
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            with _apl_task_boundary(), patch.object(search.random, 'Random', EpidemicChoice):
+            with _guided_search_boundary(directory, [[['outbreak'], ['death_coil']]],
+                                         evaluate=evaluate, pack=pack):
                 result = run_task(source, Path(directory) / 'search', search_config=dict(
-                    candidate_limit=5, round_candidate_limit=1, batch_targets=(2,),
-                    iterations=2, validation_batches=2))
+                    input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
+                    batch_targets=(2,), iterations=2, validation_batches=2))
                 ground = run_task(source, Path(directory) / 'ground', mode='single',
                                   program=[['death_and_decay'], ['epidemic']])
+                saved = read_task(Path(directory) / 'search', include_search_records=True)
         self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(saved['search']['rule_steps']), 1)
+        self.assertTrue(next(iter(saved['search']['rule_steps'].values()))['selection'])
+        self.assertNotIn(['epidemic'], result['search']['records'][0]['program'])
         self.assertIn(['epidemic'], compiled_program(result['candidate']))
         self.assertGreater(result['search_result']['dps'], 0)
         self.assertTrue(result['candidate']['text'].startswith('!GSE3!'))
@@ -476,43 +523,50 @@ class SearchAndValidationTests(TestCase):
         import search
         import sequence
         import program
+        from test_rule_diagnostics import _observed_evaluate
 
         entered = threading.Event()
         overlap = []
         finished = []
+        generated = []
+        initial = ('outbreak', 'death_coil')
         compile_threads = []
         original_compile = program.compile_program
         def compile_program(*args, **kwargs):
             compile_threads.append(threading.current_thread().name)
-            return original_compile(*args, **kwargs)
+            candidate = original_compile(*args, **kwargs)
+            actions = tuple(action['simc_action'] for block in candidate['blocks'] for action in block)
+            if actions != initial and actions not in generated:
+                generated.append(actions)
+            return candidate
         def evaluate(profile, candidate, folder, **kwargs):
-            action = candidate['blocks'][0][0]['simc_action']
-            if len(candidate['blocks']) == 1 and kwargs['iterations'] == 32:
-                if action == 'death_coil':
-                    overlap.append(entered.wait(0.5))
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            if action in ('death_coil', 'scourge_strike') and kwargs['iterations'] == 32:
-                finished.append(action)
-                if action == 'scourge_strike':
+            actions = tuple(action['simc_action'] for block in candidate['blocks'] for action in block)
+            if actions != initial and kwargs['iterations'] == 32:
+                if actions == generated[0]:
+                    overlap.append(entered.wait(2))
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            if actions != initial and kwargs['iterations'] == 32:
+                finished.append(actions)
+                if actions == generated[1]:
                     entered.set()
             return result
 
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            children = iter(([["death_coil"]], [["scourge_strike"]]))
             config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
-                          batch_targets=(32,), iterations=2, validation_batches=2, max_processes=2)
-            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
-                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
-                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)), \
+                          input_interval_ms=200, batch_targets=(32,), iterations=2,
+                          validation_batches=2, max_processes=2)
+            with _guided_search_boundary(directory, [[[name] for name in initial]],
+                                         evaluate=evaluate), \
                     patch.object(program, 'compile_program', side_effect=compile_program):
                 result = run_task(source, Path(directory) / 'task', search_config=config)
         self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(generated), 2)
         self.assertEqual(overlap, [True])
-        self.assertEqual(finished, ['scourge_strike', 'death_coil'])
-        self.assertEqual([row['program'] for row in result['search']['records']],
-                         [[["outbreak"]], [["death_coil"]], [["scourge_strike"]]])
+        self.assertEqual(finished, list(reversed(generated)))
+        self.assertEqual([tuple(name for block in row['program'] for name in block)
+                          for row in result['search']['records']], [initial, *generated])
         self.assertTrue(all(name == threading.current_thread().name for name in compile_threads))
 
     def test_cancelled_parallel_layer_keeps_other_complete_score_and_stops_dispatch(self):
@@ -520,23 +574,37 @@ class SearchAndValidationTests(TestCase):
         import collections
         import search
         import sequence
+        import program
         from runtime import TaskCancelled
+        from test_rule_diagnostics import _observed_evaluate
 
         cancellation = threading.Event()
         second_complete = threading.Event()
         interrupted = [False]
         calls = []
+        generated = []
+        initial = ('outbreak', 'scourge_strike', 'death_coil')
+        original_compile = program.compile_program
+
+        def compile_program(*args, **kwargs):
+            candidate = original_compile(*args, **kwargs)
+            actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
+            if actions not in (initial, ('outbreak', 'death_coil')) and actions not in generated:
+                generated.append(actions)
+            return candidate
+
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
             calls.append((actions, kwargs['iterations'], kwargs['seed']))
-            if actions == ('death_coil',) and kwargs['iterations'] == 32 and not interrupted[0]:
+            if (generated and actions == generated[0] and kwargs['iterations'] == 32
+                    and not interrupted[0]):
                 if not second_complete.wait(2):
                     raise AssertionError('第二候选没有并行完成')
                 interrupted[0] = True
                 cancellation.set()
                 raise TaskCancelled('test interruption')
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            if actions == ('scourge_strike',) and kwargs['iterations'] == 32:
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            if len(generated) >= 2 and actions == generated[1] and kwargs['iterations'] == 32:
                 second_complete.set()
             return result
 
@@ -544,49 +612,49 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
-            children = iter(([["death_coil"]], [["scourge_strike"]], [["dark_transformation"]]))
             config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=3,
-                          batch_targets=(32,), iterations=2, validation_batches=2, max_processes=2)
-            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
-                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
-                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)):
+                          input_interval_ms=200, batch_targets=(32,), iterations=2,
+                          validation_batches=2, max_processes=2)
+            with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate), \
+                    patch.object(program, 'compile_program', side_effect=compile_program):
                 stopped = run_task(source, destination, search_config=config, cancel_event=cancellation)
                 self.assertEqual(stopped['status'], 'cancelled')
-                self.assertNotIn(('dark_transformation',), [actions for actions, _, _ in calls])
+                self.assertEqual(len(generated), 2)
+                stopped_calls = list(calls)
                 resumed = resume_task(destination)
             self.assertEqual(resumed['status'], 'completed')
+            self.assertEqual(len(generated), 3)
+            self.assertNotIn(generated[2], [actions for actions, _, _ in stopped_calls])
+            self.assertEqual([tuple(name for block in row['program'] for name in block)
+                              for row in resumed['search']['records']], [initial, *generated])
             counts = collections.Counter(calls)
-            self.assertEqual(counts[(('scourge_strike',), 32, 20260912)], 1)
-            self.assertEqual(counts[(('death_coil',), 32, 20260912)], 2)
-            self.assertEqual(counts[(('dark_transformation',), 32, 20260912)], 1)
+            self.assertEqual(counts[(generated[1], 32, 20260912)], 1)
+            self.assertEqual(counts[(generated[0], 32, 20260912)], 2)
+            self.assertEqual(counts[(generated[2], 32, 20260912)], 1)
 
     def test_resume_after_route_promotion_during_global_challenge_keeps_valid_winners(self):
         import threading
         import collections
         import search
         import sequence
+        from test_rule_diagnostics import _observed_evaluate
         cancellation = threading.Event()
         calls = []
-        children = iter(([["death_coil"], ["outbreak"]], [["outbreak"], ["death_coil"]]))
-
-        def mutate(*args, observation=None, **kwargs):
-            if observation is not None:
-                observation.update(sampled_mutation='replace', actual_mutation='replace',
-                                   modification_position=None)
-            return next(children)
+        starts = [[['outbreak'], ['death_coil']], [['scourge_strike'], ['death_coil']]]
+        initial_scores = {('outbreak', 'death_coil'): 100, ('scourge_strike', 'death_coil'): 50}
 
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
-            wanted = {('outbreak',): 100, ('death_coil',): 50,
-                      ('death_coil', 'outbreak'): 20, ('outbreak', 'death_coil'): 110}[actions]
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            challenger = actions not in initial_scores and 'scourge_strike' in actions
+            wanted = initial_scores.get(actions, 110 if challenger else 20)
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
             result['summary']['dps'] = wanted
             result['report']['sim']['statistics']['raid_dps']['mean'] = wanted
             result['report']['sim']['players'][0]['collected_data']['dps'].update(
-                mean=wanted, variance=10000 if actions == ('outbreak', 'death_coil') else 1)
+                mean=wanted, variance=10000 if challenger else 1)
             (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
             calls.append((actions, kwargs['iterations'], kwargs['seed']))
-            if actions == ('outbreak', 'death_coil') and kwargs['iterations'] == 96:
+            if challenger and kwargs['iterations'] == 96:
                 cancellation.set()
             return result
 
@@ -595,11 +663,10 @@ class SearchAndValidationTests(TestCase):
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
             config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=1,
-                          batch_targets=(32, 128, 512), iterations=2, validation_batches=2,
+                          input_interval_ms=200, batch_targets=(32, 128, 512),
+                          iterations=2, validation_batches=2,
                           diagnostic_logging=True, search_observability='full')
-            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
-                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]], [["death_coil"]]]), \
-                    patch.object(search, 'mutate', side_effect=mutate):
+            with _guided_search_boundary(directory, starts, evaluate=evaluate):
                 interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
                 self.assertEqual(interrupted['status'], 'cancelled')
                 resumed = resume_task(destination)
@@ -607,7 +674,7 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(resumed['search_result']['dps'], 110)
             self.assertTrue(all(count == 1 for count in collections.Counter(
                 call for call in calls if call[1] >= 32).values()))
-            self.assertEqual([n for a, n, seed in calls if a == ('death_coil',)
+            self.assertEqual([n for a, n, seed in calls if a == ('scourge_strike', 'death_coil')
                               and seed < 20260912 + 100000 and n >= 32], [32])
             event = next(row for row in resumed['search']['observability']['details']
                          if row.get('candidate_score') == 110)
@@ -618,21 +685,22 @@ class SearchAndValidationTests(TestCase):
         import collections
         import search
         import sequence
+        from test_rule_diagnostics import _observed_evaluate
 
         cancellation = threading.Event()
         calls = []
-        children = iter(([["death_coil"]], [["outbreak"], ["death_coil"]]))
+        initial = ('outbreak', 'death_coil')
 
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
-            wanted = 90 if actions == ('outbreak',) else 100
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            wanted = 90 if actions == initial else 100
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
             result['summary']['dps'] = wanted
             result['report']['sim']['statistics']['raid_dps']['mean'] = wanted
             result['report']['sim']['players'][0]['collected_data']['dps'].update(mean=wanted, variance=10000)
             (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
             calls.append((actions, kwargs['iterations'], kwargs['seed']))
-            if actions == ('death_coil',) and kwargs['iterations'] == 96:
+            if actions != initial and kwargs['iterations'] == 96:
                 cancellation.set()
             return result
 
@@ -641,18 +709,21 @@ class SearchAndValidationTests(TestCase):
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
             config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
-                          batch_targets=(32, 128, 512), iterations=2, validation_batches=2)
-            with _fast_initialization(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
-                    patch.object(search, 'initial_programs', return_value=[[["outbreak"]]]), \
-                    patch.object(search, 'mutate', side_effect=lambda *args, **kwargs: next(children)):
+                          input_interval_ms=200, batch_targets=(32, 128, 512),
+                          iterations=2, validation_batches=2)
+            with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate):
                 interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
                 self.assertEqual(interrupted['status'], 'cancelled')
+                cancellation.clear()
                 resumed = resume_task(destination)
             self.assertEqual(resumed['status'], 'completed')
             self.assertEqual(resumed['search_result']['dps'], 100)
             search_calls = [(a, n, s) for a, n, s in calls if s < 20260912 + 100000]
             self.assertTrue(all(count == 1 for count in collections.Counter(search_calls).values()))
-            for actions in (('death_coil',), ('outbreak', 'death_coil')):
+            children = [tuple(name for block in row['program'] for name in block)
+                        for row in resumed['search']['records'][1:]]
+            self.assertEqual(len(children), 2)
+            for actions in children:
                 self.assertEqual([n for a, n, s in search_calls if a == actions], [32, 96, 384])
 
     def test_parent_diagnostic_maps_loop_wait_and_repeated_castsequence_member(self):
@@ -762,33 +833,35 @@ class SearchAndValidationTests(TestCase):
         import search
         import sequence
         import threading
+        from test_rule_diagnostics import _observed_evaluate
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-lazy-compile-") as directory:
             cancellation = threading.Event()
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
             source.write_text(sample_profile(), encoding="utf-8")
-            generated = iter([[["death_coil"]], [["scourge_strike"]],
-                              [["dark_transformation"]]] * 160)
+            initial = ('outbreak', 'death_coil')
 
             def evaluate(profile, candidate, folder, **kwargs):
-                result = _fast_evaluate(profile, candidate, folder, **kwargs)
-                if len(candidate["blocks"]) == 1 and candidate["blocks"][0][0]["simc_action"] == "death_coil":
+                result = _observed_evaluate(profile, candidate, folder, **kwargs)
+                actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
+                if actions != initial:
                     cancellation.set()
                 return result
 
             config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=4, round_candidate_limit=3, batch_targets=(2,),
+                          input_interval_ms=200, candidate_limit=3, round_candidate_limit=2, batch_targets=(2,),
                           iterations=2, validation_batches=1, final_batches=1,
                           final_iterations=2, scenarios=("nominal",), max_processes=1,
                           diagnostic_logging=True, diagnostics="full", random_seed=41)
-            with _fast_search_boundary(), \
-                    patch.object(search, "initial_programs", return_value=[[["outbreak"]]]), \
-                    patch.object(search, "mutate", side_effect=lambda *args, **kwargs: next(generated)), \
-                    patch.object(sequence, "evaluate", side_effect=evaluate):
+            with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate):
                 result = run_task(source, destination, search_config=config, cancel_event=cancellation)
+                saved = read_task(destination, include_search_records=True)
             diagnostics = json.loads((destination / "diagnostics.json").read_text())
             self.assertEqual(result["status"], "cancelled")
+            self.assertEqual(len(saved['search']['rule_steps']), 2)
+            self.assertTrue(any(step['status'] == 'queued'
+                                for step in saved['search']['rule_steps'].values()))
             self.assertLessEqual(diagnostics["candidate_compilations"],
                                  len(result["search"]["records"]) + 1)
 
@@ -1013,20 +1086,33 @@ class SearchAndValidationTests(TestCase):
     def test_local_and_second_global_comparisons_both_record_positions(self):
         import result_store
         import search
+        from test_rule_diagnostics import _observed_evaluate
+
+        starts = [[['outbreak'], ['death_coil']], [['scourge_strike'], ['death_coil']]]
+        initial_scores = {('outbreak', 'death_coil'): 100, ('scourge_strike', 'death_coil'): 50}
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
+            damage = initial_scores.get(actions, 110 if 'scourge_strike' in actions else 20)
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            result['summary']['dps'] = damage
+            result['report']['sim']['statistics']['raid_dps']['mean'] = damage
+            result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
+            (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+            return result
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-global-position-") as directory:
             root = Path(directory)
             source = root / "role.simc"
             source.write_text(sample_profile(), encoding="utf-8")
             config = dict(total_budget_seconds=60, search_budget_seconds=30,
+                          input_interval_ms=200,
                           candidate_limit=4, round_candidate_limit=1,
                           no_improvement_rounds=5, batch_targets=(2,), iterations=2,
                           validation_batches=2, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=11,
                           diagnostic_logging=True, search_observability="full")
-            with _fast_search_boundary(), patch.object(
-                    search, "initial_programs",
-                    return_value=[[['use_item,slot=trinket1']], [['death_coil']]]):
+            with _guided_search_boundary(directory, starts, evaluate=evaluate):
                 result = run_task(source, root / "task", search_config=config)
 
             run_id = json.loads((root / "task" / "profile.json").read_text())["run_id"]
@@ -1213,9 +1299,9 @@ class SearchAndValidationTests(TestCase):
         original = search.TaskStore
 
         class CountingTaskStore(original):
-            def save(self):
+            def _persist_state(self):
                 saves.append(self.state.get("batch_requests", 0))
-                return super().save()
+                return super()._persist_state()
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-save-count-") as directory:
             source = Path(directory) / "role.simc"
@@ -1224,9 +1310,8 @@ class SearchAndValidationTests(TestCase):
                           candidate_limit=1, batch_targets=(2,), iterations=2,
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=37)
-            with _fast_search_boundary(), \
-                    patch.object(search, "TaskStore", CountingTaskStore), \
-                    patch.object(search, "initial_programs", return_value=[[['outbreak']]]):
+            with _guided_search_boundary(Path(directory), [[['outbreak']]]), \
+                    patch.object(search, "TaskStore", CountingTaskStore):
                 result = run_task(source, Path(directory) / "task", search_config=config)
 
         self.assertLessEqual(len(saves), result["completed_batches"] * 2 + 9,
@@ -1767,7 +1852,7 @@ class SearchAndValidationTests(TestCase):
         ]
 
         with _fast_initialization():
-            starts = initial_programs(capabilities, reference, seed=20260912)
+            starts = initial_programs(capabilities, reference, seed=20260912, scene='single_target')
         self.assertEqual(starts[1:], expected)
         from search import input_times
         first = input_times("jitter", seed=20260912)
@@ -1896,7 +1981,7 @@ class SearchAndValidationTests(TestCase):
             starts = initial_programs(_fast_capabilities(), dict(identity={"spec_id": 252},
                 static_snapshot=static_snapshot(), action_sequence=[
                 dict(name="use_item,slot=trinket1", queue_failed=False),
-            ]))
+            ]), scene='single_target')
         self.assertEqual(starts[1], [["use_item,slot=trinket1"]])
 
     def test_search_winner_is_not_replaced_by_a_final_comparison(self):
@@ -2444,16 +2529,17 @@ class SearchAndValidationTests(TestCase):
         import search
         import sequence
         import result_store
+        from test_rule_diagnostics import _observed_evaluate
 
         def equal_damage(profile, candidate, folder, **kwargs):
-            nonlocal diagnostic_rounds
-            if kwargs.get('trace'):
-                diagnostic_rounds += 1
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
             # 同一程序的构造成绩固定，后续诊断不能把已发布请求从100改成200。
             key = json.dumps(sequence.compiled_identity(candidate), sort_keys=True)
-            damage = scores.setdefault(key, 200.0 if diagnostic_rounds >= 3
-                                      and result['blocks'] not in starts else 100.0)
+            if key not in scores:
+                if result['blocks'] not in starts:
+                    generated.append(key)
+                scores[key] = 200.0 if len(generated) >= 3 and result['blocks'] not in starts else 100.0
+            damage = scores[key]
             result['summary']['dps'] = damage
             result['report']['sim']['statistics']['raid_dps']['mean'] = damage
             result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
@@ -2462,21 +2548,19 @@ class SearchAndValidationTests(TestCase):
 
         count = 4
         with tempfile.TemporaryDirectory() as directory:
-            diagnostic_rounds = 0
+            generated = []
             scores = {}
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            names = ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')
+            names = ('outbreak', 'death_coil', 'scourge_strike', 'epidemic')
             starts = [[[name] for name in order]
                       for order in itertools.islice(itertools.permutations(names), count)]
             inputs = starts + [starts[0], [['missing_action']]]
             # 构造评分仅写入本次隔离报告库。
-            with _fast_search_boundary(), \
-                    patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'), \
-                    patch.object(search, 'initial_programs', return_value=inputs), \
-                    patch.object(sequence, 'evaluate', side_effect=equal_damage):
+            with _guided_search_boundary(directory, inputs, evaluate=equal_damage), \
+                    patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'):
                 result = run_task(source, Path(directory) / 'task', search_config=dict(
-                    candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
+                    input_interval_ms=200, candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
                     iterations=2, validation_batches=2))
                 saved = read_task(Path(directory) / 'task')
             self.assertEqual(result['status'], 'completed')
@@ -2490,50 +2574,41 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(saved['search']['no_improvement_round_limit'], count)
 
     def test_search_skips_exhausted_path_and_stops_only_after_all_paths_exhausted(self):
-        import random
-        import search
-        import sequence
         import threading
+        from test_rule_diagnostics import _observed_evaluate
 
-        starts = [[['outbreak']], [['death_coil']], [['scourge_strike']], [['dark_transformation']]]
+        starts = [[['death_coil']], [['outbreak']], [['scourge_strike']], [['epidemic']]]
         cancellation = threading.Event()
         diagnostic_calls = []
 
         def cancel_after_first_path_is_skipped(profile, candidate, folder, **kwargs):
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
+            result = _observed_evaluate(profile, candidate, folder, **kwargs)
             actions = [action['simc_action'] for block in candidate['blocks'] for action in block]
-            if kwargs.get('trace') and actions == ['death_coil']:
+            observations = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+            for collection in ('inputs', 'action_observations', 'state_observations'):
+                for row in observations[collection]:
+                    row['source_step'] = row['input_index'] % len(candidate['blocks'])
+            if actions[0] == 'death_coil':
+                observations['action_observations'][0].update(attempt=True, success=True)
+            # 真正的首路径已消费机会而池空；第二路径的真实插入已启动后才取消。
+            if actions == ['death_coil', 'outbreak'] and kwargs.get('rule_observation_request'):
                 diagnostic_calls.append(actions)
                 cancellation.set()
             return result
 
-        class NoFallbackShuffle(random.Random):
-            def randrange(self, start, *args):
-                return 1 if start == 16 and not args else super().randrange(start, *args)
-
-        def one_proposal_per_remaining_path(program, *args, **kwargs):
-            for index, initial in enumerate(starts[1:], 1):
-                if program == initial:
-                    return initial + [['outbreak']] * index
-            return program
-
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            with _fast_search_boundary(), \
-                    patch.object(search, 'initial_programs', return_value=starts), \
-                    patch.object(search, 'mutate', side_effect=one_proposal_per_remaining_path), \
-                    patch.object(search.random, 'Random', NoFallbackShuffle), \
-                    patch.object(sequence, 'evaluate', side_effect=cancel_after_first_path_is_skipped):
+            with _guided_search_boundary(directory, starts, evaluate=cancel_after_first_path_is_skipped):
                 cancelled = run_task(source, Path(directory) / 'task', cancel_event=cancellation,
                     search_config=dict(
-                    candidate_limit=32, round_candidate_limit=1, batch_targets=(2,),
+                    input_interval_ms=200, candidate_limit=32, round_candidate_limit=1, batch_targets=(2,),
                     iterations=2, validation_batches=2))
                 self.assertEqual(cancelled['status'], 'cancelled')
                 self.assertTrue(cancelled['search']['chains'][0]['stalled'])
                 self.assertEqual(cancelled['search']['rounds'], 0)
                 result = resume_task(Path(directory) / 'task')
-                saved = read_task(Path(directory) / 'task')
+                saved = read_task(Path(directory) / 'task', include_search_records=True)
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(result['search']['stop_reason'], 'space_stalled')
             self.assertEqual(result['search']['rounds'], 3)
@@ -2542,23 +2617,52 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(saved['search']['chains'], result['search']['chains'])
             self.assertEqual(result['search']['no_improvement_round_limit'], 4)
             self.assertEqual(len(diagnostic_calls), 1)
+            replayed_key = next(row['key'] for row in result['search']['records']
+                                if row['program'] == [['death_coil'], ['outbreak']])
+            replayed = next(row for row in saved['search']['records'] if row['key'] == replayed_key)
+            self.assertTrue(replayed['rule_diagnostics']['pool']['complete'])
+            self.assertIn(replayed['key'], saved['search']['rule_diagnostic_replays'])
             self.assertGreaterEqual(result['elapsed_seconds'], cancelled['elapsed_seconds'])
 
     def test_multiple_local_chains_use_their_own_observed_feedback(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-local-search-') as directory:
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            with _fast_search_boundary():
+            names = ('outbreak', 'scourge_strike', 'epidemic', 'death_and_decay')
+            starts = [[[name] for name in (*names[index:], *names[:index], 'death_coil')]
+                      for index in range(len(names))]
+            with _guided_search_boundary(directory, starts):
                 result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=120,
-                    search_budget_seconds=90,candidate_limit=19,round_candidate_limit=4,batch_targets=(2,),
+                    input_interval_ms=200,search_budget_seconds=90,candidate_limit=19,round_candidate_limit=4,batch_targets=(2,),
                     validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
+                saved = read_task(Path(directory) / 'task', include_search_records=True)
             self.assertEqual(result['search']['candidate_count'],19)
             self.assertTrue(result['search']['partial_round'])
             chains=result['search']['chains']
+            records = {row['key']: row for row in saved['search']['records']}
+            steps = list(saved['search']['rule_steps'].values())
             self.assertGreaterEqual(sum(chain['rounds']>0 for chain in chains),2)
             for chain in chains:
                 if chain['rounds']:
-                    self.assertTrue(chain['feedback']['attempts'])
-                    self.assertIn(chain['feedback_source'],chain['visited'])
+                    selections = [step for step in steps
+                                  if step['parent_candidate_key'] in chain['visited']]
+                    self.assertTrue(selections)
+                    for step in selections:
+                        self.assertIn(step['candidate_key'], chain['visited'])
+                        parent = records[step['parent_candidate_key']]
+                        child = records[step['candidate_key']]
+                        self.assertEqual(step['request']['parent_identity'],
+                                         parent['rule_diagnostics']['parent_identity'])
+                        feedback = step['selection']['feedback']
+                        self.assertEqual(feedback['status'], 'learned')
+                        self.assertTrue(feedback['evidence'])
+                        parent_batches = {row['data_key']: row for row in parent['batches']}
+                        child_batches = {row['data_key']: row for row in child['batches']}
+                        for evidence in feedback['evidence']:
+                            self.assertIn(evidence['parent_batch'], parent_batches)
+                            self.assertIn(evidence['candidate_batch'], child_batches)
+                            before = parent_batches[evidence['parent_batch']]
+                            self.assertEqual(evidence['parent_dps'], before['dps'])
+                            self.assertEqual(evidence['parent_samples'], before['samples'])
             self.assertIn(result['search']['stop_reason'],{'candidate_limit','no_improvement','search_deadline','space_stalled'})
 
     def test_malformed_shared_cache_record_is_ignored(self):

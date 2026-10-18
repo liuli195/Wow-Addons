@@ -11,3 +11,12 @@
 
      return action_base_t::queue_execute( et );
    }
+@@ -6247,6 +6250,8 @@
+       {
+         this->replacement_action->set_target( this->target );
++        p()->sim2gse_control.observe_replacement( this, this->replacement_action );
+         this->replacement_action->execute();
++        p()->sim2gse_control.execution_end( this->replacement_action );
+
+         if ( !this->always_replace && this->add_replacement_executes )
+           this->stats->add_execute( 0_ms, this->target );

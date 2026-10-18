@@ -1,0 +1,497 @@
+"""固定通用特征与真实 Coba LinUCB 的小型共享状态适配。"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import inspect
+import json
+import math
+
+import result_store
+
+FEATURE_VERSION = 'c50-a21-v1'
+REWARD_VERSION = 'relative-common-batches-v1'
+STATE_VERSION = 1
+MODEL_KEY = 'linucb_c50_a21_feature_v1_reward_v1'
+CONTEXT_DIMENSION, ACTION_DIMENSION, MODEL_DIMENSION = 50, 21, 1072
+COBA_VERSION, NUMPY_VERSION = '8.1.0', '2.4.4'
+FEATURES = [1, 'a', 'ax']
+_CACHED_LEARNER = None
+_SEEN_VERSION = None
+FINDING_KINDS = (
+    'unknown', 'blocked_by_plan', 'yielded', 'covered', 'attempt_failed',
+    'missed_opportunity', 'missed_window', 'no_opportunity', 'missed_preparation',
+    'not_triggered', 'utilized_off_selected_position', 'missed_short_window',
+    'expired_unused', 'right_censored', 'actual_coverage_gap', 'effect_absence',
+    'requirement_interval_unknown', 'maintenance_opportunity',
+    'reservation_crowding_hypothesis', 'actual_overflow', 'near_full_opportunity', 'avoidable_idle',
+)
+TEMPLATES = ('条件触发与CD使用', 'Buff窗口与充能使用', '爆发前准备', '短期增益利用',
+             '持续效果维护', '资源预留', '资源近满与溢出处理', '可避免空闲')
+OPERATION_KINDS = ('move', 'insert', 'reduce_wait', 'remove_wait')
+CONTEXT_SCHEMA = (
+    *[f'finding.{kind}' for kind in (*FINDING_KINDS, 'other')], 'finding.valid',
+    'certainty.observed_fact', 'certainty.hypothesis', 'certainty.unknown', 'certainty.valid',
+    'unknown_rules.value', 'unknown_rules.valid',
+    *[f'{group}.{stat}.{part}' for group in ('window_position', 'resource_fraction')
+      for stat in ('valid_fraction', 'mean', 'min', 'max') for part in ('value', 'valid')],
+    'opportunity_fraction.value', 'opportunity_fraction.valid', 'failure_fraction.value', 'failure_fraction.valid',
+)
+ACTION_SCHEMA = (
+    *[f'operation.{kind}' for kind in OPERATION_KINDS],
+    *[f'template.{kind}' for kind in (*TEMPLATES, 'other')],
+    *[f'{name}.{part}' for name in ('source_position', 'target_position', 'signed_move', 'signed_click_change')
+      for part in ('value', 'valid')],
+)
+
+
+def _ratio(numerator, denominator):
+    return [numerator / denominator, 1.0] if denominator > 0 else [0.0, 0.0]
+
+
+def _stat_features(samples):
+    valid = [value for value in samples if _finite(value)]
+    return [*_ratio(len(valid), len(samples)),
+            *([sum(valid)/len(valid), 1.0, min(valid), 1.0, max(valid), 1.0]
+              if valid else [0.0, 0.0] * 3)]
+
+
+def context_features(diagnostic, payload, objects=None):
+    """Encode the complete same-report diagnosis once, without fetching another report."""
+    rules = diagnostic.get('rules', [])
+    findings = [finding for rule in rules for finding in rule.get('findings', [])]
+    count = len(findings)
+    result = [sum(row.get('kind') == kind for row in findings) / count if count else 0.0
+              for kind in FINDING_KINDS]
+    result += [sum(row.get('kind') not in FINDING_KINDS for row in findings) / count if count else 0.0,
+               float(bool(count))]
+    result += [sum(row.get('certainty') == certainty for row in findings) / count if count else 0.0
+               for certainty in ('observed_fact', 'hypothesis', 'unknown')]
+    unknown_rules = sum(bool(row.get('status') == 'unknown' or row.get('unknown_conditions')
+                             or row.get('unknown_evidence') or row.get('state_unknown_inputs')) for row in rules)
+    result += [float(bool(count)), *_ratio(unknown_rules, len(rules))]
+    payload = payload if isinstance(payload, dict) else {}
+    scope = payload.get('scope') or {}
+    inputs = {(row.get('sample_id'), row.get('input_index')): row for row in payload.get('inputs', [])
+              if type(row.get('sample_id')) is int and type(row.get('input_index')) is int}
+    windows, window_associations_complete = {}, True
+    for finding in findings:
+        window = finding.get('window')
+        if not isinstance(window, dict):
+            continue
+        sample = window.get('sample_id', scope.get('sample_id'))
+        index = finding.get('input_index', window.get('input_index'))
+        start, end = window.get('start'), window.get('end')
+        bounded = _finite(start) and _finite(end) and end > start
+        window_id = _digest({key: window.get(key) for key in (
+            'object', 'effect_id', 'instance_id', 'target_id', 'source_id',
+            'start_event_index', 'end_event_index', 'start', 'end')})
+        if type(index) is int:
+            members = [((sample, index), inputs.get((sample, index)))]
+        elif bounded:
+            members = [(key, row) for key, row in inputs.items() if key[0] == sample
+                       and _finite(row.get('time')) and start <= row['time'] <= end]
+        else:
+            # No sample/input association can be proven from this declaration.
+            window_associations_complete = False
+            members = []
+        for identity, row in members:
+            at = row.get('time') if row else None
+            value = (at-start)/(end-start) if bounded and _finite(at) and start <= at <= end else None
+            windows[(*identity, window_id)] = value
+    window_features = _stat_features(list(windows.values()))
+    if not window_associations_complete:
+        window_features[:2] = [0.0, 0.0]
+    result += window_features
+
+    objects = objects or {}
+    aliases = {name: declaration.get('native_identity', name) for name, declaration in objects.items()
+               if declaration.get('kind') == 'resource'}
+    resource_rows = payload.get('resource_events', [])
+    if not aliases:
+        aliases = {row['object']: row['object'] for row in resource_rows if isinstance(row.get('object'), str)}
+    observed_resources = {}
+    for row in resource_rows:
+        identity = row.get('sample_id'), row.get('input_index')
+        name = row.get('object')
+        native = aliases.get(name, name if name in aliases.values() else None)
+        if identity in inputs and native is not None:
+            observed_resources.setdefault((*identity, native), []).append((row.get('current'), row.get('maximum')))
+    resources = {}
+    for identity, values in observed_resources.items():
+        # Multiple contradictory readings are unknown; never borrow initialization capacity.
+        value = None
+        if all(pair == values[0] for pair in values):
+            current, maximum = values[0]
+            if _finite(current) and _finite(maximum) and maximum > 0:
+                value = current / maximum
+        resources[identity] = value
+    result += _stat_features(list(resources.values()))
+
+    opportunities = set()
+    for row in findings:
+        if row.get('certainty') != 'hypothesis' or type(row.get('input_index')) is not int:
+            continue
+        sample = row.get('sample_id', scope.get('sample_id'))
+        identity = (sample, row['input_index'])
+        if identity in inputs:
+            opportunities.add(identity)
+    result += _ratio(len(opportunities), len(inputs))
+    from rule_diagnostics import _observed_rows
+    actions = _observed_rows(dict(payload, inputs=list(inputs.values())), [], objects, None)['action_observations']
+    actual = {}
+    complete = scope.get('complete') is True
+    for row in actions:
+        identity = (row.get('sample_id'), row.get('input_index'), row.get('object'))
+        outcome = row.get('attempt'), row.get('success')
+        if ((identity[0], identity[1]) not in inputs or type(outcome[0]) is not bool
+                or outcome[0] and type(outcome[1]) is not bool
+                or identity in actual and actual[identity] != outcome):
+            complete = False
+        actual[identity] = outcome
+    attempted = [success for attempt, success in actual.values() if attempt is True]
+    result += _ratio(sum(success is False for success in attempted), len(attempted)) if complete else [0.0, 0.0]
+    return _dense(result, CONTEXT_DIMENSION)
+
+
+def action_features(diagnostic, program, operations):
+    """Encode every concrete operation separately using the existing expansion mapping."""
+    from rule_diagnostics import _structure
+    _, expanded = _structure(program)
+    length = len(expanded)
+    positions = {}
+    for ordinal, path in enumerate(expanded):
+        if path is not None:
+            positions.setdefault(tuple(path), []).append(ordinal)
+    offsets = [0]
+    for segment in program:
+        width = (1 if isinstance(segment, list) else segment['count'] * len(segment['blocks'])
+                 if segment['kind'] == 'Loop' else segment['clicks'] if segment['kind'] == 'WaitClicks' else 1)
+        offsets.append(offsets[-1]+width)
+
+    def gaps(path):
+        if not isinstance(path, list) or not path or any(type(part) is not int for part in path):
+            return []
+        if len(path) == 1 and 0 <= path[0] <= len(program):
+            return [offsets[path[0]]]
+        if len(path) == 2 and 0 <= path[0] < len(program):
+            segment = program[path[0]]
+            if (isinstance(segment, dict) and segment.get('kind') == 'Loop'
+                    and 0 <= path[1] <= len(segment['blocks'])):
+                return [offsets[path[0]] + repeat*len(segment['blocks']) + path[1]
+                        for repeat in range(segment['count'])]
+        return []
+
+    templates = {(row.get('name'), row.get('state')): row.get('template') for row in diagnostic.get('rules', [])}
+    result = []
+    for operation in operations:
+        kind = operation.get('operation')
+        if kind not in OPERATION_KINDS:
+            raise ValueError('具体操作类别不支持固定特征版本')
+        contributing = {templates.get((row.get('rule'), row.get('state'))) for row in operation.get('contributors', [])}
+        values = [float(kind == name) for name in OPERATION_KINDS]
+        values += [float(name in contributing) for name in TEMPLATES]
+        values += [float(any(name not in TEMPLATES for name in contributing))]
+        source, destination = operation.get('source_path'), operation.get('destination_path')
+        origin = positions.get(tuple(source), []) if isinstance(source, list) else []
+        targets = gaps(destination)
+        if kind in ('reduce_wait', 'remove_wait'):
+            targets = list(origin)
+        elif kind == 'move' and origin and targets and source[:-1] == destination[:-1]:
+            width = len(origin) if len(source) == 1 else 1
+            targets = [at - (width if source[-1] < destination[-1] else 0) + (width-1)/2 for at in targets]
+        source_mean = sum(origin)/len(origin)/length if origin and length else None
+        target_mean = sum(targets)/len(targets)/length if targets and length else None
+        movement = target_mean-source_mean if source_mean is not None and target_mean is not None else None
+        change = None
+        if length:
+            if kind == 'move': change = 0.0
+            elif kind == 'insert' and targets: change = len(targets)/length
+            elif kind in ('reduce_wait', 'remove_wait') and origin and type(operation.get('count')) is int:
+                change = -operation['count']/length
+        for value in (source_mean, target_mean, movement, change):
+            values += [value, 1.0] if _finite(value) else [0.0, 0.0]
+        result.append(_dense(values, ACTION_DIMENSION))
+    return result
+
+
+class AlreadySettled(ValueError):
+    """A removed receipt cannot be predicted again after its settlement watermark."""
+    def __init__(self, task_run_id, decision_id, watermark):
+        self.task_run_id, self.decision_id, self.watermark = task_run_id, decision_id, watermark
+        super().__init__('选择决策已结算，不能重新预测；请恢复原任务的冻结反馈')
+
+
+def _finite(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _dense(values, size):
+    if not isinstance(values, list) or len(values) != size or not all(map(_finite, values)):
+        raise ValueError('选择器特征维度或有限数值无效')
+    return [float(value) for value in values]
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                    separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def _learner():
+    import coba
+    import numpy
+    from coba.learners import LinUCBLearner
+    if coba.__version__ != COBA_VERSION or numpy.__version__ != NUMPY_VERSION:
+        raise ValueError('共享选择器依赖版本不兼容，保留原状态')
+    return LinUCBLearner(alpha=1, features=list(FEATURES), seed=1)
+
+
+def _rng_state(learner):
+    from coba.random import CobaRandom
+    rng = learner._pred._pmfrng
+    generator = rng._randu
+    state = inspect.getgeneratorstate(generator)
+    if (state not in ('GEN_CREATED', 'GEN_SUSPENDED')
+            or generator.gi_code is not CobaRandom._next_uniform.__code__
+            or generator.gi_frame is None):
+        raise ValueError('Coba原生随机进度帧不受支持')
+    frame = generator.gi_frame.f_locals
+    if (not isinstance(frame.get('self'), CobaRandom)
+            or any(type(frame.get(key)) is not int or frame[key] != value
+                   for key, value in dict(a=116646453, c=9, m=2**30).items())
+            or type(frame.get('s')) is not int or not 0 <= frame['s'] < 2**30
+            or state == 'GEN_SUSPENDED' and frame.get('m_1') != 2**30-1
+            or rng.seed != 1):
+        raise ValueError('Coba原生随机进度参数不兼容')
+    return frame['s']
+
+
+def _snapshot(learner, *, version=0, reservations=None, settled=None):
+    return dict(model_key=MODEL_KEY, version=version, state_version=STATE_VERSION,
+        feature_version=FEATURE_VERSION, reward_version=REWARD_VERSION,
+        coba_version=COBA_VERSION, numpy_version=NUMPY_VERSION,
+        dimension=MODEL_DIMENSION, alpha=learner._alpha, features=list(learner._X),
+        seed=learner.params['seed'], rng_state=_rng_state(learner),
+        theta=learner._theta.tolist() if learner._theta is not None else None,
+        a_inv=learner._A_inv.tolist() if learner._A_inv is not None else None,
+        reservations=reservations if reservations is not None else [],
+        settled=settled if settled is not None else {})
+
+
+def _validate_parameters(record):
+    expected = dict(model_key=MODEL_KEY, state_version=STATE_VERSION,
+        feature_version=FEATURE_VERSION, reward_version=REWARD_VERSION,
+        coba_version=COBA_VERSION, numpy_version=NUMPY_VERSION,
+        dimension=MODEL_DIMENSION, alpha=1, features=FEATURES, seed=1)
+    if any(record.get(key) != value for key, value in expected.items()):
+        raise ValueError('共享选择器状态版本、参数或特征不兼容，保留原状态')
+
+
+def _restore(record):
+    import numpy as np
+    from coba.random import CobaRandom
+    learner = _learner()
+    _validate_parameters(record)
+    if (type(record.get('version')) is not int or record['version'] < 0
+            or type(record.get('rng_state')) is not int or not 0 <= record['rng_state'] < 2**30
+            or not isinstance(record.get('reservations'), list)
+            or not isinstance(record.get('settled'), dict)
+            or any(not isinstance(task, str) or not task or type(decision) is not int or decision < 0
+                   for task, decision in record['settled'].items())):
+        raise ValueError('共享选择器状态元数据无效，保留原状态')
+    theta, inverse = record.get('theta'), record.get('a_inv')
+    if (theta is None) != (inverse is None):
+        raise ValueError('共享选择器矩阵不完整，保留原状态')
+    if theta is not None:
+        try:
+            theta, inverse = np.asarray(theta), np.asarray(inverse)
+            if (theta.shape != (MODEL_DIMENSION,) or inverse.shape != (MODEL_DIMENSION, MODEL_DIMENSION)
+                    or theta.dtype.kind != 'f' or inverse.dtype.kind != 'f'
+                    or not np.isfinite(theta).all() or not np.isfinite(inverse).all()):
+                raise ValueError('选择器矩阵类型、形状或有限值无效')
+            learner._theta, learner._A_inv, learner._np = theta, inverse, np
+        except (ValueError, TypeError) as error:
+            raise ValueError('共享选择器矩阵无效，保留原状态') from error
+    learner._pred._pmfrng._randu = CobaRandom(record['rng_state'])._randu
+    _rng_state(learner)
+    identities = set()
+    for receipt in record['reservations']:
+        _validate_receipt(receipt)
+        identity = receipt['task_run_id'], receipt['decision_id']
+        if identity in identities or identity[1] <= record['settled'].get(identity[0], 0):
+            raise ValueError('共享选择器决策身份或结算水位冲突')
+        identities.add(identity)
+    return learner
+
+
+def _validate_intent(intent):
+    if not isinstance(intent, dict) or set(intent) != {
+            'task_run_id', 'decision_id', 'parent_identity', 'pool_digest', 'context', 'actions'}:
+        raise ValueError('选择器意图字段或身份无效')
+    if (any(not isinstance(intent[key], str) or not intent[key]
+            for key in ('task_run_id', 'parent_identity', 'pool_digest'))
+            or type(intent['decision_id']) is not int or intent['decision_id'] < 1
+            or not isinstance(intent['actions'], list) or not intent['actions']):
+        raise ValueError('选择器意图身份或操作池无效')
+    _dense(intent['context'], CONTEXT_DIMENSION)
+    identities = set()
+    for action in intent['actions']:
+        if (not isinstance(action, dict) or set(action) != {'operation_id', 'features'}
+                or not isinstance(action['operation_id'], str) or not action['operation_id']
+                or action['operation_id'] in identities):
+            raise ValueError('选择器具体操作身份无效或重复')
+        _dense(action['features'], ACTION_DIMENSION)
+        identities.add(action['operation_id'])
+
+
+def _validate_receipt(receipt):
+    if not isinstance(receipt, dict) or any(not isinstance(receipt.get(key), str) or not receipt[key]
+            for key in ('task_run_id', 'parent_identity', 'pool_digest', 'intent_digest', 'operation_id')):
+        raise ValueError('选择器回执身份无效')
+    if (receipt.get('model_key') != MODEL_KEY or type(receipt.get('decision_id')) is not int
+            or receipt['decision_id'] < 1 or type(receipt.get('model_version')) is not int
+            or receipt['model_version'] < 1 or not _finite(receipt.get('probability'))
+            or not 0 < receipt['probability'] <= 1):
+        raise ValueError('选择器回执版本或概率无效')
+    _dense(receipt.get('context'), CONTEXT_DIMENSION)
+    _dense(receipt.get('action_features'), ACTION_DIMENSION)
+
+
+def _remember(record, learner):
+    global _CACHED_LEARNER, _SEEN_VERSION
+    # Keep one native model and small metadata, never a second matrix snapshot.
+    state = {key: record[key] for key in ('version', 'reservations', 'settled')}
+    source = result_store.DATA_ROOT.resolve(), MODEL_KEY
+    _CACHED_LEARNER = source, state, learner
+    _SEEN_VERSION = source, record['version']
+    return state, learner
+
+
+def _load():
+    global _CACHED_LEARNER, _SEEN_VERSION
+    cached, _CACHED_LEARNER = _CACHED_LEARNER, None
+    source = result_store.DATA_ROOT.resolve(), MODEL_KEY
+    if _SEEN_VERSION is not None and _SEEN_VERSION[0] != source:
+        _SEEN_VERSION = None
+    if cached is not None and cached[0] == source:
+        metadata = result_store.read_search_learner_metadata(MODEL_KEY)
+        if metadata is not None and metadata['version'] == cached[1]['version']:
+            _validate_parameters(metadata)
+            _CACHED_LEARNER = cached
+            return cached[1], cached[2]
+    record = result_store.read_search_learner(MODEL_KEY)
+    if record is None:
+        if _SEEN_VERSION is not None:
+            raise result_store.DataReadError('共享选择器权威记录丢失，保留已知经验版本')
+        learner = _learner()
+        return _snapshot(learner), learner
+    if (_SEEN_VERSION is not None and type(record.get('version')) is int
+            and record['version'] < _SEEN_VERSION[1]):
+        raise result_store.DataReadError('共享选择器权威版本回退，保留已知经验版本')
+    return _remember(record, _restore(record))
+
+
+def _receipt(record, task, decision):
+    return next((row for row in record['reservations']
+                 if row['task_run_id'] == task and row['decision_id'] == decision), None)
+
+
+def reserve(intent, runtime=None):
+    """Predict once and atomically reserve the native RNG progress with its receipt."""
+    global _CACHED_LEARNER
+    _validate_intent(intent)
+    intent_digest = _digest(intent)
+    task, decision = intent['task_run_id'], intent['decision_id']
+    with result_store.search_learner_lock(runtime):
+        for attempt in range(2):
+            record, learner = _load()
+            watermark = record['settled'].get(task, 0)
+            if decision <= watermark:
+                raise AlreadySettled(task, decision, watermark)
+            existing = _receipt(record, task, decision)
+            if existing:
+                if existing['intent_digest'] != intent_digest:
+                    raise ValueError('选择器已有决策意图身份不符')
+                return copy.deepcopy(existing)
+            last = max([watermark, *[row['decision_id'] for row in record['reservations']
+                                     if row['task_run_id'] == task]])
+            if decision != last + 1:
+                raise ValueError('选择器决策序号须连续递增')
+            if runtime is not None:
+                runtime.check()
+            context = _dense(intent['context'], CONTEXT_DIMENSION)
+            actions = [_dense(row['features'], ACTION_DIMENSION) for row in intent['actions']]
+            _CACHED_LEARNER = None  # Predict mutates RNG; publish only after the atomic write.
+            selected, probability = learner.predict(context, actions)
+            index = next((i for i, action in enumerate(actions) if action is selected), None)
+            if index is None:
+                raise ValueError('Coba返回的动作不是原具体操作对象')
+            receipt = dict(task_run_id=task, decision_id=decision,
+                parent_identity=intent['parent_identity'], pool_digest=intent['pool_digest'],
+                intent_digest=intent_digest, operation_id=intent['actions'][index]['operation_id'],
+                context=context, action_features=selected, probability=float(probability),
+                model_key=MODEL_KEY, model_version=record['version']+1)
+            _validate_receipt(receipt)
+            updated = _snapshot(learner, version=record['version']+1,
+                reservations=[*record['reservations'], receipt], settled=record['settled'])
+            try:
+                result_store.write_search_learner(updated)
+                _remember(updated, learner)
+                return copy.deepcopy(receipt)
+            except Exception:
+                current, _ = _load()  # A read failure stops; never reset or blindly repeat predict.
+                committed = _receipt(current, task, decision)
+                if committed and committed == receipt:
+                    return copy.deepcopy(committed)
+                if (current['version'] != record['version']
+                        or current['settled'].get(task, 0) != watermark or attempt):
+                    _CACHED_LEARNER = None
+                    raise
+        raise AssertionError('unreachable')
+
+
+def settle(receipt, reward, common_batches, reason=None, runtime=None):
+    """Learn on the latest shared model once; settle absent evidence without a fake zero."""
+    global _CACHED_LEARNER
+    _validate_receipt(receipt)
+    if type(common_batches) is not int or common_batches < 0:
+        raise ValueError('共同批次数无效')
+    valid_reward = _finite(reward) and common_batches > 0
+    reward = float(reward) if valid_reward else None
+    feedback = dict(status='learned' if valid_reward else 'no_learn', reward=reward,
+                    common_batches=common_batches, reason=reason,
+                    task_run_id=receipt['task_run_id'], decision_id=receipt['decision_id'])
+    task, decision = receipt['task_run_id'], receipt['decision_id']
+    with result_store.search_learner_lock(runtime):
+        for attempt in range(2):
+            record, learner = _load()
+            watermark = record['settled'].get(task, 0)
+            if decision <= watermark:
+                return dict(feedback, status='already_settled', already_committed=True,
+                            model_version=record['version'])
+            original = _receipt(record, task, decision)
+            if original != receipt:
+                raise ValueError('共享选择器反馈回执身份不符或不存在')
+            if decision != watermark + 1:
+                raise ValueError('共享选择器必须按原任务head顺序结算')
+            if runtime is not None:
+                runtime.check()
+            _CACHED_LEARNER = None  # A failed or uncertain write must reload before learning again.
+            if valid_reward:
+                learner.learn(receipt['context'], receipt['action_features'], reward, receipt['probability'])
+            updated = _snapshot(learner, version=record['version']+1,
+                reservations=[row for row in record['reservations'] if row is not original],
+                settled=dict(record['settled'], **{task: decision}))
+            try:
+                result_store.write_search_learner(updated)
+                _remember(updated, learner)
+                return dict(feedback, model_version=updated['version'], already_committed=False)
+            except Exception:
+                current, _ = _load()  # Replacement may have succeeded before the writer raised.
+                if current['settled'].get(task, 0) >= decision:
+                    return dict(feedback, model_version=current['version'], already_committed=True)
+                if (current['version'] != record['version']
+                        or _receipt(current, task, decision) != receipt or attempt):
+                    _CACHED_LEARNER = None
+                    raise
+        raise AssertionError('unreachable')

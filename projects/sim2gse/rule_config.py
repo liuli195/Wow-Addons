@@ -32,7 +32,7 @@ def load(path=None):
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
         raise ValueError(f'规则配置 {path}: {error}') from error
     return dict(pack=pack, resolved=resolved, rule_config_digest=digest(pack), source=str(path.resolve()),
-                schema_version=1, executor_version='configured-opener-v2')
+                schema_version=2, executor_version='three-key-opener-v3')
 
 
 _SAVE_LOCK = threading.Lock()
@@ -51,478 +51,355 @@ def save(draft, expected_digest):
     return dict(status='saved', rule_config_digest=snapshot['rule_config_digest'], source=str(target.resolve()))
 
 
-UNKNOWN = None
-
-
-def evaluate(expression, facts):
-    """有限数据操作；None是unknown，不执行字符串或职业回调。"""
-    if not isinstance(expression, dict):
-        return expression
-    if len(expression) != 1:
-        raise ValueError('规则配置表达式必须恰有一个操作')
-    operation, args = next(iter(expression.items()))
-    if operation == 'fact':
-        return facts.get(args)
-    if operation == 'unknown':
-        return UNKNOWN
-    if operation == 'select':
-        for row in args:
-            if evaluate(row['when'], facts) is True:
-                return evaluate(row['value'], facts)
-        return UNKNOWN
-    if operation == 'not':
-        value = evaluate(args, facts)
-        return None if value is None else not value
-    values = [evaluate(arg, facts) for arg in args]
-    if operation in ('and', 'or'):
-        decisive = operation == 'or'
-        if any(value is decisive for value in values):
-            return decisive
-        return None if None in values else not decisive
-    if None in values:
-        return None
-    from operator import eq, ne, lt, le, gt, ge, add, sub, mul, truediv
-    operations = dict(eq=eq, ne=ne, lt=lt, lte=le, gt=gt, gte=ge,
-                      add=add, subtract=sub, multiply=mul, divide=truediv,
-                      min=min, max=max)
-    if operation not in operations:
-        raise ValueError('规则配置不支持的操作: ' + operation)
-    try:
-        return operations[operation](*values)
-    except (TypeError, ValueError, ZeroDivisionError) as error:
-        raise ValueError('规则配置操作错误: ' + operation) from error
-
-
-def facts_for(spec, capabilities, snapshot, target_count, *, balances=None, capacities=None, scene=None):
-    values = {}
-    available = {row['simc_action'] for row in capabilities['actions']}
-    for alias, row in spec['facts'].items():
-        source = row['from']
-        if source == 'scenario.scene':
-            value = scene
-        elif source == 'scenario.target_count':
-            value = target_count
-        elif source == 'capability.available':
-            value = spec['actions'][row['action']]['button'] in available
-        elif source == 'static.parameter':
-            value = snapshot.get('parameters', {}).get(row['key'])
-        elif source == 'static.hero_subtree':
-            trees = snapshot.get('hero_subtree_ids')
-            if trees is not None and (not isinstance(trees, list) or
-                    any(type(identity) is not int or identity <= 0 for identity in trees)):
-                raise ValueError('原生英雄子树事实无效')
-            value = None if trees is None else row['id'] in trees
-        elif source in ('static.resource.current', 'static.resource.maximum'):
-            value = snapshot.get('resources', {}).get(row['resource'], {}).get(source.rsplit('.', 1)[1])
-        elif source in ('estimate.resource.current', 'estimate.resource.deficit'):
-            key = row['resource']
-            current = (balances or {}).get(key)
-            maximum = (capacities or {}).get(key)
-            value = (current if source.endswith('.current') else
-                     maximum-current if current is not None and maximum is not None else None)
-        elif source == 'student.apl_fact':
-            value = None  # 02仅有引用契约，01没有同次学生证据。
-        else:
-            raise ValueError('规则配置未登记事实来源: ' + source)
-        if value is not None:
-            kind = row['type']
-            valid = (type(value) is bool if kind == 'boolean' else
-                     isinstance(value, str) if kind == 'string' else type(value) in (int, float) and math.isfinite(value) and
-                     (kind != 'integer' or value == int(value)))
-            if not valid or kind not in ('boolean', 'string') and value < row.get('minimum', -math.inf):
-                raise ValueError('规则配置事实类型或范围不符: ' + alias)
-        values[alias] = value
-    return values
-
-
-def bind(capabilities, snapshot, target_count, *, spec_id, rule_snapshot, scene=None):
-    """选择唯一有序起手；动态优先级声明保留给02，不在静态绑定时删除。"""
-    if not isinstance(snapshot, dict):
-        raise ValueError('规则起点缺少真实角色静态快照，请重新构建引擎')
-    spec = rule_snapshot['resolved'].get(str(spec_id))
-    if spec is None:
-        raise ValueError('当前专精尚无已审核的规则起点绑定')
-    values = facts_for(spec, capabilities, snapshot, target_count, scene=scene)
-    policy = spec['initialization']
-    for key in policy.get('required_facts', []):
-        if values.get(key) is None:
-            raise ValueError('规则起点缺少静态字段: ' + key)
-    matched = [row for row in policy['openers'] if evaluate(row['scope'], values) is True]
-    if len(matched) != 1:
-        raise ValueError('规则起点需要唯一适用起手分支；当前匹配数: ' + str(len(matched)))
-    return dict(resource=policy['resource'],
-        recovery={key: evaluate(value, values) for key, value in policy['recovery'].items()},
-        opener=copy.deepcopy(matched[0]), bindings=[dict(copy.deepcopy(row),
-            scope_status=evaluate(row['scope'], values)) for row in spec['bindings']],
-        parameter_sources={key: row for key, row in spec['facts'].items()
-                           if row['from'].startswith('static.')},
-        approximate=policy.get('approximate', []), unknown=policy.get('unknown', []),
-        native_buttons={name: row['button'] for row in spec['actions'].values()
-                        for name in [row['native_action'], *row.get('variants', [])]},
-        spec=spec, facts=values)
-
-
-_CONTEXT = {
-    'interval.attempt_count': {'02', '03'},
-    'finding.source_position': {'02', '03'},
-    'finding.opportunity_position': {'02', '03'},
-}
-_BINARY = {'eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'add', 'subtract', 'multiply', 'divide', 'min', 'max'}
-
-
-def _expression(value, facts, parameters=(), *, depth=0, phase=None):
-    import math
-    if depth > 24:
-        raise ValueError('表达式超过24层')
-    if isinstance(value, dict):
-        if len(value) != 1:
-            raise ValueError('表达式需要恰好一个操作')
-        operation, args = next(iter(value.items()))
-        if operation == 'fact':
-            if args not in facts and args not in _CONTEXT:
-                raise ValueError('未声明事实: ' + str(args))
-            if phase is not None:
-                source = facts.get(args, {}).get('from', '')
-                if (args in _CONTEXT and phase not in _CONTEXT[args]
-                        or source == 'student.apl_fact' and phase not in ('02', '03')
-                        or source.startswith('estimate.') and phase not in ('plan', 'candidate')):
-                    raise ValueError('事实不属于当前求值阶段: ' + str(args))
-            return
-        if operation == 'param':
-            if args not in parameters:
-                raise ValueError('未声明参数: ' + str(args))
-            return
-        if operation == 'unknown':
-            if not isinstance(args, str) or not args:
-                raise ValueError('unknown需要原因')
-            return
-        if operation == 'not':
-            children = [args]
-        elif operation == 'select':
-            if not isinstance(args, list) or not 1 <= len(args) <= 16:
-                raise ValueError('条件取值需要有界分支')
-            children = []
-            for row in args:
-                if not isinstance(row, dict) or set(row) != {'when', 'value'}:
-                    raise ValueError('条件取值需要when/value')
-                children.extend(row.values())
-        elif operation in _BINARY or operation in ('and', 'or'):
-            if not isinstance(args, list) or (len(args) != 2 if operation in _BINARY else not 1 <= len(args) <= 32):
-                raise ValueError('操作参数数量无效: ' + operation)
-            if operation == 'divide' and args[1] == 0:
-                raise ValueError('规则配置除零')
-            children = args
-        else:
-            raise ValueError('未知操作: ' + operation)
-        for child in children:
-            _expression(child, facts, parameters, depth=depth+1, phase=phase)
-    elif not (value is None or type(value) in (str, bool, int, float)):
-        raise ValueError('不支持表达式值')
-    elif type(value) in (int, float) and not math.isfinite(value):
-        raise ValueError('非有限数值')
-
-
-def _typed(value, facts, expected=None, parameters=None):
-    """启动时核对有限比较/算术的类型与量纲；不作隐式布尔转数字。"""
-    if isinstance(value, dict):
-        operation, args = next(iter(value.items()))
-        if operation == 'fact':
-            row = facts.get(args, {'type': 'number', 'unit': 'count'})
-            kind, unit = row['type'], row.get('unit')
-            result = ('number' if kind == 'integer' else kind, unit)
-        elif operation == 'param':
-            kind = parameters[args]
-            result = ({'action_ref': 'string', 'predicate': 'boolean', 'integer': 'number'}.get(kind, kind), None)
-        elif operation == 'unknown':
-            result = ('unknown', None)
-        elif operation == 'select':
-            results = []
-            for row in args:
-                _typed(row['when'], facts, 'boolean', parameters)
-                results.append(_typed(row['value'], facts, parameters=parameters))
-            result = next((item for item in results if item[0] != 'unknown'), ('unknown', None))
-            for item in results:
-                if item[0] not in ('unknown', result[0]) or item[1] and result[1] and item[1] != result[1]:
-                    raise ValueError('条件取值类型或单位冲突')
-        elif operation in ('not', 'and', 'or'):
-            for child in ([args] if operation == 'not' else args):
-                _typed(child, facts, 'boolean', parameters)
-            result = ('boolean', None)
-        else:
-            left, right = [_typed(child, facts, parameters=parameters) for child in args]
-            kinds = {item[0] for item in (left, right)} - {'unknown'}
-            numeric = operation not in ('eq', 'ne')
-            if len(kinds) > 1 or numeric and kinds - {'number'}:
-                raise ValueError('表达式类型冲突: ' + operation)
-            units = {item[1] for item in (left, right) if item[1]}
-            if operation in ('multiply', 'divide'):
-                units -= {'count', 'ratio'}
-            if len(units) > 1:
-                raise ValueError('表达式单位冲突: ' + operation)
-            result = ('boolean', None) if operation in ('eq', 'ne', 'lt', 'lte', 'gt', 'gte') else ('number', next(iter(units), None))
-    else:
-        result = ('unknown' if value is None else 'boolean' if type(value) is bool else
-                  'number' if type(value) in (int, float) else 'string', None)
-    if expected is not None and result[0] not in ('unknown', expected):
-        raise ValueError('表达式结果类型应为' + expected)
-    return result
-
-
-def _check(value, facts, phase, expected=None, unit=None, *, parameters=None):
-    _expression(value, facts, parameters or {}, phase=phase)
-    kind, actual_unit = _typed(value, facts, expected, parameters)
-    if kind != 'unknown' and unit and actual_unit and unit != actual_unit:
-        raise ValueError('表达式结果单位应为' + unit)
-
-
-def _check_stage_contract(contract, facts, actions=None, parameters=None):
-    diagnose = contract.get('diagnose', {})
-    if 'when' in diagnose:
-        _check(diagnose['when'], facts, '02', 'boolean', parameters=parameters)
-    if 'action' in diagnose:
-        _check(diagnose['action'], facts, '02', 'string', parameters=parameters)
-        if actions is not None and diagnose['action'] not in actions:
-            raise ValueError('诊断动作引用失效')
-    for key, value in diagnose.items():
-        if key not in ('when', 'action') and isinstance(value, dict):
-            _check(value, facts, '02', parameters=parameters)
-    for edit in contract.get('edits', []):
-        for key, value in edit.items():
-            if key == 'when' or isinstance(value, dict):
-                _check(value, facts, '02', 'boolean' if key == 'when' else None, parameters=parameters)
-    for feature in contract.get('features', []):
-        _check(feature['value'], facts, '03', 'number', parameters=parameters)
-
-
-def _substitute(value, arguments):
-    if isinstance(value, dict):
-        if set(value) == {'param'}:
-            if value['param'] not in arguments:
-                raise ValueError('缺少模板参数: ' + str(value['param']))
-            return copy.deepcopy(arguments[value['param']])
-        return {key: _substitute(item, arguments) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_substitute(item, arguments) for item in value]
+def _nonempty(value, label):
+    if not isinstance(value, str) or not value:
+        raise ValueError('规则配置字符串无效: ' + label)
     return value
 
 
-def _expand_binding(row, templates, actions, facts):
-    if {'initialize', 'extra_initializations', 'overrides'} & row.keys():
-        raise ValueError('旧初始化执行字段已取消，请使用initialization.openers')
-    arguments = row.get('arguments', {})
-    result = _substitute(row, arguments)
-    contracts, binding_defaults = [], {}
-    for identity in row['rules']:
-        template = templates[identity]
-        for name, kind in template.get('parameters', {}).items():
-            if name not in arguments:
-                raise ValueError('缺少模板参数: ' + name)
-            value = arguments[name]
-            if kind == 'action_ref':
-                if value not in actions:
-                    raise ValueError('模板动作引用失效: ' + str(value))
-            elif kind == 'predicate':
-                _expression(value, facts)
-                _typed(value, facts, 'boolean')
-            elif kind in ('integer', 'number', 'string', 'boolean'):
-                expected = 'number' if kind == 'integer' else kind
-                _typed(value, facts, expected)
-                if kind == 'integer' and type(value) is not int:
-                    raise ValueError('模板整数参数无效: ' + name)
-            else:
-                raise ValueError('未支持模板参数类型: ' + str(kind))
-        expanded = _substitute(template, arguments)
-        for field, value in expanded.get('binding', {}).items():
-            if field in binding_defaults and binding_defaults[field] != value and field not in row:
-                raise ValueError('共享定义字段冲突: ' + field)
-            binding_defaults[field] = value
-        contracts.append(dict(template=identity, **{key: expanded[key] for key in
-            ('diagnose', 'edits', 'features') if key in expanded}))
-    result = dict(binding_defaults, **result)
-    result['stage_contracts'] = contracts  # 02/03只保存并校验，不在01执行。
-    return result
+_OBJECT_KINDS = {'action', 'effect', 'state', 'resource', 'target_scope', 'source', 'plan', 'range', 'policy'}
+_DECLARED_OPERATIONS = {
+    'map', 'join', 'merge', 'record', 'any3', 'lookup_unique', 'and', 'not', 'select', 'eq',
+    'compare', 'or', 'unknown', 'lte', 'gt', 'all3', 'entries', 'gte', 'lookup', 'is_number',
+    'contains', 'filter', 'object_field', 'resolve_edit_gaps', 'block', 'adjacent', 'empty',
+    'lt', 'last_true', 'is_true', 'interval_select', 'pair_intervals', 'join_interval',
+    'first_true', 'matches_native_object', 'count', 'subtract', 'is_integer',
+}
 
 
-def _validate_templates(templates, facts, actions=None):
-    for key, row in templates.items():
-        if not isinstance(key, str) or not key or not isinstance(row, dict):
-            raise ValueError('模板身份无效')
-        if {'initialize', 'extra_initializations', 'overrides'} & row.keys():
-            raise ValueError('旧初始化执行字段已取消，请使用initialization.openers')
-        for field in ('intent', 'scope', 'modifications'):
-            if not isinstance(row.get(field), str):
-                raise ValueError('模板缺少说明: ' + key)
-        if row.get('unknown') not in ('error', 'record_not_applied', 'attempt_with_report'):
-            raise ValueError('unknown策略无效')
-        parameters = row.get('parameters', {})
-        if any(kind not in ('action_ref', 'predicate', 'integer', 'number', 'string', 'boolean')
-               for kind in parameters.values()):
-            raise ValueError('未支持模板参数类型')
-        for edit in row.get('edits', []):
-            if edit.get('operation') not in ('move', 'insert', 'remove', 'reduce_wait'):
-                raise ValueError('非法候选操作')
-        _check_stage_contract(row, facts, parameters=parameters)
-        shared = row.get('binding', {})
-        if not isinstance(shared, dict):
-            raise ValueError('共享定义字段必须是对象')
-        if {'initialize', 'extra_initializations', 'overrides'} & shared.keys():
-            raise ValueError('旧初始化执行字段已取消，请使用initialization.openers')
-        if actions is not None and 'action' in shared and shared['action'] not in actions:
-            raise ValueError('共享定义动作引用失效: ' + key)
-        for field in ('scope', 'condition'):
-            if field in shared:
-                _check(shared[field], facts, '02', 'boolean', parameters=parameters)
+def _fields(value, required, optional=(), *, label):
+    if not isinstance(value, dict) or set(required) - set(value) or set(value) - set(required) - set(optional):
+        raise ValueError('规则声明字段缺失或未支持: ' + label)
+
+
+def _template_declaration(value, parameters, depth=0):
+    """仅检查有限语法和形参引用，绝不求值02表达式。"""
+    if depth > 24:
+        raise ValueError('模板表达式超过深度边界')
+    if isinstance(value, dict):
+        if 'arg' in value and (set(value) != {'arg'} or value['arg'] not in parameters):
+            raise ValueError('模板形参引用失效')
+        if 'var' in value:
+            if set(value) != {'var'}:
+                raise ValueError('模板变量声明无效')
+            _nonempty(value['var'], 'var')
+        if 'op' in value:
+            if value['op'] not in _DECLARED_OPERATIONS or ('args' in value and not isinstance(value['args'], list)):
+                raise ValueError('模板操作未登记或参数结构无效')
+            depth += 1
+        for child in value.values():
+            _template_declaration(child, parameters, depth)
+    elif isinstance(value, list):
+        if len(value) > 4096:
+            raise ValueError('模板声明数组超过边界')
+        for child in value:
+            _template_declaration(child, parameters, depth)
+    elif type(value) is float and not math.isfinite(value):
+        raise ValueError('模板声明必须使用有限数值')
+
+
+def _argument(value, declaration, objects, prior_rules, label):
+    kind = declaration['type']
+    if value is None and declaration.get('nullable') is True:
+        return
+    if kind.endswith('_ref_array'):
+        if (not isinstance(value, list) or len(value) > 512
+                or any(not isinstance(item, str) for item in value) or len(set(value)) != len(value)):
+            raise ValueError('模板数组参数无效: ' + label)
+        for item in value:
+            _argument(item, dict(type=kind.removesuffix('_array')), objects, prior_rules, label)
+    elif kind.endswith('_ref'):
+        if kind == 'rule_ref':
+            valid = isinstance(value, str) and value in prior_rules
+        else:
+            target = objects.get(value) if isinstance(value, str) else None
+            valid = isinstance(target, dict) and target.get('kind') == kind.removesuffix('_ref')
+        if not valid:
+            raise ValueError('模板对象参数引用失效或类型不符: ' + label)
+    elif kind == 'enum':
+        if not isinstance(value, str) or not value or value not in declaration['values']:
+            raise ValueError('模板枚举参数无效: ' + label)
+    elif kind in ('number', 'integer', 'number_or_boolean'):
+        valid = (type(value) is bool and kind == 'number_or_boolean') or (
+            type(value) in (int, float) and math.isfinite(value) and (kind != 'integer' or type(value) is int))
+        if not valid or not declaration.get('minimum', -math.inf) <= value <= declaration.get('maximum', math.inf):
+            raise ValueError('模板数值参数类型或范围无效: ' + label)
+    elif kind == 'boolean':
+        if type(value) is not bool:
+            raise ValueError('模板布尔参数无效: ' + label)
+    else:
+        raise ValueError('未支持的模板参数类型: ' + str(kind))
+
+
+def _object_declaration(row, entries, alias):
+    """检查既有对象数据及同集合引用，不解释诊断或业务含义。"""
+    if not isinstance(row, dict) or row.get('kind') not in _OBJECT_KINDS:
+        raise ValueError('对象类型未登记: ' + alias)
+    kind = row['kind']
+    if kind == 'action':
+        _fields(row, ('kind', 'native_action', 'base_button'), ('native_forms', 'label'), label=alias)
+        _nonempty(row['native_action'], alias + '.native_action')
+        _nonempty(row['base_button'], alias + '.base_button')
+        if 'label' in row:
+            _nonempty(row['label'], alias + '.label')
+        forms = row.get('native_forms', [row['native_action']])
+        if not isinstance(forms, list) or any(not isinstance(value, str) or not value for value in forms):
+            raise ValueError('动作原生形态无效: ' + alias)
+    elif kind == 'effect':
+        _fields(row, ('kind',), ('native_identity', 'components', 'selector', 'from_action', 'qualification'), label=alias)
+        if ('native_identity' in row) == ('components' in row):
+            raise ValueError('效果必须唯一声明原生身份或组件: ' + alias)
+        if 'native_identity' in row:
+            _nonempty(row['native_identity'], alias + '.native_identity')
+        else:
+            components = row['components']
+            if not isinstance(components, list) or not 1 <= len(components) <= 512:
+                raise ValueError('效果组件列表无效: ' + alias)
+            for component in components:
+                _fields(component, ('native_identity', 'target_scope'), label=alias + '.component')
+                _nonempty(component['native_identity'], alias + '.component.native_identity')
+                _argument(component['target_scope'], dict(type='target_scope_ref'), entries, (), alias + '.target_scope')
+        for field, target_kind in (('from_action', 'action_ref'), ('qualification', 'state_ref')):
+            if field in row:
+                _argument(row[field], dict(type=target_kind), entries, (), alias + '.' + field)
+        if 'selector' in row:
+            selector = row['selector']
+            _fields(selector, ('slots', 'active_only'), label=alias + '.selector')
+            if (not isinstance(selector['slots'], list) or len(selector['slots']) > 512
+                    or any(type(value) is not int or value <= 0 for value in selector['slots'])
+                    or type(selector['active_only']) is not bool):
+                raise ValueError('效果选择对象字段类型无效: ' + alias)
+    elif kind in ('state', 'resource'):
+        _fields(row, ('kind', 'native_identity'), ('representation',) if kind == 'state' else (), label=alias)
+        _nonempty(row['native_identity'], alias + '.native_identity')
+        if 'representation' in row and (not isinstance(row['representation'], str)
+                or row['representation'] not in ('boolean', 'positive_stack_presence')):
+            raise ValueError('资格状态表示未登记: ' + alias)
+    elif kind == 'range':
+        _fields(row, ('kind', 'segments', 'allow_units', 'preserve_block_contents', 'respect_approved_protection'), label=alias)
+        _nonempty(row['segments'], alias + '.segments')
+        if (not isinstance(row['allow_units'], list) or not row['allow_units']
+                or any(not isinstance(value, str) or not value for value in row['allow_units'])
+                or type(row['preserve_block_contents']) is not bool or type(row['respect_approved_protection']) is not bool):
+            raise ValueError('编辑范围字段类型无效: ' + alias)
+    else:
+        _fields(row, ('kind', 'value'), label=alias)
+        _nonempty(row['value'], alias + '.value')
 
 
 def validate(pack):
-    """启动时一次校验两库与引用；失败不能替换有效文件。"""
-    if (not isinstance(pack, dict) or type(pack.get('schema_version')) is not int
-            or pack['schema_version'] != 1 or not isinstance(pack.get('general'), dict)
-            or not isinstance(pack.get('specializations'), dict)):
-        raise ValueError('schema_version/general/specializations无效')
-    general = pack['general']
-    if 'initialization' in general:
-        raise ValueError('旧通用初始化骨架已取消，请使用专精initialization.openers')
-    templates = general.get('templates')
-    if not isinstance(templates, dict) or not 0 <= len(templates) <= 128:
-        raise ValueError('通用模板数量无效')
-    _validate_templates(templates, {})
-    resolved = copy.deepcopy(pack['specializations'])
-    for spec_id, spec in resolved.items():
-        if not isinstance(spec_id, str) or not spec_id or not isinstance(spec, dict):
+    """只校验新配置并解析引用；01不执行模板诊断或编辑。"""
+    if not isinstance(pack, dict) or type(pack.get('schema_version')) is not int or pack['schema_version'] != 2:
+        raise ValueError('schema_version必须为2；旧任务结果仅保留只读')
+    _fields(pack, ('schema_version', 'identity_mappings', 'general', 'object_sets', 'configurations',
+                   'execution_evidence'), label='runtime')
+    _fields(pack['general'], ('templates',), label='general')
+    _fields(pack['identity_mappings'], ('hero_talents',), label='identity_mappings')
+    templates = pack['general']['templates']
+    objects = pack['object_sets']
+    heroes = pack['identity_mappings']['hero_talents']
+    configurations = pack['configurations']
+    executions = pack.get('execution_evidence', {})
+    if (not isinstance(templates, dict) or len(templates) > 128 or not isinstance(objects, dict)
+            or not isinstance(heroes, dict) or not isinstance(executions, dict)
+            or not isinstance(configurations, list) or not 1 <= len(configurations) <= 512):
+        raise ValueError('模板/对象/身份映射/配置列表无效')
+    for name, native_id in heroes.items():
+        _nonempty(name, 'hero_talent')
+        if type(native_id) is not int or native_id <= 0:
+            raise ValueError('英雄原生子树身份无效: ' + name)
+    for name, template in templates.items():
+        _nonempty(name, 'template')
+        _fields(template, ('application_phase', 'parameters', 'reads', 'diagnose', 'edits'), label=name)
+        if (not isinstance(template, dict) or not isinstance(template.get('parameters'), dict)
+                or not isinstance(template.get('reads'), list) or not isinstance(template.get('diagnose'), dict)
+                or not isinstance(template.get('edits'), list)
+                or template.get('application_phase') != 'post_simulation_diagnosis_and_next_candidate'):
+            raise ValueError('通用模板完整声明无效: ' + name)
+        for parameter, declaration in template['parameters'].items():
+            _nonempty(parameter, 'parameter')
+            _fields(declaration, ('type',), ('nullable', 'minimum', 'maximum', 'values', 'unit'), label=parameter)
+            kind = _nonempty(declaration['type'], parameter + '.type')
+            base = kind.removesuffix('_array').removesuffix('_ref')
+            if (kind not in ('enum', 'number', 'integer', 'number_or_boolean', 'boolean')
+                    and (not kind.removesuffix('_array').endswith('_ref') or base not in _OBJECT_KINDS | {'rule'})):
+                raise ValueError('模板参数类型未登记: ' + kind)
+            if 'nullable' in declaration and type(declaration['nullable']) is not bool:
+                raise ValueError('模板参数nullable必须为布尔值')
+            if kind == 'enum' and (not isinstance(declaration.get('values'), list)
+                    or not declaration['values']
+                    or any(not isinstance(value, str) or not value for value in declaration['values'])):
+                raise ValueError('模板枚举参数仅支持非空字符串取值')
+            if 'unit' in declaration and declaration['unit'] not in ('ms', 'count', 'percent', 'ratio'):
+                raise ValueError('模板参数单位未登记')
+            for bound in ('minimum', 'maximum'):
+                if bound in declaration and (type(declaration[bound]) not in (int, float)
+                        or not math.isfinite(declaration[bound])):
+                    raise ValueError('模板参数范围必须是有限数值')
+            if declaration.get('minimum', -math.inf) > declaration.get('maximum', math.inf):
+                raise ValueError('模板参数范围倒置')
+        for section in ('reads', 'diagnose', 'edits'):
+            _template_declaration(template[section], template['parameters'])
+    for name, entries in objects.items():
+        _nonempty(name, 'objects_ref')
+        if not isinstance(entries, dict) or len(entries) > 512:
+            raise ValueError('对象集合无效')
+        for alias, row in entries.items():
+            _nonempty(alias, 'object')
+            _object_declaration(row, entries, alias)
+    seen, resolved = set(), []
+    for configuration in configurations:
+        _fields(configuration, ('key', 'objects_ref', 'opener', 'states', 'execution_ref'),
+                ('edit_range_ref',), label='configuration')
+        key = configuration['key']
+        if not isinstance(key, dict) or set(key) != {'specialization_id', 'hero_talent', 'target_type'}:
+            raise ValueError('配置必须声明三个且仅三个身份键')
+        if type(key['specialization_id']) is not int or key['specialization_id'] <= 0:
             raise ValueError('专精身份无效')
-        actions, facts, bindings = spec['actions'], spec['facts'], spec['bindings']
-        if not isinstance(bindings, list) or not 0 <= len(bindings) <= 512 or len(facts) > 512:
-            raise ValueError('专精条目或事实数量无效')
-        for alias, action in actions.items():
-            if (not isinstance(alias, str) or not alias or
-                    not all(isinstance(action.get(k), str) and action[k] for k in ('button', 'native_action'))):
-                raise ValueError('动作映射无效')
-            variants = action.get('variants', [])
-            if not isinstance(variants, list) or any(not isinstance(item, str) or not item for item in variants):
-                raise ValueError('动作替换映射无效')
-        native_targets = {}
-        for action in actions.values():
-            for name in [action['native_action'], *action.get('variants', [])]:
-                if native_targets.setdefault(name, action['button']) != action['button']:
-                    raise ValueError('同一原生动作映射多个按钮: ' + name)
-        policy = spec['initialization']
-        if 'funding' in policy:
-            raise ValueError('旧初始化供资字段已取消，请使用initialization.openers')
-        recovery = policy['recovery']
-        if recovery.get('model') not in ('none', 'parallel_discrete'):
-            raise ValueError('未支持的恢复模型')
-        fields = {'model': ('string', None)}
-        if recovery['model'] == 'parallel_discrete':
-            fields.update(resource=('string', None), interval_ms=('number', 'ms'), slots=('number', 'count'))
-        if set(recovery) != set(fields):
-            raise ValueError('恢复模型字段不完整或未支持')
-        for key, (kind, unit) in fields.items():
-            _check(recovery[key], facts, 'bind', kind, unit)
-        if any(name not in facts for name in policy.get('required_facts', [])):
-            raise ValueError('必需事实引用失效')
-        for alias, fact in facts.items():
-            if alias in _CONTEXT:
-                raise ValueError('事实身份与保留上下文冲突: ' + alias)
-            if fact.get('type') not in ('boolean', 'integer', 'number', 'string'):
-                raise ValueError('事实类型无效: ' + alias)
-            if fact.get('from') not in ('scenario.scene', 'scenario.target_count', 'capability.available', 'static.parameter', 'static.hero_subtree',
-                                       'estimate.resource.current', 'estimate.resource.deficit', 'static.resource.current', 'static.resource.maximum', 'student.apl_fact'):
-                raise ValueError('事实来源未登记: ' + alias)
-            if fact['from'] == 'static.hero_subtree' and (fact['type'] != 'boolean'
-                    or type(fact.get('id')) is not int or fact['id'] <= 0):
-                raise ValueError('英雄子树事实类型或ID无效: ' + alias)
-            if fact['from'] == 'capability.available' and fact.get('action') not in actions:
-                raise ValueError('事实引用不存在动作: ' + alias)
-            if fact['from'] == 'student.apl_fact' and fact.get('phase') != '02':
-                raise ValueError('学生事实仅02可求值')
-        for name in policy.get('required_facts', []):
-            _check({'fact': name}, facts, 'bind')
-        openers = policy.get('openers')
-        if not isinstance(openers, list) or not 1 <= len(openers) <= 32:
-            raise ValueError('初始化需要有界有序起手列表')
-        opener_ids = set()
-        for opener in openers:
-            if not isinstance(opener.get('id'), str) or not opener['id'] or opener['id'] in opener_ids:
-                raise ValueError('起手身份缺失或重复')
-            opener_ids.add(opener['id'])
-            if not isinstance(opener.get('source'), str) or not opener['source']:
-                raise ValueError('起手缺少来源')
-            _check(opener['scope'], facts, 'bind', 'boolean')
-            steps = opener.get('steps')
-            if not isinstance(steps, list) or not 1 <= len(steps) <= 128:
-                raise ValueError('有序起手必须有1至128个步骤')
-            for step in steps:
-                if step.get('action') not in actions:
-                    raise ValueError('起手动作引用失效')
-                if type(step.get('source_step')) is not int or step['source_step'] < 1:
-                    raise ValueError('起手来源步骤无效')
-                if step.get('mapping', 'loop') not in ('loop', 'burst'):
-                    raise ValueError('起手映射方式无效')
-                if 'commands' in step:
-                    commands = step['commands']
-                    if (step.get('mapping') != 'burst' or not isinstance(commands, list)
-                            or not 1 <= len(commands) <= 16):
-                        raise ValueError('独立爆发来源多命令块无效')
-                    for command in commands:
-                        if not isinstance(command, dict) or command.get('action') not in actions:
-                            raise ValueError('开场或来源命令动作引用失效')
-                        if command.get('condition') is not None:
-                            raise ValueError('来源爆发命令不支持额外条件')
-                if 'native_form' in step and step['native_form'] not in [
-                        actions[step['action']]['native_action'], *actions[step['action']].get('variants', [])]:
-                    raise ValueError('起手替换形态引用失效')
-            if 'first_burst_step' in opener and opener['first_burst_step'] not in [row['source_step'] for row in steps]:
-                raise ValueError('首次爆发来源步骤无效')
-        local_templates = spec.get('templates', {})
-        if not isinstance(local_templates, dict) or len(local_templates) > 128 or set(local_templates) & set(templates):
-            raise ValueError('专精共享定义无效或与通用模板冲突')
-        _validate_templates(local_templates, facts, actions)
-        available_templates = dict(templates, **local_templates)
-        for row in bindings:
-            if any(key not in available_templates for key in row['rules']):
-                raise ValueError('模板引用失效: ' + row['id'])
-        bindings[:] = [_expand_binding(row, available_templates, actions, facts) for row in bindings]
-        ids = [row['id'] for row in bindings]
-        if len(set(ids)) != len(ids):
-            raise ValueError('绑定ID重复')
-        dependencies = {key: set() for key in ids}
-        for row in bindings:
-            if row.get('action') not in actions:
-                raise ValueError('绑定动作引用失效: ' + row['id'])
-            if any(key not in available_templates for key in row['rules']):
-                raise ValueError('模板引用失效: ' + row['id'])
-            for key in ('scope', 'condition'):
-                _check(row[key], facts, '02', 'boolean')
-            _check(row.get('priority', 0), facts, 'bind', 'number')
-            _check(row.get('parent_condition', True), facts, '02', 'boolean')
-            coverage = row.get('initialization_coverage', {})
-            if 'upstream_applicable' in coverage:
-                _check(coverage['upstream_applicable'], facts, 'bind', 'boolean')
-            for contract in row['stage_contracts']:
-                _check_stage_contract(contract, facts, actions)
-            for relation in row.get('yields_to', []):
-                if set(relation) != {'source_entries', 'when'} or any(
-                        key not in ids and key not in spec.get('external_entries', {}) for key in relation['source_entries']):
-                    raise ValueError('前序来源引用失效')
-                _check(relation['when'], facts, '02', 'boolean')
-            target = row.get('target', {'mode': 'current'})
-            if target.get('mode') not in ('current', 'first', 'min', 'max') or (
-                    target['mode'] != 'current' and target.get('fact') not in facts):
-                raise ValueError('目标事实引用失效')
-            if target['mode'] != 'current':
-                _check({'fact': target['fact']}, facts, '02',
-                       'boolean' if target['mode'] == 'first' else 'number')
-            for field in ('before', 'after'):
-                for other in row.get(field, []):
-                    if other not in dependencies:
-                        raise ValueError('顺序引用失效: ' + other)
-                    left, right = (other, row['id']) if field == 'before' else (row['id'], other)
-                    dependencies[left].add(right)
-        remaining = set(ids)
-        while remaining:
-            ready = {key for key in remaining if not dependencies[key] & remaining}
-            if not ready:
-                raise ValueError('动作依赖存在环')
-            remaining -= ready
+        for field in ('hero_talent', 'target_type'):
+            _nonempty(key[field], field)
+        if key['target_type'] not in ('single_target', 'aoe'):
+            raise ValueError('目标类型必须为single_target或aoe')
+        if key['hero_talent'] not in heroes:
+            raise ValueError('英雄身份映射引用失效')
+        identity = (key['specialization_id'], key['hero_talent'], key['target_type'])
+        if identity in seen:
+            raise ValueError('三键配置重复')
+        seen.add(identity)
+        if configuration['objects_ref'] not in objects:
+            raise ValueError('对象集合引用失效')
+        entries = objects[configuration['objects_ref']]
+        if configuration.get('edit_range_ref') is not None:
+            _argument(configuration['edit_range_ref'], dict(type='range_ref'), entries, (), 'edit_range_ref')
+        execution = configuration.get('execution_ref')
+        if execution is not None and execution not in executions:
+            raise ValueError('已有爆发计划引用失效')
+        states = configuration['states']
+        if not isinstance(states, dict) or not 1 <= len(states) <= 32:
+            raise ValueError('配置需要1到N个有界状态列表')
+        for name, state in states.items():
+            _nonempty(name, 'state')
+            _fields(state, ('effect', 'expected', 'priority'), label='state')
+            _argument(state['effect'], dict(type='effect_ref', nullable=True), entries, (), 'state.effect')
+            if type(state.get('expected')) is not bool or not isinstance(state.get('priority'), list):
+                raise ValueError('状态条件/有序规则列表无效')
+            prior_rules = set()
+            for rule in state['priority']:
+                _fields(rule, ('name', 'template', 'arguments'), label='binding')
+                _nonempty(rule.get('name'), 'rule.name')
+                if rule['name'] in prior_rules:
+                    raise ValueError('同状态规则名称重复')
+                if rule['template'] not in templates:
+                    raise ValueError('模板引用失效: ' + str(rule['template']))
+                parameters = templates[rule['template']]['parameters']
+                arguments = rule['arguments']
+                if not isinstance(arguments, dict) or set(arguments) != set(parameters):
+                    raise ValueError('模板参数缺失或含未声明字段: ' + rule['name'])
+                for parameter, declaration in parameters.items():
+                    _argument(arguments[parameter], declaration, entries, prior_rules, parameter)
+                prior_rules.add(rule['name'])
+        opener = configuration['opener']
+        _fields(opener, ('source_basis', 'source_steps', 'ordinary_steps', 'precombat',
+                         'burst_anchor', 'independent_burst_source_steps'), ('manual_differences',), label='opener')
+        _nonempty(opener['source_basis'], 'opener.source_basis')
+        source_steps = opener['source_steps']
+        if (not isinstance(source_steps, list) or not 1 <= len(source_steps) <= 128
+                or any(not isinstance(label, str) or not label for label in source_steps)):
+            raise ValueError('完整起手来源列表无效')
+        steps = opener['ordinary_steps']
+        if not isinstance(steps, list) or not 1 <= len(steps) <= 128:
+            raise ValueError('普通有序起手必须有1至128个步骤')
+        for step in steps:
+            _fields(step, ('action', 'source_step', 'source_form', 'attribute_query'), label='ordinary_step')
+            _nonempty(step['action'], 'ordinary_step.action')
+            action = entries.get(step['action'])
+            if not action or action['kind'] != 'action':
+                raise ValueError('起手动作引用失效')
+            if type(step['source_step']) is not int or not 1 <= step['source_step'] <= len(source_steps):
+                raise ValueError('起手来源步骤无效')
+            if step['source_form'] not in [action['native_action'], *action.get('native_forms', [])]:
+                raise ValueError('起手源形态引用失效')
+            query = step['attribute_query']
+            _fields(query, ('native_form', 'base_button', 'missing'), label='attribute_query')
+            if query['missing'] != 'unknown_no_base_cost_fallback':
+                raise ValueError('源形态缺失属性必须保留unknown')
+            if query.get('native_form') != step['source_form'] or query.get('base_button') != action['base_button']:
+                raise ValueError('起手源形态属性查询不一致')
+        independent = opener['independent_burst_source_steps']
+        if not isinstance(independent, list) or len(independent) > 128:
+            raise ValueError('独立爆发来源列表无效')
+        for step in independent:
+            _fields(step, ('action', 'source_step', 'mapping'), ('commands',), label='independent_burst_source_step')
+            _nonempty(step['action'], 'independent.action')
+            if (not isinstance(step, dict) or step.get('mapping') != 'burst'
+                    or entries.get(step.get('action'), {}).get('kind') != 'action'):
+                raise ValueError('独立爆发来源动作引用失效')
+            commands = step.get('commands', [dict(action=step['action'])])
+            if (not isinstance(commands, list) or not 1 <= len(commands) <= 16
+                    or any(not isinstance(row, dict) or not isinstance(row.get('action'), str)
+                           or set(row) != {'action'} or entries.get(row['action'], {}).get('kind') != 'action'
+                           for row in commands)):
+                raise ValueError('独立爆发来源命令引用失效')
+        indices = [step['source_step'] for step in [*steps, *independent]]
+        if (any(type(index) is not int for index in indices)
+                or sorted(indices) != list(range(1, len(source_steps) + 1))):
+            raise ValueError('完整源步骤必须由普通和独立爆发映射唯一覆盖')
+        anchor = opener.get('burst_anchor')
+        if anchor is not None:
+            _fields(anchor, ('source_step', 'freeze_per_task'), ('estimation',), label='burst_anchor')
+            if type(anchor['source_step']) is not int or anchor['freeze_per_task'] is not True:
+                raise ValueError('首次爆发来源锚点必须逐任务冻结')
+        if anchor is not None and (not isinstance(anchor, dict) or anchor.get('source_step') not in indices):
+            raise ValueError('首次爆发来源锚点无效')
+        precombat = opener['precombat']
+        if isinstance(precombat, list):
+            for row in precombat:
+                _fields(row, ('action', 'command_count', 'condition', 'path'), label='precombat')
+                _nonempty(row['action'], 'precombat.action')
+        if (not isinstance(precombat, list) or len(precombat) > 128 or any(
+                entries.get(row.get('action'), {}).get('kind') != 'action'
+                or row.get('command_count') != 1 or row.get('condition') != 'out_of_combat'
+                or row.get('path') != 'existing_supported_path' for row in precombat)):
+            raise ValueError('战前声明仅支持现有单命令路径')
+        resolved.append(dict(copy.deepcopy(configuration), objects=copy.deepcopy(entries)))
     return resolved
+
+
+def bind(capabilities, snapshot, target_count, *, spec_id, rule_snapshot, scene=None):
+    """三键唯一选择；完整状态及模板声明留给02，不在初始化求值。"""
+    if not isinstance(snapshot, dict):
+        raise ValueError('规则起点缺少真实角色静态快照，请重新构建引擎')
+    trees = snapshot.get('hero_subtree_ids')
+    if (not isinstance(trees, list) or any(type(identity) is not int or identity <= 0 for identity in trees)):
+        raise ValueError('规则起点缺少有效原生英雄子树身份')
+    if scene is None:
+        raise ValueError('三键配置需要明确目标类型，不猜测目标数阈值')
+    heroes = rule_snapshot['pack']['identity_mappings']['hero_talents']
+    matched = [row for row in rule_snapshot['resolved']
+               if row['key']['specialization_id'] == spec_id
+               and heroes[row['key']['hero_talent']] in trees and row['key']['target_type'] == scene]
+    if len(matched) != 1:
+        raise ValueError('三键配置需要唯一精确匹配；当前匹配数: ' + str(len(matched)))
+    configuration = copy.deepcopy(matched[0])
+    actions = {key: dict(row, button=row['base_button'], variants=row.get('native_forms', []))
+               for key, row in configuration['objects'].items() if row['kind'] == 'action'}
+    opener = configuration['opener']
+    expected_precombat = [actions[row['action']]['native_action'] for row in opener['precombat']]
+    if expected_precombat != [row['simc_action'] for row in capabilities.get('precombat_actions', [])]:
+        raise ValueError('配置战前声明与现有实际执行/导出路径不一致')
+    steps = [dict(row, native_form=row['source_form']) for row in opener['ordinary_steps']]
+    steps.extend(copy.deepcopy(opener['independent_burst_source_steps']))
+    steps.sort(key=lambda row: row['source_step'])
+    for row in steps:
+        row['source_label'] = opener['source_steps'][row['source_step'] - 1]
+    normalized = dict(id=digest(configuration['key']), source=opener['source_basis'],
+                      steps=steps)
+    if opener.get('burst_anchor') is not None:
+        normalized['first_burst_step'] = opener['burst_anchor']['source_step']
+    bindings = [dict(copy.deepcopy(rule), state=state_name)
+                for state_name, state in configuration['states'].items() for rule in state['priority']]
+    return dict(configuration_key=configuration['key'], states=configuration['states'],
+        opener=normalized, bindings=bindings, parameter_sources={}, approximate=[], unknown=[],
+        native_buttons={name: row['button'] for row in actions.values()
+                        for name in [row['native_action'], *row['variants']]},
+        spec=dict(actions=actions), configuration=configuration)
