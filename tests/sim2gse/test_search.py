@@ -2294,11 +2294,25 @@ class SearchAndValidationTests(TestCase):
                         batch_targets=(2,),validation_batches=1,final_batches=2,iterations=2,
                         final_iterations=32,max_processes=2)
             import result_store
-            code=("import sys,json,runpy;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
-                  "import result_store;result_store.DATA_ROOT=Path(sys.argv[5]);"
-                  "result_store._SKILL_API=runpy.run_path(sys.argv[6]);"
-                  "from task import run_task;run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]),"
-                  "simulation_config=dict(scene='single_target'))")
+            # 此场景提前提交首个真实成功批次；生产报告仍保留原分组缓冲策略。
+            code='\n'.join((
+                "import sys,json,runpy",
+                "from pathlib import Path",
+                "sys.path.insert(0,sys.argv[1])",
+                "import result_store,search",
+                "result_store.DATA_ROOT=Path(sys.argv[5])",
+                "result_store._SKILL_API=runpy.run_path(sys.argv[6])",
+                "class CheckpointStore(search.TaskStore):",
+                "    def stage_report(self,key,row,stored,**kwargs):",
+                "        super().stage_report(key,row,stored,**kwargs)",
+                "        with self.lock:",
+                "            if row.get('status')=='success' and self.persisted_batches==0:",
+                "                self.flush_reports()",
+                "                self.publish()",
+                "search.TaskStore=CheckpointStore",
+                "from task import run_task",
+                "run_task(sys.argv[2],sys.argv[3],search_config=json.loads(sys.argv[4]),"
+                "simulation_config=dict(scene='single_target'))"))
             stdout_path, stderr_path = [Path(directory) / name for name in ('child.stdout', 'child.stderr')]
             stdout = outputs.enter_context(stdout_path.open('wb'))
             stderr = outputs.enter_context(stderr_path.open('wb'))
@@ -2312,13 +2326,17 @@ class SearchAndValidationTests(TestCase):
                 deadline=started+45
                 state={}
                 while time.monotonic()<deadline and process.poll() is None:
-                    try: state=read_task(destination)
+                    try: state=read_task(destination, include_rule_initialization=False)
                     except TaskError: pass
                     completed = state.get('completed_batches')
                     if state.get('phase') == 'search' and type(completed) is int and completed > 0:
                         for pid,owner_pid in children(process.pid):
                             held=kernel.OpenProcess(0x100000,False,pid)
                             if held:
+                                if kernel.WaitForSingleObject(held,0) != 258:
+                                    kernel.CloseHandle(held)
+                                    held=None
+                                    continue
                                 owner=kernel.OpenProcess(0x100000,False,owner_pid)
                                 if owner: break
                                 kernel.CloseHandle(held)
@@ -2337,6 +2355,8 @@ class SearchAndValidationTests(TestCase):
                             failure_context[name] = output.read().decode('utf-8', errors='replace')
                 self.assertIsNotNone(held,'没有在已完成批次检查点后观察到真实引擎进程: ' +
                                      json.dumps(failure_context, ensure_ascii=False))
+                self.assertEqual(kernel.WaitForSingleObject(held,0),258,
+                                 '硬退出前真实引擎必须仍在运行，不能用已完成进程证明清理')
                 process.kill();process.wait(timeout=5)
                 self.assertEqual(kernel.WaitForSingleObject(owner,2000),0,'实际任务进程尚未退出，不能恢复')
                 self.assertEqual(kernel.WaitForSingleObject(held,2000),0,'任务退出后仍有所属模拟进程')

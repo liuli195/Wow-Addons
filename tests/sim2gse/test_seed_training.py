@@ -1436,13 +1436,18 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
     active = 0
     lock = threading.Lock()
     together = threading.Event()
+    save_attempted = threading.Event()
+    save_attempts = []
     child = None
     real_write = result_store.write
     def failing_save(table, key, rows, **kwargs):
         if interruption == 'store_failure' and table == 'seed_processed' and any(row['status'] == 'completed' for row in rows):
+            save_attempts.append([row['candidate_id'] for row in rows if row['status'] == 'completed'])
+            save_attempted.set()
             raise PermissionError('父级汇总暂时不可写')
         return real_write(table, key, rows, **kwargs)
-    with training_round_boundary(tmp_path):
+    # 这两例只检查任务所有权与故障取消，不需要构造有编辑机会的搜索轮次。
+    with training_boundary():
         native = sequence.evaluate
         def observed(*args, **kwargs):
             nonlocal active, child
@@ -1468,6 +1473,7 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
                     assert kwargs['runtime'].cancel_event.wait(5), '普通搜索必须取消全部训练worker'
                     kwargs['runtime'].check()
                 elif path == ids[1]:
+                    assert save_attempted.wait(10), '目标seed_processed完成结果保存故障尚未注入'
                     assert kwargs['runtime'].cancel_event.wait(10), '保存失败必须停止其他worker及后补派'
                     kwargs['runtime'].check()
                 return native(*args, **kwargs)
@@ -1479,6 +1485,8 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
                 patch.object(result_store, 'write', side_effect=failing_save):
             assert command(tmp_path, args) == 2
         assert active == 0 and len(dispatched) == 2
+        if interruption == 'store_failure':
+            assert save_attempted.is_set() and save_attempts
         if child is not None:
             _, error = child.communicate(timeout=3)
             assert child.returncode == 0, error.decode(errors='replace')
