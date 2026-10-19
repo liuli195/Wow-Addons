@@ -494,7 +494,8 @@ def test_upgrade_postcheck_checks_current_rule_identity_and_retest_keys(tmp_path
     rows = result_store.read_records('seed_processed', scope)
     row = rows[0]
     # 当前配置身份另立；保留原六次复测和组键核验，不借用旧commit名义。
-    rows.append(dict(row, candidate_id='rejected-a', status='rejected', error='explicit rejection'))
+    for candidate_id in ('rejected-a', 'rejected-b'):
+        rows.append(dict(row, candidate_id=candidate_id, status='rejected', error='explicit rejection'))
     for item in rows:
         for field in ('initial_program', 'program', 'comparison'):
             item[field] = json.loads(item[field])
@@ -509,7 +510,7 @@ def test_upgrade_postcheck_checks_current_rule_identity_and_retest_keys(tmp_path
     ready = dict(template_sha256=payload['template'], engines=payload['engines'],
                  burst_definition_id='test-definition')
     scene = dict(targets=1, run_id='page-fixture', training_condition=row['condition'],
-                 processed=[row['candidate_id'], 'rejected-a'])
+                 processed=[row['candidate_id'], 'rejected-a', 'rejected-b'])
     result_store.write('runs', 'page-fixture', [dict(dict.fromkeys(result_store.RUN_SCHEMA),
         run_id='page-fixture', engines=payload['engines'])], schema=result_store.RUN_SCHEMA)
     schema = dict(batch_key='VARCHAR', purpose='VARCHAR', seed='UBIGINT', samples='UBIGINT', dps='DOUBLE',
