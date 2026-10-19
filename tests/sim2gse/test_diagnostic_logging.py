@@ -53,7 +53,7 @@ def test_resume_command_requires_current_logging_intent(tmp_path, monkeypatch, e
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=stop_once):
         run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(total_budget_seconds=20, input_interval_ms=200,
+            search_config=dict(rule_diagnostics_policy='eager', total_budget_seconds=20, input_interval_ms=200,
                 candidate_limit=5, round_candidate_limit=1,
                 batch_targets=(2,), iterations=2, validation_batches=1, max_processes=1,
                 diagnostic_logging=True, diagnostics='summary'))
@@ -367,7 +367,7 @@ def test_public_feedback_logs_follow_current_invocation_switch(
             raise SystemExit('constructed store interruption before feedback commit')
         return actual_write(root, table, key, rows, **kwargs)
     monkeypatch.setitem(installed_data_store_api, 'write', interrupted_store)
-    config = dict(total_budget_seconds=20, input_interval_ms=200, candidate_limit=6,
+    config = dict(rule_diagnostics_policy='eager', total_budget_seconds=20, input_interval_ms=200, candidate_limit=6,
         round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2,
         validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',),
         diagnostic_logging=True if resume else enabled, diagnostics='summary')

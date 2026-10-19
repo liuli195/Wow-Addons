@@ -676,7 +676,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
-            config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=1,
+            config = dict(rule_diagnostics_policy='eager', total_budget_seconds=60, candidate_limit=4, round_candidate_limit=1,
                           input_interval_ms=200, batch_targets=(32, 128, 512),
                           iterations=2, validation_batches=2,
                           diagnostic_logging=True, search_observability='full')
@@ -722,7 +722,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
-            config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+            config = dict(rule_diagnostics_policy='eager', total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
                           input_interval_ms=200, batch_targets=(32, 128, 512),
                           iterations=2, validation_batches=2)
             with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate):
@@ -955,6 +955,24 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(sum(observation["summary"]["outcomes"].values()),
                          observation["summary"]["initial_candidates"] +
                          observation["summary"]["mutation_attempts"])
+
+    def test_resume_original_config_preserves_frozen_diagnostic_policy(self):
+        import sequence
+        for policy in ('on_demand', 'eager'):
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / 'role.simc'
+                destination = Path(directory) / 'task'
+                source.write_text(sample_profile(), encoding='utf-8')
+                config = dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+                              validation_batches=1)
+                with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=_fast_evaluate):
+                    run_task(source, destination, search_config=dict(config, rule_diagnostics_policy=policy))
+                    resumed = resume_task(destination, search_config=config)
+                    self.assertEqual(resumed['status'], 'completed')
+                    self.assertEqual(read_task(destination)['config']['rule_diagnostics_policy'], policy)
+                    changed = 'eager' if policy == 'on_demand' else 'on_demand'
+                    with self.assertRaisesRegex(TaskError, '恢复配置发生变化'):
+                        resume_task(destination, search_config=dict(config, rule_diagnostics_policy=changed))
 
     def test_full_observability_is_locked_during_heartbeat_and_survives_resume(self):
         import threading
@@ -1279,7 +1297,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-task-") as directory:
             source = Path(directory) / "角色.simc"
             source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+            config = dict(rule_diagnostics_policy='eager', total_budget_seconds=60, search_budget_seconds=30,
                           candidate_limit=2, batch_targets=(2,), iterations=2,
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=37)
@@ -1948,7 +1966,7 @@ class SearchAndValidationTests(TestCase):
                     source,
                     destination,
                     mode="optimize",
-                    search_config={
+                    search_config={'rule_diagnostics_policy': 'eager',
                     "total_budget_seconds": 120,
                     "search_budget_seconds": 90,
                     "candidate_limit": 4,
@@ -2639,7 +2657,7 @@ class SearchAndValidationTests(TestCase):
             source.write_text(sample_profile(), encoding='utf-8')
             with _guided_search_boundary(directory, starts, evaluate=cancel_after_first_path_is_skipped):
                 cancelled = run_task(source, Path(directory) / 'task', cancel_event=cancellation,
-                    search_config=dict(
+                    search_config=dict(rule_diagnostics_policy='eager',
                     input_interval_ms=200, candidate_limit=32, round_candidate_limit=1, batch_targets=(2,),
                     iterations=2, validation_batches=2))
                 self.assertEqual(cancelled['status'], 'cancelled')

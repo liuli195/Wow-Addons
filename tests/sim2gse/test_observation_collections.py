@@ -49,7 +49,7 @@ def test_public_task_collects_only_required_effect_rows_and_keeps_action_and_fee
     destination = tmp_path / 'task'
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=external_engine):
         result = run_task(profile, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=dict(rule_diagnostics_policy='eager', input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     saved = read_task(destination, include_search_records=True)
     request, = requests
     assert request['protocol'] == 2
@@ -86,7 +86,7 @@ def test_public_feedback_rejects_self_described_empty_request_instead_of_the_fro
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=wrong_request):
         result = run_task(profile, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=dict(rule_diagnostics_policy='eager', input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     batch = result['search']['records'][0]['batches'][0]
     assert batch['feedback_evidence']['availability'] == 'unavailable'
     assert all(row['status'] == 'unknown' for row in result['search']['rule_diagnostics']['rules'])
@@ -121,7 +121,7 @@ def test_public_new_unrecognized_collection_dependency_freezes_a_full_v1_request
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=external_engine):
         result = run_task(profile, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=dict(rule_diagnostics_policy='eager', input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     request, = requests
     assert request['protocol'] == 1 and 'collections' not in request
     assert set(request['objects']) == set(pack['object_sets']['sample'])
@@ -148,7 +148,7 @@ def test_public_protocol_or_coverage_mismatch_never_creates_supported_findings(t
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=malformed_response):
         result = run_task(profile, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=dict(rule_diagnostics_policy='eager', input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     diagnosis = result['search']['rule_diagnostics']
     assert all(row['status'] == 'unknown' and row['findings'] == [] for row in diagnosis['rules'])
     assert diagnosis['pool']['operations'] == []
@@ -168,7 +168,7 @@ def test_public_resume_uses_the_actual_frozen_request_and_rejects_unknown_protoc
     profile.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=TaskCancelled('before first score')):
         stopped = run_task(profile, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=dict(rule_diagnostics_policy='eager', input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     assert stopped['status'] == 'cancelled'
     store = TaskStore(destination)
     try:

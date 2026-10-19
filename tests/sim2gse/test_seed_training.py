@@ -1155,8 +1155,7 @@ def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
     template.write_text(sample_profile() + '\n# changed template\n', encoding='utf-8')
     def budget_on_first_round(*args, **kwargs):
         program = [[action['simc_action'] for action in block] for block in args[1]['blocks']]
-        if (kwargs.get('rule_observation_request') is not None and
-                program != [['outbreak'], ['death_coil'], ['scourge_strike']]):
+        if program != [['outbreak'], ['death_coil'], ['scourge_strike']]:
             raise BudgetExceeded('训练预算耗尽')
         return native(*args, **kwargs)
 
@@ -1477,7 +1476,7 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
         current_id = next(row['candidate_id'] for row in registry if row['source_id'] == '1')
         def stop_search(*args, **kwargs):
             program = [[action['simc_action'] for action in block] for block in args[1]['blocks']]
-            if kwargs.get('rule_observation_request') is not None and program != programs[0]:
+            if program != programs[0]:
                 raise BudgetExceeded('原A路径未收敛')
             return native(*args, **kwargs)
         with training_round_boundary(tmp_path):

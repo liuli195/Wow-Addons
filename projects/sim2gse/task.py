@@ -1933,7 +1933,12 @@ def _resume_task(output_root, **kwargs):
                 raise TaskError('任务缺少恢复模拟配置')
             if simulation_config != simulation_config_for(state['simulation_config']):
                 raise TaskError('恢复模拟配置发生变化，请创建新任务')
-            config = config_for(kwargs.pop('search_config', None) or state['config'], legacy=True)
+            requested_config = kwargs.pop('search_config', None) or state['config']
+            if ('rule_diagnostics_policy' not in requested_config
+                    and 'rule_diagnostics_policy' in state['config']):
+                requested_config = dict(requested_config,
+                    rule_diagnostics_policy=state['config']['rule_diagnostics_policy'])
+            config = config_for(requested_config, legacy=True)
             if config.get('rule_diagnostics_policy', 'eager') == state['config'].get('rule_diagnostics_policy', 'eager'):
                 if 'rule_diagnostics_policy' in state['config']:
                     config['rule_diagnostics_policy'] = state['config']['rule_diagnostics_policy']

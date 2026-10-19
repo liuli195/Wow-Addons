@@ -36,7 +36,10 @@ def _invocation(exports, *, refs=None, read_refs=None, fields=None, query_input=
       scope=dict(sample_selection='first_scored_complete',sample_id=1,start_ms=0,end_ms=200,complete=True),
       inputs=[dict(sample_id=1,input_index=0,event_index=0,time=0,source_step=0,input_source='loop')],
       action_observations=[],state_observations=[],effect_observations=[]))]))
-    return dict(program=[['outbreak']],capabilities={},initialization=dict(rule_snapshot=snapshot,configuration_key=snapshot['resolved'][0]['key']),
+    bindings = [dict(state=name, **binding)
+                for name, state in snapshot['resolved'][0]['states'].items()
+                for binding in state['priority']]
+    return dict(program=[['outbreak']],capabilities={},initialization=dict(rule_snapshot=snapshot,configuration_key=snapshot['resolved'][0]['key'], bindings=bindings),
       report=report,task_run_id='fixture',batch_key='same-batch',behavior_identity='same-program',requested_iterations=2)
 
 
@@ -81,6 +84,9 @@ def test_diagnose_keeps_states_and_separate_reports_independent():
     second['priority'][0]['template'] = 'other facts'
     pack['configurations'][0]['states']['second'] = second
     snapshot.update(resolved=validate(pack), rule_config_digest=digest(pack))
+    invocation['initialization']['bindings'] = [dict(state=name, **binding)
+        for name, state in snapshot['resolved'][0]['states'].items()
+        for binding in state['priority']]
     result = diagnose(**invocation, runtime=TaskRuntime())
     consumers = [row for row in result['rules'] if row['name'] == 'consumer']
     assert [(row['state'], row['findings'][0]['kind']) for row in consumers] == [('only', 'true'), ('second', 'false')]
