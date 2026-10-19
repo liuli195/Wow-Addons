@@ -14,6 +14,10 @@ import uuid
 
 
 _DIAGNOSTIC_LOCK = threading.Lock()
+_DIAGNOSTIC_WALL_STAGES = (
+    'diagnostic.total', 'report.prepare', 'report.write',
+    'model.full_write', 'model.control_write', 'state.persist.full', 'state.persist.partial',
+)
 
 
 def diagnostic_start():
@@ -29,7 +33,8 @@ def diagnostic_finish(owner, stage, started, **units):
     if started is None:
         return
     try:
-        seconds = max(0.0, time.perf_counter() - started)
+        finished = time.perf_counter()
+        seconds = max(0.0, finished - started)
         with _DIAGNOSTIC_LOCK:
             if not hasattr(owner, 'performance_stages'):
                 owner.performance_stages = {}
@@ -38,14 +43,34 @@ def diagnostic_finish(owner, stage, started, **units):
             stats['seconds'] += seconds
             for name, count in units.items():
                 stats['units'][name] = stats['units'].get(name, 0) + count
+            # Only coarse stages retain intervals. Fine-grained rule entries stay aggregated.
+            if stage in _DIAGNOSTIC_WALL_STAGES:
+                if not hasattr(owner, 'performance_intervals'):
+                    owner.performance_intervals = {}
+                owner.performance_intervals.setdefault(stage, []).append((started, max(started, finished)))
     except Exception:
         # 计时或采集失败不能覆盖原业务返回值或原异常。
         pass
 
 
+def diagnostic_candidate(owner, kind, identity, runtime):
+    """本次新执行候选的观测里程碑；不写入或恢复业务检查点。"""
+    try:
+        elapsed = runtime.elapsed_seconds
+        invocation = max(0.0, elapsed - runtime.used_seconds)
+        with _DIAGNOSTIC_LOCK:
+            if not hasattr(owner, 'performance_candidates'):
+                owner.performance_candidates = {}
+            owner.performance_candidates.setdefault(kind, {}).setdefault(identity, dict(
+                behavior_identity=identity, invocation_seconds=invocation, budget_elapsed_seconds=elapsed))
+    except Exception:
+        pass
+
+
 def diagnostic_summary(*owners):
     """独立于业务状态的本次调用汇总；嵌套和并发区间不能相加。"""
-    stages = {}
+    stages, intervals = {}, {}
+    candidates = {'first_score_published': {}, 'screening_archived': {}}
     with _DIAGNOSTIC_LOCK:
         for owner in owners:
             for name, value in getattr(owner, 'performance_stages', {}).items():
@@ -54,7 +79,24 @@ def diagnostic_summary(*owners):
                 stats['seconds'] += value['seconds']
                 for unit, count in value['units'].items():
                     stats['units'][unit] = stats['units'].get(unit, 0) + count
-    return dict(scope='current_invocation', timing='inclusive_wall_seconds', stages=stages)
+            for name, spans in getattr(owner, 'performance_intervals', {}).items():
+                intervals.setdefault(name, []).extend(spans)
+            for kind, records in getattr(owner, 'performance_candidates', {}).items():
+                for identity, record in records.items():
+                    candidates[kind].setdefault(identity, record)
+    for name, spans in intervals.items():
+        total, end = 0.0, None
+        for start, stop in sorted(spans):
+            total += stop - start if end is None or start > end else max(0.0, stop - end)
+            end = stop if end is None else max(end, stop)
+        stages[name]['wall_union_seconds'] = total
+    return dict(scope='current_invocation', timing='inclusive_wall_seconds', stages=stages,
+        candidate_progress={kind: list(records.values()) for kind, records in candidates.items()},
+        candidate_progress_timing=dict(
+            invocation_seconds='Since this TaskRuntime.started; not the outer public-call start.',
+            budget_elapsed_seconds='TaskRuntime elapsed including previously used budget.',
+            first_score_published='New native search batch zero, validated and report-group transaction committed.',
+            screening_archived='Newly executed candidate completed in-memory screening/archive flow; checkpoint may still be buffered.'))
 
 
 def replace_file(source, destination):

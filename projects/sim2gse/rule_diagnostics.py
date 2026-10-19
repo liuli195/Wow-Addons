@@ -1,5 +1,6 @@
 """解释已校验模板；证据只来自当前候选的同一计分批次。"""
 import copy
+import json
 import math
 import time
 from runtime import diagnostic_start, diagnostic_finish
@@ -296,6 +297,7 @@ class Evaluation:
         self.interval_choices = {}
         self.unknown_evidence = []
         self.prior_queries = {}
+        self.index_statistics = None
 
     @staticmethod
     def field(row, path):
@@ -439,7 +441,12 @@ class Evaluation:
     def matching_rows(self, rows, fields, values, *, include_unknown=False):
         """同一不可变行集的等值关联索引，仅在一次规则求值中复用。"""
         key = (id(rows), tuple(fields))
+        if self.index_statistics is not None:
+            self.index_statistics['index_queries'] += 1
         if key not in self.indexes:
+            if self.index_statistics is not None:
+                self.index_statistics['index_builds'] += 1
+                self.index_statistics['index_build_rows'] += len(rows)
             index, unknown = {}, []
             for row in rows:
                 identity = tuple(self.field(row, field) for field in fields)
@@ -447,7 +454,10 @@ class Evaluation:
                 else: index.setdefault(identity, []).append(row)
             self.indexes[key] = (rows, index, unknown)
         index, unknown = self.indexes[key][1:]
-        return index.get(tuple(values), []) + (unknown if include_unknown else [])
+        result = index.get(tuple(values), []) + (unknown if include_unknown else [])
+        if self.index_statistics is not None:
+            self.index_statistics['index_matched_rows'] += len(result)
+        return result
 
     @staticmethod
     def interval_key(window):
@@ -461,11 +471,22 @@ class Evaluation:
         before_end = at < window['end'] or at == window['end'] and row.get('event_index', math.inf) <= window['end_event_index']
         return after_start and before_end
 
-    def lets(self, declarations, env):
+    def lets(self, declarations, env, *, diagnostic=None):
         if not isinstance(declarations, list):
             raise Unsupported('未支持的let声明')
         for row in declarations:
-            env[row['name']] = self.value(row['value'], env)
+            if diagnostic is None:
+                env[row['name']] = self.value(row['value'], env)
+            else:
+                owner, label = diagnostic
+                started, value = diagnostic_start(), UNKNOWN
+                try:
+                    value = self.value(row['value'], env)
+                    env[row['name']] = value
+                finally:
+                    diagnostic_finish(owner, label + '.let.' + row['name'], started,
+                        rows=len(value) if isinstance(value, list) else 0,
+                        uncertain_rows=len(getattr(value, 'uncertain', ())), unknown=int(value is UNKNOWN))
 
     def value(self, expression, env):
         if isinstance(expression, list):
@@ -1019,8 +1040,19 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
         diagnostic_finish(runtime, 'diagnostic.read_validate', phase_started, players=len(players),
                           inputs=len(payload['inputs']) if payload_error is None else 0)
         phase_started = diagnostic_start()
+    if logging:
+        detail_started = diagnostic_start()
+        normalized_payload = _report_columns(raw_payload)
+        diagnostic_finish(runtime, 'diagnostic.preprocess.normalize', detail_started)
+        detail_started = diagnostic_start()
+        observation_digest = digest(normalized_payload)
+        del normalized_payload
+        diagnostic_finish(runtime, 'diagnostic.preprocess.digest', detail_started)
+        detail_started = diagnostic_start()
+    else:
+        observation_digest = digest(_report_columns(raw_payload))
     evidence = dict(task_run_id=task_run_id, batch_key=batch_key,
-                    observation_digest=digest(_report_columns(raw_payload)),
+                    observation_digest=observation_digest,
                     rule_config_digest=snapshot['rule_config_digest'])
     parent = dict(evidence, structure_identity=digest(program), behavior_identity=behavior_identity)
     parent_identity = digest(parent)
@@ -1035,7 +1067,15 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
         position_map.append(dict(input_index=row['input_index'], source_position=path,
             parent_path=path[:-1] if path else None, occurrence=click,
             gap_before=path, gap_after=path[:-1]+[path[-1]+1] if path else None))
+    if logging:
+        diagnostic_finish(runtime, 'diagnostic.preprocess.positions', detail_started,
+                          inputs=len(inputs), structures=len(structures), positions=len(position_map))
+        detail_started = diagnostic_start()
     collections = _observed_rows(payload, position_map, objects, capabilities.get('burst_exclusions')) if payload_error is None else {}
+    if logging:
+        diagnostic_finish(runtime, 'diagnostic.preprocess.observed_rows', detail_started,
+                          inputs=len(inputs), action_observations=len(collections.get('action_observations', ())),
+                          action_events=len(collections.get('action_events', ())))
 
     def range_contains(range_ref, path):
         definition = objects[range_ref]
@@ -1087,6 +1127,8 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
             raise Stopped(incomplete_reason) from error
 
     trigger_specs = {}
+    if logging:
+        detail_started = diagnostic_start()
     identity_rows = [dict(row, run_id=task_run_id, batch_key=batch_key) for row in collections.get('inputs', [])]
     effect_states = {}
     for item in collections.get('effect_observations', []):
@@ -1094,11 +1136,15 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
             key = (item['object'], item.get('sample_id'), item.get('input_index'))
             effect_states.setdefault(key, []).append(item.get('active'))
     if logging:
+        diagnostic_finish(runtime, 'diagnostic.preprocess.indexes', detail_started,
+                          inputs=len(identity_rows), effect_observations=len(collections.get('effect_observations', ())))
         diagnostic_finish(runtime, 'diagnostic.preprocess', phase_started, inputs=len(inputs),
                           action_observations=len(collections.get('action_observations', ())),
                           effect_observations=len(collections.get('effect_observations', ())))
         phase_started = diagnostic_start()
     for state_name, state in configuration['states'].items():
+        if logging:
+            detail_started = diagnostic_start()
         state_inputs, unknown_inputs = set(), []
         for row in identity_rows:
             identity = (row['sample_id'], row['input_index'])
@@ -1111,12 +1157,22 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
             elif active is UNKNOWN: unknown_inputs.append(row['input_index'])
         state_identity_rows = [row for row in identity_rows if (row['sample_id'], row['input_index']) in state_inputs]
         prior_prefix = _PriorTriggerPrefix(state_identity_rows)
+        if logging:
+            diagnostic_finish(runtime, 'diagnostic.state.' + state_name, detail_started,
+                              inputs=len(identity_rows), known_inputs=len(state_inputs), unknown_inputs=len(unknown_inputs))
         for binding in state['priority']:
+            if logging:
+                binding_started = diagnostic_start()
+                label = 'diagnostic.binding.' + json.dumps(
+                    [state_name, binding['name'], binding['template']], ensure_ascii=False, separators=(',', ':'))
             triggers = UNKNOWN
             template = snapshot['pack']['general']['templates'][binding['template']]
             bounds = dict(start=payload.get('scope', {}).get('start_ms'), end=payload.get('scope', {}).get('end_ms'),
                           controlled_actor_index=payload.get('scope', {}).get('controlled_actor_index', UNKNOWN)) if payload else {}
             evaluator = Evaluation(objects, binding['arguments'], gaps, check, range_contains, bounds)
+            if logging:
+                evaluator.index_statistics = dict(index_queries=0, index_builds=0,
+                                                  index_build_rows=0, index_matched_rows=0)
             env, prior_views = {}, {}
             rule = dict(name=binding['name'], state=state_name, template=binding['template'], findings=[], unknown_conditions=[])
             try:
@@ -1126,14 +1182,24 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                     rule.update(status='unknown' if unknown_inputs else 'not_applicable',
                                 state_unknown_inputs=unknown_inputs)
                     results.append(rule)
+                    if logging:
+                        diagnostic_finish(runtime, label + '.total', binding_started,
+                                          inputs=0, **evaluator.index_statistics)
                     continue
-                for read in template['reads']:
+                for read_index, read in enumerate(template['reads']):
+                    if logging:
+                        read_started = diagnostic_start()
+                        read_label = label + '.read.' + str(read_index) + '.' + read['as']
+                        scan_rows = 0
                     ref = evaluator.value(read['object'], env)
                     source = read['from']
                     if source == 'candidate.structure': rows = structures
                     elif source == 'candidate.expanded_position_map': rows = position_map
                     elif source == 'student.observation_bounds':
                         env[read['as']] = {key: bounds.get(key, UNKNOWN) for key in read['fields']}
+                        if logging:
+                            diagnostic_finish(runtime, read_label + '.select', read_started,
+                                              source_scan_rows=0, rows=1, fields=len(read['fields']))
                         continue
                     elif source == 'frozen.inputs':
                         if batch_request is None: raise Unsupported('同次批次冻结输入缺失')
@@ -1146,6 +1212,8 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                             raise Unsupported('同次批次冻结爆发输入身份无效')
                         else:
                             sources = burst['sources']
+                            if logging:
+                                scan_rows = len(times)
                             rows = [dict(time=at) for index, (at, source_name) in enumerate(zip(times, sources))
                                     if source_name == 'burst' and (index == 0 or sources[index-1] != 'burst')]
                     elif source == 'execution.policy_evidence':
@@ -1154,13 +1222,22 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                         # 当前冻结执行协议只有独立爆发暂停/保护，没有隐含资源预留。
                         rows = [dict(row, protected=row.get('input_source') == 'burst', reserved=False)
                                 for row in state_identity_rows]
+                        if logging:
+                            scan_rows = len(state_identity_rows)
                     elif source == 'evaluation.prior_rule_trigger_records':
+                        if logging:
+                            scan_rows = len(prior)
                         rows = [row for row in prior if row['rule_name'] in ref and row['state'] == state_name]
                     elif ref is None: rows = state_identity_rows
                     elif source.startswith('student.'):
                         if source[8:] not in collections:
                             env[read['as']] = UNKNOWN
+                            if logging:
+                                diagnostic_finish(runtime, read_label + '.select', read_started,
+                                                  source_scan_rows=0, rows=0, unknown=1)
                             continue
+                        if logging:
+                            scan_rows = len(collections[source[8:]])
                         rows = [dict(row, run_id=task_run_id, batch_key=batch_key) for row in collections.get(source[8:], [])
                                 if row.get('object') in (ref if isinstance(ref, list) else [ref]) and (
                                     'input_index' not in row or (row.get('sample_id'), row['input_index']) in state_inputs)]
@@ -1176,6 +1253,11 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                             observed = {(row['sample_id'], row['input_index']) for row in rows}
                             rows += [row for row in state_identity_rows if (row['sample_id'], row['input_index']) not in observed]
                     else: raise Unsupported('同次读取尚未接通: ' + source)
+                    if logging:
+                        diagnostic_finish(runtime, read_label + '.select', read_started,
+                            source_scan_rows=scan_rows, rows=len(rows),
+                            uncertain_rows=len(getattr(rows, 'uncertain', ())), fields=len(read['fields']))
+                        project_started = diagnostic_start()
                     # 协议完整性与同次身份始终保留；业务事实仍只按模板声明读取。
                     metadata = {'object', 'run_id', 'batch_key', 'sample_id', 'input_index', 'event_index',
                                 'lifecycle_complete', 'coverage_unknown'}
@@ -1183,13 +1265,29 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                         row = dict(row['value'], **row) if isinstance(row.get('value'), dict) else row
                         return {key: value for key, value in row.items() if key in metadata or key in read['fields']}
                     env[read['as']] = Rows(map(project, rows), map(project, getattr(rows, 'uncertain', [])))
+                    if logging:
+                        diagnostic_finish(runtime, read_label + '.project', project_started,
+                            rows=len(rows), uncertain_rows=len(getattr(rows, 'uncertain', ())),
+                            fields=len(read['fields']))
                     if source == 'evaluation.prior_rule_trigger_records':
                         prior_views[read['as']] = env[read['as']]
+                if logging:
+                    detail_started = diagnostic_start()
                 if binding['template'] not in trigger_specs:
                     trigger_specs[binding['template']] = _prior_queries(template)
                 evaluator.prior_queries = prior_prefix.queries(trigger_specs[binding['template']], evaluator, prior_views, env)
-                evaluator.lets(template['diagnose']['let'], env)
+                if logging:
+                    diagnostic_finish(runtime, label + '.prefix_prepare', detail_started)
+                    evaluator.lets(template['diagnose']['let'], env, diagnostic=(runtime, label))
+                    detail_started = diagnostic_start()
+                else:
+                    evaluator.lets(template['diagnose']['let'], env)
                 contexts = evaluator.value(template['diagnose']['for_each'], env)
+                if logging:
+                    diagnostic_finish(runtime, label + '.contexts', detail_started,
+                        rows=len(contexts) if isinstance(contexts, list) else 0,
+                        uncertain_rows=len(getattr(contexts, 'uncertain', ())), unknown=int(contexts is UNKNOWN))
+                    detail_started = diagnostic_start()
                 if contexts is UNKNOWN: raise Unsupported('规则必要事实未知')
                 for context in getattr(contexts, 'uncertain', []):
                     rule['unknown_conditions'].append(dict(case='uncertain_context',
@@ -1264,6 +1362,10 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                                             contributors=[contributor], resulting_behavior_identity=canonical['identity'])
                                         by_operation[operation_key] = operation
                                         operations.append(operation)
+                if logging:
+                    diagnostic_finish(runtime, label + '.cases_edits', detail_started,
+                                      findings=len(rule['findings']), unknown_conditions=len(rule['unknown_conditions']))
+                    detail_started = diagnostic_start()
                 triggers = evaluator.value(template['diagnose']['export_trigger_records'], env)
                 if triggers is not UNKNOWN:
                     prior.extend(dict(row, rule_name=binding['name'], state=state_name) for row in triggers)
@@ -1271,16 +1373,27 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                                   'unknown' if rule['unknown_conditions'] or evaluator.unknown_evidence else 'not_applicable')
                 rule['state_unknown_inputs'] = unknown_inputs
                 rule['unknown_evidence'] = evaluator.unknown_evidence
+                if logging:
+                    diagnostic_finish(runtime, label + '.export_triggers', detail_started,
+                        rows=len(triggers) if isinstance(triggers, list) else 0, unknown=int(triggers is UNKNOWN))
             except Unsupported as error:
                 rule.update(status='unknown', reason=str(error))
             except Stopped as error:
                 rule.update(status='unknown', reason=str(error))
             if incomplete_reason is None:
+                if logging:
+                    detail_started = diagnostic_start()
                 try:
                     prior_prefix.advance(binding['name'], triggers, check)
                 except Stopped as error:
                     rule.update(status='unknown', reason=str(error))
+                finally:
+                    if logging:
+                        diagnostic_finish(runtime, label + '.prefix_advance', detail_started)
             results.append(_public(rule))
+            if logging:
+                diagnostic_finish(runtime, label + '.total', binding_started,
+                                  inputs=len(state_inputs), **evaluator.index_statistics)
     if logging:
         diagnostic_finish(runtime, 'diagnostic.rules', phase_started, rules=len(results),
                           operations=len(operations))

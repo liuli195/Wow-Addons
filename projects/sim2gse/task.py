@@ -1969,8 +1969,14 @@ def _resume_task(output_root, **kwargs):
         if config['diagnostic_logging']:
             # 同一次恢复先补反馈再重开任务；只转交内存中的本次统计，不读取旧日志。
             try:
-                runtime.performance_stages = diagnostic_summary(runtime, store,
-                    *getattr(store, 'diagnostic_runtimes', ()))['stages']
+                owners = (runtime, store, *getattr(store, 'diagnostic_runtimes', ()))
+                stages = diagnostic_summary(*owners)['stages']
+                intervals = {}
+                for owner in owners:
+                    for name, spans in getattr(owner, 'performance_intervals', {}).items():
+                        intervals.setdefault(name, []).extend(spans)
+                runtime.performance_stages = stages
+                runtime.performance_intervals = intervals
             except Exception:
                 pass
         kwargs.pop('cancel_event',None)

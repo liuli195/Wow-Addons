@@ -17,7 +17,7 @@ import sqlite3
 import statistics
 import time
 
-from runtime import replace_file, diagnostic_start, diagnostic_finish, diagnostic_summary
+from runtime import replace_file, diagnostic_start, diagnostic_finish, diagnostic_summary, diagnostic_candidate
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 
 
@@ -1131,6 +1131,16 @@ class TaskStore:
                 self.db.executemany('DELETE FROM report_intents WHERE key=?',
                                     ((key,) for key in {group, *clear_intents}))
             self._save_progress()
+        if self.diagnostic_logging:
+            # A recovered/cached publication has no new-native marker in this invocation.
+            for key, row in metadata:
+                if (key in getattr(self, 'diagnostic_new_batches', ()) and row.get('status') == 'success'
+                        and row['request']['purpose'] == 'search' and row.get('batch_index') == 0
+                        and type(row.get('dps')) in (int, float) and math.isfinite(row['dps'])
+                        and type(row.get('samples')) is int and row['samples'] > 0):
+                    diagnostic_candidate(self, 'first_score_published', row['request']['behavior_identity'],
+                                         getattr(self, 'runtime', None))
+                    self.diagnostic_new_batches.discard(key)
 
     def recover_reports(self, character, simulation_config):
         from result_store import _api, DATA_ROOT
@@ -2014,6 +2024,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             def native_started():
                 with store.lock:
                     state['native_batch_starts'] = state.get('native_batch_starts', 0) + 1
+                    if config['diagnostic_logging'] and purpose == 'search' and index == 0:
+                        if not hasattr(store, 'diagnostic_new_batches'):
+                            store.diagnostic_new_batches = set()
+                            store.diagnostic_new_behaviors = set()
+                        store.diagnostic_new_batches.add(key)
+                        store.diagnostic_new_behaviors.add(behavior_id)
             result = evaluate(profile, compiled, folder, character=character, iterations=iterations, seed=seed,
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started,
@@ -2475,6 +2491,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 elif state['full_round']:
                     state['no_improvement'] += 1
             store.save()
+            if (config['diagnostic_logging'] and current
+                    and key in getattr(store, 'diagnostic_new_behaviors', ())):
+                diagnostic_candidate(store, 'screening_archived', key, runtime)
         runtime.check()  # 已完成评分先可靠归档，再传播诊断期间发生的取消/预算耗尽。
         state.setdefault('stop_reason', 'candidate_limit')
 
