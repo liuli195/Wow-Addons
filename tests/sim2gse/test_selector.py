@@ -283,6 +283,13 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     selector.settle(first, .25, 1)
     snapshot = result_store.read_search_learner(selector.MODEL_KEY)
     control = result_store.read_search_learner_control(selector.MODEL_KEY)
+    assert snapshot['state_version'] == 3
+    assert snapshot['matrix_format'] == 'f64-le-v1'
+    assert snapshot['dimension'] == 1072
+    assert isinstance(snapshot['theta_bytes'], bytes) and len(snapshot['theta_bytes']) == 8576
+    assert isinstance(snapshot['a_inv_bytes'], bytes) and len(snapshot['a_inv_bytes']) == 9193472
+    assert snapshot['theta'] is None and snapshot['a_inv'] is None
+    assert not {'theta', 'a_inv', 'theta_bytes', 'a_inv_bytes', 'matrix_format'} & control.keys()
     next_intent = _intent(decision=2)
     next_intent['actions'].append(dict(operation_id='third', features=[0.0] * 21))
     expected = selector.reserve(next_intent)

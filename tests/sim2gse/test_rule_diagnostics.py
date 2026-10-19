@@ -97,6 +97,16 @@ def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_pa
     saved_fields = set().union(*(row['fields'] for row in scoped))
     assert {'selection_feedback_intents', 'selection_feedback_incomplete', 'pending',
             'rule_steps', 'selection_generation'} <= saved_fields
+    import result_store, selector
+    snapshot = result_store.read_search_learner(selector.MODEL_KEY)
+    control = result_store.read_search_learner_control(selector.MODEL_KEY)
+    assert snapshot['state_version'] == 3
+    assert snapshot['matrix_format'] == 'f64-le-v1'
+    assert snapshot['dimension'] == 1072
+    assert isinstance(snapshot['theta_bytes'], bytes) and len(snapshot['theta_bytes']) == 8576
+    assert isinstance(snapshot['a_inv_bytes'], bytes) and len(snapshot['a_inv_bytes']) == 9193472
+    assert snapshot['theta'] is None and snapshot['a_inv'] is None
+    assert not {'theta', 'a_inv', 'theta_bytes', 'a_inv_bytes', 'matrix_format'} & control.keys()
 
 
 
