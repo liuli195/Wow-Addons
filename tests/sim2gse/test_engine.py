@@ -4,11 +4,51 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 
 from engine import _profile_with_import_queries, identity, inspect, reference  # noqa: E402
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('outcome', ['success', 'timeout', 'cancelled', 'budget'])
+def test_native_execution_timing_preserves_process_outcome(tmp_path, monkeypatch, enabled, outcome):
+    from types import SimpleNamespace
+    import engine
+    import runtime
+
+    task_runtime = runtime.TaskRuntime(diagnostic_logging=enabled)
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    errors = dict(timeout=runtime.ProcessTimeout('fixture timeout'),
+                  cancelled=runtime.TaskCancelled('fixture cancellation'),
+                  budget=runtime.BudgetExceeded('fixture budget'))
+    def native_process(*args, **kwargs):
+        if outcome != 'success':
+            raise errors[outcome]
+        return SimpleNamespace(returncode=0, stdout=b'normal result', stderr=b'', elapsed_seconds=2.0)
+    monkeypatch.setattr(engine, 'run_command', native_process)
+    clocks = []
+    def performance_clock():
+        clocks.append(True)
+        assert enabled, '默认关闭不得额外计时'
+        return float(len(clocks))
+    monkeypatch.setattr(runtime.time, 'perf_counter', performance_clock)
+    if outcome == 'success':
+        assert engine.run(tmp_path / 'role.simc', tmp_path / 'native', runtime=task_runtime) == 'normal result'
+    else:
+        expected = engine.CandidateError if outcome == 'timeout' else type(errors[outcome])
+        with pytest.raises(expected) as caught:
+            engine.run(tmp_path / 'role.simc', tmp_path / 'native', runtime=task_runtime)
+        assert (caught.value.__cause__ if outcome == 'timeout' else caught.value) is errors[outcome]
+    stages = runtime.diagnostic_summary(task_runtime)['stages']
+    if enabled:
+        assert stages['native.execute']['calls'] == 1
+        assert stages['native.execute']['seconds'] == 1.0
+    else:
+        assert clocks == []
+        assert stages == {}
 
 
 def static_snapshot():

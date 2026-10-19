@@ -15,8 +15,10 @@ import uuid
 
 _DIAGNOSTIC_LOCK = threading.Lock()
 _DIAGNOSTIC_WALL_STAGES = (
-    'diagnostic.total', 'report.prepare', 'report.write',
+    'diagnostic.total', 'native.execute', 'evaluation.report_read_validate', 'evaluation.trace',
+    'candidate.compile', 'candidate.write', 'report.prepare', 'report.write', 'report.publish',
     'model.full_write', 'model.control_write', 'state.persist.full', 'state.persist.partial',
+    'main.wait',
 )
 
 
@@ -84,13 +86,22 @@ def diagnostic_summary(*owners):
             for kind, records in getattr(owner, 'performance_candidates', {}).items():
                 for identity, record in records.items():
                     candidates[kind].setdefault(identity, record)
-    for name, spans in intervals.items():
+    def wall_union(spans):
         total, end = 0.0, None
         for start, stop in sorted(spans):
             total += stop - start if end is None or start > end else max(0.0, stop - end)
             end = stop if end is None else max(end, stop)
-        stages[name]['wall_union_seconds'] = total
+        return total
+    for name, spans in intervals.items():
+        stages[name]['wall_union_seconds'] = wall_union(spans)
+    covered_stages = sorted(name for name in intervals if name != 'main.wait')
     return dict(scope='current_invocation', timing='inclusive_wall_seconds', stages=stages,
+        covered_stages=covered_stages,
+        covered_wall_seconds=wall_union(span for name in covered_stages for span in intervals[name]),
+        covered_wall_timing=(
+            'Union of selected coarse covered_stages, including I/O, lock and process waits; '
+            'main.wait measures screen_round future.result only and is an overlapping wait indicator; it is excluded. '
+            'This is not CPU time and not the complete public-call wall time.'),
         candidate_progress={kind: list(records.values()) for kind, records in candidates.items()},
         candidate_progress_timing=dict(
             invocation_seconds='Since this TaskRuntime.started; not the outer public-call start.',

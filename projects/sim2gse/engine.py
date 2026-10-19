@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import os
-from runtime import replace_file
+from runtime import replace_file, diagnostic_start, diagnostic_finish
 from runtime import BudgetExceeded, ProcessTimeout, TaskCancelled, TaskRuntime, run_command
 from simulation_config import config_for, engine_options
 from native_build import own_sources, build_identity, identity_digest
@@ -126,8 +126,13 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
                'output=' + ('native.txt' if runtime.diagnostic_logging else os.devnull),
                *options]
     try:
-        proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
-                           on_start=on_start)
+        started = diagnostic_start() if runtime.diagnostic_logging else None
+        try:
+            proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
+                               on_start=on_start)
+        finally:
+            if runtime.diagnostic_logging:
+                diagnostic_finish(runtime, 'native.execute', started)
     except ProcessTimeout as error:
         if runtime.diagnostic_logging:
             (folder / 'process.log').write_text(str(error), encoding='utf-8')

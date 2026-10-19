@@ -1031,89 +1031,94 @@ class TaskStore:
 
     def flush_reports(self, *, replace_group=None):
         from result_store import write, _api, DATA_ROOT
-        with self.lock:
-            if not self.report_buffer:
-                return
-        with self.lock, self.report_locations.locked() as locations:
-            api = _api()
-            number = self.state.get('next_report_group', 0)
-            prefix = self.state['run_id'] + '_g'
-            # Reservations are durable before publication, including partial commits.
-            number = max(number, max((int(group[len(prefix):]) + 1
-                                     for group in locations.groups
-                                     if group.startswith(prefix) and group[len(prefix):].isdigit()), default=0))
-            new_group = prefix + str(number)
-            plans = {}
-            for key, row, stored in self.report_buffer:
-                group = replace_group or locations.entries.get(key)
-                target = group or key  # Legacy reports use their original logical key.
-                existing = None
-                try:
-                    with api['read_key'](DATA_ROOT, 'batches', target, filters={'batch_key': key}) as cursor:
-                        names = [column[0] for column in cursor.description]
-                        matches = cursor.fetchmany(2)
-                        if len(matches) == 1:
-                            existing = dict(zip(names, matches[0]))
-                    group = target
-                except api['MissingKeyError']:
-                    group = group or new_group
-                except api['CorruptDataError']:
-                    group = target
-                valid = False
-                if existing is not None:
+        publish_started = diagnostic_start() if self.diagnostic_logging else None
+        try:
+            with self.lock:
+                if not self.report_buffer:
+                    return
+            with self.lock, self.report_locations.locked() as locations:
+                api = _api()
+                number = self.state.get('next_report_group', 0)
+                prefix = self.state['run_id'] + '_g'
+                # Reservations are durable before publication, including partial commits.
+                number = max(number, max((int(group[len(prefix):]) + 1
+                                         for group in locations.groups
+                                         if group.startswith(prefix) and group[len(prefix):].isdigit()), default=0))
+                new_group = prefix + str(number)
+                plans = {}
+                for key, row, stored in self.report_buffer:
+                    group = replace_group or locations.entries.get(key)
+                    target = group or key  # Legacy reports use their original logical key.
+                    existing = None
                     try:
-                        _validate_saved_batch(existing, key, row, self.character,
-                                              stored['batch_index'], stored['scenario'], self.simulation_config)
-                        valid = True
-                    except (ValueError, KeyError, TypeError, RuntimeError):
-                        # 同请求已有可靠报告但成绩冲突时，不能最后写入静默覆盖。
-                        try:
-                            _validate_saved_batch(existing, key, dict(row, **{
-                                name: existing[name] for name in ('dps', 'samples', 'variance')}),
-                                self.character, stored['batch_index'], stored['scenario'], self.simulation_config)
-                        except (ValueError, KeyError, TypeError, RuntimeError):
-                            pass
-                        else:
-                            raise ValueError('同请求可靠报告成绩冲突: ' + key)
-                plan = plans.setdefault(group, dict(metadata=[], replacements={}))
-                plan['metadata'].append((key, dict(row, storage_group_key=group,
-                                                  batch_index=stored['batch_index'], scenario=stored['scenario'])))
-                if not valid:
-                    plan['replacements'][key] = dict(stored, storage_group_key=group)
-            for position, (group, plan) in enumerate(plans.items()):
-                metadata = plan['metadata']
-                with self.db:
-                    self.db.execute('INSERT OR REPLACE INTO report_intents VALUES (?,?)',
-                                    (group, _json(dict(number=number, rows=metadata,
-                                                      counters={key: self.state.get(key, 0) for key in _TASK_COUNTERS}))))
-                locations.reserve(group, [key for key, _ in metadata])
-                if plan['replacements']:
-                    retained = {}
-                    try:
-                        with api['read_key'](DATA_ROOT, 'batches', group) as cursor:
+                        with api['read_key'](DATA_ROOT, 'batches', target, filters={'batch_key': key}) as cursor:
                             names = [column[0] for column in cursor.description]
-                            retained = {record['batch_key']: record for values in cursor.fetchall()
-                                        if (record := dict(zip(names, values)))}
-                    except (api['MissingKeyError'], api['CorruptDataError']):
-                        pass
-                    retained.update(plan['replacements'])
-                    if len(retained) > 12:
-                        raise ValueError('报告组超过十二份')
-                    logging = self.diagnostic_logging
-                    started = diagnostic_start() if logging else None
-                    try:
-                        write('batches', group, list(retained.values()))
-                    finally:
-                        if logging:
-                            diagnostic_finish(self, 'report.write', started, rows=len(retained), groups=1,
-                                              replacements=len(plan['replacements']))
-                last = position == len(plans) - 1
-                self._commit_report_group(group, number, metadata, checkpoint=last,
-                                          clear_intents=tuple(plans) if last else ())
-            for key, row, _ in self.report_buffer:
-                row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
-                (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
-            self.report_buffer.clear()
+                            matches = cursor.fetchmany(2)
+                            if len(matches) == 1:
+                                existing = dict(zip(names, matches[0]))
+                        group = target
+                    except api['MissingKeyError']:
+                        group = group or new_group
+                    except api['CorruptDataError']:
+                        group = target
+                    valid = False
+                    if existing is not None:
+                        try:
+                            _validate_saved_batch(existing, key, row, self.character,
+                                                  stored['batch_index'], stored['scenario'], self.simulation_config)
+                            valid = True
+                        except (ValueError, KeyError, TypeError, RuntimeError):
+                            # 同请求已有可靠报告但成绩冲突时，不能最后写入静默覆盖。
+                            try:
+                                _validate_saved_batch(existing, key, dict(row, **{
+                                    name: existing[name] for name in ('dps', 'samples', 'variance')}),
+                                    self.character, stored['batch_index'], stored['scenario'], self.simulation_config)
+                            except (ValueError, KeyError, TypeError, RuntimeError):
+                                pass
+                            else:
+                                raise ValueError('同请求可靠报告成绩冲突: ' + key)
+                    plan = plans.setdefault(group, dict(metadata=[], replacements={}))
+                    plan['metadata'].append((key, dict(row, storage_group_key=group,
+                                                      batch_index=stored['batch_index'], scenario=stored['scenario'])))
+                    if not valid:
+                        plan['replacements'][key] = dict(stored, storage_group_key=group)
+                for position, (group, plan) in enumerate(plans.items()):
+                    metadata = plan['metadata']
+                    with self.db:
+                        self.db.execute('INSERT OR REPLACE INTO report_intents VALUES (?,?)',
+                                        (group, _json(dict(number=number, rows=metadata,
+                                                          counters={key: self.state.get(key, 0) for key in _TASK_COUNTERS}))))
+                    locations.reserve(group, [key for key, _ in metadata])
+                    if plan['replacements']:
+                        retained = {}
+                        try:
+                            with api['read_key'](DATA_ROOT, 'batches', group) as cursor:
+                                names = [column[0] for column in cursor.description]
+                                retained = {record['batch_key']: record for values in cursor.fetchall()
+                                            if (record := dict(zip(names, values)))}
+                        except (api['MissingKeyError'], api['CorruptDataError']):
+                            pass
+                        retained.update(plan['replacements'])
+                        if len(retained) > 12:
+                            raise ValueError('报告组超过十二份')
+                        logging = self.diagnostic_logging
+                        started = diagnostic_start() if logging else None
+                        try:
+                            write('batches', group, list(retained.values()))
+                        finally:
+                            if logging:
+                                diagnostic_finish(self, 'report.write', started, rows=len(retained), groups=1,
+                                                  replacements=len(plan['replacements']))
+                    last = position == len(plans) - 1
+                    self._commit_report_group(group, number, metadata, checkpoint=last,
+                                              clear_intents=tuple(plans) if last else ())
+                for key, row, _ in self.report_buffer:
+                    row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
+                    (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
+                self.report_buffer.clear()
+        finally:
+            if self.diagnostic_logging:
+                diagnostic_finish(self, 'report.publish', publish_started)
 
     def _commit_report_group(self, group, number, metadata, *, checkpoint=True, clear_intents=()):
         with self.lock, self._transaction():
@@ -1856,11 +1861,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         and canonical['form'] == compiled_identity(saved['candidate'])):
                     compiled = saved['candidate']
                 else:
-                    compiled = compile_program(canonical['program'],
-                                               destination / 'exports' / key,
-                                               identity=reference['identity'], runtime=runtime,
-                                               capabilities=capabilities,
-                                               on_lua_start=store.note_lua_start)
+                    started = diagnostic_start() if config['diagnostic_logging'] else None
+                    try:
+                        compiled = compile_program(canonical['program'],
+                                                   destination / 'exports' / key,
+                                                   identity=reference['identity'], runtime=runtime,
+                                                   capabilities=capabilities,
+                                                   on_lua_start=store.note_lua_start)
+                    finally:
+                        if config['diagnostic_logging']:
+                            diagnostic_finish(runtime, 'candidate.compile', started)
                     if config['diagnostic_logging']:
                         candidate_compilations += 1
                     if canonical['form'] != compiled_identity(compiled):
@@ -1869,18 +1879,23 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 candidate_data_key = digest(dict(run_id=state['run_id'], candidate_key=key))
                 search_order = next((index for index, row in enumerate(state['archive'])
                                      if row.get('key') == key), len(state['archive']))
-                write_records('candidates', candidate_data_key, [dict(
-                    run_id=state['run_id'], candidate_key=key,
-                    candidate_data_key=candidate_data_key,
-                    search_order=search_order,
-                    source=compiled.get('source', 'search'),
-                    program=canonical['program'], export_text=compiled['text'],
-                    simulation=compiled.get('simulation'),
-                    selected_sequence=compiled.get('selected_sequence'),
-                    selected_version=compiled.get('selected_version'),
-                    import_sha256=compiled.get('import_sha256'),
-                    game_validation=compiled.get('game_validation'))],
-                    schema=CANDIDATE_SCHEMA)
+                started = diagnostic_start() if config['diagnostic_logging'] else None
+                try:
+                    write_records('candidates', candidate_data_key, [dict(
+                        run_id=state['run_id'], candidate_key=key,
+                        candidate_data_key=candidate_data_key,
+                        search_order=search_order,
+                        source=compiled.get('source', 'search'),
+                        program=canonical['program'], export_text=compiled['text'],
+                        simulation=compiled.get('simulation'),
+                        selected_sequence=compiled.get('selected_sequence'),
+                        selected_version=compiled.get('selected_version'),
+                        import_sha256=compiled.get('import_sha256'),
+                        game_validation=compiled.get('game_validation'))],
+                        schema=CANDIDATE_SCHEMA)
+                finally:
+                    if config['diagnostic_logging']:
+                        diagnostic_finish(runtime, 'candidate.write', started)
             if config['diagnostics'] == 'full':
                 diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
                                               candidate_compilations_so_far=candidate_compilations))
@@ -2168,7 +2183,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     stopped = None
                     for work, future in futures:
                         try:
-                            row = future.result()
+                            started = diagnostic_start() if config['diagnostic_logging'] else None
+                            try:
+                                row = future.result()
+                            finally:
+                                if config['diagnostic_logging']:
+                                    diagnostic_finish(runtime, 'main.wait', started)
                             with store.lock:
                                 work['score_batches'].append(row)
                                 store.save()

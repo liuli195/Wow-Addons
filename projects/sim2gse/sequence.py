@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from collections import Counter
 from engine import run, check_report, player_report, CandidateError, native_button_definition
-from runtime import replace_file
+from runtime import replace_file, diagnostic_start, diagnostic_finish
 from runtime import TaskRuntime
 from simulation_config import config_for
 
@@ -309,87 +309,97 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     effective_blocks = [[name for position, name in enumerate(block)
                          if (step, position) not in skipped_positions]
                         for step, block in enumerate(runtime_blocks)]
+    logging = runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
     try:
-        pending_report = json.loads(pending_report.read_text(encoding='utf-8'))
-    except (OSError, ValueError) as error:
-        raise ValueError('原生报告缺失或不是有效 JSON') from error
-    # 只有完整解析成功的报告才进入正式名称；任务恢复时不会把半份文件当成成功批次。
-    report = pending_report
-    if player_report(report, character).get('sim2gse_skipped_commands', []) != skipped_commands:
-        raise ValueError('原生报告与跳过日志不一致')
-    expected_precombat = [name for block in blocks[:precombat_count] for name in block]
-    native_precombat = player_report(report, character).get('sim2gse_precombat_actions', [])
-    if expected_precombat and [row.get('signature') for row in native_precombat
-                              if native_button_definition(row)] != expected_precombat:
-        raise ValueError('原生完整战前命令定义与GSE战前前缀不一致')
-    measured = (report['sim']['statistics']['raid_dps'] if len(report['sim']['players']) > 1
-                else player_report(report, character)['collected_data']['dps'])
-    if measured['mean'] == 0:
-        raise CandidateError('合法候选没有有效伤害')
-    summary = check_report(report, character, iterations, simulation_config=simulation_config)
+        try:
+            pending_report = json.loads(pending_report.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            raise ValueError('原生报告缺失或不是有效 JSON') from error
+        # 只有完整解析成功的报告才进入正式名称；任务恢复时不会把半份文件当成成功批次。
+        report = pending_report
+        if player_report(report, character).get('sim2gse_skipped_commands', []) != skipped_commands:
+            raise ValueError('原生报告与跳过日志不一致')
+        expected_precombat = [name for block in blocks[:precombat_count] for name in block]
+        native_precombat = player_report(report, character).get('sim2gse_precombat_actions', [])
+        if expected_precombat and [row.get('signature') for row in native_precombat
+                                  if native_button_definition(row)] != expected_precombat:
+            raise ValueError('原生完整战前命令定义与GSE战前前缀不一致')
+        measured = (report['sim']['statistics']['raid_dps'] if len(report['sim']['players']) > 1
+                    else player_report(report, character)['collected_data']['dps'])
+        if measured['mean'] == 0:
+            raise CandidateError('合法候选没有有效伤害')
+        summary = check_report(report, character, iterations, simulation_config=simulation_config)
+    finally:
+        if logging:
+            diagnostic_finish(runtime, 'evaluation.report_read_validate', started)
     events = []
     if trace:
-        for line in (folder / 'native.txt').read_text(encoding='utf-8').splitlines():
-            if 'S2GSE\t' not in line:
-                continue
-            fields = line.split('S2GSE\t', 1)[1].split('\t')
-            if len(fields) != (16 if input_sources is not None else 14):
-                raise ValueError('原生来源轨迹字段数量不一致')
-            (ms, event, origin, step, action, gcd, rp, health, cooldown, battle, signature,
-             cast_ms, sequence_step, sequence_member) = fields[:14]
-            events.append(dict(ms=float(ms), event=event, origin=int(origin), step=int(step), action=action,
-                               gcd=float(gcd), rp=float(rp), health=float(health), cooldown_ms=float(cooldown),
-                               battle=int(battle), signature=signature, cast_ms=float(cast_ms),
-                               sequence_step=int(sequence_step), sequence_member=int(sequence_member)))
-            if input_sources is not None:
-                events[-1].update(source=fields[14], source_origin=int(fields[15]),
-                                  source_step=int(step) - (burst_offset if fields[14] == 'burst' else 0))
-                if int(origin) and (not 1 <= int(origin) <= len(input_times)
-                        or fields[14] != input_sources[int(origin) - 1]
-                        or int(fields[15]) != source_origins[int(origin) - 1]):
-                    raise ValueError('原生输入来源或来源局部编号不一致')
-    if trace:
-        inputs = [e for e in events if e['event'] == 'input']
-        executed = [e for e in events if e['event'] == 'native_execute']
-        interrupted = [e for e in events if e['event'] == 'native_interrupt']
-        rolled_back = any(e['event'] == 'queue_rollback' for e in events)
-        if any(e['event'] == 'late_negative_feedback' for e in events):
-            raise ValueError('已执行后收到否定反馈，原生轨迹不可信')
-        if not inputs or inputs[0]['ms'] != input_times[0] or (not executed and not rolled_back):
-            raise ValueError('缺少原生输入或执行轨迹')
-        if any(e['origin'] < 1 or e['origin'] > len(input_times) or e['ms'] != input_times[e['origin'] - 1]
-               or e['step'] != expected_steps[e['origin'] - 1] for e in inputs):
-            raise ValueError('原生输入轨迹的时刻、起点或步进不一致')
-        dispatches = [e for e in events if e['event'] == 'dispatch']
-        if any(not 1 <= e['origin'] <= len(input_times)
-               or e['step'] != expected_steps[e['origin'] - 1]
-               or e['signature'] not in effective_blocks[e['step']]
-               for e in dispatches + executed + interrupted):
-            raise ValueError('原生动作不属于来源输入对应的编译块')
-        by_step = {row['step']: row['members'] for row in castsequences}
-        if any((e['sequence_step'] != e['step'] or
-                not 0 <= e['sequence_member'] < len(by_step[e['step']]) or
-                (e['event'] in {'dispatch', 'native_execute', 'native_interrupt'} and
-                 e['signature'] != by_step[e['step']][e['sequence_member']]))
-               for e in events if e['step'] in by_step):
-            raise ValueError('/castsequence 原生成员轨迹与编译定义不一致')
-        if expected_precombat:
-            battles = {e['battle'] for e in events if e['event'] == 'input'}
-            for battle in battles:
-                observed = [e['action'] for e in events
-                            if e['battle'] == battle and e['event'] == 'explicit_precombat'
-                            and e['action'] in expected_precombat]
-                if observed != expected_precombat:
-                    raise ValueError('原生战前动作没有对应 GSE 战前步骤')
-        def key(e):
-            return e['battle'], e['origin'], e['step'], e['signature']
-        starts = {key(e): e for e in dispatches}
-        completed = executed + interrupted
-        finishes = Counter(map(key, completed))
-        pending = [e for e in dispatches if key(e) not in finishes and e['ms'] + e['cast_ms'] >= 180000]
-        if (Counter(map(key, completed + pending)) != Counter(map(key, dispatches)) or
-                any(e['ms'] < starts[key(e)]['ms'] for e in completed)):
-            raise ValueError('原生派发与实际执行轨迹不一致')
+        started = diagnostic_start() if logging else None
+        try:
+            for line in (folder / 'native.txt').read_text(encoding='utf-8').splitlines():
+                if 'S2GSE\t' not in line:
+                    continue
+                fields = line.split('S2GSE\t', 1)[1].split('\t')
+                if len(fields) != (16 if input_sources is not None else 14):
+                    raise ValueError('原生来源轨迹字段数量不一致')
+                (ms, event, origin, step, action, gcd, rp, health, cooldown, battle, signature,
+                 cast_ms, sequence_step, sequence_member) = fields[:14]
+                events.append(dict(ms=float(ms), event=event, origin=int(origin), step=int(step), action=action,
+                                   gcd=float(gcd), rp=float(rp), health=float(health), cooldown_ms=float(cooldown),
+                                   battle=int(battle), signature=signature, cast_ms=float(cast_ms),
+                                   sequence_step=int(sequence_step), sequence_member=int(sequence_member)))
+                if input_sources is not None:
+                    events[-1].update(source=fields[14], source_origin=int(fields[15]),
+                                      source_step=int(step) - (burst_offset if fields[14] == 'burst' else 0))
+                    if int(origin) and (not 1 <= int(origin) <= len(input_times)
+                            or fields[14] != input_sources[int(origin) - 1]
+                            or int(fields[15]) != source_origins[int(origin) - 1]):
+                        raise ValueError('原生输入来源或来源局部编号不一致')
+            inputs = [e for e in events if e['event'] == 'input']
+            executed = [e for e in events if e['event'] == 'native_execute']
+            interrupted = [e for e in events if e['event'] == 'native_interrupt']
+            rolled_back = any(e['event'] == 'queue_rollback' for e in events)
+            if any(e['event'] == 'late_negative_feedback' for e in events):
+                raise ValueError('已执行后收到否定反馈，原生轨迹不可信')
+            if not inputs or inputs[0]['ms'] != input_times[0] or (not executed and not rolled_back):
+                raise ValueError('缺少原生输入或执行轨迹')
+            if any(e['origin'] < 1 or e['origin'] > len(input_times) or e['ms'] != input_times[e['origin'] - 1]
+                   or e['step'] != expected_steps[e['origin'] - 1] for e in inputs):
+                raise ValueError('原生输入轨迹的时刻、起点或步进不一致')
+            dispatches = [e for e in events if e['event'] == 'dispatch']
+            if any(not 1 <= e['origin'] <= len(input_times)
+                   or e['step'] != expected_steps[e['origin'] - 1]
+                   or e['signature'] not in effective_blocks[e['step']]
+                   for e in dispatches + executed + interrupted):
+                raise ValueError('原生动作不属于来源输入对应的编译块')
+            by_step = {row['step']: row['members'] for row in castsequences}
+            if any((e['sequence_step'] != e['step'] or
+                    not 0 <= e['sequence_member'] < len(by_step[e['step']]) or
+                    (e['event'] in {'dispatch', 'native_execute', 'native_interrupt'} and
+                     e['signature'] != by_step[e['step']][e['sequence_member']]))
+                   for e in events if e['step'] in by_step):
+                raise ValueError('/castsequence 原生成员轨迹与编译定义不一致')
+            if expected_precombat:
+                battles = {e['battle'] for e in events if e['event'] == 'input'}
+                for battle in battles:
+                    observed = [e['action'] for e in events
+                                if e['battle'] == battle and e['event'] == 'explicit_precombat'
+                                and e['action'] in expected_precombat]
+                    if observed != expected_precombat:
+                        raise ValueError('原生战前动作没有对应 GSE 战前步骤')
+            def key(e):
+                return e['battle'], e['origin'], e['step'], e['signature']
+            starts = {key(e): e for e in dispatches}
+            completed = executed + interrupted
+            finishes = Counter(map(key, completed))
+            pending = [e for e in dispatches if key(e) not in finishes and e['ms'] + e['cast_ms'] >= 180000]
+            if (Counter(map(key, completed + pending)) != Counter(map(key, dispatches)) or
+                    any(e['ms'] < starts[key(e)]['ms'] for e in completed)):
+                raise ValueError('原生派发与实际执行轨迹不一致')
+        finally:
+            if logging:
+                diagnostic_finish(runtime, 'evaluation.trace', started)
     replace_file(folder / 'native.pending.json', folder / 'native.json')
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
                 precombat_commands=native_precombat,

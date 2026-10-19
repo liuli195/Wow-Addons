@@ -145,7 +145,8 @@ def test_public_task_exports_current_invocation_stage_totals(tmp_path, monkeypat
         assert clock_calls == []
         assert not output.exists()
         return
-    performance = json.loads(output.read_text(encoding='utf-8'))['performance']
+    diagnostics = json.loads(output.read_text(encoding='utf-8'))
+    performance = diagnostics['performance']
     assert performance['scope'] == 'current_invocation'
     assert performance['timing'] == 'inclusive_wall_seconds'
     stages = performance['stages']
@@ -153,13 +154,20 @@ def test_public_task_exports_current_invocation_stage_totals(tmp_path, monkeypat
                  'diagnostic.rules', 'diagnostic.finalize',
                  'report.prepare', 'report.write', 'state.persist.full', 'state.persist.partial',
                  'state.transaction', 'state.progress', 'model.load', 'model.predict', 'model.learn',
-                 'model.snapshot', 'model.full_write', 'model.control_write'):
+                 'model.snapshot', 'model.full_write', 'model.control_write',
+                 'candidate.compile', 'candidate.write', 'report.publish', 'main.wait'):
         assert stages[name]['calls'] > 0, name
         assert stages[name]['seconds'] >= 0, name
     assert stages['model.predict']['units']['actions'] > 0
     assert stages['model.learn']['units']['common_batches'] > 0
     assert stages['report.write']['units']['rows'] > 0
     assert stages['state.persist.full']['units']['written_bytes'] > 0
+    assert stages['candidate.compile']['calls'] == diagnostics['candidate_compilations']
+    assert stages['candidate.write']['calls'] == stages['candidate.compile']['calls']
+    assert stages['report.publish']['wall_union_seconds'] > 0
+    assert 'report.publish' in performance['covered_stages']
+    assert stages['main.wait']['wall_union_seconds'] >= 0
+    assert 'main.wait' not in performance['covered_stages']
 
 
 def test_timing_failure_does_not_replace_report_error(monkeypatch):
@@ -188,6 +196,40 @@ def test_stage_wall_union_merges_overlaps_across_invocation_owners(monkeypatch):
     assert stages['diagnostic.total']['calls'] == 3
     assert 'wall_union_seconds' not in stages['diagnostic.rules']
     assert not any('intervals' in value for value in stages.values())
+
+
+def test_covered_wall_unions_selected_stages_without_wait_or_nested_double_count(monkeypatch):
+    from types import SimpleNamespace
+    import runtime
+
+    first, second = SimpleNamespace(), SimpleNamespace()
+    spans = [
+        (first, 'diagnostic.total', 1.0, 4.0),
+        (second, 'native.execute', 3.0, 7.0),
+        (first, 'report.publish', 6.0, 10.0),
+        (second, 'report.write', 7.0, 9.0),
+        (first, 'evaluation.report_read_validate', 7.0, 8.0),
+        (first, 'evaluation.trace', 8.0, 8.5),
+        (second, 'state.persist.full', 9.0, 11.0),
+        (first, 'candidate.compile', 12.0, 13.0),
+        (first, 'candidate.write', 13.0, 15.0),
+        (first, 'main.wait', 0.0, 20.0),
+        (first, 'diagnostic.rules', 0.0, 25.0),
+    ]
+    for owner, name, start, stop in spans:
+        monkeypatch.setattr(runtime.time, 'perf_counter', lambda stop=stop: stop)
+        runtime.diagnostic_finish(owner, name, start)
+    summary = runtime.diagnostic_summary(first, second)
+    assert summary['covered_wall_seconds'] == 13.0
+    assert summary['covered_stages'] == [
+        'candidate.compile', 'candidate.write', 'diagnostic.total',
+        'evaluation.report_read_validate', 'evaluation.trace', 'native.execute',
+        'report.publish', 'report.write', 'state.persist.full']
+    assert summary['stages']['main.wait']['wall_union_seconds'] == 20.0
+    assert summary['stages']['report.publish']['wall_union_seconds'] == 4.0
+    assert summary['stages']['report.write']['wall_union_seconds'] == 2.0
+    assert 'not CPU time' in summary['covered_wall_timing']
+    assert 'not the complete public-call wall time' in summary['covered_wall_timing']
 
 
 @pytest.mark.parametrize('case', ['known', 'unknown', 'duplicate', 'cancelled'])
@@ -259,7 +301,10 @@ def test_public_candidate_progress_counts_only_new_successful_first_scores(tmp_p
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
         run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
     saved = read_task(destination, include_search_records=True)
-    progress = json.loads((destination / 'diagnostics.json').read_text())['performance']['candidate_progress']
+    performance = json.loads((destination / 'diagnostics.json').read_text())['performance']
+    progress = performance['candidate_progress']
+    assert performance['stages']['candidate.compile']['calls'] == 1
+    assert performance['stages']['candidate.write']['calls'] == 1
     keys = {row['key'] for row in saved['search']['records']}
     assert len(keys) == 1
     for kind in ('first_score_published', 'screening_archived'):
@@ -275,10 +320,13 @@ def test_public_candidate_progress_counts_only_new_successful_first_scores(tmp_p
         else:
             destination = tmp_path / 'cached'
             run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
-    progress = json.loads((destination / 'diagnostics.json').read_text())['performance']['candidate_progress']
+    performance = json.loads((destination / 'diagnostics.json').read_text())['performance']
+    progress = performance['candidate_progress']
     assert progress['first_score_published'] == []
     if replay == 'resume':
         assert progress['screening_archived'] == []
+        assert 'candidate.compile' not in performance['stages']
+        assert 'native.execute' not in performance['stages']
 
 
 @pytest.mark.parametrize('enabled', [False, True])
