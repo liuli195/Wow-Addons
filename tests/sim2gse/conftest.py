@@ -32,7 +32,24 @@ def installed_data_store_api(installed_data_store):
 
 @pytest.fixture(autouse=True)
 def isolated_result_center(tmp_path, monkeypatch, installed_data_store_api, installed_data_store):
+    import duckdb
     import result_store
+
+    original_connect = duckdb.connect
+    def connect(*args, **kwargs):
+        supplied_config = args[2] if len(args) > 2 else kwargs.get('config')
+        if supplied_config is not None and not isinstance(supplied_config, dict):
+            return original_connect(*args, **kwargs)
+        config = dict(supplied_config or {})
+        config.setdefault('threads', 1)
+        if len(args) > 2:
+            args = (*args[:2], config, *args[3:])
+        else:
+            kwargs['config'] = config
+        return original_connect(*args, **kwargs)
+
+    # Temporary worker-only limit; independent CLI processes keep their defaults.
+    monkeypatch.setattr(duckdb, 'connect', connect)
     monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'data')
     # Business tests use the real package copy; connection tests launch clean processes.
     monkeypatch.setattr(result_store, '_SKILL_API', installed_data_store_api)
