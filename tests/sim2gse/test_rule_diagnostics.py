@@ -957,6 +957,8 @@ def test_public_cancel_keeps_completed_score_and_marks_rule_pool_incomplete(tmp_
     assert diagnosis['pool']['incomplete_reason'] == 'cancelled'
     assert resumed['search']['rule_diagnostics']['pool']['complete'] is True
     assert len(resumed['search']['rule_diagnostics']['pool']['operations']) == 2
+    assert resumed['search']['rule_diagnostics']['observation_scope'] == diagnosis['observation_scope']
+    assert resumed['search']['rule_diagnostics']['evidence'] == diagnosis['evidence']
 
 
 def test_public_cached_batch_keeps_original_evidence_and_rebinds_current_parent(tmp_path, monkeypatch):

@@ -13,8 +13,6 @@ from pathlib import Path
 import threading
 import time
 
-from runtime import diagnostic_start, diagnostic_finish
-
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 CANDIDATE_SCHEMA = dict(
@@ -352,7 +350,11 @@ def read_search_learner(model_key):
 def write_search_learner(record, *, runtime=None):
     """Caller holds the shared lock; this full commit absorbs older control state."""
     logging = runtime is not None and runtime.diagnostic_logging
-    started = diagnostic_start() if logging else None
+    if logging:
+        from runtime import diagnostic_start, diagnostic_finish
+        started = diagnostic_start()
+    else:
+        started = None
     try:
         return write('search_learners', record['model_key'], [record], schema=SEARCH_LEARNER_SCHEMA)
     finally:
@@ -383,7 +385,11 @@ def read_search_learner_control(model_key):
 def write_search_learner_control(record, *, runtime=None):
     """Caller holds the shared lock; reserve/no-learn commit without copying matrices."""
     logging = runtime is not None and runtime.diagnostic_logging
-    started = diagnostic_start() if logging else None
+    if logging:
+        from runtime import diagnostic_start, diagnostic_finish
+        started = diagnostic_start()
+    else:
+        started = None
     try:
         return write('search_learner_controls', record['model_key'], [record],
                      schema=SEARCH_LEARNER_CONTROL_SCHEMA)
@@ -508,7 +514,11 @@ def write_batch(key: str, row: dict, *, diagnostic_logging=False, runtime=None) 
     """Persist normal report columns; sampled action traces follow the diagnostic switch."""
     prepared = prepare_batch(row, diagnostic_logging=diagnostic_logging, runtime=runtime)
     logging = runtime is not None and runtime.diagnostic_logging
-    started = diagnostic_start() if logging else None
+    if logging:
+        from runtime import diagnostic_start, diagnostic_finish
+        started = diagnostic_start()
+    else:
+        started = None
     try:
         return write('batches', key, [prepared])
     finally:
@@ -521,7 +531,11 @@ def prepare_batch(row: dict, *, diagnostic_logging=False, runtime=None) -> dict:
     if runtime is not None:
         diagnostic_logging = runtime.diagnostic_logging
     logging = runtime is not None and runtime.diagnostic_logging
-    started = diagnostic_start() if logging else None
+    if logging:
+        from runtime import diagnostic_start, diagnostic_finish
+        started = diagnostic_start()
+    else:
+        started = None
     try:
         if not diagnostic_logging:
             report = row['report']

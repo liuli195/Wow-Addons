@@ -474,16 +474,19 @@ class SimulationConfigTests(unittest.TestCase):
         assert spec.loader is not None
         spec.loader.exec_module(module)
         config = config_for({"enable_omnium_talents": False})
-        with patch.object(module, "load_config", return_value=config), \
+        with patch.object(module, "load_config", return_value=config) as load, \
                 patch.object(module, "serve") as serve, \
                 patch.object(sys, "argv", [str(script), "--port", "0"]):
             self.assertEqual(module.main(), 0)
 
+        load.assert_called_once_with()
         serve.assert_called_once_with(
             REPOSITORY / ".local/sim2gse/ui-tasks",
             host="127.0.0.1",
             port=0,
-            task_options={"simulation_config": config},
+            task_options={"simulation_config": config,
+                          "search_config": dict(diagnostic_logging=False, diagnostics="summary",
+                                                search_observability="full")},
         )
 
     def test_invalid_service_config_stops_before_starting_server(self) -> None:

@@ -920,7 +920,21 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
     before = next(iter(_checkpoint_states(batch).values()))
     assert before['phase'] == 'search' and before['pending']
     # 新选择器的随机进度与已预留决策保存在共享模型，任务保留对应原回执。
-    learner_before = result_store.read_search_learner(selector.MODEL_KEY)
+    def learner_state():
+        with result_store.search_learner_lock():
+            full = result_store.read_search_learner(selector.MODEL_KEY)
+            control = result_store.read_search_learner_control(selector.MODEL_KEY)
+        assert control['phase'] == 'active'
+        fields = ('version', 'rng_state', 'reservations', 'settled')
+        if control['version'] >= full['version']:
+            assert control['base_version'] == full['version']
+            if control['version'] == full['version']:
+                assert all(control[field] == full[field] for field in fields)
+            return dict(full, **{field: control[field] for field in fields})
+        assert 0 <= control['base_version'] <= control['version'] < full['version']
+        return full
+
+    learner_before = learner_state()
     assert type(learner_before['rng_state']) is int and 0 <= learner_before['rng_state'] < 2**30
     decisions = {work['rule_step']['operation']['operation_id']: work['rule_step']['selection']
                  for work in before['pending']}
@@ -938,7 +952,7 @@ def test_training_entry_resumes_two_to_four_preserving_successful_batches(
         evaluate = sequence.evaluate
         def observe(profile, candidate, folder, **kwargs):
             if not resumed:
-                learner = result_store.read_search_learner(selector.MODEL_KEY)
+                learner = learner_state()
                 assert learner['rng_state'] == learner_before['rng_state']
                 assert learner['reservations'] == learner_before['reservations']
             resumed.append(Path(folder).name)
@@ -1987,7 +2001,7 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
-            '--max-trainings', str(outer), '--max-processes', str(inner)]
+            '--max-trainings', str(outer), '--max-processes', str(inner), '--diagnostic-logging']
     active = peak = 0
     active_paths = set()
     overlap = 0
@@ -2034,6 +2048,7 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
             with lock:
                 running[path] = running.get(path, 0) + 1
             return observed(*args, **kwargs)
+        # The six-way gate excludes each path's initial traced batch, so request traces explicitly.
         with patch.object(sequence, 'evaluate', side_effect=counted):
             assert command(tmp_path, args) == 0
     output = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
@@ -2094,7 +2109,7 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
             return native(*args, **kwargs)
         with patch.object(sequence, 'evaluate', side_effect=observed):
             assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
-                                      '--workspace', str(tmp_path / 'work')]) == 0
+                                      '--workspace', str(tmp_path / 'work'), '--diagnostic-logging']) == 0
     assert len(gated) == 2
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
     records = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -2146,7 +2161,7 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
             return native(*args, **kwargs)
         with patch.object(sequence, 'evaluate', side_effect=reject_repeated_target):
             assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
-                                      '--workspace', str(tmp_path / 'work')]) == 0
+                                      '--workspace', str(tmp_path / 'work'), '--diagnostic-logging']) == 0
     records = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     recovered = next(row for row in records if json.loads(row['initial_program']) == third_start)
     with sqlite3.connect(Path(recovered['task_path']) / 'task.sqlite3') as database:

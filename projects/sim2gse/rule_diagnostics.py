@@ -884,12 +884,19 @@ def _validate_observations(payload, requested_iterations, *, observation_request
                 or row['sample_id'] != scope['sample_id']
                 or type(row.get('event_index')) is not int or row['event_index'] < 0):
             raise Unsupported('效果事件与同次计分样本身份不符')
+    # typed 空 struct 的 NULL 只在冻结请求已证明该集合为空时还原输出视图。
+    # 不修改原始 payload，证据摘要仍绑定实际存储内容；缺 key 仍然缺失。
+    if (payload['protocol'] == 2 and observation_request is not None
+            and observation_request['collections']['effect_events'] == {}
+            and 'effect_events_complete' in scope and scope['effect_events_complete'] is None):
+        return dict(scope, effect_events_complete={})
+    return scope
 
 
 def feedback_observations(payload, requested_iterations, *, observation_request=None):
     """复用旧反馈解析器所需的真实控制事件；缺失不猜not_ready或未尝试。"""
     try:
-        _validate_observations(payload, requested_iterations, observation_request=observation_request)
+        scope = _validate_observations(payload, requested_iterations, observation_request=observation_request)
         if not payload['scope']['complete']:
             raise Unsupported('首计分样本尚未完整结束')
         events = payload.get('feedback_events')
@@ -902,7 +909,7 @@ def feedback_observations(payload, requested_iterations, *, observation_request=
                     or type(row.get('event_index')) is not int or row['event_index'] < 0
                     or not isinstance(row.get('event'), str) or row.get('source') not in ('loop', 'burst')):
                 raise Unsupported('同次旧搜索反馈事件身份无效')
-        return events, dict(availability='same_scoring_batch', observation_scope=payload['scope'])
+        return events, dict(availability='same_scoring_batch', observation_scope=scope)
     except Unsupported as error:
         return None, dict(availability='unavailable', reason=str(error))
 
@@ -1002,8 +1009,9 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
     raw_payload = players[0].get('sim2gse_rule_observations') if len(players) == 1 else None
     payload = raw_payload if isinstance(raw_payload, dict) else None
     payload_error = None
+    observation_scope = payload.get('scope') if payload else None
     try:
-        _validate_observations(payload, requested_iterations,
+        observation_scope = _validate_observations(payload, requested_iterations,
             observation_request=(batch_request or {}).get('rule_observations', {}).get('request'))
     except Unsupported as error:
         payload_error = str(error)
@@ -1278,7 +1286,7 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                           operations=len(operations))
         phase_started = diagnostic_start()
     result = dict(version=VERSION, parent_identity=parent_identity, parent=parent, evidence=evidence,
-        observation_scope=payload.get('scope') if payload else None, rules=results,
+        observation_scope=observation_scope, rules=results,
         facts=dict(source=dict(batch_key=batch_key, report_field='sim.players.sim2gse_rule_observations'),
                    collection_counts={name: len(rows) for name, rows in collections.items()},
                    qualification_events_promoted_to_input_state=False),

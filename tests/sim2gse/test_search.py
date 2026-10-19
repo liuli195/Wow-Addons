@@ -346,22 +346,29 @@ class SearchAndValidationTests(TestCase):
 
         original_write = Path.write_text
         failure = OSError('diagnostics unavailable')
+        business_error = ValueError('original business failure')
+        attempted = []
         with tempfile.TemporaryDirectory(prefix='sim2gse-diagnostics-failure-') as directory:
             destination = Path(directory) / 'task'
             destination.mkdir()
 
             def write(path, *args, **kwargs):
                 if path == destination / 'diagnostics.json':
+                    attempted.append(path)
                     raise failure
                 return original_write(path, *args, **kwargs)
 
             with _captured_task_connections() as connections:
                 store = TaskStore(destination)
-                store.diagnostics_mode = 'summary'
+                store.state['config'] = dict(diagnostic_logging=True)
                 with patch.object(Path, 'write_text', new=write), \
-                        self.assertRaises(OSError) as caught:
-                    store.close()
-                self.assertIs(caught.exception, failure)
+                        self.assertRaises(ValueError) as caught:
+                    try:
+                        raise business_error
+                    finally:
+                        store.close()
+                self.assertIs(caught.exception, business_error)
+                self.assertEqual(attempted, [destination / 'diagnostics.json'])
                 self.assertEqual(len(connections), 1)
                 with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
                     connections[0].execute('SELECT 1')

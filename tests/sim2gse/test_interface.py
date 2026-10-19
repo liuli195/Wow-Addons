@@ -1941,7 +1941,7 @@ class InterfaceTests(unittest.TestCase):
                 self.assertIn('published group before registration', state['error'])
             _, handle = self.server.tasks[created['task_id']]
             handle.join(5)
-            resumed = resume_task(handle.output_root)
+            resumed = resume_task(handle.output_root, diagnostic_logging=True)
         self.assertEqual(resumed['status'], 'completed')
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
@@ -2042,7 +2042,7 @@ class InterfaceTests(unittest.TestCase):
                 self.assertIsNotNone(handle.error)
             # Restore the exact durable task image at the stop, before error handling.
             shutil.copyfile(snapshot, handle.output_root / 'task.sqlite3')
-            resumed = resume_task(handle.output_root)
+            resumed = resume_task(handle.output_root, diagnostic_logging=True)
         self.assertEqual(resumed['status'], 'completed')
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
