@@ -1291,7 +1291,8 @@ class TaskStore:
                                    task_state_bytes=self.state_bytes,
                                    task_state_full_value_bytes=self.full_state_value_bytes,
                                    lua_compiler_starts=self.lua_compiler_starts,
-                                   performance=diagnostic_summary(self, getattr(self, 'runtime', None)))
+                                   performance=diagnostic_summary(self, getattr(self, 'runtime', None),
+                                       *getattr(self, 'diagnostic_runtimes', ())))
                 (self.destination / 'diagnostics.json').write_text(_json(diagnostics), encoding='utf-8')
             except Exception:
                 pass  # 性能日志失败不得覆盖业务错误或任务结果。
@@ -1343,7 +1344,7 @@ def freeze_selection_feedback(store, work, rows, *, reason=None):
 def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cancel_event=None):
     """补共享反馈后再补任务状态；已评分恢复不重新模拟/重新学习。"""
     intents = store.state.get('selection_feedback_intents', {})
-    if not intents and not finalizing:
+    if not intents and (not finalizing or not store.state.get('pending')):
         if store.state.get('selection_feedback_incomplete'):
             store.state['selection_feedback_incomplete'] = False
             store.save(fields=('selection_feedback_incomplete', 'pending', 'rule_steps', 'search_observability'))
@@ -1352,8 +1353,14 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
     started = time.monotonic()
     elapsed_before = store.state.get('elapsed_seconds', 0)
     # 整批以既有锁等待上限为收尾截止；不增加搜索预算，到期保留意图。
-    recovery = (TaskRuntime(30, cancel_event=runtime.cancel_event if runtime else cancel_event)
+    recovery = (TaskRuntime(30, cancel_event=runtime.cancel_event if runtime else cancel_event,
+                           diagnostic_logging=(runtime.diagnostic_logging if runtime is not None
+                                               else store.diagnostic_logging))
                 if runtime is None or finalizing else runtime)
+    if recovery is not runtime and recovery.diagnostic_logging:
+        if not hasattr(store, 'diagnostic_runtimes'):
+            store.diagnostic_runtimes = []
+        store.diagnostic_runtimes.append(recovery)
     pending_frozen = finalizing
     stopped = False
     def freeze_pending():

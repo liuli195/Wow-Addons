@@ -95,7 +95,8 @@ def test_public_feedback_rejects_self_described_empty_request_instead_of_the_fro
 @pytest.mark.parametrize('source,fields', [
     ('student.action_events', ['kind']),
     ('student.future_facts', ['time']),
-    ('student.action_observations', ['future_field'])])
+    ('student.action_observations', ['future_field']),
+    ('student.target_scope', ['target_id'])])
 def test_public_new_unrecognized_collection_dependency_freezes_a_full_v1_request(tmp_path, monkeypatch, source, fields):
     import sequence
     from test_search import _apl_task_boundary
@@ -103,6 +104,10 @@ def test_public_new_unrecognized_collection_dependency_freezes_a_full_v1_request
     pack['general']['templates']['renamed-template']['reads'].append(dict(
         **{'as': 'additional_raw_facts', 'from': source}, object={'arg': 'action'}, fields=fields,
         same_run=True, on_declared_null_object='not_applicable_identity_rows'))
+    if source == 'student.target_scope':
+        pack['object_sets']['sample']['literal_scope'] = dict(kind='target_scope', value='controlled_player')
+        # 输入衍生集合的对象表达式也必须识别；未识别时不能静默漏采该范围。
+        pack['general']['templates']['renamed-template']['reads'][-1]['object'] = 'literal_scope'
     _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
@@ -149,7 +154,7 @@ def test_public_protocol_or_coverage_mismatch_never_creates_supported_findings(t
     assert diagnosis['pool']['operations'] == []
 
 
-@pytest.mark.parametrize('frozen', ['legacy_without_request', 'existing_v2', 'unknown_protocol'])
+@pytest.mark.parametrize('frozen', ['legacy_without_request', 'existing_v2', 'unknown_protocol', 'null_request'])
 def test_public_resume_uses_the_actual_frozen_request_and_rejects_unknown_protocol(tmp_path, monkeypatch, frozen):
     import sequence
     from runtime import TaskCancelled
@@ -171,6 +176,7 @@ def test_public_resume_uses_the_actual_frozen_request_and_rejects_unknown_protoc
         original = copy.deepcopy(initialization['rule_observation_request'])
         if frozen == 'legacy_without_request': initialization.pop('rule_observation_request')
         elif frozen == 'unknown_protocol': initialization['rule_observation_request']['protocol'] = 99
+        elif frozen == 'null_request': initialization['rule_observation_request'] = None
         store.save()
     finally:
         store.close()
@@ -181,7 +187,7 @@ def test_public_resume_uses_the_actual_frozen_request_and_rejects_unknown_protoc
         return _observed_evaluate(*args, **kwargs)
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=external_engine):
-        if frozen == 'unknown_protocol':
+        if frozen in ('unknown_protocol', 'null_request'):
             with pytest.raises(TaskError, match='冻结规则观察请求'):
                 resume_task(destination)
             assert requests == []

@@ -23,7 +23,7 @@ import uuid
 from contextlib import contextmanager, nullcontext
 import msvcrt
 
-from runtime import replace_file
+from runtime import replace_file, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 from simulation_config import config_for as simulation_config_for, engine_options, load_config
 
@@ -1966,6 +1966,13 @@ def _resume_task(output_root, **kwargs):
             runtime.started += feedback_accounted_seconds
         else:
             runtime = TaskRuntime(config['total_budget_seconds'], cancel_event=kwargs.pop('cancel_event', None))
+        if config['diagnostic_logging']:
+            # 同一次恢复先补反馈再重开任务；只转交内存中的本次统计，不读取旧日志。
+            try:
+                runtime.performance_stages = diagnostic_summary(runtime, store,
+                    *getattr(store, 'diagnostic_runtimes', ()))['stages']
+            except Exception:
+                pass
         kwargs.pop('cancel_event',None)
         runtime.identities.update(verified)
         runtime.used_seconds=used

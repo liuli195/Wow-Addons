@@ -11,7 +11,7 @@ VERSION = 'same-batch-template-v1'
 def observation_request(initialization, *, protocol=1):
     """任务冻结后一次解析所需对象，评分热路径只携带这份有限请求。"""
     frozen = initialization.get('rule_observation_request')
-    if frozen is not None:
+    if 'rule_observation_request' in initialization:
         _validate_observation_request(frozen)
         return copy.deepcopy(frozen)
     snapshot = initialization['rule_snapshot']
@@ -55,13 +55,15 @@ def observation_request(initialization, *, protocol=1):
                     source = read['from']
                     if source not in _OBSERVATION_SOURCES:
                         raise Unsupported('尚未识别的采集依赖')
+                    reference = read['object']
+                    if reference is not None and (not isinstance(reference, dict) or set(reference) != {'arg'}):
+                        raise Unsupported('尚未识别的采集对象表达式')
                     collection = _OBSERVATION_SOURCES[source]
                     if collection is None:
                         continue  # 输入、候选结构等保留原路径的完整事实。
                     if not set(read['fields']) <= _OBSERVATION_FIELDS[collection]:
                         raise Unsupported('尚未识别的采集字段')
-                    reference = read['object']
-                    if not isinstance(reference, dict) or set(reference) != {'arg'}:
+                    if reference is None:
                         raise Unsupported('尚未识别的采集对象表达式')
                     names = binding['arguments'][reference['arg']]
                     names = names if isinstance(names, list) else [names]

@@ -170,3 +170,79 @@ def test_timing_failure_does_not_replace_report_error(monkeypatch):
     monkeypatch.setattr(runtime.time, 'perf_counter', broken_clock)
     with pytest.raises(KeyError, match='report'):
         result_store.write_batch('invalid', {}, runtime=runtime.TaskRuntime(diagnostic_logging=True))
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('flow', ['finalizing', 'exhausted_resume', 'continue_resume'])
+def test_public_feedback_logs_follow_current_invocation_switch(
+        tmp_path, monkeypatch, installed_data_store_api, enabled, flow):
+    resume = flow != 'finalizing'
+    import json
+    import runtime
+    import sequence
+    from unittest.mock import patch
+    from task import run_task, resume_task, read_task
+    from test_character_export import sample_profile
+    from test_engine import apl_pool_reference
+    from test_rule_initialization import _configure_opener
+    from test_rule_diagnostics import _condition_pack, _observed_evaluate
+    from test_search import _apl_task_boundary
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']:
+        row['gcd_ms'] = 200
+    source, destination = tmp_path / 'role.simc', tmp_path / 'task'
+    source.write_text(sample_profile(), encoding='utf-8')
+    scoring_calls = []
+    def budget_end(*args, **kwargs):
+        result = _observed_evaluate(*args, **kwargs)
+        if kwargs.get('rule_observation_request') is not None:
+            scoring_calls.append(True)
+            if len(scoring_calls) == 6 and flow != 'continue_resume':
+                kwargs['runtime'].used_seconds = kwargs['runtime'].budget_seconds
+        return result
+    actual_write = installed_data_store_api['write']
+    interrupted = False
+    def interrupted_store(root, table, key, rows, **kwargs):
+        nonlocal interrupted
+        if resume and table == 'search_learners' and rows[0]['settled'] and not interrupted:
+            interrupted = True
+            raise SystemExit('constructed store interruption before feedback commit')
+        return actual_write(root, table, key, rows, **kwargs)
+    monkeypatch.setitem(installed_data_store_api, 'write', interrupted_store)
+    config = dict(total_budget_seconds=20, input_interval_ms=200, candidate_limit=6,
+        round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2,
+        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',),
+        diagnostic_logging=True if resume else enabled, diagnostics='summary')
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=budget_end):
+        if resume:
+            with pytest.raises(SystemExit, match='before feedback commit'):
+                run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
+        else:
+            run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
+    output = destination / 'diagnostics.json'
+    old_output = output.read_bytes() if output.exists() else None
+    clock_calls = []
+    if resume:
+        if not enabled:
+            def unexpected_clock():
+                clock_calls.append(True)
+                raise AssertionError('本次未开启不得沿用旧任务性能设置')
+            monkeypatch.setattr(runtime.time, 'perf_counter', unexpected_clock)
+        resumed_engine = budget_end if flow == 'continue_resume' else AssertionError('不得新增评分')
+        with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=resumed_engine):
+            resume_task(destination, diagnostic_logging=enabled)
+    saved = read_task(destination, include_search_records=True)
+    selections = [step['selection'] for step in saved['search']['rule_steps'].values() if step.get('selection')]
+    assert len(scoring_calls) == 6 and len(selections) == 2
+    assert all(row['feedback']['status'] == 'learned' for row in selections)
+    if not enabled:
+        assert clock_calls == []
+        assert (output.read_bytes() if output.exists() else None) == old_output
+        return
+    stages = json.loads(output.read_text(encoding='utf-8'))['performance']['stages']
+    assert stages['model.learn']['calls'] == 2
+    assert stages['model.learn']['units']['common_batches'] == 2
+    if resume:
+        assert stages['model.full_write']['calls'] == 2
+        assert 'model.predict' not in stages, '本次恢复不能混入旧调用的性能汇总'

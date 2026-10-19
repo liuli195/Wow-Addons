@@ -1091,7 +1091,6 @@ def test_public_window_template_uses_configured_effect_without_enabling_full_cha
     def window_engine(*args, **kwargs):
         result = _observed_evaluate(*args, **kwargs)
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
-        payload['scope']['effect_events_complete'] = {'window': True}
         payload['effect_observations'] = [dict(row, object='window', active=row['input_index'] == 0)
                                           for row in payload['inputs']]
         for row in payload['action_observations']: row.update(charges_current=2, charges_maximum=2)
