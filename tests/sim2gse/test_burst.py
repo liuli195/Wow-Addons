@@ -667,7 +667,7 @@ def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path,
 
 @pytest.mark.parametrize('interrupt_second', [False])
 def test_dual_resume_preserves_missing_eager_policy_for_old_and_new_children(tmp_path, monkeypatch,
-                                                                          page_task_engine, interrupt_second):
+                                                                          page_task_engine, memory_result_center, interrupt_second):
     import burst, dual_task, result_store, search
     definition, raw = reviewed_fixture()
     burst.publish(definition)

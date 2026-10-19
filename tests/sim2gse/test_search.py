@@ -1603,10 +1603,10 @@ class SearchAndValidationTests(TestCase):
                       for index in range(2)]
             with _guided_search_boundary(directory, starts):
                 result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=120,
-                    input_interval_ms=200,search_budget_seconds=90,candidate_limit=7,round_candidate_limit=2,batch_targets=(2,),
+                    input_interval_ms=200,search_budget_seconds=90,candidate_limit=5,round_candidate_limit=2,batch_targets=(2,),
                     validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
                 saved = read_task(Path(directory) / 'task', include_search_records=True)
-            self.assertEqual(result['search']['candidate_count'],7)
+            self.assertEqual(result['search']['candidate_count'],5)
             self.assertTrue(result['search']['partial_round'])
             chains=result['search']['chains']
             records = {row['key']: row for row in saved['search']['records']}
