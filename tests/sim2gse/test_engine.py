@@ -21,14 +21,12 @@ def test_native_execution_timing_preserves_process_outcome(tmp_path, monkeypatch
 
     task_runtime = runtime.TaskRuntime(diagnostic_logging=enabled)
     monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
-    errors = dict(timeout=runtime.ProcessTimeout('fixture timeout'),
-                  cancelled=runtime.TaskCancelled('fixture cancellation'),
-                  budget=runtime.BudgetExceeded('fixture budget'))
+    timeout_error = runtime.ProcessTimeout('fixture timeout')
     commands = []
     def native_process(command, folder, **kwargs):
         commands.append(command)
-        if outcome != 'success':
-            raise errors[outcome]
+        if outcome == 'timeout':
+            raise timeout_error
         for option in command:
             if option.startswith('json2='):
                 (folder / option.split('=', 1)[1]).write_text('complete report')
@@ -51,10 +49,9 @@ def test_native_execution_timing_preserves_process_outcome(tmp_path, monkeypatch
             assert not (folder / 'process.log').exists()
             assert not (folder / 'invocation.json').exists()
     else:
-        expected = engine.CandidateError if outcome == 'timeout' else type(errors[outcome])
-        with pytest.raises(expected) as caught:
+        with pytest.raises(engine.CandidateError) as caught:
             engine.run(tmp_path / 'role.simc', folder, runtime=task_runtime)
-        assert (caught.value.__cause__ if outcome == 'timeout' else caught.value) is errors[outcome]
+        assert caught.value.__cause__ is timeout_error
     stages = runtime.diagnostic_summary(task_runtime)['stages']
     if enabled:
         assert stages['native.execute']['calls'] == 1

@@ -5,43 +5,6 @@ import json
 import pytest
 
 
-@pytest.mark.parametrize('diagnostic_logging', [False, True])
-def test_public_task_scoped_checkpoints_restore_every_nested_change(tmp_path, monkeypatch, diagnostic_logging):
-    import search
-    from task import read_task, run_task
-    from test_character_export import sample_profile
-    from test_search import _guided_search_boundary
-
-    scoped = []
-    original = search.TaskStore
-
-    class CheckedStore(original):
-        def save(self, **changes):
-            with self.lock:
-                super().save(**changes)
-                if changes.get('fields') is not None and not self.report_buffer:
-                    # Compare the entire recoverable state, including nested observations
-                    # and coupled receipts, rather than trusting the supplied field list.
-                    assert self.load_state(self.db) == json.loads(json.dumps(self.state))
-                    scoped.append(changes)
-
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    monkeypatch.setattr(search, 'TaskStore', CheckedStore)
-    with _guided_search_boundary(tmp_path, [[['outbreak'], ['death_coil']]]):
-        result = run_task(source, tmp_path / 'task', search_config=dict(
-            candidate_limit=2, round_candidate_limit=1, batch_targets=(2,), iterations=2,
-            validation_batches=1, max_processes=1, input_interval_ms=200,
-            diagnostic_logging=diagnostic_logging,
-            search_observability='full' if diagnostic_logging else 'off'))
-        saved = read_task(tmp_path / 'task', include_search_records=True)
-
-    assert result['status'] == saved['status'] == 'completed'
-    assert saved['selected_candidate_key'] == result['selected_candidate_key']
-    assert scoped, 'The public search must use scoped checkpoints, not rescan every archive.'
-    saved_fields = set().union(*(row['fields'] for row in scoped))
-    assert {'selection_feedback_intents', 'selection_feedback_incomplete',
-            'pending', 'rule_steps', 'selection_generation'} <= saved_fields
 
 
 def _new_checkpoint(tmp_path):

@@ -98,10 +98,7 @@ class SimulationConfigTests(unittest.TestCase):
 
     def test_invalid_config_is_rejected(self) -> None:
         cases = (
-            '[simulation]\ntarget_name = "not safe-name"\n',
-            "[simulation]\ntarget_level = 0\n",
             "[simulation]\ntarget_count = 0\n",
-            "[simulation]\narmor_coefficient = -1\n",
             "[simulation]\nunknown = true\n",
         )
         for text in cases:

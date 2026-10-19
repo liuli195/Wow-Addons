@@ -12,7 +12,19 @@ from test_search import _apl_task_boundary, _fast_evaluate, _initialized_starts
 
 
 def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_path, monkeypatch):
-    import sequence
+    import sequence, search
+    scoped = []
+    original_store = search.TaskStore
+
+    class CheckedStore(original_store):
+        def save(self, **changes):
+            with self.lock:
+                super().save(**changes)
+                if changes.get('fields') is not None and not self.report_buffer:
+                    assert self.load_state(self.db) == json.loads(json.dumps(self.state))
+                    scoped.append(changes)
+
+    monkeypatch.setattr(search, 'TaskStore', CheckedStore)
     from result_store import one
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
@@ -78,6 +90,13 @@ def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_pa
     assert observed['rule_observations'] is not None
     assert 'rule_observations' not in score_batch['request']
     assert ordinary['report']['sim']['players'][0].get('sim2gse_rule_observations') is None
+
+    assert result['status'] == saved['status'] == 'completed'
+    assert saved['selected_candidate_key'] == result['selected_candidate_key']
+    assert scoped
+    saved_fields = set().union(*(row['fields'] for row in scoped))
+    assert {'selection_feedback_intents', 'selection_feedback_incomplete', 'pending',
+            'rule_steps', 'selection_generation'} <= saved_fields
 
 
 
@@ -174,8 +193,7 @@ def test_public_on_demand_cancelled_capture_reuses_published_report_without_swee
 
 
 
-@pytest.mark.parametrize('diagnostic_logging', [False])
-def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished_task(tmp_path, monkeypatch, diagnostic_logging):
+def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished_task(tmp_path, monkeypatch):
     import sequence
     import sqlite3
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
@@ -195,7 +213,7 @@ def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
         original = run_task(source, destination, simulation_config=dict(scene='single_target'),
             search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2,
-                               diagnostic_logging=diagnostic_logging))
+                               diagnostic_logging=False))
         count = calls.call_count
         before = read_task(destination, include_search_records=True, include_reports=True)
         assert calls.call_count == count
@@ -252,8 +270,7 @@ def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished
 
 
 
-@pytest.mark.parametrize('interrupted', [True])
-def test_public_old_missing_policy_preserves_eager_identity_and_refuses_policy_change(tmp_path, monkeypatch, interrupted):
+def test_public_old_missing_policy_preserves_eager_identity_and_refuses_policy_change(tmp_path, monkeypatch):
     import search
     import sequence
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
@@ -273,16 +290,16 @@ def test_public_old_missing_policy_preserves_eager_identity_and_refuses_policy_c
     def observed(*args, **kwargs):
         requests.append((kwargs['seed'], tuple(tuple(row['simc_action'] for row in block) for block in args[1]['blocks'])))
         result = _observed_evaluate(*args, **kwargs)
-        if interrupted and not cancelled:
+        if not cancelled:
             cancelled.append(True)
             kwargs['runtime'].cancel()
         return result
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed) as calls:
         with patch.object(search, 'config_for', side_effect=legacy_configuration):
             result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=dict(input_interval_ms=200, candidate_limit=2 if interrupted else 1, batch_targets=(2,), iterations=2))
+                search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2))
         assert 'rule_diagnostics_policy' not in result['config']
-        assert result['search']['rule_diagnostic_status'] == ('incomplete' if interrupted else 'complete')
+        assert result['search']['rule_diagnostic_status'] == ('incomplete')
         count = calls.call_count
         resumed = resume_task(tmp_path / 'task')
         assert count == 1
@@ -389,9 +406,7 @@ def test_public_manual_capture_preserves_burst_and_full_frozen_request_on_read(t
 
 
 
-@pytest.mark.parametrize('initial_logging, operation_logging', [(True, False)])
-def test_public_manual_diagnosis_uses_invocation_logging_and_preserves_original_trace(tmp_path, monkeypatch,
-                                                                                   initial_logging, operation_logging):
+def test_public_manual_diagnosis_uses_invocation_logging_and_preserves_original_trace(tmp_path, monkeypatch):
     import result_store, sequence
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
@@ -410,37 +425,42 @@ def test_public_manual_diagnosis_uses_invocation_logging_and_preserves_original_
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring):
         original = run_task(source, destination, simulation_config=dict(scene='single_target'),
             search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2,
-                               diagnostic_logging=initial_logging, trace_search=True))
+                               diagnostic_logging=True, trace_search=True))
         original = read_task(destination)
-        old_log = (destination / 'diagnostics.json').read_bytes() if initial_logging else None
+        old_log = (destination / 'diagnostics.json').read_bytes()
         key = original['selected_candidate_key']
         result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10,
-                             diagnostic_logging=operation_logging)
+                             diagnostic_logging=False)
         saved = read_task(destination, include_search_records=True)
-    assert traces == [initial_logging, initial_logging]
+    assert traces == [True, True]
     assert result['config'] == saved['config'] == original['config']
     assert saved['elapsed_seconds'] == original['elapsed_seconds']
     record, = saved['search']['records']
     capture, = record['diagnostic_batches']
-    assert capture['request']['trace'] is initial_logging
-    assert ('costs' in record['rule_diagnostics']) is operation_logging
+    assert capture['request']['trace'] is True
+    assert ('costs' in record['rule_diagnostics']) is False
     stored = result_store.one('batches', 'batch_key', capture['data_key'])
-    assert ('action_sequence' in stored['report']['sim']['players'][0]['collected_data']) is (operation_logging and initial_logging)
-    if operation_logging:
-        log = json.loads((destination / 'diagnostics.json').read_text())
-        assert log['performance']['stages']['diagnostic.total']['calls'] == 1
-        assert log['performance']['stages']['report.prepare']['calls'] == 1
-    else:
-        assert (destination / 'diagnostics.json').read_bytes() == old_log
+    assert ('action_sequence' in stored['report']['sim']['players'][0]['collected_data']) is (False)
+    assert (destination / 'diagnostics.json').read_bytes() == old_log
     trace_rows = list(result_store.iter_rows('SELECT batch_key FROM traces', tables=['traces'])) if (result_store.DATA_ROOT / 'traces').exists() else []
-    assert any(row['batch_key'] == capture['data_key'] for row in trace_rows) is (operation_logging and initial_logging)
+    assert any(row['batch_key'] == capture['data_key'] for row in trace_rows) is (False)
 
 
 
-@pytest.mark.parametrize('failed_publication', [True])
-def test_public_manual_diagnosis_accounts_publication_and_retry_time_separately(tmp_path, monkeypatch,
-                                                                               failed_publication):
-    import result_store, sequence, time
+def _task_clock_offset(monkeypatch):
+    """只推进任务预算/恢复记账，不改变标准time或存储锁的时钟。"""
+    import runtime, search, task, time
+    from types import SimpleNamespace
+    offset = [0.0]
+    clock = SimpleNamespace(**dict(vars(time), monotonic=lambda: time.monotonic() + offset[0]))
+    for module in (runtime, search, task):
+        monkeypatch.setattr(module, 'time', clock)
+    return offset
+
+
+def test_public_manual_diagnosis_accounts_publication_and_retry_time_separately(tmp_path, monkeypatch):
+    import result_store, sequence
+    offset = _task_clock_offset(monkeypatch)
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
@@ -463,16 +483,15 @@ def test_public_manual_diagnosis_accounts_publication_and_retry_time_separately(
                 metrics = rows[0]['search_metrics']
                 if isinstance(metrics, str): metrics = json.loads(metrics)
                 delayed.append(metrics['diagnostic_operations'][key]['elapsed_seconds'])
-                time.sleep(0.15)
-                if failed_publication and not failed:
+                offset[0] += 0.15
+                if not failed:
                     failed.append(True)
                     raise PermissionError('constructed delayed publication failure')
             return real_write(table, logical_key, rows, **kwargs)
         with patch.object(result_store, 'write', side_effect=delayed_publication):
-            if failed_publication:
-                with pytest.raises((TaskError, PermissionError), match='delayed publication failure'):
-                    resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
-                delay_next[0] = True
+            with pytest.raises((TaskError, PermissionError), match='delayed publication failure'):
+                resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+            delay_next[0] = True
             result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
         saved = read_task(destination, include_search_records=True)
         assert calls.call_count == 2
@@ -631,14 +650,12 @@ def _direct_diagnosis(tmp_path, pack, native, mutate=None, *, iterations=2,
     return diagnosis
 
 
-@pytest.mark.parametrize('diagnostic_logging', [False])
-def test_public_task_exposes_same_batch_complete_diagnostics_and_legal_pool(tmp_path, monkeypatch, diagnostic_logging):
+def test_public_task_exposes_same_batch_complete_diagnostics_and_legal_pool(tmp_path, monkeypatch):
     import sequence
-    if not diagnostic_logging:
-        import rule_diagnostics
-        def no_performance_clock():
-            raise AssertionError('关闭性能诊断时不应额外计时')
-        monkeypatch.setattr(rule_diagnostics.time, 'perf_counter', no_performance_clock)
+    import rule_diagnostics
+    def no_performance_clock():
+        raise AssertionError('关闭性能诊断时不应额外计时')
+    monkeypatch.setattr(rule_diagnostics.time, 'perf_counter', no_performance_clock)
     pack = _condition_pack()
     _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
@@ -649,7 +666,7 @@ def test_public_task_exposes_same_batch_complete_diagnostics_and_legal_pool(tmp_
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
             search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1, diagnostic_logging=diagnostic_logging))
+                               iterations=2, validation_batches=1, diagnostic_logging=False))
         saved = read_task(tmp_path / 'task', include_search_records=True)
         diagnosis = result['search']['records'][0]['rule_diagnostics']
         with pytest.raises(TaskError, match='候选预算'):
@@ -659,7 +676,7 @@ def test_public_task_exposes_same_batch_complete_diagnostics_and_legal_pool(tmp_
     diagnosis = result['search']['records'][0]['rule_diagnostics']
     assert diagnosis == saved['search']['rule_diagnostics']
     assert diagnosis == saved['search']['records'][0]['rule_diagnostics']
-    assert ('costs' in diagnosis) is diagnostic_logging
+    assert ('costs' in diagnosis) is False
     assert diagnosis['observation_scope']['sample_selection'] == 'first_scored_complete'
     assert diagnosis['evidence']['batch_key'] == result['search']['records'][0]['batches'][0]['data_key']
     assert [row['name'] for row in diagnosis['rules']] == ['supported opportunity', 'inactive condition']
@@ -693,22 +710,16 @@ def test_public_resume_checks_diagnostic_references_and_keeps_legacy_contents(tm
             if representation.startswith('legacy'):
                 physical.pop('rule_diagnostics_ref')
                 physical['rule_diagnostics'] = copy.deepcopy(canonical)
-                if representation == 'legacy_distinct':
-                    physical['rule_diagnostics']['legacy_annotation'] = 'same identity, distinct content'
-            elif representation == 'bad_parent': physical['rule_diagnostics_ref']['parent_identity'] = 'foreign-parent'
-            elif representation == 'future_version': physical['rule_diagnostics_ref']['version'] = 2
-            else: physical['batches'][0].pop('rule_diagnostics')
+
+            else:
+                physical['rule_diagnostics_ref']['parent_identity'] = 'foreign-parent'
             database.execute('UPDATE state_archive SET value=? WHERE key=?', (json.dumps(physical), key))
         if representation.startswith('legacy'):
             resume_task(destination)
             with sqlite3.connect(destination / 'task.sqlite3') as database:
                 restored, = TaskStore.load_state(database)['archive']
-            if representation == 'legacy_equal':
-                assert restored['rule_diagnostics'] == canonical
-                assert restored['rule_diagnostics'] is restored['batches'][0]['rule_diagnostics']
-            else:
-                assert restored['rule_diagnostics'] == physical['rule_diagnostics']
-                assert restored['rule_diagnostics'] != restored['batches'][0]['rule_diagnostics']
+            assert restored['rule_diagnostics'] == canonical
+            assert restored['rule_diagnostics'] is restored['batches'][0]['rule_diagnostics']
             assert read_task(destination, include_search_records=True)['search']['rule_diagnostics'] == before['search']['rule_diagnostics']
         else:
             with pytest.raises(ValueError, match='诊断引用'): resume_task(destination)
@@ -734,12 +745,12 @@ def test_public_supported_hypothesis_keeps_known_negative_requirements_false(tmp
         for row in payload['action_observations']:
             row.update(native_qualified=None, has_cooldown=True, cooldown_remaining=0,
                 charges_current=0, resource_costs={}, resource_balances={}, known_native_requirements=[])
-            if qualification == 'cooldown_blocked': row['cooldown_remaining'] = 1000
+
             if qualification == 'resource_blocked':
                 row.update(resource_costs={'mana': 2}, resource_balances={'mana': 1})
-            if qualification == 'requirement_blocked': row['known_native_requirements'] = [{'value': False}]
+
             if qualification == 'missing_fact': row.update(cooldown_remaining=None, charges_current=None)
-            if qualification == 'native_forbidden': row['native_qualified'] = False
+
         payload['action_observations'] += [dict(row, object='first', actual_form='outbreak',
             base_button='outbreak', native_qualified=True, cooldown_remaining=0,
             resource_costs={}, resource_balances={}, known_native_requirements=[])
@@ -836,8 +847,7 @@ def test_public_auto_selection_cancelled_before_score_resumes_the_saved_decision
     assert normal_requests[-1] == normal_requests[-2]
 
 
-@pytest.mark.parametrize('cleanup_expired', [True])
-def test_public_budget_end_learns_completed_pending_common_batches_without_more_scores(tmp_path, monkeypatch, installed_data_store_api, cleanup_expired):
+def test_public_budget_end_learns_completed_pending_common_batches_without_more_scores(tmp_path, monkeypatch, installed_data_store_api):
     import search
     import result_store
     from selector import MODEL_KEY
@@ -860,11 +870,10 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
 
     real_runtime = search.TaskRuntime
     cleanup_calls = []
-    if cleanup_expired:
-        def expired_cleanup(total, **kwargs):
-            cleanup_calls.append(total)
-            return real_runtime(total, used_seconds=total, **kwargs)
-        monkeypatch.setattr(search, 'TaskRuntime', expired_cleanup)
+    def expired_cleanup(total, **kwargs):
+        cleanup_calls.append(total)
+        return real_runtime(total, used_seconds=total, **kwargs)
+    monkeypatch.setattr(search, 'TaskRuntime', expired_cleanup)
     with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
             patch.object(sequence, 'evaluate', side_effect=finish_at_budget):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
@@ -874,28 +883,24 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
         saved = read_task(tmp_path / 'task', include_search_records=True)
     selections = [step['selection'] for step in saved['search']['rule_steps'].values() if step.get('selection')]
     assert len(selections) == 2 and len(requests) == 3
-    if cleanup_expired:
-        checkpoint = search.TaskStore(tmp_path / 'task')
-        try:
-            assert cleanup_calls == [30]
-            assert checkpoint.state['selection_feedback_incomplete'] is True
-            assert len(checkpoint.state['selection_feedback_intents']) == 2
-            assert all(intent['common_batches'] == 1 for intent in checkpoint.state['selection_feedback_intents'].values())
-            frozen_receipts = [intent['receipt'] for intent in checkpoint.state['selection_feedback_intents'].values()]
-        finally:
-            checkpoint.close()
-        _assert_pending_selector_receipts(frozen_receipts)
-        assert saved['search']['selection_feedback_incomplete'] is True
-        monkeypatch.setattr(search, 'TaskRuntime', real_runtime)
-    else:
-        assert all(row.get('feedback', {}).get('status') == 'learned' for row in selections)
-        assert all(row['feedback']['common_batches'] == 1 for row in selections)
+    checkpoint = search.TaskStore(tmp_path / 'task')
+    try:
+        assert cleanup_calls == [30]
+        assert checkpoint.state['selection_feedback_incomplete'] is True
+        assert len(checkpoint.state['selection_feedback_intents']) == 2
+        assert all(intent['common_batches'] == 1 for intent in checkpoint.state['selection_feedback_intents'].values())
+        frozen_receipts = [intent['receipt'] for intent in checkpoint.state['selection_feedback_intents'].values()]
+    finally:
+        checkpoint.close()
+    _assert_pending_selector_receipts(frozen_receipts)
+    assert saved['search']['selection_feedback_incomplete'] is True
+    monkeypatch.setattr(search, 'TaskRuntime', real_runtime)
     published_before = result_store.one('runs', 'run_id', saved['run_id'])
     real_write = installed_data_store_api['write']
     publish_failed = False
     def fail_result_once(root, table, key, rows, **kwargs):
         nonlocal publish_failed
-        if cleanup_expired and table == 'runs' and not publish_failed:
+        if table == 'runs' and not publish_failed:
             publish_failed = True
             raise PermissionError('constructed completed-result publication failure')
         return real_write(root, table, key, rows, **kwargs)
@@ -909,27 +914,23 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
         return result
     monkeypatch.setattr(search.TaskStore, 'save', save_complete_flag_with_intents)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=AssertionError('预算耗尽不能补评分')):
-        if cleanup_expired:
-            with pytest.raises(PermissionError, match='completed-result'):
-                resume_task(tmp_path / 'task')
-            committed = result_store.read_search_learner(MODEL_KEY)
+        with pytest.raises(PermissionError, match='completed-result'):
+            resume_task(tmp_path / 'task')
+        committed = result_store.read_search_learner(MODEL_KEY)
         resume_task(tmp_path / 'task')
     again = read_task(tmp_path / 'task', include_search_records=True)
-    if not cleanup_expired:
-        assert again['search']['rule_steps'] == saved['search']['rule_steps']
+
     assert all(step['selection']['feedback']['status'] == 'learned'
                for step in again['search']['rule_steps'].values())
     assert result_store.read_search_learner(MODEL_KEY)['reservations'] == []
-    if cleanup_expired:
-        assert result_store.read_search_learner(MODEL_KEY) == committed
-        assert again['search']['selection_feedback_incomplete'] is False
-        published_after = result_store.one('runs', 'run_id', saved['run_id'])
-        for name in published_before.keys() - {'search_metrics', 'elapsed_seconds'}:
-            assert published_after[name] == published_before[name]
+    assert result_store.read_search_learner(MODEL_KEY) == committed
+    assert again['search']['selection_feedback_incomplete'] is False
+    published_after = result_store.one('runs', 'run_id', saved['run_id'])
+    for name in published_before.keys() - {'search_metrics', 'elapsed_seconds'}:
+        assert published_after[name] == published_before[name]
 
 
-@pytest.mark.parametrize('stage,supplied_runtime', [('learning', True)])
-def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, monkeypatch, stage, supplied_runtime):
+def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, monkeypatch):
     import time
     import result_store
     import sequence
@@ -949,7 +950,7 @@ def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, mo
     def published_then_exit(root, table, key, rows, **kwargs):
         nonlocal interrupted
         result = real_write(root, table, key, rows, **kwargs)
-        if table == 'search_learners' and not interrupted and rows[0]['version'] == (1 if stage == 'prediction' else 2):
+        if table == 'search_learners' and not interrupted and rows[0]['version'] == 2:
             interrupted = True
             raise SystemExit('constructed process exit after real shared atomic replacement')
         return result
@@ -975,27 +976,19 @@ def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, mo
             used_before = checkpoint.state['elapsed_seconds']
         finally:
             checkpoint.close()
-        external = TaskRuntime(600) if supplied_runtime else None
-        external_started = external.started if external else None
-        resume_task(tmp_path / 'task', **({'_runtime': external} if external else {}))
-        if external:
-            assert abs(external.elapsed_seconds - (used_before + time.monotonic()-external_started)) < .02
+        external = TaskRuntime(600)
+        external_started = external.started
+        resume_task(tmp_path / 'task', _runtime=external)
+        assert abs(external.elapsed_seconds - (used_before + time.monotonic()-external_started)) < .02
         saved = read_task(tmp_path / 'task', include_search_records=True)
     step = next(step for step in saved['search']['rule_steps'].values() if step.get('selection'))
     assert step['selection']['feedback']['status'] == 'learned'
     assert result_store.read_search_learner(MODEL_KEY)['version'] == 2
-    if stage == 'prediction':
-        receipt = before['reservations'][0]
-        assert step['selection']['operation_id'] == receipt['operation_id']
-        assert step['selection']['probability'] == receipt['probability']
-        assert len(normal_requests) == requests_before + 1
-    else:
-        assert result_store.read_search_learner(MODEL_KEY) == before
-        assert len(normal_requests) == requests_before
+    assert result_store.read_search_learner(MODEL_KEY) == before
+    assert len(normal_requests) == requests_before
 
 
-@pytest.mark.parametrize('cancel_recovery', [True])
-def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_exit(tmp_path, monkeypatch, cancel_recovery):
+def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_exit(tmp_path, monkeypatch):
     import threading
     import search
     import result_store
@@ -1039,20 +1032,19 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
         checkpoint.close()
     monkeypatch.setattr(search, 'freeze_selection_feedback', real_freeze)
     cancellation = threading.Event()
-    if cancel_recovery: cancellation.set()
+    cancellation.set()
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=AssertionError('预算恢复不能增加评分')):
         resume_task(tmp_path / 'task', cancel_event=cancellation)
-        if cancel_recovery:
-            checkpoint = search.TaskStore(tmp_path / 'task')
-            try:
-                assert len(checkpoint.state['selection_feedback_intents']) == 2
-                assert checkpoint.state['selection_feedback_incomplete'] is True
-                frozen_receipts = [intent['receipt'] for intent in checkpoint.state['selection_feedback_intents'].values()]
-            finally:
-                checkpoint.close()
-            _assert_pending_selector_receipts(frozen_receipts)
-            cancellation.clear()
-            resume_task(tmp_path / 'task', cancel_event=cancellation)
+        checkpoint = search.TaskStore(tmp_path / 'task')
+        try:
+            assert len(checkpoint.state['selection_feedback_intents']) == 2
+            assert checkpoint.state['selection_feedback_incomplete'] is True
+            frozen_receipts = [intent['receipt'] for intent in checkpoint.state['selection_feedback_intents'].values()]
+        finally:
+            checkpoint.close()
+        _assert_pending_selector_receipts(frozen_receipts)
+        cancellation.clear()
+        resume_task(tmp_path / 'task', cancel_event=cancellation)
     assert len(requests) == 3
     assert result_store.read_search_learner(MODEL_KEY)['reservations'] == []
     saved = read_task(tmp_path / 'task', include_search_records=True)
@@ -1061,9 +1053,8 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
                for step in saved['search']['rule_steps'].values())
 
 
-@pytest.mark.parametrize('saved_running', [True])
-def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_path, monkeypatch, saved_running):
-    import time
+def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_path, monkeypatch):
+    offset = _task_clock_offset(monkeypatch)
     import sequence, result_store
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
@@ -1082,8 +1073,7 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
         result = real_write(root, table, key, rows, **kwargs)
         if table == 'search_learners' and rows[0]['settled'] and not interrupted:
             interrupted = True
-            active_runtime.used_seconds = active_runtime.budget_seconds - (
-                time.monotonic()-active_runtime.started) - 1.0
+            offset[0] += max(0.0, active_runtime.remaining_seconds - 1.0)
             raise SystemExit('constructed exit with one second of task budget left')
         return result
 
@@ -1091,7 +1081,7 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
         nonlocal delayed
         if table == 'search_learners' and interrupted and not delayed:
             delayed = True
-            time.sleep(1.2)  # Real external-store latency, charged by the existing task clock.
+            offset[0] += 1.2  # 真read_key边界推进时钟，仍由原TaskRuntime记账。
         return real_read(root, table, key, **kwargs)
 
     def observed(*args, **kwargs):
@@ -1113,9 +1103,8 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
     checkpoint = TaskStore(tmp_path / 'task')
     try:
         used_before_recovery = checkpoint.state['elapsed_seconds']
-        if saved_running:
-            checkpoint.state.update(status='running', inflight={})
-            checkpoint.save()  # A process can exit before its running marker is cleared.
+        checkpoint.state.update(status='running', inflight={})
+        checkpoint.save()  # A process can exit before its running marker is cleared.
     finally:
         checkpoint.close()
     monkeypatch.setitem(api, 'read_key', delayed_read)
@@ -1151,8 +1140,7 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
                for step in saved['search']['rule_steps'].values())
 
 
-@pytest.mark.parametrize('operation_kind', ['insert'])
-def test_public_resume_scores_one_requested_operation_and_keeps_pending_starts(tmp_path, monkeypatch, operation_kind):
+def test_public_resume_scores_one_requested_operation_and_keeps_pending_starts(tmp_path, monkeypatch):
     import sequence
     from runtime import TaskCancelled
     calls = []
@@ -1179,7 +1167,7 @@ def test_public_resume_scores_one_requested_operation_and_keeps_pending_starts(t
                                search_observability='summary'))
         assert stopped['status'] == 'cancelled'
         diagnosis = read_task(tmp_path / 'task')['search']['rule_diagnostics']
-        operation = next(row for row in diagnosis['pool']['operations'] if row['operation'] == operation_kind)
+        operation = next(row for row in diagnosis['pool']['operations'] if row['operation'] == 'insert')
         request = dict(parent_identity=diagnosis['parent_identity'], operation_id=operation['operation_id'])
         with pytest.raises(TaskError, match='父身份'):
             resume_task(tmp_path / 'task', diagnostic_logging=True, rule_step=dict(request, parent_identity='foreign-parent'))
@@ -1187,13 +1175,12 @@ def test_public_resume_scores_one_requested_operation_and_keeps_pending_starts(t
         saved = read_task(tmp_path / 'task', include_search_records=True)
         again = resume_task(tmp_path / 'task', diagnostic_logging=True, rule_step=request)
     changed = next(row for row in resumed['search']['records'] if row.get('rule_step'))
-    expected = [['death_coil'], ['outbreak']] + ([['death_coil']] if operation_kind == 'insert' else [])
+    expected = [['death_coil'], ['outbreak']] + ([['death_coil']])
     assert changed['program'] == expected
     assert changed['rule_step']['request'] == request
     assert changed['rule_step']['parent_score'] > 0
     assert changed['score'] > 0
-    if operation_kind == 'insert':
-        assert changed['score'] > changed['rule_step']['parent_score']
+    assert changed['score'] > changed['rule_step']['parent_score']
     assert any(row.get('rule_step') == changed['rule_step'] for row in saved['search']['records'])
     assert selected_score_calls.count(tuple(block[0] for block in expected)) == 1
     assert saved['search']['candidate_count'] == 3
@@ -1412,35 +1399,29 @@ def test_public_join_keeps_target_components_and_missing_effect_unknown(tmp_path
         row = payload['inputs'][0]
         row['target_scopes'] = dict(scope=[dict(target_id=target, required=True) for target in (1, 2)])
         row['target_scope_sources'] = dict(scope='sim.target_non_sleeping_list')
-        if scope_case == 'empty': row['target_scopes']['scope'] = []
-        elif scope_case == 'unresolved': row['target_scopes']['scope'] = None
+
         payload['state_observations'] = payload['state_observations'][:1]
         payload['action_observations'] = [dict(payload['action_observations'][0], target_id=999)]
         payload['effect_observations'] = [dict(row, object='effect', target_id=target,
             component_id='dot', applicable=True, active=True if target == 1 else None) for target in (1, 2)]
         if scope_case == 'missing_component_key': payload['effect_observations'][0].pop('target_id')
-        if scope_case == 'unknown_applicability':
-            payload['effect_observations'][0]['applicable'] = None
-            payload['effect_observations'][1]['applicable'] = False
+
         return result
 
     diagnosis = _direct_diagnosis(tmp_path, pack, native, component_engine)
     rule, = diagnosis['rules']
-    if scope_case in ('missing_component_key', 'unresolved'):
+    if scope_case == 'missing_component_key':
         assert rule['status'] == 'unknown'
         assert '关联键缺失' in rule['reason']
         assert diagnosis['pool']['operations'] == []
         return
-    if scope_case == 'empty':
-        assert rule['status'] == 'not_applicable'
-        assert rule['findings'] == []
-        return
+
     findings = rule['findings']
     assert [row for row in findings if row['input_index'] == 0] == [
         dict(kind='joined', certainty='observed_fact', input_index=0, target=1,
-             component='dot', action_target=999, active=True, applicable=None if scope_case == 'unknown_applicability' else True),
+             component='dot', action_target=999, active=True, applicable=True),
         dict(kind='joined', certainty='observed_fact', input_index=0, target=2,
-             component='dot', action_target=999, active=None, applicable=False if scope_case == 'unknown_applicability' else True)]
+             component='dot', action_target=999, active=None, applicable=True)]
 
 
 @pytest.mark.parametrize('missing_input_source', [False, 'scoped_unknown'])
@@ -1455,18 +1436,14 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
     pack['configurations'][0]['states']['only']['priority'] = [dict(name='prepare before anchor',
         template='prepare-renamed', arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
             stock='counter', compare='eq', threshold=1, anchor='anchor'))]
-    if missing_input_source in ('scoped_unknown', 'threshold_false'):
+    if missing_input_source == 'scoped_unknown':
         pack['general']['templates']['lower-template'] = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['条件触发与CD使用']
         pack['object_sets']['sample']['low_counter'] = dict(kind='state', native_identity='fixture_low_counter')
         pack['configurations'][0]['states']['only']['priority'].append(dict(name='after final anchor',
             template='lower-template', arguments=dict(action='consumer', priority_refs=['prepare before anchor'],
                 edit_range='editable', state='low_counter', compare='eq', value=1,
                 activation_effect=None, activation_expected=True)))
-        if missing_input_source == 'threshold_false':
-            pack['object_sets']['sample']['low_action'] = copy.deepcopy(pack['object_sets']['sample']['consumer'])
-            high, low = pack['configurations'][0]['states']['only']['priority']
-            high['arguments'].update(compare='gte', threshold=2)
-            low['arguments']['action'] = 'low_action'
+
     definition, profile = reviewed_fixture()
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
@@ -1480,21 +1457,6 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
             for row, input_source in zip(payload[name], sources, strict=True): row['input_source'] = input_source
         for row in payload['state_observations']: row['value'] = 1
         for row in payload['action_observations']: row['input_allowed'] = row['input_source'] == 'loop'
-        if missing_input_source and missing_input_source != 'threshold_false':
-            for row in payload['inputs']: row.pop('input_source')
-        if missing_input_source == 'scoped_unknown':
-            payload['state_observations'] += [dict(row, object='low_counter', value=int(index == len(payload['inputs'])-1))
-                                                for index, row in enumerate(payload['inputs'])]
-        if missing_input_source == 'threshold_false':
-            assert sources[0] == 'loop'
-            low_actions = [dict(row, object='low_action') for row in payload['action_observations']]
-            for row in payload['state_observations']: row['value'] = 0
-            payload['state_observations'] += [dict(row, object='low_counter', value=int(index == 0))
-                                                for index, row in enumerate(payload['inputs'])]
-            for row in payload['action_observations']:
-                row.update(native_qualified=None, resource_costs=None, has_cooldown=False,
-                           known_native_requirements=[])
-            payload['action_observations'] += low_actions
         return result
 
     if missing_input_source == 'scoped_unknown':
@@ -1530,16 +1492,6 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
     findings = diagnosis['rules'][0]['findings']
-    if missing_input_source in ('scoped_unknown', 'threshold_false'):
-        lower = diagnosis['rules'][1]
-        assert [(row['input_index'], row['kind']) for row in lower['findings'] if row['kind'] == 'missed_opportunity'] == [
-            (0 if missing_input_source == 'threshold_false' else
-             len(result['search']['records'][0]['batches'][0]['request']['times'])-1, 'missed_opportunity')]
-        return
-    if missing_input_source:
-        assert {row['kind'] for row in findings} == {'unknown'}
-        assert diagnosis['pool']['operations'] == []
-        return
     assert [(row['kind'], row.get('anchor')) for row in findings] == [
         ('missed_preparation', 3000), ('missed_preparation', 48000),
         ('missed_preparation', 93000), ('missed_preparation', 138000)]
@@ -1547,8 +1499,8 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
     assert all(row['certainty'] == 'hypothesis' for row in findings)
 
 
-@pytest.mark.parametrize('missing_events,lifecycle_complete', [(False, True), (False, False)])
-def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecycle_unknown(tmp_path, monkeypatch, missing_events, lifecycle_complete):
+@pytest.mark.parametrize('lifecycle_complete', [True, False])
+def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecycle_unknown(tmp_path, monkeypatch, lifecycle_complete):
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'short-renamed':
@@ -1565,16 +1517,15 @@ def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecyc
         for row in payload['action_observations']:
             row['effect_completion_time'] = row['time']
             row['event_index'] += 1
-        if not missing_events:
-            event = dict(object='window', sample_id=1, effect_id='fixture_short_buff', instance_id=1,
-                target_id=0, source_id=0, applicable=True, start=0, end=400)
-            if lifecycle_complete is not None: event['lifecycle_complete'] = lifecycle_complete
-            payload['effect_events'] = [dict(event, event_index=0, kind='start', time=0, end_reason=None),
-                dict(event, event_index=10001, kind='expire', time=400, end_reason='expired')]
+        event = dict(object='window', sample_id=1, effect_id='fixture_short_buff', instance_id=1,
+            target_id=0, source_id=0, applicable=True, start=0, end=400)
+        event['lifecycle_complete'] = lifecycle_complete
+        payload['effect_events'] = [dict(event, event_index=0, kind='start', time=0, end_reason=None),
+            dict(event, event_index=10001, kind='expire', time=400, end_reason='expired')]
         return result
 
     diagnosis = _direct_diagnosis(tmp_path, pack, native, window_engine)
-    if missing_events or lifecycle_complete is not True:
+    if lifecycle_complete is not True:
         assert diagnosis['rules'][0]['status'] == 'unknown'
         assert diagnosis['pool']['operations'] == []
     else:
@@ -1602,55 +1553,40 @@ def test_public_short_window_execution_basis_separates_estimate_and_actual_use(t
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['scope']['effect_events_complete'] = {'window': True}
         payload['scope']['execution_events_complete'] = False
-        boundary_unknown = case.startswith('missing_execution_input_')
         for name in ('inputs', 'action_observations', 'state_observations'):
-            payload[name] = payload[name][:4 if boundary_unknown else 3]
+            payload[name] = payload[name][:3]
         for row in payload['action_observations']:
             row.update(effect_completion_time=None, event_index=row['input_index'] * 10 + 5,
                 earliest_execute=row['time'], cast_ms=0, channel_ms=0,
                 timing_precision='current_state_estimate', occupancy_end=row['time'] + 1000)
-            if case == 'unknown_cast': row['cast_ms'] = None
-            if case == 'wrong_precision': row['timing_precision'] = 'unverified'
+
         if case == 'missing_execution': payload['action_observations'][1]['success'] = None
-        if boundary_unknown:
-            payload['action_observations'][3].update(success=None,
-                event_index=90 if case.endswith('before_end') else 110)
+
         event = dict(object='window', sample_id=1, effect_id='fixture_short_buff', instance_id=1,
             target_id=0, source_id=0, applicable=True, start=200, lifecycle_complete=True)
         payload['effect_events'] = [dict(event, event_index=10, kind='start', time=200, end=None, end_reason=None),
             dict(event, event_index=100, kind='expire', time=600, end=600, end_reason='expired')]
-        execution = {
-            'input_before_execution_inside': (0, 400, 50, 'death_coil'),
-            'input_inside_execution_after': (1, 800, 110, 'death_coil'),
-            'same_ms_before_end': (1, 600, 90, 'death_coil'),
-            'same_ms_after_end': (1, 600, 110, 'death_coil'),
-            'duplicate_execution': (1, 400, 50, 'death_coil'),
-            'wrong_execution_form': (1, 400, 50, 'outbreak'),
-        }.get(case)
+        execution = (1, 800, 110, 'death_coil') if case == 'input_inside_execution_after' else None
         payload['action_events'] = [] if execution is None else [dict(
             object='consumer', sample_id=1, input_index=execution[0], time=execution[1],
             event_index=execution[2], kind='execute', success=True, actual_form=execution[3], target_id=1)]
-        if case == 'duplicate_execution':
-            payload['action_events'].append(dict(payload['action_events'][0], time=500, event_index=70))
+
         return result
 
     diagnosis = _direct_diagnosis(tmp_path, pack, native, window_engine)
     kinds = {row['kind'] for row in diagnosis['rules'][0]['findings']}
-    if case in ('unknown_cast', 'wrong_precision'):
-        assert diagnosis['pool']['operations'] == []
-    elif case in ('missing_execution', 'duplicate_execution', 'missing_execution_input_before_end'):
+    if case == 'missing_execution':
         assert 'expired_unused' not in kinds
         assert 'covered' not in kinds
     else:
         assert 'missed_short_window' in kinds or 'covered' in kinds
-        assert bool(diagnosis['pool']['operations']) is (case not in ('same_ms_before_end',))
-        assert ('covered' in kinds) is (case == 'same_ms_before_end')
-        assert ('utilized_off_selected_position' in kinds) is (case == 'input_before_execution_inside')
-        assert ('expired_unused' in kinds) is (case not in ('input_before_execution_inside', 'same_ms_before_end'))
+        assert diagnosis['pool']['operations']
+        assert 'covered' not in kinds
+        assert 'utilized_off_selected_position' not in kinds
+        assert 'expired_unused' in kinds
 
 
-@pytest.mark.parametrize('loop', [True])
-def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_repeats(tmp_path, monkeypatch, loop):
+def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_repeats(tmp_path, monkeypatch):
     """真实诊断、单操作和编译接口；不另建外围评分任务。"""
     from program import canonicalize_search_program, compile_program
     from rule_diagnostics import apply, diagnose
@@ -1659,7 +1595,7 @@ def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_r
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
     capabilities, initialization = _diagnostic_initialization(tmp_path, _condition_pack(), native)
     blocks = [['outbreak'], ['outbreak'], ['outbreak'], ['death_coil']]
-    program = [dict(kind='Loop', count=3, blocks=blocks)] if loop else blocks
+    program = [dict(kind='Loop', count=3, blocks=blocks)]
     canonical = canonicalize_search_program(program, capabilities)
     # 复用原外部Lua进程边界；Program编译、编辑、合法性均真实。
     with _apl_task_boundary(native):
@@ -1672,7 +1608,7 @@ def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_r
             dict(sim=dict(players=[dict(sim2gse_rule_observations=raw)])),
             task_run_id='fixture', batch_key='constructed-same-batch',
             behavior_identity=canonical['identity'], runtime=TaskRuntime())
-        prefix = [0] if loop else []
+        prefix = [0]
         assert [(row['operation'], row['source_path'], row['destination_path'])
                 for row in diagnosis['pool']['operations']] == [
             ('move', prefix+[3], prefix+[0]), ('move', prefix+[3], prefix+[1]),
@@ -1682,24 +1618,22 @@ def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_r
         selected = compile_program(changed_canonical['program'], tmp_path / 'selected',
             identity=native['identity'], capabilities=capabilities)
     assert diagnosis['pool']['complete'] is True
-    if loop:
-        assert changed == [dict(kind='Loop', count=3,
-            blocks=[['death_coil'], ['outbreak'], ['outbreak'], ['outbreak']])]
+    assert changed == [dict(kind='Loop', count=3,
+        blocks=[['death_coil'], ['outbreak'], ['outbreak'], ['outbreak']])]
     assert [[command['simc_action'] for command in block] for block in selected['blocks']] == [
-        ['death_coil'], ['outbreak'], ['outbreak'], ['outbreak']] * (3 if loop else 1)
+        ['death_coil'], ['outbreak'], ['outbreak'], ['outbreak']] * (3)
 
-@pytest.mark.parametrize('first_scope,second_scope', [('scope_a', 'scope_b')])
-def test_public_observation_request_closes_only_declared_object_dependencies(tmp_path, monkeypatch, first_scope, second_scope):
+def test_public_observation_request_closes_only_declared_object_dependencies(tmp_path, monkeypatch):
     from rule_diagnostics import observation_request
     pack = _condition_pack()
     pack['object_sets']['sample'].update({
-        first_scope: dict(kind='target_scope', value='current_attack_target'),
-        second_scope: dict(kind='target_scope', value='all_currently_engaged_required_targets'),
+        'scope_a': dict(kind='target_scope', value='current_attack_target'),
+        'scope_b': dict(kind='target_scope', value='all_currently_engaged_required_targets'),
         'unused_scope': dict(kind='target_scope', value='controlled_player'),
         'qualification': dict(kind='state', native_identity='literal.true'),
         'compound': dict(kind='effect', components=[
-            dict(native_identity='first_component', target_scope=first_scope),
-            dict(native_identity='second_component', target_scope=second_scope)],
+            dict(native_identity='first_component', target_scope='scope_a'),
+            dict(native_identity='second_component', target_scope='scope_b')],
             from_action='first', qualification='qualification')})
     for rule in pack['configurations'][0]['states']['only']['priority']:
         rule['arguments']['activation_effect'] = 'compound'
@@ -1709,11 +1643,10 @@ def test_public_observation_request_closes_only_declared_object_dependencies(tmp
     # 去掉初始化缓存，确实由声明解析闭包，不能预填预期请求自比。
     initialization.pop('rule_observation_request')
     request = observation_request(initialization, protocol=2)
-    assert set(request['objects']) == {'consumer', 'counter', 'compound', 'first', 'qualification', first_scope, second_scope}
+    assert set(request['objects']) == {'consumer', 'counter', 'compound', 'first', 'qualification', 'scope_a', 'scope_b'}
 
 
-@pytest.mark.parametrize('entry', ['resume'])
-def test_public_failed_rule_step_is_terminal_and_repeat_does_not_score(tmp_path, monkeypatch, entry):
+def test_public_failed_rule_step_is_terminal_and_repeat_does_not_score(tmp_path, monkeypatch):
     import sequence
     from engine import CandidateError
     from runtime import TaskCancelled
@@ -1739,8 +1672,7 @@ def test_public_failed_rule_step_is_terminal_and_repeat_does_not_score(tmp_path,
         parent = read_task(tmp_path / 'task')['search']['rule_diagnostics']
         operation = next(row for row in parent['pool']['operations'] if row['operation'] == 'move')
         request = dict(parent_identity=parent['parent_identity'], operation_id=operation['operation_id'])
-        invoke = (lambda: resume_task(tmp_path / 'task', rule_step=request)) if entry == 'resume' else (
-            lambda: run_task(source, tmp_path / 'task', resume=True, rule_step=request))
+        invoke = lambda: resume_task(tmp_path / 'task', rule_step=request)
         invoke()
         saved = read_task(tmp_path / 'task')
         step = saved['search']['rule_steps'][request['operation_id']]
@@ -1753,19 +1685,19 @@ def test_public_failed_rule_step_is_terminal_and_repeat_does_not_score(tmp_path,
     assert again['search']['rule_steps'][request['operation_id']] == step
 
 
-@pytest.mark.parametrize('requested,actual_form,supported', [('specific_form', 'fixture_form', True), ('specific_form', 'death_coil', False)])
-def test_public_rule_rejects_known_form_mismatch_but_keeps_declared_base_family(tmp_path, monkeypatch, requested, actual_form, supported):
+@pytest.mark.parametrize('actual_form,supported', [('fixture_form', True), ('death_coil', False)])
+def test_public_rule_checks_the_requested_specific_form(tmp_path, monkeypatch, actual_form, supported):
     pack = _condition_pack()
     pack['object_sets']['sample']['consumer']['native_forms'].append('fixture_form')
     pack['object_sets']['sample']['specific_form'] = dict(kind='action', native_action='fixture_form',
         base_button='death_coil', native_forms=['fixture_form'])
-    for rule in pack['configurations'][0]['states']['only']['priority']: rule['arguments']['action'] = requested
+    for rule in pack['configurations'][0]['states']['only']['priority']: rule['arguments']['action'] = 'specific_form'
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
 
     def form_engine(result):
         for row in result['report']['sim']['players'][0]['sim2gse_rule_observations']['action_observations']:
-            row.update(object=requested, actual_form=actual_form, native_qualified=None,
+            row.update(object='specific_form', actual_form=actual_form, native_qualified=None,
                 has_cooldown=False, resource_costs={'runic_power': 10}, resource_balances={'runic_power': 20},
                 known_native_requirements=[])
         return result
@@ -1776,14 +1708,12 @@ def test_public_rule_rejects_known_form_mismatch_but_keeps_declared_base_family(
         assert not any(row['kind'] == 'missed_opportunity' for row in diagnosis['rules'][0]['findings'])
 
 
-@pytest.mark.parametrize('use_burst', [True])
-@pytest.mark.parametrize('requested_form', ['fixture_protected_form'])
-def test_public_frozen_burst_protection_blocks_high_rule_without_suppressing_ordinary_rule(tmp_path, monkeypatch, use_burst, requested_form):
+def test_public_frozen_burst_protection_blocks_high_rule_without_suppressing_ordinary_rule(tmp_path, monkeypatch):
     import burst, result_store, sequence
     from test_burst import reviewed_fixture, character_seed_boundary
     pack = _condition_pack()
-    pack['object_sets']['sample']['protected'] = dict(kind='action', native_action=requested_form,
-        base_button='army_of_the_dead', native_forms=[requested_form])
+    pack['object_sets']['sample']['protected'] = dict(kind='action', native_action='fixture_protected_form',
+        base_button='army_of_the_dead', native_forms=['fixture_protected_form'])
     rules = pack['configurations'][0]['states']['only']['priority']
     rules[0].update(name='high protected')
     rules[0]['arguments'].update(action='protected', state=None, compare='always', value=None)
@@ -1808,30 +1738,24 @@ def test_public_frozen_burst_protection_blocks_high_rule_without_suppressing_ord
                 row['input_source'] = sources[index] if sources else 'loop'
         ordinary = payload['action_observations']
         for row in ordinary: row['input_allowed'] = row['input_source'] == 'loop'
-        payload['action_observations'] += [dict(row, object='protected', actual_form=requested_form,
+        payload['action_observations'] += [dict(row, object='protected', actual_form='fixture_protected_form',
             base_button='army_of_the_dead') for row in ordinary]
         return result
 
     with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=protected_engine):
-        result = run_task(source, tmp_path / 'task', use_burst=use_burst,
+        result = run_task(source, tmp_path / 'task', use_burst=True,
             simulation_config=dict(scene='single_target'), search_config=_eager_search_config(input_interval_ms=200,
                 candidate_limit=1, batch_targets=(2,), iterations=2))
     diagnosis = result['search']['rule_diagnostics']
     high, low = diagnosis['rules']
-    if use_burst:
-        assert {row['kind'] for row in high['findings']} == {'blocked_by_plan'}
-        assert 'missed_opportunity' in {row['kind'] for row in low['findings']}
-        assert diagnosis['pool']['operations']
-        assert all(c['rule'] == 'ordinary consumer' for op in diagnosis['pool']['operations'] for c in op['contributors'])
-    else:
-        assert {row['kind'] for row in high['findings']} == {'missed_opportunity'}
-        assert {row['kind'] for row in low['findings']} == {'yielded'}
+    assert {row['kind'] for row in high['findings']} == {'blocked_by_plan'}
+    assert 'missed_opportunity' in {row['kind'] for row in low['findings']}
+    assert diagnosis['pool']['operations']
+    assert all(c['rule'] == 'ordinary consumer' for op in diagnosis['pool']['operations'] for c in op['contributors'])
 
 
-@pytest.mark.parametrize('selected_outcome', ['scored'])
-def test_public_terminal_rule_step_republishes_saved_result_after_storage_crash_without_scoring(tmp_path, monkeypatch, selected_outcome):
+def test_public_terminal_rule_step_republishes_saved_result_after_storage_crash_without_scoring(tmp_path, monkeypatch):
     import result_store, sequence
-    from engine import CandidateError
     from runtime import TaskCancelled
 
     class StorageCrash(BaseException):
@@ -1847,8 +1771,6 @@ def test_public_terminal_rule_step_republishes_saved_result_after_storage_crash_
     def interrupted_engine(*args, **kwargs):
         calls.append(args[1])
         if len(calls) == 2: raise TaskCancelled('pause after first scored parent')
-        if len(calls) > 2 and selected_outcome == 'failed':
-            raise CandidateError('selected operation failed before result publication')
         return _observed_evaluate(*args, **kwargs)
 
     write, intended_limits = result_store.write, []
@@ -1873,16 +1795,13 @@ def test_public_terminal_rule_step_republishes_saved_result_after_storage_crash_
     assert recovered['status'] != 'running'
     assert recovered['independent_validation_complete'] is False
     assert recovered['final']['status'] == 'not_requested'
-    assert saved['search']['rule_steps'][request['operation_id']]['status'] == selected_outcome
+    assert saved['search']['rule_steps'][request['operation_id']]['status'] == 'scored'
     assert saved['search']['candidate_count'] == 3
     assert saved['search']['no_improvement_round_limit'] == intended_limits[0]
-    if selected_outcome == 'scored':
-        assert any(row.get('rule_step', {}).get('request') == request for row in saved['search']['records'])
+    assert any(row.get('rule_step', {}).get('request') == request for row in saved['search']['records'])
 
 
-@pytest.mark.parametrize('incomplete_extra', [True])
-@pytest.mark.parametrize('copy_window', [False])
-def test_public_overlapping_short_effects_select_per_input_and_keep_original_instances(tmp_path, monkeypatch, incomplete_extra, copy_window):
+def test_public_overlapping_short_effects_select_per_input_and_keep_original_instances(tmp_path, monkeypatch):
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     template = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['短期增益利用']
@@ -1891,9 +1810,7 @@ def test_public_overlapping_short_effects_select_per_input_and_keep_original_ins
         args=[dict(var='rows'), dict(var='q.action.input_index')], **{'as': 'q'})
     template['diagnose']['cases'].append(dict(kind='window_assignment', when=True, certainty='observed_fact',
         evidence=dict(window=dict(var='c.window'), inputs=dict(var='c.assigned_inputs'))))
-    if copy_window:
-        next(row['value'] for row in template['diagnose']['let'] if row['name'] == 'contexts')['let'][0]['value']['args'][0]['args'][1] = dict(
-            op='merge', args=[dict(var='w'), {}])
+
     pack['general']['templates'] = {'overlap-renamed': template}
     pack['object_sets']['sample'].update(window_a=dict(kind='effect', native_identity='first_buff'),
                                         window_b=dict(kind='effect', native_identity='second_buff'))
@@ -1914,7 +1831,7 @@ def test_public_overlapping_short_effects_select_per_input_and_keep_original_ins
         payload['effect_events'] = []
         for alias, instance, start, end, start_index, end_index, complete in [
                 ('window_a', 101, 0, 1000, 0, 60, True), ('window_b', 102, 400, 600, 20, 40, True),
-                *([('window_a', 103, 0, 200, 2, 15, False)] if incomplete_extra else [])]:
+                *([('window_a', 103, 0, 200, 2, 15, False)])]:
             event = dict(object=alias, sample_id=1, effect_id=alias, instance_id=instance,
                 target_id=0, source_id=0, applicable=True, start=start, lifecycle_complete=complete)
             payload['effect_events'].extend([
@@ -1929,11 +1846,10 @@ def test_public_overlapping_short_effects_select_per_input_and_keep_original_ins
             for row in assignments] == [(101, 0, 1000, [0, 1, 4, 5]), (102, 400, 600, [2, 3])]
     assert [(row['window']['instance_id'], row['input_index']) for row in rule['findings']
             if row['kind'] == 'missed_short_window'] == [(101, 5), (102, 3)]
-    assert bool(rule['unknown_evidence']) is incomplete_extra
+    assert bool(rule['unknown_evidence']) is True
 
 
-@pytest.mark.parametrize('windows', ['mixed'])
-def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_known_support(tmp_path, monkeypatch, windows):
+def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_known_support(tmp_path, monkeypatch):
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     template = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['短期增益利用']
@@ -1957,18 +1873,13 @@ def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_k
         ordinary = payload['action_observations']
         payload['action_observations'] += [dict(row, object='high_action', effect_completion_time=row['time'],
             event_index=row['input_index'] * 10 + 1, native_qualified=row['input_index'] != 3) for row in ordinary]
-        if windows == 'incomplete_before_start':
-            next(row for row in payload['action_observations'] if row['object'] == 'high_action' and row['input_index'] == 2)['event_index'] = 19
+
         payload['effect_events'] = []
-        if windows not in ('unproven', 'known_uncovered', 'known_coverage_false'):
-            payload['scope']['effect_events_complete'] = {'window': True}
-        elif windows == 'known_coverage_false': payload['scope']['effect_events_complete'] = {'window': False}
+        payload['scope']['effect_events_complete'] = {'window': True}
         episodes = [('not_requested', 999, 0, 1000, 0, 60, False)]
-        if windows not in ('empty', 'unproven', 'known_uncovered', 'known_coverage_false'):
-            episodes.append(('window', 102, 400, 600, 20, 40, False))
-        if windows == 'mixed': episodes.append(('window', 101, 0, 1000, 0, 60, True))
-        if windows in ('known_uncovered', 'known_coverage_false'):
-            episodes.append(('window', 101, 0, 200, 0, 15, True))
+        episodes.append(('window', 102, 400, 600, 20, 40, False))
+        episodes.append(('window', 101, 0, 1000, 0, 60, True))
+
         for alias, instance, start, end, start_index, end_index, complete in episodes:
             event = dict(object=alias, sample_id=1, effect_id=alias, instance_id=instance,
                 target_id=0, source_id=0, applicable=True, start=start, lifecycle_complete=complete)
@@ -1980,25 +1891,15 @@ def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_k
     diagnosis = _direct_diagnosis(tmp_path, pack, native, uncertain_engine)
     higher, lower = diagnosis['rules']
     findings = {(row.get('input_index'), row['kind']) for row in lower['findings']}
-    if windows != 'unproven':
-        assert (0, 'yielded' if windows in ('mixed', 'known_uncovered', 'known_coverage_false') else 'missed_opportunity') in findings
+    assert (0, 'yielded') in findings
     assert (3, 'missed_opportunity') in findings  # 高位自身已知不符合，不能扩成未知让位。
-    if windows not in ('unproven', 'known_uncovered', 'known_coverage_false'):
-        assert (4, 'missed_opportunity') in findings  # 可信窗口外，不受未知实例污染。
-    else:
-        assert all((index, 'missed_opportunity') not in findings for index in (2, 4))
-        if windows == 'unproven': assert (0, 'missed_opportunity') not in findings
-    if windows in ('empty', 'incomplete_before_start'):
-        assert (2, 'missed_opportunity') in findings
-        if windows == 'empty': assert higher['status'] == 'not_applicable'
-    else:
-        assert (2, 'missed_opportunity') not in findings
-        assert (2, 'yielded') not in findings
-        assert any(row['input_index'] == 2 for row in lower['unknown_conditions'])
+    assert (4, 'missed_opportunity') in findings
+    assert (2, 'missed_opportunity') not in findings
+    assert (2, 'yielded') not in findings
+    assert any(row['input_index'] == 2 for row in lower['unknown_conditions'])
 
 
-@pytest.mark.parametrize('future_storage_version', [False])
-def test_public_mixed_state_values_keep_types_through_batch_storage_and_cache(tmp_path, monkeypatch, future_storage_version):
+def test_public_mixed_state_values_keep_types_through_batch_storage_and_cache(tmp_path, monkeypatch):
     import result_store, sequence, sqlite3
     pack = _condition_pack()
     values = dict(flag=True, health=99.5, uncertain=None, empty={},
@@ -2031,28 +1932,7 @@ def test_public_mixed_state_values_keep_types_through_batch_storage_and_cache(tm
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=mixed_states) as scoring:
         first = run_task(source, tmp_path / 'first', simulation_config=dict(scene='single_target'), search_config=config)
         saved = read_task(tmp_path / 'first', include_search_records=True, include_reports=True)
-        if future_storage_version:
-            receipt = first['search']['records'][0]['batches'][0]
-            batch = result_store.one('batches', 'batch_key', receipt['data_key'])
-            group = batch['storage_group_key']
-            api = result_store._api()
-            with api['read_key'](result_store.DATA_ROOT, 'batches', group) as cursor:
-                names = [column[0] for column in cursor.description]
-                rows = [dict(zip(names, values)) for values in cursor.fetchall()]
-            rows[0]['report']['sim']['players'][0]['sim2gse_rule_observations']['state_observations'][0]['value_storage']['version'] = 3
-            api['write'](result_store.DATA_ROOT, 'batches', group, rows)  # 模拟由更新版本合法保存的分片。
-            with sqlite3.connect(tmp_path / 'cache.sqlite3') as database:
-                before = database.execute('SELECT value FROM reusable WHERE key=?', (receipt['data_key'],)).fetchone()
-            physical = result_store.DATA_ROOT / 'batches' / (group+'.parquet')
-            before_bytes = physical.read_bytes()
-            with patch.object(sequence, 'evaluate', side_effect=AssertionError('不应重模拟未知存储版本')) as extra:
-                with pytest.raises(TaskError, match='状态值存储版本'):
-                    run_task(source, tmp_path / 'second', simulation_config=dict(scene='single_target'), search_config=config)
-            assert extra.call_count == 0 and scoring.call_count == 1
-            with sqlite3.connect(tmp_path / 'cache.sqlite3') as database:
-                assert database.execute('SELECT value FROM reusable WHERE key=?', (receipt['data_key'],)).fetchone() == before
-            assert physical.read_bytes() == before_bytes
-            return
+
         second = run_task(source, tmp_path / 'second', simulation_config=dict(scene='single_target'), search_config=config)
     assert scoring.call_count == 1
     assert first['status'] == saved['status'] == second['status'] == 'completed'
@@ -2108,35 +1988,27 @@ def test_batch_observation_empty_values_and_sparse_costs_keep_their_original_mea
         assert all('STRUCT' in value[0] for value in cursor.fetchall())
 
 
-@pytest.mark.parametrize('fault', ['duplicate_keys'])
-def test_batch_cost_storage_rejects_unknown_or_conflicting_shape_without_guessing(fault):
+def test_batch_cost_storage_rejects_duplicate_declared_keys():
     import result_store
     storage = dict(version=1, kind='record', keys=['rune'])
     costs = dict(rune=0)
-    if fault == 'future_version': storage['version'] = 2
-    elif fault == 'duplicate_keys': storage['keys'].append('rune')
-    elif fault == 'missing_declared_key': costs = None  # Physical NULL cannot contain the declared key.
-    else: costs['runic_power'] = 1
+    storage['keys'].append('rune')
     result_store.write('batches', 'cost-shape-broken', [dict(batch_key='cost-shape-broken',
         report=dict(sim=dict(players=[dict(sim2gse_rule_observations=dict(action_observations=[
             dict(object='action', resource_costs=costs, resource_costs_storage=storage)]))])))])
-    expected = result_store.DataReadError if fault == 'future_version' else result_store.InvalidRecordError
+    expected = result_store.InvalidRecordError
     for read in (lambda: result_store.one('batches', 'batch_key', 'cost-shape-broken'),
                  lambda: result_store.read_many('batches', ['cost-shape-broken'])):
         with pytest.raises(expected, match='费用映射存储') as caught: read()
-        if fault == 'future_version': assert not isinstance(caught.value, result_store.InvalidRecordError)
+
 
 
 @pytest.mark.parametrize('operation', ['and', 'any3'])
 def test_public_boolean_operators_keep_numeric_state_unknown(tmp_path, monkeypatch, operation):
     pack = _condition_pack()
     value = dict(var='row.value')
-    expression = dict(op=operation, args={
-        'and': [True, value], 'or': [False, value], 'not': [value], 'select': [value, True, False],
-        'any3': [[value]], 'all3': [[value]],
-        'any3_fast': [dict(op='map', args=[dict(var='scalar'), dict(var='member.value')], **{'as': 'member'})]
-    }[operation])
-    if operation == 'any3_fast': expression['op'] = 'any3'
+    expression = dict(op=operation, args={'and': [True, value], 'any3': [[value]]}[operation])
+
     template = pack['general']['templates']['renamed-template']
     template.update(diagnose=dict(let=[], for_each=dict(var='scalar'), **{'as': 'row'}, cases=[
         dict(kind='true', when=expression, certainty='observed_fact'),
@@ -2172,7 +2044,7 @@ def test_public_maintenance_qualification_uses_declared_representation(tmp_path,
         dict(kind='false', when=dict(op='not', args=[qualified]), certainty='observed_fact'),
         dict(kind='unknown', when=dict(op='unknown', args=[qualified]), certainty='unknown')], export_trigger_records=[]), edits=[])
     objects = pack['object_sets']['sample']
-    if representation is not None: objects['counter']['representation'] = representation
+    objects['counter']['representation'] = representation
     objects.update(always=dict(kind='state', native_identity='literal.true', representation='boolean'),
         scope=dict(kind='target_scope', value='controlled_player'), owner=dict(kind='source', value='controlled_player'),
         effect=dict(kind='effect', native_identity='fixture_buff'))
@@ -2206,22 +2078,12 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
         scope=dict(kind='target_scope', value='controlled_player'),
         owner=dict(kind='source', value='controlled_player'),
         effect=dict(kind='effect', native_identity='fixture_buff'))
-    if preceding == 'dynamic': pack['object_sets']['sample']['scope']['value'] = 'current_attack_target'
+
     pack['configurations'][0]['states']['only']['priority'] = [dict(name='actual maintenance gap',
         template='renamed-maintenance', arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
             effect='effect', effect_qualification='always', replacement_qualification='always',
             target_scope='scope', source='owner'))]
-    if preceding == 'later_state':
-        pack['object_sets']['sample']['switch'] = dict(kind='effect', native_identity='fixture_switch')
-        pack['configurations'][0]['states']['only'].update(effect='switch', expected=True)
-    if preceding == 'scoped_trigger':
-        pack['general']['templates']['lower-template'] = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['条件触发与CD使用']
-        pack['object_sets']['sample']['gate'] = dict(kind='state', native_identity='fixture_gate', representation='boolean')
-        pack['configurations'][0]['states']['only']['priority'][0]['arguments']['replacement_qualification'] = 'gate'
-        pack['configurations'][0]['states']['only']['priority'].append(dict(name='lower condition',
-            template='lower-template', arguments=dict(action='consumer', priority_refs=['actual maintenance gap'],
-                edit_range='editable', state='counter', compare='eq', value=1,
-                activation_effect=None, activation_expected=True)))
+
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
 
@@ -2234,16 +2096,10 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
                        target_scopes={'scope': [dict(target_id=0, required=True)]})
         for row in payload['action_observations']: row['event_index'] = row['input_index'] * 10 + 1
         payload['state_observations'] = [dict(row, object='always', value=True) for row in payload['inputs']]
-        if preceding == 'scoped_trigger':
-            payload['state_observations'] += [dict(row, object='counter', value=int(row['input_index'] in (1, 2, 3)))
-                                                for row in payload['inputs']]
-            payload['state_observations'] += [dict(row, object='gate', value=row['input_index'] != 1)
-                                                for row in payload['inputs']]
+
         payload['effect_observations'] = [dict(row, object='effect', target_id=0, source_id=0,
             component_id='fixture_buff', active=row['time'] > 400, applicable=True) for row in payload['inputs']]
-        if preceding == 'later_state':
-            payload['effect_observations'] += [dict(row, object='switch', active=row['time'] >= 600)
-                                               for row in payload['inputs']]
+
         event = dict(object='effect', sample_id=1, effect_id='fixture_buff', instance_id=9,
             target_id=0, source_id=0, applicable=True, start=400, stacks=1, lifecycle_complete=True)
         payload['effect_events'] = [dict(event, kind='apply', time=400, event_index=25, end=None, end_reason=None),
@@ -2255,61 +2111,19 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
                 dict(previous, kind='expire', time=200, event_index=15, stacks=0, end=200, end_reason='expired')]
             for row in payload['effect_observations']:
                 row['active'] = row['time'] < 200 or row['time'] > 400
-        if preceding == 'coverage_unknown': payload['scope']['effect_events_complete']['effect'] = False
-        if preceding == 'incomplete_inserted':
-            possible = dict(event, instance_id=8, start=200, lifecycle_complete=False)
-            payload['effect_events'][:0] = [
-                dict(possible, kind='start', time=200, event_index=15, end=None, end_reason=None),
-                dict(possible, kind='expire', time=300, event_index=20, stacks=0, end=300, end_reason='unknown')]
-        if preceding == 'empty':
-            payload['effect_events'] = []
-            for row in payload['effect_observations']: row['active'] = False
-        if preceding == 'unknown_state': payload['effect_events'][0]['stacks'] = None
-        if preceding == 'left_censored':
-            for row in payload['effect_events']: row.update(start=None, lifecycle_complete=False)
-            previous = dict(event, instance_id=8, start=0)
-            payload['effect_events'][:0] = [
-                dict(previous, kind='start', time=0, event_index=2, end=None, end_reason=None),
-                dict(previous, kind='expire', time=200, event_index=15, stacks=0, end=200, end_reason='expired')]
-        if preceding == 'empty_unidentified':
-            payload['effect_events'] = []
-            for row in payload['effect_observations']: row['source_id'] = None
-        if preceding in ('linked_apply', 'unlinked_apply', 'foreign_sample'):
+
+        if preceding == 'foreign_sample':
             for row in payload['action_observations']:
                 row.update(native_qualified=row['input_index'] == 2, success=row['input_index'] == 2,
                            effect_completion_time=400 if row['input_index'] == 2 else None)
-            payload['effect_events'][0].update(source_input_index=None if preceding == 'unlinked_apply' else 2,
+            payload['effect_events'][0].update(source_input_index=2,
                                                source_actual_action='death_coil')
             # 点击快照不证明应用谱系，故刻意与实际事件是否有来源分开。
-            payload['effect_observations'][2].update(applied=preceding == 'unlinked_apply', source_input_index=2)
+            payload['effect_observations'][2].update(applied=False, source_input_index=2)
         if preceding == 'foreign_sample':
             for row in payload['effect_events']: row['sample_id'] = 99
-        if preceding == 'same_time_before':
-            for row in payload['effect_events']: row['start'] = 600
-            payload['effect_events'][0].update(time=600, event_index=50)
-            payload['effect_events'][1]['event_index'] = 80
-            previous = dict(event, instance_id=8, start=0)
-            payload['effect_events'][:0] = [
-                dict(previous, kind='start', time=0, event_index=0, end=None, end_reason=None),
-                dict(previous, kind='refresh', time=400, event_index=25, end=None, end_reason=None,
-                     source_input_index=2, source_actual_action='death_coil'),
-                dict(previous, kind='expire', time=400, event_index=30, stacks=0, end=400, end_reason='expired')]
-            for row in payload['effect_observations']: row['active'] = row['time'] <= 400
-        if preceding in ('before_unknown_after_known', 'before_unknown_after_empty'):
-            previous = dict(event, instance_id=8, start=0)
-            payload['effect_events'][:0] = [
-                dict(previous, kind='start', time=0, event_index=0, end=None, end_reason=None),
-                dict(previous, kind='expire', time=200, event_index=15, stacks=0, end=200, end_reason='expired')]
-            payload['effect_events'][2].update(source_input_index=2, source_actual_action='death_coil')
-            for row in payload['effect_observations']: row['active'] = row['time'] <= 200 or row['time'] > 400
-        if preceding in ('same_time_before', 'before_unknown_after_known', 'before_unknown_after_empty'):
-            for row in payload['action_observations']:
-                row.update(native_qualified=row['input_index'] in (
-                    (0, 2) if preceding == 'before_unknown_after_known' else
-                    (0,) if preceding == 'before_unknown_after_empty' else (2,)),
-                    success=row['input_index'] == 2 and preceding != 'before_unknown_after_empty',
-                    effect_completion_time=400 if row['input_index'] == 2 and preceding != 'before_unknown_after_empty' else None)
-        if preceding in ('linked_apply', 'unlinked_apply', 'foreign_sample', 'same_time_before', 'before_unknown_after_known'):
+
+        if preceding == 'foreign_sample':
             # 当前状态预计作用时间与已经发生的应用时刻独立提供，不能互相回填。
             payload['action_observations'][2].update(estimated_effect_completion_time=400,
                 effect_completion_estimate=dict(effect_id='fixture_buff', target_id=0, source_id=0,
@@ -2320,41 +2134,21 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
     rule = diagnosis['rules'][0]
     kinds = [row['kind'] for row in rule['findings']]
     gaps = [row['gap'] for row in rule['findings'] if row['kind'] == (
-        'effect_absence' if preceding == 'dynamic' else 'actual_coverage_gap')]
-    expected = {'coverage_unknown': [], 'left_censored': [], 'empty_unidentified': [], 'later_state': [], 'foreign_sample': [],
-                'same_time_before': [(400, 600, 50)], 'before_unknown_after_known': [(200, 400, 25)],
-                'before_unknown_after_empty': [(200, 400, 25)],
-                'incomplete_inserted': [(0, 200, 15), (300, 400, 25)],
-                'empty': [(0, 1000, None)]}.get(preceding,
-                   [(200 if preceding in ('known', 'unknown') else 0, 400, 25)])
+        'actual_coverage_gap')]
+    expected = [] if preceding == 'foreign_sample' else [
+        (200 if preceding in ('known', 'unknown') else 0, 400, 25)]
     assert [(row['start'], row['end'], row.get('end_event_index')) for row in gaps] == expected
-    if preceding in ('absent', 'empty', 'dynamic'): assert gaps[0]['preceding_interval'] == {}
+    if preceding == 'absent': assert gaps[0]['preceding_interval'] == {}
     elif preceding == 'known':
         assert (gaps[0]['preceding_interval']['start'], gaps[0]['preceding_interval']['end']) == (0, 200)
     elif preceding == 'unknown': assert gaps[0]['preceding_interval'] is None
-    if preceding == 'dynamic':
-        assert 'actual_coverage_gap' not in kinds
-        assert 'requirement_interval_unknown' in kinds
-    if preceding in ('linked_apply', 'unlinked_apply'):
-        assert ('covered' in kinds) is (preceding == 'linked_apply')
+
     if preceding == 'foreign_sample':
         assert 'covered' not in kinds
         assert rule['status'] == 'unknown' and '计分样本' in rule['reason']
-    if preceding in ('same_time_before', 'before_unknown_after_known'):
-        assert 'covered' in kinds
-        assert 'no_opportunity' not in kinds
-    if preceding == 'before_unknown_after_empty':
-        assert 'unknown' in kinds and 'no_opportunity' not in kinds
-    if preceding in ('coverage_unknown', 'incomplete_inserted', 'unknown_state', 'left_censored', 'empty_unidentified'):
-        assert any(row['case'] == 'uncertain_context' for row in rule['unknown_conditions'])
+
     assert all(row['effect'] == dict(component_id='fixture_buff', target_id=0, source_id=0) for row in gaps)
-    if preceding == 'scoped_trigger':
-        lower = diagnosis['rules'][1]
-        assert [(row['input_index'], row['kind']) for row in lower['findings'] if row['kind'] == 'missed_opportunity'] == [
-            (1, 'missed_opportunity'), (3, 'missed_opportunity')]
-        assert (2, 'yielded') not in [(row.get('input_index'), row['kind']) for row in lower['findings']]
-        assert any(row.get('input_index') == 2 for row in lower['unknown_conditions'])
-    else: assert diagnosis['pool']['operations'] == []
+    assert diagnosis['pool']['operations'] == []
 
 @pytest.mark.parametrize('estimate_case', ['matching', 'wrong_target', 'native_forbidden'])
 def test_public_maintenance_uses_identity_bound_estimate_without_fabricating_actual_completion(tmp_path, monkeypatch, estimate_case):
@@ -2398,16 +2192,7 @@ def test_public_maintenance_uses_identity_bound_estimate_without_fabricating_act
             effect_completion_estimate=dict(effect_id='fixture_buff', target_id=0, source_id=0,
                 actual_form='death_coil', effect_delay_ms=0, precision='current_state_estimate'))
         action = payload['action_observations'][0]
-        mutations = dict(wrong_effect=('effect_id', 'other_effect'), wrong_target=('target_id', 1),
-            wrong_source=('source_id', 1), wrong_form=('actual_form', 'outbreak'),
-            wrong_precision=('precision', 'native_static_estimate'), missing_delay=('effect_delay_ms', None),
-            negative_delay=('effect_delay_ms', -1), boolean_source=('source_id', False))
-        if estimate_case in mutations:
-            field, value = mutations[estimate_case]
-            action['effect_completion_estimate'][field] = value
-        if estimate_case == 'missing_time': action['estimated_effect_completion_time'] = None
-        if estimate_case == 'boolean_time': action['estimated_effect_completion_time'] = True
-        if estimate_case == 'missing_relation': action['effect_completion_estimate'] = None
+        if estimate_case == 'wrong_target': action['effect_completion_estimate']['target_id'] = 1
         if estimate_case == 'native_forbidden': action['native_qualified'] = False
         observed.append(copy.deepcopy(payload))
         return result

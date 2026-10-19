@@ -75,11 +75,8 @@ class ProgramTests(unittest.TestCase):
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
         capabilities = dict(actions=[dict(kind="spell", spell_id=77575, name="Outbreak",
                                           simc_action="outbreak")])
-        upstream_result = type("Process", (), {"returncode": 0,
-                                                 "stdout": b"STEP\t1\tspell\t77575\t\t31\t465554555245\t1\nPASS\t1\n",
-                                                 "stderr": b""})()
         with tempfile.TemporaryDirectory() as directory, \
-             patch("gse_import.run_command", return_value=upstream_result) as run_upstream, \
+             patch("gse_import.run_command") as run_upstream, \
              self.assertRaisesRegex(ValueError, "3333.*3332.*不能模拟"):
             compile_program(from_gse_import(text, "FUTURE", 1), Path(directory),
                             identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
@@ -115,9 +112,8 @@ class ProgramTests(unittest.TestCase):
                                                 1: {"Type": "Pause", "Clicks": 3000}}])])
         raw = cbor2.dumps(wire_value(["TOO_MANY", sequence]))
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        fake = type("Process", (), {"returncode": 0, "stdout": b"PASS\t1\n", "stderr": b""})()
         with tempfile.TemporaryDirectory() as directory, \
-             patch("gse_import.run_command", return_value=fake) as run_upstream, \
+             patch("gse_import.run_command") as run_upstream, \
              self.assertRaisesRegex(ValueError, "展开.*4096"):
             compile_program(from_gse_import(text, "TOO_MANY", 1), Path(directory),
                             identity=dict(class_id=6, spec_id=252), capabilities=dict(actions=[]),
@@ -178,7 +174,9 @@ class ProgramTests(unittest.TestCase):
                  1: {"Type": "Action", "type": "spell", "spell": 77575},
                  2: {"Type": "Pause", "Clicks": 2}},
                 {"Type": "If", "Variable": "true",
-                 1: [{"Type": "Action", "type": "spell", "spell": 77575}],
+                 1: [{"Type": "Action", "type": "spell", "spell": 77575},
+                     {"Type": "Action", "type": "item", "item": 250245},
+                     {"Type": "Action", "type": "macro", "macro": "/cast festering_strike"}],
                  2: [{"Type": "Pause", "Clicks": 2}]},
                 {"Type": "Embed", "Sequence": "CHILD"},
             ]),
@@ -191,6 +189,15 @@ class ProgramTests(unittest.TestCase):
                             *[dict(kind="spell", spell_id=spell_id, name=f"spell_{spell_id}",
                                    simc_action=f"spell_{spell_id}")
                               for spell_id in (70001, 70002, 70003, 70004)]])
+        strike = dict(kind="spell", spell_id=85948, name="festering_strike",
+                      simc_action="festering_strike")
+        alias = dict(kind="spell", spell_id=316239, native_spell_id=85948,
+                     name="festering_strike", simc_action="festering_strike",
+                     data_valid=True, available=True, background=False, passive=False, quiet=False)
+        cap["actions"].append(strike)
+        cap["import_actions"] = [*cap["actions"], alias,
+                                 dict(kind="item", slot=13, item_id=250245,
+                                      simc_action="use_item,slot=trinket1")]
         with tempfile.TemporaryDirectory() as directory:
             candidate = compile_program(from_gse_import(text, "MAIN", 1), Path(directory),
                                         identity=dict(class_id=6, spec_id=252), capabilities=cap,
@@ -235,8 +242,13 @@ class ProgramTests(unittest.TestCase):
             ("MAIN", 1, "1", ["spell_70001"]),
             ("MAIN", 1, "4", ["outbreak"]),
             ("MAIN", 1, "5.2", []),
-            ("MAIN", 1, "6.1.1", ["outbreak"]),
+            ("MAIN", 1, "1", ["spell_70001"]),
             ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "6.1.1", ["outbreak"]),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "6.1.2", ["use_item,slot=trinket1"]),
+            ("MAIN", 1, "6.1.3", ["festering_strike"]),
             ("CHILD", 1, "1", ["spell_70004"]),
         ]
         clicks = candidate["compiled_program"]["clicks"]
@@ -246,7 +258,7 @@ class ProgramTests(unittest.TestCase):
                            click["source"]["path"],
                            click["commands"] if click["kind"] == "Action" else [])
                           for click in clicks], expected)
-        self.assertEqual(len(candidate["source_paths"]), 26)
+        self.assertEqual(len(candidate["source_paths"]), 31)
 
     def test_default_scene_rejects_active_petattack_with_its_source_path(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -262,48 +274,13 @@ class ProgramTests(unittest.TestCase):
                             identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
                             context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
 
-    def test_item_action_maps_only_by_unique_actual_item_id(self):
-        sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                        Versions=[dict(Actions=[{"Type": "Action", "type": "item",
-                                                "item": 250245}])])
-        raw = cbor2.dumps(wire_value(["ITEM_ID", sequence]))
-        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        capabilities = dict(actions=[], import_actions=[dict(kind="item", slot=13, item_id=250245,
-                                                              simc_action="use_item,slot=trinket1")])
-        with tempfile.TemporaryDirectory() as directory:
-            candidate = compile_program(from_gse_import(text, "ITEM_ID", 1), Path(directory),
-                                        identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
-                                        context=dict(click_ms=300, input_interval_ms=300,
-                                                     gcd_ms=1500, seed=1))
-        self.assertEqual(compiled_program(candidate), [["use_item,slot=trinket1"]])
-
-        ambiguous = dict(actions=[], import_actions=[
+    def test_item_action_rejects_ambiguous_actual_item_id(self):
+        ambiguous = [
             dict(kind="item", slot=13, item_id=250245, simc_action="use_item,slot=trinket1"),
             dict(kind="item", slot=14, item_id=250245, simc_action="use_item,slot=trinket2"),
-        ])
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "item 250245.*不能映射"):
-            compile_program(from_gse_import(text, "ITEM_ID", 1), Path(directory),
-                            identity=dict(class_id=6, spec_id=252), capabilities=ambiguous,
-                            context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
-
-    def test_spell_alias_and_baseline_row_resolve_to_one_native_action(self):
-        sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                        Versions=[dict(Actions=[{"Type": "Action", "type": "macro",
-                                                "macro": "/cast festering_strike"}])])
-        raw = cbor2.dumps(wire_value(["SPELL_ALIAS", sequence]))
-        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        action = dict(kind="spell", spell_id=85948, name="festering_strike",
-                      simc_action="festering_strike")
-        alias = dict(kind="spell", spell_id=316239, native_spell_id=85948,
-                     name="festering_strike", simc_action="festering_strike",
-                     data_valid=True, available=True, background=False, passive=False, quiet=False)
-        with tempfile.TemporaryDirectory() as directory:
-            candidate = compile_program(from_gse_import(text, "SPELL_ALIAS", 1), Path(directory),
-                                        identity=dict(class_id=6, spec_id=252),
-                                        capabilities=dict(actions=[action], import_actions=[action, alias]),
-                                        context=dict(click_ms=300, input_interval_ms=300,
-                                                     gcd_ms=1500, seed=1))
-        self.assertEqual(compiled_program(candidate), [["festering_strike"]])
+        ]
+        with self.assertRaisesRegex(ValueError, "item 250245.*不能映射"):
+            map_action("item", "250245", ambiguous, "ITEM_ID v1 1")
 
     def test_search_program_keeps_export_and_compiled_order(self):
         blocks = [[dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak")]]

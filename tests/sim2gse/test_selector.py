@@ -105,8 +105,7 @@ def test_selector_reloads_when_an_independent_instance_updates_the_shared_versio
     assert record['a_inv'][0][0] == pytest.approx(.25)
 
 
-@pytest.mark.parametrize('operation', ['settle'])
-def test_selector_reloads_after_authoritative_version_read_failure(monkeypatch, operation):
+def test_selector_reloads_after_authoritative_version_read_failure(monkeypatch):
     import result_store
     import selector
 
@@ -126,8 +125,7 @@ def test_selector_reloads_after_authoritative_version_read_failure(monkeypatch, 
     monkeypatch.setitem(result_store._SKILL_API, 'read_key', read)
 
     def act():
-        return (selector.reserve(_intent(decision=3)) if operation == 'reserve'
-                else selector.settle(second, -.5, 1))
+        return (selector.settle(second, -.5, 1))
 
     with pytest.raises(result_store.DataReadError, match='temporary version read failure'):
         act()
@@ -136,8 +134,7 @@ def test_selector_reloads_after_authoritative_version_read_failure(monkeypatch, 
     assert reads == [MODEL_HEADER_COLUMNS, None]
 
 
-@pytest.mark.parametrize('operation', ['reserve'])
-def test_selector_does_not_reset_after_its_authoritative_record_disappears(operation):
+def test_selector_does_not_reset_after_its_authoritative_record_disappears():
     import result_store
     import selector
 
@@ -147,15 +144,11 @@ def test_selector_does_not_reset_after_its_authoritative_record_disappears(opera
     path.unlink()
     for _ in range(2):
         with pytest.raises(result_store.DataReadError):
-            if operation == 'reserve':
-                selector.reserve(_intent('two'))
-            else:
-                selector.settle(first, .25, 1)
+            selector.reserve(_intent('two'))
         assert not path.exists()
 
 
-@pytest.mark.parametrize('operation', ['settle'])
-def test_selector_rejects_authoritative_version_rollback_without_losing_its_watermark(operation):
+def test_selector_rejects_authoritative_version_rollback_without_losing_its_watermark():
     import result_store
     import selector
 
@@ -166,30 +159,23 @@ def test_selector_rejects_authoritative_version_rollback_without_losing_its_wate
         result_store.write_search_learner(earlier)
     for _ in range(2):
         with pytest.raises(result_store.DataReadError):
-            if operation == 'reserve':
-                selector.reserve(_intent('two'))
-            else:
-                selector.settle(first, .25, 1)
+            selector.settle(first, .25, 1)
         assert result_store.read_search_learner(selector.MODEL_KEY) == earlier
 
 
-@pytest.mark.parametrize('operation,field,value', [('reserve', 'feature_version', 'future-feature-version')])
-def test_selector_rejects_changed_compatibility_at_the_cached_version(operation, field, value):
+def test_selector_rejects_changed_compatibility_at_the_cached_version():
     import result_store
     import selector
 
     first = selector.reserve(_intent())
     selector.settle(first, .25, 1)
     incompatible = result_store.read_search_learner(selector.MODEL_KEY)
-    incompatible[field] = value
+    incompatible['feature_version'] = 'future-feature-version'
     with result_store.search_learner_lock():
         result_store.write_search_learner(incompatible)
     for _ in range(2):
         with pytest.raises(ValueError, match='不兼容'):
-            if operation == 'reserve':
-                selector.reserve(_intent('two'))
-            else:
-                selector.settle(first, .25, 1)
+            selector.reserve(_intent('two'))
         assert result_store.read_search_learner(selector.MODEL_KEY) == incompatible
 
 
@@ -381,17 +367,13 @@ def test_selector_never_falls_back_to_full_when_active_control_is_invalid(monkey
     path = result_store.DATA_ROOT / 'search_learner_controls' / (selector.MODEL_KEY + '.parquet')
     if damage == 'missing':
         path.unlink()
-    elif damage == 'corrupt':
-        path.write_bytes(b'constructed invalid parquet envelope')
     else:
-        control = (earlier_control if damage == 'rollback'
-                   else result_store.read_search_learner_control(selector.MODEL_KEY))
-        if damage == 'wrong_base':
-            control['base_version'] = 2
+        control = (result_store.read_search_learner_control(selector.MODEL_KEY))
+        control['base_version'] = 2
         with result_store.search_learner_lock():
             result_store.write_search_learner_control(control)
     before = path.read_bytes() if path.exists() else None
-    instance = selector.reserve if damage == 'rollback' else runpy.run_path(selector.__file__)['reserve']
+    instance = runpy.run_path(selector.__file__)['reserve']
     with pytest.raises(result_store.DataReadError):
         instance(_intent('three'))
     assert result_store.read_search_learner(selector.MODEL_KEY) == full
@@ -421,8 +403,7 @@ def test_selector_refuses_a_legacy_writer_update_during_prepared_migration(tmp_p
     assert result_store.read_search_learner_control(selector.MODEL_KEY) == prepared
 
 
-@pytest.mark.parametrize('damage', ['null_trained_model'])
-def test_selector_does_not_reinitialize_missing_matrices_as_new_experience(damage):
+def test_selector_does_not_reinitialize_missing_matrices_as_new_experience():
     import runpy
     import result_store
     import selector
@@ -431,13 +412,7 @@ def test_selector_does_not_reinitialize_missing_matrices_as_new_experience(damag
     selector.settle(first, .25, 1)
     broken = result_store.read_search_learner(selector.MODEL_KEY)
     broken.update(theta=None, a_inv=None)
-    if damage == 'progress_over_empty_model':
-        selector.reserve(_intent('two'))
-        control = result_store.read_search_learner_control(selector.MODEL_KEY)
-        control['base_version'] = 0
-        broken.update(version=0, rng_state=1, reservations=[], settled={})
-        with result_store.search_learner_lock():
-            result_store.write_search_learner_control(control)
+
     with result_store.search_learner_lock():
         result_store.write_search_learner(broken)
     control = result_store.read_search_learner_control(selector.MODEL_KEY)

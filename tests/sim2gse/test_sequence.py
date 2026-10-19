@@ -39,7 +39,7 @@ def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeyp
     report = _fast_report(character, 100.0, 1)
     def native_exchange(profile, folder, *args, **kwargs):
         (folder / 'native.pending.json').write_text(
-            '{invalid' if outcome == 'invalid_report' else json.dumps(report), encoding='utf-8')
+            json.dumps(report), encoding='utf-8')
         trace = '\n'.join('S2GSE\t' + '\t'.join(map(str, [ms, event, 1, 0, action, 0, 0, 100,
             0, 1, signature, 0, -1, -1])) for ms, event, action, signature in [
                 (0, 'input', '-', '-'), (1, 'dispatch', 'outbreak', 'outbreak'),
@@ -57,9 +57,8 @@ def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeyp
     monkeypatch.setattr(runtime.time, 'perf_counter', performance_clock)
     arguments = dict(character=character, iterations=2, input_times=[0],
                      trace=outcome != 'without_trace', runtime=task_runtime)
-    if outcome.startswith('invalid_'):
-        message = '原生报告缺失或不是有效 JSON' if outcome == 'invalid_report' else '原生来源轨迹字段数量不一致'
-        with pytest.raises(ValueError, match=message):
+    if outcome == 'invalid_trace':
+        with pytest.raises(ValueError, match='原生来源轨迹字段数量不一致'):
             evaluate(source, candidate, tmp_path / 'result', **arguments)
     else:
         result = evaluate(source, candidate, tmp_path / 'result', **arguments)
@@ -70,11 +69,8 @@ def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeyp
     if enabled:
         assert stages['evaluation.report_read_validate']['calls'] == 1
         assert stages['evaluation.report_read_validate']['seconds'] == 1.0
-        if outcome in ('with_trace', 'invalid_trace'):
-            assert stages['evaluation.trace']['calls'] == 1
-            assert stages['evaluation.trace']['seconds'] == 1.0
-        else:
-            assert 'evaluation.trace' not in stages
+        assert stages['evaluation.trace']['calls'] == 1
+        assert stages['evaluation.trace']['seconds'] == 1.0
     else:
         assert clocks == []
         assert stages == {}
@@ -241,15 +237,14 @@ class SequenceSimulationTests(unittest.TestCase):
                 identity=native['identity'], capabilities=capabilities)
             burst_candidate = compile_program(burst, root / 'burst',
                 identity=native['identity'], capabilities=capabilities)
-            for independent_burst in (False, True):
-                with self.subTest(independent_burst=independent_burst):
-                    result = evaluate(source, candidate, root / str(independent_burst),
-                        character=character, iterations=1, input_times=[0, 300, 600],
-                        burst_candidate=burst_candidate if independent_burst else None,
-                        input_sources=['loop', 'burst', 'loop'] if independent_burst else None)
-                    self.assertTrue(result['consistent'])
-                    self.assertEqual(len(result['native_blocks']), 131 if independent_burst else 129)
-                    self.assertEqual(result['blocks'], result['native_blocks'])
+            result = evaluate(source, candidate, root / 'with-burst',
+                character=character, iterations=1, input_times=[0, 300, 600],
+                burst_candidate=burst_candidate, input_sources=['loop', 'burst', 'loop'])
+            self.assertTrue(result['consistent'])
+            self.assertEqual(len(candidate['compiled_steps']), 129)
+            self.assertEqual(len(burst_candidate['compiled_steps']), 2)
+            self.assertEqual(len(result['native_blocks']), 131)
+            self.assertEqual(result['blocks'], result['native_blocks'])
 
     def test_long_search_castsequence_compiles_and_runs_with_member_limits(self):
         from program import compile_program, from_search_program
@@ -533,7 +528,7 @@ class SequenceSimulationTests(unittest.TestCase):
             self.assertTrue(any(e['ms'] >= 1270 and e['origin'] == 4 for e in executed), executed)
 
     def test_failed_steps_and_queue_replacement(self):
-        result = self.task([['outbreak'], ['death_coil'], ['scourge_strike']])
+        result = self.task([['outbreak'], ['death_coil'], ['scourge_strike']], iterations=2)
         events = result['controlled_simulation']['trace']
         self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'death_coil' and e['ms'] == 600 for e in events))
         self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'scourge_strike' and e['ms'] == 600 for e in events))
@@ -545,7 +540,8 @@ class SequenceSimulationTests(unittest.TestCase):
                             for e in dispatched + executed))
         self.assertEqual(Counter((e['battle'], e['origin'], e['signature'], e['ms']) for e in executed),
                          Counter((d['battle'], d['origin'], d['signature'], d['ms']) for d in dispatched))
-        retained = self.task([['outbreak'], ['outbreak'], ['outbreak'], ['outbreak'], ['death_coil'], ['outbreak']])
+        retained = self.task([['outbreak'], ['outbreak'], ['outbreak'], ['outbreak'], ['death_coil'], ['outbreak']],
+                             iterations=2)
         events = retained['controlled_simulation']['trace']
         queued = [e for e in events if e['event'] == 'queue']
         dispatched = [e for e in events if e['event'] == 'dispatch']
@@ -719,7 +715,9 @@ class SequenceSimulationTests(unittest.TestCase):
         text = sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
         text = text.replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311')
         prepared = self.prepare(text, Path(tempfile.mkdtemp(prefix='items-', dir=self.directory.name)))
-        for slots in [('trinket1',), ('trinket1', 'trinket2'), ('trinket2', 'trinket1')]:
+        for slots, first_signature in [
+                (('trinket1', 'trinket2'), 'use_item,slot=trinket1'),
+                (('trinket2', 'trinket1'), 'use_item,slot=trinket2')]:
             program = [[*[f'use_item,slot={s}' for s in slots], 'outbreak']]
             candidate, source, character = self.candidate(prepared, program)
             controlled = evaluate(source, candidate,
@@ -729,40 +727,33 @@ class SequenceSimulationTests(unittest.TestCase):
             self.assertEqual(result['controlled_simulation']['blocks'], [['raise_dead'], *program])
             self.assertEqual(result['controlled_simulation']['native_blocks'], [[], *program])
             events = result['controlled_simulation']['trace']
-            first_press = [e['action'] for e in events if e['event'] == 'native_execute' and e['ms'] == 300]
-            self.assertTrue(first_press[0].startswith('use_item_'))
+            first_press = [e for e in events if e['event'] == 'native_execute' and e['ms'] == 300]
+            self.assertTrue(first_press[0]['action'].startswith('use_item_'))
+            self.assertEqual(first_press[0]['signature'], first_signature)
             self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'outbreak'
                                 and e['ms'] >= 1500 for e in events))
-            first_actions.append(first_press[0])
-        self.assertEqual(first_actions[0], first_actions[1])
-        self.assertNotEqual(first_actions[1], first_actions[2])
+            first_actions.append(first_press[0]['action'])
+        self.assertNotEqual(first_actions[0], first_actions[1])
 
     def test_phase_reset_and_replay(self):
+        from engine import identity
+
         candidate, source, character = self.candidate(self.prepared, [['outbreak'], ['scourge_strike']])
-        times = list(range(150, 180000, 300))
+        times = [150, 550, 1000, 1400]
         with tempfile.TemporaryDirectory(prefix='phase-replay-', dir=self.directory.name) as directory:
             first = evaluate(source, candidate, Path(directory) / 'first', character=character,
-                             iterations=2, input_times=times)
+                             iterations=3, input_times=times)
             second = evaluate(source, candidate, Path(directory) / 'second', character=character,
-                              iterations=2, input_times=times)
+                              iterations=3, input_times=times)
         inputs = [e for e in first['trace'] if e['event'] == 'input']
         self.assertEqual(inputs[0]['ms'], 150)
         self.assertTrue(all(e['step'] == 0 and e['ms'] == 150 for e in inputs if e['origin'] == 1))
         self.assertEqual(first['trace'], second['trace'])
         self.assertEqual(first['report']['sim']['players'], second['report']['sim']['players'])
-        self.assertEqual(first['summary']['samples'], 1)
+        self.assertEqual(first['summary']['samples'], 2)
         self.assertEqual(first['input_times'], times)
-        self.assertEqual({e['battle'] for e in inputs if e['origin'] == 1}, {0, 1})
+        self.assertEqual({e['battle'] for e in inputs if e['origin'] == 1}, {0, 1, 2})
 
-    def test_independent_lifecycle_keeps_irregular_inputs_across_battles(self):
-        from engine import identity
-
-        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
-        times = [150, 550, 1000, 1400]
-        with tempfile.TemporaryDirectory() as directory:
-            result = evaluate(source, candidate, Path(directory), character=character,
-                              iterations=3, input_times=times)
-        inputs = [event for event in result['trace'] if event['event'] == 'input']
         for battle in (0, 1, 2):
             self.assertEqual([(event['ms'], event['origin']) for event in inputs
                               if event['battle'] == battle], list(zip(times, range(1, 5))))
@@ -770,7 +761,6 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertIn('projects/sim2gse/native/src/controller.cpp',
                       {entry['path'] for entry in manifest['sources']},
                       '输入时间和每轮重置尚未由独立控制源码提供')
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -626,6 +626,11 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(len(children), 2)
             for actions in children:
                 self.assertEqual([n for a, n, s in search_calls if a == actions], [32, 96, 384])
+            for record in resumed['search']['records'][1:]:
+                batches = record['batches']
+                self.assertEqual([row['target'] for row in batches], [32, 128, 512])
+                self.assertEqual([row['requested_iterations'] for row in batches], [32, 96, 384])
+                self.assertEqual([row['samples'] for row in batches], [31, 95, 383])
 
     def test_resume_original_config_preserves_frozen_diagnostic_policy(self):
         import sequence
@@ -1050,35 +1055,6 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(final_seeds)
             self.assertFalse(search_seeds & validation_seeds or search_seeds & final_seeds or validation_seeds & final_seeds)
 
-
-    def test_search_batch_targets_add_independent_requested_iterations(self):
-        with tempfile.TemporaryDirectory(prefix="sim2gse-batches-") as directory:
-            source = Path(directory) / "角色.simc"
-            destination = Path(directory) / "任务"
-            source.write_text(sample_profile(), encoding="utf-8")
-            with _fast_search_boundary():
-                result = run_task(
-                    source,
-                    destination,
-                    mode="optimize",
-                    search_config={
-                        "total_budget_seconds": 60,
-                        "search_budget_seconds": 30,
-                        "candidate_limit": 2,
-                        "round_candidate_limit": 1,
-                        "batch_targets": (2, 4, 8),
-                        "validation_batches": 1,
-                        "final_batches": 1,
-                        "iterations": 2,
-                        "final_iterations": 2,
-                        "scenarios": ("nominal",),
-                        "max_processes": 1,
-                    },
-                )
-            batches = result["search"]["records"][0]["batches"]
-            self.assertEqual([row["target"] for row in batches], [2, 4, 8])
-            self.assertEqual([row["requested_iterations"] for row in batches], [2, 2, 4])
-            self.assertEqual([row["samples"] for row in batches], [1, 1, 3])
 
     def test_search_resumes_without_resetting_budget_or_batches(self):
         import sequence

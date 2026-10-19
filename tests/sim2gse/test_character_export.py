@@ -242,40 +242,36 @@ class CharacterExportTests(unittest.TestCase):
     def test_public_entry_simulates_native_channel_item(self):
         with tempfile.TemporaryDirectory(prefix='序列 饰品 ') as directory:
             source = Path(directory) / '角色.simc'
-            source.write_text(sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=270168,ilevel=311'), encoding='utf-8')
+            text = (sample_profile().replace('highmountain_tauren', 'undead')
+                    .replace('trinket1=,id=250245', 'trinket1=,id=270168,ilevel=311'))
+            source.write_text(text, encoding='utf-8', newline='')
             destination = Path(directory) / '任务'
             result = run_task(source, destination, mode="single")
+            self.assertEqual(result['status'], 'offline_ready')
+            self.assertTrue((destination / 'reference').exists())
             from task import read_task
             self.assertEqual(read_task(destination)['candidate']['text'], result['candidate']['text'])
             self.assertTrue(result['controlled_simulation']['consistent'])
             self.assertIn(270168, {a['item_id'] for a in result['capabilities']['actions'] if a['kind']=='item'})
 
-    def test_public_entry_exports_both_active_items(self):
+    def test_native_catalogue_exports_both_active_items(self):
+        from engine import reference, inspect
+        from sequence import select
+        from program import compile_program, from_action_blocks
+
         with tempfile.TemporaryDirectory(prefix='序列 双主动 ') as directory:
-            source = Path(directory) / '角色.simc'
-            source.write_text(sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
-                              .replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311'), encoding='utf-8')
-            destination = Path(directory) / '任务'
-            from test_search import _fast_evaluate
-            with patch('sequence.evaluate', side_effect=_fast_evaluate):
-                result = run_task(source, destination, mode="single")
-            self.assertEqual([a['slot'] for a in result['capabilities']['actions'] if a['kind'] == 'item'], [13,14])
-            self.assertIn(dict(type='item', item=13), result['candidate']['compiled_steps'])
-            self.assertIn(dict(type='macro', macrotext='/use [@player] 14'), result['candidate']['compiled_steps'])
-
-
-    def test_public_entry_allows_unselected_racial_capability(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / '角色.simc'
-            source.write_text(sample_profile().replace('highmountain_tauren', 'undead'), encoding='utf-8')
-            destination = Path(directory) / '任务'
-            from test_search import _fast_evaluate
-            with patch('sequence.evaluate', side_effect=_fast_evaluate):
-                result = run_task(source, destination, mode="single")
-            self.assertEqual(result['status'], 'offline_ready')
-            self.assertTrue((destination / 'reference').exists())
-            from task import read_task
-            self.assertEqual(read_task(destination)['candidate']['text'], result['candidate']['text'])
+            folder = Path(directory)
+            text = (sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
+                    .replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311'))
+            source = folder / '角色.simc'
+            source.write_text(text, encoding='utf-8', newline='')
+            native = reference(source, folder / 'reference', parse_character(text), iterations=2)
+            capabilities = inspect(native, folder / 'capabilities')
+            candidate = compile_program(from_action_blocks(select(capabilities)), folder / 'export',
+                                        identity=native['identity'], capabilities=capabilities)
+            self.assertEqual([a['slot'] for a in capabilities['actions'] if a['kind'] == 'item'], [13,14])
+            self.assertIn(dict(type='item', item=13), candidate['compiled_steps'])
+            self.assertIn(dict(type='macro', macrotext='/use [@player] 14'), candidate['compiled_steps'])
 
 
 if __name__ == "__main__":

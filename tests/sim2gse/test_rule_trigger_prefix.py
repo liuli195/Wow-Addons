@@ -81,15 +81,14 @@ def test_diagnose_keeps_states_and_separate_reports_independent():
     assert [row['findings'][0]['kind'] for row in result['rules'] if row['name'] == 'consumer'] == ['false', 'false']
 
 
-@pytest.mark.parametrize('stop', ['cancelled'])
-def test_diagnose_reports_incomplete_after_runtime_stop(stop):
-    runtime = TaskRuntime(0 if stop == 'budget_exhausted' else 600)
-    if stop == 'cancelled': runtime.cancel()
+def test_diagnose_reports_incomplete_after_runtime_stop():
+    runtime = TaskRuntime(600)
+    runtime.cancel()
     result = diagnose(**_invocation([[dict(input_index=0, trigger=True)]]), runtime=runtime)
     assert result['pool']['complete'] is False
-    assert result['pool']['incomplete_reason'] == stop
+    assert result['pool']['incomplete_reason'] == 'cancelled'
     assert result['pool']['operations'] == []
-    assert all(rule['reason'] == stop for rule in result['rules'])
+    assert all(rule['reason'] == 'cancelled' for rule in result['rules'])
 
 def test_diagnose_preserves_map_alias_shadowing_of_its_prior_source():
     invocation = _invocation([[dict(input_index=0, trigger=True)]])

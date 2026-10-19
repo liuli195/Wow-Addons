@@ -75,11 +75,19 @@ def test_public_burst_precheck_requires_a_reviewed_definition(tmp_path):
 
 def test_public_burst_precheck_roundtrip_and_real_potion(tmp_path):
     import burst
-    definition, raw = reviewed_fixture()
+    definition, _ = reviewed_fixture()
+    definition['version'] = 'test-other-talents'
+    definition['talent_hashes'] = ['0' * 64]
     burst.publish(definition)
     profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    result = task.precheck_burst(profile, tmp_path / 'burst')
+    original = (sample_profile() + 'omnium_talents=1:1\n').encode('utf-8')
+    profile.write_bytes(original)
+    result = task.precheck_burst(profile, tmp_path / 'burst',
+                                simulation_config={'enable_omnium_talents': False})
+    assert result['definition']['version'] == 'test-other-talents'
+    assert profile.read_bytes() == original
+    effective = (tmp_path / 'burst/input.effective.simc').read_text(encoding='utf-8')
+    assert 'omnium_talents=' not in effective
     assert result['definition']['potion'] == 'potion_of_recklessness'
     assert result['candidate']['compiled_steps'][1]['macrotext'] == (
         '/use 鲁莽药水\n/use 13\n/use 14\n/cast 黑暗突变')
@@ -89,6 +97,12 @@ def test_public_burst_precheck_roundtrip_and_real_potion(tmp_path):
                               'use_item,slot=trinket2', 'dark_transformation']]
     assert result['candidate']['name'].startswith('S2G_BURST_')
     assert result['simulation']['consistent']
+    assert {row['simc_action'] for row in result['simulation']['skipped_commands']} == {
+        'use_item,slot=trinket1', 'use_item,slot=trinket2'}
+    assert result['simulation']['effective_blocks'][1] == ['potion', 'dark_transformation']
+    assert len(result['simulation']['input_times']) == 20
+    assert any(row['reason'] == 'passive_item' and row['simc_action'] == 'use_item,slot=trinket2'
+               for row in result['simulation']['skipped_commands'])
     events = result['simulation']['trace']
     executions = [event for event in events if event['event'] == 'native_execute' and event['action'] == 'potion']
     assert len(executions) == 1
@@ -112,7 +126,7 @@ def test_public_burst_precheck_roundtrip_and_real_potion(tmp_path):
     assert behavior_key(displayed) == behavior_key(result['candidate'])
 
 
-def test_public_burst_rejects_draft_corruption_but_accepts_other_talents(tmp_path):
+def test_public_burst_rejects_draft_corruption(tmp_path):
     import burst
     import result_store
     definition, raw = reviewed_fixture()
@@ -129,12 +143,6 @@ def test_public_burst_rejects_draft_corruption_but_accepts_other_talents(tmp_pat
     with pytest.raises(task.TaskError, match='身份不符'):
         task.precheck_burst(profile, tmp_path / 'corrupt')
     result_store.write('burst_definitions', 'current_252', [row])
-    unreviewed = copy.deepcopy(definition)
-    unreviewed['version'] = 'test-other-talents'
-    unreviewed['talent_hashes'] = ['0' * 64]
-    burst.publish(unreviewed)
-    result = task.precheck_burst(profile, tmp_path / 'talents')
-    assert result['definition']['version'] == 'test-other-talents'
 
 
 def test_public_burst_storage_failure_keeps_the_previous_version(tmp_path, monkeypatch):
@@ -162,27 +170,6 @@ def test_public_burst_storage_failure_keeps_the_previous_version(tmp_path, monke
     assert result_store.read_records('burst_definitions', 'history_' + original['definition_id']) == [original]
 
 
-@pytest.mark.parametrize('empty_slot', [False])
-def test_public_burst_skips_passive_trinkets_without_changing_the_macro(tmp_path, empty_slot):
-    import burst
-    definition, _ = reviewed_fixture()
-    burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    raw = sample_profile()
-    if empty_slot:
-        raw = raw.replace('trinket2=,id=250228\n', '')
-    profile.write_text(raw, encoding='utf-8')
-    result = task.precheck_burst(profile, tmp_path / 'passive-trinkets')
-    assert result['candidate']['compiled_steps'][1]['macrotext'] == (
-        '/use 鲁莽药水\n/use 13\n/use 14\n/cast 黑暗突变')
-    assert {row['simc_action'] for row in result['simulation']['skipped_commands']} == {
-        'use_item,slot=trinket1', 'use_item,slot=trinket2'}
-    assert result['simulation']['effective_blocks'][1] == ['potion', 'dark_transformation']
-    assert len(result['simulation']['input_times']) == 20
-    assert any(row['reason'] == ('empty_slot' if empty_slot else 'passive_item')
-               and row['simc_action'] == 'use_item,slot=trinket2'
-               for row in result['simulation']['skipped_commands'])
-
 
 def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path):
     import burst
@@ -195,21 +182,6 @@ def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path)
     with pytest.raises(task.TaskError, match='optional spell identity does not match action'):
         task.precheck_burst(profile, tmp_path / 'wrong-identity')
 
-
-def test_public_burst_uses_effective_talents_when_extra_talents_are_disabled(tmp_path):
-    import burst
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    # Disabled input must be removed before native initialization and review matching.
-    original = (raw + 'omnium_talents=1:1\n').encode('utf-8')
-    profile = tmp_path / 'character.simc'
-    profile.write_bytes(original)
-    result = task.precheck_burst(profile, tmp_path / 'omnium-off',
-                                simulation_config={'enable_omnium_talents': False})
-    assert result['simulation']['consistent']
-    assert profile.read_bytes() == original
-    effective = (tmp_path / 'omnium-off/input.effective.simc').read_text(encoding='utf-8')
-    assert 'omnium_talents=' not in effective
 
 
 def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
@@ -481,12 +453,10 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
             thread.join(3)
 
 
-@pytest.mark.parametrize('fault', ['aoe'])
 def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
-        tmp_path, monkeypatch, fault, page_task_engine, memory_result_center):
+        tmp_path, monkeypatch, page_task_engine, memory_result_center):
     import burst
     import dual_task
-    import codec
     import threading
     from interface import create_server
     from urllib.request import Request, urlopen
@@ -496,42 +466,17 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
     profile.write_text(raw, encoding='utf-8')
     destination = tmp_path / 'dual'
     calls, interrupted = [], []
-    original_run, original_collection, original_save = task.run_task, codec.collection, dual_task._save
+    original_run = task.run_task
 
     def run(*args, **kwargs):
         purpose = Path(args[1]).name
         calls.append(purpose)
-        if fault == 'aoe' and purpose == 'aoe' and not interrupted:
+        if purpose == 'aoe' and not interrupted:
             interrupted.append(True)
             raise task.TaskError('injected second scene interruption')
-        if fault == 'preparation' and purpose == 'single_target' and not interrupted:
-            interrupted.append(True)
-            Path(args[1]).mkdir()
-            (Path(args[1]) / 'preserved.txt').write_text('preparation evidence')
-            raise task.TaskError('injected before durable child state')
         return original_run(*args, **kwargs)
 
-    def collect(*args, **kwargs):
-        if fault == 'collection' and not interrupted:
-            interrupted.append(True)
-            raise task.TaskError('injected packaging interruption')
-        return original_collection(*args, **kwargs)
-
-    def save(row):
-        if fault == 'registration' and row['single_target_status'] == 'completed' and not interrupted:
-            interrupted.append(True)
-            raise task.TaskError('injected parent registration interruption')
-        if (fault == 'cancel' and row['single_target_export'] and row['burst_export']
-                and row['aoe_status'] == 'pending' and not interrupted):
-            interrupted.append(True)
-            threading.Thread(target=lambda: urlopen(Request(
-                base + '/api/tasks/' + task_id + '/cancel', method='POST')).close(), daemon=True).start()
-            assert server.tasks[task_id][1].cancel_event.wait(5)
-        return original_save(row)
-
     monkeypatch.setattr(task, 'run_task', run)
-    monkeypatch.setattr(codec, 'collection', collect)
-    monkeypatch.setattr(dual_task, '_save', save)
     server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
         candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
         final_batches=1, final_iterations=2, scenarios=('nominal',))))
@@ -551,11 +496,6 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
     state = public_read()
     assert interrupted and state['status'] in ('partial', 'cancelled', 'failed'), state
     assert not state['collection_ready']
-    if fault == 'collection':
-        assert len(state['exports']) == 3
-    if fault == 'cancel':
-        assert calls == ['single_target'] and state['scenes'][1]['status'] == 'pending'
-        assert set(state['exports']) == {'single_target', 'burst'}
     with urlopen(Request(base + '/api/tasks/' + task_id + '/resume', method='POST')) as response:
         assert response.status == 202
     recovered = server.tasks[task_id][1]
@@ -574,9 +514,6 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
     exported = next(iter(decode_import(restored['exports']['burst'])['sequences'].values()))
     assert exported['MetaData']['Help'].partition('爆发按法：')[2] == instructions
     assert burst.load(252)['instructions'] == definition['instructions']
-    if fault == 'preparation':
-        assert (destination / 'single_target/preserved.txt').read_text() == 'preparation evidence'
-        assert any(name.startswith('s-') for name in calls)
     original = (destination / 'input.original.simc').read_bytes()
     (destination / 'input.original.simc').write_bytes(original + b'\n# changed')
     from urllib.error import HTTPError
@@ -631,9 +568,8 @@ def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path,
 
 
 
-@pytest.mark.parametrize('interrupt_second', [False])
 def test_dual_resume_preserves_missing_eager_policy_for_old_and_new_children(tmp_path, monkeypatch,
-                                                                          page_task_engine, memory_result_center, interrupt_second):
+                                                                          page_task_engine, memory_result_center):
     import burst, dual_task, result_store, search
     definition, raw = reviewed_fixture()
     burst.publish(definition)
@@ -665,26 +601,9 @@ def test_dual_resume_preserves_missing_eager_policy_for_old_and_new_children(tmp
     assert not (destination / 'aoe').exists()
     first = task.read_task(destination / 'single_target', include_search_records=True)
     assert 'rule_diagnostics_policy' not in first['config']
-    second_cut = []
-    def pause_second_child(table, key, rows, **kwargs):
-        result = original_write(table, key, rows, **kwargs)
-        if (interrupt_second and not second_cut and table == 'batches'
-                and any(row.get('purpose') == 'search' and len(row.get('report', {}).get('sim', {}).get('targets', [])) == 5
-                        for row in rows)):
-            second_cut.append(True)
-            from runtime import TaskCancelled
-            raise TaskCancelled('constructed second child interruption after durable score')
-        return result
-    with patch.object(result_store, 'write', side_effect=pause_second_child):
-        resumed = dual_task.resume(destination)
-        resumed.join(20)
-        assert resumed.done
-    if interrupt_second:
-        assert second_cut and dual_task.read(destination)['status'] == 'cancelled'
-        assert task.read_task(destination / 'aoe')['config']['rule_diagnostics_policy'] == 'eager'
-        resumed = dual_task.resume(destination)
-        resumed.join(20)
-        assert resumed.done
+    resumed = dual_task.resume(destination)
+    resumed.join(20)
+    assert resumed.done
     saved = dual_task.read(destination)
     assert saved['status'] == 'completed', saved
     assert saved['collection_ready']

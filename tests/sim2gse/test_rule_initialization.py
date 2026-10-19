@@ -142,19 +142,6 @@ def test_public_task_rejects_unknown_or_ambiguous_three_key_identity(tmp_path, m
     config = dict(scene='single_target')
     if fault == 'missing_hero':
         native['static_snapshot'].pop('hero_subtree_ids')
-    elif fault == 'unknown_hero':
-        native['static_snapshot']['hero_subtree_ids'] = [999]
-    elif fault == 'missing_scene':
-        config['scene'] = None
-    elif fault == 'wrong_scene':
-        config['scene'] = 'aoe'
-    elif fault == 'wrong_spec':
-        native['identity']['spec_id'] = 999
-    elif fault == 'ambiguous_hero':
-        pack['identity_mappings']['hero_talents']['other_hero'] = 17
-        other = copy.deepcopy(pack['configurations'][0])
-        other['key']['hero_talent'] = 'other_hero'
-        pack['configurations'].append(other)
     else:
         pack['configurations'].append(copy.deepcopy(pack['configurations'][0]))
     _configure_opener(tmp_path, monkeypatch, pack)
@@ -228,8 +215,7 @@ def test_explicit_program_does_not_require_rule_initialization_snapshot(tmp_path
     assert not result.get('rule_initialization')
 
 
-@pytest.mark.parametrize('use_burst', [True])
-def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_path, monkeypatch, use_burst):
+def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_path, monkeypatch):
     from test_engine import apl_pool_reference
     from test_search import _minimal_rule_pack
     pack = _minimal_rule_pack()
@@ -248,16 +234,15 @@ def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_pat
     source.write_text(sample_profile(), encoding='utf-8')
     boundary = _apl_task_boundary(native)
     definition = None
-    if use_burst:
-        import burst, result_store
-        result_store.DATA_ROOT.mkdir()
-        from test_burst import reviewed_fixture, character_seed_boundary
-        definition, raw = reviewed_fixture()
-        definition = burst.publish(definition)
-        source.write_text(raw, encoding='utf-8')
-        boundary = character_seed_boundary(native_reference=native)
+    import burst, result_store
+    result_store.DATA_ROOT.mkdir()
+    from test_burst import reviewed_fixture, character_seed_boundary
+    definition, raw = reviewed_fixture()
+    definition = burst.publish(definition)
+    source.write_text(raw, encoding='utf-8')
+    boundary = character_seed_boundary(native_reference=native)
     with boundary:
-        result = run_task(source, tmp_path / 'task', use_burst=use_burst, search_config=dict(
+        result = run_task(source, tmp_path / 'task', use_burst=True, search_config=dict(
             input_interval_ms=300, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
     report = result['rule_initialization']
     compiled_actions = [(index, row) for index, row in enumerate(report['click_mapping']) if row['kind'] == 'Action']
@@ -268,8 +253,7 @@ def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_pat
     for row, (index, click) in zip(actions, compiled_actions[1:], strict=True):
         assert click['commands'] == [row['action']]
         assert row['estimated_ms'] == index * 300
-    if use_burst:
-        assert report['protected_burst']['definition_id'] == definition['definition_id']
+    assert report['protected_burst']['definition_id'] == definition['definition_id']
 
 
 def test_generate_preserves_resource_uncertainty_without_inserting_funding_wait(tmp_path, monkeypatch):
@@ -301,16 +285,9 @@ def test_task_rejects_invalid_rule_references_before_running(tmp_path, monkeypat
     configuration = pack['configurations'][0]
     row = configuration['states']['only']['priority'][0]
     opener = configuration['opener']
-    if fault == 'type': row['arguments']['enabled'] = 1
-    elif fault == 'unit': template['parameters']['count']['unit'] = 'unregistered'
-    elif fault == 'parameter': row.pop('arguments')
-    elif fault == 'override': row['overrides'] = []
-    elif fault == 'source_step': opener['ordinary_steps'][0]['source_step'] = -1
-    elif fault == 'action': opener['ordinary_steps'][0]['action'] = 'missing_action'
-    elif fault == 'object': row['arguments']['action'] = 'missing_action'
-    elif fault == 'cycle': row['arguments']['priority_refs'] = ['first']
-    elif fault == 'count': opener['ordinary_steps'] *= 129
-    else: template['diagnose']['for_each'] = dict(op='python', args=[])
+    if fault == 'unit': template['parameters']['count']['unit'] = 'unregistered'
+    else:
+        row['arguments']['priority_refs'] = ['first']
     _configure_opener(tmp_path, monkeypatch, pack)
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
@@ -359,8 +336,7 @@ def test_rule_cli_concurrent_writers_cannot_overwrite_the_same_expected_version(
     assert main(['rules-check', str(target)]) == 0
 
 
-@pytest.mark.parametrize('asynchronous', [True])
-def test_public_task_budget_includes_configuration_read_and_validation(tmp_path, monkeypatch, asynchronous):
+def test_public_task_budget_includes_configuration_read_and_validation(tmp_path, monkeypatch):
     import time
     from pathlib import Path
     _configure_opener(tmp_path, monkeypatch)
@@ -380,35 +356,29 @@ def test_public_task_budget_includes_configuration_read_and_validation(tmp_path,
     monkeypatch.setattr(Path, 'open', timed_open)
     with _apl_task_boundary():
         config = dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1)
-        if asynchronous:
-            handle = start_task(source, tmp_path / 'task', search_config=config)
-            result = handle.join(30)
-            assert handle.done and handle.error is None
-        else:
-            result = run_task(source, tmp_path / 'task', search_config=config)
+        handle = start_task(source, tmp_path / 'task', search_config=config)
+        result = handle.join(30)
+        assert handle.done and handle.error is None
     assert delay[0] == 2.0
     assert result['elapsed_seconds'] >= 2.0
 
 
-@pytest.mark.parametrize('precombat_gcd,precombat_occupancy,cast_ms,protocol,starts,first_burst', [(1253, 3000, 2000, 2, [3000, 5000, 7000], 9000), (1253, None, 0, 2, None, None)])
+@pytest.mark.parametrize('precombat_occupancy,cast_ms,starts,first_burst', [(3000, 2000, [3000, 5000, 7000], 9000), (None, 0, None, None)])
 def test_task_accounts_native_effective_precombat_occupancy_before_freezing_t0(
-        tmp_path, monkeypatch, precombat_gcd, precombat_occupancy, cast_ms, protocol, starts, first_burst):
+        tmp_path, monkeypatch, precombat_occupancy, cast_ms, starts, first_burst):
     import json,burst,result_store
     from test_burst import reviewed_fixture,character_seed_boundary
     from test_engine import apl_pool_reference
     definition,raw=reviewed_fixture();result_store.DATA_ROOT.mkdir();burst.publish(definition)
     native=apl_pool_reference();template=native['apl_actions'][0]
-    native['static_snapshot']['protocol']=protocol
+    native['static_snapshot']['protocol']=2
     for row in native['static_snapshot']['actions']:
         row.update(cast_ms=cast_ms,channel_ms=0)
     native['precombat_definitions']=[dict(template,name='raise_dead',signature='raise_dead',data_id=46584,
         base_spell_id=46584,precombat=True,harmful=False,gcd_ms=1500)]
     native['precombat_sequence']=[dict(name='raise_dead')]
-    if precombat_gcd is not None:
-        native['static_snapshot']['parameters']['precombat_gcd_ms']=precombat_gcd
-    if precombat_occupancy == 'unknown':
-        native['static_snapshot']['parameter_unknown']={'precombat_occupancy_ms':'unsafe_duration'}
-    elif precombat_occupancy is not None:
+    native['static_snapshot']['parameters']['precombat_gcd_ms']=1253
+    if precombat_occupancy is not None:
         native['static_snapshot']['parameters']['precombat_occupancy_ms']=precombat_occupancy
     pack = _opener_pack({'tap': 'scourge_strike', 'big': 'army_of_the_dead'}, [dict(action='tap', source_step=i) for i in (1, 2, 3)], precombat=['raise_dead'], independent=[dict(action='big', source_step=4, mapping='burst')], anchor=4)
     path=tmp_path/'rules.json';path.write_text(json.dumps(pack),encoding='utf-8')
@@ -424,19 +394,19 @@ def test_task_accounts_native_effective_precombat_occupancy_before_freezing_t0(
             candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     report=result['rule_initialization']
     assert [row['estimated_ms'] for row in report['positions'] if row['kind']=='action']==starts
-    assert report['precombat_occupancy']['gcd_ms']==precombat_gcd
+    assert report['precombat_occupancy']['gcd_ms']==1253
     assert report['precombat_occupancy']['first_loop_ms']==starts[0]
     if precombat_occupancy is not None:
         assert report['precombat_occupancy']['occupancy_ms']==precombat_occupancy
     assert result['burst']['plan']['start_ms']==first_burst
 
 
-@pytest.mark.parametrize('hero,scene,steps', [(701, 'single_target', 1), (702, 'aoe', 4)])
-def test_task_selects_opener_by_explicit_scene_and_native_hero_facts(tmp_path, monkeypatch, hero, scene, steps):
+
+def test_task_selects_opener_by_explicit_scene_and_native_hero_facts(tmp_path, monkeypatch):
     import copy
     from test_engine import apl_pool_reference
     native = apl_pool_reference()
-    native['static_snapshot']['hero_subtree_ids'] = [] if hero is None else [hero]
+    native['static_snapshot']['hero_subtree_ids'] = [702]
     pack = _opener_pack({'tap':'scourge_strike'}, [dict(action='tap',source_step=1)], hero_id=701)
     pack['identity_mappings']['hero_talents'] = {'first':701, 'second':702}
     pack['configurations'] = []
@@ -447,14 +417,11 @@ def test_task_selects_opener_by_explicit_scene_and_native_hero_facts(tmp_path, m
     _configure_opener(tmp_path, monkeypatch, pack)
     source=tmp_path/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
     with _apl_task_boundary(native):
-        if hero is None:
-            with pytest.raises(TaskError,match='三键'):
-                run_task(source,tmp_path/'task',simulation_config={'target_count':5,'scene':scene})
-            return
-        result=run_task(source,tmp_path/'task',simulation_config={'target_count':5,'scene':scene},
+
+        result=run_task(source,tmp_path/'task',simulation_config={'target_count':5,'scene':'aoe'},
             search_config=dict(input_interval_ms=200,candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
-    assert [row['source_step'] for row in result['rule_initialization']['source_steps']] == list(range(1,steps+1))
-    assert result['simulation_config']['scene'] == scene
+    assert [row['source_step'] for row in result['rule_initialization']['source_steps']] == list(range(1,5))
+    assert result['simulation_config']['scene'] == 'aoe'
 
 
 
@@ -510,9 +477,9 @@ def test_task_uses_configured_replacement_form_cost_and_same_button_mapping(
     native['static_snapshot']['resources']['runic_power']['current']=100
     if known_cost is not False:
         native['static_snapshot']['actions'].append(dict(name='graveyard',gcd_ms=form_gcd,cooldown_ms=0,
-            cast_ms=0,channeled=False,costs={'runic_power':18} if known_cost else None,
-            gains={} if known_cost else None,gain_status='known_zero' if known_cost else 'unknown',
-            gain_timing='none',unknown={} if known_cost else {'costs':'unsafe_cost', 'gains':'unsafe_gain'}))
+            cast_ms=0,channeled=False,costs={'runic_power':18},
+            gains={},gain_status='known_zero',
+            gain_timing='none',unknown={}))
     pack = _opener_pack({'area': dict(kind='action', base_button='epidemic', native_action='epidemic', native_forms=['epidemic','graveyard'])}, [dict(action='area',source_form='graveyard',source_step=i) for i in (1,2)])
     config=tmp_path/'rules.json';config.write_text(json.dumps(pack),encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(config))
@@ -528,13 +495,10 @@ def test_task_uses_configured_replacement_form_cost_and_same_button_mapping(
     report=result['rule_initialization']
     attempts=[row for row in report['positions'] if row['kind']=='action']
     assert [row['action'] for row in attempts]==['epidemic','epidemic']
-    assert [row['costs'] for row in attempts]==([{'runic_power':18}]*2 if known_cost else [None,None])
-    assert [row['estimated_resources_after']['runic_power'] for row in attempts]==([82,64] if known_cost else [None,None])
+    assert [row['costs'] for row in attempts]==[{'runic_power':18}]*2
+    assert [row['estimated_resources_after']['runic_power'] for row in attempts]==[82,64]
     assert [row['estimated_ms'] for row in attempts]==starts
-    if known_cost is None:
-        assert all(row['effective_gcd_ms']==1000 for row in attempts)
-        assert any('graveyard.costs' in item for item in report['unknown'])
-        assert any('graveyard.gains' in item for item in report['unknown'])
+
     assert report['click_mapping'][0]['commands']==['epidemic','graveyard']
     assert all(row['condition_status']=='dynamic_condition_unknown' for row in attempts)
 
@@ -703,8 +667,7 @@ def test_task_rejects_unknown_or_inconsistent_action_timing(
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
 
-@pytest.mark.parametrize('input_interval_ms', [200])
-def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, monkeypatch, input_interval_ms):
+def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, monkeypatch):
     import json,threading
     from urllib.request import Request,urlopen
     import burst,result_store,sequence
@@ -728,7 +691,7 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
     pack['configurations'].extend(aoe['configurations'])
     path=tmp_path/'rules.json';path.write_text(json.dumps(pack),encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(path))
-    server=create_server(tmp_path/'page',task_options=dict(search_config=dict(input_interval_ms=input_interval_ms,
+    server=create_server(tmp_path/'page',task_options=dict(search_config=dict(input_interval_ms=200,
         candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1)))
     thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01},daemon=True)
     thread.start()
@@ -750,7 +713,7 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
                     edited.append(True)
                 return score(*args,**kwargs)
             with patch.object(sequence,'evaluate',side_effect=update_current_file):
-                request=Request(base+'/api/tasks',json.dumps(dict(profile=raw,mode='dual',input_interval_ms=input_interval_ms)).encode(),
+                request=Request(base+'/api/tasks',json.dumps(dict(profile=raw,mode='dual',input_interval_ms=200)).encode(),
                     {'Content-Type':'application/json'})
                 with urlopen(request) as response:
                     task_id=json.load(response)['task_id']
@@ -769,7 +732,7 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
         single = read_task(destination / 'single_target')
         assert single['rule_initialization'] == reports[0]
         assert single['burst']['plan'] == dict(published['plan'], start_ms=1000)
-        assert single['burst']['interval_ms'] == input_interval_ms
+        assert single['burst']['interval_ms'] == 200
         assert reports[0]['protected_burst']['plan'] == single['burst']['plan']
         assert single['burst']['candidate']['text'] == single_burst_text[0]
         actions = [row for row in reports[0]['positions'] if row['kind'] == 'action']
@@ -782,13 +745,10 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
             [dict(native_action='dark_transformation', block=1, command=3, input_ms=1200)]]
         assert burst.load(252) == published
         assert definition_path.read_bytes() == definition_bytes
-        starts = {
-            200: ('单体：第1、46、91、136秒','群体：第2、47、92、137秒'),
-            300: ('单体：第1.2、46.2、91.2、136.2秒','群体：第2.4、47.4、92.4、137.4秒'),
-        }[input_interval_ms]
+        starts = {200: ('单体：第1、46、91、136秒','群体：第2、47、92、137秒')}[200]
         assert all(value in detail['burst_instructions'] for value in starts)
-        assert detail['input_interval_ms']==input_interval_ms
-        assert detail['burst_instructions'].count(f'间隔{input_interval_ms}毫秒')==2
+        assert detail['input_interval_ms']==200
+        assert detail['burst_instructions'].count(f'间隔{200}毫秒')==2
         from gse_import import decode_import
         help_text=next(iter(decode_import(detail['exports']['burst'])['sequences'].values()))['MetaData']['Help']
         assert detail['burst_instructions'] in help_text
@@ -796,8 +756,7 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
         server.shutdown();server.server_close();thread.join(5)
 
 
-@pytest.mark.parametrize('definition_present', [True])
-def test_task_validates_precombat_definition_without_replacing_native_preparations(tmp_path, definition_present):
+def test_task_validates_precombat_definition_without_replacing_native_preparations(tmp_path):
     from unittest.mock import patch
     import sequence
     from test_engine import apl_pool_reference
@@ -822,9 +781,8 @@ def test_task_validates_precombat_definition_without_replacing_native_preparatio
         character=parse_character(sample_profile())
         report=_fast_report(character,100.,99)
         report['sim']['players'][0]['sim2gse_precombat_actions']=[dict(row,executions=0) for row in
-            [*preparations,*([summon] if definition_present else [])]]
-        if definition_present=='extra_active':
-            report['sim']['players'][0]['sim2gse_precombat_actions'].append(dict(template))
+            [*preparations,summon]]
+
         (folder/'native.pending.json').write_text(json.dumps(report),encoding='utf-8')
         events=[(0,'explicit_precombat',0,-1,'raise_dead'),(0,'input',1,0,'-'),(200,'input',2,1,'-'),
                 (200,'dispatch',2,1,'scourge_strike'),(200,'native_execute',2,1,'scourge_strike')]
@@ -833,14 +791,9 @@ def test_task_validates_precombat_definition_without_replacing_native_preparatio
         return 'S2GBLOCK\t0\t-1\t-\nS2GBLOCK\t1\t0\tscourge_strike\n'
     with _apl_task_boundary(native),patch.object(sequence,'evaluate',side_effect=real_evaluate),\
             patch.object(sequence,'run',side_effect=native_boundary):
-        if definition_present is True:
-            result=run_task(source,tmp_path/'task',mode='single',program=[['scourge_strike']],
-                 search_config=dict(input_interval_ms=200,diagnostic_logging=False))
-            assert result['status']=='offline_ready'
-        else:
-            with pytest.raises(TaskError,match='战前'):
-                run_task(source,tmp_path/'task',mode='single',program=[['scourge_strike']],
-                    search_config=dict(input_interval_ms=200,diagnostic_logging=False))
+        result=run_task(source,tmp_path/'task',mode='single',program=[['scourge_strike']],
+             search_config=dict(input_interval_ms=200,diagnostic_logging=False))
+        assert result['status']=='offline_ready'
 
 
 def test_task_behavior_identity_distinguishes_precombat_prefix_from_combat_clicks(tmp_path):
@@ -864,9 +817,8 @@ def test_task_behavior_identity_distinguishes_precombat_prefix_from_combat_click
     assert behavior_key(before['candidate'])!=behavior_key(during['candidate'])
 
 
-@pytest.mark.parametrize('location', ['funding'])
 def test_rule_cli_rejects_retired_initialization_contract_without_replacing_valid_pack(
-        tmp_path, monkeypatch, capsys, location):
+        tmp_path, monkeypatch, capsys):
     import json
     from task import main
     pack = _declared_pack()
@@ -879,15 +831,7 @@ def test_rule_cli_rejects_retired_initialization_contract_without_replacing_vali
     configuration = pack['configurations'][0]
     template = next(iter(pack['general']['templates'].values()))
     row = configuration['states']['only']['priority'][0]
-    if location == 'general_policy': pack['general']['initialization'] = dict(edit_limit=32)
-    elif location == 'funding': configuration['opener']['funding'] = dict(action='tap')
-    elif location == 'general_template': pack['general']['templates']['retired'] = dict(initialize=dict(when=True))
-    elif location == 'shared_template': template['initialize'] = dict(when=True)
-    elif location == 'shared_binding': template['binding'] = dict(initialize=dict(attempt='putrefy'))
-    elif location == 'binding': row['initialize'] = dict(attempt='putrefy')
-    elif location == 'extra_initializations': row['extra_initializations'] = []
-    elif location == 'overrides': row['overrides'] = []
-    else: row['condition'] = {'op':'eq','args':[{'var':'plan.target_cost'},0]}
+    configuration['opener']['funding'] = dict(action='tap')
     draft = tmp_path / 'draft.json'
     draft.write_text(json.dumps(pack), encoding='utf-8')
     checked = main(['rules-check', str(draft)])

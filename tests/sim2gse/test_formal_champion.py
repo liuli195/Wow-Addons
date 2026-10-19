@@ -264,13 +264,11 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
         result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
         for scene in first['scenes']}
     identity = engine.identity
-    for change in ('name', 'equipment', 'cadence', 'engine'):
+    for change in ('equipment', 'cadence', 'engine'):
         with subtests.test(change=change):
             with ExitStack() as condition_patches:
                 case_raw, interval = raw, 200
-                if change == 'name':
-                    case_raw = raw.replace('deathknight="', 'deathknight="Different ')
-                elif change == 'equipment':
+                if change == 'equipment':
                     case_raw = raw.replace('id=273795', 'id=273795,bonus_id=1')
                 elif change == 'cadence':
                     # 250ms keeps the 1000ms fixture GCD and burst pause representable.

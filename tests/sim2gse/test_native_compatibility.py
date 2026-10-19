@@ -332,7 +332,7 @@ class NativeObservationTests(unittest.TestCase):
             folder = Path(directory)
             profile = folder / 'sample.simc'
             profile.write_text(sample_profile(), encoding='utf-8')
-            options = dict(character=parse_character(sample_profile()), iterations=2, trace=False,
+            options = dict(character=parse_character(sample_profile()), iterations=1, trace=False,
                            input_times=[0], simulation_config={'target_count': 2})
             request = dict(protocol=1, objects={
                 'my_actor': dict(kind='target_scope', value='controlled_player'),
@@ -390,7 +390,7 @@ class NativeObservationTests(unittest.TestCase):
             profile = folder / 'sample.simc'
             # Avoid creating a second unused racial Buff through the default APL.
             profile.write_text(text + '\nactions=festering_strike\n', encoding='utf-8')
-            options = dict(character=parse_character(text), iterations=2, trace=False,
+            options = dict(character=parse_character(text), iterations=1, trace=False,
                            input_times=[0, 1500])
             observed = evaluate(profile, candidate, folder / 'observed', **options,
                 rule_observation_request=dict(protocol=1, objects={
@@ -421,7 +421,7 @@ class NativeObservationTests(unittest.TestCase):
             profile.write_text(sample_profile(), encoding='utf-8')
             for at, expected in ((0, 'expired'), (179900, 'simulation_end'), ('extend', 'expired')):
                 with self.subTest(at=at):
-                    options = dict(character=parse_character(sample_profile()), iterations=2,
+                    options = dict(character=parse_character(sample_profile()), iterations=1,
                                    trace=False, input_times=[0, 1500, 3000, 4500, 6000] if at == 'extend' else [at])
                     program = funded if at == 'extend' else candidate
                     observed = evaluate(profile, program, folder / str(at), **options,

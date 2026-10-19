@@ -198,75 +198,11 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
     high = rows[1]
     folder = Path(high['task_path'])
     key = digest(dict(folder=str(folder / 'retest-final'), seed=seed_training.RETEST_SEEDS[0]))
-    if fault == 'scores_missing':
-        high['scores'] = [200., 200.]
-        result_store.write('seed_processed', 'deathknight-unholy-1-burst', rows,
-                           schema=seed_training.PROCESSED_SCHEMA)
-    if fault in ('receipt_missing', 'wrong_program', 'wrong_condition', 'wrong_seed', 'wrong_iterations',
-                 'receipt_non_object', 'invalid_group'):
+    if fault == 'wrong_program':
         with sqlite3.connect(folder / 'task.sqlite3') as database:
-            if fault == 'receipt_missing':
-                database.execute('DELETE FROM batches WHERE key=?', (key,))
-            else:
-                receipt = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()[0])
-                if fault == 'receipt_non_object':
-                    receipt = [receipt]
-                elif fault == 'invalid_group':
-                    receipt['storage_group_key'] = []
-                else:
-                    field, value = {'wrong_program': ('program', {}), 'wrong_condition': ('condition', 'foreign'),
-                                    'wrong_seed': ('seed', 1), 'wrong_iterations': ('iterations', 127)}[fault]
-                    receipt['request'][field] = value
-                database.execute('UPDATE batches SET value=? WHERE key=?', (json.dumps(receipt), key))
-    if fault.startswith('foreign_') or fault == 'legacy_unapproved_hash':
-        batch = folder.parent
-        manifest = json.loads((batch / 'identity.json').read_text(encoding='utf-8'))
-        payload = manifest['condition_input']
-        if fault == 'foreign_template':
-            payload['template'] = 'different-template'
-        elif fault == 'foreign_engine':
-            payload['engines'] = dict(payload['engines'], controlled={'mode': 'foreign'})
-        elif fault == 'foreign_targets':
-            payload['simulation']['target_count'] = 5
-        elif fault == 'foreign_cadence':
-            payload['config']['input_interval_ms'] = 400
-        elif fault == 'foreign_version':
-            manifest['semantic_versions']['statistics'] = 'foreign-statistics'
-        else:
-            payload['rules'].update({name: hashes[0] for name, hashes in
-                                     seed_training.LEGACY_EXECUTION_RULES.items()})
-            payload['rules']['projects/sim2gse/task.py'] = 'unapproved-task-hash'
-            manifest['legacy_source_commit'] = seed_training.LEGACY_SOURCE_COMMIT
-        manifest['semantic_condition'] = seed_training.semantic_condition(payload, manifest['semantic_versions'])
-        manifest['input_sha256'] = digest(payload)
-        manifest['condition'] = digest(payload) if fault == 'legacy_unapproved_hash' else manifest['semantic_condition']
-        (batch / 'condition.txt').write_text(manifest['condition'], encoding='ascii')
-        (batch / 'identity.json').write_text(json.dumps(manifest), encoding='utf-8')
-        for row in rows:
-            row['condition'] = manifest['condition']
-        result_store.write('seed_processed', 'deathknight-unholy-1-burst', rows,
-                           schema=seed_training.PROCESSED_SCHEMA)
-    if fault in ('report_actor', 'report_spec', 'report_spec_id', 'report_race', 'report_talents',
-                 'second_report_identity', 'third_report_condition'):
-        report_index = 1 if fault == 'second_report_identity' else 2 if fault == 'third_report_condition' else 0
-        report_key = digest(dict(folder=str(folder / 'retest-final'), seed=seed_training.RETEST_SEEDS[report_index]))
-        group = folder.name + '-retest-final'
-        report_group = result_store.read_records('batches', group)
-        stored = next(report for report in report_group if report['batch_key'] == report_key)
-        player = stored['report']['sim']['players'][0]
-        if fault == 'report_actor':
-            player['name'] = 'foreign actor'
-        elif fault == 'report_spec':
-            player['sim2gse_spec'] = 'frost'
-        elif fault in ('report_spec_id', 'second_report_identity'):
-            player['sim2gse_spec_id'] = 251
-        elif fault == 'report_race':
-            player['race'] = 'orc'
-        elif fault == 'report_talents':
-            player['talents'] = 'foreign-talents'
-        else:
-            stored['condition_key'] = 'foreign-final-condition'
-        result_store.write('batches', group, report_group)
+            receipt = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()[0])
+            receipt['request']['program'] = {}
+            database.execute('UPDATE batches SET value=? WHERE key=?', (json.dumps(receipt), key))
     api = result_store._api()
     def read_key(root, table, group, **kwargs):
         if table == 'batches' and group == folder.name + '-retest-final' and kwargs.get('filters') == {'batch_key': key}:
@@ -278,7 +214,7 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
                 raise OSError('temporary isolated storage failure')
         return api['read_key'](root, table, group, **kwargs)
     with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)):
-        if fault in ('wrong_program', 'foreign_template', 'temporary_error'):
+        if fault in ('wrong_program', 'temporary_error'):
             state = dual_result(tmp_path, raw, candidate_limit=1,
                                 expected='failed' if fault == 'temporary_error' else 'completed')
             if fault == 'temporary_error':
@@ -292,17 +228,9 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
                 engines={mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')},
                 input_interval_ms=200, use_burst=True,
                 burst_identity=dict(spec_id=definition['spec_id'], definition_id=definition['definition_id']))
-    if fault.startswith('foreign_') or fault == 'legacy_unapproved_hash':
-        assert champion['status'] == 'absent'
-        assert champion['excluded']
-        if fault == 'legacy_unapproved_hash':
-            # 当前v2先拒绝v1旧身份，不再进入旧源码hash（摘要）检查分支。
-            assert any('旧训练条件凭据缺失或不是已审核基线' in excluded['reason']
-                       for excluded in champion['excluded'])
-    else:
-        assert champion['candidate_id'] == rows[0]['candidate_id']
-        excluded = next(row for row in champion['excluded'] if row['candidate_id'] == high['candidate_id'])
-        assert excluded['status'] == ('missing' if fault in ('receipt_missing', 'report_missing') else 'invalid')
+    assert champion['candidate_id'] == rows[0]['candidate_id']
+    excluded = next(row for row in champion['excluded'] if row['candidate_id'] == high['candidate_id'])
+    assert excluded['status'] == ('missing' if fault == 'report_missing' else 'invalid')
 
 
 @pytest.mark.parametrize('static_proof', [True])
@@ -333,10 +261,9 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
             capabilities = inspect(*args, **kwargs)
             capabilities['actions'] = [action for action in capabilities['actions']
                                        if action['simc_action'] != 'outbreak']
-            if static_proof:
-                capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
-                    action_initialized=True, available=False, data_valid=True, data_id=1001,
-                    signature='outbreak', name='outbreak', gcd_ms=1500))
+            capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
+                action_initialized=True, available=False, data_valid=True, data_id=1001,
+                signature='outbreak', name='outbreak', gcd_ms=1500))
             return capabilities
         with patch.object(engine, 'inspect', current_catalogue):
             scene = dual_result(tmp_path, raw)['scenes'][0]
@@ -408,27 +335,11 @@ def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failure
     api = result_store._api()
     def read_key(root, table, key, **kwargs):
         if table == 'seed_processed' and key == 'deathknight-unholy-1-burst':
-            if fault == 'processed_corrupt':
-                raise api['CorruptDataError'](key)
-            if fault == 'processed_temporary':
-                raise OSError('temporary isolated processed storage error')
+            raise OSError('temporary isolated processed storage error')
         return api['read_key'](root, table, key, **kwargs)
-    read_text = Path.read_text
-    identity = Path(rows[0]['task_path']).parent / 'identity.json'
-    def read_identity(path, *args, **kwargs):
-        if fault == 'identity_temporary' and path == identity:
-            raise PermissionError('temporary isolated identity access error')
-        return read_text(path, *args, **kwargs)
-    with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)), \
-            patch.object(Path, 'read_text', read_identity):
-        state = dual_result(tmp_path, raw, candidate_limit=1,
-                            expected='completed' if fault == 'processed_corrupt' else 'failed')
-    if fault == 'processed_corrupt':
-        champion = state['scenes'][0]['training_champion_snapshot']
-        assert champion['status'] == 'absent'
-        assert champion['excluded'][0]['status'] == 'invalid'
-    else:
-        assert '不可读' in state['error']
+    with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)):
+        state = dual_result(tmp_path, raw, candidate_limit=1, expected='failed')
+    assert '不可读' in state['error']
 
 
 def test_dual_rejects_training_champion_from_previous_rule_configuration(

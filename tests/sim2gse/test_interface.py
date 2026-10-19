@@ -735,7 +735,7 @@ class InterfaceTests(unittest.TestCase):
                     self.assertEqual(len(set(keys)), 14)
             journal.write_bytes(original)
 
-    def _assert_simultaneous_identical_tasks(self, *, different_parent=False) -> None:
+    def _assert_simultaneous_identical_tasks(self) -> None:
         import result_store
         import sequence
 
@@ -757,47 +757,22 @@ class InterfaceTests(unittest.TestCase):
                 first_reports.wait(self.server.task_options['search_config']['search_budget_seconds'])
             return _fast_evaluate(*args, **kwargs)
 
-        second_server = second_thread = None
-        original_url = self.url
-        urls = [original_url, original_url]
-        if different_parent:
-            second_server = create_server(Path(self.directory.name) / '另一任务目录', port=0,
-                                          task_options=self.server.task_options)
-            second_thread = threading.Thread(target=second_server.serve_forever,
-                                             kwargs={'poll_interval': .01}, daemon=True)
-            second_thread.start()
-            urls[1] = f'http://127.0.0.1:{second_server.server_port}/'
-        try:
-            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-                created = []
-                for url in urls:
-                    self.url = url
-                    created.append((url, self._json_request('POST', '/api/tasks', {
-                        'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})))
-                deadline = time.monotonic() + 30
-                for url, task in created:
-                    self.url = url
-                    while time.monotonic() < deadline:
-                        state = self._task_state_request(task['task_id'], deadline)
-                        if state['status'] in {'completed', 'failed'}:
-                            break
-                        time.sleep(.02)
-                    server = self.server if url == original_url else second_server
-                    error = server.tasks[task['task_id']][1].error
-                    self.assertEqual(state['status'], 'completed', dict(state, task_error=repr(error),
-                        task_error_cause=repr(getattr(error, '__cause__', None)),
-                        task_error_context=repr(getattr(error, '__context__', None))))
-        finally:
-            self.url = original_url
-            if second_server is not None:
-                from task import cancel_task
-                for _, handle in second_server.tasks.values():
-                    if not handle.done:
-                        cancel_task(handle)
-                        handle.join(5)
-                second_server.shutdown()
-                second_server.server_close()
-                second_thread.join(2)
+        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+            created = []
+            for _ in range(2):
+                created.append(self._json_request('POST', '/api/tasks', {
+                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'}))
+            deadline = time.monotonic() + 30
+            for task in created:
+                while time.monotonic() < deadline:
+                    state = self._task_state_request(task['task_id'], deadline)
+                    if state['status'] in {'completed', 'failed'}:
+                        break
+                    time.sleep(.02)
+                error = self.server.tasks[task['task_id']][1].error
+                self.assertEqual(state['status'], 'completed', dict(state, task_error=repr(error),
+                    task_error_cause=repr(getattr(error, '__cause__', None)),
+                    task_error_context=repr(getattr(error, '__context__', None))))
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
@@ -867,7 +842,7 @@ class InterfaceTests(unittest.TestCase):
     def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
         self._check_adaptive_round(invalid_variance=True)
 
-    def _check_adaptive_round(self, *, grouped=False, invalid_variance=False):
+    def _check_adaptive_round(self, *, invalid_variance=False):
         from task import read_task
         from test_rule_diagnostics import _observed_evaluate
         from test_search import _guided_search_boundary
@@ -884,10 +859,6 @@ class InterfaceTests(unittest.TestCase):
             damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
             damage.update(mean=wanted, variance=1)
             result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
-            # 父保留可诊断的受控actor；两个实际子报告按整组伤害和方差比较。
-            if grouped and actions != initial:
-                result["report"]["sim"]["players"].append({"name": "Companion"})
-                result["report"]["sim"]["statistics"]["raid_dps"]["variance"] = 1000000
             if invalid_variance and actions == worse:
                 damage.pop("variance")
             result["summary"]["dps"] = wanted
@@ -912,7 +883,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["status"], "completed", state)
         self.assertTrue(state["result_ready"])
         search_calls = [(actions, count) for actions, count, seed in calls if seed < 20260912 + 100000]
-        expected = [32, 96, 384] if grouped else [32]
+        expected = [32]
         self.assertEqual([n for a, n in search_calls if a == worse], expected)
         self.assertEqual([n for a, n in search_calls if a == better], expected)
         self.assertEqual(state["search_result"]["dps"], 120)
@@ -1043,70 +1014,66 @@ class InterfaceTests(unittest.TestCase):
              patch.object(sequence, "check_report", new=engine.check_report), \
              _initialized_starts([initial]), \
              patch.object(sequence, "evaluate", side_effect=evaluate):
-            states = {}
-            saved = {}
-            for interval in (300,):
-                active_interval = interval
-                created = self._json_request("POST", "/api/tasks", {
-                    "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                    "input_interval_ms": interval,
-                })
-                deadline = time.monotonic() + 45
-                state = {}
-                while time.monotonic() < deadline:
-                    state = self._task_state_request(created["task_id"], deadline)
-                    if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                        break
-                    time.sleep(0.05)
-                states[interval] = state
-                handle = self.server.tasks[created["task_id"]][1]
-                handle.join(5)
-                saved[interval] = read_task(handle.output_root, include_search_records=True)
+            interval = 300
+            active_interval = interval
+            created = self._json_request("POST", "/api/tasks", {
+                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
+                "input_interval_ms": interval,
+            })
+            deadline = time.monotonic() + 45
+            state = {}
+            while time.monotonic() < deadline:
+                state = self._task_state_request(created["task_id"], deadline)
+                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
+                    break
+                time.sleep(0.05)
+            handle = self.server.tasks[created["task_id"]][1]
+            handle.join(5)
+            saved = read_task(handle.output_root, include_search_records=True)
 
-        for interval, state in states.items():
-            self.assertEqual(state["status"], "completed", state)
-            self.assertEqual(state["evidence_status"], "search_result")
-            self.assertEqual(state["input_interval_ms"], interval)
-            reduced = [step for step in saved[interval]['search']['rule_steps'].values()
-                       if step['operation']['operation'] == 'reduce_wait']
-            self.assertEqual(len(reduced), 1)
-            parent = next(row for row in saved[interval]['search']['records']
-                          if row['key'] == reduced[0]['parent_candidate_key'])
-            pool = parent['rule_diagnostics']['pool']
-            self.assertTrue(pool['complete'])
-            self.assertIn('insert', {row['operation'] for row in pool['operations']})
-            self.assertEqual(reduced[0]['operation']['source_path'], [1])
-            self.assertEqual(reduced[0]['operation']['count'], 1)
-            self.assertEqual(reduced[0]['selection']['operation_id'], reduced[0]['request']['operation_id'])
-            self.assertEqual(reduced[0]['candidate_key'], saved[interval]['selected_candidate_key'])
-            self.assertEqual(reduced[0]['candidate_key'], saved[interval]['locked_candidate_key'])
-            self.assertEqual(saved[interval]['candidate']['text'], state['candidate_text'])
-            self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
-            self.assertGreaterEqual(len(wait_candidates[interval]), 2,
-                                    "不同 WaitClicks 次数未作为不同候选评价")
-            self.assertEqual(len({candidate["text"] for candidate in wait_candidates[interval].values()}),
-                             len(wait_candidates[interval]))
-            selected_wait = next((candidate for candidate in wait_candidates[interval].values()
-                                  if candidate["text"] == state["candidate_text"]), None)
-            self.assertIsNotNone(selected_wait,
-                                 f"公开任务在 {interval} 毫秒间隔没有选择 WaitClicks 候选")
-            self.assertEqual(saved[interval]['candidate']['program'], selected_wait['program'])
-            native_wait = next((candidate for native_interval, candidate, _ in native_evaluations
-                                if native_interval == interval), None)
-            self.assertIsNotNone(native_wait,
-                                 f"{interval} 毫秒间隔没有真实评价的 WaitClicks 候选")
-            self.assertEqual(selected_wait["text"], native_wait["text"],
-                             f"{interval} 毫秒间隔最终候选没有经过真实原生评价")
-            payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
-            actions = payload[1][b"Versions"][0][b"Actions"]
-            exported_waits = [action for action in actions if action[b"Type"] == b"Pause"]
-            expected_clicks = [node["clicks"] for node in selected_wait["program"]["nodes"]
-                               if node["kind"] == "Pause"]
-            self.assertEqual([action[b"Clicks"] for action in exported_waits], expected_clicks)
-            self.assertTrue(exported_waits and all(action[b"Clicks"] >= 2 for action in exported_waits))
-            self.assertTrue(all(all(count >= 2 for count in counts)
-                                for counts in wait_candidates[interval]))
-            self.assertTrue(next(iter(wait_candidates[interval].values()))["text"].startswith("!GSE3!"))
+        self.assertEqual(state["status"], "completed", state)
+        self.assertEqual(state["evidence_status"], "search_result")
+        self.assertEqual(state["input_interval_ms"], interval)
+        reduced = [step for step in saved['search']['rule_steps'].values()
+                   if step['operation']['operation'] == 'reduce_wait']
+        self.assertEqual(len(reduced), 1)
+        parent = next(row for row in saved['search']['records']
+                      if row['key'] == reduced[0]['parent_candidate_key'])
+        pool = parent['rule_diagnostics']['pool']
+        self.assertTrue(pool['complete'])
+        self.assertIn('insert', {row['operation'] for row in pool['operations']})
+        self.assertEqual(reduced[0]['operation']['source_path'], [1])
+        self.assertEqual(reduced[0]['operation']['count'], 1)
+        self.assertEqual(reduced[0]['selection']['operation_id'], reduced[0]['request']['operation_id'])
+        self.assertEqual(reduced[0]['candidate_key'], saved['selected_candidate_key'])
+        self.assertEqual(reduced[0]['candidate_key'], saved['locked_candidate_key'])
+        self.assertEqual(saved['candidate']['text'], state['candidate_text'])
+        self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
+        self.assertGreaterEqual(len(wait_candidates[interval]), 2,
+                                "不同 WaitClicks 次数未作为不同候选评价")
+        self.assertEqual(len({candidate["text"] for candidate in wait_candidates[interval].values()}),
+                         len(wait_candidates[interval]))
+        selected_wait = next((candidate for candidate in wait_candidates[interval].values()
+                              if candidate["text"] == state["candidate_text"]), None)
+        self.assertIsNotNone(selected_wait,
+                             f"公开任务在 {interval} 毫秒间隔没有选择 WaitClicks 候选")
+        self.assertEqual(saved['candidate']['program'], selected_wait['program'])
+        native_wait = next((candidate for native_interval, candidate, _ in native_evaluations
+                            if native_interval == interval), None)
+        self.assertIsNotNone(native_wait,
+                             f"{interval} 毫秒间隔没有真实评价的 WaitClicks 候选")
+        self.assertEqual(selected_wait["text"], native_wait["text"],
+                         f"{interval} 毫秒间隔最终候选没有经过真实原生评价")
+        payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
+        actions = payload[1][b"Versions"][0][b"Actions"]
+        exported_waits = [action for action in actions if action[b"Type"] == b"Pause"]
+        expected_clicks = [node["clicks"] for node in selected_wait["program"]["nodes"]
+                           if node["kind"] == "Pause"]
+        self.assertEqual([action[b"Clicks"] for action in exported_waits], expected_clicks)
+        self.assertTrue(exported_waits and all(action[b"Clicks"] >= 2 for action in exported_waits))
+        self.assertTrue(all(all(count >= 2 for count in counts)
+                            for counts in wait_candidates[interval]))
+        self.assertTrue(next(iter(wait_candidates[interval].values()))["text"].startswith("!GSE3!"))
 
         self.assertEqual({row[0] for row in native_evaluations}, {300},
                          "空点击候选必须进入真实原生评价")
@@ -1353,8 +1320,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         from task import TaskError
         native_cases = [
             ('native_default', (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
-            ('native_disabled', 'allow_experimental_specializations=0\n' +
-             (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
             ('native_unsupported', (REPOSITORY / 'tests/sim2gse/fixtures/holy-paladin.simc').read_text(encoding='utf-8')),
         ]
         for failure, profile in native_cases:

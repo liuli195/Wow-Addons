@@ -134,24 +134,15 @@ def test_covered_wall_unions_selected_stages_without_wait_or_nested_double_count
     assert 'not the complete public-call wall time' in summary['covered_wall_timing']
 
 
-@pytest.mark.parametrize('case', ['known'])
-def test_detailed_diagnostic_stages_preserve_public_result(monkeypatch, case):
+def test_detailed_diagnostic_stages_preserve_public_result(monkeypatch):
     import copy
     import runtime
     from rule_diagnostics import diagnose
     from test_rule_trigger_prefix import _invocation
     exports = [[dict(input_index=0, trigger=True)]]
-    options = {}
-    if case == 'unknown':
-        exports = [[]]
-    elif case == 'duplicate':
-        exports = [[dict(input_index=0, trigger=False), dict(input_index=0, trigger=True)]]
-    invocation = _invocation(exports, **options)
+    invocation = _invocation(exports)
     enabled = runtime.TaskRuntime(diagnostic_logging=True)
     disabled = runtime.TaskRuntime()
-    if case == 'cancelled':
-        enabled.cancel()
-        disabled.cancel()
     actual = diagnose(**copy.deepcopy(invocation), runtime=enabled)
     actual.pop('costs')
     stages = runtime.diagnostic_summary(enabled)['stages']
@@ -160,9 +151,8 @@ def test_detailed_diagnostic_stages_preserve_public_result(monkeypatch, case):
             'diagnostic.preprocess.indexes'} <= stages.keys()
     bindings = [name for name in stages if name.startswith('diagnostic.binding.')]
     assert bindings
-    if case != 'cancelled':
-        assert any('.read.' in name and name.endswith('.project') for name in bindings)
-        assert any('.let.' in name for name in bindings)
+    assert any('.read.' in name and name.endswith('.project') for name in bindings)
+    assert any('.let.' in name for name in bindings)
     clock_calls = []
     def unexpected_clock():
         clock_calls.append(True)
@@ -180,6 +170,7 @@ def test_public_feedback_logs_follow_current_invocation_switch(
     resume = flow != 'finalizing'
     import json
     import runtime
+    import search
     import sequence
     from unittest.mock import patch
     from task import run_task, resume_task, read_task
@@ -188,6 +179,19 @@ def test_public_feedback_logs_follow_current_invocation_switch(
     from test_rule_initialization import _configure_opener
     from test_rule_diagnostics import _condition_pack, _observed_evaluate
     from test_search import _apl_task_boundary
+    scoped = []
+    if enabled:
+        original = search.TaskStore
+
+        class CheckedStore(original):
+            def save(self, **changes):
+                with self.lock:
+                    super().save(**changes)
+                    if changes.get('fields') is not None and not self.report_buffer:
+                        assert self.load_state(self.db) == json.loads(json.dumps(self.state))
+                        scoped.append(changes)
+
+        monkeypatch.setattr(search, 'TaskStore', CheckedStore)
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']:
@@ -214,13 +218,14 @@ def test_public_feedback_logs_follow_current_invocation_switch(
     config = dict(rule_diagnostics_policy='eager', total_budget_seconds=20, input_interval_ms=200, candidate_limit=6,
         round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2,
         validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',),
-        diagnostic_logging=True if resume else enabled, diagnostics='summary')
+        diagnostic_logging=True if resume else enabled, diagnostics='summary',
+        search_observability='full' if enabled else 'off')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=budget_end):
         if resume:
             with pytest.raises(SystemExit, match='before feedback commit'):
                 run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
         else:
-            run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
+            result = run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
     output = destination / 'diagnostics.json'
     old_output = output.read_bytes() if output.exists() else None
     clock_calls = []
@@ -241,6 +246,12 @@ def test_public_feedback_logs_follow_current_invocation_switch(
         assert clock_calls == []
         assert (output.read_bytes() if output.exists() else None) == old_output
         return
+    assert result['status'] == saved['status'] == 'completed'
+    assert saved['selected_candidate_key'] == result['selected_candidate_key']
+    assert scoped, 'The public search must use scoped checkpoints, not rescan every archive.'
+    saved_fields = set().union(*(row['fields'] for row in scoped))
+    assert {'selection_feedback_intents', 'selection_feedback_incomplete',
+            'pending', 'rule_steps', 'selection_generation'} <= saved_fields
     diagnostics = json.loads(output.read_text(encoding='utf-8'))
     performance = diagnostics['performance']
     assert performance['scope'] == 'current_invocation'
