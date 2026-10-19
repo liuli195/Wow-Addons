@@ -37,6 +37,20 @@ Triage: ready-for-agent
 - 01初始化/配置/原生时序及02同次诊断/合法单步已完成限定实施与独立审查；03自动Coba选择、共享恢复与真实功能链已完成限定审查。历史A四项性能/原义修复已完成分片独审及26例合并验证，后续保语义性能实测、Windows调试验证与本次恢复状态见下节。三票仍为in-progress；旧/新获选结果141201.9448/134389.7783 DPS（新低4.8244%）保留，不能称收益通过；正式60秒预算及游戏验收尚未通过。
 - 八模板、单模板绑定、四项通用算法、相对DPS评分与Coba LinUCB已确定。三组use_position默认均已确认：瘟疫降临last、单体收割突变窗first、末日突降消费first；不存在剩余算法/默认值审批阻塞。其他外围存放讨论本轮无具体迁移项目，不是阻塞项。
 
+### 2026-10-19 Windows修复与B性能实跑收尾
+
+`491bd2ddb0867fa8384983bc8263b3cbc2e4bd59` 修复恢复时遗漏冻结诊断策略及旧即时诊断测试合同；Windows（视窗系统）完整调试1011项＋167子测试通过，pytest耗时107.44秒、退出码0。固定差异 `a0dd631…491bd2d` 独立Standards（规范轴）与Spec（规格轴）审查各0项可行动发现。日志 `.local/fix061-evidence/full-debug.log`；这不是正式60秒门禁通过。
+
+`7de4e0e623ed10a35d95e4ac18eceec3ade573ab` 只新增固定公开输入 `tests/sim2gse/fixtures/sanlayn-performance.simc`，Git（版本管理）原始1560字节，SHA-256为 `fa1ae07e2f0e6b027b6e67f6063147c60f02d323cabf65431eb60c7bfa3418d1`；Windows检出CRLF仅在运行前还原为原始字节核对，运行后恢复检出换行，产品未改、不重复全套测试。
+
+唯一一次B运行 `ondemand-20261019T140341Z`（产品run_id `90d9d8ca160d470c845301e9e9cdc5ce`），2026-10-19 14:03:41至14:05:59 UTC（协调世界时）：全新center/task/model/cache（中心/任务/模型/缓存），600秒预算、1000候选上限、每轮16、连续5轮无改善早停、批目标32/128/256、iterations=100、validation_batches=4、final_batches=20、final_iterations=100、max_processes=2、seed=20260912；nominal/jitter/slow/pause/phase场景列表保持，输入200ms、reset为空、on_demand、diagnostic_logging=true、diagnostics=summary、search_observability=off、trace_search=false；万奥宝典开启、单目标、固定爆发ID `1ee1ddbee05b3c538b7624a9beef49b6db92df32fd41b14d62b8b9338031a632`、规则摘要 `1d82157c96c628c8fbec92f586d9b90603ed332dd84e40f6b3faf753bf5feb2e`。
+
+结果completed（完成），6轮后按no_improvement（无改善）早停；外层脚本调用及保存尝试墙钟137.658秒，产品保存时快照136.515秒，末次进度137.0秒，三者口径分列。首次评分发布100、筛选归档100，均在600秒内，待处理及运行中均0；里程碑时间从TaskRuntime（任务计时）起算。原生204次＝基准1＋搜索153＋验证44＋独立诊断6，诊断父唯一数6；predict/learn（预测/学习）各96次。搜索DPS（每秒伤害）134389.7783，参考177287.5176、比值0.75803294。未跑满600秒；`100 / 137.658 * 600 ≈ 436` 只是等速估算，不是实测600秒候选数，也不是同机旧新加速倍数。
+
+原日志 `diagnostics.json.performance.stages` 中模型完整保存98次累计32.887秒、该阶段墙钟区间并集也32.887秒；诊断6次累计9.234秒、该阶段并集也9.234秒。均为含子阶段墙钟；原生累计81.978秒而并集51.982秒，嵌套/并发阶段不得相加。模型预测0.807秒、学习0.587秒。完整数据、配置与机器可读精简结果仅保存在 `.local/performance/ondemand-20261019T140341Z/{run.json,compact-summary.json,public-result.json,task/diagnostics.json}`，GSE在同目录 `candidate.gse.txt`，不提交模型、数据库或全量日志。
+
+包装脚本首次准备在调用run_task前误读缺失definition_id字段，未开始搜索；修正后上述唯一产品运行完成，随后返回值含Character对象而JSON（数据交换格式）序列化失败。通过公开read_task只读恢复报告，未重跑或补模拟。正式60秒门禁、最终独立复测、游戏验收和最终交付仍未完成，本段不把历史收益比较改写为通过。
+
 ### 2026-10-19最新有效合同：B按需采集与收尾1
 
 用户 `Sentinel_9838d5f47eb88191ae20bf5b25a5f4e6` 已选B（普通评分薄数据、需要时独立真实补采）；随后 `Sentinel_bd5d76067ea48191a1901d5de1344c63` 已选收尾1：搜索结束直接输出原最佳GSE/DPS，已有诊断就显示，没有就明确“未诊断”。这是当前实施授权，替代此前A/B待确认和“所有候选必须在首评分同批即时完整诊断”的时点合同；仅保留完整采集、延后Python诊断的方案A不实施。本次B不是历史未批准的base64矩阵方案，后者仍不执行。沿原三票共用门禁和单写者TDD开始实施，不因该选择新建票据或额外确认门禁；本节是批准合同，不是实现已通过声明。
