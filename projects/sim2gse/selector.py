@@ -429,6 +429,13 @@ def _binary_available():
 
 
 def _related(record, control):
+    if (control['phase'] != 'active' and
+            (control['version'] < record['version'] or control['base_version'] != record['version'])):
+        raise result_store.DataReadError('共享选择器准备阶段与完整模型版本冲突')
+    if (record.get('theta') is None and record.get('theta_bytes') is None
+            and (control['version'] != 0 or control['rng_state'] != 1
+                 or control['reservations'] or control['settled'])):
+        raise result_store.DataReadError('共享选择器空模型不能叠加已有控制进度')
     if control['version'] >= record['version']:
         if control['base_version'] != record['version']:
             raise result_store.DataReadError('共享选择器控制记录与模型基础版本冲突')

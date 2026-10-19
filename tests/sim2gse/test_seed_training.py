@@ -113,8 +113,11 @@ def memory_result_center(installed_data_store_api, monkeypatch):
             with lock, database.cursor() as cursor:
                 if binary:
                     records = installed_data_store_api['_binary_records'](cursor, rows, schema)
-                    records.create('_binary_records_view')
-                    cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT * FROM _binary_records_view')
+                    try:
+                        records.create_view('_binary_records_view', replace=True)
+                        cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT * FROM _binary_records_view')
+                    finally:
+                        cursor.execute('DROP VIEW IF EXISTS _binary_records_view')
                 else:
                     payload = json.dumps(rows, ensure_ascii=False, allow_nan=False)
                     structure = (json.dumps([schema]) if schema is not None else

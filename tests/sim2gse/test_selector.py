@@ -500,6 +500,18 @@ def test_selector_never_falls_back_to_full_when_active_control_is_invalid(monkey
         instance(_intent('three'))
     assert result_store.read_search_learner(selector.MODEL_KEY) == full
     assert (path.read_bytes() if path.exists() else None) == before
+    if damage == 'wrong_base':
+        from unittest.mock import Mock
+        result_store.write_search_learner_control(dict(earlier_control, phase='migrating'))
+        before = path.read_bytes()
+        writes = Mock(wraps=result_store._SKILL_API['write'])
+        with monkeypatch.context() as scoped:
+            scoped.setitem(result_store._SKILL_API, 'write', writes)
+            with pytest.raises(result_store.DataReadError):
+                runpy.run_path(selector.__file__)['reserve'](_intent('three'))
+        writes.assert_not_called()
+        assert path.read_bytes() == before
+        assert result_store.read_search_learner(selector.MODEL_KEY) == full
 
 
 def test_selector_refuses_a_legacy_writer_update_during_prepared_migration(tmp_path, monkeypatch):
@@ -524,12 +536,13 @@ def test_selector_refuses_a_legacy_writer_update_during_prepared_migration(tmp_p
     assert result_store.read_search_learner_control(selector.MODEL_KEY) == prepared
 
 
-def test_selector_does_not_reinitialize_missing_matrices_as_new_experience():
+def test_selector_does_not_reinitialize_missing_matrices_as_new_experience(monkeypatch):
     import runpy
     import result_store
     import selector
 
     first = selector.reserve(_intent())
+    initialized = result_store.read_search_learner(selector.MODEL_KEY)
     selector.settle(first, .25, 1)
     broken = result_store.read_search_learner(selector.MODEL_KEY)
     broken.update(theta_bytes=None, a_inv_bytes=None)
@@ -542,6 +555,25 @@ def test_selector_does_not_reinitialize_missing_matrices_as_new_experience():
         restarted['reserve'](_intent('three'))
     assert result_store.read_search_learner(selector.MODEL_KEY) == broken
     assert result_store.read_search_learner_control(selector.MODEL_KEY) == control
+    from unittest.mock import Mock
+    legacy = {name: value for name, value in broken.items()
+              if name not in ('theta_bytes', 'a_inv_bytes', 'matrix_format')}
+    legacy.update(state_version=2, version=0, rng_state=1, reservations=[], settled={})
+    advanced = {name: value for name, value in initialized.items()
+                if name not in ('theta', 'a_inv', 'theta_bytes', 'a_inv_bytes', 'matrix_format')}
+    advanced.update(state_version=2, base_version=0, phase='active')
+    _write_legacy(legacy)
+    result_store.write_search_learner_control(advanced)
+    paths = [result_store.DATA_ROOT / table / (selector.MODEL_KEY + '.parquet')
+             for table in ('search_learners', 'search_learner_controls')]
+    before = [path.read_bytes() for path in paths]
+    writes = Mock(wraps=result_store._SKILL_API['write'])
+    with monkeypatch.context() as scoped:
+        scoped.setitem(result_store._SKILL_API, 'write', writes)
+        with pytest.raises(result_store.DataReadError):
+            runpy.run_path(selector.__file__)['reserve'](_intent('three'))
+    writes.assert_not_called()
+    assert [path.read_bytes() for path in paths] == before
 
 
 @pytest.mark.parametrize('operation,after_replace', [('reserve', True), ('no_learn', False)])
