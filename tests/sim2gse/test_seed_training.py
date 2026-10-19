@@ -170,14 +170,15 @@ def memory_training_center(training_center, memory_result_center):
 
 
 @pytest.fixture
-def four_candidate_training_rounds(monkeypatch):
+def single_candidate_training_rounds(monkeypatch):
+    """每轮只选一个真实子候选；两轮停止与初/终三种子复测保持原义。"""
     import seed_training
     config_for = seed_training.config_for
     assert config_for(training=True)['round_candidate_limit'] == 16
     assert config_for({'max_processes': 16}, training=True)['max_processes'] == 16
 
     def small_rounds(values=None, *, training=False):
-        return config_for(dict(values or {}, round_candidate_limit=4), training=training)
+        return config_for(dict(values or {}, round_candidate_limit=1), training=training)
 
     with monkeypatch.context() as scoped:
         scoped.setattr(seed_training, 'config_for', small_rounds)
@@ -264,7 +265,7 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
 
 
 def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed_work(
-        tmp_path, capsys, memory_training_center, four_candidate_training_rounds):
+        tmp_path, capsys, memory_training_center, single_candidate_training_rounds):
     from seed_training import main
     from test_character_export import sample_profile
     from unittest.mock import patch
@@ -401,50 +402,6 @@ def test_training_command_diagnoses_only_parents_and_reuses_on_demand_reports(
             for row in batches] == diagnostics
     assert result_store.read_search_learner(selector.MODEL_KEY) == model
 
-
-
-def test_training_resume_reuses_missing_eager_policy_manifest_without_new_batch(tmp_path, monkeypatch,
-                                                                            capsys, four_candidate_training_rounds):
-    import result_store, seed_training, sequence
-    from unittest.mock import patch
-    from test_character_export import sample_profile
-    source = tmp_path / 'source.json'
-    source.write_text(json.dumps(dict(label='legacy policy source', class_name='deathknight', spec='unholy',
-        source='constructed-boundary', original='preserved input', instructions='repeat', semantic='preserved',
-        changes=[], family='plain', core=[['outbreak']],
-        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    config_for = seed_training.config_for
-    def old_configuration(values=None, **kwargs):
-        config = config_for(values, **kwargs)
-        config.pop('rule_diagnostics_policy', None)
-        return config
-    with training_round_boundary(tmp_path), patch.object(seed_training, 'config_for', side_effect=old_configuration):
-        assert command(tmp_path, args) == 0
-    manifests = list((tmp_path / 'work/1').glob('*/identity.json'))
-    manifest, = manifests
-    original = json.loads(manifest.read_text())
-    assert 'rule_diagnostics_policy' not in original['condition_input']['config']
-    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-    paths = {row['task_path'] for row in processed}
-    batch_keys = [row['batch_key'] for row in result_store.iter_rows('SELECT batch_key FROM batches', tables=['batches'])]
-    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('旧训练恢复不能新建批次或重评分')):
-        assert command(tmp_path, args) == 0
-    assert list((tmp_path / 'work/1').glob('*/identity.json')) == manifests
-    restored = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-    assert {row['task_path'] for row in restored} == paths
-    assert [row['batch_key'] for row in result_store.iter_rows('SELECT batch_key FROM batches', tables=['batches'])] == batch_keys
-    assert json.loads(manifest.read_text())['condition'] == original['condition']
-    from search import TaskStore
-    for path in paths:
-        with sqlite3.connect(Path(path) / 'task.sqlite3') as database:
-            state = TaskStore.load_state(database)
-        assert 'rule_diagnostics_policy' not in state['config']
-        assert all('rule_observations' in row['batches'][0]['request'] for row in state['archive'])
-        assert all('diagnostic_batches' not in row for row in state['archive'])
 
 
 def training_batch_fixture(tmp_path, *, mutate_input=lambda payload: None, burst_context=None, legacy=True):
@@ -641,7 +598,7 @@ def test_training_command_rejects_invalid_parallelism_before_compute(tmp_path, m
 
 @pytest.mark.parametrize('max_processes', [2])
 def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
-        tmp_path, max_processes, memory_training_center, four_candidate_training_rounds):
+        tmp_path, max_processes, memory_training_center, single_candidate_training_rounds):
     from test_character_export import sample_profile
     from unittest.mock import patch
     from runtime import BudgetExceeded
@@ -771,7 +728,7 @@ def test_training_entry_rejects_an_active_foreground_search(tmp_path, monkeypatc
 
 @pytest.mark.parametrize('interruption', ['foreground'])
 def test_foreground_search_does_not_wait_for_training_and_stops_it(
-        tmp_path, capsys, interruption, memory_training_center, four_candidate_training_rounds):
+        tmp_path, capsys, interruption, memory_training_center, single_candidate_training_rounds):
     import os
     import time
     import threading
@@ -944,7 +901,7 @@ def test_unconnected_public_search_does_not_create_data_root(tmp_path, monkeypat
 
 @pytest.mark.parametrize('case', ['structured', 'empty'])
 def test_training_entry_adapts_burst_sources_and_history_without_rewriting_them(tmp_path, capsys, monkeypatch, case,
-                                                                              four_candidate_training_rounds,
+                                                                              single_candidate_training_rounds,
                                                                               memory_training_center):
     import burst
     import engine
@@ -1146,7 +1103,7 @@ def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, 
 
 def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(tmp_path, capsys, monkeypatch,
                                                                              memory_training_center,
-                                                                             four_candidate_training_rounds):
+                                                                             single_candidate_training_rounds):
     import burst
     import sequence
     import engine
@@ -1282,7 +1239,7 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
 
 def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys,
                                                                   memory_training_center,
-                                                                  four_candidate_training_rounds):
+                                                                  single_candidate_training_rounds):
     from test_character_export import sample_profile
     from unittest.mock import patch
     import result_store

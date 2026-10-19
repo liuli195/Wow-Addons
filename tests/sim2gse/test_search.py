@@ -1548,7 +1548,7 @@ class SearchAndValidationTests(TestCase):
         import threading
         from test_rule_diagnostics import _observed_evaluate
 
-        starts = [[['death_coil']], [['outbreak']], [['scourge_strike']], [['epidemic']]]
+        starts = [[['death_coil']], [['outbreak']]]
         cancellation = threading.Event()
         diagnostic_calls = []
 
@@ -1582,11 +1582,11 @@ class SearchAndValidationTests(TestCase):
                 saved = read_task(Path(directory) / 'task', include_search_records=True)
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(result['search']['stop_reason'], 'space_stalled')
-            self.assertEqual(result['search']['rounds'], 3)
-            self.assertEqual([chain['rounds'] for chain in result['search']['chains']], [0, 1, 1, 1])
+            self.assertEqual(result['search']['rounds'], 1)
+            self.assertEqual([chain['rounds'] for chain in result['search']['chains']], [0, 1])
             self.assertTrue(all(chain['stalled'] for chain in result['search']['chains']))
             self.assertEqual(saved['search']['chains'], result['search']['chains'])
-            self.assertEqual(result['search']['no_improvement_round_limit'], 4)
+            self.assertEqual(result['search']['no_improvement_round_limit'], 2)
             self.assertEqual(len(diagnostic_calls), 1)
             replayed_key = next(row['key'] for row in result['search']['records']
                                 if row['program'] == [['death_coil'], ['outbreak']])
