@@ -64,11 +64,11 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    program = [['death_coil']] * 20 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
+    program = [['death_coil']] * 2 + [dict(kind='WaitClicks', clicks=2), ['outbreak']]
     template, _ = completed_training(tmp_path, 1, [(program, [200.] * 3)])
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     from test_search import _fast_capabilities
-    stronger = [['death_coil']] * 30 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
+    stronger = [['death_coil']] * 3 + [dict(kind='WaitClicks', clicks=3), ['outbreak']]
     grades = {canonicalize_search_program(value, _fast_capabilities())['identity']: score
               for value, score in ((program, 200.), (stronger, 300.))}
     original_evaluate, store_run, api = sequence.evaluate, task._store_run, result_store._api()

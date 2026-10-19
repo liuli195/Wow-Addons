@@ -170,7 +170,9 @@ class ProgramTests(unittest.TestCase):
                         Versions=[dict(Actions=actions)])
         payload = dict(type="COLLECTION", payload=dict(Sequences={
             "MAIN": sequence([
-                {"Type": "Action", "type": "spell", "spell": 77575},
+                {"Type": "Repeat", "type": "spell", "spell": 70001, "Interval": 1},
+                {"Type": "Action", "type": "spell", "spell": 70002},
+                {"Type": "Action", "type": "spell", "spell": 70003},
                 {"Type": "Repeat", "type": "spell", "spell": 77575, "Interval": 2},
                 {"Type": "Loop", "Repeat": "2",
                  1: {"Type": "Action", "type": "spell", "spell": 77575},
@@ -180,12 +182,15 @@ class ProgramTests(unittest.TestCase):
                  2: [{"Type": "Pause", "Clicks": 2}]},
                 {"Type": "Embed", "Sequence": "CHILD"},
             ]),
-            "CHILD": sequence([{"Type": "Action", "type": "spell", "spell": 77575}]),
+            "CHILD": sequence([{"Type": "Action", "type": "spell", "spell": 70004}]),
         }, Variables={}, Macros={}))
         raw = cbor2.dumps(wire_value(payload))
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
         cap = dict(actions=[dict(kind="spell", spell_id=77575, name="Outbreak",
-                                 simc_action="outbreak")])
+                                 simc_action="outbreak"),
+                            *[dict(kind="spell", spell_id=spell_id, name=f"spell_{spell_id}",
+                                   simc_action=f"spell_{spell_id}")
+                              for spell_id in (70001, 70002, 70003, 70004)]])
         with tempfile.TemporaryDirectory() as directory:
             candidate = compile_program(from_gse_import(text, "MAIN", 1), Path(directory),
                                         identity=dict(class_id=6, spec_id=252), capabilities=cap,
@@ -205,14 +210,39 @@ class ProgramTests(unittest.TestCase):
                         <= set(node_kinds(candidate["program"]["nodes"])))
         self.assertEqual([node["commands"] if node["kind"] == "Action" else []
                           for node in candidate["compiled_program"]["clicks"]], compiled_program(candidate))
-        self.assertEqual(len(candidate["compiled_program"]["clicks"]), 14)
-        self.assertTrue(all(node["source"]["path"] for node in candidate["compiled_program"]["clicks"]))
-        self.assertEqual(candidate["compiled_program"]["clicks"][0]["source"]["sequence"], "MAIN")
-        self.assertEqual(candidate["compiled_program"]["clicks"][12]["source"]["sequence"], "CHILD")
-        self.assertEqual([bool(block) for block in compiled_program(candidate)],
-                         [True, True, True, False, True, False, True, True,
-                          False, False, True, True, True, True])
-        self.assertEqual(len(candidate["source_paths"]), 14)
+        # Two Repeat intervals remain distinct, including MAIN/CHILD's shared path 1.
+        expected = [
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "2", ["spell_70002"]),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "3", ["spell_70003"]),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "5.1", ["outbreak"]),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "5.2", []),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "5.2", []),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "5.1", ["outbreak"]),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "5.2", []),
+            ("MAIN", 1, "1", ["spell_70001"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("MAIN", 1, "5.2", []),
+            ("MAIN", 1, "6.1.1", ["outbreak"]),
+            ("MAIN", 1, "4", ["outbreak"]),
+            ("CHILD", 1, "1", ["spell_70004"]),
+        ]
+        clicks = candidate["compiled_program"]["clicks"]
+        self.assertEqual([(click["source"].get("sequence"), click["source"].get("version"),
+                           click["source"]["path"], click["commands"]) for click in clicks], expected)
+        self.assertEqual(len(candidate["source_paths"]), 26)
 
     def test_default_scene_rejects_active_petattack_with_its_source_path(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -270,39 +300,6 @@ class ProgramTests(unittest.TestCase):
                                         context=dict(click_ms=300, input_interval_ms=300,
                                                      gcd_ms=1500, seed=1))
         self.assertEqual(compiled_program(candidate), [["festering_strike"]])
-
-    def test_repeat_and_embed_same_path_keep_full_source_identity(self):
-        main = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                    Versions=[dict(Actions=[
-                        {"Type": "Repeat", "Interval": 1, "type": "spell", "spell": 70001},
-                        {"Type": "Action", "type": "spell", "spell": 70002},
-                        {"Type": "Action", "type": "spell", "spell": 70003},
-                        {"Type": "Embed", "Sequence": "CHILD"},
-                    ])])
-        child = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                     Versions=[dict(Actions=[{"Type": "Action", "type": "spell", "spell": 70004}])])
-        raw = cbor2.dumps(wire_value({"type": "COLLECTION", "payload": {
-            "Sequences": {"MAIN": main, "CHILD": child}, "Variables": {}, "Macros": {},
-        }}))
-        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        actions = [dict(kind="spell", spell_id=spell_id, name=f"spell_{spell_id}",
-                        simc_action=f"spell_{spell_id}") for spell_id in (70001, 70002, 70003, 70004)]
-        with tempfile.TemporaryDirectory() as directory:
-            candidate = compile_program(from_gse_import(text, "MAIN", 1), Path(directory),
-                                        identity=dict(class_id=6, spec_id=252),
-                                        capabilities=dict(actions=actions),
-                                        context=dict(click_ms=300, input_interval_ms=300,
-                                                     gcd_ms=1500, seed=1))
-        clicks = candidate["compiled_program"]["clicks"]
-        expected = [
-            ("MAIN", 1, "1"), ("MAIN", 1, "2"), ("MAIN", 1, "1"),
-            ("MAIN", 1, "3"), ("MAIN", 1, "1"), ("CHILD", 1, "1"),
-        ]
-        self.assertEqual([(click["source"].get("sequence"), click["source"].get("version"),
-                           click["source"]["path"]) for click in clicks], expected)
-        self.assertEqual([click["commands"] for click in clicks],
-                         [["spell_70001"], ["spell_70002"], ["spell_70001"],
-                          ["spell_70003"], ["spell_70001"], ["spell_70004"]])
 
     def test_search_program_keeps_export_and_compiled_order(self):
         blocks = [[dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak")]]

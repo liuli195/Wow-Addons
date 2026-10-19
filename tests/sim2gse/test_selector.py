@@ -15,18 +15,30 @@ def _intent(task='one', decision=1):
 
 
 def test_selector_reserves_once_and_settles_shared_latest_model():
+    import result_store
     import selector
 
     first = selector.reserve(_intent())
+    initialized = result_store.read_search_learner(selector.MODEL_KEY)
+    assert initialized['theta'] is not None and initialized['a_inv'][0][0] == 1
     assert first == selector.reserve(_intent())
     other = selector.reserve(_intent('two'))
     assert other['model_version'] > first['model_version']
-    learned = selector.settle(first, .25, 1)
+    assert result_store.read_search_learner(selector.MODEL_KEY) == initialized
+    learned = selector.settle(first, 0, 1)
     assert learned['status'] == 'learned'
-    assert selector.settle(first, .25, 1)['status'] == 'already_settled'
+    trained = result_store.read_search_learner(selector.MODEL_KEY)
+    assert trained['a_inv'][0][0] == .5
+    assert trained['settled'] == {'one': 1}
+    assert trained['reservations'] == [other]
+    assert selector.settle(first, 0, 1)['status'] == 'already_settled'
     with pytest.raises(selector.AlreadySettled):
         selector.reserve(_intent())
     assert selector.settle(other, None, 0, reason='no_common_batch')['status'] == 'no_learn'
+    assert result_store.read_search_learner(selector.MODEL_KEY) == trained
+    control = result_store.read_search_learner_control(selector.MODEL_KEY)
+    assert control['settled'] == {'one': 1, 'two': 1}
+    assert control['reservations'] == []
     next_choice = selector.reserve(_intent(decision=2))
     assert next_choice['model_version'] > learned['model_version']
     changed = copy.deepcopy(_intent(decision=2))
@@ -302,24 +314,6 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     other = selector.reserve(_intent('two'))
     assert other['model_version'] == 1
     assert selector.settle(other, .25, 1)['model_version'] == 2
-
-
-def test_nonlearning_choices_preserve_full_model_and_zero_reward_still_learns():
-    import result_store
-    import selector
-
-    first = selector.reserve(_intent())
-    initialized = result_store.read_search_learner(selector.MODEL_KEY)
-    assert initialized['theta'] is not None and initialized['a_inv'][0][0] == 1
-    other = selector.reserve(_intent('two'))
-    assert result_store.read_search_learner(selector.MODEL_KEY) == initialized
-    assert selector.settle(other, None, 0)['status'] == 'no_learn'
-    assert result_store.read_search_learner(selector.MODEL_KEY) == initialized
-    assert selector.settle(first, 0, 1)['status'] == 'learned'
-    learned = result_store.read_search_learner(selector.MODEL_KEY)
-    assert learned['a_inv'][0][0] == .5
-    assert learned['settled'] == {'one': 1, 'two': 1}
-    assert learned['reservations'] == []
 
 
 @pytest.mark.parametrize('phase', ['bootstrap', 'migrating'])

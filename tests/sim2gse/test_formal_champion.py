@@ -67,16 +67,17 @@ def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_pro
         return native
 
     with patch.object(engine, 'reference', four_native_sources):
-        former = [['death_coil']] * 20 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
+        # Both remain above the six-action native source under the constructed score.
+        former = [['death_coil']] * 6 + [dict(kind='WaitClicks', clicks=2), ['outbreak']]
         template, _ = completed_training(tmp_path, 1, [(former, [200.] * 3)])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
         first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=2)
-        challenger = [['death_coil']] * 30 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
+        challenger = [['death_coil']] * 7 + [dict(kind='WaitClicks', clicks=3), ['outbreak']]
         _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')
         engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
         selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
             class_name='deathknight', spec='unholy', targets=1,
-            program=[['outbreak'], dict(kind='WaitClicks', clicks=100 + index), ['death_coil']],
+            program=[['outbreak'], dict(kind='WaitClicks', clicks=2 + index), ['death_coil']],
             family='family-' + str(index), score=100., scores=[100.] * 3,
             template_sha256='selected-template', engines=engines) for index in range(4)]
         result_store.write('seed_selected', 'deathknight-unholy-1-burst', selected,
@@ -141,10 +142,17 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
     import json
     import result_store
     import threading
+    import task
     from concurrent.futures import ThreadPoolExecutor
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
+    profile = tmp_path / 'role.simc'
+    profile.write_text(raw, encoding='utf-8')
+    options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
+            scenarios=('nominal',)))
     import search
     inspect, initial_programs = engine.inspect, search.initial_programs
     stale_ids = set()
@@ -180,15 +188,17 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
         try:
             assert waiting.wait(20)
             with patch.object(search, 'initial_programs', side_effect=another_native_start):
-                fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1)
+                fresh = task.run_task(profile, tmp_path / 'fresh', **options)
+                assert fresh['status'] == 'completed', fresh
         finally:
             release.set()
         stale = pending.result(20)
     assert stale['scenes'][0]['formal_champion_snapshot']['status'] == 'absent'
     assert stale['scenes'][0]['formal_champion_publication']['status'] == 'conflict'
     assert stale['scenes'][0]['search_result']['samples'] > 0
-    inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=1)
-    assert inherited['scenes'][0]['formal_champion_snapshot']['source_run_id'] == fresh['scenes'][0][
+    inherited = task.run_task(profile, tmp_path / 'inherited', **options)
+    assert inherited['status'] == 'completed', inherited
+    assert inherited['search']['formal_champion_snapshot']['source_run_id'] == fresh['search'][
         'formal_champion_publication']['source_run_id']
 
 

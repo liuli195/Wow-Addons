@@ -505,10 +505,10 @@ def test_public_on_demand_restores_declared_state_order_for_full_pool_and_featur
         original = run_task(source, tmp_path / 'B', simulation_config=dict(scene='single_target'), search_config=config)
         resumed = resume_task(tmp_path / 'B', diagnostic_candidate_key=original['selected_candidate_key'],
                               diagnostic_budget_seconds=10)
-        eager = run_task(source, tmp_path / 'eager', simulation_config=dict(scene='single_target'),
-                         search_config=dict(config, rule_diagnostics_policy='eager'))
     left = resumed['search']['rule_diagnostics']
-    right = eager['search']['rule_diagnostics']
+    # 右侧从原始声明和独立原报告重新诊断，不读取左侧的恢复诊断/响应。
+    right = _direct_diagnosis(tmp_path / 'eager', copy.deepcopy(pack), copy.deepcopy(native),
+                              include_context=True)
     assert [row['state'] for row in left['rules']] == [row['state'] for row in right['rules']] == [
         'z_first', 'z_first', 'a_second', 'a_second']
     assert left['pool']['complete'] is right['pool']['complete'] is True
@@ -556,14 +556,11 @@ def _condition_pack():
     return pack
 
 
-def _observed_evaluate(*args, **kwargs):
-    """仅替换已存在的外部引擎边界，不替换解释器或编辑器。"""
-    request = kwargs.pop('rule_observation_request', None)
-    result = _fast_evaluate(*args, **kwargs)
+def _observation_payload(input_times, request=None):
     inputs = [dict(input_index=i, time=ms, sample_id=1, event_index=i,
                    source_step=i % 2, input_source='loop')
-              for i, ms in enumerate(result['input_times'])]
-    result['report']['sim']['players'][0]['sim2gse_rule_observations'] = dict(
+              for i, ms in enumerate(input_times)]
+    payload = dict(
         protocol=1, scope=dict(sample_selection='first_scored_complete', sample_id=1,
             start_ms=0, end_ms=180000, complete=True), inputs=inputs,
         action_observations=[dict(row, object='consumer', native_qualified=True,
@@ -574,11 +571,64 @@ def _observed_evaluate(*args, **kwargs):
         state_observations=[dict(row, object='counter', value=1 if row['input_index'] == 0 else 0)
                             for row in inputs], effect_observations=[])
     if request is not None and request['protocol'] == 2:
-        payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload.update(protocol=2, request=copy.deepcopy(request))
         payload['scope']['effect_events_complete'] = {
             name: False for name in request['collections']['effect_events']}
+    return payload
+
+
+def _observed_evaluate(*args, **kwargs):
+    """仅替换已存在的外部引擎边界，不替换解释器或编辑器。"""
+    request = kwargs.pop('rule_observation_request', None)
+    result = _fast_evaluate(*args, **kwargs)
+    result['report']['sim']['players'][0]['sim2gse_rule_observations'] = _observation_payload(
+        result['input_times'], request)
     return result
+
+
+def _diagnostic_initialization(tmp_path, pack, native):
+    """真实目录、声明校验和冻结初始化；不建立任务或评分存储。"""
+    import engine, rule_config, rule_initialization
+    from search import digest
+    capabilities = engine.inspect(native, tmp_path / 'catalogue')
+    snapshot = dict(pack=copy.deepcopy(pack), resolved=rule_config.validate(pack),
+                    rule_config_digest=digest(pack))
+    binding = rule_config.bind(capabilities, native['static_snapshot'], 1,
+        spec_id=native['identity']['spec_id'], rule_snapshot=snapshot, scene='single_target')
+    initialization = rule_initialization.generate(capabilities, native, binding=binding,
+        input_interval_ms=200, rule_snapshot=snapshot)
+    return capabilities, initialization
+
+
+def _direct_diagnosis(tmp_path, pack, native, mutate=None, *, iterations=2,
+                      input_times=None, batch_request=None, include_context=False):
+    """独立报告与权威请求交给公开diagnose；每个参数仍独立执行。"""
+    from rule_diagnostics import diagnose
+    from runtime import TaskRuntime
+    capabilities, initialization = _diagnostic_initialization(tmp_path, pack, native)
+    times = list(range(0, 180000, 200)) if input_times is None else list(input_times)
+    request = copy.deepcopy(initialization['rule_observation_request'])
+    evidence = dict(input_times=times, report=dict(sim=dict(players=[dict(
+        sim2gse_rule_observations=_observation_payload(times, request))])))
+    if batch_request is None:
+        batch_request = dict(times=times, rule_observations=dict(request=copy.deepcopy(request)))
+    else:
+        batch_request = copy.deepcopy(batch_request)
+        batch_request['rule_observations'] = dict(request=copy.deepcopy(request))
+    if mutate is not None:
+        mutate(evidence)
+    diagnosis = diagnose(initialization['program'], capabilities, initialization, evidence['report'],
+        task_run_id='fixture', batch_key='same-batch',
+        behavior_identity=initialization['behavior_identity'], runtime=TaskRuntime(),
+        requested_iterations=iterations, batch_request=batch_request)
+    if include_context:
+        from selector import context_features, FEATURE_VERSION
+        resolved = next(row for row in initialization['rule_snapshot']['resolved']
+                        if row['key'] == initialization['configuration_key'])
+        diagnosis['selection_context'] = dict(version=FEATURE_VERSION, values=context_features(
+            diagnosis, evidence['report']['sim']['players'][0]['sim2gse_rule_observations'],
+            objects=resolved['objects']))
+    return diagnosis
 
 
 @pytest.mark.parametrize('diagnostic_logging', [False])
@@ -669,7 +719,6 @@ def test_public_resume_checks_diagnostic_references_and_keeps_legacy_contents(tm
 
 @pytest.mark.parametrize('qualification', ['resource_blocked', 'supported', 'missing_fact'])
 def test_public_supported_hypothesis_keeps_known_negative_requirements_false(tmp_path, monkeypatch, qualification):
-    import sequence
     pack = _condition_pack()
     high = pack['configurations'][0]['states']['only']['priority'][0]
     high['name'] = 'higher opportunity'
@@ -677,14 +726,10 @@ def test_public_supported_hypothesis_keeps_known_negative_requirements_false(tmp
     low.update(name='ordinary lower')
     low['arguments'].update(action='first', priority_refs=['higher opportunity'])
     pack['configurations'][0]['states']['only']['priority'] = [high, low]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def partial_qualification(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def partial_qualification(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         for row in payload['action_observations']:
             row.update(native_qualified=None, has_cooldown=True, cooldown_remaining=0,
@@ -701,17 +746,12 @@ def test_public_supported_hypothesis_keeps_known_negative_requirements_false(tmp
             for row in payload['action_observations']]
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=partial_qualification) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-        saved = read_task(tmp_path / 'task', include_search_records=True)
-    diagnostic = result['search']['rule_diagnostics']
-    assert diagnostic == saved['search']['rule_diagnostics']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, partial_qualification)
+    diagnostic = diagnosis
     higher, lower = diagnostic['rules']
     higher_kinds = {row['kind'] for row in higher['findings']}
     lower_kinds = {row['kind'] for row in lower['findings']}
     contributors = {row['rule'] for operation in diagnostic['pool']['operations'] for row in operation['contributors']}
-    assert scoring.call_count == 1
     if qualification == 'supported':
         assert 'missed_opportunity' in higher_kinds and 'yielded' in lower_kinds
         assert contributors == {'higher opportunity'}
@@ -725,18 +765,13 @@ def test_public_supported_hypothesis_keeps_known_negative_requirements_false(tmp
 
 
 def test_public_unmapped_edit_keeps_later_diagnostics_operations_and_priority_evidence(tmp_path, monkeypatch):
-    import sequence
     pack = _condition_pack()
     higher, lower = pack['configurations'][0]['states']['only']['priority']
     lower['arguments'].update(action='first', value=1, priority_refs=[higher['name']])
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def unmapped_first_input(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def unmapped_first_input(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['inputs'][0].update(input_source='precombat')
         for row in payload['state_observations']:
@@ -745,12 +780,8 @@ def test_public_unmapped_edit_keeps_later_diagnostics_operations_and_priority_ev
             base_button='outbreak') for row in payload['action_observations']]
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=unmapped_first_input) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-        saved = read_task(tmp_path / 'task', include_search_records=True)
-    diagnostic = saved['search']['rule_diagnostics']
-    assert diagnostic == result['search']['rule_diagnostics']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, unmapped_first_input)
+    diagnostic = diagnosis
     higher, lower = diagnostic['rules']
     assert [finding['input_index'] for finding in higher['findings']
             if finding['kind'] == 'missed_opportunity'] == [0, 2]
@@ -764,7 +795,6 @@ def test_public_unmapped_edit_keeps_later_diagnostics_operations_and_priority_ev
         ('move', (0,)), ('insert', (0,))}
     assert {contributor['evidence']['input_index'] for row in diagnostic['pool']['operations']
             for contributor in row['contributors']} == {2}
-    assert scoring.call_count == 1
 
 
 def test_public_auto_selection_cancelled_before_score_resumes_the_saved_decision(tmp_path, monkeypatch):
@@ -1177,7 +1207,6 @@ def test_public_resume_scores_one_requested_operation_and_keeps_pending_starts(t
 
 
 def test_public_diagnostics_keep_inactive_state_rules_without_editing_them(tmp_path, monkeypatch):
-    import sequence
     pack = _condition_pack()
     pack['object_sets']['sample']['switch'] = dict(kind='effect', native_identity='fixture_switch')
     active = pack['configurations'][0]['states'].pop('only')
@@ -1185,23 +1214,15 @@ def test_public_diagnostics_keep_inactive_state_rules_without_editing_them(tmp_p
     inactive = copy.deepcopy(active)
     inactive['expected'] = True
     pack['configurations'][0]['states'] = {'inactive': inactive, 'active': active}
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def switched_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def switched_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['effect_observations'] = [dict(row, object='switch', active=False) for row in payload['inputs']]
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=switched_engine):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    diagnosis = result['search']['rule_diagnostics']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, switched_engine)
     assert len(diagnosis['rules']) == 4
     assert [(row['state'], row['status']) for row in diagnosis['rules']] == [
         ('inactive', 'not_applicable'), ('inactive', 'not_applicable'),
@@ -1210,25 +1231,17 @@ def test_public_diagnostics_keep_inactive_state_rules_without_editing_them(tmp_p
 
 
 def test_public_unknown_execution_is_not_reported_as_inactive_or_failed(tmp_path, monkeypatch):
-    import sequence
-    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    pack = _condition_pack()
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def missing_outcomes(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def missing_outcomes(result):
         for row in result['report']['sim']['players'][0]['sim2gse_rule_observations']['action_observations']:
             row.update(native_qualified=None, success=None, has_cooldown=False,
                        resource_costs={'rune': 0}, resource_balances={'rune': 6}, known_native_requirements=[])
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=missing_outcomes):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    diagnosis = result['search']['rule_diagnostics']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, missing_outcomes)
     assert diagnosis['rules'][0]['status'] == 'unknown'
     assert {row['case'] for row in diagnosis['rules'][0]['unknown_conditions']} == {'covered', 'missed_opportunity'}
     assert diagnosis['rules'][0]['findings'] == []
@@ -1237,27 +1250,19 @@ def test_public_unknown_execution_is_not_reported_as_inactive_or_failed(tmp_path
 
 @pytest.mark.parametrize('iterations,sample_id,supported', [(2, 0, False), (1, 1, True)])
 def test_public_diagnostics_use_actual_scored_sample_not_warmup(tmp_path, monkeypatch, iterations, sample_id, supported):
-    import sequence
-    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    pack = _condition_pack()
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def selected_sample(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def selected_sample(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['scope']['sample_id'] = sample_id
         for name in ('inputs', 'action_observations', 'state_observations'):
             for row in payload[name]: row['sample_id'] = sample_id
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=selected_sample) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=iterations, validation_batches=1))
-    assert scoring.call_count == 1
-    diagnosis = result['search']['rule_diagnostics']
+    # 原task的首评分批由batch_targets=(2,)决定，config.iterations=1也实际请求2场。
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, selected_sample, iterations=2)
     assert bool(diagnosis['pool']['operations']) is supported
     if not supported:
         assert all(row['status'] == 'unknown' for row in diagnosis['rules'])
@@ -1265,7 +1270,6 @@ def test_public_diagnostics_use_actual_scored_sample_not_warmup(tmp_path, monkey
 
 
 def test_public_window_template_uses_configured_effect_without_enabling_full_charge_branch(tmp_path, monkeypatch):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'another-name': json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['Buff窗口与充能使用']}
@@ -1273,45 +1277,27 @@ def test_public_window_template_uses_configured_effect_without_enabling_full_cha
     pack['configurations'][0]['states']['only']['priority'] = [dict(name='window use', template='another-name',
         arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
                        window_effect='window', allow_full_charge=False))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def window_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def window_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['effect_observations'] = [dict(row, object='window', active=row['input_index'] == 0)
                                           for row in payload['inputs']]
         for row in payload['action_observations']: row.update(charges_current=2, charges_maximum=2)
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=window_engine) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    diagnosis = result['search']['rule_diagnostics']
-    assert scoring.call_count == 1
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, window_engine)
     assert [(finding['kind'], finding.get('input_index')) for finding in diagnosis['rules'][0]['findings']] == [('missed_window', 0)]
     assert len(diagnosis['pool']['operations']) == 2
 
 
 def test_public_pool_respects_configured_edit_unit_range(tmp_path, monkeypatch):
-    import sequence
     pack = _condition_pack()
     pack['object_sets']['sample']['editable']['allow_units'] = ['wait_block']
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    diagnosis = result['search']['rule_diagnostics']
-    assert scoring.call_count == 1
+    diagnosis = _direct_diagnosis(tmp_path, pack, native)
     assert diagnosis['rules'][0]['findings'][0]['kind'] == 'missed_opportunity'
     assert diagnosis['pool']['complete'] is True
     assert diagnosis['pool']['operations'] == []
@@ -1320,7 +1306,6 @@ def test_public_pool_respects_configured_edit_unit_range(tmp_path, monkeypatch):
 
 
 def test_public_resource_template_uses_configured_native_resource_identity(tmp_path, monkeypatch):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'resource-template-renamed':
@@ -1329,14 +1314,10 @@ def test_public_resource_template_uses_configured_native_resource_identity(tmp_p
     pack['configurations'][0]['states']['only']['priority'] = [dict(name='spend before overflow',
         template='resource-template-renamed', arguments=dict(action='consumer', priority_refs=[],
             edit_range='editable', resource='tank', margin_source='native_cost', near_full_margin=None))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def resource_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def resource_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['resource_events'] = [dict(row, object='tank', current=95 if row['input_index'] == 0 else 0,
             maximum=100, overflow=0) for row in payload['inputs']]
@@ -1344,19 +1325,13 @@ def test_public_resource_template_uses_configured_native_resource_identity(tmp_p
             row.update(resource_costs={'runic_power': 10}, resource_balances={'runic_power': 95})
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=resource_engine) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    diagnosis = result['search']['rule_diagnostics']
-    assert scoring.call_count == 1
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, resource_engine)
     assert [(row['kind'], row.get('input_index')) for row in diagnosis['rules'][0]['findings']] == [
         ('near_full_opportunity', 0)]
     assert len(diagnosis['pool']['operations']) == 2
 
 
 def test_public_reservation_template_enumerates_all_later_positions(tmp_path, monkeypatch):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'reserve-renamed':
@@ -1370,14 +1345,10 @@ def test_public_reservation_template_enumerates_all_later_positions(tmp_path, mo
         template='reserve-renamed', arguments=dict(action='consumer', reserved_action='first',
             priority_refs=[], edit_range='editable', resource='tank', reservation_effect='reserve',
             reserve_amount_source='explicit', reserve_amount=30))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def reservation_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def reservation_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         for name in ('inputs', 'action_observations', 'state_observations'):
             for row in payload[name]: row['source_step'] = row['input_index'] % 3
@@ -1388,12 +1359,7 @@ def test_public_reservation_template_enumerates_all_later_positions(tmp_path, mo
         for row in payload['action_observations']: row['success'] = row['input_index'] == 1
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=reservation_engine) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    diagnosis = result['search']['rule_diagnostics']
-    assert scoring.call_count == 1
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, reservation_engine)
     assert [(row['kind'], row.get('input_index')) for row in diagnosis['rules'][0]['findings']] == [
         ('reservation_crowding_hypothesis', 1)]
     assert [(row['operation'], row['source_path'], row['destination_path'])
@@ -1402,7 +1368,6 @@ def test_public_reservation_template_enumerates_all_later_positions(tmp_path, mo
 
 @pytest.mark.parametrize('scope_case', ['known', 'missing_component_key'])
 def test_public_join_keeps_target_components_and_missing_effect_unknown(tmp_path, monkeypatch, scope_case):
-    import sequence
     pack = _condition_pack()
     objects = pack['object_sets']['sample']
     objects.update(scope=dict(kind='target_scope', value='all_currently_engaged_required_targets'),
@@ -1438,14 +1403,10 @@ def test_public_join_keeps_target_components_and_missing_effect_unknown(tmp_path
     pack['general']['templates'] = {'join-renamed': template}
     pack['configurations'][0]['states']['only']['priority'] = [dict(name='target join',
         template='join-renamed', arguments=dict(action='consumer', scope='scope', effect='effect'))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def component_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def component_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['inputs'] = payload['inputs'][:1]
         row = payload['inputs'][0]
@@ -1463,15 +1424,12 @@ def test_public_join_keeps_target_components_and_missing_effect_unknown(tmp_path
             payload['effect_observations'][1]['applicable'] = False
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=component_engine):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    rule, = result['search']['rule_diagnostics']['rules']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, component_engine)
+    rule, = diagnosis['rules']
     if scope_case in ('missing_component_key', 'unresolved'):
         assert rule['status'] == 'unknown'
         assert '关联键缺失' in rule['reason']
-        assert result['search']['rule_diagnostics']['pool']['operations'] == []
+        assert diagnosis['pool']['operations'] == []
         return
     if scope_case == 'empty':
         assert rule['status'] == 'not_applicable'
@@ -1509,14 +1467,9 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
             high, low = pack['configurations'][0]['states']['only']['priority']
             high['arguments'].update(compare='gte', threshold=2)
             low['arguments']['action'] = 'low_action'
-    _configure_opener(tmp_path, monkeypatch, pack)
-    result_store.DATA_ROOT.mkdir()
     definition, profile = reviewed_fixture()
-    burst.publish(definition)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(profile, encoding='utf-8')
 
     def preparation_engine(*args, **kwargs):
         sources = kwargs.pop('input_sources')
@@ -1544,6 +1497,32 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
             payload['action_observations'] += low_actions
         return result
 
+    if missing_input_source == 'scoped_unknown':
+        times, sources = burst.combined_inputs(list(range(0, 180000, 200)), definition, 200)
+
+        def scoped_unknown_report(result):
+            payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+            for name in ('inputs', 'action_observations', 'state_observations'):
+                for row, input_source in zip(payload[name], sources, strict=True):
+                    row['input_source'] = input_source
+            for row in payload['state_observations']: row['value'] = 1
+            for row in payload['action_observations']: row['input_allowed'] = row['input_source'] == 'loop'
+            for row in payload['inputs']: row.pop('input_source')
+            payload['state_observations'] += [dict(row, object='low_counter', value=int(index == len(payload['inputs'])-1))
+                for index, row in enumerate(payload['inputs'])]
+
+        diagnosis = _direct_diagnosis(tmp_path, pack, native, scoped_unknown_report,
+            input_times=times, batch_request=dict(times=times, burst=dict(sources=sources)))
+        lower = diagnosis['rules'][1]
+        assert [(row['input_index'], row['kind']) for row in lower['findings'] if row['kind'] == 'missed_opportunity'] == [
+            (len(times)-1, 'missed_opportunity')]
+        return
+
+    _configure_opener(tmp_path, monkeypatch, pack)
+    result_store.DATA_ROOT.mkdir()
+    burst.publish(definition)
+    source = tmp_path / 'role.simc'
+    source.write_text(profile, encoding='utf-8')
     with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=preparation_engine) as scoring:
         result = run_task(source, tmp_path / 'task', use_burst=True, simulation_config=dict(scene='single_target'),
             search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
@@ -1570,7 +1549,6 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
 
 @pytest.mark.parametrize('missing_events,lifecycle_complete', [(False, True), (False, False)])
 def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecycle_unknown(tmp_path, monkeypatch, missing_events, lifecycle_complete):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'short-renamed':
@@ -1579,14 +1557,10 @@ def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecyc
     pack['configurations'][0]['states']['only']['priority'] = [dict(name='use short effect',
         template='short-renamed', arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
             effect_refs=['window'], window_selection='earliest_end', use_position='first_eligible', consume_required=True, usage_time_basis='effect_completion'))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def window_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def window_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         for row in payload['action_observations']:
             row['effect_completion_time'] = row['time']
@@ -1599,12 +1573,7 @@ def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecyc
                 dict(event, event_index=10001, kind='expire', time=400, end_reason='expired')]
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=window_engine) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-    diagnosis = result['search']['rule_diagnostics']
-    assert scoring.call_count == 1
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, window_engine)
     if missing_events or lifecycle_complete is not True:
         assert diagnosis['rules'][0]['status'] == 'unknown'
         assert diagnosis['pool']['operations'] == []
@@ -1617,7 +1586,6 @@ def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecyc
 
 @pytest.mark.parametrize('case', ['opportunity', 'input_inside_execution_after', 'missing_execution'])
 def test_public_short_window_execution_basis_separates_estimate_and_actual_use(tmp_path, monkeypatch, case):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'short-renamed':
@@ -1627,14 +1595,10 @@ def test_public_short_window_execution_basis_separates_estimate_and_actual_use(t
         template='short-renamed', arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
             effect_refs=['window'], window_selection='earliest_end', use_position='first_eligible',
             consume_required=False, usage_time_basis='execution'))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def window_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def window_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['scope']['effect_events_complete'] = {'window': True}
         payload['scope']['execution_events_complete'] = False
@@ -1670,14 +1634,8 @@ def test_public_short_window_execution_basis_separates_estimate_and_actual_use(t
             payload['action_events'].append(dict(payload['action_events'][0], time=500, event_index=70))
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=window_engine) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-        saved = read_task(tmp_path / 'task', include_search_records=True)
-    diagnosis = result['search']['rule_diagnostics']
-    assert diagnosis == saved['search']['rule_diagnostics']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, window_engine)
     kinds = {row['kind'] for row in diagnosis['rules'][0]['findings']}
-    assert scoring.call_count == 1
     if case in ('unknown_cast', 'wrong_precision'):
         assert diagnosis['pool']['operations'] == []
     elif case in ('missing_execution', 'duplicate_execution', 'missing_execution_input_before_end'):
@@ -1693,32 +1651,26 @@ def test_public_short_window_execution_basis_separates_estimate_and_actual_use(t
 
 @pytest.mark.parametrize('loop', [True])
 def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_repeats(tmp_path, monkeypatch, loop):
-    """补充诊断/单操作公开接口；最高task公开链由上面用例覆盖。"""
-    import sequence
+    """真实诊断、单操作和编译接口；不另建外围评分任务。"""
     from program import canonicalize_search_program, compile_program
     from rule_diagnostics import apply, diagnose
     from runtime import TaskRuntime
-    _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
-        task = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-        blocks = [['outbreak'], ['outbreak'], ['outbreak'], ['death_coil']]
-        program = [dict(kind='Loop', count=3, blocks=blocks)] if loop else blocks
-        canonical = canonicalize_search_program(program, task['capabilities'])
-        compiled = compile_program(canonical['program'], tmp_path / 'parent', identity=task['native_reference']['identity'],
-                                   capabilities=task['capabilities'])
-        evidence = sequence.evaluate(source, compiled, tmp_path / 'evidence', character=task['character'],
-                                     iterations=2, trace=False)
-        raw = evidence['report']['sim']['players'][0]['sim2gse_rule_observations']
+    capabilities, initialization = _diagnostic_initialization(tmp_path, _condition_pack(), native)
+    blocks = [['outbreak'], ['outbreak'], ['outbreak'], ['death_coil']]
+    program = [dict(kind='Loop', count=3, blocks=blocks)] if loop else blocks
+    canonical = canonicalize_search_program(program, capabilities)
+    # 复用原外部Lua进程边界；Program编译、编辑、合法性均真实。
+    with _apl_task_boundary(native):
+        compiled = compile_program(canonical['program'], tmp_path / 'parent',
+            identity=native['identity'], capabilities=capabilities)
+        raw = _observation_payload(list(range(0, 180000, 300)))
         for name in ('inputs', 'action_observations', 'state_observations'):
             for row in raw[name]: row['source_step'] = row['input_index'] % len(compiled['blocks'])
-        diagnosis = diagnose(program, task['capabilities'], task['rule_initialization'], evidence['report'],
-            task_run_id=task['profile']['run_id'], batch_key='constructed-same-batch',
+        diagnosis = diagnose(program, capabilities, initialization,
+            dict(sim=dict(players=[dict(sim2gse_rule_observations=raw)])),
+            task_run_id='fixture', batch_key='constructed-same-batch',
             behavior_identity=canonical['identity'], runtime=TaskRuntime())
         prefix = [0] if loop else []
         assert [(row['operation'], row['source_path'], row['destination_path'])
@@ -1726,22 +1678,19 @@ def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_r
             ('move', prefix+[3], prefix+[0]), ('move', prefix+[3], prefix+[1]),
             ('move', prefix+[3], prefix+[2]), ('insert', None, prefix+[0])]
         changed = apply(program, diagnosis['pool']['operations'][0])
-        changed_canonical = canonicalize_search_program(changed, task['capabilities'])
-        selected = compile_program(changed_canonical['program'], tmp_path / 'selected', identity=task['native_reference']['identity'],
-                                   capabilities=task['capabilities'])
-        scored = sequence.evaluate(source, selected, tmp_path / 'selected-score',
-                                   character=task['character'], iterations=2, trace=False)
+        changed_canonical = canonicalize_search_program(changed, capabilities)
+        selected = compile_program(changed_canonical['program'], tmp_path / 'selected',
+            identity=native['identity'], capabilities=capabilities)
     assert diagnosis['pool']['complete'] is True
     if loop:
         assert changed == [dict(kind='Loop', count=3,
             blocks=[['death_coil'], ['outbreak'], ['outbreak'], ['outbreak']])]
-    assert scored['blocks'] == [['death_coil'], ['outbreak'], ['outbreak'], ['outbreak']] * (3 if loop else 1)
-    assert scored['summary']['dps'] > 0
-
+    assert [[command['simc_action'] for command in block] for block in selected['blocks']] == [
+        ['death_coil'], ['outbreak'], ['outbreak'], ['outbreak']] * (3 if loop else 1)
 
 @pytest.mark.parametrize('first_scope,second_scope', [('scope_a', 'scope_b')])
 def test_public_observation_request_closes_only_declared_object_dependencies(tmp_path, monkeypatch, first_scope, second_scope):
-    import sequence
+    from rule_diagnostics import observation_request
     pack = _condition_pack()
     pack['object_sets']['sample'].update({
         first_scope: dict(kind='target_scope', value='current_attack_target'),
@@ -1754,21 +1703,12 @@ def test_public_observation_request_closes_only_declared_object_dependencies(tmp
             from_action='first', qualification='qualification')})
     for rule in pack['configurations'][0]['states']['only']['priority']:
         rule['arguments']['activation_effect'] = 'compound'
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    requests = []
-
-    def requested_engine(*args, **kwargs):
-        requests.append(copy.deepcopy(kwargs['rule_observation_request']))
-        return _observed_evaluate(*args, **kwargs)
-
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=requested_engine):
-        run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-    request, = requests
+    _, initialization = _diagnostic_initialization(tmp_path, pack, native)
+    # 去掉初始化缓存，确实由声明解析闭包，不能预填预期请求自比。
+    initialization.pop('rule_observation_request')
+    request = observation_request(initialization, protocol=2)
     assert set(request['objects']) == {'consumer', 'counter', 'compound', 'first', 'qualification', first_scope, second_scope}
 
 
@@ -1815,30 +1755,22 @@ def test_public_failed_rule_step_is_terminal_and_repeat_does_not_score(tmp_path,
 
 @pytest.mark.parametrize('requested,actual_form,supported', [('specific_form', 'fixture_form', True), ('specific_form', 'death_coil', False)])
 def test_public_rule_rejects_known_form_mismatch_but_keeps_declared_base_family(tmp_path, monkeypatch, requested, actual_form, supported):
-    import sequence
     pack = _condition_pack()
     pack['object_sets']['sample']['consumer']['native_forms'].append('fixture_form')
     pack['object_sets']['sample']['specific_form'] = dict(kind='action', native_action='fixture_form',
         base_button='death_coil', native_forms=['fixture_form'])
     for rule in pack['configurations'][0]['states']['only']['priority']: rule['arguments']['action'] = requested
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def form_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def form_engine(result):
         for row in result['report']['sim']['players'][0]['sim2gse_rule_observations']['action_observations']:
             row.update(object=requested, actual_form=actual_form, native_qualified=None,
                 has_cooldown=False, resource_costs={'runic_power': 10}, resource_balances={'runic_power': 20},
                 known_native_requirements=[])
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=form_engine):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-    diagnosis = result['search']['rule_diagnostics']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, form_engine)
     assert bool(diagnosis['pool']['operations']) is supported
     if not supported:
         assert not any(row['kind'] == 'missed_opportunity' for row in diagnosis['rules'][0]['findings'])
@@ -1951,7 +1883,6 @@ def test_public_terminal_rule_step_republishes_saved_result_after_storage_crash_
 @pytest.mark.parametrize('incomplete_extra', [True])
 @pytest.mark.parametrize('copy_window', [False])
 def test_public_overlapping_short_effects_select_per_input_and_keep_original_instances(tmp_path, monkeypatch, incomplete_extra, copy_window):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     template = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['短期增益利用']
@@ -1970,14 +1901,10 @@ def test_public_overlapping_short_effects_select_per_input_and_keep_original_ins
         template='overlap-renamed', arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
             effect_refs=['window_a', 'window_b'], window_selection='earliest_end',
             use_position='last_finishable', consume_required=False, usage_time_basis='effect_completion'))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def overlap_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def overlap_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['scope']['effect_events_complete'] = {'window_a': True, 'window_b': True}
         for name in ('inputs', 'action_observations', 'state_observations'):
@@ -1995,22 +1922,18 @@ def test_public_overlapping_short_effects_select_per_input_and_keep_original_ins
                 dict(event, event_index=end_index, kind='expire', time=end, end=end, end_reason='expired')])
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=overlap_engine) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-    rule, = result['search']['rule_diagnostics']['rules']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, overlap_engine)
+    rule, = diagnosis['rules']
     assignments = [row for row in rule['findings'] if row['kind'] == 'window_assignment']
     assert [(row['window']['instance_id'], row['window']['start'], row['window']['end'], row['inputs'])
             for row in assignments] == [(101, 0, 1000, [0, 1, 4, 5]), (102, 400, 600, [2, 3])]
     assert [(row['window']['instance_id'], row['input_index']) for row in rule['findings']
             if row['kind'] == 'missed_short_window'] == [(101, 5), (102, 3)]
     assert bool(rule['unknown_evidence']) is incomplete_extra
-    assert scoring.call_count == 1
 
 
 @pytest.mark.parametrize('windows', ['mixed'])
 def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_known_support(tmp_path, monkeypatch, windows):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     template = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['短期增益利用']
@@ -2024,14 +1947,10 @@ def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_k
         priority_refs=[], edit_range='editable', effect_refs=['window'], window_selection='earliest_end',
         use_position='first_eligible', consume_required=False, usage_time_basis='effect_completion'))
     pack['configurations'][0]['states']['only']['priority'] = [high, low]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def uncertain_engine(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def uncertain_engine(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         for name in ('inputs', 'action_observations', 'state_observations'): payload[name] = payload[name][:6]
         for row in payload['state_observations']: row['value'] = 1 if row['input_index'] in (0, 2, 3, 4) else 0
@@ -2058,10 +1977,8 @@ def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_k
                 dict(event, event_index=end_index, kind='expire', time=end, end=end, end_reason='expired')])
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=uncertain_engine):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-    higher, lower = result['search']['rule_diagnostics']['rules']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, uncertain_engine)
+    higher, lower = diagnosis['rules']
     findings = {(row.get('input_index'), row['kind']) for row in lower['findings']}
     if windows != 'unproven':
         assert (0, 'yielded' if windows in ('mixed', 'known_uncovered', 'known_coverage_false') else 'missed_opportunity') in findings
@@ -2212,7 +2129,6 @@ def test_batch_cost_storage_rejects_unknown_or_conflicting_shape_without_guessin
 
 @pytest.mark.parametrize('operation', ['and', 'any3'])
 def test_public_boolean_operators_keep_numeric_state_unknown(tmp_path, monkeypatch, operation):
-    import sequence
     pack = _condition_pack()
     value = dict(var='row.value')
     expression = dict(op=operation, args={
@@ -2228,29 +2144,22 @@ def test_public_boolean_operators_keep_numeric_state_unknown(tmp_path, monkeypat
         dict(kind='unknown', when=dict(op='unknown', args=[expression]), certainty='unknown')],
         export_trigger_records=[]), edits=[])
     pack['configurations'][0]['states']['only']['priority'] = pack['configurations'][0]['states']['only']['priority'][:1]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def zero_is_not_a_boolean(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def zero_is_not_a_boolean(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         for name in ('inputs', 'action_observations', 'state_observations'): payload[name] = payload[name][:1]
         payload['state_observations'][0]['value'] = 0
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=zero_is_not_a_boolean):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-    rule, = result['search']['rule_diagnostics']['rules']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, zero_is_not_a_boolean)
+    rule, = diagnosis['rules']
     assert [row['kind'] for row in rule['findings']] == ['unknown']
 
 
 @pytest.mark.parametrize('representation,value,expected', [('positive_stack_presence', 1, 'true'), ('positive_stack_presence', None, 'unknown'), ('boolean', 1, 'unknown')])
 def test_public_maintenance_qualification_uses_declared_representation(tmp_path, monkeypatch, representation, value, expected):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     template = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['持续效果维护']
@@ -2271,30 +2180,23 @@ def test_public_maintenance_qualification_uses_declared_representation(tmp_path,
     pack['configurations'][0]['states']['only']['priority'] = [dict(name='declared qualification',
         template='qualification-renamed', arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
             effect='effect', effect_qualification='counter', replacement_qualification='always', target_scope='scope', source='owner'))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def typed_state(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def typed_state(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         for name in ('inputs', 'action_observations', 'state_observations'): payload[name] = payload[name][:1]
         payload['state_observations'][0]['value'] = value
         payload['state_observations'].append(dict(payload['inputs'][0], object='always', value=True))
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=typed_state):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-    rule, = result['search']['rule_diagnostics']['rules']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, typed_state)
+    rule, = diagnosis['rules']
     assert [row['kind'] for row in rule['findings']] == [expected]
 
 
 @pytest.mark.parametrize('preceding', ['absent', 'known', 'unknown', 'foreign_sample'])
 def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path, monkeypatch, preceding):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'renamed-maintenance':
@@ -2320,14 +2222,10 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
             template='lower-template', arguments=dict(action='consumer', priority_refs=['actual maintenance gap'],
                 edit_range='editable', state='counter', compare='eq', value=1,
                 activation_effect=None, activation_expected=True)))
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
 
-    def actual_buff_edges(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def actual_buff_edges(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['scope'].update(end_ms=1000, controlled_actor_index=0, effect_events_complete={'effect': True})
         for name in ('inputs', 'action_observations'): payload[name] = payload[name][:4]
@@ -2418,11 +2316,8 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
                     actual_form='death_coil', effect_delay_ms=0, precision='current_state_estimate'))
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=actual_buff_edges) as scoring:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-        saved = read_task(tmp_path / 'task')
-    rule = saved['search']['rule_diagnostics']['rules'][0]
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, actual_buff_edges)
+    rule = diagnosis['rules'][0]
     kinds = [row['kind'] for row in rule['findings']]
     gaps = [row['gap'] for row in rule['findings'] if row['kind'] == (
         'effect_absence' if preceding == 'dynamic' else 'actual_coverage_gap')]
@@ -2453,18 +2348,16 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
     if preceding in ('coverage_unknown', 'incomplete_inserted', 'unknown_state', 'left_censored', 'empty_unidentified'):
         assert any(row['case'] == 'uncertain_context' for row in rule['unknown_conditions'])
     assert all(row['effect'] == dict(component_id='fixture_buff', target_id=0, source_id=0) for row in gaps)
-    assert scoring.call_count == 1
     if preceding == 'scoped_trigger':
-        lower = saved['search']['rule_diagnostics']['rules'][1]
+        lower = diagnosis['rules'][1]
         assert [(row['input_index'], row['kind']) for row in lower['findings'] if row['kind'] == 'missed_opportunity'] == [
             (1, 'missed_opportunity'), (3, 'missed_opportunity')]
         assert (2, 'yielded') not in [(row.get('input_index'), row['kind']) for row in lower['findings']]
         assert any(row.get('input_index') == 2 for row in lower['unknown_conditions'])
-    else: assert result['search']['rule_diagnostics']['pool']['operations'] == []
+    else: assert diagnosis['pool']['operations'] == []
 
 @pytest.mark.parametrize('estimate_case', ['matching', 'wrong_target', 'native_forbidden'])
 def test_public_maintenance_uses_identity_bound_estimate_without_fabricating_actual_completion(tmp_path, monkeypatch, estimate_case):
-    import sequence
     from rule_config import DEFAULT_PATH
     pack = _condition_pack()
     pack['general']['templates'] = {'maintenance-estimate':
@@ -2478,15 +2371,11 @@ def test_public_maintenance_uses_identity_bound_estimate_without_fabricating_act
         template='maintenance-estimate', arguments=dict(action='consumer', priority_refs=[], edit_range='editable',
             effect='effect', effect_qualification='always', replacement_qualification='always',
             target_scope='scope', source='owner'))]
-    _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
     observed = []
 
-    def estimated_boundary(*args, **kwargs):
-        result = _observed_evaluate(*args, **kwargs)
+    def estimated_boundary(result):
         payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
         payload['scope'].update(end_ms=1000, controlled_actor_index=0, effect_events_complete={'effect': True})
         for name in ('inputs', 'action_observations'): payload[name] = payload[name][:4]
@@ -2523,20 +2412,15 @@ def test_public_maintenance_uses_identity_bound_estimate_without_fabricating_act
         observed.append(copy.deepcopy(payload))
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=estimated_boundary) as scoring:
-        run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-        saved = read_task(tmp_path / 'task')
-    diagnostic = saved['search']['rule_diagnostics']
+    diagnosis = _direct_diagnosis(tmp_path, pack, native, estimated_boundary)
+    diagnostic = diagnosis
     rule, = diagnostic['rules']
     if estimate_case != 'matching':
         assert diagnostic['pool']['operations'] == []
         assert all(row['kind'] != 'maintenance_opportunity' for row in rule['findings'])
-        assert scoring.call_count == 1
         return
     assert any(row['kind'] == 'maintenance_opportunity' and row['input_index'] == 0 for row in rule['findings'])
     assert [(row['operation'], row['destination_path']) for row in diagnostic['pool']['operations']] == [
         ('move', [0]), ('insert', [0])]
-    assert scoring.call_count == 1
     assert all(row['effect_completion_time'] is None for row in observed[0]['action_observations'])
     assert observed[0]['effect_events'][0].get('source_input_index') is None

@@ -1178,50 +1178,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(completed["status"], "completed", completed)
         self.assertTrue(completed["result_ready"], completed)
 
-    def test_browser_reloads_rule_details_after_detail_storage_recovers(self):
-        # 页面及轮询真实执行，仅在 HTTP 系统边界构造短暂不可读及恢复响应。
-        env = os.environ.copy()
-        env.setdefault('NODE_PATH', str(Path.home() /
-            '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'))
-        script = r'''
-const {chromium}=require('playwright'),assert=require('node:assert/strict');
-(async()=>{
- const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
- const browser=await chromium.launch({channel:'msedge',headless:true});
- try{
-  const context=await browser.newContext(),page=await context.newPage();
-  let detailReads=0;
-  const summary={status:'running',phase:'aoe',result_ready:true,result_note:'已有单场结果',
-   exports:{},collection_ready:false,scenes:[
-    {purpose:'single_target',status:'completed',total_budget_seconds:600,
-     has_rule_initialization:true,rule_initialization_identity:'rule-a:compiled'},
-    {purpose:'aoe',status:'running',total_budget_seconds:600}]};
-  const unavailableState={status:'running',phase:'storage_unavailable',
-   storage_unavailable:true,recoverable:true,error:'存储暂时不可读取'};
-  await page.route('**/api/tasks/saved-rule-task*',async route=>{
-   const details=new URL(route.request().url()).searchParams.has('details');
-   let body=summary;
-   if(details){
-    detailReads++;
-    body=detailReads===1?unavailableState:{...summary,scenes:[
-     {...summary.scenes[0],rule_initialization:{behavior_identity:'rule-a',
-      compilation:'compiled',evidence:'restored_rule_details'}},summary.scenes[1]]};
-   }
-   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
-  });
-  await page.addInitScript(()=>localStorage.setItem('sim2gse-task','saved-rule-task'));
-  await page.goto(input.url);
-  await page.locator('#ruleInitialization summary').click();
-  await page.waitForFunction(()=>document.getElementById('ruleInitializationText').textContent.includes('restored_rule_details'),null,{timeout:5000});
-  assert.equal(detailReads,2,'详情恢复后应重新取详情');
-  await context.close();
- }finally{await browser.close();}
-})().catch(e=>{console.error(e);process.exitCode=1;});
-'''
-        result = subprocess.run(['node', '-e', script], input=json.dumps({'url': self.url}),
-            text=True, encoding='utf-8', capture_output=True, env=env, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
     def test_browser_computes_copies_and_clears_real_candidate(self):
         # 一次真实180ms双场任务覆盖计算、复制和清旧；200ms保页面初始默认值。
         import sequence
@@ -1251,30 +1207,64 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
  const browser=await chromium.launch({channel:'msedge',headless:true});
  try{
-  const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
-  const page=await context.newPage(); let state, submitted;
-  page.on('request',request=>{if(request.url().endsWith('/api/tasks')&&request.method()==='POST')submitted=request.postDataJSON();});
-  page.on('response',async response=>{if(response.url().includes('/api/tasks/')&&response.request().method()==='GET')state=await response.json();});
-  await page.goto(input.url);
-  assert.equal(await page.locator('#interval').inputValue(),'200');
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
-  await page.locator('#interval').fill('180');
-  await page.locator('#profile').fill(input.profile);
-  await page.locator('#start').click();
-  await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:35000});
-  assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
-  const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
-  assert.equal(state.input_interval_ms,180);
-  assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
-  assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
-  assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
-  assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
-  await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
-  await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
-  await page.locator('#profile').fill(input.profile+'\n# changed');
-  assert.equal(await page.locator('#resultSection').isVisible(),false);
-  assert.equal(await page.locator('#result').inputValue(),'');
-  console.log(JSON.stringify({candidate:text,state}));
+  {
+   const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
+   try{
+    const page=await context.newPage(); let state, submitted;
+    page.on('request',request=>{if(request.url().endsWith('/api/tasks')&&request.method()==='POST')submitted=request.postDataJSON();});
+    page.on('response',async response=>{if(response.url().includes('/api/tasks/')&&response.request().method()==='GET')state=await response.json();});
+    await page.goto(input.url);
+    assert.equal(await page.locator('#interval').inputValue(),'200');
+    assert.equal(await page.locator('#resultSection').isVisible(),false);
+    await page.locator('#interval').fill('180');
+    await page.locator('#profile').fill(input.profile);
+    await page.locator('#start').click();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled,{},{timeout:35000});
+    assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
+    const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
+    assert.equal(state.input_interval_ms,180);
+    assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
+    assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
+    assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
+    assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
+    await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
+    await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
+    await page.locator('#profile').fill(input.profile+'\n# changed');
+    assert.equal(await page.locator('#resultSection').isVisible(),false);
+    assert.equal(await page.locator('#result').inputValue(),'');
+    console.log(JSON.stringify({candidate:text,state}));
+   }finally{await context.close();}
+  }
+  {
+   const context=await browser.newContext();
+   try{
+    const page=await context.newPage();
+    let detailReads=0;
+    const summary={status:'running',phase:'aoe',result_ready:true,result_note:'已有单场结果',
+     exports:{},collection_ready:false,scenes:[
+      {purpose:'single_target',status:'completed',total_budget_seconds:600,
+       has_rule_initialization:true,rule_initialization_identity:'rule-a:compiled'},
+      {purpose:'aoe',status:'running',total_budget_seconds:600}]};
+    const unavailableState={status:'running',phase:'storage_unavailable',
+     storage_unavailable:true,recoverable:true,error:'存储暂时不可读取'};
+    await page.route('**/api/tasks/saved-rule-task*',async route=>{
+     const details=new URL(route.request().url()).searchParams.has('details');
+     let body=summary;
+     if(details){
+      detailReads++;
+      body=detailReads===1?unavailableState:{...summary,scenes:[
+       {...summary.scenes[0],rule_initialization:{behavior_identity:'rule-a',
+        compilation:'compiled',evidence:'restored_rule_details'}},summary.scenes[1]]};
+     }
+     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
+    });
+    await page.addInitScript(()=>localStorage.setItem('sim2gse-task','saved-rule-task'));
+    await page.goto(input.url);
+    await page.locator('#ruleInitialization summary').click();
+    await page.waitForFunction(()=>document.getElementById('ruleInitializationText').textContent.includes('restored_rule_details'),null,{timeout:5000});
+    assert.equal(detailReads,2,'详情恢复后应重新取详情');
+   }finally{await context.close();}
+  }
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''

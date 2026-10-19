@@ -1151,9 +1151,28 @@ class SearchAndValidationTests(TestCase):
             config = dict(total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
                           batch_targets=(2,), iterations=2, validation_batches=1,
                           final_batches=1, final_iterations=2, scenarios=('nominal',),
-                          max_processes=1)
+                          max_processes=1, diagnostic_logging=True, diagnostics='summary')
             with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-                first = run_task(source, Path(directory) / 'first', search_config=config)
+                first_destination = Path(directory) / 'first'
+                first = run_task(source, first_destination, search_config=config)
+                saved_task = read_task(first_destination, include_search_records=True)
+                performance = json.loads((first_destination / 'diagnostics.json').read_text())['performance']
+                progress = performance['candidate_progress']
+                self.assertEqual(performance['stages']['candidate.compile']['calls'], 1)
+                self.assertEqual(performance['stages']['candidate.write']['calls'], 1)
+                keys = {row['key'] for row in saved_task['search']['records']}
+                self.assertEqual(len(keys), 1)
+                for kind in ('first_score_published', 'screening_archived'):
+                    self.assertEqual({row['behavior_identity'] for row in progress[kind]}, keys)
+                    self.assertEqual(len(progress[kind]), 1)
+                    self.assertGreaterEqual(progress[kind][0]['invocation_seconds'], 0)
+                    self.assertGreaterEqual(progress[kind][0]['budget_elapsed_seconds'],
+                                            progress[kind][0]['invocation_seconds'])
+                cached_destination = Path(directory) / 'cached'
+                with patch.object(sequence, 'evaluate', side_effect=AssertionError('复用不得重新评分')):
+                    run_task(source, cached_destination, search_config=config)
+                cached_performance = json.loads((cached_destination / 'diagnostics.json').read_text())['performance']
+                self.assertEqual(cached_performance['candidate_progress']['first_score_published'], [])
                 batch_key = first['search']['records'][0]['batches'][0]['data_key']
                 # Fault injection only: mimic a damaged Parquet shard behind the read-only API.
                 saved = result_store.one('batches', 'batch_key', batch_key)

@@ -259,6 +259,8 @@ class NativeObservationTests(unittest.TestCase):
             'form': dict(kind='action', native_action='festering_scythe', base_button='festering_strike'),
             'delayed_action': dict(kind='action', native_action='putrefy', base_button='putrefy'),
             'impact': dict(kind='effect', native_identity='festering_scythe_tt'),
+            'scythe_window': dict(kind='effect', native_identity='festering_scythe'),
+            'impact_buff': dict(kind='effect', native_identity='festering_scythe_tt'),
         })
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
@@ -296,6 +298,31 @@ class NativeObservationTests(unittest.TestCase):
             self.assertEqual(applied['time'], execution['time'])
             self.assertEqual(applied['time'], scythes[0]['estimated_effect_completion_time'])
             self.assertEqual((applied['target_id'], applied['source_id']), (actor, actor))
+
+            events = [row for row in facts['effect_events'] if row['object'] == 'scythe_window']
+            applied = next(row for row in events if row['kind'] == 'apply')
+            consumed = next(row for row in events if row['kind'] == 'consume')
+            self.assertEqual(consumed['instance_id'], applied['instance_id'])
+            self.assertEqual(consumed['source_input_index'], 1)
+            self.assertEqual(consumed['source_actual_action'], 'festering_scythe')
+            self.assertEqual(consumed['end_reason'], 'consumed')
+            self.assertEqual(consumed['stacks'], 0)
+            self.assertEqual(consumed['time'], 1500)
+            self.assertIsNone(applied['source_input_index'])
+            self.assertTrue(all(row['object'] == 'scythe_window' and row['sample_id'] == 1
+                                for row in events))
+            self.assertEqual(applied['source_id'], facts['scope']['controlled_actor_index'])
+            self.assertTrue(consumed['lifecycle_complete'])
+            execution = next(row for row in facts['action_events']
+                             if row['kind'] == 'execute' and row['input_index'] == 1)
+            self.assertLess(execution['event_index'], consumed['event_index'])
+            self.assertNotIn('effect_completion_time', consumed)
+            impact_events = [row for row in facts['effect_events'] if row['object'] == 'impact_buff']
+            impact_start = next(row for row in impact_events if row['kind'] == 'start')
+            refreshed = next(row for row in impact_events if row['kind'] == 'refresh')
+            self.assertEqual(refreshed['instance_id'], impact_start['instance_id'])
+            self.assertEqual(refreshed['stacks'], impact_start['stacks'])
+            self.assertGreaterEqual(refreshed['scheduled_end'], impact_start['scheduled_end'])
 
     def test_requested_target_scopes_and_inactive_buff_coverage_keep_unknown_applicability(self):
         command = dict(kind='spell', spell_id=85948, name='Festering Strike',
@@ -377,50 +404,6 @@ class NativeObservationTests(unittest.TestCase):
             self.assertTrue(any(row['end_reason'] == 'expired' for row in events))
             self.assertTrue(all(row['lifecycle_complete'] is False for row in events),
                             '未审stat_buff_t派生路径不能仅凭base hook声称生命周期完整')
-
-    def test_requested_buff_lifecycle_keeps_real_instance_and_consumer(self):
-        command = dict(kind='spell', spell_id=85948, name='Festering Strike',
-                       simc_action='festering_strike')
-        candidate = dict(blocks=[[command]], compiled_steps=[dict(type='spell', spell=85948)])
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            profile = folder / 'sample.simc'
-            profile.write_text(sample_profile(), encoding='utf-8')
-            options = dict(character=parse_character(sample_profile()), iterations=2,
-                           trace=False, input_times=[0, 1500], simulation_config={'target_count': 2})
-            observed = evaluate(profile, candidate, folder / 'observed', **options,
-                rule_observation_request=dict(protocol=1, objects={
-                    'scythe_window': dict(kind='effect', native_identity='festering_scythe'),
-                    'impact_buff': dict(kind='effect', native_identity='festering_scythe_tt'),
-                    'button': dict(kind='action', native_action='festering_strike',
-                                   base_button='festering_strike')}))
-            quiet = evaluate(profile, candidate, folder / 'quiet', **options)
-            self.assertEqual(battle_report(observed['report']), battle_report(quiet['report']))
-            facts = observed['report']['sim']['players'][0]['sim2gse_rule_observations']
-            events = [row for row in facts['effect_events'] if row['object'] == 'scythe_window']
-            applied = next(row for row in events if row['kind'] == 'apply')
-            consumed = next(row for row in events if row['kind'] == 'consume')
-            self.assertEqual(consumed['instance_id'], applied['instance_id'])
-            self.assertEqual(consumed['source_input_index'], 1)
-            self.assertEqual(consumed['source_actual_action'], 'festering_scythe')
-            self.assertEqual(consumed['end_reason'], 'consumed')
-            self.assertEqual(consumed['stacks'], 0)
-            self.assertEqual(consumed['time'], 1500)
-            self.assertIsNone(applied['source_input_index'])
-            self.assertTrue(all(row['object'] == 'scythe_window' and row['sample_id'] == 1
-                                for row in events))
-            self.assertEqual(applied['source_id'], facts['scope']['controlled_actor_index'])
-            self.assertTrue(consumed['lifecycle_complete'])
-            execution = next(row for row in facts['action_events']
-                             if row['kind'] == 'execute' and row['input_index'] == 1)
-            self.assertLess(execution['event_index'], consumed['event_index'])
-            self.assertNotIn('effect_completion_time', consumed)
-            impact_events = [row for row in facts['effect_events'] if row['object'] == 'impact_buff']
-            impact_start = next(row for row in impact_events if row['kind'] == 'start')
-            refreshed = next(row for row in impact_events if row['kind'] == 'refresh')
-            self.assertEqual(refreshed['instance_id'], impact_start['instance_id'])
-            self.assertEqual(refreshed['stacks'], impact_start['stacks'])
-            self.assertGreaterEqual(refreshed['scheduled_end'], impact_start['scheduled_end'])
 
     def test_requested_buff_natural_expiry_and_battle_end_are_distinct(self):
         command = dict(kind='spell', spell_id=85948, name='Festering Strike',
@@ -608,10 +591,11 @@ class NativeCatalogueTests(unittest.TestCase):
             folder = Path(directory)
             text = sample_profile()
             profile = folder / 'forms.simc'
-            profile.write_text(text + '\nactions=death_coil\nactions+=/epidemic\nactions+=/scourge_strike\n',
+            profile.write_text(text + '\nactions=death_coil\nactions+=/epidemic\nactions+=/scourge_strike\n'
+                               'actions+=/festering_strike\nactions+=/chains_of_ice,if=0\n',
                                encoding='utf-8')
             native = engine.reference(profile, folder / 'reference', parse_character(text),
-                                      iterations=1, simulation_config={'target_count': 1})
+                                      iterations=2, simulation_config={'target_count': 1})
             rows = native['static_snapshot']['actions']
             for name, spell_id in [('necrotic_coil', 1242174), ('graveyard', 383269)]:
                 forms = [row for row in rows if row['name'] == name]
@@ -624,6 +608,18 @@ class NativeCatalogueTests(unittest.TestCase):
                     self.assertIsInstance(row['costs'], dict)
                     self.assertEqual(row['gain_status'], 'known_zero')
                     self.assertEqual(row['gains'], {})
+
+            rows = [row for row in native['static_snapshot']['actions']
+                    if row['name'] == 'chains_of_ice']
+            self.assertTrue(rows, '已初始化的受支持普通动作不能被原九技能白名单排除')
+            self.assertFalse(any(row['name'] == 'chains_of_ice'
+                                 for row in native['executed_actions']))
+            for row in rows:
+                self.assertGreater(row['gcd_ms'], 0)
+                self.assertGreater(row['costs']['rune'], 0)
+                self.assertEqual(row['gain_status'], 'known')
+                self.assertEqual(row['gain_scope'], 'direct_action')
+                self.assertGreater(row['gains']['runic_power'], 0)
 
     def test_reference_reads_audited_player_haste_and_executed_precombat_occupancy(self):
         import re
@@ -656,7 +652,8 @@ class NativeCatalogueTests(unittest.TestCase):
             profile = folder / 'discipline.simc'
             profile.write_text(character_text + '\nallow_experimental_specializations=1\n'
                                'actions.precombat=smite\n'
-                               'actions=penance\nactions+=/smite\n', encoding='utf-8')
+                               'actions=penance\nactions+=/smite\n'
+                               'actions+=/shadow_word_death,if=0\n', encoding='utf-8')
             native = engine.reference(profile, folder / 'reference', parse_character(character_text),
                                       iterations=1, simulation_config={'target_count': 1})
             snapshot = native['static_snapshot']
@@ -675,17 +672,6 @@ class NativeCatalogueTests(unittest.TestCase):
             self.assertTrue({'smite', 'penance'}.issubset(
                 row['name'] for row in native['executed_actions']))
 
-    def test_reference_keeps_unadapted_fields_unknown_without_losing_known_timing(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            text = (ROOT / 'tests/sim2gse/fixtures/discipline.simc').read_text()
-            profile = folder / 'discipline.simc'
-            profile.write_text(text + '\nallow_experimental_specializations=1\n'
-                               'actions=smite\nactions+=/shadow_word_death,if=0\n', encoding='utf-8')
-            native = engine.reference(profile, folder / 'reference', parse_character(text),
-                                      iterations=1, simulation_config={'target_count': 1})
-            rows = {row['name']: row for row in native['static_snapshot']['actions']}
-            self.assertGreater(rows['smite']['cast_ms'], 0)
             self.assertIn('costs', rows['smite']['unknown'])
             unknown = rows['shadow_word_death']
             self.assertFalse(unknown['channeled'])
@@ -708,25 +694,3 @@ class NativeCatalogueTests(unittest.TestCase):
             snapshot = native['static_snapshot']
             self.assertEqual(snapshot['parameters']['precombat_occupancy_ms'], 0)
             self.assertEqual(snapshot['parameters']['precombat_gcd_ms'], 0)
-
-    def test_reference_collects_initialized_action_outside_old_nine_actions(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            text = (sample_profile() + '\nactions=chains_of_ice,if=0\n'
-                    'actions+=/festering_strike\nactions+=/death_coil\n')
-            profile = folder / 'sample.simc'
-            profile.write_text(text, encoding='utf-8')
-            native = engine.reference(profile, folder / 'reference',
-                                      parse_character(sample_profile()), iterations=2,
-                                      simulation_config={'target_count': 1})
-            rows = [row for row in native['static_snapshot']['actions']
-                    if row['name'] == 'chains_of_ice']
-            self.assertTrue(rows, '已初始化的受支持普通动作不能被原九技能白名单排除')
-            self.assertFalse(any(row['name'] == 'chains_of_ice'
-                                 for row in native['executed_actions']))
-            for row in rows:
-                self.assertGreater(row['gcd_ms'], 0)
-                self.assertGreater(row['costs']['rune'], 0)
-                self.assertEqual(row['gain_status'], 'known')
-                self.assertEqual(row['gain_scope'], 'direct_action')
-                self.assertGreater(row['gains']['runic_power'], 0)

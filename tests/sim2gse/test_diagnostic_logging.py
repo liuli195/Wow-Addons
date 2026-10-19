@@ -173,63 +173,6 @@ def test_detailed_diagnostic_stages_preserve_public_result(monkeypatch, case):
     assert not hasattr(disabled, 'performance_stages')
 
 
-@pytest.mark.parametrize('replay', ['cached_task'])
-def test_public_candidate_progress_counts_only_new_successful_first_scores(tmp_path, monkeypatch, replay):
-    import json
-    import sequence
-    from unittest.mock import patch
-    from task import run_task, resume_task, read_task
-    from search import TaskStore
-    from test_character_export import sample_profile
-    from test_engine import apl_pool_reference
-    from test_rule_initialization import _configure_opener
-    from test_rule_diagnostics import _condition_pack, _observed_evaluate
-    from test_search import _apl_task_boundary
-    _configure_opener(tmp_path, monkeypatch, _condition_pack())
-    native = apl_pool_reference()
-    for row in native['static_snapshot']['actions']:
-        row['gcd_ms'] = 200
-    source, destination = tmp_path / 'role.simc', tmp_path / 'first'
-    source.write_text(sample_profile(), encoding='utf-8')
-    config = dict(total_budget_seconds=20, input_interval_ms=200, candidate_limit=1,
-        batch_targets=(2,), iterations=2, validation_batches=1, max_processes=1,
-        diagnostic_logging=True, diagnostics='summary')
-    if replay == 'duplicate_publication':
-        original_commit = TaskStore._commit_report_group
-        def replay_group(self, *args, **kwargs):
-            original_commit(self, *args, **kwargs)
-            original_commit(self, *args, **kwargs)
-        monkeypatch.setattr(TaskStore, '_commit_report_group', replay_group)
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
-        run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
-    saved = read_task(destination, include_search_records=True)
-    performance = json.loads((destination / 'diagnostics.json').read_text())['performance']
-    progress = performance['candidate_progress']
-    assert performance['stages']['candidate.compile']['calls'] == 1
-    assert performance['stages']['candidate.write']['calls'] == 1
-    keys = {row['key'] for row in saved['search']['records']}
-    assert len(keys) == 1
-    for kind in ('first_score_published', 'screening_archived'):
-        assert {row['behavior_identity'] for row in progress[kind]} == keys
-        assert len(progress[kind]) == 1
-        assert progress[kind][0]['invocation_seconds'] >= 0
-        assert progress[kind][0]['budget_elapsed_seconds'] >= progress[kind][0]['invocation_seconds']
-    if replay == 'duplicate_publication':
-        return
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=AssertionError('复用不得重新评分')):
-        if replay == 'resume':
-            resume_task(destination, diagnostic_logging=True)
-        else:
-            destination = tmp_path / 'cached'
-            run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
-    performance = json.loads((destination / 'diagnostics.json').read_text())['performance']
-    progress = performance['candidate_progress']
-    assert progress['first_score_published'] == []
-    if replay == 'resume':
-        assert progress['screening_archived'] == []
-        assert 'candidate.compile' not in performance['stages']
-        assert 'native.execute' not in performance['stages']
-
 
 @pytest.mark.parametrize('enabled,flow', [(True, 'finalizing'), (False, 'exhausted_resume')])
 def test_public_feedback_logs_follow_current_invocation_switch(

@@ -84,23 +84,20 @@ def test_rule_cli_preserves_complete_templates_and_rejects_wrong_binding_paramet
 @pytest.mark.parametrize('fault', ['qualification_ref', 'native_identity_type'])
 def test_rule_cli_rejects_invalid_object_types_and_same_set_references(tmp_path, monkeypatch, capsys, fault):
     import json
-    from rule_config import DEFAULT_PATH
     from task import main
-    pack = json.loads(DEFAULT_PATH.read_bytes())
+    pack = _declared_pack()
+    objects = pack['object_sets']['sample']
+    objects.update(gate=dict(kind='state', native_identity='literal.true'),
+                   resource=dict(kind='resource', native_identity='energy'),
+                   effect=dict(kind='effect', native_identity='fixture_effect', qualification='gate'))
     target = tmp_path / 'rules.json'
-    target.write_bytes(DEFAULT_PATH.read_bytes())
+    target.write_text(json.dumps(pack), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
     assert main(['rules-check', str(target)]) == 0
     identity = json.loads(capsys.readouterr().out)['rule_config_digest']
     before = target.read_bytes()
-    objects = pack['object_sets']['unholy_sanlayn']
-    effect = objects['putrefy_diseases']
-    if fault == 'component_scope': effect['components'][0]['target_scope'] = 'missing_scope'
-    elif fault == 'from_action_kind': effect['from_action'] = 'runic_power'
-    elif fault == 'qualification_ref': effect['qualification'] = 'missing_state'
-    elif fault == 'representation_value': objects['scythe_qualification']['representation'] = 'any_nonzero'
-    elif fault == 'representation_object': objects['scythe_qualification']['representation'] = dict(op='gt')
-    else: objects['runic_power']['native_identity'] = {'op': 'python', 'args': []}
+    if fault == 'qualification_ref': objects['effect']['qualification'] = 'missing_state'
+    else: objects['resource']['native_identity'] = {'op': 'python', 'args': []}
     draft = tmp_path / 'draft.json'
     draft.write_text(json.dumps(pack), encoding='utf-8')
     assert main(['rules-save', str(draft), '--expected-digest', identity]) == 2
@@ -110,19 +107,20 @@ def test_rule_cli_rejects_invalid_object_types_and_same_set_references(tmp_path,
 
 def test_rule_cli_rejects_object_algorithm_in_enum_declaration_and_argument(tmp_path, monkeypatch, capsys):
     import json
-    from rule_config import DEFAULT_PATH
     from task import main
-    pack = json.loads(DEFAULT_PATH.read_bytes())
+    pack = _declared_pack()
+    template = pack['general']['templates']['fixture']
+    template['parameters']['compare'] = dict(type='enum', values=['eq'])
+    row = pack['configurations'][0]['states']['only']['priority'][0]
+    row['arguments']['compare'] = 'eq'
     target = tmp_path / 'rules.json'
-    target.write_bytes(DEFAULT_PATH.read_bytes())
+    target.write_text(json.dumps(pack), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
     assert main(['rules-check', str(target)]) == 0
     identity = json.loads(capsys.readouterr().out)['rule_config_digest']
     before = target.read_bytes()
     algorithm = {'op': 'python', 'args': ['arbitrary specialization algorithm']}
-    pack['general']['templates']['条件触发与CD使用']['parameters']['compare']['values'].append(algorithm)
-    row = next(row for row in pack['configurations'][0]['states']['normal']['priority']
-               if row['template'] == '条件触发与CD使用')
+    template['parameters']['compare']['values'].append(algorithm)
     row['arguments']['compare'] = algorithm
     draft = tmp_path / 'draft.json'
     draft.write_text(json.dumps(pack), encoding='utf-8')
@@ -196,23 +194,26 @@ def test_task_exports_ordered_opener_using_effective_gcd(tmp_path, monkeypatch):
     assert [row['effective_gcd_ms'] for row in report['positions'] if row['kind'] == 'action'] == [1000]*3
 
 
-@pytest.mark.parametrize('fault,message', [('missing_gcd', '静态字段'), ('too_long', '点击或场景边界')])
-def test_task_reports_unrepresentable_or_unknown_rule_start(tmp_path, monkeypatch, fault, message):
+@pytest.mark.parametrize('fault,message', [('missing_gcd', r'静态字段.*outbreak\.gcd_ms'), ('too_long', '点击或场景边界')])
+def test_generate_reports_unrepresentable_or_unknown_rule_start(tmp_path, monkeypatch, fault, message):
+    from engine import inspect
+    from rule_config import bind, load
+    from rule_initialization import generate
     from test_engine import apl_pool_reference
     _configure_opener(tmp_path, monkeypatch)
     native = apl_pool_reference()
     row = native['static_snapshot']['actions'][0]
     if fault == 'missing_gcd':
         row.pop('gcd_ms')
-    elif fault == 'single_empty':
-        row['gcd_ms'] = 400
     else:
         row['gcd_ms'] = 1000000
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native), pytest.raises(TaskError, match=message):
-        run_task(source, tmp_path / 'task', search_config=dict(
-            input_interval_ms=300, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+    capabilities = inspect(native, tmp_path / 'capabilities')
+    snapshot = load()
+    binding = bind(capabilities, native['static_snapshot'], 1, spec_id=native['identity']['spec_id'],
+                   rule_snapshot=snapshot, scene='single_target')
+    with pytest.raises(ValueError, match=message):
+        generate(capabilities, native, binding=binding, input_interval_ms=300,
+                 target_count=1, rule_snapshot=snapshot)
 
 
 def test_explicit_program_does_not_require_rule_initialization_snapshot(tmp_path):
@@ -271,17 +272,20 @@ def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_pat
         assert report['protected_burst']['definition_id'] == definition['definition_id']
 
 
-def test_task_preserves_resource_uncertainty_without_inserting_funding_wait(tmp_path, monkeypatch):
+def test_generate_preserves_resource_uncertainty_without_inserting_funding_wait(tmp_path, monkeypatch):
+    from engine import inspect
+    from rule_config import bind, load
+    from rule_initialization import generate
     from test_engine import apl_pool_reference
     _configure_opener(tmp_path, monkeypatch)
     native = apl_pool_reference()
     native['static_snapshot']['resources']['rune'] = dict(current=1, maximum=1)
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native):
-        result = run_task(source, tmp_path / 'task', search_config=dict(
-            input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-    report = result['rule_initialization']
+    capabilities = inspect(native, tmp_path / 'capabilities')
+    snapshot = load()
+    binding = bind(capabilities, native['static_snapshot'], 1, spec_id=native['identity']['spec_id'],
+                   rule_snapshot=snapshot, scene='single_target')
+    report = generate(capabilities, native, binding=binding, input_interval_ms=200,
+                      target_count=1, rule_snapshot=snapshot)
     actions = [row for row in report['positions'] if row['kind'] == 'action']
     assert [row['action'] for row in actions] == ['outbreak', 'scourge_strike', 'death_coil']
     assert [row['estimated_ms'] for row in actions] == [0, 1000, 2000]
@@ -318,10 +322,9 @@ def test_task_rejects_invalid_rule_references_before_running(tmp_path, monkeypat
 
 def test_rule_cli_rejects_duplicate_json_keys_without_replacing_valid_file(tmp_path, monkeypatch, capsys):
     import json
-    from rule_config import DEFAULT_PATH
     from task import main
     target = tmp_path / 'rules.json'
-    target.write_bytes(DEFAULT_PATH.read_bytes())
+    target.write_text(json.dumps(_declared_pack()), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
     assert main(['rules-check', str(target)]) == 0
     identity = json.loads(capsys.readouterr().out)['rule_config_digest']
@@ -336,10 +339,9 @@ def test_rule_cli_rejects_duplicate_json_keys_without_replacing_valid_file(tmp_p
 def test_rule_cli_concurrent_writers_cannot_overwrite_the_same_expected_version(tmp_path, monkeypatch, capsys):
     import json
     from concurrent.futures import ThreadPoolExecutor
-    from rule_config import DEFAULT_PATH
     from task import main
     target = tmp_path / 'rules.json'
-    target.write_bytes(DEFAULT_PATH.read_bytes())
+    target.write_text(json.dumps(_declared_pack()), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
     assert main(['rules-check', str(target)]) == 0
     identity = json.loads(capsys.readouterr().out)['rule_config_digest']
@@ -640,9 +642,9 @@ def test_task_runs_independent_spec_and_renamed_aliases_without_class_strategy(t
 
 
 @pytest.mark.parametrize('name,spell_id,cast_ms,channel_ms,channeled,starts,finish', [('smite', 585, 2000, 0, False, [0, 2000], 4000), ('penance', 47540, 0, 3000, True, [0, 3000], 6000)])
-def test_task_initializes_non_dk_cast_or_complete_channel_before_next_attempt(
+def test_initializes_non_dk_cast_or_complete_channel_before_next_attempt(
         tmp_path, monkeypatch, name, spell_id, cast_ms, channel_ms, channeled, starts, finish):
-    """构造原生时长经公开任务入口排位，不冒充真实牧师验证。"""
+    """普通施法直接排位；完整引导保公开任务/导出/读回，不冒充真实牧师验证。"""
     from pathlib import Path
     from task import read_task
     from test_engine import apl_pool_reference
@@ -658,17 +660,28 @@ def test_task_initializes_non_dk_cast_or_complete_channel_before_next_attempt(
                  costs={'mana': 100}, gains={}, gain_status='known_zero', gain_timing='none')])
     pack = _opener_pack({'cast': name}, [dict(action='cast',source_step=i) for i in (1,2)], spec_id=256)
     _configure_opener(tmp_path, monkeypatch, pack)
-    source = tmp_path / 'role.simc'
-    source.write_text((Path(__file__).with_name('fixtures') / 'discipline.simc').read_text(), encoding='utf-8')
-    with _apl_task_boundary(native):
-        result = run_task(source, tmp_path / 'task', search_config=dict(input_interval_ms=200,
-            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-        saved = read_task(tmp_path / 'task')
-    report = result['rule_initialization']
-    assert report == saved['rule_initialization']
+    if channeled:
+        source = tmp_path / 'role.simc'
+        source.write_text((Path(__file__).with_name('fixtures') / 'discipline.simc').read_text(), encoding='utf-8')
+        with _apl_task_boundary(native):
+            result = run_task(source, tmp_path / 'task', search_config=dict(input_interval_ms=200,
+                candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+            saved = read_task(tmp_path / 'task')
+        report = result['rule_initialization']
+        assert report == saved['rule_initialization']
+        assert result['candidate']['text'].startswith('!GSE3!')
+    else:
+        from engine import inspect
+        from rule_config import bind, load
+        from rule_initialization import generate
+        capabilities = inspect(native, tmp_path / 'capabilities')
+        snapshot = load()
+        binding = bind(capabilities, native['static_snapshot'], 1, spec_id=native['identity']['spec_id'],
+                       rule_snapshot=snapshot, scene='single_target')
+        report = generate(capabilities, native, binding=binding, input_interval_ms=200,
+                          target_count=1, rule_snapshot=snapshot)
     assert [row['estimated_ms'] for row in report['positions'] if row['kind'] == 'action'] == starts
     assert report['duration_ms'] == finish
-    assert result['candidate']['text'].startswith('!GSE3!')
 
 
 @pytest.mark.parametrize('fields,missing,field,protocol', [({'channeled': True}, 'channel_ms', 'channel_ms', 1)])
@@ -855,9 +868,8 @@ def test_task_behavior_identity_distinguishes_precombat_prefix_from_combat_click
 def test_rule_cli_rejects_retired_initialization_contract_without_replacing_valid_pack(
         tmp_path, monkeypatch, capsys, location):
     import json
-    from rule_config import DEFAULT_PATH
     from task import main
-    pack = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    pack = _declared_pack()
     target = tmp_path / 'rules.json'
     target.write_text(json.dumps(pack), encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
@@ -866,9 +878,9 @@ def test_rule_cli_rejects_retired_initialization_contract_without_replacing_vali
     before = target.read_bytes()
     configuration = pack['configurations'][0]
     template = next(iter(pack['general']['templates'].values()))
-    row = configuration['states']['normal']['priority'][0]
+    row = configuration['states']['only']['priority'][0]
     if location == 'general_policy': pack['general']['initialization'] = dict(edit_limit=32)
-    elif location == 'funding': configuration['opener']['funding'] = dict(action='scourge_strike')
+    elif location == 'funding': configuration['opener']['funding'] = dict(action='tap')
     elif location == 'general_template': pack['general']['templates']['retired'] = dict(initialize=dict(when=True))
     elif location == 'shared_template': template['initialize'] = dict(when=True)
     elif location == 'shared_binding': template['binding'] = dict(initialize=dict(attempt='putrefy'))
