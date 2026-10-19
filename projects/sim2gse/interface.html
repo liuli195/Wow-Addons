@@ -44,8 +44,9 @@ const outputs={single_target:[result,copy],aoe:[document.getElementById('aoeResu
 const collectionResult=document.getElementById('collectionResult'),copyCollection=document.getElementById('copyCollection');
 const diagnosticLogging=document.createElement('input');
 diagnosticLogging.type='checkbox';diagnosticLogging.id='diagnosticLogging';diagnosticLogging.style.width='auto';
+diagnosticLogging.disabled=true;diagnosticLogging.checked=false;
 const diagnosticLabel=document.createElement('label');
-diagnosticLabel.append(diagnosticLogging,document.createTextNode(' 诊断日志总开关（默认关闭）'));
+diagnosticLabel.append(diagnosticLogging,document.createTextNode(' 性能诊断日志（由启动命令控制，默认关闭）'));
 interval.after(diagnosticLabel);
 const gseImport=document.getElementById('gseImport'),inspectImport=document.getElementById('inspectImport'),importSequence=document.getElementById('importSequence'),importVersion=document.getElementById('importVersion'),importStart=document.getElementById('importStart'),importResult=document.getElementById('importResult');
 const importInspection=document.getElementById('importInspection'),importSelection=document.getElementById('importSelection'),gcdMs=document.getElementById('gcdMs');

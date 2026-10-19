@@ -11,6 +11,19 @@ from test_rule_initialization import _configure_opener, _opener_pack
 from test_search import _apl_task_boundary, _fast_evaluate
 
 
+def _assert_pending_selector_receipts(receipts):
+    import result_store
+    from selector import MODEL_KEY
+
+    with result_store.search_learner_lock():
+        full = result_store.read_search_learner(MODEL_KEY)
+        control = result_store.read_search_learner_control(MODEL_KEY)
+    assert control['phase'] == 'active'
+    assert control['base_version'] == full['version'] < control['version']
+    assert sorted(control['reservations'], key=lambda row: row['decision_id']) == sorted(
+        receipts, key=lambda row: row['decision_id'])
+
+
 def _condition_pack():
     from rule_config import DEFAULT_PATH
     template = json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['条件触发与CD使用']
@@ -32,7 +45,7 @@ def _condition_pack():
 
 def _observed_evaluate(*args, **kwargs):
     """仅替换已存在的外部引擎边界，不替换解释器或编辑器。"""
-    kwargs.pop('rule_observation_request', None)
+    request = kwargs.pop('rule_observation_request', None)
     result = _fast_evaluate(*args, **kwargs)
     inputs = [dict(input_index=i, time=ms, sample_id=1, event_index=i,
                    source_step=i % 2, input_source='loop')
@@ -47,12 +60,22 @@ def _observed_evaluate(*args, **kwargs):
             occupancy_domains=['player_gcd'], target_id=1) for row in inputs],
         state_observations=[dict(row, object='counter', value=1 if row['input_index'] == 0 else 0)
                             for row in inputs], effect_observations=[])
+    if request is not None and request['protocol'] == 2:
+        payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+        payload.update(protocol=2, request=copy.deepcopy(request))
+        payload['scope']['effect_events_complete'] = {
+            name: False for name in request['collections']['effect_events']}
     return result
 
 
 @pytest.mark.parametrize('diagnostic_logging', [False, True])
 def test_public_task_exposes_same_batch_complete_diagnostics_and_legal_pool(tmp_path, monkeypatch, diagnostic_logging):
     import sequence
+    if not diagnostic_logging:
+        import rule_diagnostics
+        def no_performance_clock():
+            raise AssertionError('关闭性能诊断时不应额外计时')
+        monkeypatch.setattr(rule_diagnostics.time, 'perf_counter', no_performance_clock)
     pack = _condition_pack()
     _configure_opener(tmp_path, monkeypatch, pack)
     native = apl_pool_reference()
@@ -558,9 +581,10 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
             assert checkpoint.state['selection_feedback_incomplete'] is True
             assert len(checkpoint.state['selection_feedback_intents']) == 2
             assert all(intent['common_batches'] == 1 for intent in checkpoint.state['selection_feedback_intents'].values())
+            frozen_receipts = [intent['receipt'] for intent in checkpoint.state['selection_feedback_intents'].values()]
         finally:
             checkpoint.close()
-        assert len(result_store.read_search_learner(MODEL_KEY)['reservations']) == 2
+        _assert_pending_selector_receipts(frozen_receipts)
         assert saved['search']['selection_feedback_incomplete'] is True
         monkeypatch.setattr(search, 'TaskRuntime', real_runtime)
     else:
@@ -577,8 +601,8 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
         return real_write(root, table, key, rows, **kwargs)
     monkeypatch.setitem(installed_data_store_api, 'write', fail_result_once)
     real_save = search.TaskStore.save
-    def save_complete_flag_with_intents(store):
-        result = real_save(store)
+    def save_complete_flag_with_intents(store, **changes):
+        result = real_save(store, **changes)
         persisted = search.TaskStore.load_state(store.db)
         if not persisted.get('selection_feedback_intents'):
             assert not persisted.get('selection_feedback_incomplete'), '空intent与complete标记必须同次保存'
@@ -714,13 +738,14 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=AssertionError('预算恢复不能增加评分')):
         resume_task(tmp_path / 'task', cancel_event=cancellation)
         if cancel_recovery:
-            assert len(result_store.read_search_learner(MODEL_KEY)['reservations']) == 2
             checkpoint = search.TaskStore(tmp_path / 'task')
             try:
                 assert len(checkpoint.state['selection_feedback_intents']) == 2
                 assert checkpoint.state['selection_feedback_incomplete'] is True
+                frozen_receipts = [intent['receipt'] for intent in checkpoint.state['selection_feedback_intents'].values()]
             finally:
                 checkpoint.close()
+            _assert_pending_selector_receipts(frozen_receipts)
             cancellation.clear()
             resume_task(tmp_path / 'task', cancel_event=cancellation)
     assert len(requests) == 6
@@ -794,8 +819,8 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
     monkeypatch.setattr(search, 'TaskRuntime', recovery_clock)
     original_save = search.TaskStore.save
     acknowledged = []
-    def save_acknowledged_elapsed(store):
-        result = original_save(store)
+    def save_acknowledged_elapsed(store, **changes):
+        result = original_save(store, **changes)
         persisted = search.TaskStore.load_state(store.db)
         if not acknowledged and any(step.get('selection', {}).get('feedback')
                                     for step in persisted.get('rule_steps', {}).values()):
@@ -847,10 +872,10 @@ def test_public_resume_scores_one_requested_operation_and_keeps_pending_starts(t
         operation = next(row for row in diagnosis['pool']['operations'] if row['operation'] == operation_kind)
         request = dict(parent_identity=diagnosis['parent_identity'], operation_id=operation['operation_id'])
         with pytest.raises(TaskError, match='父身份'):
-            resume_task(tmp_path / 'task', rule_step=dict(request, parent_identity='foreign-parent'))
-        resumed = resume_task(tmp_path / 'task', rule_step=request)
+            resume_task(tmp_path / 'task', diagnostic_logging=True, rule_step=dict(request, parent_identity='foreign-parent'))
+        resumed = resume_task(tmp_path / 'task', diagnostic_logging=True, rule_step=request)
         saved = read_task(tmp_path / 'task', include_search_records=True)
-        again = resume_task(tmp_path / 'task', rule_step=request)
+        again = resume_task(tmp_path / 'task', diagnostic_logging=True, rule_step=request)
     changed = next(row for row in resumed['search']['records'] if row.get('rule_step'))
     expected = [['death_coil'], ['outbreak']] + ([['death_coil']] if operation_kind == 'insert' else [])
     assert changed['program'] == expected

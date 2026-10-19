@@ -351,8 +351,9 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
         assert command(tmp_path, args) == 0
 
 
+@pytest.mark.parametrize('diagnostic_logging', [False, True])
 def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
-        tmp_path, capsys, monkeypatch):
+        tmp_path, capsys, monkeypatch, diagnostic_logging):
     from unittest.mock import patch
     from test_character_export import sample_profile
     from test_rule_diagnostics import _condition_pack, _observed_evaluate
@@ -375,6 +376,8 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
     template.write_text(sample_profile(), encoding='utf-8')
     args = ['run', '--template', str(template), '--targets', '1',
             '--workspace', str(tmp_path / 'work')]
+    if diagnostic_logging:
+        args.append('--diagnostic-logging')
     requests = []
 
     def observed(*args, **kwargs):
@@ -399,6 +402,7 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
     for batch in batches:
         saved = result_store.one('batches', 'batch_key', batch['batch_key'])
         diagnostic = json.loads(saved['rule_diagnostics'])
+        assert ('costs' in diagnostic) is diagnostic_logging
         assert diagnostic['evidence']['batch_key'] == batch['batch_key']
         assert diagnostic['parent']['behavior_identity'] == batch['candidate_key']
         assert [row['name'] for row in diagnostic['rules']] == [
@@ -412,6 +416,7 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
         store = TaskStore(Path(material['task_path']))
         try:
             assert store.state['starts'] == [json.loads(material['initial_program'])]
+            assert store.state['config']['diagnostic_logging'] is diagnostic_logging
             choices = [row['selection'] for row in store.state['rule_steps'].values()]
             assert choices
             assert all(row['feedback']['status'] == 'learned' and row['feedback']['reward'] == 0
@@ -796,6 +801,7 @@ def test_training_condition_excludes_only_execution_and_keeps_real_inputs(tmp_pa
     expected = semantic_condition(payload, versions)
     execution = deepcopy(payload)
     execution['config']['max_processes'] = 16
+    execution['config'].update(diagnostic_logging=False, diagnostics='full', search_observability='full')
     execution['rules']['projects/sim2gse/seed_training.py'] = 'logging-only-source-change'
     assert semantic_condition(execution, versions) == expected
     for field, value in [('template', 'new-role'), ('engines', {'baseline': 'new-engine'}),
@@ -1765,8 +1771,10 @@ def test_prepare_run_reuses_context_and_only_rebuilds_changed_sources(tmp_path, 
     assert first['preparation']['sources_rebuilt'] == 2
     assert first['preparation']['context_rebuilt'] is True
     with training_boundary():
-        assert command(tmp_path, ['prepare', *options]) == 0
-    assert json.loads(capsys.readouterr().out)[0]['preparation']['sources_rebuilt'] == 0
+        assert command(tmp_path, ['prepare', *options, '--diagnostic-logging']) == 0
+    logged = json.loads(capsys.readouterr().out)[0]
+    assert logged['preparation']['sources_rebuilt'] == 0
+    assert logged['config_key'] == first['config_key']
     row['label'] = 'metadata revision'
     source.write_text(json.dumps(row), encoding='utf-8')
     assert command(tmp_path, ['register', str(source)]) == 0

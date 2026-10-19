@@ -446,9 +446,31 @@ void controller_t::initialize_observations()
   rapidjson::Document request;
   request.Parse( observation_request_.c_str() );
   if ( request.HasParseError() || !request.IsObject() || !request.HasMember("protocol") ||
-       !request["protocol"].IsInt() || request["protocol"].GetInt() != 1 ||
+       !request["protocol"].IsInt() || (request["protocol"].GetInt() != 1 && request["protocol"].GetInt() != 2) ||
        !request.HasMember("objects") || !request["objects"].IsObject() )
     throw std::runtime_error("invalid sim2gse rule observation request");
+  observation_protocol_ = request["protocol"].GetInt();
+  if ( observation_protocol_ == 2 )
+  {
+    const std::set<std::string> names = {"action_observations", "action_events", "state_observations",
+                                        "effect_observations", "effect_events"};
+    if ( !request.HasMember("collections") || !request["collections"].IsObject() ||
+         request["collections"].MemberCount() != names.size() )
+      throw std::runtime_error("invalid sim2gse observation collections");
+    for ( auto collection = request["collections"].MemberBegin();
+          collection != request["collections"].MemberEnd(); ++collection )
+    {
+      if ( !names.count(collection->name.GetString()) || !collection->value.IsObject() )
+        throw std::runtime_error("unknown sim2gse observation collection");
+      for ( auto alias = collection->value.MemberBegin(); alias != collection->value.MemberEnd(); ++alias )
+      {
+        if ( !request["objects"].HasMember(alias->name.GetString()) || !alias->value.IsArray() )
+          throw std::runtime_error("invalid sim2gse observation collection object");
+        for ( const auto& field : alias->value.GetArray() )
+          if ( !field.IsString() ) throw std::runtime_error("invalid sim2gse observation field");
+      }
+    }
+  }
   for ( auto member = request["objects"].MemberBegin(); member != request["objects"].MemberEnd(); ++member )
   {
     const auto& declaration = member->value;
@@ -466,6 +488,12 @@ void controller_t::initialize_observations()
     object.base_button = text("base_button");
     object.from_action = text("from_action");
     object.qualification = text("qualification");
+    if ( observation_protocol_ == 2 )
+      for ( auto collection = request["collections"].MemberBegin();
+            collection != request["collections"].MemberEnd(); ++collection )
+        if ( collection->value.HasMember(object.alias.c_str()) )
+          for ( const auto& field : collection->value[object.alias.c_str()].GetArray() )
+            object.collections[collection->name.GetString()].insert(field.GetString());
     if ( object.kind == "action" )
     {
       // Prefer the exact controlled command; replacements outside the input table
@@ -514,6 +542,14 @@ void controller_t::initialize_observations()
         }
 }
 
+bool controller_t::observation_wants( const observation_object_t& object, const char* collection,
+                                      const char* field ) const
+{
+  if ( observation_protocol_ == 1 ) return true;
+  const auto found = object.collections.find(collection);
+  return found != object.collections.end() && (!field || found->second.count(field));
+}
+
 void controller_t::start_observations()
 {
   if ( observation_request_.empty() || observation_complete_ ||
@@ -522,7 +558,13 @@ void controller_t::start_observations()
   observation_event_ = 0;
   observation_active_ = true;
   js::JsonOutput root( observations_.js_, observations_.js_ );
-  root["protocol"] = 1;
+  root["protocol"] = observation_protocol_;
+  if ( observation_protocol_ == 2 )
+  {
+    rapidjson::Document request;
+    request.Parse(observation_request_.c_str());
+    root["request"].val().CopyFrom(request, observations_.js_.GetAllocator());
+  }
   auto scope = root["scope"];
   scope["sample_selection"] = "first_scored_complete";
   scope["sample_id"] = owner_->sim->current_iteration;
@@ -535,7 +577,8 @@ void controller_t::start_observations()
   scope["execution_events_complete"] = false;
   scope["effect_events_complete"].val().SetObject();
   for ( const auto& object : observation_objects_ )
-    if ( object.kind == "effect" ) scope["effect_events_complete"][object.alias] = false;
+    if ( object.kind == "effect" && observation_wants(object, "effect_events") )
+      scope["effect_events_complete"][object.alias] = false;
   for ( const auto* name : { "inputs", "action_observations", "action_events",
                             "state_observations", "effect_observations", "feedback_events", "effect_events" } )
     root[name].make_array();
@@ -700,7 +743,7 @@ void controller_t::observe_input( unsigned origin )
       else for ( resource_e resource = RESOURCE_NONE; ++resource < RESOURCE_MAX; )
         if ( owner_->resources.max[resource] > 0 )
           balances[util::resource_type_string(resource)] = owner_->resources.current[resource];
-      observe_action( row, object.action, object.button );
+      observe_action( row, object.action, object.button, object );
       continue;
     }
     if ( object.kind == "state" || object.kind == "resource" )
@@ -740,6 +783,8 @@ void controller_t::observe_input( unsigned origin )
     if ( object.kind != "effect" ) continue;
     auto effect = [this, origin, &object]( const std::string& identity, player_t* target, buff_t* buff,
                                          bool excluded = false ) {
+      // Preserve the global event identity, without constructing unrequested facts.
+      if ( !observation_wants(object, "effect_observations") ) { ++observation_event_; return; }
       auto row = observation_row("effect_observations", origin, object.alias);
       row["observation_kind"] = "input_snapshot";
       row["lifecycle_complete"] = false;
@@ -749,23 +794,25 @@ void controller_t::observe_input( unsigned origin )
       if ( target ) row["target_id"] = target->actor_index;
       row["applicable"].val().SetNull();
       if ( excluded ) row["applicable"] = false;
-      for ( const auto* field : { "active", "stacks", "remains", "instance_id" } ) row[field].val().SetNull();
+      for ( const auto* field : { "active", "stacks", "remains", "instance_id" } )
+        if ( observation_wants(object, "effect_observations", field) ) row[field].val().SetNull();
       if ( buff )
       {
         row["applicable"] = true;
-        row["active"] = buff->check() > 0;
-        row["stacks"] = buff->check();
-        if ( buff->remains() != timespan_t::min() ) row["remains"] = buff->remains().total_millis();
+        if ( observation_wants(object, "effect_observations", "active") ) row["active"] = buff->check() > 0;
+        if ( observation_wants(object, "effect_observations", "stacks") ) row["stacks"] = buff->check();
+        if ( observation_wants(object, "effect_observations", "remains") && buff->remains() != timespan_t::min() )
+          row["remains"] = buff->remains().total_millis();
         if ( buff->source ) row["source_id"] = buff->source->actor_index;
         else row["source_id"].val().SetNull();
       }
       else if ( target && !excluded )
         if ( const auto* dot = target->find_dot(identity, owner_) )
         {
-          row["active"] = dot->is_ticking();
+          if ( observation_wants(object, "effect_observations", "active") ) row["active"] = dot->is_ticking();
           if ( dot->is_ticking() ) row["applicable"] = true;
-          row["stacks"] = dot->current_stack();
-          row["remains"] = dot->remains().total_millis();
+          if ( observation_wants(object, "effect_observations", "stacks") ) row["stacks"] = dot->current_stack();
+          if ( observation_wants(object, "effect_observations", "remains") ) row["remains"] = dot->remains().total_millis();
         }
     };
     if ( object.components.empty() ) effect(object.identity, object.buff ? owner_ : owner_->target, object.buff);
@@ -792,6 +839,13 @@ void controller_t::observe_ready( action_t* action, unsigned origin, bool ready 
       row["attempt"] = true;
       row["native_qualified"] = ready;
       if ( !ready ) row["failure_reason"] = "native_action_not_ready";
+      if ( observation_protocol_ == 2 )
+      {
+        // The actual ready caller is available without re-running an action getter.
+        row["ready_action"] = action->name_str;
+        if ( action->target ) row["target_id"] = action->target->actor_index;
+        continue;
+      }
       row["cooldown_remaining"] = action->cooldown->remains().total_millis();
       row["resource_as_of"] = owner_->last_regen.total_millis();
       auto balances = row["resource_balances"];
@@ -801,14 +855,17 @@ void controller_t::observe_ready( action_t* action, unsigned origin, bool ready 
         if ( owner_->resources.max[resource] > 0 )
           balances[util::resource_type_string(resource)] = owner_->resources.current[resource];
       if ( action->target ) row["target_id"] = action->target->actor_index;
-      observe_action( row, object.action, object.button );
+      observe_action( row, object.action, object.button, object );
     }
 }
 
-void controller_t::observe_action( js::JsonOutput row, action_t* action, action_t* button )
+void controller_t::observe_action( js::JsonOutput row, action_t* action, action_t* button,
+                                  const observation_object_t& object )
 {
-  row["estimated_effect_completion_time"].val().SetNull();
-  row["effect_completion_estimate"].val().SetNull();
+  if ( observation_wants(object, "action_observations", "estimated_effect_completion_time") )
+    row["estimated_effect_completion_time"].val().SetNull();
+  if ( observation_wants(object, "action_observations", "effect_completion_estimate") )
+    row["effect_completion_estimate"].val().SetNull();
   if ( action )
   {
     row["cooldown_remaining"] = action->cooldown->remains().total_millis();
@@ -842,12 +899,13 @@ void controller_t::observe_action( js::JsonOutput row, action_t* action, action_
     earliest = std::max(earliest, now + dot->remains());
   }
   earliest = std::max(earliest, sim2gse_precombat_cast_ready);
-  row["timing_precision"] = "current_state_estimate";
+  if ( observation_wants(object, "action_observations", "timing_precision") )
+    row["timing_precision"] = "current_state_estimate";
   row["earliest_execute"] = earliest.total_millis();
   row["occupancy_start"] = earliest.total_millis();
   row["occupancy_end"] = earliest.total_millis() + std::max(value["gcd_ms"].GetDouble(),
       value["cast_ms"].GetDouble() + value["channel_ms"].GetDouble());
-  if ( value["effect_completion_estimate"].IsObject() &&
+  if ( value.HasMember("effect_completion_estimate") && value["effect_completion_estimate"].IsObject() &&
        value["effect_completion_estimate"].HasMember("effect_delay_ms") &&
        value["effect_completion_estimate"]["effect_delay_ms"].IsNumber() )
     row["estimated_effect_completion_time"] = earliest.total_millis() + value["cast_ms"].GetDouble() +
@@ -924,6 +982,7 @@ void controller_t::write_buff_event( buff_t& buff, const char* kind, const char*
   for ( const auto& object : observation_objects_ )
     if ( object.kind == "effect" && object.buff == &buff )
     {
+      if ( !observation_wants(object, "effect_events") ) { ++observation_event_; continue; }
       js::JsonOutput root( observations_.js_, observations_.js_ );
       auto row = root["effect_events"].add();
       row["object"] = object.alias;
@@ -937,17 +996,19 @@ void controller_t::write_buff_event( buff_t& buff, const char* kind, const char*
       else row["source_id"].val().SetNull();
       row["applicable"] = true; // An actual application to this requested Buff owner.
       row["kind"] = kind;
-      row["stacks"] = buff.current_stack;
+      if ( observation_wants(object, "effect_events", "stacks") ) row["stacks"] = buff.current_stack;
       row["lifecycle_complete"] = state.complete;
       for ( const auto* field : {"start", "end", "end_reason", "scheduled_end",
-                                 "source_input_index", "source_actual_action"} ) row[field].val().SetNull();
+                                 "source_input_index", "source_actual_action"} )
+        if ( observation_wants(object, "effect_events", field) ) row[field].val().SetNull();
       if ( state.start != timespan_t::min() ) row["start"] = state.start.total_millis();
       if ( reason )
       {
         row["end"] = owner_->sim->current_time().total_millis();
         row["end_reason"] = reason;
       }
-      if ( buff.expiration.size() == 1 ) row["scheduled_end"] = buff.expiration.front()->occurs().total_millis();
+      if ( observation_wants(object, "effect_events", "scheduled_end") && buff.expiration.size() == 1 )
+        row["scheduled_end"] = buff.expiration.front()->occurs().total_millis();
       if ( consumer )
       {
         row["source_actual_action"] = consumer->name_str;
@@ -1055,6 +1116,7 @@ void controller_t::write_dot_event( dot_t& dot, const char* kind, const char* re
     for ( const auto& [identity, scope] : object.components )
       if ( identity == dot.name_str && dot.source == owner_ )
       {
+        if ( !observation_wants(object, "effect_events") ) { ++observation_event_; continue; }
         js::JsonOutput root(observations_.js_, observations_.js_);
         auto row = root["effect_events"].add();
         row["object"] = object.alias;
@@ -1068,12 +1130,14 @@ void controller_t::write_dot_event( dot_t& dot, const char* kind, const char* re
         row["source_id"] = dot.source->actor_index;
         row["applicable"] = true; // Actual instance, not potential target qualification.
         row["kind"] = kind;
-        row["stacks"] = dot.current_stack();
+        if ( observation_wants(object, "effect_events", "stacks") ) row["stacks"] = dot.current_stack();
         row["lifecycle_complete"] = state.complete;
         for ( const auto* field : {"start", "end", "end_reason", "scheduled_end",
-                                   "source_input_index", "source_actual_action"} ) row[field].val().SetNull();
+                                   "source_input_index", "source_actual_action"} )
+          if ( observation_wants(object, "effect_events", field) ) row[field].val().SetNull();
         if ( state.start != timespan_t::min() ) row["start"] = state.start.total_millis();
-        if ( state.deadline != timespan_t::min() ) row["scheduled_end"] = state.deadline.total_millis();
+        if ( observation_wants(object, "effect_events", "scheduled_end") && state.deadline != timespan_t::min() )
+          row["scheduled_end"] = state.deadline.total_millis();
         if ( reason )
         {
           row["end"] = owner_->sim->current_time().total_millis();
@@ -1223,7 +1287,7 @@ void controller_t::finish_observations()
   root["scope"]["end_ms"] = owner_->sim->current_time().total_millis();
   root["scope"]["complete"] = true;
   for ( const auto& object : observation_objects_ )
-    if ( object.kind == "effect" )
+    if ( object.kind == "effect" && observation_wants(object, "effect_events") )
     {
       const auto state = observation_buffs_.find(object.buff);
       root["scope"]["effect_events_complete"][object.alias] = object.buff_unique &&

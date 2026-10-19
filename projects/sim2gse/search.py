@@ -17,7 +17,7 @@ import sqlite3
 import statistics
 import time
 
-from runtime import replace_file
+from runtime import replace_file, diagnostic_start, diagnostic_finish, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 
 
@@ -900,6 +900,11 @@ class TaskStore:
             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
         self.db.commit()
 
+    @property
+    def diagnostic_logging(self):
+        config = self.state.get('config')
+        return bool(config and config.get('diagnostic_logging', False))
+
     @staticmethod
     def load_state(database):
         row = database.execute('SELECT value FROM state WHERE id=1').fetchone()
@@ -915,62 +920,101 @@ class TaskStore:
 
     @contextmanager
     def _transaction(self):
-        fields, archive, ready = self.saved_fields.copy(), self.saved_archive.copy(), self.incremental_ready
-        counts = self.state_write_count, self.state_bytes, self.full_state_value_bytes, self.persisted_batches
+        logging = self.diagnostic_logging
+        started = diagnostic_start() if logging else None
         try:
-            with self.db:
-                yield
-        except BaseException:
-            self.saved_fields, self.saved_archive, self.incremental_ready = fields, archive, ready
-            self.state_write_count, self.state_bytes, self.full_state_value_bytes, self.persisted_batches = counts
-            raise
+            fields, archive, ready = self.saved_fields.copy(), self.saved_archive.copy(), self.incremental_ready
+            counts = self.state_write_count, self.state_bytes, self.full_state_value_bytes, self.persisted_batches
+            try:
+                with self.db:
+                    yield
+            except BaseException:
+                self.saved_fields, self.saved_archive, self.incremental_ready = fields, archive, ready
+                self.state_write_count, self.state_bytes, self.full_state_value_bytes, self.persisted_batches = counts
+                raise
+        finally:
+            if logging:
+                diagnostic_finish(self, 'state.transaction', started)
 
     def _persist_state(self):
-        written = 0
-        if not self.incremental_ready:
-            self.db.execute('DELETE FROM state_fields')
-            self.db.execute('DELETE FROM state_archive')
-            self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json({'storage_format': 2}),))
-            self.incremental_ready = True
-        current_fields = set(self.state) - {'archive'}
-        for key in self.saved_fields.keys() - current_fields:
-            self.db.execute('DELETE FROM state_fields WHERE key=?', (key,))
-            del self.saved_fields[key]
-        for key in current_fields:
-            value = self.state[key]
-            if key == 'pending':
-                value = [_checkpoint_diagnostic_reference(record) for record in value]
-            previous = self.saved_fields.get(key)
-            if previous is None or previous[0] != value:
-                payload = _json(value)
-                size = len(payload.encode('utf-8'))
-                self.db.execute('INSERT OR REPLACE INTO state_fields VALUES (?,?)', (key, payload))
-                self.saved_fields[key] = (_checkpoint_copy(value), size)
-                written += size
-        current_archive = {record['key']: (ordinal, _checkpoint_diagnostic_reference(record))
-                           for ordinal, record in enumerate(self.state.get('archive', []))}
-        if len(current_archive) != len(self.state.get('archive', [])):
-            raise ValueError('任务归档包含重复候选')
-        for key in self.saved_archive.keys() - current_archive.keys():
-            self.db.execute('DELETE FROM state_archive WHERE key=?', (key,))
-            del self.saved_archive[key]
-        for key, (ordinal, record) in current_archive.items():
-            previous = self.saved_archive.get(key)
-            if previous is None or previous[:2] != (ordinal, record):
-                payload = _json(record)
-                size = len(payload.encode('utf-8'))
-                self.db.execute('INSERT OR REPLACE INTO state_archive VALUES (?,?,?)', (key, ordinal, payload))
-                self.saved_archive[key] = (ordinal, _checkpoint_copy(record), size)
-                written += size
-        if self.state.get('config', {}).get('diagnostic_logging', False):
-            self.state_write_count += 1
-            self.state_bytes += written
-            self.full_state_value_bytes += sum(value[1] for value in self.saved_fields.values()) + sum(value[2] for value in self.saved_archive.values())
+        self._persist_changes()
 
-    def save(self):
+    def _persist_changes(self, fields=None, archive_keys=()):
+        """Known mutation sites may limit comparisons; structural drift uses a full save."""
+        logging = self.diagnostic_logging
+        started = diagnostic_start() if logging else None
+        written = 0
+        changed_fields = changed_archive = ()
+        try:
+            current_fields = set(self.state) - {'archive'}
+            current_archive = {record['key']: (ordinal, record)
+                               for ordinal, record in enumerate(self.state.get('archive', []))}
+            if len(current_archive) != len(self.state.get('archive', [])):
+                raise ValueError('任务归档包含重复候选')
+            if fields is not None:
+                # Heartbeats and worker counters can change alongside the caller's fields.
+                fields = set(fields) | {'elapsed_seconds', 'status', 'inflight', *_TASK_COUNTERS}
+                if (not self.incremental_ready or 'archive' in fields
+                        or (current_fields ^ self.saved_fields.keys()) - fields
+                        or current_archive.keys() != self.saved_archive.keys()
+                        or any(self.saved_archive[key][0] != ordinal
+                               for key, (ordinal, _) in current_archive.items())):
+                    fields = None
+            changed_fields = current_fields if fields is None else current_fields & fields
+            changed_archive = current_archive.keys() if fields is None else set(archive_keys)
+            written = 0
+            if not self.incremental_ready:
+                self.db.execute('DELETE FROM state_fields')
+                self.db.execute('DELETE FROM state_archive')
+                self.db.execute('INSERT OR REPLACE INTO state VALUES (1,?)', (_json({'storage_format': 2}),))
+                self.incremental_ready = True
+            removed_fields = self.saved_fields.keys() - current_fields
+            if fields is not None:
+                removed_fields &= fields
+            for key in removed_fields:
+                self.db.execute('DELETE FROM state_fields WHERE key=?', (key,))
+                del self.saved_fields[key]
+            for key in changed_fields:
+                value = self.state[key]
+                if key == 'pending':
+                    value = [_checkpoint_diagnostic_reference(record) for record in value]
+                previous = self.saved_fields.get(key)
+                if previous is None or previous[0] != value:
+                    payload = _json(value)
+                    size = len(payload.encode('utf-8'))
+                    self.db.execute('INSERT OR REPLACE INTO state_fields VALUES (?,?)', (key, payload))
+                    self.saved_fields[key] = (_checkpoint_copy(value), size)
+                    written += size
+            for key in self.saved_archive.keys() - current_archive.keys():
+                self.db.execute('DELETE FROM state_archive WHERE key=?', (key,))
+                del self.saved_archive[key]
+            for key in changed_archive:
+                ordinal, record = current_archive[key]
+                record = _checkpoint_diagnostic_reference(record)
+                previous = self.saved_archive.get(key)
+                if previous is None or previous[:2] != (ordinal, record):
+                    payload = _json(record)
+                    size = len(payload.encode('utf-8'))
+                    self.db.execute('INSERT OR REPLACE INTO state_archive VALUES (?,?,?)', (key, ordinal, payload))
+                    self.saved_archive[key] = (ordinal, _checkpoint_copy(record), size)
+                    written += size
+            if self.state.get('config', {}).get('diagnostic_logging', False):
+                self.state_write_count += 1
+                self.state_bytes += written
+                self.full_state_value_bytes += sum(value[1] for value in self.saved_fields.values()) + sum(value[2] for value in self.saved_archive.values())
+        finally:
+            if logging:
+                diagnostic_finish(self, 'state.persist.full' if fields is None else 'state.persist.partial',
+                                  started, written_bytes=written, fields=len(changed_fields),
+                                  archive_records=len(changed_archive))
+
+    def save(self, *, fields=None, archive_keys=()):
         with self.lock, self._transaction():
             if not self.report_buffer:
-                self._persist_state()
+                if fields is None:
+                    self._persist_state()
+                else:
+                    self._persist_changes(fields, archive_keys)
             self._save_progress()
 
     def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None):
@@ -979,7 +1023,7 @@ class TaskStore:
             if replace_group:
                 self.flush_reports()
             self.report_buffer.append((key, row, prepare_batch(
-                stored, diagnostic_logging=diagnostic_logging)))
+                stored, diagnostic_logging=diagnostic_logging, runtime=getattr(self, 'runtime', None))))
             self.verified_batches[key] = row
             self.state['completed_batches'] += 1
             if replace_group or len(self.report_buffer) >= 12:
@@ -1055,7 +1099,14 @@ class TaskStore:
                     retained.update(plan['replacements'])
                     if len(retained) > 12:
                         raise ValueError('报告组超过十二份')
-                    write('batches', group, list(retained.values()))
+                    logging = self.diagnostic_logging
+                    started = diagnostic_start() if logging else None
+                    try:
+                        write('batches', group, list(retained.values()))
+                    finally:
+                        if logging:
+                            diagnostic_finish(self, 'report.write', started, rows=len(retained), groups=1,
+                                              replacements=len(plan['replacements']))
                 last = position == len(plans) - 1
                 self._commit_report_group(group, number, metadata, checkpoint=last,
                                           clear_intents=tuple(plans) if last else ())
@@ -1136,8 +1187,14 @@ class TaskStore:
                          _json(self.state.get('inflight', {}))))
 
     def save_runtime(self):
-        with self.lock, self.db:
-            self._save_progress()
+        logging = self.diagnostic_logging
+        started = diagnostic_start() if logging else None
+        try:
+            with self.lock, self.db:
+                self._save_progress()
+        finally:
+            if logging:
+                diagnostic_finish(self, 'state.progress', started)
 
     def publish(self):
         with self.lock:
@@ -1200,6 +1257,7 @@ class TaskStore:
     @contextmanager
     def active(self, runtime):
         """进程崩溃最多按尚未消耗的单批额度扣费，恢复扣除只发生一次。"""
+        self.runtime = runtime
         stop = threading.Event()
         def beat():
             with self.lock:
@@ -1226,14 +1284,17 @@ class TaskStore:
     def close(self):
         self.db.close()
         self.verified_batches.clear()
-        if getattr(self, 'diagnostics_mode', 'off') != 'off':
-            diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
-                               task_state_writes=self.state_write_count,
-                               task_state_bytes=self.state_bytes,
-                               task_state_full_value_bytes=self.full_state_value_bytes,
-                               lua_compiler_starts=self.lua_compiler_starts)
-            (self.destination / 'diagnostics.json').write_text(
-                _json(diagnostics), encoding='utf-8')
+        if self.diagnostic_logging:
+            try:
+                diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
+                                   task_state_writes=self.state_write_count,
+                                   task_state_bytes=self.state_bytes,
+                                   task_state_full_value_bytes=self.full_state_value_bytes,
+                                   lua_compiler_starts=self.lua_compiler_starts,
+                                   performance=diagnostic_summary(self, getattr(self, 'runtime', None)))
+                (self.destination / 'diagnostics.json').write_text(_json(diagnostics), encoding='utf-8')
+            except Exception:
+                pass  # 性能日志失败不得覆盖业务错误或任务结果。
 
 
 def _score(rows):
@@ -1272,8 +1333,11 @@ def freeze_selection_feedback(store, work, rows, *, reason=None):
                   for child, before in valid])
     store.state.setdefault('selection_feedback_intents', {})[key] = intent
     store.state['selection_feedback_incomplete'] = True
+    flushed_reports = bool(store.report_buffer)
     store.flush_reports()
-    store.save()
+    store.save(fields=None if flushed_reports else (
+        'selection_feedback_intents', 'selection_feedback_incomplete',
+        'rule_steps', 'pending', 'search_observability', 'errors'))
 
 
 def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cancel_event=None):
@@ -1282,7 +1346,7 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
     if not intents and not finalizing:
         if store.state.get('selection_feedback_incomplete'):
             store.state['selection_feedback_incomplete'] = False
-            store.save()
+            store.save(fields=('selection_feedback_incomplete', 'pending', 'rule_steps', 'search_observability'))
         return
     from selector import settle
     started = time.monotonic()
@@ -1326,24 +1390,32 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
             if feedback['status'] == 'already_settled':
                 feedback = dict(feedback, status='learned' if intent['reward'] is not None else 'no_learn')
             feedback['evidence'] = intent['evidence']
+            changed_fields = {'selection_feedback_intents', 'selection_feedback_incomplete',
+                              'pending', 'rule_steps', 'search_observability'}
+            changed_archive = []
             for step in store.state.get('rule_steps', {}).values():
                 selection = step.get('selection')
                 if selection and selection['decision_id'] == receipt['decision_id']:
                     selection['feedback'] = feedback
-            for item in [*store.state.get('pending', []), *store.state.get('archive', [])]:
-                selection = item.get('rule_step', {}).get('selection')
-                if selection and selection['decision_id'] == receipt['decision_id']:
-                    selection['feedback'] = feedback
+            for collection in ('pending', 'archive'):
+                for item in store.state.get(collection, []):
+                    selection = item.get('rule_step', {}).get('selection')
+                    if selection and selection['decision_id'] == receipt['decision_id']:
+                        selection['feedback'] = feedback
+                        if collection == 'archive':
+                            changed_archive.append(item['key'])
             del intents[key]
             store.state['selection_feedback_incomplete'] = bool(intents)
             if runtime is None:
                 store.state['elapsed_seconds'] = elapsed_before + time.monotonic()-started
+            flushed_reports = bool(store.report_buffer)
             store.flush_reports()
-            store.save()
+            store.save(fields=None if flushed_reports else changed_fields, archive_keys=changed_archive)
     finally:
         store.state['selection_feedback_incomplete'] = bool(store.state.get('selection_feedback_intents'))
         if runtime is None:
             store.state['elapsed_seconds'] = elapsed_before + time.monotonic()-started
+        # Retry every coupled change if an earlier checkpoint transaction failed.
         store.save()
 
 
@@ -1955,7 +2027,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     batch_request=request)
                 encode_selection_context(row['rule_diagnostics'], result['report'])
                 events, feedback_evidence = feedback_observations(
-                    player_report(result['report'], character).get('sim2gse_rule_observations'), iterations)
+                    player_report(result['report'], character).get('sim2gse_rule_observations'), iterations,
+                    observation_request=rule_observation_request)
                 row['feedback_evidence'] = dict(feedback_evidence, batch_key=key)
                 if events is not None:
                     row['feedback'] = feedback_from_trace(events, [a['simc_action'] for a in capabilities['actions']],
@@ -2192,8 +2265,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     generation = dict(lane=lane_index, parent=state['chains'][lane_index]['best'], selected=0,
                         limit=min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys'])))
                     state['selection_generation'] = generation
+                    flushed_reports = bool(store.report_buffer)
                     store.flush_reports()
-                    store.save()
+                    store.save(fields=None if flushed_reports else ('selection_generation',))
                 lane_index = generation['lane']
                 lane = state['chains'][lane_index]
                 base = next(row for row in state['archive'] if row['key'] == generation['parent'])
@@ -2220,8 +2294,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                             context=context['values'], actions=[dict(operation_id=row['operation_id'], features=values)
                                 for row, values in zip(operations, features)])
                         state.update(selection_sequence=decision, selection_intent=intent)
+                        flushed_reports = bool(store.report_buffer)
                         store.flush_reports()
-                        store.save()
+                        store.save(fields=None if flushed_reports else ('selection_sequence', 'selection_intent'))
                     receipt = reserve(intent, runtime=runtime)
                     operation = next(row for row in pool['operations'] if row['operation_id'] == receipt['operation_id'])
                     request = dict(parent_identity=diagnostic['parent_identity'], operation_id=operation['operation_id'])
@@ -2240,8 +2315,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     state['pending'].append(work)
                     generation['selected'] += 1
                     state.pop('selection_intent', None)
+                    flushed_reports = bool(store.report_buffer)
                     store.flush_reports()
-                    store.save()
+                    store.save(fields=None if flushed_reports else (
+                        'pending', 'rule_steps', 'selection_generation', 'selection_intent', 'search_observability'))
                 if generation['selected'] == 0:
                     lane['stalled'] = True
                 state.update(next_chain_index=(lane_index + 1) % len(state['chains']),

@@ -8,10 +8,11 @@ import json
 import math
 
 import result_store
+from runtime import diagnostic_start, diagnostic_finish
 
 FEATURE_VERSION = 'c50-a21-v1'
 REWARD_VERSION = 'relative-common-batches-v1'
-STATE_VERSION = 1
+STATE_VERSION = 2
 MODEL_KEY = 'linucb_c50_a21_feature_v1_reward_v1'
 CONTEXT_DIMENSION, ACTION_DIMENSION, MODEL_DIMENSION = 50, 21, 1072
 COBA_VERSION, NUMPY_VERSION = '8.1.0', '2.4.4'
@@ -266,20 +267,31 @@ def _rng_state(learner):
     return frame['s']
 
 
-def _snapshot(learner, *, version=0, reservations=None, settled=None):
-    return dict(model_key=MODEL_KEY, version=version, state_version=STATE_VERSION,
-        feature_version=FEATURE_VERSION, reward_version=REWARD_VERSION,
-        coba_version=COBA_VERSION, numpy_version=NUMPY_VERSION,
-        dimension=MODEL_DIMENSION, alpha=learner._alpha, features=list(learner._X),
-        seed=learner.params['seed'], rng_state=_rng_state(learner),
-        theta=learner._theta.tolist() if learner._theta is not None else None,
-        a_inv=learner._A_inv.tolist() if learner._A_inv is not None else None,
-        reservations=reservations if reservations is not None else [],
-        settled=settled if settled is not None else {})
+def _snapshot(learner, *, version=0, reservations=None, settled=None, model=True, runtime=None):
+    logging = runtime is not None and runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    try:
+        record = dict(model_key=MODEL_KEY, version=version, state_version=STATE_VERSION,
+            feature_version=FEATURE_VERSION, reward_version=REWARD_VERSION,
+            coba_version=COBA_VERSION, numpy_version=NUMPY_VERSION,
+            dimension=MODEL_DIMENSION, alpha=learner._alpha, features=list(learner._X),
+            seed=learner.params['seed'], rng_state=_rng_state(learner),
+            reservations=reservations if reservations is not None else [],
+            settled=settled if settled is not None else {})
+        if model:
+            record.update(theta=learner._theta.tolist() if learner._theta is not None else None,
+                          a_inv=learner._A_inv.tolist() if learner._A_inv is not None else None)
+        return record
+    finally:
+        if logging:
+            try:
+                diagnostic_finish(runtime, 'model.snapshot', started, dimension=MODEL_DIMENSION, matrix_values=(MODEL_DIMENSION * (MODEL_DIMENSION + 1) if model and learner._theta is not None else 0))
+            except Exception:
+                pass
 
 
-def _validate_parameters(record):
-    expected = dict(model_key=MODEL_KEY, state_version=STATE_VERSION,
+def _validate_parameters(record, *, state_version=None):
+    expected = dict(model_key=MODEL_KEY, state_version=STATE_VERSION if state_version is None else state_version,
         feature_version=FEATURE_VERSION, reward_version=REWARD_VERSION,
         coba_version=COBA_VERSION, numpy_version=NUMPY_VERSION,
         dimension=MODEL_DIMENSION, alpha=1, features=FEATURES, seed=1)
@@ -287,11 +299,7 @@ def _validate_parameters(record):
         raise ValueError('共享选择器状态版本、参数或特征不兼容，保留原状态')
 
 
-def _restore(record):
-    import numpy as np
-    from coba.random import CobaRandom
-    learner = _learner()
-    _validate_parameters(record)
+def _validate_state(record):
     if (type(record.get('version')) is not int or record['version'] < 0
             or type(record.get('rng_state')) is not int or not 0 <= record['rng_state'] < 2**30
             or not isinstance(record.get('reservations'), list)
@@ -299,9 +307,28 @@ def _restore(record):
             or any(not isinstance(task, str) or not task or type(decision) is not int or decision < 0
                    for task, decision in record['settled'].items())):
         raise ValueError('共享选择器状态元数据无效，保留原状态')
+    identities = set()
+    for receipt in record['reservations']:
+        _validate_receipt(receipt)
+        identity = receipt['task_run_id'], receipt['decision_id']
+        if (identity in identities or identity[1] <= record['settled'].get(identity[0], 0)
+                or receipt['model_version'] > record['version']):
+            raise ValueError('共享选择器决策身份或结算水位冲突')
+        identities.add(identity)
+
+
+def _restore(record, *, state_version=None):
+    import numpy as np
+    from coba.random import CobaRandom
+    learner = _learner()
+    _validate_parameters(record, state_version=state_version)
+    _validate_state(record)
     theta, inverse = record.get('theta'), record.get('a_inv')
-    if (theta is None) != (inverse is None):
+    if not {'theta', 'a_inv'} <= record.keys() or (theta is None) != (inverse is None):
         raise ValueError('共享选择器矩阵不完整，保留原状态')
+    if theta is None and (record['version'] != 0 or record['rng_state'] != 1
+                          or record['reservations'] or record['settled']):
+        raise ValueError('共享选择器只有严格空初始版本可以没有矩阵，保留原经验')
     if theta is not None:
         try:
             theta, inverse = np.asarray(theta), np.asarray(inverse)
@@ -314,13 +341,6 @@ def _restore(record):
             raise ValueError('共享选择器矩阵无效，保留原状态') from error
     learner._pred._pmfrng._randu = CobaRandom(record['rng_state'])._randu
     _rng_state(learner)
-    identities = set()
-    for receipt in record['reservations']:
-        _validate_receipt(receipt)
-        identity = receipt['task_run_id'], receipt['decision_id']
-        if identity in identities or identity[1] <= record['settled'].get(identity[0], 0):
-            raise ValueError('共享选择器决策身份或结算水位冲突')
-        identities.add(identity)
     return learner
 
 
@@ -357,38 +377,129 @@ def _validate_receipt(receipt):
     _dense(receipt.get('action_features'), ACTION_DIMENSION)
 
 
-def _remember(record, learner):
+def _control(record, base_version, phase='active'):
+    return dict({key: value for key, value in record.items() if key not in ('theta', 'a_inv')},
+                base_version=base_version, phase=phase)
+
+
+def _validate_control(record):
+    _validate_parameters(record)
+    _validate_state(record)
+    if (record.get('phase') not in ('bootstrap', 'migrating', 'active')
+            or type(record.get('base_version')) is not int
+            or not 0 <= record['base_version'] <= record['version']):
+        raise result_store.DataReadError('共享选择器控制阶段或基础版本无效')
+
+
+def _activate(runtime=None):
+    """Finish only the bounded empty bootstrap or same-version v1 migration, under the lock."""
+    for attempt in range(2):
+        try:
+            record = result_store.read_search_learner(MODEL_KEY)
+            control = result_store.read_search_learner_control(MODEL_KEY)
+            if record is None:
+                empty = _snapshot(_learner(), runtime=runtime)
+                prepared = _control(empty, 0, 'bootstrap')
+                if control is None:
+                    result_store.write_search_learner_control(prepared, runtime=runtime)
+                    control = prepared
+                if control != prepared:
+                    raise result_store.DataReadError('共享选择器完整记录丢失，不能重建已有经验')
+                result_store.write_search_learner(empty, runtime=runtime)
+                record = empty
+            elif record.get('state_version') == 1:
+                _restore(record, state_version=1)
+                record = dict(record, state_version=STATE_VERSION)
+                prepared = _control(record, record['version'], 'migrating')
+                if control is None:
+                    result_store.write_search_learner_control(prepared, runtime=runtime)
+                    control = prepared
+                if control != prepared:
+                    raise result_store.DataReadError('共享选择器旧格式与迁移控制记录冲突，请先停止旧写入进程')
+                result_store.write_search_learner(record, runtime=runtime)
+            _validate_parameters(record)
+            if control is None:
+                raise result_store.DataReadError('共享选择器控制记录丢失')
+            _validate_control(control)
+            if control['phase'] != 'active':
+                if control['phase'] == 'bootstrap' and record != _snapshot(_learner(), runtime=runtime):
+                    raise result_store.DataReadError('共享选择器初始化阶段已有非空经验，不能覆盖')
+                if control != _control(record, record['version'], control['phase']):
+                    raise result_store.DataReadError('共享选择器准备记录与完整版本冲突')
+                control = dict(control, phase='active')
+                result_store.write_search_learner_control(control, runtime=runtime)
+            return record, control
+        except Exception:
+            if attempt:
+                raise
+    raise AssertionError('unreachable')
+
+
+def _remember(record, learner, *, full_version=None):
     global _CACHED_LEARNER, _SEEN_VERSION
     # Keep one native model and small metadata, never a second matrix snapshot.
-    state = {key: record[key] for key in ('version', 'reservations', 'settled')}
+    state = {key: record[key] for key in ('version', 'rng_state', 'reservations', 'settled')}
+    state['full_version'] = (record.get('base_version', record['version'])
+                             if full_version is None else full_version)
     source = result_store.DATA_ROOT.resolve(), MODEL_KEY
     _CACHED_LEARNER = source, state, learner
     _SEEN_VERSION = source, record['version']
     return state, learner
 
 
-def _load():
-    global _CACHED_LEARNER, _SEEN_VERSION
-    cached, _CACHED_LEARNER = _CACHED_LEARNER, None
-    source = result_store.DATA_ROOT.resolve(), MODEL_KEY
-    if _SEEN_VERSION is not None and _SEEN_VERSION[0] != source:
-        _SEEN_VERSION = None
-    if cached is not None and cached[0] == source:
-        metadata = result_store.read_search_learner_metadata(MODEL_KEY)
-        if metadata is not None and metadata['version'] == cached[1]['version']:
-            _validate_parameters(metadata)
-            _CACHED_LEARNER = cached
-            return cached[1], cached[2]
-    record = result_store.read_search_learner(MODEL_KEY)
-    if record is None:
-        if _SEEN_VERSION is not None:
-            raise result_store.DataReadError('共享选择器权威记录丢失，保留已知经验版本')
-        learner = _learner()
-        return _snapshot(learner), learner
-    if (_SEEN_VERSION is not None and type(record.get('version')) is int
-            and record['version'] < _SEEN_VERSION[1]):
-        raise result_store.DataReadError('共享选择器权威版本回退，保留已知经验版本')
-    return _remember(record, _restore(record))
+def _load(runtime=None):
+    logging = runtime is not None and runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    try:
+        from coba.random import CobaRandom
+        global _CACHED_LEARNER, _SEEN_VERSION
+        cached, _CACHED_LEARNER = _CACHED_LEARNER, None
+        source = result_store.DATA_ROOT.resolve(), MODEL_KEY
+        if _SEEN_VERSION is not None and _SEEN_VERSION[0] != source:
+            _SEEN_VERSION = None
+        cached = cached if cached is not None and cached[0] == source else None
+        record = (result_store.read_search_learner_metadata(MODEL_KEY) if cached
+                  else result_store.read_search_learner(MODEL_KEY))
+        control = result_store.read_search_learner_control(MODEL_KEY)
+        if record is None or record.get('state_version') == 1:
+            if _SEEN_VERSION is not None:
+                raise result_store.DataReadError('共享选择器权威记录丢失或格式回退，保留已知经验版本')
+            record, control = _activate(runtime)
+            cached = None
+        _validate_parameters(record)
+        if control is None:
+            raise result_store.DataReadError('共享选择器控制记录丢失，保留已有经验')
+        _validate_control(control)
+        if (_SEEN_VERSION is not None
+                and max(record['version'], control['version']) < _SEEN_VERSION[1]):
+            raise result_store.DataReadError('共享选择器权威版本回退，保留已知经验版本')
+        if control['phase'] != 'active':
+            record, control = _activate(runtime)
+            cached = None
+        full_version = record['version']
+        if cached and full_version == cached[1]['full_version']:
+            state, learner = cached[1], cached[2]
+        else:
+            if cached:
+                record = result_store.read_search_learner(MODEL_KEY)
+            state, learner = record, _restore(record)
+        if control['version'] >= full_version:
+            if control['base_version'] != full_version:
+                raise result_store.DataReadError('共享选择器控制记录与完整模型基础版本冲突')
+            if control['version'] == full_version and any(
+                    control[key] != state[key] for key in ('rng_state', 'reservations', 'settled')):
+                raise result_store.DataReadError('共享选择器同版本控制内容冲突')
+            state = control
+        if learner._A_inv is None and (state['version'] != 0 or state['rng_state'] != 1
+                                       or state['reservations'] or state['settled']):
+            raise result_store.DataReadError('共享选择器空模型不能叠加已有控制进度')
+        if _SEEN_VERSION is not None and state['version'] < _SEEN_VERSION[1]:
+            raise result_store.DataReadError('共享选择器权威版本回退，保留已知经验版本')
+        learner._pred._pmfrng._randu = CobaRandom(state['rng_state'])._randu
+        return _remember(state, learner, full_version=full_version)
+    finally:
+        if logging:
+            diagnostic_finish(runtime, 'model.load', started, dimension=MODEL_DIMENSION)
 
 
 def _receipt(record, task, decision):
@@ -404,7 +515,7 @@ def reserve(intent, runtime=None):
     task, decision = intent['task_run_id'], intent['decision_id']
     with result_store.search_learner_lock(runtime):
         for attempt in range(2):
-            record, learner = _load()
+            record, learner = _load(runtime)
             watermark = record['settled'].get(task, 0)
             if decision <= watermark:
                 raise AlreadySettled(task, decision, watermark)
@@ -421,8 +532,15 @@ def reserve(intent, runtime=None):
                 runtime.check()
             context = _dense(intent['context'], CONTEXT_DIMENSION)
             actions = [_dense(row['features'], ACTION_DIMENSION) for row in intent['actions']]
+            initialized = learner._A_inv is None
             _CACHED_LEARNER = None  # Predict mutates RNG; publish only after the atomic write.
-            selected, probability = learner.predict(context, actions)
+            logging = runtime is not None and runtime.diagnostic_logging
+            started = diagnostic_start() if logging else None
+            try:
+                selected, probability = learner.predict(context, actions)
+            finally:
+                if logging:
+                    diagnostic_finish(runtime, 'model.predict', started, actions=len(actions), context_dimension=CONTEXT_DIMENSION, action_dimension=ACTION_DIMENSION)
             index = next((i for i, action in enumerate(actions) if action is selected), None)
             if index is None:
                 raise ValueError('Coba返回的动作不是原具体操作对象')
@@ -433,13 +551,18 @@ def reserve(intent, runtime=None):
                 model_key=MODEL_KEY, model_version=record['version']+1)
             _validate_receipt(receipt)
             updated = _snapshot(learner, version=record['version']+1,
-                reservations=[*record['reservations'], receipt], settled=record['settled'])
+                reservations=[*record['reservations'], receipt], settled=record['settled'], model=initialized, runtime=runtime)
+            if not initialized:
+                updated = _control(updated, record['full_version'])
             try:
-                result_store.write_search_learner(updated)
+                if initialized:
+                    result_store.write_search_learner(updated, runtime=runtime)
+                else:
+                    result_store.write_search_learner_control(updated, runtime=runtime)
                 _remember(updated, learner)
                 return copy.deepcopy(receipt)
             except Exception:
-                current, _ = _load()  # A read failure stops; never reset or blindly repeat predict.
+                current, _ = _load(runtime)  # A read failure stops; never reset or blindly repeat predict.
                 committed = _receipt(current, task, decision)
                 if committed and committed == receipt:
                     return copy.deepcopy(committed)
@@ -464,7 +587,7 @@ def settle(receipt, reward, common_batches, reason=None, runtime=None):
     task, decision = receipt['task_run_id'], receipt['decision_id']
     with result_store.search_learner_lock(runtime):
         for attempt in range(2):
-            record, learner = _load()
+            record, learner = _load(runtime)
             watermark = record['settled'].get(task, 0)
             if decision <= watermark:
                 return dict(feedback, status='already_settled', already_committed=True,
@@ -478,16 +601,27 @@ def settle(receipt, reward, common_batches, reason=None, runtime=None):
                 runtime.check()
             _CACHED_LEARNER = None  # A failed or uncertain write must reload before learning again.
             if valid_reward:
-                learner.learn(receipt['context'], receipt['action_features'], reward, receipt['probability'])
+                logging = runtime is not None and runtime.diagnostic_logging
+                started = diagnostic_start() if logging else None
+                try:
+                    learner.learn(receipt['context'], receipt['action_features'], reward, receipt['probability'])
+                finally:
+                    if logging:
+                        diagnostic_finish(runtime, 'model.learn', started, common_batches=common_batches, dimension=MODEL_DIMENSION)
             updated = _snapshot(learner, version=record['version']+1,
                 reservations=[row for row in record['reservations'] if row is not original],
-                settled=dict(record['settled'], **{task: decision}))
+                settled=dict(record['settled'], **{task: decision}), model=valid_reward, runtime=runtime)
+            if not valid_reward:
+                updated = _control(updated, record['full_version'])
             try:
-                result_store.write_search_learner(updated)
+                if valid_reward:
+                    result_store.write_search_learner(updated, runtime=runtime)
+                else:
+                    result_store.write_search_learner_control(updated, runtime=runtime)
                 _remember(updated, learner)
                 return dict(feedback, model_version=updated['version'], already_committed=False)
             except Exception:
-                current, _ = _load()  # Replacement may have succeeded before the writer raised.
+                current, _ = _load(runtime)  # Replacement may have succeeded before the writer raised.
                 if current['settled'].get(task, 0) >= decision:
                     return dict(feedback, model_version=current['version'], already_committed=True)
                 if (current['version'] != record['version']

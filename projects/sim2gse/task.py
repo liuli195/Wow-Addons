@@ -603,7 +603,7 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
             batch_key=reference_key, run_id=run_id, purpose='reference',
             seed=20260912, requested_iterations=100, samples=native['samples'],
             dps=native['dps'], variance=reference_damage.get('variance'), report=reference_report),
-                    diagnostic_logging=diagnostic_logging)
+                    diagnostic_logging=diagnostic_logging, runtime=runtime)
         reference_stored = True
     finally:
         _discard_native_exchange(destination / 'reference', keep_valid=reference_valid and not reference_stored)
@@ -661,7 +661,7 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
             samples=controlled['summary']['samples'], dps=controlled['summary']['dps'],
             variance=controlled_damage.get('variance'), report=controlled['report'],
             times=controlled['input_times'], phase_ms=phase_ms,
-            reset_events=controlled.get('reset_events', [])), diagnostic_logging=diagnostic_logging)
+            reset_events=controlled.get('reset_events', [])), diagnostic_logging=diagnostic_logging, runtime=runtime)
         controlled_stored = True
     finally:
         _discard_native_exchange(destination / 'controlled',
@@ -1387,7 +1387,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         purpose='reference', seed=config['random_seed'],
                         requested_iterations=config['iterations'], samples=native['samples'],
                         dps=native['dps'], variance=reference_damage.get('variance'),
-                        report=reference_report), diagnostic_logging=config['diagnostic_logging'])
+                        report=reference_report), diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
                     reference_stored = True
                 finally:
                     _discard_native_exchange(destination / 'reference',
@@ -1840,9 +1840,16 @@ def _resume_task(output_root, **kwargs):
                 raise TaskError('任务缺少恢复模拟配置')
             if simulation_config != simulation_config_for(state['simulation_config']):
                 raise TaskError('恢复模拟配置发生变化，请创建新任务')
-            config = config_for(kwargs.pop('search_config',None) or state['config'])
-            if config != config_for(state['config']):
+            config = config_for(kwargs.pop('search_config', None) or state['config'])
+            logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability')
+            if ({key: value for key, value in config.items() if key not in logging_keys} !=
+                    {key: value for key, value in config_for(state['config']).items()
+                     if key not in logging_keys}):
                 raise TaskError('恢复配置发生变化，请创建新任务')
+            logging = kwargs.pop('diagnostic_logging', False)
+            config = config_for(dict(config, diagnostic_logging=logging,
+                diagnostics=(config['diagnostics'] if config['diagnostics'] != 'off' else 'summary')))
+            state['config'] = config
             from engine import identity
             # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
             verified = getattr(kwargs.get('_runtime'), 'identities', {})
@@ -1927,8 +1934,9 @@ def _resume_task(output_root, **kwargs):
                         metrics = dict(published.get('search_metrics') or {})
                         metrics.update(rule_steps=state.get('rule_steps', {}),
                             selection_feedback_incomplete=state.get('selection_feedback_incomplete', False))
-                        if metrics != published.get('search_metrics') or used != published['elapsed_seconds']:
-                            published.update(search_metrics=metrics,
+                        if (metrics != published.get('search_metrics') or used != published['elapsed_seconds']
+                                or published.get('config') != config):
+                            published.update(search_metrics=metrics, config=config,
                                 elapsed_seconds=used + time.monotonic()-started)
                             write('runs', state['run_id'], [published], schema=RUN_SCHEMA)
                     finally:
@@ -2238,16 +2246,21 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='从单个角色文件生成本机离线序列')
     parser.add_argument('input',type=Path,nargs='?',help='角色导出文件')
     parser.add_argument('--resume',action='store_true',help='按原有清单和预算恢复任务')
+    parser.add_argument('--diagnostic-logging', action='store_true',
+                        help='本次开启全部性能诊断日志；新建和恢复默认均关闭')
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')
     args = parser.parse_args(argv)
     try:
         simulation_config = load_config()
         if args.resume:
-            result = resume_task(args.output, simulation_config=simulation_config)
+            result = resume_task(args.output, simulation_config=simulation_config,
+                                 diagnostic_logging=args.diagnostic_logging)
         else:
             if args.input is None:
                 parser.error('新任务需要角色文件')
-            result = run_task(args.input, args.output, simulation_config=simulation_config)
+            result = run_task(args.input, args.output, simulation_config=simulation_config,
+                              search_config=dict(diagnostic_logging=args.diagnostic_logging,
+                                                 diagnostics='summary'))
         print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:

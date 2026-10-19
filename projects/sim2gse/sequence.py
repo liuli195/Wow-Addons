@@ -273,7 +273,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                     json.dumps(rule_observation_request, ensure_ascii=False, separators=(',', ':'))]),
                *(['potion=potion_of_recklessness', 'override.allow_potions=1']
                  if any(c['kind'] == 'potion' for b in all_commands for c in b) else []),
-               'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', True) else os.devnull)], runtime=runtime,
+               'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', False) else os.devnull)], runtime=runtime,
               simulation_config=simulation_config, **start_callback)
     native_blocks = []
     skipped_commands = []

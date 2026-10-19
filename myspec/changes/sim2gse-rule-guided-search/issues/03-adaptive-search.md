@@ -4,7 +4,7 @@ Parent: [总开发方案](../spec.md)
 Status: in-progress
 Triage: ready-for-agent
 Assignee: Implementer（实施者）
-Blocked by: 01/02实施依赖已满足；Windows完整调试测试已通过，A整任务效果未达目标；下一优化方案待用户确认，正式60秒验证预算问题按用户要求延后。
+Blocked by: 01/02既有实施依赖已满足；本次四项保语义性能修复及日志总开关已获整套批准，实施/定向与正式验证仍待；正式60秒预算问题按原用户要求延后，不能据旧调试绿宣称新范围通过。
 
 ## Current progress（真实进度）
 
@@ -25,6 +25,8 @@ Blocked by: 01/02实施依赖已满足；Windows完整调试测试已通过，A�
 A包含104个search批次、32个validation批次及另1个reference进程，137个native均exit0；80次选择中78 learned、2 no_learn，反馈完整。终态pending16（其中14已评分但未归档），不能将82称为完整归档。纯公开调用632.1104秒，结果读取0.1921秒、轻量导出0.1178秒，未导出巨量run-return；配置仍600/600，预算到期后处理与收尾实耗未截断。首末native跨度593.3161秒、运行区间并集60.2505秒、内部无native空档533.0656秒，另末尾38.3680秒单列。旧两组wrapper墙钟含完整导出，不与本次纯调用直接计算加速倍数；无native空档也不等于磁盘IO。A未解决核心性能问题，不宣称达标。261项边界及702个旧产物摘要保持，未重跑旧组。
 
 后续只读复核确认82份完整诊断池中仅5个不同父候选被用于80次选择，其余77池未用于本轮选择。一次隔离存储报告重放剖析、零native发现报告预处理全树遍历及整组保存有明显成本；带剖析开销、存储STRUCT补null和原运行数据形态不同，不能外推成533秒的完整归因或提速承诺。重放诊断的完整语义等价性尚未证明，不能忽略该缺口。已提出“按实际父需求生成完整诊断/池”的待确认方案；它改变02的逐候选即时诊断时点，未经用户确认不实施。此前B（base64模型数组存储）也仍未授权、不执行。
+
+2026-10-19最新整套方案已获用户批准（`Sentinel_a1870b1f0e948191906e80cdc1d538e1`），替代此前暂停根因调查/等待旧性能A或B选择的状态。本票承接状态脏项保存、模型轻量控制状态与统一日志开关，并核02受限前序汇总及源头裁剪后的完整池、特征、反馈与恢复；准确范围及审查条件见[总方案](../spec.md#2026-10-19已批准的保语义性能收口)。当前70–120秒仅整体估算，日志总开关和四路产品聚合计时已实现待联合验证；状态finally（最终处理）全量恢复屏障/errors（错误）脏字段修复已独审，模型严格NULL（空值）空v0、active control（活动控制）故障守卫及旧writer（写入端）真实缓存拒绝动态验证已补齐。源头原生程序在构建、Python协议空映射边界仍收尾；只有阶段回归与诊断小样本结果，整套未完成、最终600秒未跑，不能当作已省或性能达标；原600秒结果、869项调试通过及历史失败证据保留。按需跳过候选、大缓存、base64矩阵和任务末内存攒报告不在本次批准范围。
 
 ## Shared workflow（共用开发流程）
 
@@ -70,6 +72,8 @@ A包含104个search批次、32个validation批次及另1个reference进程，137
 - [ ] 配置/实际输入计划/引擎/特征及反馈版本纳入原身份与缓存，变规拒恢复，旧结果可读；固定burst机制不变。
 - [ ] 贯通01初始化、02同次事实/完整池、一次单操作与真实评分，所有现有搜索/新训练入口不藏旧随机兜底。
 - [ ] 最终仅按同条件旧方案与新方案各600秒比较输出DPS；不加100场、消融、统计门槛、最低提升或额外收益指标。
+
+2026-10-19状态脏项保存仍在同一TaskStore（任务存储）和SQLite事务内：显式标记变动字段/归档，覆盖原地修改和删除；事务成功后才确认已保存，回滚/失败仍保脏并可重试，归档重排或未识别形态全量回退。公开暂停/恢复、冻结反馈、完整重读与原状态逐值相同，不允许为减少保存遗漏可靠意图。唯一 `--diagnostic-logging` 默认关闭，恢复/重启需本次显式开启；页面分级/请求不能越过它，旧训练身份兼容不等于继承开启。性能日志不控制业务诊断/池/学习/回执或真实预算。总开关及四路产品聚合已接入diagnostics.json.performance.stages，scope=current_invocation（仅本次调用）、timing=inclusive_wall_seconds（含子阶段墙钟秒），每阶段calls/seconds/units（次数/秒/工作量）；默认off无额外perf_counter（性能计时器），仍待联合验证。诊断total/read_validate（内存取数）/preprocess/rules/finalize、报告prepare/write、状态persist.full/partial/transaction/progress、模型load/predict/learn/snapshot/full_write/control_write已接入；嵌套并发不能相加，data-store（数据存储）内部序列化/Parquet细分未实现。
 
 ## Budget and boundaries（预算与边界）
 
@@ -149,11 +153,21 @@ RNG薄适配已按固定源核准，实际持久化仍须公开验收：CobaRand
 
 最小真实roundtrip包括未初始化、已learn、0/多次predict、同特征不同operation及变长池：同snapshot恢复两份，比较下一具体operation/p，再同reward learn比较theta/A_inv及再下一predict。本轮真实库探针已验证初始None/已learn状态、下一具体动作与概率、下一learn矩阵、变长池及同特征独立对象；产品共享恢复仍待公开TDD。
 
-### 4. 共同数据中心一个权威记录，短锁+CAS
+### 4. 共同数据中心逻辑权威版本，短锁+CAS
 
 不使用每任务 `destination.parent/cache.sqlite3` 冒充全局模型，不依赖双WAL ATTACH崩溃原子性。复用 `result_store.DATA_ROOT` 与既有data-store原子同键write/read_key，以及现正式冠军短文件锁/CAS写法。
 
-新逻辑表 `search_learners`，一个兼容 feature_v1/reward_v1 key对应一个权威记录组；不是新数据库/服务/经验平台。该组一次原子替换同时含 model版本/真实状态/RNG、尚未结算的决策receipt、每task已结算decision水位。权威状态只在该记录，task不存能回写的模型快照；配置digest不分模型。不兼容field/reward/状态版本明确拒绝混用。状态矩阵有类型数组，少量schema/receipt元数据允许显式JSON，不把报告整包字符串化。
+原v1在 `search_learners` 的同MODEL_KEY完整记录含矩阵、逻辑版本、RNG、reservations/settled（待结算回执/结算水位）。本次批准的v2保留此完整键，新增同中心 `search_learner_controls` 的同MODEL_KEY轻量键，不含theta/a_inv（模型向量/矩阵），以base_version绑定完整键版本；不是新数据库、服务或经验平台。逻辑权威由持原共享锁、校验成功后的完整键与控制键合成，task不存能回写的模型快照，配置digest仍不分模型。矩阵保持有类型数组，少量身份/回执元数据允许JSON，不把报告整包字符串化。
+
+v2读取/选择/结算必须持现有全局共享锁。正常active（活动）状态的完整键或控制键缺失/损坏、坏形状或已知版本回退均停止，不静默重置；只允许下述可核验的bootstrap/migrating（引导/迁移）阶段继续未提交步骤。控制版本新于完整键时，仅base_version等于完整键版本才合成；控制旧于完整键时，采用已吸收控制状态的完整记录，不逐次删旧文件。reserve（选择）及no_learn（不学习）只原子替换小控制键；首次predict（预测）初始化矩阵例外，仍全量保存。有效反馈在最新合成模型上原生Coba.learn（学习），只原子替换包含最新控制状态的完整键；旧控制自然失效。任一发布异常都按原契约持锁重读提交版本/回执，不盲重试或重复学习，不假称两文件同时原子替换。
+
+state_version升为2，但feature/reward（特征/反馈）版本及MODEL_KEY不变，不按角色或任务分经验。迁移前必须停旧写入器；旧writer在原参数校验处拒绝v2，不能把该拒绝当作可与旧writer继续并写的许可。
+
+首次初始化按bootstrap→active（引导→活动）推进：先发布phase=bootstrap、逻辑版本0/空经验/RNG初值的控制键，再发布矩阵为None（未初始化）的空v2完整键，最后原子切换控制phase=active；active之前不调用predict（预测）。重启遇合法bootstrap且完整键尚缺，可在同锁内幂等补建同一空版本0记录，不重预测、不重置已有经验；首次实际predict仍完整保存初始化单位矩阵/零向量。正常active后完整键缺失则拒绝，不与未完成bootstrap混为一谈。
+
+v1迁移按migrating→active（迁移→活动）推进：持同锁核旧完整键可读/控制一致，先发布phase=migrating且与旧完整键同逻辑版本的控制键，再原子写同版本v2完整键，最后切换active，不虚增逻辑决策版本。旧完整键仍v1时以它为权威；完整键已v2而控制尚未active时，只补完成一致阶段，准备控制键不算新决策。
+
+异常必须同锁重读权威阶段/版本/回执；已提交步骤不重做，只对明确未提交步骤有界重试，不重复predict/learn（预测/学习）。正常每次决策仍只有一个权威键原子替换，不是每轮双写或多文件事务。完整/轻量版本关联、三阶段各中断点、写前/后异常、旧控制残留、跨任务交错及旧任务恢复按原TDD门禁核验；目前阶段回归与诊断小样本不等于本次整套完成、整任务收益或最终验收。
 
 每task decision单调递增，沿原pending顺序结算。只保尚未结算reservations（每任务受原round limit限制）+各task已结算水位，不保O(历史predict次数) RNG重放日志。若现原pending存在逆序结算路径，先调整为原head退队边界结算，不另造调度。
 
@@ -171,7 +185,7 @@ task/dual/training均共用optimize；版本纳入现算法/条件/缓存身份�
 
 ### 6. 顺序表与恢复点
 
-| 时点 | 原任务存储 | 共享同key原子发布 | 恢复/失败 |
+| 时点 | 原任务存储 | 共享逻辑权威版本发布（v2按上节选完整键或控制键） | 恢复/失败 |
 | --- | --- | --- | --- |
 | 选择前 | 原seen/同轮结果去重；flush_reports→save完整intent | 尚无模型变更 | 未提交intent不启动predict/模拟 |
 | 选择 | 继续持有原任务运行锁，未开原生进程 | 短共享锁重读最新→先水位/receipt检查→原生predict→RNG+receipt+version同写 | write报错须重读提交身份；只明确未提交才从重读旧状态重做 |

@@ -120,8 +120,10 @@ private:
     bool buff_unique = false;
     int resource = 0;
     std::vector<std::pair<std::string, std::string>> components;
+    std::map<std::string, std::set<std::string>> collections;
   };
   std::string observation_request_;
+  int observation_protocol_ = 1;
   std::vector<observation_object_t> observation_objects_;
   js::sc_js_t observations_;
   bool observation_active_ = false, observation_complete_ = false;
@@ -158,7 +160,8 @@ private:
   void start_observations();
   void observe_input( unsigned );
   void observe_ready( action_t*, unsigned, bool );
-  void observe_action( js::JsonOutput, action_t*, action_t* );
+  bool observation_wants( const observation_object_t&, const char*, const char* = nullptr ) const;
+  void observe_action( js::JsonOutput, action_t*, action_t*, const observation_object_t& );
   void observe_unselected( unsigned );
   js::JsonOutput observation_row( const char*, unsigned, const std::string& = {} );
 

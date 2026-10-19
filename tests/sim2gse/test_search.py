@@ -676,7 +676,7 @@ class SearchAndValidationTests(TestCase):
             with _guided_search_boundary(directory, starts, evaluate=evaluate):
                 interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
                 self.assertEqual(interrupted['status'], 'cancelled')
-                resumed = resume_task(destination)
+                resumed = resume_task(destination, diagnostic_logging=True)
             self.assertEqual(resumed['status'], 'completed')
             self.assertEqual(resumed['search_result']['dps'], 110)
             self.assertTrue(all(count == 1 for count in collections.Counter(
@@ -1038,8 +1038,8 @@ class SearchAndValidationTests(TestCase):
                     _initialized_starts([[['outbreak']], [['death_coil']]]), \
                     patch.object(sequence, "evaluate", side_effect=cancel_after_first):
                 stopped = run_task(source, destination, search_config=config, _runtime=runtime)
-                resumed = run_task(source, destination, search_config=config, resume=True,
-                                   _runtime=TaskRuntime(60))
+                resumed = resume_task(destination, search_config=config, diagnostic_logging=True,
+                                      _runtime=TaskRuntime(60))
 
         self.assertEqual(stopped["status"], "cancelled")
         self.assertTrue(any(store.heartbeat_publishes for store in stores))
@@ -2092,7 +2092,7 @@ class SearchAndValidationTests(TestCase):
                 cancelled = read_task(destination, include_search_records=True)
                 self.assertEqual(cancelled["status"], "cancelled")
                 self.assertGreater(cancelled['completed_batches'], 0)
-                resumed = run_task(destination/"input.simc",destination,resume=True)
+                resumed = resume_task(destination, diagnostic_logging=True)
             self.assertEqual(resumed['search']['records'][0]['key'], cancelled['search']['records'][0]['key'])
             self.assertGreater(resumed["elapsed_seconds"], cancelled["elapsed_seconds"])
             self.assertGreaterEqual(resumed["completed_batches"], cancelled["completed_batches"])

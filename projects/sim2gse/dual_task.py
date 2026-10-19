@@ -96,9 +96,12 @@ def _publish_export(row, purpose, compiled):
 
 
 def _child_matches(row, child, targets, scene):
+    logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability')
+    business_config = lambda value: {key: item for key, item in config_for(value).items()
+                                     if key not in logging_keys}
     if (child['profile']['input_original_sha256'] != row['input_sha256']
             or child['simulation_config'] != dict(row['simulation_config'], target_count=targets, scene=scene)
-            or config_for(child['config']) != config_for(row['config'])
+            or business_config(child['config']) != business_config(row['config'])
             or (child.get('rule_initialization') or {}).get('rule_config_digest') != row['rule_snapshot']['rule_config_digest']
             or (child.get('burst') or {}).get('definition_id') != row['definition_id']):
         raise task.TaskError('父任务与子任务的冻结条件不一致')
@@ -149,17 +152,20 @@ def _worker(handle):
                 row['phase'] = purpose
                 row[purpose + '_status'] = 'running'
                 _save(row)
-                runtime = TaskRuntime(row['config']['total_budget_seconds'], cancel_event=handle.cancel_event)
+                runtime = TaskRuntime(row['config']['total_budget_seconds'], cancel_event=handle.cancel_event,
+                                      diagnostic_logging=row['config']['diagnostic_logging'])
                 runtime.identities = copy.deepcopy(handle.identities)
                 if (child_path / 'result.json').exists():
                     child = task.read_task(child_path)
                     if (child.get('status') != 'completed' or
                             child.get('search', {}).get('formal_champion_publication', {}).get('status') == 'pending'):
                         child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
+                            search_config=row['config'], diagnostic_logging=row['config']['diagnostic_logging'],
                             simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
                             _rule_snapshot=row['rule_snapshot'])
                 elif (child_path / 'task.sqlite3').exists():
                     child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
+                        search_config=row['config'], diagnostic_logging=row['config']['diagnostic_logging'],
                         simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
                             _rule_snapshot=row['rule_snapshot'])
                 else:
@@ -183,7 +189,8 @@ def _worker(handle):
                 _child_matches(row, child, targets, purpose)
                 row[purpose + '_status'] = 'completed'
                 _save(row)
-                runtime = TaskRuntime(600, cancel_event=handle.cancel_event)
+                runtime = TaskRuntime(600, cancel_event=handle.cancel_event,
+                                      diagnostic_logging=row['config']['diagnostic_logging'])
                 native_identity = child['native_reference']['identity']
                 started = time.monotonic()
                 compiled = _export(child['candidate'], purpose, native_identity,
@@ -267,13 +274,17 @@ def _launch(destination, identities):
     return handle
 
 
-def resume(destination):
+def resume(destination, *, diagnostic_logging=False):
     from engine import identity
     destination = Path(destination).resolve()
     with task._task_lease(destination):
         row = _load(destination)
         identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
         _verify(row, destination, identities, current_rules=True)
+        row['config'] = config_for(dict(row['config'], diagnostic_logging=diagnostic_logging,
+            diagnostics=(row['config'].get('diagnostics') if row['config'].get('diagnostics') != 'off'
+                         else 'summary')))
+        _save(row)
     return _launch(destination, identities)
 
 

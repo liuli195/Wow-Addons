@@ -298,6 +298,7 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     first = selector.reserve(_intent())
     selector.settle(first, .25, 1)
     snapshot = result_store.read_search_learner(selector.MODEL_KEY)
+    control = result_store.read_search_learner_control(selector.MODEL_KEY)
     next_intent = _intent(decision=2)
     next_intent['actions'].append(dict(operation_id='third', features=[0.0] * 21))
     expected = selector.reserve(next_intent)
@@ -305,6 +306,7 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     expected_state = result_store.read_search_learner(selector.MODEL_KEY)
     monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'restored-center')
     with result_store.search_learner_lock():
+        result_store.write_search_learner_control(control)
         result_store.write_search_learner(snapshot)
     actual = selector.reserve(next_intent)
     assert actual == expected
@@ -336,3 +338,199 @@ def test_resource_aliases_share_one_actual_observation_and_detect_contradictions
     assert selector.context_features(diagnostic, payload, objects)[38:46] == [1, 1, .5, 1, .5, 1, .5, 1]
     payload['resource_events'].append(dict(object='second_alias', sample_id=1, input_index=0, current=75, maximum=100))
     assert selector.context_features(diagnostic, payload, objects)[38:46] == [0, 1, 0, 0, 0, 0, 0, 0]
+
+
+def test_nonlearning_choices_preserve_full_model_and_zero_reward_still_learns():
+    import result_store
+    import selector
+
+    first = selector.reserve(_intent())
+    initialized = result_store.read_search_learner(selector.MODEL_KEY)
+    assert initialized['theta'] is not None and initialized['a_inv'][0][0] == 1
+    other = selector.reserve(_intent('two'))
+    assert result_store.read_search_learner(selector.MODEL_KEY) == initialized
+    assert selector.settle(other, None, 0)['status'] == 'no_learn'
+    assert result_store.read_search_learner(selector.MODEL_KEY) == initialized
+    assert selector.settle(first, 0, 1)['status'] == 'learned'
+    learned = result_store.read_search_learner(selector.MODEL_KEY)
+    assert learned['a_inv'][0][0] == .5
+    assert learned['settled'] == {'one': 1, 'two': 1}
+    assert learned['reservations'] == []
+
+
+@pytest.mark.parametrize('phase', ['bootstrap', 'migrating'])
+@pytest.mark.parametrize('boundary', ['prepare', 'model', 'activate'])
+@pytest.mark.parametrize('after_replace', [False, True])
+def test_selector_restarts_each_format_publication_step_without_repredicting(
+        tmp_path, monkeypatch, phase, boundary, after_replace):
+    import runpy
+    import result_store
+    import selector
+
+    previous = None
+    if phase == 'migrating':
+        previous = selector.reserve(_intent())
+        legacy = result_store.read_search_learner(selector.MODEL_KEY)
+        legacy['state_version'] = 1
+        monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'legacy-center')
+        result_store.write('search_learners', selector.MODEL_KEY, [legacy],
+                           schema=result_store.SEARCH_LEARNER_SCHEMA)
+    native_write = result_store._SKILL_API['write']
+    expected_version = 0 if phase == 'bootstrap' else 1
+
+    def crash(root, table, key, rows, **kwargs):
+        record = rows[0]
+        targeted = (table == 'search_learners' and record.get('state_version') == 2
+                    and record.get('version') == expected_version) if boundary == 'model' else (
+            table == 'search_learner_controls' and record.get('phase') == (
+                phase if boundary == 'prepare' else 'active')
+            and record.get('version') == expected_version)
+        if targeted:
+            if after_replace:
+                native_write(root, table, key, rows, **kwargs)
+            raise SystemExit('constructed process exit at format publication')
+        return native_write(root, table, key, rows, **kwargs)
+
+    monkeypatch.setitem(result_store._SKILL_API, 'write', crash)
+    instance = runpy.run_path(selector.__file__)
+    with pytest.raises(SystemExit, match='format publication'):
+        instance['reserve'](_intent('two' if previous else 'one'))
+    monkeypatch.setitem(result_store._SKILL_API, 'write', native_write)
+    restarted = runpy.run_path(selector.__file__)
+    first = restarted['reserve'](_intent())
+    assert first['model_version'] == 1 and first['operation_id'] == 'first'
+    assert first['probability'] == .5
+    if previous:
+        assert first == previous
+    other = restarted['reserve'](_intent('two'))
+    assert other['model_version'] == 2 and other['operation_id'] == 'second'
+    assert restarted['reserve'](_intent('two')) == other
+    assert restarted['settle'](first, .25, 1)['status'] == 'learned'
+    assert restarted['settle'](first, .25, 1)['status'] == 'already_settled'
+    record = result_store.read_search_learner(selector.MODEL_KEY)
+    assert record['state_version'] == 2 and record['version'] == 3
+    assert record['theta'][0] == .125 and record['a_inv'][0][0] == .5
+
+
+@pytest.mark.parametrize('damage', ['missing', 'corrupt', 'wrong_base', 'rollback'])
+def test_selector_never_falls_back_to_full_when_active_control_is_invalid(monkeypatch, damage):
+    import runpy
+    import result_store
+    import selector
+
+    selector.reserve(_intent())
+    earlier_control = result_store.read_search_learner_control(selector.MODEL_KEY)
+    selector.reserve(_intent('two'))
+    full = result_store.read_search_learner(selector.MODEL_KEY)
+    path = result_store.DATA_ROOT / 'search_learner_controls' / (selector.MODEL_KEY + '.parquet')
+    if damage == 'missing':
+        path.unlink()
+    elif damage == 'corrupt':
+        path.write_bytes(b'constructed invalid parquet envelope')
+    else:
+        control = (earlier_control if damage == 'rollback'
+                   else result_store.read_search_learner_control(selector.MODEL_KEY))
+        if damage == 'wrong_base':
+            control['base_version'] = 2
+        with result_store.search_learner_lock():
+            result_store.write_search_learner_control(control)
+    before = path.read_bytes() if path.exists() else None
+    instance = selector.reserve if damage == 'rollback' else runpy.run_path(selector.__file__)['reserve']
+    with pytest.raises(result_store.DataReadError):
+        instance(_intent('three'))
+    assert result_store.read_search_learner(selector.MODEL_KEY) == full
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
+def test_selector_refuses_a_legacy_writer_update_during_prepared_migration(tmp_path, monkeypatch):
+    import runpy
+    import result_store
+    import selector
+
+    selector.reserve(_intent())
+    legacy = result_store.read_search_learner(selector.MODEL_KEY)
+    legacy['state_version'] = 1
+    prepared = {name: value for name, value in legacy.items() if name not in ('theta', 'a_inv')}
+    prepared.update(state_version=2, base_version=1, phase='migrating')
+    monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'interrupted-migration')
+    # While v1 is still visible, an old writer can settle the receipt without learning.
+    legacy.update(version=2, reservations=[], settled={'one': 1})
+    with result_store.search_learner_lock():
+        result_store.write_search_learner_control(prepared)
+        result_store.write_search_learner(legacy)
+    restarted = runpy.run_path(selector.__file__)
+    with pytest.raises(result_store.DataReadError, match='迁移控制记录冲突'):
+        restarted['reserve'](_intent('two'))
+    assert result_store.read_search_learner(selector.MODEL_KEY) == legacy
+    assert result_store.read_search_learner_control(selector.MODEL_KEY) == prepared
+
+
+@pytest.mark.parametrize('damage', ['null_trained_model', 'progress_over_empty_model'])
+def test_selector_does_not_reinitialize_missing_matrices_as_new_experience(damage):
+    import runpy
+    import result_store
+    import selector
+
+    first = selector.reserve(_intent())
+    selector.settle(first, .25, 1)
+    broken = result_store.read_search_learner(selector.MODEL_KEY)
+    broken.update(theta=None, a_inv=None)
+    if damage == 'progress_over_empty_model':
+        selector.reserve(_intent('two'))
+        control = result_store.read_search_learner_control(selector.MODEL_KEY)
+        control['base_version'] = 0
+        broken.update(version=0, rng_state=1, reservations=[], settled={})
+        with result_store.search_learner_lock():
+            result_store.write_search_learner_control(control)
+    with result_store.search_learner_lock():
+        result_store.write_search_learner(broken)
+    control = result_store.read_search_learner_control(selector.MODEL_KEY)
+    restarted = runpy.run_path(selector.__file__)
+    with pytest.raises((ValueError, result_store.DataReadError)):
+        restarted['reserve'](_intent('three'))
+    assert result_store.read_search_learner(selector.MODEL_KEY) == broken
+    assert result_store.read_search_learner_control(selector.MODEL_KEY) == control
+
+
+@pytest.mark.parametrize('operation', ['reserve', 'no_learn'])
+@pytest.mark.parametrize('after_replace', [False, True])
+def test_active_control_write_errors_preserve_receipts_rng_and_unlearned_matrices(
+        monkeypatch, operation, after_replace):
+    import runpy
+    import result_store
+    import selector
+
+    first = selector.reserve(_intent())
+    full = result_store.read_search_learner(selector.MODEL_KEY)
+    other = selector.reserve(_intent('two')) if operation == 'no_learn' else None
+    native_write = result_store._SKILL_API['write']
+    failed = []
+
+    def fail_once(root, table, key, rows, **kwargs):
+        if table == 'search_learner_controls' and not failed:
+            failed.append(True)
+            if after_replace:
+                native_write(root, table, key, rows, **kwargs)
+            raise OSError('constructed active control publication failure')
+        return native_write(root, table, key, rows, **kwargs)
+
+    monkeypatch.setitem(result_store._SKILL_API, 'write', fail_once)
+    if operation == 'reserve':
+        other = selector.reserve(_intent('two'))
+    else:
+        assert selector.settle(first, None, 0)['status'] == 'no_learn'
+    assert failed == [True]
+    monkeypatch.setitem(result_store._SKILL_API, 'write', native_write)
+    restarted = runpy.run_path(selector.__file__)
+    assert restarted['reserve'](_intent('two')) == other
+    assert other['model_version'] == 2 and other['operation_id'] == 'second'
+    if operation == 'no_learn':
+        assert restarted['settle'](first, None, 0)['status'] == 'already_settled'
+        with pytest.raises(selector.AlreadySettled):
+            selector.reserve(_intent())
+    else:
+        assert restarted['reserve'](_intent()) == first
+    control = result_store.read_search_learner_control(selector.MODEL_KEY)
+    assert control['version'] == (3 if operation == 'no_learn' else 2)
+    assert control['rng_state'] == 856855263  # Second native Coba draw with the pinned seed.
+    assert result_store.read_search_learner(selector.MODEL_KEY) == full

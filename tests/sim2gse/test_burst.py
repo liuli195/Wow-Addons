@@ -1006,7 +1006,8 @@ def test_dual_children_automatically_learn_with_one_frozen_rule_pack(tmp_path, m
         kwargs['score'] = 100.0
         return _observed_evaluate(*args, **kwargs)
     with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=observed):
-        handle = dual_task.start(source, tmp_path / 'dual', search_config=dict(total_budget_seconds=60,
+        handle = dual_task.start(source, tmp_path / 'dual', search_config=dict(total_budget_seconds=20,
+            diagnostic_logging=True, diagnostics='summary',
             input_interval_ms=200, candidate_limit=5, round_candidate_limit=1, batch_targets=(2,),
             iterations=2, validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',)))
         handle.join(30)
@@ -1031,4 +1032,9 @@ def test_dual_children_automatically_learn_with_one_frozen_rule_pack(tmp_path, m
             resumed = dual_task.resume(handle.output_root)
             resumed.join(20)
             assert resumed.done and dual_task.read(handle.output_root)['status'] == 'completed'
+            assert dual_task._load(handle.output_root)['config']['diagnostic_logging'] is False
+            logged = dual_task.resume(handle.output_root, diagnostic_logging=True)
+            logged.join(20)
+            assert logged.done and dual_task.read(handle.output_root)['status'] == 'completed'
+            assert dual_task._load(handle.output_root)['config']['diagnostic_logging'] is True
         assert result_store.read_search_learner(selector.MODEL_KEY) == model

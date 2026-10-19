@@ -13,6 +13,8 @@ from pathlib import Path
 import threading
 import time
 
+from runtime import diagnostic_start, diagnostic_finish
+
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 CANDIDATE_SCHEMA = dict(
@@ -53,6 +55,10 @@ SEARCH_LEARNER_SCHEMA = dict(
     numpy_version='VARCHAR', dimension='UBIGINT', alpha='DOUBLE', features='JSON',
     seed='BIGINT', rng_state='BIGINT', theta='DOUBLE[]', a_inv='DOUBLE[][]',
     reservations='JSON', settled='JSON',
+)
+SEARCH_LEARNER_CONTROL_SCHEMA = dict(
+    **{name: kind for name, kind in SEARCH_LEARNER_SCHEMA.items() if name not in ('theta', 'a_inv')},
+    base_version='UBIGINT', phase='VARCHAR',
 )
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
@@ -327,7 +333,7 @@ def read_search_learner_metadata(model_key):
 
 
 def read_search_learner(model_key):
-    """Only absence is empty; a read or schema failure never resets experience."""
+    """Read the complete matrix snapshot; selector composes its newer control state."""
     rows = read_records('search_learners', model_key)
     if not rows:
         return None
@@ -343,9 +349,50 @@ def read_search_learner(model_key):
     return record
 
 
-def write_search_learner(record):
-    """Caller holds search_learner_lock; one atomic replacement includes all state."""
-    return write('search_learners', record['model_key'], [record], schema=SEARCH_LEARNER_SCHEMA)
+def write_search_learner(record, *, runtime=None):
+    """Caller holds the shared lock; this full commit absorbs older control state."""
+    logging = runtime is not None and runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    try:
+        return write('search_learners', record['model_key'], [record], schema=SEARCH_LEARNER_SCHEMA)
+    finally:
+        if logging:
+            try:
+                diagnostic_finish(runtime, 'model.full_write', started, rows=1, dimension=record['dimension'], matrix_values=(record['dimension'] * (record['dimension'] + 1) if record.get('theta') is not None else 0), reservations=len(record['reservations']), settled=len(record['settled']))
+            except Exception:
+                pass
+
+
+def read_search_learner_control(model_key):
+    """Read the mandatory small v2 control record, including publication phase."""
+    rows = read_records('search_learner_controls', model_key)
+    if not rows:
+        return None
+    if len(rows) != 1 or rows[0].get('model_key') != model_key:
+        raise InvalidRecordError('共享选择器控制记录身份不唯一或不符')
+    record = rows[0]
+    for field in ('features', 'reservations', 'settled'):
+        if isinstance(record.get(field), str):
+            try:
+                record[field] = json.loads(record[field])
+            except ValueError as error:
+                raise InvalidRecordError('共享选择器控制记录损坏') from error
+    return record
+
+
+def write_search_learner_control(record, *, runtime=None):
+    """Caller holds the shared lock; reserve/no-learn commit without copying matrices."""
+    logging = runtime is not None and runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    try:
+        return write('search_learner_controls', record['model_key'], [record],
+                     schema=SEARCH_LEARNER_CONTROL_SCHEMA)
+    finally:
+        if logging:
+            try:
+                diagnostic_finish(runtime, 'model.control_write', started, rows=1, reservations=len(record['reservations']), settled=len(record['settled']), **{record['phase'] + '_writes': 1})
+            except Exception:
+                pass
 
 
 def _report_columns(value):
@@ -457,21 +504,36 @@ def _restore_batch(row):
     return dict(row, report=_state_value_report(row['report'], restore=True)) if isinstance(row.get('report'), dict) else row
 
 
-def write_batch(key: str, row: dict, *, diagnostic_logging=False) -> int:
+def write_batch(key: str, row: dict, *, diagnostic_logging=False, runtime=None) -> int:
     """Persist normal report columns; sampled action traces follow the diagnostic switch."""
-    return write('batches', key, [prepare_batch(row, diagnostic_logging=diagnostic_logging)])
+    prepared = prepare_batch(row, diagnostic_logging=diagnostic_logging, runtime=runtime)
+    logging = runtime is not None and runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    try:
+        return write('batches', key, [prepared])
+    finally:
+        if logging:
+            diagnostic_finish(runtime, 'report.write', started, rows=1, groups=1)
 
 
-def prepare_batch(row: dict, *, diagnostic_logging=False) -> dict:
+def prepare_batch(row: dict, *, diagnostic_logging=False, runtime=None) -> dict:
     """Normalize a complete report before bounded group publication."""
-    if not diagnostic_logging:
-        report = row['report']
-        players = [dict(player, collected_data={name: value for name, value
-                    in player.get('collected_data', {}).items()
-                    if name not in {'action_sequence', 'action_sequence_precombat'}})
-                   for player in report['sim']['players']]
-        row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
-    return dict(row, report=_report_columns(_state_value_report(row['report'])))
+    if runtime is not None:
+        diagnostic_logging = runtime.diagnostic_logging
+    logging = runtime is not None and runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    try:
+        if not diagnostic_logging:
+            report = row['report']
+            players = [dict(player, collected_data={name: value for name, value
+                        in player.get('collected_data', {}).items()
+                        if name not in {'action_sequence', 'action_sequence_precombat'}})
+                       for player in report['sim']['players']]
+            row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
+        return dict(row, report=_report_columns(_state_value_report(row['report'])))
+    finally:
+        if logging:
+            diagnostic_finish(runtime, 'report.prepare', started, rows=1)
 
 def write_traces(key: str, run_id: str, events: list[dict], *, batch_key=None) -> int:
     if not events:

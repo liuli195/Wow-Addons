@@ -78,12 +78,15 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_page(self) -> None:
+        enabled = (self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False)
+        page = PAGE.replace(b'diagnosticLogging.checked=false',
+                            b'diagnosticLogging.checked=' + (b'true' if enabled else b'false'))
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(PAGE)))
+        self.send_header("Content-Length", str(len(page)))
         self.end_headers()
-        self.wfile.write(PAGE)
+        self.wfile.write(page)
 
     def _body(self) -> dict:
         try:
@@ -186,12 +189,12 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if type(target_count) is not int or target_count not in (1, 5):
             raise TaskError("目标数量必须为 1 或 5")
         observation_mode = value.get("search_observability", "off")
-        diagnostic_logging = value.get("diagnostic_logging", False)
-        if type(diagnostic_logging) is not bool:
+        if type(value.get("diagnostic_logging", False)) is not bool:
             raise TaskError("诊断日志总开关必须为布尔值")
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
+        diagnostic_logging = (options.get('search_config') or {}).get('diagnostic_logging', False)
         simulation = options.get("simulation_config") or {}
         options["simulation_config"] = simulation_config_for(dict(
             simulation, target_count=target_count, scene=value.get("scene", simulation.get("scene"))))
@@ -304,7 +307,8 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             if not (destination / 'dual.json').exists():
                 raise TaskError('此入口只恢复双场任务')
             from dual_task import resume
-            handle = resume(destination)
+            handle = resume(destination, diagnostic_logging=(
+                self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False))
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, dict(task_id=task_id, status='starting'))
 

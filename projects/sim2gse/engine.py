@@ -123,19 +123,19 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     command = [str(executable), os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
                'iterations=100', 'max_time=180',
                *reports,
-               'output=' + ('native.txt' if getattr(runtime, 'diagnostic_logging', True) else os.devnull),
+               'output=' + ('native.txt' if runtime.diagnostic_logging else os.devnull),
                *options]
     try:
         proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
                            on_start=on_start)
     except ProcessTimeout as error:
-        if getattr(runtime, 'diagnostic_logging', True):
+        if runtime.diagnostic_logging:
             (folder / 'process.log').write_text(str(error), encoding='utf-8')
         raise CandidateError('原生引擎运行超时，已停止本次进程') from error
     except (TaskCancelled, BudgetExceeded):
         raise
     log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
-    if getattr(runtime, 'diagnostic_logging', True):
+    if runtime.diagnostic_logging:
         (folder / 'process.log').write_text(log, encoding='utf-8')
         (folder / 'invocation.json').write_text(json.dumps(dict(command=command, identity=manifest,
                                                                exit_code=proc.returncode,

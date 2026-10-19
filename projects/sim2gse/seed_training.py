@@ -20,7 +20,7 @@ import uuid
 
 import result_store
 from search import digest, config_for, TaskStore, optimize, summarize_pairs
-from runtime import TaskRuntime, BudgetExceeded, TaskCancelled
+from runtime import TaskRuntime, BudgetExceeded, TaskCancelled, diagnostic_summary
 
 CANDIDATE_SCHEMA = dict(candidate_id='VARCHAR', label='VARCHAR', class_name='VARCHAR',
     spec='VARCHAR', source='VARCHAR', source_id='VARCHAR', source_revision='VARCHAR',
@@ -487,9 +487,14 @@ def training_condition_input(template_sha, engines, config, simulation_config, *
                           if burst_context else {}))
 
 
+def _identity_config(config):
+    # 保留历史训练编号的固定日志字段；本次采集只读实际执行配置。
+    legacy = dict(config, diagnostic_logging=True, diagnostics='summary', search_observability='off')
+    return {key: value for key, value in legacy.items() if key != 'max_processes'}
+
+
 def semantic_condition(payload, versions):
-    semantic = dict(payload, config={key: value for key, value in payload['config'].items()
-                                    if key != 'max_processes'}, semantic_versions=versions)
+    semantic = dict(payload, config=_identity_config(payload['config']), semantic_versions=versions)
     semantic.pop('rules')
     return digest(semantic)
 
@@ -675,7 +680,7 @@ def selected_materials(candidate_ids, *, sources=None):
 
 
 def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None,
-                     burst_identity=None, verified_engines=None, rule_snapshot=None):
+                     burst_identity=None, verified_engines=None, rule_snapshot=None, diagnostic_logging=False):
     from engine import identity
     from rule_config import load
     rule_snapshot = rule_snapshot if rule_snapshot is not None else load()
@@ -686,7 +691,7 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     text = Path(template).read_text(encoding='utf-8')
     character = template_character(text)
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
-    config = config_for({'diagnostic_logging': True, 'diagnostics': 'summary',
+    config = config_for({'diagnostic_logging': diagnostic_logging, 'diagnostics': 'summary',
                          'no_improvement_rounds': 2, 'max_processes': max_processes}, training=True)
     from dual_task import SCENES
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True,
@@ -718,12 +723,12 @@ def source_relationships(sources, initial, final):
 
 
 def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burst=False,
-                    materials=None, max_processes=None, inputs=None, sources=None):
+                    materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=False):
     """run/prepare共用入口：完整快照原子保存成功后才返回可派发队列。"""
     from engine import reference, prepare_loop
     from program import canonicalize_search_program, from_search_program, compile_program
     inputs = inputs or _training_inputs(template, targets, cancel_event=cancel_event, use_burst=use_burst,
-                                       max_processes=max_processes)
+                                       max_processes=max_processes, diagnostic_logging=diagnostic_logging)
     text, character, scope, config, simulation_config, engines, template_sha, definition = (
         inputs[name] for name in ('text', 'character', 'scope', 'config', 'simulation_config',
                                  'engines', 'template_sha', 'definition'))
@@ -733,7 +738,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     preparation_input = dict(version=PREPARATION_VERSION, template=template_sha, engines=engines,
         rule_config_digest=inputs['rule_snapshot']['rule_config_digest'],
         simulation=simulation_config, definition=definition, semantics=semantic_versions(),
-        config={key: value for key, value in config.items() if key != 'max_processes'})
+        config=_identity_config(config))
     config_key = digest(preparation_input)
     try:
         cached = result_store.read_records('seed_prepared', config_key)
@@ -758,7 +763,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     active = [row for row in sources if row.get('active', True) and row['semantic'] != 'unsupported']
     context = header['context'] if header else None
     context_rebuilt = bool(active and context is None)
-    runtime = TaskRuntime(600, cancel_event=cancel_event)
+    runtime = TaskRuntime(600, cancel_event=cancel_event, diagnostic_logging=config['diagnostic_logging'])
     if context_rebuilt:
         setup = Path(workspace).resolve() / 'preparation' / config_key[:12] / uuid.uuid4().hex
         setup.mkdir(parents=True)
@@ -786,7 +791,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                                     purpose='seed_reference'))
         result_store.write_batch(reference_key, dict(batch_key=reference_key, run_id=config_key,
             purpose='seed_reference', dps=native['dps'], samples=native['samples'],
-            report=json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))))
+            report=json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))),
+            diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
         (setup / 'reference/native.json').unlink()
         context = dict(native=native, all_capabilities=all_capabilities, capabilities=capabilities,
                        burst=burst_context, rule_initialization=rule_initialization, representations={})
@@ -902,18 +908,28 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                  original_unique=len({digest(row['program']) for row in active}), unique_inputs=len(queue),
                  rejected=sum(row['status'] == 'rejected' for row in entries),
                  sources_rebuilt=rebuilt, context_rebuilt=context_rebuilt)
+    if runtime.diagnostic_logging:
+        diagnostic_path = Path(workspace).resolve() / 'preparation' / config_key[:12] / 'diagnostics.json'
+        try:
+            diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+            diagnostic_path.write_text(json.dumps(dict(performance=diagnostic_summary(runtime)),
+                                                   ensure_ascii=False), encoding='utf-8')
+        except (OSError, ValueError, TypeError):
+            pass
     return dict(text=text, character=character, scope=scope, config=config, simulation_config=simulation_config,
                 engines=engines, template_sha=template_sha, definition=definition, config_key=config_key,
                 context=context, entries=entries, queue=queue, preparation=stats)
 
 
 def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None,
-                  max_processes=None, max_trainings=None, prepare_only=False, sources=None, burst_identity=None):
+                  max_processes=None, max_trainings=None, prepare_only=False, sources=None, burst_identity=None,
+                  diagnostic_logging=False):
     from simulation_config import load_training_config
     parallelism = load_training_config(max_processes=max_processes, max_trainings=max_trainings)
     max_processes, max_trainings = parallelism['max_processes'], parallelism['max_trainings']
     inputs = _training_inputs(template, targets, cancel_event=cancel_event, use_burst=use_burst,
-                              max_processes=max_processes, burst_identity=burst_identity)
+                              max_processes=max_processes, burst_identity=burst_identity,
+                              diagnostic_logging=diagnostic_logging)
     text, character, scope, config, simulation_config, engines, template_sha, definition = (
         inputs[name] for name in ('text', 'character', 'scope', 'config', 'simulation_config',
                                  'engines', 'template_sha', 'definition'))
@@ -1117,7 +1133,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     elapsed = store.state.get('elapsed_seconds', 0)
                 else:
                     used = store.state.get('elapsed_seconds', 0)
-                    runtime = TaskRuntime(600, used_seconds=min(600, used), cancel_event=cancel_event)
+                    runtime = TaskRuntime(600, used_seconds=min(600, used), cancel_event=cancel_event,
+                                          diagnostic_logging=config['diagnostic_logging'])
                     with store.active(runtime):
                         result = optimize(profile=profile, character=character, capabilities=capabilities,
                                           reference=native, destination=folder, runtime=runtime, config=config,
@@ -1135,11 +1152,13 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 record['initial_scores'] = retest(profile, row['program'], character, capabilities,
                                                  native, folder / 'retest-initial', simulation_config,
                                                  engines=engines, condition=condition, store=store,
-                                                 runtime=TaskRuntime(600, cancel_event=cancel_event), burst_context=burst_context)
+                                                 runtime=TaskRuntime(600, cancel_event=cancel_event,
+                                                     diagnostic_logging=config['diagnostic_logging']), burst_context=burst_context)
                 record['scores'] = retest(profile, program, character, capabilities, native,
                                          folder / 'retest-final', simulation_config,
                                          engines=engines, condition=condition, store=store,
-                                         runtime=TaskRuntime(600, cancel_event=cancel_event), burst_context=burst_context)
+                                         runtime=TaskRuntime(600, cancel_event=cancel_event,
+                                             diagnostic_logging=config['diagnostic_logging']), burst_context=burst_context)
                 record['comparison'].update(summarize_pairs(
                     [{'dps': value} for value in record['scores']],
                     [{'dps': value} for value in record['initial_scores']]))
@@ -1239,12 +1258,14 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 preparation=ready['preparation'], config_key=ready['config_key'])
 
 
-def run_training(template, targets, workspace, *, use_burst=False, max_processes=None, max_trainings=None):
+def run_training(template, targets, workspace, *, use_burst=False, max_processes=None, max_trainings=None,
+                 diagnostic_logging=False):
     from seed_activity import training_activity
     with writer_lock(), training_activity() as cancel_event:
         sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
-                             max_processes=max_processes, max_trainings=max_trainings, sources=sources)
+                             max_processes=max_processes, max_trainings=max_trainings, sources=sources,
+                             diagnostic_logging=diagnostic_logging)
 
 
 def check_training(template=None, *, use_burst=True):
@@ -1419,6 +1440,8 @@ def main(argv=None):
     training = commands.add_parser('run', help='独立训练至连续两轮无改善、复测与更新')
     preparing = commands.add_parser('prepare', help='统一增量整理并冻结唯一输入，不启动优化或复测')
     for command_parser in (training, preparing):
+        command_parser.add_argument('--diagnostic-logging', action='store_true',
+                                    help='本次开启全部性能诊断日志；继续旧训练也须显式传入')
         command_parser.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
         command_parser.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
         command_parser.add_argument('--candidate-id', action='append', help='只训练指定登记材料；可重复传入，默认全部')
@@ -1464,6 +1487,7 @@ def main(argv=None):
                                             max_processes=max_processes, max_trainings=parallelism['max_trainings'],
                                             prepare_only=args.command == 'prepare', sources=sources,
                                             burst_identity=frozen['burst_identity'],
+                                            diagnostic_logging=args.diagnostic_logging,
                                             **material_options)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state == 'prepared':

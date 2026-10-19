@@ -82,8 +82,8 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
     save_checkpoint = TaskStore.save
     baseline_probe = dict(root=None, expected=None, score=None, samples=None, folder=None)
 
-    def save_probe_baseline(store):
-        saved = save_checkpoint(store)
+    def save_probe_baseline(store, **changes):
+        saved = save_checkpoint(store, **changes)
         root = baseline_probe['root']
         archive = store.state.get('archive', [])
         if root is not None and root in store.destination.parents and archive:

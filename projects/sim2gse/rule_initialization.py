@@ -204,7 +204,7 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
         row['source'] = canonical['program']['nodes'][prefix + row['position']]['source']
         if row['kind'] == 'action':
             row['commands'] = canonical['form']['clicks'][row['click_position']]
-    return dict(version=VERSION, rule_snapshot=rule_snapshot,
+    initialization = dict(version=VERSION, rule_snapshot=rule_snapshot,
         rule_config_digest=rule_snapshot['rule_config_digest'],
         configuration_key=binding['configuration_key'], states=binding['states'],
         source_opener=binding['configuration']['opener'],
@@ -223,3 +223,6 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
         approximate=['动作占用按输入间隔向上取整；静态资源账不足或动态收益时保留未知',
                      '起手映射为可搜索循环，不能保证一次性或指南动态条件', *binding['approximate']],
         unknown=unknown)
+    from rule_diagnostics import observation_request
+    initialization['rule_observation_request'] = observation_request(initialization, protocol=2)
+    return initialization

@@ -115,8 +115,8 @@ def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_pro
         incumbent = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
         third_root, cancel_once, save_checkpoint = (tmp_path / 'third').resolve(), [True], TaskStore.save
 
-        def stop_after_saved_baseline(store):
-            saved = save_checkpoint(store)
+        def stop_after_saved_baseline(store, **changes):
+            saved = save_checkpoint(store, **changes)
             if cancel_once[0] and third_root in store.destination.parents and store.state.get('archive'):
                 cancel_once[0] = False
                 assert len(store.state['archive']) == 1

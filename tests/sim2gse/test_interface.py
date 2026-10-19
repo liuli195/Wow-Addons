@@ -2760,10 +2760,13 @@ class InterfaceTests(unittest.TestCase):
             final_iterations=2, scenarios=("nominal",), max_processes=1,
             diagnostics="full",
         )}
+        with urlopen(self.url) as response:
+            page = response.read().decode('utf-8')
+        self.assertIn('diagnosticLogging.disabled=true;diagnosticLogging.checked=false', page)
         with _fast_search_boundary():
             created = self._json_request("POST", "/api/tasks", {
                 "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "diagnostic_logging": False,
+                "diagnostic_logging": True,
                 "search_observability": "full",
             })
             deadline = time.monotonic() + 30
@@ -2892,7 +2895,11 @@ class InterfaceTests(unittest.TestCase):
             round_candidate_limit=1, batch_targets=(2,), iterations=2,
             validation_batches=1, final_batches=1, final_iterations=2,
             scenarios=("nominal",), max_processes=1, random_seed=37, input_interval_ms=200,
+            diagnostic_logging=True,
         )}
+        with urlopen(self.url) as response:
+            page = response.read().decode('utf-8')
+        self.assertIn('diagnosticLogging.disabled=true;diagnosticLogging.checked=true', page)
 
         def evaluate_with_positions(*args, **kwargs):
             result = _observed_evaluate(*args, **kwargs)
@@ -2913,7 +2920,7 @@ class InterfaceTests(unittest.TestCase):
                 [[['outbreak']], [['outbreak'], ['outbreak']]], evaluate=evaluate_with_positions):
             created = self._json_request("POST", "/api/tasks", {
                 "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "diagnostic_logging": True, "input_interval_ms": 200,
+                "diagnostic_logging": False, "input_interval_ms": 200,
                 "search_observability": "full",
             })
             deadline = time.monotonic() + 45

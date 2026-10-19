@@ -2,13 +2,18 @@
 import copy
 import math
 import time
+from runtime import diagnostic_start, diagnostic_finish
 
 UNKNOWN = object()
 VERSION = 'same-batch-template-v1'
 
 
-def observation_request(initialization):
+def observation_request(initialization, *, protocol=1):
     """任务冻结后一次解析所需对象，评分热路径只携带这份有限请求。"""
+    frozen = initialization.get('rule_observation_request')
+    if frozen is not None:
+        _validate_observation_request(frozen)
+        return copy.deepcopy(frozen)
     snapshot = initialization['rule_snapshot']
     configuration = next(row for row in snapshot['resolved'] if row['key'] == initialization['configuration_key'])
     objects, required = configuration['objects'], set()
@@ -30,10 +35,113 @@ def observation_request(initialization):
                 required.add(ref)
                 pending.append(ref)
     # 即使无规则对象，旧搜索反馈仍复用首计分输入/控制事件，不另跑index99。
-    return dict(protocol=1, objects={name: objects[name] for name in sorted(required)})
+    request = dict(protocol=1, objects={name: copy.deepcopy(objects[name]) for name in sorted(required)})
+    if protocol == 1:
+        return request
+    if protocol != 2:
+        raise ValueError('未支持的规则观察请求协议')
+    collections = {name: {} for name in _OBSERVATION_FIELDS}
+
+    def include(collection, names, fields):
+        for name in names:
+            collections[collection].setdefault(name, set()).update(fields)
+
+    try:
+        for state in configuration['states'].values():
+            if state['effect'] is not None:
+                include('effect_observations', [state['effect']], ['active'])
+            for binding in state['priority']:
+                for read in snapshot['pack']['general']['templates'][binding['template']]['reads']:
+                    source = read['from']
+                    if source not in _OBSERVATION_SOURCES:
+                        raise Unsupported('尚未识别的采集依赖')
+                    collection = _OBSERVATION_SOURCES[source]
+                    if collection is None:
+                        continue  # 输入、候选结构等保留原路径的完整事实。
+                    if not set(read['fields']) <= _OBSERVATION_FIELDS[collection]:
+                        raise Unsupported('尚未识别的采集字段')
+                    reference = read['object']
+                    if not isinstance(reference, dict) or set(reference) != {'arg'}:
+                        raise Unsupported('尚未识别的采集对象表达式')
+                    names = binding['arguments'][reference['arg']]
+                    names = names if isinstance(names, list) else [names]
+                    if any(name is not None and name not in request['objects'] for name in names):
+                        raise Unsupported('采集对象未解析')
+                    include(collection, [name for name in names if name is not None], read['fields'])
+    except (Unsupported, KeyError, TypeError):
+        # 新声明不能用已知字段契约解释时，保守采集该配置全部原始对象。
+        # 旧任务没有冻结请求时仍返回上面的旧 v1 闭包，不能重解释旧身份。
+        return dict(protocol=1, objects=copy.deepcopy(objects))
+    for name, declaration in request['objects'].items():
+        if declaration['kind'] == 'action':
+            include('action_observations', [name], _ACTION_AUDIT_FIELDS)
+            include('action_events', [name], _ACTION_EVENT_FIELDS)
+        elif declaration['kind'] in ('state', 'resource'):
+            include('state_observations', [name], ['value'])
+    for collection, aliases in collections.items():
+        for fields in aliases.values():
+            fields.update(_OBSERVATION_ID_FIELDS)
+            if collection in ('effect_events', 'effect_observations'):
+                fields.update(_EFFECT_AUDIT_FIELDS)
+            if collection == 'effect_events':
+                fields.update({'kind', 'start', 'end', 'end_reason', 'source_input_index', 'source_actual_action'})
+    request.update(protocol=2, collections={name: {alias: sorted(fields) for alias, fields in aliases.items()}
+                                            for name, aliases in collections.items()})
+    return request
 
 
-def rebind(diagnostic, task_run_id, *, diagnostic_logging=True):
+# 有限的现有原生/派生字段契约。新来源或未识别字段回退完整 v1，不猜语义。
+_OBSERVATION_ID_FIELDS = {'object', 'sample_id', 'input_index', 'event_index', 'time',
+                          'source_step', 'input_source'}
+_ACTION_AUDIT_FIELDS = {'actual_form', 'base_button', 'attempt', 'success', 'failure_reason',
+                        'native_qualified', 'input_allowed', 'known_native_requirements',
+                        'native_requirements_complete', 'resource_costs', 'resource_balances',
+                        'resource_as_of', 'gcd_ms', 'cast_ms', 'channel_ms', 'cooldown_remaining',
+                        'earliest_execute', 'occupancy_start', 'occupancy_end', 'occupancy_domains', 'target_id'}
+_ACTION_EVENT_FIELDS = {'kind', 'capture_stage', 'attempt', 'success', 'outcome', 'actual_form',
+                        'ready_action', 'native_qualified', 'failure_reason', 'target_id'}
+_EFFECT_AUDIT_FIELDS = {'effect_id', 'component_id', 'instance_id', 'source_id', 'target_id',
+                        'applicable', 'lifecycle_complete'}
+_OBSERVATION_FIELDS = {
+    'action_observations': _OBSERVATION_ID_FIELDS | _ACTION_AUDIT_FIELDS | {
+        'run_id', 'source_position', 'effect_completion_time', 'estimated_effect_completion_time',
+        'effect_completion_estimate', 'charges_current', 'charges_maximum', 'has_cooldown',
+        'execution_time', 'execution_event_index', 'execution_actual_form', 'timing_precision'},
+    'action_events': _OBSERVATION_ID_FIELDS | _ACTION_EVENT_FIELDS,
+    'state_observations': _OBSERVATION_ID_FIELDS | {'run_id', 'value', 'maximum', 'resource_as_of',
+        'target_id', 'gcd', 'casting', 'channeling', 'queue_committed'},
+    'effect_observations': _OBSERVATION_ID_FIELDS | _EFFECT_AUDIT_FIELDS | {
+        'run_id', 'active', 'stacks', 'remains', 'episode_id', 'applied', 'refreshed', 'extended',
+        'scheduled_expiry', 'actual_end_reason', 'source_input_index', 'gap_start', 'gap_end'},
+    'effect_events': _OBSERVATION_ID_FIELDS | _EFFECT_AUDIT_FIELDS | {
+        'run_id', 'kind', 'stacks', 'start', 'end', 'end_reason', 'scheduled_end',
+        'source_input_index', 'source_actual_action'}}
+_OBSERVATION_SOURCES = {
+    **{'student.' + name: name for name in _OBSERVATION_FIELDS if name != 'action_events'},
+    'student.effect_component_scopes': 'effect_observations',
+    **{name: None for name in ('student.inputs', 'student.target_scope', 'student.observation_bounds',
+        'candidate.structure', 'candidate.expanded_position_map', 'evaluation.prior_rule_trigger_records',
+        'frozen.inputs', 'execution.policy_evidence')}}
+
+
+def _validate_observation_request(request):
+    if (not isinstance(request, dict) or type(request.get('protocol')) is not int
+            or request['protocol'] not in (1, 2) or not isinstance(request.get('objects'), dict)):
+        raise ValueError('未支持的冻结规则观察请求')
+    if request['protocol'] == 2:
+        collections = request.get('collections')
+        if not isinstance(collections, dict) or set(collections) != set(_OBSERVATION_FIELDS):
+            raise ValueError('冻结规则观察集合无效')
+        for name, aliases in collections.items():
+            if not isinstance(aliases, dict): raise ValueError('冻结规则观察集合无效')
+            for alias, fields in aliases.items():
+                if (alias not in request['objects'] or not isinstance(fields, list)
+                        or any(not isinstance(field, str) for field in fields)
+                        or not set(fields) <= _OBSERVATION_FIELDS[name]):
+                    raise ValueError('冻结规则观察字段无效')
+
+
+def rebind(diagnostic, task_run_id, *, diagnostic_logging=False):
     """缓存证据保持原批次来源；操作身份绑定当前任务的同一父结构。"""
     from search import digest
     if not diagnostic:
@@ -82,6 +190,100 @@ class Rows(list):
         self.uncertain = list(uncertain)
 
 
+_DUPLICATE_TRIGGER = object()
+
+
+def _prior_queries(template):
+    """仅识别纯有序 any3(map(lookup_unique))，不解释业务模板名。"""
+    reads = {row['as']: row for row in template['reads']
+             if row['from'] == 'evaluation.prior_rule_trigger_records'}
+    found = {}
+
+    def visit(value):
+        if isinstance(value, list):
+            for item in value: visit(item)
+        elif isinstance(value, dict):
+            args = value.get('args', [])
+            if value.get('op') == 'any3' and isinstance(args, list) and len(args) == 1:
+                mapping = args[0]
+                if isinstance(mapping, dict) and mapping.get('op') == 'map' and mapping.get('let', []) == []:
+                    parts = mapping.get('args', [])
+                    if isinstance(parts, list) and len(parts) == 2:
+                        refs, lookup = parts
+                        alias = mapping.get('as')
+                        if (isinstance(refs, dict) and set(refs) == {'arg'} and isinstance(lookup, dict)
+                                and lookup.get('op') == 'lookup_unique' and lookup.get('duplicate') == 'error'
+                                and lookup.get('missing') == 'unknown' and lookup.get('value_field') == 'trigger'):
+                            relation = lookup.get('args', [])
+                            if isinstance(relation, list) and len(relation) == 2:
+                                source, query = relation
+                                fields = query.get('fields', {}) if isinstance(query, dict) else {}
+                                key = fields.get('input_index') if isinstance(fields, dict) else None
+                                view = source.get('var') if isinstance(source, dict) and set(source) == {'var'} else None
+                                read = reads.get(view) if isinstance(view, str) else None
+                                if (read is not None and '.' not in view and isinstance(query, dict) and read['object'] == refs
+                                        and {'input_index', 'rule_name', 'trigger'} <= set(read['fields'])
+                                        and query.get('op') == 'record' and set(fields) == {'input_index', 'rule_name'}
+                                        and isinstance(alias, str) and '.' not in alias and alias != view
+                                        and fields['rule_name'] == {'var': alias}
+                                        and isinstance(key, dict) and set(key) == {'var'}
+                                        and isinstance(key['var'], str) and key['var'].split('.')[0] != alias):
+                                    found[id(value)] = (refs['arg'], view, key)
+            for item in value.values(): visit(item)
+    visit(template['diagnose'])
+    visit(template['edits'])
+    return found
+
+
+class _PriorTriggerPrefix:
+    """一个状态内前序唯一关联的有序OR；缺项/歧义保持延迟求值语义。"""
+    def __init__(self, inputs):
+        self.values = {row['input_index']: False for row in inputs}
+        self.sample_ids = {row['sample_id'] for row in inputs}
+        self.names = []
+        self.valid = True
+
+    def queries(self, specs, evaluator, views, env):
+        if not self.valid: return {}
+        result = {}
+        for identity, (argument, alias, key) in specs.items():
+            refs, view = evaluator.arguments.get(argument), views.get(alias)
+            if (type(refs) is list and refs == self.names and isinstance(view, Rows)
+                    and not view.uncertain and env.get(alias) is view):
+                result[identity] = (key, alias, view, self.values)
+        return result
+
+    def advance(self, name, triggers, check):
+        if not self.valid: return
+        if name in self.names:
+            self.valid = False
+            return
+        grouped = {}
+        if triggers is not UNKNOWN:
+            for row in triggers:
+                check()
+                if not isinstance(row, dict):
+                    self.valid = False
+                    return
+                key = row.get('input_index')
+                if (type(key) is not int or key not in self.values or isinstance(row.get('value'), dict)
+                        or ('sample_id' in row and (type(row['sample_id']) is not int
+                                                  or row['sample_id'] not in self.sample_ids))):
+                    self.valid = False
+                    return
+                grouped.setdefault(key, []).append(row)
+        for key, previous in self.values.items():
+            check()
+            if previous is True or previous is _DUPLICATE_TRIGGER: continue
+            records = grouped.get(key, [])
+            if len(records) > 1: self.values[key] = _DUPLICATE_TRIGGER
+            elif not records: self.values[key] = UNKNOWN
+            else:
+                value = records[0].get('trigger', UNKNOWN)
+                self.values[key] = True if value is True else previous if value is False else UNKNOWN
+        self.names.append(name)
+
+
 class Evaluation:
     def __init__(self, objects, arguments, gaps, check, range_contains, observation_bounds):
         self.objects, self.arguments, self.gaps = objects, arguments, gaps
@@ -91,6 +293,7 @@ class Evaluation:
         self.indexes = {}
         self.interval_choices = {}
         self.unknown_evidence = []
+        self.prior_queries = {}
 
     @staticmethod
     def field(row, path):
@@ -287,6 +490,16 @@ class Evaluation:
                 unknown |= type(value) is not bool
             return UNKNOWN if unknown else op == 'and'
         if op == 'any3' and isinstance(args[0], dict) and args[0].get('op') == 'map':
+            prepared = self.prior_queries.get(id(expression))
+            if prepared is not None:
+                key_expression, alias, view, values = prepared
+                if env.get(alias) is view:
+                    self.check()
+                    key = self.value(key_expression, env)
+                    if type(key) is int and key in values:
+                        value = values[key]
+                        if value is _DUPLICATE_TRIGGER: raise Unsupported('同次事实关联不唯一')
+                        return value
             declaration = args[0]
             rows = self.value(declaration['args'][0], env)
             if rows is UNKNOWN: return UNKNOWN
@@ -614,13 +827,36 @@ def _observed_rows(payload, position_map, objects, burst_exclusions):
     return collections
 
 
-def _validate_observations(payload, requested_iterations):
-    if not isinstance(payload, dict) or type(payload.get('protocol')) is not int or payload['protocol'] != 1:
+def _validate_observations(payload, requested_iterations, *, observation_request=None):
+    if (not isinstance(payload, dict) or type(payload.get('protocol')) is not int
+            or payload['protocol'] not in (1, 2)):
         raise Unsupported('同次计分批次缺少规则观察协议')
+    if payload['protocol'] == 2:
+        try:
+            # typed report 的空 struct 会还原为 NULL。仅在与完整冻结请求
+            # 逐值匹配后信任该形状；无冻结预期时绝不把缺项或 NULL 猜成空请求。
+            _validate_observation_request(observation_request if observation_request is not None
+                                          else payload.get('request'))
+        except ValueError as error:
+            raise Unsupported(str(error)) from error
+        if not isinstance(payload.get('request'), dict) or payload['request'].get('protocol') != 2:
+            raise Unsupported('观察响应与请求协议不符')
+    if observation_request is not None:
+        from result_store import _report_columns
+        if (payload['protocol'] != observation_request['protocol'] or payload['protocol'] == 2
+                and _report_columns(payload['request']) != _report_columns(observation_request)):
+            raise Unsupported('观察响应与任务冻结请求不符')
     scope = payload.get('scope')
     if (not isinstance(scope, dict) or scope.get('sample_selection') != 'first_scored_complete'
             or type(scope.get('sample_id')) is not int or type(scope.get('complete')) is not bool):
         raise Unsupported('同次观察范围身份缺失')
+    if payload['protocol'] == 2:
+        coverage = scope.get('effect_events_complete')
+        if coverage is None: coverage = {}
+        if (not isinstance(coverage, dict)
+                or not set(coverage) <= set(payload['request']['collections']['effect_events'] or {})
+                or any(type(value) is not bool for value in coverage.values())):
+            raise Unsupported('效果完整性超出任务采集范围')
     if requested_iterations is not None and scope['sample_id'] != (0 if requested_iterations == 1 else 1):
         raise Unsupported('观察不是当前批次首个真实计分样本，不能使用warmup')
     inputs = payload.get('inputs')
@@ -648,10 +884,10 @@ def _validate_observations(payload, requested_iterations):
             raise Unsupported('效果事件与同次计分样本身份不符')
 
 
-def feedback_observations(payload, requested_iterations):
+def feedback_observations(payload, requested_iterations, *, observation_request=None):
     """复用旧反馈解析器所需的真实控制事件；缺失不猜not_ready或未尝试。"""
     try:
-        _validate_observations(payload, requested_iterations)
+        _validate_observations(payload, requested_iterations, observation_request=observation_request)
         if not payload['scope']['complete']:
             raise Unsupported('首计分样本尚未完整结束')
         events = payload.get('feedback_events')
@@ -753,7 +989,9 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
     from program import canonicalize_search_program
     from result_store import _report_columns
     from search import digest
-    started = time.perf_counter()
+    logging = runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    phase_started = started
     snapshot = initialization['rule_snapshot']
     configuration = next(row for row in snapshot['resolved'] if row['key'] == initialization['configuration_key'])
     objects = configuration['objects']
@@ -763,9 +1001,14 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
     payload = raw_payload if isinstance(raw_payload, dict) else None
     payload_error = None
     try:
-        _validate_observations(payload, requested_iterations)
+        _validate_observations(payload, requested_iterations,
+            observation_request=(batch_request or {}).get('rule_observations', {}).get('request'))
     except Unsupported as error:
         payload_error = str(error)
+    if logging:
+        diagnostic_finish(runtime, 'diagnostic.read_validate', phase_started, players=len(players),
+                          inputs=len(payload['inputs']) if payload_error is None else 0)
+        phase_started = diagnostic_start()
     evidence = dict(task_run_id=task_run_id, batch_key=batch_key,
                     observation_digest=digest(_report_columns(raw_payload)),
                     rule_config_digest=snapshot['rule_config_digest'])
@@ -833,12 +1076,18 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
             incomplete_reason = 'cancelled' if isinstance(error, TaskCancelled) else 'budget_exhausted'
             raise Stopped(incomplete_reason) from error
 
+    trigger_specs = {}
     identity_rows = [dict(row, run_id=task_run_id, batch_key=batch_key) for row in collections.get('inputs', [])]
     effect_states = {}
     for item in collections.get('effect_observations', []):
         if isinstance(item.get('object'), str):
             key = (item['object'], item.get('sample_id'), item.get('input_index'))
             effect_states.setdefault(key, []).append(item.get('active'))
+    if logging:
+        diagnostic_finish(runtime, 'diagnostic.preprocess', phase_started, inputs=len(inputs),
+                          action_observations=len(collections.get('action_observations', ())),
+                          effect_observations=len(collections.get('effect_observations', ())))
+        phase_started = diagnostic_start()
     for state_name, state in configuration['states'].items():
         state_inputs, unknown_inputs = set(), []
         for row in identity_rows:
@@ -851,12 +1100,14 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
             if active is True: state_inputs.add(identity)
             elif active is UNKNOWN: unknown_inputs.append(row['input_index'])
         state_identity_rows = [row for row in identity_rows if (row['sample_id'], row['input_index']) in state_inputs]
+        prior_prefix = _PriorTriggerPrefix(state_identity_rows)
         for binding in state['priority']:
+            triggers = UNKNOWN
             template = snapshot['pack']['general']['templates'][binding['template']]
             bounds = dict(start=payload.get('scope', {}).get('start_ms'), end=payload.get('scope', {}).get('end_ms'),
                           controlled_actor_index=payload.get('scope', {}).get('controlled_actor_index', UNKNOWN)) if payload else {}
             evaluator = Evaluation(objects, binding['arguments'], gaps, check, range_contains, bounds)
-            env = {}
+            env, prior_views = {}, {}
             rule = dict(name=binding['name'], state=state_name, template=binding['template'], findings=[], unknown_conditions=[])
             try:
                 check()
@@ -922,6 +1173,11 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                         row = dict(row['value'], **row) if isinstance(row.get('value'), dict) else row
                         return {key: value for key, value in row.items() if key in metadata or key in read['fields']}
                     env[read['as']] = Rows(map(project, rows), map(project, getattr(rows, 'uncertain', [])))
+                    if source == 'evaluation.prior_rule_trigger_records':
+                        prior_views[read['as']] = env[read['as']]
+                if binding['template'] not in trigger_specs:
+                    trigger_specs[binding['template']] = _prior_queries(template)
+                evaluator.prior_queries = prior_prefix.queries(trigger_specs[binding['template']], evaluator, prior_views, env)
                 evaluator.lets(template['diagnose']['let'], env)
                 contexts = evaluator.value(template['diagnose']['for_each'], env)
                 if contexts is UNKNOWN: raise Unsupported('规则必要事实未知')
@@ -1009,7 +1265,16 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                 rule.update(status='unknown', reason=str(error))
             except Stopped as error:
                 rule.update(status='unknown', reason=str(error))
+            if incomplete_reason is None:
+                try:
+                    prior_prefix.advance(binding['name'], triggers, check)
+                except Stopped as error:
+                    rule.update(status='unknown', reason=str(error))
             results.append(_public(rule))
+    if logging:
+        diagnostic_finish(runtime, 'diagnostic.rules', phase_started, rules=len(results),
+                          operations=len(operations))
+        phase_started = diagnostic_start()
     result = dict(version=VERSION, parent_identity=parent_identity, parent=parent, evidence=evidence,
         observation_scope=payload.get('scope') if payload else None, rules=results,
         facts=dict(source=dict(batch_key=batch_key, report_field='sim.players.sim2gse_rule_observations'),
@@ -1018,6 +1283,11 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
         pool=dict(complete=incomplete_reason is None, incomplete_reason=incomplete_reason, operations=operations,
                   empty_reason=('no_supported_legal_operation' if not operations and incomplete_reason is None else None),
                   rejections=rejections))
-    if getattr(runtime, 'diagnostic_logging', True):
-        result['costs'] = dict(diagnose_and_pool_seconds=time.perf_counter()-started)
+    if logging:
+        diagnostic_finish(runtime, 'diagnostic.finalize', phase_started, rules=len(results),
+                          operations=len(operations))
+        finished = diagnostic_start()
+        result['costs'] = dict(diagnose_and_pool_seconds=(max(0.0, finished-started)
+            if finished is not None and started is not None else None))
+        diagnostic_finish(runtime, 'diagnostic.total', started)
     return result
