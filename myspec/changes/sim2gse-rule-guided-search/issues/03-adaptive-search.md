@@ -4,7 +4,7 @@ Parent: [总开发方案](../spec.md)
 Status: in-progress
 Triage: ready-for-agent
 Assignee: Implementer（实施者）
-Blocked by: 01/02既有实施依赖已满足；四项保语义性能修复已有后续真实运行，当前仅恢复日志与根因小测；正式60秒预算按用户要求延后，按需Python/native策略仍待明确批准，已恢复日志原范围64项通过，后续流水线补点尚未完成。
+Blocked by: 01/02既有实施依赖已满足；四项保语义性能修复已有后续真实运行，当前仅恢复日志与根因小测；正式60秒预算按用户要求延后，按需Python/native策略仍待明确批准，已恢复日志原范围64项、后续流水线43项＋7子测试及唯一12候选归因小测已通过各自限定验证，正式门禁与交付仍待。
 
 ## Current progress（真实进度）
 
@@ -41,9 +41,25 @@ A包含104个search批次、32个validation批次及另1个reference进程，137
 
 上一轮Windows回传远端81cee19e/tree b967：963项＋165子测试、约111秒通过；原本机日志 `.local/windows-short-temp-verify-08ecde5618d04994bb36d1a244e13acc/{stdout.log,execution.log}`，本次恢复未复跑。正式60秒预算仍延后，调试通过不代表游戏验收或交付完成。
 
-后续细日志一份真实报告22规则/82有序操作，off/on（关闭/开启）均值2.0767/2.1906秒，业务输出与特征相同；64项/45.88秒绿是该历史切片。公开resume（继续任务）阶段墙钟并集漏计修补的24项logging（日志）绿仍为历史回传；本次恢复另有64项/56.93秒通过（包含24项日志及前序规则/检查点），证据 `performance-root/recovered-logging-prefix-checkpoint-green.log`，本地提交24a0582。runtime/rule_diagnostics/search与保留恢复清单SHA逐字相同。其后流水线计时补点仍为未完成切片，不能被本次恢复绿测覆盖。后续计时须同时保留两种里程碑：`first_score_published` 只表示评分报告group（报告组）可靠提交，`screening_archived` 表示内存筛选归档完成，二者并列、不得混计；时间从runtime起算，不借外层公开调用时间冒充。预备12候选/180秒安全预算小测尚未运行。
+后续细日志一份真实报告22规则/82有序操作，off/on（关闭/开启）均值2.0767/2.1906秒，业务输出与特征相同；64项/45.88秒绿是该历史切片。公开resume（继续任务）阶段墙钟并集漏计修补的24项logging（日志）绿仍为历史回传；本次恢复另有64项/56.93秒通过（包含24项日志及前序规则/检查点），证据 `performance-root/recovered-logging-prefix-checkpoint-green.log`，本地提交24a0582。runtime/rule_diagnostics/search与保留恢复清单SHA逐字相同。该64项只覆盖原恢复切片；后续流水线补点另有下述43项＋7子测试及真实小测，不混用验证范围。计时同时保留两种里程碑：`first_score_published` 只表示评分报告group（报告组）可靠提交，`screening_archived` 表示内存筛选归档完成，二者并列、不得混计；时间从runtime起算，不借外层公开调用时间冒充。12候选/180秒安全预算归因小测已唯一完成，结果如下。
 
 按需采集32迭代ABBA有效31样本、完整战斗/DPS/方差/37,664轨迹一致，四个已测串行阶段1.997→0.552秒；存储仅NULL补列且readback_exact仍false、632,649既有观察叶值相同及87,665 NULL差异均已核。尚未验证重放Python诊断/池/特征、按需来源与奖励契约或任务恢复，不能以微测代替策略设计和验收。当前仅补日志与根因小测；按需Python/native均待明确批准，原完整诊断、池、学习及来源规范不改。完整实证与限制见[总方案](../spec.md#2026-10-19后续实测与本次恢复状态)。
+
+### 唯一12候选归因小测（2026-10-19）
+
+固定运行提交 `7b69d593e7f93751b9082d73efc4b47b7d0652a3`，仅一次、未重跑；证据 `performance-root/twelve-candidate-probe/{analysis.md,analysis.json,run-summary.json,diagnostic-consumer-audit/summary.json}`。公开调用 **80.632秒**，12首评分可靠发布、12最终持久归档、pending0，4初始＋8子。candidate_limit（候选上限）正常终止，轮上限仍16，partial_round=true不意味着遗留待处理项。搜索结果 **122798.143 DPS、126样本**；保存结果 `final_status=not_requested`、`independent_validation_complete=false`，不是独立最终复测。
+
+| 归因层 | 实测与边界 |
+| --- | --- |
+| 完整诊断 | 累计42.005秒/并集26.632秒；12份仅1父供8次选择，身份及操作归属均匹配，11份未供后续选择累计40.079秒（95.41%）。这是诊断累计占比，不是可省任务墙钟。 |
+| 原生调用 | native.execute累计33.036秒/并集26.431秒；30实际调用全部成功：首批12＋追加评分9＋配对验证8＋参考1，缓存0。 |
+| 发布与等待 | report.publish 15.851秒包含report.write 14.960秒；main.wait 37.021秒仅筛选轮future.result重叠等待，不计覆盖并集。 |
+| 覆盖与差额 | 粗阶段跨阶段并集70.823秒，公开墙钟未覆盖9.809秒；现有日志不能将差额精确拆项，不是全CPU时间。嵌套/并发阶段不能相加。 |
+| 原生计时边界 | invocation elapsed累计23.293秒，和native.execute差9.743秒，包含外层前置及清理/回调等待，不能全称cleanup；已在覆盖阶段内，不是未覆盖9.809秒。 |
+
+两里程碑仍以TaskRuntime.started起算：首次评分可靠发布须等group事务提交，筛选归档只标内存完成、检查点可能缓冲；首候选内存入档7.358秒、发布17.287秒这种顺序合法。最终持久归档12个由任务状态另核，不能用内存事件替代持久完成。
+
+新容器真实重建binary SHA（可执行文件摘要）改变，engine/compiler identity（引擎/编译器身份）与whole-run-final相同；预算/日志和工作量也不同，只作归因，不能当作前后收益验收或将固定初始化/配对验证成本线性外推400–500候选。尚无该候选量实证。流水线定向43项＋7子测试/61.67秒通过（`performance-root/pipeline-combined-green.log`），Astra独立双轴0项问题；不替代正式60秒门禁或游戏验收，也不据运行提交号声称远端同步完成。按需Python/native仍待明确批准，本次未改完整诊断、池、评分/学习及恢复合同；详见[总方案归因记录](../spec.md#2026-10-19唯一12候选归因小测)。
 
 ## Shared workflow（共用开发流程）
 
