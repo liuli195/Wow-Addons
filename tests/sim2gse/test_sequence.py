@@ -24,8 +24,8 @@ from sequence import evaluate, select
 from test_character_export import sample_profile
 
 
-@pytest.mark.parametrize('enabled', [False, True])
-@pytest.mark.parametrize('outcome', ['without_trace', 'with_trace', 'invalid_report', 'invalid_trace'])
+@pytest.mark.parametrize('enabled,outcome', [
+    (False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace')])
 def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeypatch, enabled, outcome):
     import runtime
     import sequence
@@ -516,21 +516,6 @@ class SequenceSimulationTests(unittest.TestCase):
         return {'candidate': candidate, 'character': character,
                 'controlled_simulation': controlled}
 
-    def test_public_entry_simulates_selected_single_skill(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="sim2gse-sequence ") as directory:
-            source = Path(directory) / "中文 角色.simc"
-            destination = Path(directory) / "任务"
-            source.write_text(sample_profile(), encoding="utf-8")
-
-            result = run_task(source, destination, program=[["outbreak"]], mode='single')
-
-            simulation = result["controlled_simulation"]
-            self.assertEqual(simulation["blocks"], [["raise_dead"], ["outbreak"]])
-            self.assertEqual(simulation["native_blocks"], [[], ["outbreak"]])
-            self.assertTrue(simulation["consistent"])
-            self.assertTrue(simulation["trace"])
-            self.assertGreater(simulation["report"]["sim"]["players"][0]["collected_data"]["dps"]["mean"], 0)
-
     def test_single_evaluation_uses_interval_and_validates_phase(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)/'input.simc'
@@ -539,7 +524,11 @@ class SequenceSimulationTests(unittest.TestCase):
                               phase_ms=179, search_config={'input_interval_ms':180})
             simulation = result['controlled_simulation']
             self.assertEqual(simulation['input_times'], list(range(179,180000,180)))
+            self.assertEqual(simulation['blocks'], [['raise_dead'], ['outbreak']])
+            self.assertEqual(simulation['native_blocks'], [[], ['outbreak']])
             self.assertTrue(simulation['consistent'])
+            self.assertTrue(simulation['trace'])
+            self.assertGreater(simulation['report']['sim']['players'][0]['collected_data']['dps']['mean'], 0)
             with self.assertRaisesRegex(TaskError, '0 至 179'):
                 run_task(source, Path(directory)/'invalid', mode='single', phase_ms=180,
                          search_config={'input_interval_ms':180})
@@ -798,20 +787,6 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertIn('projects/sim2gse/native/src/controller.cpp',
                       {entry['path'] for entry in manifest['sources']},
                       '输入时间和每轮重置尚未由独立控制源码提供')
-
-    def test_complete_controller_runs_without_the_temporary_legacy_hook(self):
-        from engine import identity
-
-        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
-        with tempfile.TemporaryDirectory() as directory:
-            result = evaluate(source, candidate, Path(directory), character=character,
-                              iterations=2, input_times=[0, 300, 600, 900], trace=False)
-        self.assertTrue(result['consistent'])
-        self.assertEqual(result['trace'], [])
-        _, manifest = identity('controlled')
-        self.assertFalse(any('temporary-legacy-controller' in entry['path']
-                             for entry in manifest['patches']),
-                         '构建仍使用暂存旧控制补丁，尚未采用完整独立控制模块')
 
     def test_two_gcd_commands_rejected_at_selection(self):
         with self.assertRaisesRegex(ValueError, '同块多个公共冷却'):

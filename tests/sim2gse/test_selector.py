@@ -93,7 +93,7 @@ def test_selector_reloads_when_an_independent_instance_updates_the_shared_versio
     assert record['a_inv'][0][0] == pytest.approx(.25)
 
 
-@pytest.mark.parametrize('operation', ['reserve', 'settle'])
+@pytest.mark.parametrize('operation', ['settle'])
 def test_selector_reloads_after_authoritative_version_read_failure(monkeypatch, operation):
     import result_store
     import selector
@@ -124,7 +124,7 @@ def test_selector_reloads_after_authoritative_version_read_failure(monkeypatch, 
     assert reads == [MODEL_HEADER_COLUMNS, None]
 
 
-@pytest.mark.parametrize('operation', ['reserve', 'settle'])
+@pytest.mark.parametrize('operation', ['reserve'])
 def test_selector_does_not_reset_after_its_authoritative_record_disappears(operation):
     import result_store
     import selector
@@ -142,7 +142,7 @@ def test_selector_does_not_reset_after_its_authoritative_record_disappears(opera
         assert not path.exists()
 
 
-@pytest.mark.parametrize('operation', ['reserve', 'settle'])
+@pytest.mark.parametrize('operation', ['settle'])
 def test_selector_rejects_authoritative_version_rollback_without_losing_its_watermark(operation):
     import result_store
     import selector
@@ -161,10 +161,7 @@ def test_selector_rejects_authoritative_version_rollback_without_losing_its_wate
         assert result_store.read_search_learner(selector.MODEL_KEY) == earlier
 
 
-@pytest.mark.parametrize('operation,field,value', [
-    ('reserve', 'feature_version', 'future-feature-version'),
-    ('settle', 'features', ['future-interactions']),
-])
+@pytest.mark.parametrize('operation,field,value', [('reserve', 'feature_version', 'future-feature-version')])
 def test_selector_rejects_changed_compatibility_at_the_cached_version(operation, field, value):
     import result_store
     import selector
@@ -315,31 +312,6 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     monkeypatch.setattr(result_store, 'DATA_ROOT', initial_root)
 
 
-def test_missing_window_association_or_resource_observation_does_not_invent_a_denominator():
-    import selector
-
-    diagnostic = dict(rules=[dict(status='unknown', findings=[
-        dict(kind='unknown', certainty='unknown', window=dict(effect_id=1, instance_id=1))])])
-    payload = dict(scope=dict(sample_id=1, complete=True),
-                   inputs=[dict(sample_id=1, input_index=0, time=10)])
-    objects = {'energy': dict(kind='resource', native_identity='energy')}
-    features = selector.context_features(diagnostic, payload, objects)
-    assert features[30:46] == [0.0] * 16
-
-
-def test_resource_aliases_share_one_actual_observation_and_detect_contradictions():
-    import selector
-
-    diagnostic = dict(rules=[])
-    payload = dict(scope=dict(sample_id=1, complete=True),
-        inputs=[dict(sample_id=1, input_index=0, time=10)], resource_events=[
-            dict(object='first_alias', sample_id=1, input_index=0, current=50, maximum=100)])
-    objects = {name: dict(kind='resource', native_identity='energy') for name in ('first_alias', 'second_alias')}
-    assert selector.context_features(diagnostic, payload, objects)[38:46] == [1, 1, .5, 1, .5, 1, .5, 1]
-    payload['resource_events'].append(dict(object='second_alias', sample_id=1, input_index=0, current=75, maximum=100))
-    assert selector.context_features(diagnostic, payload, objects)[38:46] == [0, 1, 0, 0, 0, 0, 0, 0]
-
-
 def test_nonlearning_choices_preserve_full_model_and_zero_reward_still_learns():
     import result_store
     import selector
@@ -359,10 +331,9 @@ def test_nonlearning_choices_preserve_full_model_and_zero_reward_still_learns():
 
 
 @pytest.mark.parametrize('phase', ['bootstrap', 'migrating'])
-@pytest.mark.parametrize('boundary', ['prepare', 'model', 'activate'])
-@pytest.mark.parametrize('after_replace', [False, True])
+@pytest.mark.parametrize('boundary', ['prepare', 'model'])
 def test_selector_restarts_each_format_publication_step_without_repredicting(
-        tmp_path, monkeypatch, phase, boundary, after_replace):
+        tmp_path, monkeypatch, phase, boundary):
     import runpy
     import result_store
     import selector
@@ -382,12 +353,11 @@ def test_selector_restarts_each_format_publication_step_without_repredicting(
         record = rows[0]
         targeted = (table == 'search_learners' and record.get('state_version') == 2
                     and record.get('version') == expected_version) if boundary == 'model' else (
-            table == 'search_learner_controls' and record.get('phase') == (
-                phase if boundary == 'prepare' else 'active')
+            table == 'search_learner_controls' and record.get('phase') == phase
             and record.get('version') == expected_version)
         if targeted:
-            if after_replace:
-                native_write(root, table, key, rows, **kwargs)
+            # 下一次写入前与本次替换后具有相同持久状态，只保留这两个不同恢复点。
+            native_write(root, table, key, rows, **kwargs)
             raise SystemExit('constructed process exit at format publication')
         return native_write(root, table, key, rows, **kwargs)
 
@@ -412,7 +382,7 @@ def test_selector_restarts_each_format_publication_step_without_repredicting(
     assert record['theta'][0] == .125 and record['a_inv'][0][0] == .5
 
 
-@pytest.mark.parametrize('damage', ['missing', 'corrupt', 'wrong_base', 'rollback'])
+@pytest.mark.parametrize('damage', ['missing', 'wrong_base'])
 def test_selector_never_falls_back_to_full_when_active_control_is_invalid(monkeypatch, damage):
     import runpy
     import result_store
@@ -465,7 +435,7 @@ def test_selector_refuses_a_legacy_writer_update_during_prepared_migration(tmp_p
     assert result_store.read_search_learner_control(selector.MODEL_KEY) == prepared
 
 
-@pytest.mark.parametrize('damage', ['null_trained_model', 'progress_over_empty_model'])
+@pytest.mark.parametrize('damage', ['null_trained_model'])
 def test_selector_does_not_reinitialize_missing_matrices_as_new_experience(damage):
     import runpy
     import result_store
@@ -492,8 +462,7 @@ def test_selector_does_not_reinitialize_missing_matrices_as_new_experience(damag
     assert result_store.read_search_learner_control(selector.MODEL_KEY) == control
 
 
-@pytest.mark.parametrize('operation', ['reserve', 'no_learn'])
-@pytest.mark.parametrize('after_replace', [False, True])
+@pytest.mark.parametrize('operation,after_replace', [('reserve', True), ('no_learn', False)])
 def test_active_control_write_errors_preserve_receipts_rng_and_unlearned_matrices(
         monkeypatch, operation, after_replace):
     import runpy

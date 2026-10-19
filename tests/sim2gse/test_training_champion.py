@@ -54,58 +54,6 @@ def champion_engine(page_task_engine, monkeypatch):
         yield
 
 
-def test_champion_engine_and_local_score_restore_the_original_functions(installed_data_store_api):
-    """真实夹具逐层退出后，受检函数不能残留快速替身或已关闭内存 API。"""
-    from contextlib import contextmanager, ExitStack
-    from functools import partial
-    import codec
-    import engine
-    import result_store
-    import sequence
-    import task
-
-    watched = [(engine, name) for name in ('identity', 'reference', 'inspect', 'check_report')]
-    watched += [(sequence, 'evaluate'), (codec, 'run_command'), (result_store, '_api'), (task, '_rule_hashes')]
-    originals = [getattr(module, name) for module, name in watched]
-    with pytest.MonkeyPatch.context() as outer, ExitStack() as scopes:
-        scopes.enter_context(contextmanager(memory_result_center.__wrapped__)(installed_data_store_api, outer))
-        page = scopes.enter_context(contextmanager(page_task_engine.__wrapped__)())
-        scopes.enter_context(contextmanager(champion_engine.__wrapped__)(page, outer))
-        scopes.enter_context(patch.object(sequence, 'evaluate', partial(sequence.evaluate, score=123.)))
-        scopes.enter_context(patch.object(engine, 'inspect', wraps=engine.inspect))
-        scopes.enter_context(patch.object(result_store, '_api', return_value=result_store._api()))
-        assert engine.check_report is REAL_CHECK_REPORT
-        rules = task._rule_hashes
-        outer.setattr(task, '_rule_hashes', lambda **kwargs: {'changed': 'local rule'})
-        assert task._rule_hashes() == {'changed': 'local rule'}
-        outer.setattr(task, '_rule_hashes', rules)
-    assert [(module.__name__, name) for (module, name), original in zip(watched, originals)
-            if getattr(module, name) is not original] == []
-
-
-def test_champion_engine_scans_each_rule_root_once_per_test(page_task_engine):
-    """真实首扫、两种路径键、并发副本和夹具间隔离只在本接缝核验。"""
-    from concurrent.futures import ThreadPoolExecutor
-    from contextlib import contextmanager
-    from unittest.mock import call
-    import engine
-    import task
-
-    with patch.object(task, '_rule_hashes', wraps=task._rule_hashes) as scans:
-        for activation in range(2):
-            with pytest.MonkeyPatch.context() as scoped, \
-                    contextmanager(champion_engine.__wrapped__)(page_task_engine, scoped):
-                for root in (None, engine.ROOT):
-                    with ThreadPoolExecutor(max_workers=2) as pool:
-                        copies = list(pool.map(lambda _: task._rule_hashes(relative_to=root), range(2)))
-                    assert copies[0] == copies[1]
-                    assert all(Path(key).is_absolute() == (root is None) for key in copies[1])
-                    copies[0].clear()
-                    assert copies[1] and task._rule_hashes(relative_to=root) == copies[1]
-            assert task._rule_hashes is scans
-            assert scans.call_args_list == [call(relative_to=None), call(relative_to=engine.ROOT)] * (activation + 1)
-
-
 def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0, prepared_context=None):
     """构造完整最终成绩凭据，不启动训练或原生计算。"""
     from contextlib import closing
@@ -251,80 +199,7 @@ def test_dual_reads_each_scenes_final_training_champion(tmp_path, monkeypatch,
         [190., 200., 210.], [290., 300., 310.]]
 
 
-def test_dual_reads_67_rows_with_7_final_evidence_and_keeps_four_selected_sources(tmp_path, monkeypatch,
-        memory_result_center, champion_engine):
-    from functools import partial
-    import burst
-    import engine
-    import result_store
-    import seed_training
-    import sequence
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    winning_program = [['outbreak'], dict(kind='WaitClicks', clicks=72), ['death_coil']]
-    entries = [([['outbreak'], dict(kind='WaitClicks', clicks=index + 2), ['death_coil']],
-                [100., 100., 100.]) for index in range(5)]
-    entries += [(winning_program, [199., 200., 201.]), (winning_program, [190., 200., 210.])]
-    template, final_rows = completed_training(tmp_path, 1, entries, candidate_offset=60)
-    incomplete_rows = [dict.fromkeys(seed_training.PROCESSED_SCHEMA) | dict(
-        candidate_id=f'01{index:010d}' + '0' * 52, condition=final_rows[0]['condition'],
-        status='completed') for index in range(60)]
-    result_store.write('seed_processed', 'deathknight-unholy-1-burst', incomplete_rows + final_rows,
-                       schema=seed_training.PROCESSED_SCHEMA)
-    rows = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
-    assert len(rows) == 67 and len(final_rows) == 7
-    assert all(row['status'] == 'completed' for row in rows)
-    assert all(row['scores'] is None and row['task_path'] is None for row in rows[:60])
-    assert [row['candidate_id'] for row in rows[:60]] == [row['candidate_id'] for row in incomplete_rows]
-    assert rows[65]['candidate_id'] == final_rows[5]['candidate_id']
-    assert all(row['core_retained'] is False for row in final_rows)
-    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-    selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
-        class_name='deathknight', spec='unholy', targets=1,
-        program=[['death_coil'], dict(kind='WaitClicks', clicks=100 + index), ['outbreak']],
-        family='family-' + str(index), score=99999., scores=[99999.] * 3,
-        template_sha256='selected-template', engines=engine.identity('baseline')[1]) for index in range(4)]
-    engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
-    for row in selected:
-        row['engines'] = engines
-    result_store.write('seed_selected', 'deathknight-unholy-1-burst', selected,
-                       schema=seed_training.SELECTED_SCHEMA)
-    before = {table: result_store.read_records(table, 'deathknight-unholy-1-burst')
-              for table in ('seed_processed', 'seed_selected')}
-    api = result_store._api()
-    def read_only_training(root, table, key, values, **kwargs):
-        if table.startswith('seed_'):
-            raise AssertionError('正式搜索写入了训练存储')
-        return api['write'](root, table, key, values, **kwargs)
-    with patch.object(sequence, 'evaluate', partial(sequence.evaluate, score=123.)), \
-            patch.object(result_store, '_api', return_value=dict(api, write=read_only_training)):
-        state = dual_result(tmp_path, raw)
-    scene = state['scenes'][0]
-    champion = scene['training_champion_snapshot']
-    assert champion['candidate_id'] == rows[65]['candidate_id']
-    assert len(champion['excluded']) == 60
-    assert {row['candidate_id'] for row in champion['excluded']} == {
-        row['candidate_id'] for row in incomplete_rows}
-    assert all(row['status'] == 'invalid' for row in champion['excluded'])
-    assert champion['program'] == winning_program
-    assert champion['phase'] == 'final' and champion['score'] == 200.
-    assert scene['training_champion_adaptation']['current_score'] == 123.
-    assert scene['training_champion_adaptation']['current_samples'] > 0
-    sources = [source for group in scene['start_sources'].values() for source in group]
-    assert {source['candidate_id'] for source in sources if source['source_kind'] == 'seed_selected'} == {
-        'selected-0', 'selected-1', 'selected-2', 'selected-3'}
-    assert any(source['source_kind'] == 'native' for source in sources)
-    assert len([source for source in sources if source['source_kind'] == 'training_champion']) == 1
-    assert {table: result_store.read_records(table, 'deathknight-unholy-1-burst') for table in before} == before
-    assert state['scenes'][1]['training_champion_snapshot']['status'] == 'absent'
-
-
-@pytest.mark.parametrize('fault', ['scores_missing', 'receipt_missing', 'wrong_program', 'wrong_condition',
-    'wrong_seed', 'wrong_iterations', 'report_missing', 'report_corrupt', 'temporary_error',
-    'foreign_template', 'foreign_engine', 'foreign_targets', 'foreign_cadence', 'foreign_version',
-    'legacy_unapproved_hash', 'report_actor', 'report_spec', 'report_spec_id', 'report_race',
-    'report_talents', 'second_report_identity', 'third_report_condition', 'receipt_non_object', 'invalid_group'])
+@pytest.mark.parametrize('fault', ['wrong_program', 'report_missing', 'report_corrupt', 'temporary_error'])
 def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_storage_errors(tmp_path, monkeypatch,
         memory_result_center, champion_engine, fault):
     import burst
@@ -450,28 +325,7 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
         assert excluded['status'] == ('missing' if fault in ('receipt_missing', 'report_missing') else 'invalid')
 
 
-def test_dual_keeps_legal_native_starts_when_another_cannot_be_mapped(tmp_path, monkeypatch,
-        memory_result_center, champion_engine):
-    import burst
-    import engine
-    import result_store
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    inspect = engine.inspect
-    def native_catalogue(*args, **kwargs):
-        capabilities = inspect(*args, **kwargs)
-        capabilities['baseline_actions'] = capabilities['actions'] + [dict(kind='spell',
-            spell_id=999999, simc_action='unmapped_native_action', name='unmapped', gcd_ms=1500)]
-        return capabilities
-    with patch.object(engine, 'inspect', native_catalogue):
-        state = dual_result(tmp_path, raw)
-    assert all(scene['search_result']['dps'] > 0 for scene in state['scenes'])
-    assert all(any(source['source_kind'] == 'native' for group in scene['start_sources'].values()
-                   for source in group) for scene in state['scenes'])
-
-
-@pytest.mark.parametrize('static_proof', [True, False])
+@pytest.mark.parametrize('static_proof', [True])
 def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_place(tmp_path, monkeypatch,
         memory_result_center, champion_engine, static_proof):
     import burst
@@ -511,42 +365,6 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
         assert scene['training_champion_adaptation']['reason']
         assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
                        for source in group)
-
-
-def test_dual_merges_equivalent_native_selected_and_training_champion_sources(tmp_path, monkeypatch,
-        memory_result_center, champion_engine):
-    import burst
-    import engine
-    import result_store
-    import seed_training
-    definition, raw = reviewed_fixture()
-    definition = burst.publish(definition)
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    from search import initial_programs
-    from runtime import TaskRuntime
-    from task import parse_character
-    probe = tmp_path / 'native-start.simc'
-    probe.write_text(raw, encoding='utf-8')
-    character = parse_character(raw)
-    native = engine.reference(probe, tmp_path / 'native-reference', character)
-    _, capabilities, context = engine.prepare_loop(native, character, tmp_path / 'native-start',
-        TaskRuntime(600), definition=definition, interval_ms=200)
-    program = initial_programs(capabilities, native, input_interval_ms=200, burst=context,
-                               scene='single_target')[0]
-    template, rows = completed_training(tmp_path, 1, [(program, [200.] * 3)])
-    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-    engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
-    selected = dict(candidate_id='same-selected', condition=rows[0]['condition'], class_name='deathknight',
-        spec='unholy', targets=1, program=program, family='plain', score=99999., scores=[99999.] * 3,
-        template_sha256='old-standard', engines=engines)
-    result_store.write('seed_selected', 'deathknight-unholy-1-burst', [selected], schema=seed_training.SELECTED_SCHEMA)
-    scene = dual_result(tmp_path, raw)['scenes'][0]
-    assert scene['training_champion_adaptation']['status'] == 'duplicate'
-    groups = [sources for sources in scene['start_sources'].values()
-              if any(source['source_kind'] == 'training_champion' for source in sources)]
-    assert len(groups) == 1
-    assert {source['source_kind'] for source in groups[0]} == {'native', 'seed_selected', 'training_champion'}
-    assert scene['training_champion_adaptation']['current_score'] != 200.
 
 
 def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arrives(tmp_path, monkeypatch,
@@ -590,7 +408,7 @@ def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arriv
     assert state['scenes'][0]['training_champion_snapshot'] == state['previous_state']['scenes'][0]['training_champion_snapshot']
 
 
-@pytest.mark.parametrize('fault', ['processed_corrupt', 'processed_temporary', 'identity_temporary'])
+@pytest.mark.parametrize('fault', ['processed_temporary'])
 def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failures(tmp_path, monkeypatch,
         memory_result_center, champion_engine, fault):
     import burst

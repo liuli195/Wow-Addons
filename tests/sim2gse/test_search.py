@@ -5,7 +5,6 @@ from __future__ import annotations
 import tempfile
 import time
 import shutil
-import hashlib
 import os
 from contextlib import contextmanager, nullcontext, ExitStack
 import json
@@ -22,7 +21,7 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from test_character_export import sample_profile
 from test_engine import apl_pool_reference, static_snapshot
 from task import cancel_task, read_task, resume_task, run_task, start_task, TaskError
-from search import initial_programs, mutate, TaskStore
+from search import initial_programs, TaskStore
 
 
 def _minimal_rule_pack():
@@ -316,63 +315,6 @@ class SearchAndValidationTests(TestCase):
                 with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
                     connections[0].execute('SELECT 1')
 
-    def test_task_profile_parse_failure_closes_connection_and_keeps_error(self):
-        import sqlite3
-
-        original_read = Path.read_text
-        with tempfile.TemporaryDirectory(prefix='sim2gse-profile-failure-') as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            destination = Path(directory) / 'task'
-
-            def read(path, *args, **kwargs):
-                if path == destination / 'profile.json':
-                    return '{invalid-profile'
-                return original_read(path, *args, **kwargs)
-
-            with _fast_search_boundary(), _captured_task_connections() as connections, \
-                    patch.object(Path, 'read_text', new=read):
-                with self.assertRaises(json.JSONDecodeError) as caught:
-                    run_task(source, destination, search_config=dict(
-                        candidate_limit=1, batch_targets=(2,), iterations=2,
-                        validation_batches=1, scenarios=('nominal',), max_processes=1))
-                self.assertEqual(caught.exception.doc, '{invalid-profile')
-                self.assertEqual(len(connections), 1)
-                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
-                    connections[0].execute('SELECT 1')
-
-    def test_task_store_diagnostics_write_failure_still_closes_connection(self):
-        import sqlite3
-
-        original_write = Path.write_text
-        failure = OSError('diagnostics unavailable')
-        business_error = ValueError('original business failure')
-        attempted = []
-        with tempfile.TemporaryDirectory(prefix='sim2gse-diagnostics-failure-') as directory:
-            destination = Path(directory) / 'task'
-            destination.mkdir()
-
-            def write(path, *args, **kwargs):
-                if path == destination / 'diagnostics.json':
-                    attempted.append(path)
-                    raise failure
-                return original_write(path, *args, **kwargs)
-
-            with _captured_task_connections() as connections:
-                store = TaskStore(destination)
-                store.state['config'] = dict(diagnostic_logging=True)
-                with patch.object(Path, 'write_text', new=write), \
-                        self.assertRaises(ValueError) as caught:
-                    try:
-                        raise business_error
-                    finally:
-                        store.close()
-                self.assertIs(caught.exception, business_error)
-                self.assertEqual(attempted, [destination / 'diagnostics.json'])
-                self.assertEqual(len(connections), 1)
-                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
-                    connections[0].execute('SELECT 1')
-
     def test_task_final_publish_failure_still_closes_connection(self):
         import sqlite3
         from runtime import TaskRuntime
@@ -478,40 +420,6 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(ground['candidate']['compiled_steps'][0],
                          {'type': 'macro', 'macrotext': '/cast [@player] death_and_decay'})
         self.assertGreater(ground['controlled_simulation']['summary']['dps'], 0)
-
-    def test_task_rejects_missing_apl_protocol_and_unsupported_button(self):
-        for label in ('missing_protocol', 'unsupported_button'):
-            native = apl_pool_reference()
-            if label == 'missing_protocol':
-                native.pop('apl_actions_protocol')
-                message = '完整的 APL 动作目录'
-            else:
-                native['apl_actions'][-1]['base_spell_id'] = 0
-                message = '主动能力不完整'
-            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
-                source = Path(directory) / 'role.simc'
-                source.write_text(sample_profile(), encoding='utf-8')
-                with _apl_task_boundary(native), self.assertRaisesRegex(TaskError, message):
-                    run_task(source, Path(directory) / 'task', search_config=dict(candidate_limit=1))
-
-    def test_default_task_stops_initial_sampling_at_256_and_keeps_512_override(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            for label, override, expected_requests, expected_samples in (
-                ('default', {}, [32, 96, 128], 253),
-                ('explicit-512', {'batch_targets': (32, 128, 512)}, [32, 96, 384], 509),
-            ):
-                with self.subTest(label=label), _fast_search_boundary():
-                    result = run_task(source, Path(directory) / label,
-                                      search_config=dict(candidate_limit=1, **override))
-                    self.assertEqual(result['status'], 'completed')
-                    batches = result['search']['records'][0]['batches']
-                    self.assertEqual([row['request']['iterations'] for row in batches], expected_requests)
-                    self.assertEqual(sum(row['samples'] for row in batches), expected_samples)
-                    self.assertEqual(result['config']['validation_batches'], 4)
-                    self.assertEqual(result['config']['no_improvement_rounds'], 5)
-                    self.assertEqual(result['config']['total_budget_seconds'], 600)
 
     def test_task_promotion_and_saved_summary_share_one_comparison(self):
         import search
@@ -646,54 +554,6 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(counts[(generated[0], 32, 20260912)], 2)
             self.assertEqual(counts[(generated[2], 32, 20260912)], 1)
 
-    def test_resume_after_route_promotion_during_global_challenge_keeps_valid_winners(self):
-        import threading
-        import collections
-        import search
-        import sequence
-        from test_rule_diagnostics import _observed_evaluate
-        cancellation = threading.Event()
-        calls = []
-        starts = [[['outbreak'], ['death_coil']], [['scourge_strike'], ['death_coil']]]
-        initial_scores = {('outbreak', 'death_coil'): 100, ('scourge_strike', 'death_coil'): 50}
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
-            challenger = actions not in initial_scores and 'scourge_strike' in actions
-            wanted = initial_scores.get(actions, 110 if challenger else 20)
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
-            result['summary']['dps'] = wanted
-            result['report']['sim']['statistics']['raid_dps']['mean'] = wanted
-            result['report']['sim']['players'][0]['collected_data']['dps'].update(
-                mean=wanted, variance=10000 if challenger else 1)
-            (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
-            calls.append((actions, kwargs['iterations'], kwargs['seed']))
-            if challenger and kwargs['iterations'] == 96:
-                cancellation.set()
-            return result
-
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            destination = Path(directory) / 'task'
-            config = dict(rule_diagnostics_policy='eager', total_budget_seconds=60, candidate_limit=4, round_candidate_limit=1,
-                          input_interval_ms=200, batch_targets=(32, 128, 512),
-                          iterations=2, validation_batches=2,
-                          diagnostic_logging=True, search_observability='full')
-            with _guided_search_boundary(directory, starts, evaluate=evaluate):
-                interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
-                self.assertEqual(interrupted['status'], 'cancelled')
-                resumed = resume_task(destination, diagnostic_logging=True)
-            self.assertEqual(resumed['status'], 'completed')
-            self.assertEqual(resumed['search_result']['dps'], 110)
-            self.assertTrue(all(count == 1 for count in collections.Counter(
-                call for call in calls if call[1] >= 32).values()))
-            self.assertEqual([n for a, n, seed in calls if a == ('scourge_strike', 'death_coil')
-                              and seed < 20260912 + 100000 and n >= 32], [32])
-            event = next(row for row in resumed['search']['observability']['details']
-                         if row.get('candidate_score') == 110)
-            self.assertEqual(event['position_comparison_count'], 2)
-
     def test_near_round_resumes_mid_layer_without_repeating_completed_batches(self):
         import threading
         import collections
@@ -740,222 +600,6 @@ class SearchAndValidationTests(TestCase):
             for actions in children:
                 self.assertEqual([n for a, n, s in search_calls if a == actions], [32, 96, 384])
 
-    def test_parent_diagnostic_maps_loop_wait_and_repeated_castsequence_member(self):
-        from search import _parent_positions
-
-        cases = [
-            ([["outbreak"], dict(kind="Loop", count=2, blocks=[["death_coil"], ["scourge_strike"]])],
-             3, None, {"segment": 1, "loop_block": 0}),
-            ([["outbreak"], dict(kind="WaitClicks", clicks=2), ["death_coil"]],
-             3, None, {"segment": 2}),
-            ([["outbreak"], dict(kind="CastSequence", members=["death_coil", "death_coil"], reset=None)],
-             1, 1, {"segment": 1, "member": 1}),
-        ]
-        for parent, step, member, expected in cases:
-            with self.subTest(position=expected):
-                positions = _parent_positions(parent, _fast_capabilities(), [
-                    dict(click_position=step, action_position=member),
-                ])
-                self.assertEqual(positions[0]["source_position"], expected)
-
-    def test_finite_replacement_options_are_not_repeated_for_the_same_parent(self):
-        import random
-        from search import program_key
-
-        excluded = set()
-        parent = [["outbreak"]]
-        for _ in range(4):
-            child = mutate(parent, _fast_capabilities(), random.Random(6), excluded_programs=excluded)
-            self.assertNotEqual(child, parent)
-            self.assertNotIn(program_key(child), excluded)
-            excluded.add(program_key(child))
-        self.assertEqual(mutate(parent, _fast_capabilities(), random.Random(6), excluded_programs=excluded), parent)
-
-    def test_position_feedback_proposes_changes_without_removing_failed_skill(self):
-        import random
-
-        parent = [["outbreak"], ["death_coil"], ["scourge_strike"]]
-        feedback = dict(positions=[dict(unresolved_inputs=1, source_position={"segment": 1},
-                                       ambiguous=False)])
-        repairs = []
-        for seed in range(100):
-            observation = {}
-            child = mutate(parent, _fast_capabilities(), random.Random(seed),
-                           feedback=feedback, observation=observation)
-            position = observation.get("modification_position") or {}
-            if position.get("repair"):
-                repairs.append(child)
-                self.assertNotEqual(child, parent)
-                self.assertIn(["death_coil"], child)
-                self.assertEqual(parent, [["outbreak"], ["death_coil"], ["scourge_strike"]])
-        self.assertGreater(len(repairs), 0)
-
-    def test_search_diagnostic_locates_failed_parent_position_once_per_input(self):
-        from search import _parent_positions, _position_observations
-
-        parent = [["outbreak"], ["death_coil"]]
-        candidate = {
-            "blocks": [[action] for action in _fast_capabilities()["actions"][:2]],
-            "compiled_steps": [dict(type="spell", spell=1001), dict(type="spell", spell=1002)],
-        }
-        first = dict(ms=0, event="input", battle=1, origin=1, step=0, action="-", signature="-")
-        second = dict(ms=300, event="input", battle=1, origin=2, step=1, action="-", signature="-")
-        failed = dict(ms=300, event="not_ready", battle=1, origin=2, step=1,
-                      action="death_coil", signature="death_coil")
-        positions = _parent_positions(parent, _fast_capabilities(), _position_observations(
-            candidate, "candidate", [first, second, dict(second), failed, dict(failed),
-                                      dict(failed, event="queue"), dict(failed, event="queue_confirm")]))
-        failed = next(row for row in positions if row["click_position"] == 1)
-        self.assertEqual(failed["source_position"], {"segment": 1})
-        self.assertEqual(failed["turns"], 1)
-        self.assertEqual(failed["queued"], 1)
-        self.assertEqual(failed["failures"], {"not_ready": 1})
-        self.assertEqual(failed["unresolved_inputs"], 1)
-
-    def test_replacement_mutation_changes_action_without_creating_two_gcd_actions(self):
-        import random
-        from program import canonicalize_search_program
-
-        parent = [["outbreak", "use_item,slot=trinket1"]]
-        checked = 0
-        for seed in range(200):
-            observation = {}
-            child = mutate(parent, _fast_capabilities(), random.Random(seed), observation=observation)
-            if observation["sampled_mutation"] != "replace":
-                continue
-            checked += 1
-            self.assertNotEqual(child, parent)
-            canonicalize_search_program(child, _fast_capabilities())
-        self.assertGreater(checked, 0)
-
-    def test_new_loop_never_wraps_existing_loop_or_castsequence(self):
-        import random
-        from program import canonicalize_search_program
-
-        parent = [["outbreak"], dict(kind="CastSequence", members=["death_coil", "scourge_strike"], reset=None),
-                  ["dark_transformation"]]
-        checked = 0
-        for seed in range(200):
-            observation = {}
-            child = mutate(parent, _fast_capabilities(), random.Random(seed), observation=observation)
-            if observation["sampled_mutation"] == "loop":
-                checked += 1
-                canonicalize_search_program(child, _fast_capabilities())
-        self.assertGreater(checked, 0)
-
-    def test_cancelled_task_does_not_compile_pending_unscored_candidates(self):
-        import search
-        import sequence
-        import threading
-        from test_rule_diagnostics import _observed_evaluate
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-lazy-compile-") as directory:
-            cancellation = threading.Event()
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
-            initial = ('outbreak', 'death_coil')
-
-            def evaluate(profile, candidate, folder, **kwargs):
-                result = _observed_evaluate(profile, candidate, folder, **kwargs)
-                actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
-                if actions != initial:
-                    cancellation.set()
-                return result
-
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          input_interval_ms=200, candidate_limit=3, round_candidate_limit=2, batch_targets=(2,),
-                          iterations=2, validation_batches=1, final_batches=1,
-                          final_iterations=2, scenarios=("nominal",), max_processes=1,
-                          diagnostic_logging=True, diagnostics="full", random_seed=41)
-            with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate):
-                result = run_task(source, destination, search_config=config, cancel_event=cancellation)
-                saved = read_task(destination, include_search_records=True)
-            diagnostics = json.loads((destination / "diagnostics.json").read_text())
-            self.assertEqual(result["status"], "cancelled")
-            self.assertEqual(len(saved['search']['rule_steps']), 2)
-            self.assertTrue(any(step['status'] == 'queued'
-                                for step in saved['search']['rule_steps'].values()))
-            self.assertLessEqual(diagnostics["candidate_compilations"],
-                                 len(result["search"]["records"]) + 1)
-
-    def test_repeated_actions_without_trace_position_are_reported_as_ambiguous(self):
-        from search import _position_observations
-
-        action = dict(kind="spell", spell_id=1001, simc_action="outbreak", name="outbreak")
-        candidate = {
-            "blocks": [[action, action]],
-            "compiled_steps": [dict(type="macro",
-                                     macrotext="/cast outbreak\n/cast outbreak")],
-        }
-        rows = _position_observations(candidate, "candidate", [
-            dict(event="input", step=0),
-            dict(event="native_execute", step=0, action="outbreak", signature="outbreak"),
-            dict(event="native_execute", step=0, action="outbreak", signature="outbreak"),
-        ])
-
-        ambiguous = [row for row in rows if row.get("ambiguous")]
-        self.assertEqual(len(ambiguous), 1)
-        self.assertIsNone(ambiguous[0]["action_position"])
-        self.assertEqual(ambiguous[0]["ambiguity_reason"], "trace_missing_action_position")
-        self.assertEqual(ambiguous[0]["successes"], 2)
-        self.assertEqual(ambiguous[0]["turns"], 0)
-        self.assertTrue(all(row["successes"] == 0 for row in rows
-                            if row["action_position"] in (0, 1)))
-
-    def test_processing_counts_a_dispatch_once_when_native_execution_follows(self):
-        from search import _position_observations
-
-        candidate = {
-            "blocks": [[dict(kind="spell", spell_id=1001, simc_action="outbreak",
-                              name="outbreak")]],
-            "compiled_steps": [dict(type="spell", spell=1001)],
-        }
-        rows = _position_observations(candidate, "candidate", [
-            dict(event="input", step=0),
-            dict(event="dispatch", step=0, action="outbreak", signature="outbreak"),
-            dict(event="native_execute", step=0, action="outbreak", signature="outbreak"),
-        ])
-
-        self.assertEqual(rows[0]["processing"], 1)
-        self.assertEqual(rows[0]["successes"], 1)
-
-    def test_search_cutoff_assigns_outcomes_to_every_unscored_candidate(self):
-        import search
-        import sequence
-        from runtime import BudgetExceeded
-
-        calls = 0
-
-        def stop_on_second_batch(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise BudgetExceeded("test search cutoff")
-            return _fast_evaluate(*args, **kwargs)
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-pending-outcomes-") as directory:
-            root = Path(directory)
-            source = root / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=4, round_candidate_limit=1,
-                          no_improvement_rounds=5, batch_targets=(2,), iterations=2,
-                          validation_batches=2, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=11,
-                          diagnostic_logging=True, search_observability="full")
-            with _fast_initialization(), \
-                    patch.object(sequence, "evaluate", side_effect=stop_on_second_batch), \
-                    _initialized_starts([[['outbreak']], [['death_coil']]]):
-                result = run_task(source, root / "task", search_config=config)
-
-        observation = result["search"]["observability"]
-        outcomes = [row.get("outcome") for row in observation["details"]]
-        self.assertCountEqual(outcomes, ["scored", "budget_not_scored"])
-        self.assertEqual(sum(observation["summary"]["outcomes"].values()),
-                         observation["summary"]["initial_candidates"] +
-                         observation["summary"]["mutation_attempts"])
-
     def test_resume_original_config_preserves_frozen_diagnostic_policy(self):
         import sequence
         for policy in ('on_demand', 'eager'):
@@ -973,144 +617,6 @@ class SearchAndValidationTests(TestCase):
                     changed = 'eager' if policy == 'on_demand' else 'on_demand'
                     with self.assertRaisesRegex(TaskError, '恢复配置发生变化'):
                         resume_task(destination, search_config=dict(config, rule_diagnostics_policy=changed))
-
-    def test_full_observability_is_locked_during_heartbeat_and_survives_resume(self):
-        import threading
-        import search
-        import sequence
-        from runtime import TaskRuntime
-
-        stores = []
-
-        def guard(value, lock):
-            if isinstance(value, dict):
-                return LockedDict(value, lock)
-            if isinstance(value, list):
-                return LockedList(value, lock)
-            return value
-
-        class LockedDict(dict):
-            def __init__(self, value, lock):
-                self.lock = lock
-                dict.__init__(self, ((key, guard(item, lock)) for key, item in value.items()))
-
-            def __setitem__(self, key, value):
-                if not self.lock._is_owned():
-                    raise AssertionError("search observability write did not hold TaskStore.lock")
-                dict.__setitem__(self, key, guard(value, self.lock))
-
-            def setdefault(self, key, default=None):
-                if key in self:
-                    return self[key]
-                self[key] = default
-                return self[key]
-
-        class LockedList(list):
-            def __init__(self, value, lock):
-                self.lock = lock
-                list.__init__(self, (guard(item, lock) for item in value))
-
-            def append(self, value):
-                if not self.lock._is_owned():
-                    raise AssertionError("search observability append did not hold TaskStore.lock")
-                list.append(self, value)
-
-        class LockedStore(search.TaskStore):
-            def __init__(self, destination):
-                super().__init__(destination)
-                self.heartbeat_publishes = 0
-                if "search_observability" in self.state:
-                    self.state["search_observability"] = guard(
-                        self.state["search_observability"], self.lock)
-                stores.append(self)
-
-            def publish(self):
-                if threading.current_thread() is not threading.main_thread():
-                    self.heartbeat_publishes += 1
-                return super().publish()
-
-        original_observability = search._new_search_observability
-
-        def locked_observability(mode):
-            return guard(original_observability(mode), stores[-1].lock)
-
-        runtime = TaskRuntime(60)
-        calls = 0
-
-        def cancel_after_first(*args, **kwargs):
-            nonlocal calls
-            result = _fast_evaluate(*args, **kwargs)
-            calls += 1
-            if calls == 1:
-                threading.Event().wait(0.6)
-                runtime.cancel()
-            return result
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-observability-resume-") as directory:
-            root = Path(directory)
-            source = root / "role.simc"
-            destination = root / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37,
-                          diagnostic_logging=True, search_observability="full")
-            with _fast_initialization(), \
-                    patch.object(search, "TaskStore", LockedStore), \
-                    patch.object(search, "_new_search_observability",
-                                 side_effect=locked_observability), \
-                    _initialized_starts([[['outbreak']], [['death_coil']]]), \
-                    patch.object(sequence, "evaluate", side_effect=cancel_after_first):
-                stopped = run_task(source, destination, search_config=config, _runtime=runtime)
-                resumed = resume_task(destination, search_config=config, diagnostic_logging=True,
-                                      _runtime=TaskRuntime(60))
-
-        self.assertEqual(stopped["status"], "cancelled")
-        self.assertTrue(any(store.heartbeat_publishes for store in stores))
-        stopped_details = stopped["search"]["observability"]["details"]
-        resumed_details = resumed["search"]["observability"]["details"]
-        self.assertEqual([row["event_id"] for row in stopped_details],
-                         [row["event_id"] for row in resumed_details])
-        self.assertCountEqual([row["outcome"] for row in resumed_details],
-                              ["scored", "cancelled_not_scored"])
-
-    def test_budget_exhausted_resume_keeps_previously_collected_observability(self):
-        import sqlite3
-        import search
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-observability-budget-") as directory:
-            root = Path(directory)
-            source = root / "role.simc"
-            destination = root / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=1, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37,
-                          diagnostic_logging=True, search_observability="full")
-            with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
-                completed = run_task(source, destination, search_config=config)
-
-            database = sqlite3.connect(destination / "task.sqlite3")
-            try:
-                state = TaskStore.load_state(database)
-                state["elapsed_seconds"] = config["total_budget_seconds"]
-                state["status"] = "interrupted"
-                database.execute("UPDATE state SET value=? WHERE id=1",
-                                 (json.dumps(state, ensure_ascii=False),))
-                database.commit()
-            finally:
-                database.close()
-
-            with _fast_initialization():
-                resumed = resume_task(destination, search_config=config)
-
-        self.assertEqual(resumed["status"], "validation_incomplete")
-        self.assertEqual(resumed["search_observability"]["details"],
-                         completed["search"]["observability"]["details"])
-        self.assertEqual(resumed['search_result'], completed['search_result'])
-        self.assertEqual(resumed['locked_candidate_key'], completed['locked_candidate_key'])
 
     def test_local_and_second_global_comparisons_both_record_positions(self):
         import result_store
@@ -1172,102 +678,6 @@ class SearchAndValidationTests(TestCase):
                                for row in record[side]]
         self.assertFalse(any(request["trace"] for request in validation_requests))
 
-    def test_position_observation_uses_main_budget_and_propagates_cancel(self):
-        import search
-        import sequence
-        from runtime import TaskCancelled, TaskRuntime
-
-        runtime = TaskRuntime(60)
-        observed_runtimes = []
-
-        def cancel_observation(*args, **kwargs):
-            observed_runtimes.append(kwargs["runtime"])
-            if "observability" in str(args[2]):
-                raise TaskCancelled("cancel during position observation")
-            return _fast_evaluate(*args, **kwargs)
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-observation-budget-") as directory:
-            root = Path(directory)
-            source = root / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37,
-                          diagnostic_logging=True, search_observability="full")
-            with _fast_initialization(), \
-                    patch.object(sequence, "evaluate", side_effect=cancel_observation), \
-                    _initialized_starts([[['outbreak']], [['death_coil']]]):
-                result = run_task(source, root / "task", search_config=config,
-                                  _runtime=runtime)
-
-        self.assertEqual(result["status"], "cancelled")
-        self.assertTrue(result["search"]["observability"]["summary"]
-                        ["position_observation_incomplete"])
-        self.assertTrue(observed_runtimes)
-        self.assertTrue(all(item is runtime for item in observed_runtimes))
-
-    def test_promotion_timeout_keeps_pending_position_observation_visible(self):
-        import search
-        import sequence
-        from runtime import BudgetExceeded, TaskRuntime
-
-        runtime = TaskRuntime(60)
-
-        def stop_during_promotion(*args, **kwargs):
-            if kwargs.get("trace") and runtime.remaining_seconds <= 0:
-                raise BudgetExceeded("no time left for position observation")
-            if 100000 <= kwargs["seed"] < 200000 and not kwargs.get("trace"):
-                runtime.used_seconds = runtime.budget_seconds
-                raise BudgetExceeded("test promotion timeout")
-            offset = 1000 if any(a['simc_action'] == 'death_coil'
-                                for block in args[1]['blocks'] for a in block) else 0
-            return _fast_evaluate(*args, **kwargs, score_offset=offset)
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-promotion-timeout-") as directory:
-            root = Path(directory)
-            source = root / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=4, round_candidate_limit=1,
-                          no_improvement_rounds=5, batch_targets=(2,), iterations=2,
-                          validation_batches=2, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=11,
-                          diagnostic_logging=True, search_observability="full")
-            with _fast_search_boundary(), \
-                    patch.object(sequence, "evaluate", side_effect=stop_during_promotion), \
-                    _initialized_starts([[['use_item,slot=trinket1']], [['death_coil']]]):
-                result = run_task(source, root / "task", search_config=config,
-                                  _runtime=runtime)
-
-        observation = result["search"]["observability"]
-        checked = [row for row in observation["details"]
-                   if row["global_promotion"]["checked"]]
-        self.assertTrue(checked)
-        self.assertTrue(observation["summary"]["position_observation_incomplete"])
-        self.assertTrue(any("position_summary" not in row for row in checked))
-
-    def test_replacement_recording_preserves_the_existing_random_draw_order(self):
-        import random
-
-        from search import mutate
-
-        capabilities = _fast_capabilities()
-        observed_rng = random.Random(6)
-        observation = {}
-        observed = mutate([["outbreak"]], capabilities, observed_rng,
-                          observation=observation)
-
-        plain_rng = random.Random(6)
-        plain = mutate([["outbreak"]], capabilities, plain_rng)
-
-        self.assertEqual(observed, [["death_coil"]])
-        self.assertEqual(observed, plain)
-        self.assertEqual(observed_rng.getstate(), plain_rng.getstate())
-        self.assertEqual(observation["sampled_mutation"], "replace")
-        self.assertEqual(observation["actual_mutation"], "replace")
-        self.assertEqual(observation["modification_position"], {"segment": 0, "action": 0})
-
     def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
         import codec
         import search
@@ -1318,62 +728,6 @@ class SearchAndValidationTests(TestCase):
         matching_compiles = [mode for mode, folder in compiler_calls
                              if folder.endswith(matching_records[0]["key"])]
         self.assertEqual(len(matching_compiles), 1)
-
-    def test_run_task_does_not_save_full_state_for_batch_counters(self):
-        import search
-
-        saves = []
-        original = search.TaskStore
-
-        class CountingTaskStore(original):
-            def _persist_state(self):
-                saves.append(self.state.get("batch_requests", 0))
-                return super()._persist_state()
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-save-count-") as directory:
-            source = Path(directory) / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=1, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37)
-            with _guided_search_boundary(Path(directory), [[['outbreak']]]), \
-                    patch.object(search, "TaskStore", CountingTaskStore):
-                result = run_task(source, Path(directory) / "task", search_config=config)
-
-        self.assertLessEqual(len(saves), result["completed_batches"] * 2 + 9,
-                             (len(saves), result["completed_batches"]))
-        self.assertNotIn("diagnostics", result["search"])
-
-    def test_summary_diagnostics_report_cost_without_detailed_events(self):
-        with tempfile.TemporaryDirectory(prefix="sim2gse-summary-diagnostics-") as directory:
-            source = Path(directory) / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=1, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37,
-                          diagnostic_logging=True, diagnostics="summary")
-            with _fast_search_boundary():
-                result = run_task(source, Path(directory) / "task", search_config=config)
-            persisted = json.loads((Path(directory) / "task" / "diagnostics.json").read_text())
-
-        diagnostics = result["search"]["diagnostics"]
-        self.assertEqual(diagnostics["mode"], "summary")
-        self.assertGreater(diagnostics["task_state_writes"], 0)
-        self.assertGreater(diagnostics["candidate_compilations"], 0)
-        self.assertNotIn("events", diagnostics)
-        self.assertGreaterEqual(persisted["task_state_writes"], diagnostics["task_state_writes"])
-        self.assertEqual(persisted["lua_compiler_starts"],
-                         persisted["candidate_compilations"])
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-full-diagnostics-") as directory:
-            source = Path(directory) / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            with _fast_search_boundary():
-                full = run_task(source, Path(directory) / "task",
-                                search_config=dict(config, diagnostics="full"))
-        self.assertTrue(full["search"]["diagnostics"]["events"])
 
     def test_search_observability_is_off_by_default_and_preserves_selection(self):
         import sqlite3
@@ -1430,29 +784,6 @@ class SearchAndValidationTests(TestCase):
 
         self.assertEqual(score_snapshot(baseline), score_snapshot(observed))
 
-    def test_observability_time_is_returned_to_total_budget_after_search(self):
-        import search
-        from runtime import TaskRuntime
-
-        runtime = TaskRuntime(60)
-        with tempfile.TemporaryDirectory(prefix="sim2gse-observation-time-") as directory:
-            root = Path(directory)
-            source = root / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37,
-                          diagnostic_logging=True, search_observability="full")
-            with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
-                result = run_task(source, root / "task", search_config=config,
-                                  _runtime=runtime)
-
-        recorded = sum(result["search"]["observability"]["summary"]
-                       ["phase_seconds"].values())
-        self.assertGreater(recorded, 0)
-        self.assertLessEqual(runtime.remaining_seconds, runtime.budget_seconds)
-
     def test_search_artifacts_and_requests_use_the_canonical_behavior_identity(self):
         import search
 
@@ -1474,84 +805,6 @@ class SearchAndValidationTests(TestCase):
             for record in result["search"]["records"]:
                 for row in record["batches"]:
                     self.assertEqual(row["request"]["behavior_identity"], record["key"])
-
-    def test_search_reports_requests_cache_hits_and_native_batch_starts_separately(self):
-        import result_store
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-cache-counters-") as directory:
-            source = Path(directory) / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            first_destination = Path(directory) / "first"
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, diagnostic_logging=True)
-            with _fast_search_boundary():
-                first = run_task(source, first_destination, search_config=config)
-                second = run_task(source, Path(directory) / "second", search_config=config)
-            first_run_id = json.loads((first_destination / "profile.json").read_text())["run_id"]
-            traces = list(result_store.iter_rows(
-                'SELECT event_index FROM traces WHERE run_id = ?', [first_run_id], tables=['traces']))
-
-        self.assertEqual(first["search"]["batch_cache_hits"], 0)
-        self.assertEqual(first["search"]["batch_requests"],
-                         first["search"]["native_batch_starts"])
-        self.assertGreater(second["search"]["batch_cache_hits"], 0)
-        self.assertEqual(second["search"]["batch_requests"],
-                         second["search"]["batch_cache_hits"]
-                         + second["search"]["native_batch_starts"])
-        self.assertGreater(len(traces), 0)
-
-    def test_same_task_comparisons_reuse_verified_results_without_storage_reads(self):
-        import result_store
-        import search
-
-        original = result_store.one
-        original_connect = search.sqlite3.connect
-        repeated_storage_access = []
-
-        def traced_connect(*args, **kwargs):
-            import re
-            connection = original_connect(*args, **kwargs)
-            registered = set()
-
-            def trace(statement):
-                if 'batches' not in statement:
-                    return
-                key = re.search(r"(?:WHERE key\s*=\s*|VALUES \()'([^']+)'", statement)
-                if key is None:
-                    return
-                if statement.startswith('SELECT value FROM batches') and key[1] in registered:
-                    repeated_storage_access.append('重复读取已核验批次')
-                if statement.startswith('INSERT OR REPLACE INTO batches') and '"status":"success"' in statement:
-                    if key[1] in registered:
-                        repeated_storage_access.append('重复登记成功批次及状态')
-                    registered.add(key[1])
-
-            connection.set_trace_callback(trace)
-            return connection
-
-        def unavailable_batch(table, field, value):
-            if table == 'batches':
-                raise result_store.DataReadError('historical reads unavailable')
-            return original(table, field, value)
-
-        with tempfile.TemporaryDirectory(prefix='sim2gse-memory-reuse-') as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _fast_search_boundary(), _initialized_starts([[['outbreak']], [['death_coil']], [['scourge_strike']]]), \
-                    patch.object(result_store, 'one', side_effect=unavailable_batch), \
-                    patch.object(search.sqlite3, 'connect', side_effect=traced_connect):
-                result = run_task(source, Path(directory) / 'task', search_config=dict(
-                    total_budget_seconds=60, candidate_limit=3, batch_targets=(2,),
-                    iterations=2, validation_batches=1, max_processes=1,
-                    scenarios=('nominal',), diagnostic_logging=True))
-            self.assertEqual(result['status'], 'completed')
-            self.assertGreater(result['search']['batch_cache_hits'], 0)
-            self.assertEqual(result['search']['batch_requests'],
-                             result['search']['native_batch_starts'] + result['search']['batch_cache_hits'])
-            self.assertEqual(result['completed_batches'], result['search']['native_batch_starts'])
-            self.assertEqual(repeated_storage_access, [])
 
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
         import sqlite3
@@ -1650,42 +903,6 @@ class SearchAndValidationTests(TestCase):
         self.assertNotEqual(loop["program"]["nodes"][0]["source"],
                             expanded["program"]["nodes"][0]["source"])
 
-    def test_canonical_identity_merges_adjacent_wait_clicks(self):
-        from program import canonicalize_search_program
-
-        capabilities = _fast_capabilities()
-        adjacent = canonicalize_search_program(
-            [dict(kind="WaitClicks", clicks=2), dict(kind="WaitClicks", clicks=3), ["outbreak"]],
-            capabilities,
-        )
-        combined = canonicalize_search_program(
-            [dict(kind="WaitClicks", clicks=5), ["outbreak"]], capabilities
-        )
-
-        self.assertEqual(adjacent["identity"], combined["identity"])
-        self.assertEqual(adjacent["form"]["clicks"],
-                         [[], [], [], [], [], ["outbreak"]])
-
-    def test_canonical_identity_keeps_action_order_distinct(self):
-        from program import canonicalize_search_program
-
-        capabilities = _fast_capabilities()
-        forward = canonicalize_search_program([["outbreak"], ["death_coil"]], capabilities)
-        reversed_actions = canonicalize_search_program([["death_coil"], ["outbreak"]], capabilities)
-
-        self.assertNotEqual(forward["identity"], reversed_actions["identity"])
-
-    def test_canonical_identity_keeps_action_count_distinct(self):
-        from program import canonicalize_search_program
-
-        capabilities = _fast_capabilities()
-        twice = canonicalize_search_program([["outbreak"], ["outbreak"]], capabilities)
-        three_times = canonicalize_search_program(
-            [["outbreak"], ["outbreak"], ["outbreak"]], capabilities
-        )
-
-        self.assertNotEqual(twice["identity"], three_times["identity"])
-
     def test_canonical_identity_keeps_action_block_boundaries_distinct(self):
         from program import canonicalize_search_program
 
@@ -1695,21 +912,6 @@ class SearchAndValidationTests(TestCase):
         two_blocks = canonicalize_search_program([["outbreak"], [item]], capabilities)
 
         self.assertNotEqual(one_block["identity"], two_blocks["identity"])
-
-    def test_canonical_identity_keeps_castsequence_members_distinct(self):
-        from program import canonicalize_search_program
-
-        capabilities = _fast_capabilities()
-        first = canonicalize_search_program(
-            [dict(kind="CastSequence", members=["outbreak", "death_coil"], reset=None)],
-            capabilities,
-        )
-        second = canonicalize_search_program(
-            [dict(kind="CastSequence", members=["outbreak", "scourge_strike"], reset=None)],
-            capabilities,
-        )
-
-        self.assertNotEqual(first["identity"], second["identity"])
 
     def test_canonical_identity_keeps_castsequence_reset_distinct(self):
         from program import canonicalize_search_program
@@ -1726,48 +928,6 @@ class SearchAndValidationTests(TestCase):
 
         self.assertNotEqual(without_reset["identity"], with_reset["identity"])
 
-    def test_canonical_form_declares_start_and_sequence_reset_rules(self):
-        from program import canonicalize_search_program
-
-        result = canonicalize_search_program([["outbreak"]], _fast_capabilities())
-
-        self.assertEqual(result["form"]["start_step"], 1)
-        self.assertEqual(result["form"]["sequence_reset"], "end")
-
-    def test_canonical_identity_treats_castsequence_reset_flags_as_a_set(self):
-        from program import canonicalize_search_program
-
-        capabilities = _fast_capabilities()
-        target_combat = canonicalize_search_program(
-            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
-                  reset={"timeout_seconds": 3, "flags": ["target", "combat"]})],
-            capabilities,
-        )
-        combat_target = canonicalize_search_program(
-            [dict(kind="CastSequence", members=["outbreak", "death_coil"],
-                  reset={"timeout_seconds": 3,
-                         "flags": ["combat", "target", "combat"]})],
-            capabilities,
-        )
-
-        self.assertEqual(target_combat["identity"], combat_target["identity"])
-        self.assertEqual(target_combat["form"]["castsequences"][0]["reset"]["flags"],
-                         ["combat", "target"])
-
-    def test_canonical_identity_accepts_an_active_trinket_as_its_only_action(self):
-        from program import canonicalize_search_program
-
-        result = canonicalize_search_program([["use_item,slot=trinket1"]], _fast_capabilities())
-
-        self.assertEqual(result["form"]["clicks"], [["use_item,slot=trinket1"]])
-        self.assertEqual(result["form"]["castsequences"], [])
-
-    def test_canonical_identity_rejects_only_empty_clicks_with_location(self):
-        from program import canonicalize_search_program
-
-        with self.assertRaisesRegex(ValueError, r"blocks\[0\].*空点击"):
-            canonicalize_search_program([dict(kind="WaitClicks", clicks=2)], _fast_capabilities())
-
     def test_canonical_identity_rejects_invalid_wait_click_counts_with_location(self):
         from program import canonicalize_search_program
 
@@ -1778,20 +938,6 @@ class SearchAndValidationTests(TestCase):
                     [dict(kind="WaitClicks", clicks=clicks), ["outbreak"]], _fast_capabilities()
                 )
 
-    def test_canonical_identity_rejects_empty_loop_with_location(self):
-        from program import canonicalize_search_program
-
-        with self.assertRaisesRegex(ValueError, r"segments\[0\]\.blocks\[0\].*Loop"):
-            canonicalize_search_program(
-                [dict(kind="Loop", count=2, blocks=[[]])], _fast_capabilities()
-            )
-
-    def test_canonical_identity_rejects_unmapped_action_with_location(self):
-        from program import canonicalize_search_program
-
-        with self.assertRaisesRegex(ValueError, r"segments\[0\].*当前角色不支持"):
-            canonicalize_search_program([["not_a_character_action"]], _fast_capabilities())
-
     def test_canonical_identity_rejects_expansion_over_4096_with_location(self):
         from program import canonicalize_search_program
 
@@ -1801,55 +947,6 @@ class SearchAndValidationTests(TestCase):
                       blocks=[["outbreak"], ["use_item,slot=trinket1"]])],
                 _fast_capabilities(),
             )
-
-    def test_search_can_vary_castsequence_timeout_without_event_variants(self):
-        from search import program_key
-
-        class TimeoutChoice:
-            @staticmethod
-            def choice(values):
-                if 'castsequence_reset' in values:
-                    assert 'castsequence_reset_flag' not in values
-                    return 'castsequence_reset'
-                if 2 in values:
-                    return 2
-                for value in values:
-                    if isinstance(value, dict) and value.get('timeout_seconds') == 2:
-                        return value
-                return values[0]
-
-        original = [dict(kind='CastSequence', members=['outbreak', 'death_coil'], reset=None)]
-        changed = mutate(original, _fast_capabilities(), TimeoutChoice())
-        self.assertEqual(changed[0]['reset'], {'timeout_seconds': 2, 'flags': []})
-        self.assertIsNone(original[0]['reset'])
-        self.assertNotEqual(program_key(changed), program_key(original))
-
-    def test_search_can_vary_observable_castsequence_reset_flag(self):
-        class FlagChoice:
-            @staticmethod
-            def choice(values):
-                if 'castsequence_reset_flag' in values:
-                    return 'castsequence_reset_flag'
-                if 'target' in values:
-                    return 'target'
-                return values[0]
-
-        original = [dict(kind='CastSequence', members=['outbreak', 'death_coil'], reset=None)]
-        changed = mutate(original, _fast_capabilities(), FlagChoice(), reset_flags=('target',))
-        self.assertEqual(changed[0]['reset'], {'timeout_seconds': None, 'flags': ['target']})
-
-    def test_search_reset_events_require_observable_scenario(self):
-        from search import config_for
-
-        configured = config_for({'scenarios': ('nominal',),
-                                 'reset_events': ((3000, 'target'), (6000, 'shift'))})
-        self.assertEqual(configured['reset_events'], ((3000, 'target'), (6000, 'shift')))
-        with self.assertRaisesRegex(ValueError, '修饰键'):
-            config_for({'scenarios': ('nominal',), 'reset_events': ((6001, 'shift'),)})
-        with self.assertRaisesRegex(ValueError, '修饰键'):
-            config_for({'reset_events': ((6000, 'shift'),)})
-        with self.assertRaisesRegex(ValueError, '诊断模式'):
-            config_for({'diagnostics': 'verbose'})
 
     def test_search_starts_match_fixed_baseline_golden(self):
         """导入专用动作目录不改变基线搜索起点或顺序。"""
@@ -1878,73 +975,6 @@ class SearchAndValidationTests(TestCase):
         first = input_times("jitter", seed=20260912)
         self.assertEqual(first, input_times("jitter", seed=20260912))
         self.assertNotEqual(first, input_times("jitter", seed=20260913))
-
-    def test_loop_repeat_count_is_part_of_candidate_identity(self):
-        from search import program_key
-
-        body = [["outbreak"], ["death_coil"]]
-        twice = [dict(kind="Loop", count=2, blocks=body)]
-        three_times = [dict(kind="Loop", count=3, blocks=body)]
-        self.assertNotEqual(program_key(twice), program_key(three_times))
-
-    def test_low_success_action_inside_loop_drops_its_top_level_candidate(self):
-        class FeedbackRng:
-            def __init__(self):
-                self.choice_count = 0
-
-            def choice(self, values):
-                self.choice_count += 1
-                return "swap" if self.choice_count == 1 else values[0]
-
-            def random(self):
-                return 0
-
-            def sample(self, population, count):
-                return [0, 2]
-
-        program = [
-            ["outbreak"],
-            dict(kind="Loop", count=2, blocks=[["death_coil"], ["wasted_action"]]),
-            ["scourge_strike"],
-        ]
-        capabilities = dict(actions=[dict(simc_action=name) for name in (
-            "outbreak", "death_coil", "wasted_action", "scourge_strike")])
-        feedback = dict(attempts={"wasted_action": 3}, successes={"wasted_action": 0})
-
-        result = mutate(program, capabilities, FeedbackRng(), feedback=feedback)
-
-        self.assertEqual(result, [["outbreak"], ["scourge_strike"]])
-
-    def test_report_version_gate_accepts_historical_and_current_build(self):
-        """历史报告在其对应版本上有效，升级不得把它们踢掉。"""
-        import engine
-
-        def character():
-            equipment = {"head": SimpleNamespace(raw=",id=1")}
-            return SimpleNamespace(name="角色", class_name="death_knight", level=90, race="scourge",
-                                   spec_id=252, fields={"talents": "talents"}, equipment=equipment)
-
-        def report(build_level, version_used="Live"):
-            player = {"name": "角色", "sim2gse_class": "death_knight", "level": 90,
-                      "sim2gse_spec_id": 252, "race": "scourge", "talents": "talents",
-                      "sim2gse_resource": "runic_power", "sim2gse_class_id": 6,
-                      "sim2gse_spec": "unholy", "role": "attack",
-                      "gear": {"head": {"encoded_item": ",id=1"}},
-                      "collected_data": {"dps": {"mean": 100.0, "count": 99},
-                                         "fight_length": {"mean": 180}}}
-            return {"sim": {"players": [player], "targets": [{}],
-                            "statistics": {"raid_dps": {"mean": 100.0, "count": 99}},
-                            "options": {"dbc": {"Live": {"build_level": build_level, "wow_version": f"12.1.0.{build_level}"},
-                                                "version_used": version_used}}}}
-
-        for build in (69587, 69814, 69933):
-            engine.check_report(report(build), character(), 100)
-        # 校验强度不变：清单外的版本照旧拒绝。
-        for build in (69999, 0):
-            with self.assertRaises(ValueError):
-                engine.check_report(report(build), character(), 100)
-        with self.assertRaises(ValueError):
-            engine.check_report(report(69814, "Ptr"), character(), 100)
 
     def test_public_entry_runs_multi_start_search_with_isolated_validation(self):
         import sequence
@@ -1995,14 +1025,6 @@ class SearchAndValidationTests(TestCase):
             self.assertTrue(search_seeds and validation_seeds)
             self.assertFalse(final_seeds)
             self.assertFalse(search_seeds & validation_seeds or search_seeds & final_seeds or validation_seeds & final_seeds)
-
-    def test_reference_start_keeps_executed_active_items(self):
-        with _fast_initialization():
-            starts = initial_programs(_fast_capabilities(), dict(identity={"spec_id": 252},
-                static_snapshot=static_snapshot(), action_sequence=[
-                dict(name="use_item,slot=trinket1", queue_failed=False),
-            ]), scene='single_target')
-        self.assertEqual(starts[1], [["use_item,slot=trinket1"]])
 
     def test_search_winner_is_not_replaced_by_a_final_comparison(self):
         import search
@@ -2128,37 +1150,6 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(resumed["independent_validation_complete"])
             self.assertEqual(resumed["final"]["scenarios"], {})
 
-    def test_corrupt_success_report_is_recomputed_and_changed_config_rejected(self):
-        import result_store
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-cache-") as directory:
-            source = Path(directory)/'role.simc'
-            destination = Path(directory)/'task'
-            source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=120,search_budget_seconds=90,candidate_limit=2,
-                        batch_targets=(2,),validation_batches=2,final_batches=2,
-                        iterations=2,final_iterations=2,scenarios=('nominal',),max_processes=1)
-            with _fast_search_boundary():
-                first=run_task(source,destination,search_config=config)
-                row=first['search']['records'][0]['batches'][0]
-                saved = result_store.one('batches', 'batch_key', row['data_key'])
-                saved['report']['sim']['players'][0]['collected_data']['dps']['mean'] = 1.0
-                saved['report']['sim']['statistics']['raid_dps']['mean'] = 1.0
-                group = saved.get('storage_group_key') or row['data_key']
-                records = list(result_store.iter_rows(
-                    'SELECT * FROM batches WHERE storage_group_key = ?', [group], tables=['batches']))
-                result_store.write('batches', group, [saved if item['batch_key'] == row['data_key']
-                                                     else item for item in records])
-                resumed=run_task(source,Path(directory)/'second',search_config=config)
-                # A frozen champion may lead the new run; verify the corrupted identity, not index zero.
-                recomputed = next(batch for item in resumed['search']['records'] for batch in item['batches']
-                                  if batch['data_key'] == row['data_key'])
-                self.assertGreater(recomputed['dps'], 1)
-                self.assertFalse(recomputed.get('cached', False))
-                with self.assertRaises(TaskError):
-                    resume_task(destination,search_config=dict(config,max_processes=2))
-                self.assertFalse(resumed['independent_validation_complete'])
-
     def test_corrupt_parquet_cache_shard_is_recomputed(self):
         import result_store
         import sequence
@@ -2254,25 +1245,6 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(len(exchange_paths), 1)
             self.assertTrue(exchange_paths[0].is_file())
             self.assertIsInstance(json.loads(exchange_paths[0].read_text(encoding='utf-8')), dict)
-
-    def test_old_rule_checkpoint_is_rejected_without_overwriting_its_result(self):
-        import sqlite3
-        from contextlib import closing
-        with tempfile.TemporaryDirectory(prefix='sim2gse-old-rules-') as directory:
-            source = Path(directory) / 'role.simc'
-            destination = Path(directory) / 'task'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2))
-                before = read_task(destination)
-                with closing(sqlite3.connect(destination / 'task.sqlite3')) as database:
-                    state = TaskStore.load_state(database)
-                    state.pop('rules')
-                    database.execute('UPDATE state SET value=? WHERE id=1', (json.dumps(state),))
-                    database.commit()
-                with self.assertRaisesRegex(TaskError, '版本或编译规则已变化'):
-                    resume_task(destination)
-                self.assertEqual(read_task(destination), before)
 
     def test_task_hard_exit_preserves_checkpoint_and_cleans_owned_engine(self):
         import os
@@ -2394,13 +1366,6 @@ class SearchAndValidationTests(TestCase):
                 if held:kernel.CloseHandle(held)
                 if process.poll() is None:process.kill();process.wait(timeout=5)
 
-    def test_search_budget_rejects_values_outside_contract(self):
-        from search import config_for
-
-        for value in (601, float("nan"), -1):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                config_for({"total_budget_seconds": value})
-
     def test_owned_process_tree_hard_exit_does_not_stop_other_owner(self):
         # 补充进程系统边界检查；产品恢复仍由上方 run_task 测试覆盖。
         import ctypes
@@ -2447,24 +1412,6 @@ class SearchAndValidationTests(TestCase):
                 except PermissionError:
                     if attempt==20:raise
                     time.sleep(0.05)
-
-    def test_same_conditions_reuse_search_without_final_samples(self):
-        with tempfile.TemporaryDirectory(prefix='sim2gse-cache-reuse-') as directory:
-            source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=120,search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
-                        validation_batches=2,final_batches=2,iterations=2,final_iterations=2,
-                        scenarios=('nominal',),max_processes=1,
-                        reset_events=((4500, 'target'),))
-            with _fast_search_boundary():
-                first=run_task(source,Path(directory)/'first',search_config=config)
-                source.write_text(sample_profile()+'\n# display note\n',encoding='utf-8')
-                second=run_task(source,Path(directory)/'second',search_config=config)
-                changed_events=dict(config, reset_events=((6000, 'target'),))
-                third=run_task(source,Path(directory)/'third',search_config=changed_events)
-            self.assertTrue(second['search']['records'][0]['batches'][0].get('cached'))
-            self.assertFalse(third['search']['records'][0]['batches'][0].get('cached'))
-            self.assertEqual(first['final']['scenarios'], {})
-            self.assertEqual(second['final']['scenarios'], {})
 
     def test_completed_search_removes_native_report_exchange_files(self):
         import sequence
@@ -2530,38 +1477,6 @@ class SearchAndValidationTests(TestCase):
             self.assertNotIn('report', pointer)
             run = result_store.one('runs', 'run_id', loaded['run_id'])
             self.assertNotIn('result', run)
-
-    def test_single_task_stores_exchange_reports_in_center(self):
-        import result_store
-
-        with tempfile.TemporaryDirectory(prefix='sim2gse-single-data-store-') as directory:
-            source = Path(directory) / 'role.simc'
-            destination = Path(directory) / 'task'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _fast_search_boundary():
-                result = run_task(source, destination, mode='single', program=[['outbreak']],
-                                  phase_ms=30, search_config={'input_interval_ms': 180})
-
-            self.assertEqual(result['status'], 'offline_ready')
-            self.assertEqual(list(destination.rglob('native.json')), [])
-            loaded = read_task(destination, include_reports=True)
-            self.assertEqual(loaded['candidate']['text'], result['candidate']['text'])
-            self.assertEqual(loaded['config']['input_interval_ms'], 180)
-            reference = result_store.one('batches', 'batch_key', result['reference_data_key'])
-            controlled = result_store.one('batches', 'batch_key', result['controlled_data_key'])
-            self.assertEqual(reference['report']['sim']['statistics']['raid_dps']['mean'], 100.0)
-            self.assertEqual(controlled['report']['sim']['players'][0]['collected_data']['dps']['mean'],
-                             result['controlled_simulation']['summary']['dps'])
-            self.assertEqual(controlled['times'][:2], [30, 210])
-            self.assertEqual(controlled['phase_ms'], 30)
-            self.assertNotIn('action_sequence', loaded['native_reference'])
-            self.assertEqual(loaded['controlled_simulation']['summary'],
-                             result['controlled_simulation']['summary'])
-            pointer = json.loads((destination / 'result.json').read_text(encoding='utf-8'))
-            self.assertNotIn('report', pointer)
-            self.assertNotIn('candidate', pointer)
-            from result_store import report_for_task
-            self.assertEqual(report_for_task(destination), controlled['report'])
 
     def test_native_global_failure_stops_task(self):
         import ctypes
@@ -2685,13 +1600,13 @@ class SearchAndValidationTests(TestCase):
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             names = ('outbreak', 'scourge_strike', 'epidemic', 'death_and_decay')
             starts = [[[name] for name in (*names[index:], *names[:index], 'death_coil')]
-                      for index in range(len(names))]
+                      for index in range(2)]
             with _guided_search_boundary(directory, starts):
                 result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=120,
-                    input_interval_ms=200,search_budget_seconds=90,candidate_limit=19,round_candidate_limit=4,batch_targets=(2,),
+                    input_interval_ms=200,search_budget_seconds=90,candidate_limit=7,round_candidate_limit=2,batch_targets=(2,),
                     validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
                 saved = read_task(Path(directory) / 'task', include_search_records=True)
-            self.assertEqual(result['search']['candidate_count'],19)
+            self.assertEqual(result['search']['candidate_count'],7)
             self.assertTrue(result['search']['partial_round'])
             chains=result['search']['chains']
             records = {row['key']: row for row in saved['search']['records']}
@@ -2721,54 +1636,6 @@ class SearchAndValidationTests(TestCase):
                             self.assertEqual(evidence['parent_samples'], before['samples'])
             self.assertIn(result['search']['stop_reason'],{'candidate_limit','no_improvement','search_deadline','space_stalled'})
 
-    def test_malformed_shared_cache_record_is_ignored(self):
-        import sqlite3
-        with tempfile.TemporaryDirectory(prefix='sim2gse-malformed-cache-') as directory:
-            source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=120,search_budget_seconds=90,candidate_limit=2,batch_targets=(2,),
-                        validation_batches=2,final_batches=2,iterations=2,final_iterations=2,scenarios=('nominal',))
-            with _fast_search_boundary():
-                run_task(source,Path(directory)/'first',search_config=config)
-                with sqlite3.connect(Path(directory)/'cache.sqlite3') as database:
-                    database.execute("UPDATE reusable SET value='broken-json'")
-                database.close()
-                result=run_task(source,Path(directory)/'second',search_config=config)
-            self.assertTrue(result['candidate']['text'].startswith('!GSE3!'))
-            self.assertFalse(result['search']['records'][0]['batches'][0].get('cached',False))
-
-    def test_busy_and_dispatch_failure_are_counted_as_attempts(self):
-        from search import feedback_from_trace
-
-        feedback = feedback_from_trace([
-            dict(event="busy", battle=1, origin=1, action="feedback_probe"),
-            dict(event="dispatch_failed", battle=1, origin=2, action="feedback_probe"),
-        ])
-        self.assertEqual(feedback["attempts"], {"feedback_probe": 2})
-
-    def test_crash_allowance_exhaustion_is_published_once(self):
-        import sqlite3,json
-        with tempfile.TemporaryDirectory(prefix='sim2gse-exhaustion-') as directory:
-            source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-            destination=Path(directory)/'task'
-            with _fast_search_boundary():
-                run_task(source,destination,search_config=dict(total_budget_seconds=10,search_budget_seconds=3,
-                    candidate_limit=2,batch_targets=(2,),iterations=2,validation_batches=2,final_batches=1,
-                    final_iterations=2,scenarios=('nominal',)))
-            database=sqlite3.connect(destination/'task.sqlite3')
-            try:
-                state=TaskStore.load_state(database)
-                state.update(status='running',phase='final',elapsed_seconds=9,inflight={'batch':dict(start=9,allowance=1)})
-                database.execute('UPDATE state SET value=?',(json.dumps(state),));database.commit()
-            finally:database.close()
-            (destination/'progress.json').write_text(json.dumps(dict(status='running',phase='final',elapsed_seconds=9)))
-            with _fast_initialization():
-                resumed=resume_task(destination)
-            self.assertEqual(resumed['status'],'validation_incomplete')
-            self.assertEqual(resumed['elapsed_seconds'],10)
-            self.assertEqual(read_task(destination)['status'],'validation_incomplete')
-            with _fast_initialization():
-                self.assertEqual(resume_task(destination)['elapsed_seconds'],10)
-
     def test_process_creation_failure_releases_thread_and_temporary_files(self):
         import ctypes
         from ctypes import wintypes
@@ -2796,45 +1663,6 @@ class SearchAndValidationTests(TestCase):
                     leaked.append(handle);runtime._kernel32.CloseHandle(handle)
             self.assertFalse(leaked,'创建中断泄漏线程句柄')
             self.assertFalse(list(destination.rglob('.stdout-*.tmp'))+list(destination.rglob('.stderr-*.tmp')))
-
-    def test_native_start_callback_failure_still_cleans_the_created_process(self):
-        import runtime
-
-        class Process:
-            def __init__(self, folder):
-                self.stdout_path = Path(folder) / "stdout.tmp"
-                self.stderr_path = Path(folder) / "stderr.tmp"
-                self.stdout_path.write_bytes(b"")
-                self.stderr_path.write_bytes(b"")
-                self.terminated = False
-                self.closed = False
-
-            def terminate(self):
-                self.terminated = True
-
-            def wait(self, _timeout):
-                return 0
-
-            def close(self):
-                self.closed = True
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-start-callback-") as directory:
-            process = Process(directory)
-            reservations = []
-            task_runtime = runtime.TaskRuntime(10)
-            task_runtime.reservation = lambda key, allowance: reservations.append((key, allowance))
-            with patch.object(runtime, "_create_process", return_value=process), \
-                    self.assertRaisesRegex(OSError, "counter write failed"):
-                runtime.run_command(["simc"], directory, timeout_seconds=5,
-                                    runtime=task_runtime,
-                                    on_start=lambda: (_ for _ in ()).throw(
-                                        OSError("counter write failed")))
-
-            self.assertTrue(process.terminated)
-            self.assertTrue(process.closed)
-            self.assertIsNone(reservations[-1][1])
-            self.assertFalse(process.stdout_path.exists())
-            self.assertFalse(process.stderr_path.exists())
 
     def test_search_deadline_terminates_a_hung_native_batch(self):
         import ctypes

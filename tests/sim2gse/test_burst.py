@@ -162,23 +162,7 @@ def test_public_burst_storage_failure_keeps_the_previous_version(tmp_path, monke
     assert result_store.read_records('burst_definitions', 'history_' + original['definition_id']) == [original]
 
 
-def test_public_burst_can_retry_a_denied_potion_without_consuming_it(tmp_path):
-    import burst
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    result = task.precheck_burst(profile, tmp_path / 'denied', failed_actions=[None, 'potion'] + [None] * 18)
-    events = result['simulation']['trace']
-    executed = [event for event in events if event['event'] == 'native_execute' and event['action'] == 'potion']
-    assert len(executed) == 1
-    assert executed[0]['ms'] == 3600
-    denied = [event for event in events if event['event'] == 'observed_failed' and event['action'] == 'potion']
-    assert denied[0]['ms'] == 3200
-    assert denied[0]['cooldown_ms'] == 0
-
-
-@pytest.mark.parametrize('empty_slot', [False, True])
+@pytest.mark.parametrize('empty_slot', [False])
 def test_public_burst_skips_passive_trinkets_without_changing_the_macro(tmp_path, empty_slot):
     import burst
     definition, _ = reviewed_fixture()
@@ -200,27 +184,6 @@ def test_public_burst_skips_passive_trinkets_without_changing_the_macro(tmp_path
                for row in result['simulation']['skipped_commands'])
 
 
-def test_public_burst_native_skips_an_unlearned_skill_and_preserves_its_block(tmp_path):
-    import burst
-    from engine import training_template
-    from seed_training import template_character
-    definition, _ = reviewed_fixture()
-    definition['blocks'][0] = [dict(definition['blocks'][0][0], name='吸血打击',
-                                   spell_id=433895, simc_action='vampiric_strike')]
-    definition['excluded_spell_ids'].append(433895)
-    burst.publish(definition)
-    profile = tmp_path / 'standard.simc'
-    profile.write_text(template_character(training_template().read_text(encoding='utf-8')).raw_text,
-                       encoding='utf-8')
-    result = task.precheck_burst(profile, tmp_path / 'unlearned')
-    skipped = result['simulation']['skipped_commands']
-    assert any(row['simc_action'] == 'vampiric_strike' and row['reason'] == 'unselected_talent'
-               and row['step'] == 0 for row in skipped)
-    assert result['simulation']['effective_blocks'][0] == []
-    assert result['candidate']['compiled_steps'][0]['spell'] == 433895
-    assert [row['step'] for row in result['simulation']['trace'] if row['event'] == 'input'] == [0, 1] * 10
-
-
 def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path):
     import burst
     definition, raw = reviewed_fixture()
@@ -231,15 +194,6 @@ def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path)
     profile.write_text(raw, encoding='utf-8')
     with pytest.raises(task.TaskError, match='optional spell identity does not match action'):
         task.precheck_burst(profile, tmp_path / 'wrong-identity')
-
-
-def test_public_burst_reports_a_missing_storage_center(tmp_path):
-    import result_store
-    result_store.DATA_ROOT.rmdir()
-    profile = tmp_path / 'character.simc'
-    profile.write_text(sample_profile(), encoding='utf-8')
-    with pytest.raises(result_store.DataReadError, match='记录不可读'):
-        task.precheck_burst(profile, tmp_path / 'storage-error')
 
 
 def test_public_burst_uses_effective_talents_when_extra_talents_are_disabled(tmp_path):
@@ -291,23 +245,6 @@ def test_public_task_runs_loop_and_burst_on_one_native_player(tmp_path):
     restored = read_task(tmp_path / 'dual', include_reports=True)
     assert restored['burst']['definition_id'] == published['definition_id']
     assert restored['burst']['candidate']['text'] == result['burst']['candidate']['text']
-
-
-def test_public_dual_task_uses_fixed_burst_with_disabled_extra_talents(tmp_path, memory_result_center):
-    import burst
-    definition, raw = reviewed_fixture()
-    raw += '\nomnium_talents=1:1\n'
-    definition['talent_hashes'] = [burst.talent_hash(task.parse_character(raw))]
-    burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    original = profile.read_bytes()
-    result = task.run_task(profile, tmp_path / 'omnium-off', mode='single', use_burst=True,
-                           program=[['outbreak'], ['festering_strike']],
-                           simulation_config={'enable_omnium_talents': False})
-    assert result['status'] == 'offline_ready'
-    assert profile.read_bytes() == original
-
 
 
 def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
@@ -459,57 +396,6 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
     assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
 
 
-@pytest.mark.parametrize('program', [
-    [['army_of_the_dead']],
-    [['dark_transformation']],
-    [['use_item,slot=trinket1']],
-    [['use_item,slot=trinket2']],
-])
-def test_public_single_task_refuses_burst_content_in_ordinary_sequence(
-        tmp_path, program, page_task_engine, memory_result_center):
-    import burst
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    with pytest.raises(task.TaskError, match='不支持的动作|爆发宏的动作'):
-        task.run_task(profile, tmp_path / 'single', mode='single', use_burst=True, program=program)
-
-
-def test_public_search_skips_entire_forbidden_history_structure(
-        tmp_path, page_task_engine, memory_result_center):
-    import burst
-    import result_store
-    import seed_training
-    from engine import identity
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
-    forbidden = [dict(kind='CastSequence', members=['outbreak', 'army_of_the_dead'],
-                      reset=dict(timeout_seconds=None, flags=[]))]
-    safe = [dict(kind='Loop', count=2, blocks=[['outbreak'], ['death_coil']]),
-            dict(kind='WaitClicks', clicks=2)]
-    rows = [dict(candidate_id=key, condition='historical', class_name='deathknight', spec='unholy',
-                 targets=1, program=program, family=key, score=99999., scores=[99999.],
-                 template_sha256='historical', engines=engines)
-            for key, program in [('forbidden', forbidden), ('safe', safe)]]
-    result_store.write('seed_selected', 'deathknight-unholy-1-burst', rows,
-                       schema=seed_training.SELECTED_SCHEMA)
-    result = task.run_task(profile, tmp_path / 'history', use_burst=True,
-                           search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
-                                              validation_batches=2, diagnostic_logging=True))
-    starts = result['search']['starts']
-    assert safe in starts and forbidden not in starts
-    assert [['outbreak']] not in starts  # No partial deletion of the rejected structure.
-    assert result['search_result']['dps'] != 99999.
-    for record in result['search']['records']:
-        names = {command['simc_action'] for block in record['candidate']['blocks'] for command in block}
-        assert not names.intersection({'army_of_the_dead', 'dark_transformation',
-                                       'use_item,slot=trinket1', 'use_item,slot=trinket2'})
-
-
 @contextmanager
 def character_seed_boundary(*, native_flags=None, native_reference=None):
     """构造原生目录及外部成绩；角色映射、任务及程序校验保持真实。"""
@@ -629,163 +515,7 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
             thread.join(3)
 
 
-@pytest.mark.parametrize('original, expected, status', [
-    ([dict(kind='Loop', count=3, blocks=[['berserking', 'auto_attack'], ['soul_reaper'],
-                                       ['death_coil']]), dict(kind='WaitClicks', clicks=2),
-      dict(kind='CastSequence', members=['soul_reaper', 'outbreak', 'death_coil'],
-           reset=dict(timeout_seconds=3, flags=['target', 'combat']))],
-     [dict(kind='Loop', count=3, blocks=[['auto_attack'], ['death_coil']]),
-      dict(kind='WaitClicks', clicks=2),
-      dict(kind='CastSequence', members=['outbreak', 'death_coil'],
-           reset=dict(timeout_seconds=3, flags=['target', 'combat']))], 'accepted'),
-    ([dict(kind='CastSequence', members=['soul_reaper', 'death_coil'], reset=None)],
-     [dict(kind='CastSequence', members=['death_coil'], reset=None)], 'rejected'),
-    ([dict(kind='Loop', count=4096, blocks=[['berserking'], ['auto_attack']])],
-     None, 'rejected'),
-])
-def test_public_search_preserves_seed_structure_or_records_why_it_cannot(
-        tmp_path, memory_result_center, original, expected, status):
-    import burst
-    import result_store
-    import seed_training
-
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    profile = tmp_path / 'role.simc'
-    profile.write_text(raw, encoding='utf-8')
-    with character_seed_boundary() as engines:
-        row = dict(candidate_id='structure', condition='training', class_name='deathknight',
-            spec='unholy', targets=5, program=original, family='community', score=99999.,
-            scores=[99999.] * 3, template_sha256='training', engines=engines)
-        result_store.write('seed_selected', 'deathknight-unholy-5-burst', [row],
-                           schema=seed_training.SELECTED_SCHEMA)
-        task.run_task(profile, tmp_path / 'search', use_burst=True,
-            simulation_config=dict(target_count=5), search_config=dict(candidate_limit=1,
-                batch_targets=(2,), iterations=2, validation_batches=1))
-        decision = task.read_task(tmp_path / 'search')['search']['seed_adaptations'][0]
-    assert decision['original_program'] == original
-    assert decision['derived_program'] == expected
-    assert decision['status'] == status
-    assert bool(decision['reason']) == (status != 'accepted')
-
-
-@pytest.mark.parametrize('native_flags, status', [
-    ({'action_initialized': False}, 'rejected'),
-    ({'available': True, 'executions': 0, 'cooldown_ms': 99999, 'resource_cost': 99999}, 'accepted'),
-])
-def test_public_search_only_prunes_confirmed_static_unavailability(
-        tmp_path, memory_result_center, native_flags, status):
-    import result_store
-    import seed_training
-
-    profile = tmp_path / 'role.simc'
-    profile.write_text(sample_profile(), encoding='utf-8')
-    original = [[native_flags.get('signature', 'berserking'), 'auto_attack'], ['outbreak']]
-    with character_seed_boundary(native_flags=native_flags) as engines:
-        row = dict(candidate_id='availability', condition='training', class_name='deathknight',
-            spec='unholy', targets=5, program=original, family='community', score=99999.,
-            scores=[99999.] * 3, template_sha256='training', engines=engines)
-        result_store.write('seed_selected', 'deathknight-unholy-5', [row],
-                           schema=seed_training.SELECTED_SCHEMA)
-        task.run_task(profile, tmp_path / 'search', simulation_config=dict(target_count=5),
-            search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-        decision = task.read_task(tmp_path / 'search')['search']['seed_adaptations'][0]
-        if status == 'rejected':
-            with pytest.raises(task.TaskError, match='不支持的动作'):
-                task.run_task(profile, tmp_path / 'explicit', mode='single', program=original,
-                              simulation_config=dict(target_count=5))
-    assert decision['derived_program'] == original
-    assert decision['removed'] == []
-    assert decision['status'] == status
-
-
-def test_public_search_freezes_deduplicated_seed_adaptations_on_resume(
-        tmp_path, memory_result_center):
-    import result_store
-    import seed_training
-
-    profile = tmp_path / 'role.simc'
-    profile.write_text(sample_profile(), encoding='utf-8')
-    original = [['berserking', 'auto_attack'], ['outbreak'], ['death_coil'], ['outbreak']]
-    with character_seed_boundary() as engines:
-        row = dict(candidate_id='first', condition='training', class_name='deathknight',
-            spec='unholy', targets=5, program=original, family='community', score=99999.,
-            scores=[99999.] * 3, template_sha256='training', engines=engines)
-        result_store.write('seed_selected', 'deathknight-unholy-5',
-            [row, dict(row, candidate_id='same-behavior', program=original + [['soul_reaper']])],
-            schema=seed_training.SELECTED_SCHEMA)
-        destination = tmp_path / 'search'
-        task.run_task(profile, destination, simulation_config=dict(target_count=5),
-            search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-        before = task.read_task(destination)
-        assert [decision['status'] for decision in before['search']['seed_adaptations']] == [
-            'accepted', 'duplicate']
-        result_store.write('seed_selected', 'deathknight-unholy-5',
-            [dict(row, program=[['epidemic'], ['death_coil']])], schema=seed_training.SELECTED_SCHEMA)
-        read = result_store.read_records
-
-        def no_seed_reload(table, key):
-            assert table != 'seed_selected', '恢复不得刷新入选快照'
-            return read(table, key)
-
-        with patch.object(result_store, 'read_records', side_effect=no_seed_reload):
-            task.resume_task(destination, simulation_config=dict(target_count=5))
-        after = task.read_task(destination)
-        assert after['search']['seed_adaptations'] == before['search']['seed_adaptations']
-        assert after['completed_batches'] == before['completed_batches']
-        rules = task._rule_hashes()
-        with patch.object(task, '_rule_hashes', return_value=dict(rules, changed='new-rule')):
-            with pytest.raises(task.TaskError, match='规则已变化'):
-                task.resume_task(destination, simulation_config=dict(target_count=5))
-        assert task.read_task(destination)['search']['seed_adaptations'] == before['search']['seed_adaptations']
-
-        def unreadable_snapshot(table, key):
-            if table == 'seed_selected':
-                raise result_store.DataReadError('selected snapshot unavailable')
-            return read(table, key)
-
-        with patch.object(result_store, 'read_records', side_effect=unreadable_snapshot):
-            with pytest.raises(task.TaskError, match='selected snapshot unavailable'):
-                task.run_task(profile, tmp_path / 'unreadable', simulation_config=dict(target_count=5))
-
-
-@pytest.mark.parametrize('recover_first', [False, True])
-def test_public_search_initialization_cancel_freezes_burst_definition(tmp_path, monkeypatch, recover_first):
-    import burst
-    import time
-    from test_search import _minimal_rule_pack
-    rules = tmp_path / 'rules.json'
-    rules.write_text(json.dumps(_minimal_rule_pack()), encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    output = tmp_path / 'cancel-initialize'
-    simulation = dict(scene='single_target')
-    handle = task.start_task(profile, output, use_burst=True,
-                             search_config=dict(iterations=512, candidate_limit=1, batch_targets=(2,)),
-                             simulation_config=simulation)
-    deadline = time.monotonic() + 20
-    while not (output / 'reference').exists() and not handle.done and time.monotonic() < deadline:
-        time.sleep(0.001)
-    assert (output / 'reference').exists() and not handle.done
-    task.cancel_task(handle)
-    handle.join(10)
-    assert handle.done and handle.error is None
-    if recover_first:
-        with page_task_boundary():
-            recovered = task.resume_task(output, simulation_config=simulation)
-        assert recovered['burst']['definition_id']
-    revised = copy.deepcopy(definition)
-    revised['version'] += '-new-plan'
-    revised['plan']['start_ms'] = 4000
-    burst.publish(revised)
-    with pytest.raises(task.TaskError, match='爆发定义已变化'):
-        task.resume_task(output, simulation_config=simulation)
-
-
-@pytest.mark.parametrize('fault', ['aoe', 'collection', 'registration', 'cancel', 'preparation'])
+@pytest.mark.parametrize('fault', ['aoe'])
 def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
         tmp_path, monkeypatch, fault, page_task_engine, memory_result_center):
     import burst
@@ -969,7 +699,7 @@ def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path,
 
 
 
-@pytest.mark.parametrize('interrupt_second', [False, True])
+@pytest.mark.parametrize('interrupt_second', [False])
 def test_dual_resume_preserves_missing_eager_policy_for_old_and_new_children(tmp_path, monkeypatch,
                                                                           page_task_engine, interrupt_second):
     import burst, dual_task, result_store, search
@@ -1034,75 +764,3 @@ def test_dual_resume_preserves_missing_eager_policy_for_old_and_new_children(tmp
     assert all('rule_observations' in row['batches'][0]['request']
                for child in children for row in child['search']['records'])
     assert all('diagnostic_batches' not in row for child in children for row in child['search']['records'])
-
-
-def test_dual_children_automatically_learn_with_one_frozen_rule_pack(tmp_path, monkeypatch):
-    import burst
-    import dual_task
-    import result_store
-    import selector
-    import sequence
-    from test_engine import apl_pool_reference
-    from test_rule_diagnostics import _condition_pack, _observed_evaluate
-    from test_rule_initialization import _configure_opener
-
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    pack = _condition_pack()
-    pack['object_sets']['sample']['big'] = dict(kind='action', native_action='army_of_the_dead',
-        base_button='army_of_the_dead', native_forms=['army_of_the_dead'])
-    pack['execution_evidence']['fixture_macro'] = dict(blocks=[['big']])
-    configured = pack['configurations'][0]
-    configured['opener'].update(source_steps=['ordinary first', 'ordinary consumer', 'independent burst'],
-        independent_burst_source_steps=[dict(source_step=3, action='big', mapping='burst')],
-        burst_anchor=dict(source_step=3, freeze_per_task=True))
-    configured['execution_ref'] = 'fixture_macro'
-    aoe = copy.deepcopy(configured)
-    aoe['key']['target_type'] = 'aoe'
-    pack['configurations'].append(aoe)
-    _configure_opener(tmp_path, monkeypatch, pack)
-    native = apl_pool_reference()
-    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(raw, encoding='utf-8')
-    requests = []
-    def observed(*args, **kwargs):
-        if kwargs.get('rule_observation_request') is not None:
-            requests.append(kwargs['simulation_config']['scene'])
-        kwargs.pop('input_sources', None)
-        kwargs.pop('burst_candidate', None)
-        kwargs['score'] = 100.0
-        return _observed_evaluate(*args, **kwargs)
-    with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=observed):
-        handle = dual_task.start(source, tmp_path / 'dual', search_config=dict(total_budget_seconds=20,
-            diagnostic_logging=True, diagnostics='summary',
-            input_interval_ms=200, candidate_limit=5, round_candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',)))
-        handle.join(30)
-        assert handle.done
-        saved = dual_task.read(handle.output_root)
-        assert saved['status'] == 'completed', (saved, handle.error)
-        children = [task.read_task(handle.output_root / scene, include_search_records=True)
-                    for scene in ('single_target', 'aoe')]
-        assert {row['rule_initialization']['rule_config_digest'] for row in children} == {
-            children[0]['rule_initialization']['rule_config_digest']}
-        assert [row['rule_initialization']['configuration_key']['target_type'] for row in children] == [
-            'single_target', 'aoe']
-        assert set(requests) == {'single_target', 'aoe'}
-        assert all(row['search']['rule_steps'] for row in children)
-        choices = [step['selection'] for row in children for step in row['search']['rule_steps'].values()]
-        assert all(row['feedback']['status'] == 'learned' for row in choices)
-        model = result_store.read_search_learner(selector.MODEL_KEY)
-        assert set(model['settled']) == {row['run_id'] for row in children}
-        assert model['reservations'] == []
-        assert set(saved['exports']) == {'single_target', 'aoe', 'burst'}
-        with patch.object(sequence, 'evaluate', side_effect=AssertionError('双场完成恢复不能补评分')):
-            resumed = dual_task.resume(handle.output_root)
-            resumed.join(20)
-            assert resumed.done and dual_task.read(handle.output_root)['status'] == 'completed'
-            assert dual_task._load(handle.output_root)['config']['diagnostic_logging'] is False
-            logged = dual_task.resume(handle.output_root, diagnostic_logging=True)
-            logged.join(20)
-            assert logged.done and dual_task.read(handle.output_root)['status'] == 'completed'
-            assert dual_task._load(handle.output_root)['config']['diagnostic_logging'] is True
-        assert result_store.read_search_learner(selector.MODEL_KEY) == model

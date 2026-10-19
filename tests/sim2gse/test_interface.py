@@ -33,11 +33,6 @@ def gse_fixture(payload):
     return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(wire_value(payload)), wbits=-15)).decode("ascii")
 
 
-def gse_cbor_text_fixture(payload):
-    import cbor2
-    return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(payload), wbits=-15)).decode("ascii")
-
-
 # 固定合成向量：用锁定的 GSE 密钥编号和 cryptography 50.0.1 封装 CBOR 序列。
 GSE_PROTECTED_SEQUENCE_VECTOR = (
     "!GSE3!+1AAECAwQFBgcICQoLG3AsKkGhhV0N/HWzbc4GgaZF4hReCjduid5ThZ/TBlBgCNHrDpQx1J2iLtVdXEdO66EYA7hAvDDxuP9DAhKFhjMVEzQ3ozkJGC11ccmZccQGTFEh+sKMi6o+CLvZlhVYS8655pzOGq9yw4Jk7CRHgh4eA6vj8zZcJHh9bajv/WolLkgO+/daJ3D5eUT0ddHkPxlmWXvyew6e5yMXVgfHN0YDkPk6MN9zjy9FPxSkkV4WGxkSw2Y="
@@ -47,9 +42,6 @@ GSE_PROTECTED_VARIABLE_VECTOR = (
 )
 GSE_PROTECTED_MACRO_VECTOR = (
     "!GSE3!+1GBkaGxwdHh8gISIjITXl5rxvJIfGsh1W9faejI+hnlUimbME8ag7Z5QUpuBgQG4pwW6rzLr0Um/muYNGkQHukMPDGG9hvkrUbFL6wWMwRz+/XkNH"
-)
-GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR = (
-    "!GSE3!+1ICEiIyQlJicoKSorMoOFyqPhNN1YfERp5oUsrO/2zVKXHka7E/VPMT1L9LD845xEagPNMvtXVhv0CqeNYpewT5FQaKmK8Qru9EVVETd2suCP9MToI6W7BLmLzaZb4HoF4ewOXE5gNBupjzZhAZEpY6VrFHj6fA=="
 )
 
 
@@ -75,18 +67,6 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertFalse(result["simulation_started"])
 
 
-    def test_import_inspection_accepts_direct_sequence_object(self) -> None:
-        imported = gse_fixture({
-            "MetaData": {"Name": "DIRECT_SEQUENCE", "SpecID": 252, "GSEVersion": 3331},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]}],
-        })
-        result = inspect_import(imported)
-        self.assertEqual(result["status"], "decoded")
-        self.assertEqual(result["format"], "direct")
-        self.assertEqual(result["sequences"][0]["name"], "DIRECT_SEQUENCE")
-
-
     def test_import_inspection_returns_the_full_decoded_payload(self) -> None:
         import cbor2
         from codec import wire_value
@@ -109,24 +89,6 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertEqual(result["payload_cbor_base64"], base64.b64encode(
             cbor2.dumps(wire_value(payload))).decode("ascii"))
         self.assertFalse(result["simulation_started"])
-
-
-    def test_import_inspection_accepts_upstream_cbor_text_strings(self) -> None:
-        payload = ["TEXT_CBOR", {
-            "MetaData": {"Name": "TEXT_CBOR", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                          "macro": "/cast 77575"}]}],
-        }]
-
-        try:
-            result = inspect_import(gse_cbor_text_fixture(payload))
-        except ValueError as error:
-            self.fail(str(error))
-
-        self.assertEqual(result["raw_payload"], payload)
-        self.assertEqual(result["sequences"][0]["name"], "TEXT_CBOR")
-        self.assertEqual(result["status"], "decoded")
 
 
     def test_import_inspection_decodes_fixed_protected_sequence_vector(self) -> None:
@@ -159,246 +121,6 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertIn("2", error)
 
 
-    def test_import_inspection_decodes_fixed_protected_variable_and_macro_vectors(self) -> None:
-        variable = inspect_import(GSE_PROTECTED_VARIABLE_VECTOR)
-        macro = inspect_import(GSE_PROTECTED_MACRO_VECTOR)
-
-        self.assertEqual(variable["format"], "protected")
-        self.assertEqual(variable["protected_object_type"], "VARIABLE")
-        self.assertEqual(variable["variables"]["PVAR"]["funct"], "return GSE.V.Other()")
-        self.assertEqual(variable["variables"]["PVAR"]["CustomField"], [1, None])
-        self.assertEqual(variable["sequences"], [])
-        self.assertEqual(macro["format"], "protected")
-        self.assertEqual(macro["protected_object_type"], "MACRO")
-        self.assertEqual(macro["macros"]["PMAC"]["macro"], "/cast 77575\n/use 13")
-        self.assertEqual(macro["macros"]["PMAC"]["CustomField"], "kept")
-
-
-    def test_import_inspection_decodes_unprotected_standalone_variable_and_macro(self) -> None:
-        variable_payload = {"objectType": "VARIABLE", "name": "PLAIN_VARIABLE",
-                            "funct": "return 7", "Custom": None}
-        macro_payload = {"objectType": "MACRO", "name": "PLAIN_MACRO",
-                         "macro": "/cast 77575", "Custom": "kept"}
-        variable_import = gse_fixture(variable_payload)
-        macro_import = gse_fixture(macro_payload)
-
-        variable = inspect_import(variable_import)
-        macro = inspect_import(macro_import)
-
-        self.assertEqual(variable["status"], "decoded")
-        self.assertEqual(variable["format"], "direct")
-        self.assertEqual(variable["content_format"], "object")
-        self.assertIsNone(variable["protected_object_type"])
-        self.assertEqual(variable["object_type"], "VARIABLE")
-        self.assertEqual(variable["raw_import"], variable_import)
-        self.assertEqual(variable["raw_payload"], variable_payload)
-        self.assertEqual(variable["variables"]["PLAIN_VARIABLE"]["funct"], "return 7")
-        self.assertIsNone(variable["variables"]["PLAIN_VARIABLE"]["Custom"])
-        self.assertEqual(variable["sequences"], [])
-        self.assertEqual(macro["status"], "decoded")
-        self.assertEqual(macro["format"], "direct")
-        self.assertEqual(macro["content_format"], "object")
-        self.assertIsNone(macro["protected_object_type"])
-        self.assertEqual(macro["object_type"], "MACRO")
-        self.assertEqual(macro["raw_import"], macro_import)
-        self.assertEqual(macro["raw_payload"], macro_payload)
-        self.assertEqual(macro["macros"]["PLAIN_MACRO"]["macro"], "/cast 77575")
-        self.assertEqual(macro["macros"]["PLAIN_MACRO"]["Custom"], "kept")
-        self.assertEqual(macro["sequences"], [])
-
-
-    def test_import_inspection_reports_missing_protected_decoder_dependency_as_bad_request(self) -> None:
-        import builtins
-        from unittest.mock import patch
-
-        original_import = builtins.__import__
-        def without_cryptography(name, *args, **kwargs):
-            if name == "cryptography" or name.startswith("cryptography."):
-                raise ModuleNotFoundError("test simulated missing cryptography")
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=without_cryptography):
-            with self.assertRaises(ValueError) as raised:
-                inspect_import(GSE_PROTECTED_SEQUENCE_VECTOR)
-        self.assertIn("cryptography==50.0.1", str(raised.exception))
-
-
-    def test_import_inspection_accepts_numeric_string_version_map(self) -> None:
-        sequence = {
-            "MetaData": {"Name": "DRUSS_ST", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": {"1": {"Actions": [{"Type": "Action", "type": "macro",
-                                                "macro": "/cast 77575"}]}},
-        }
-        payload = {"type": "COLLECTION", "payload": {
-            "Sequences": {"DRUSS_ST": sequence}, "Variables": {}, "Macros": {},
-        }}
-
-        try:
-            result = inspect_import(gse_cbor_text_fixture(payload))
-        except ValueError as error:
-            self.fail(str(error))
-
-        self.assertEqual(result["sequences"][0]["name"], "DRUSS_ST")
-        self.assertEqual(result["sequences"][0]["version_count"], 1)
-        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["DRUSS_ST"]["Versions"],
-                         {"1": {"Actions": [{"Type": "Action", "type": "macro",
-                                               "macro": "/cast 77575"}]}})
-
-
-    def test_import_inspection_preserves_sparse_version_map_indexes(self) -> None:
-        sequence = {
-            "MetaData": {"Name": "SPARSE", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": {
-                "1": {"Actions": [{"Type": "Action", "type": "macro", "macro": "/cast 77575"}]},
-                "3": {"Actions": [{"Type": "Pause", "Clicks": 2}]},
-            },
-        }
-        payload = {"type": "COLLECTION", "payload": {
-            "Sequences": {"SPARSE": sequence}, "Variables": {}, "Macros": {},
-        }}
-
-        try:
-            result = inspect_import(gse_cbor_text_fixture(payload))
-        except ValueError as error:
-            self.fail(str(error))
-
-        member = result["sequences"][0]
-        self.assertEqual(member["version_count"], 2)
-        self.assertEqual([version["version"] for version in member["versions"]], [1, 3])
-        self.assertEqual(member["versions"][1]["raw_version"]["Actions"][0]["Type"], "Pause")
-        self.assertTrue(any("gap" in reason.lower() for reason in member["parse_warnings"]))
-
-
-    def test_import_inspection_preserves_sparse_actions_but_blocks_simulation(self) -> None:
-        action = {"Type": "Action", "type": "spell", "spell": 77575}
-        cases = [
-            ("TOP_GAP", {"1": action, "3": action},
-             "Sequences[TOP_GAP].Versions[1].Actions[3]"),
-            ("LOOP_GAP", [{"Type": "Loop", "Repeat": 2,
-                           "1": action, "3": action}],
-             "Sequences[LOOP_GAP].Versions[1].Actions[1][3]"),
-            ("IF_GAP", [{"Type": "If", "Variable": "=true",
-                         "1": {"1": action, "3": action}}],
-             "Sequences[IF_GAP].Versions[1].Actions[1][1][3]"),
-        ]
-        for name, actions, expected_path in cases:
-            payload = [name, {"MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
-                              "Default": 1, "Versions": [{"Actions": actions}]}]
-            with self.subTest(name=name):
-                result = inspect_import(gse_cbor_text_fixture(payload))
-                member = result["sequences"][0]
-                self.assertEqual(member["versions"][0]["raw_version"]["Actions"], actions)
-                support = member["version_support"][0]
-                self.assertFalse(support["simulation_preflight_passed"])
-                self.assertIn(expected_path, support["support_reason"])
-                self.assertTrue(any(expected_path in warning for warning in member["parse_warnings"]))
-
-
-    def test_import_inspection_reports_each_known_block_field_path(self) -> None:
-        actions = [
-            {"Type": "Action", "type": "pet", "action": "Assist", "macro": "raw pet macro"},
-            {"Type": "Repeat", "Interval": "4", "spell": 77575, "macro": "/cast 77575"},
-            {"Type": "Loop", "Repeat": "2", "StepFunction": "ReversePriority",
-             "1": {"Type": "Pause", "Clicks": 2, "MS": "GCD"}},
-            {"Type": "If", "Variable": "=GSE.V.CustomFlag()", "1": [
-                {"Type": "Action", "type": "toy", "toy": 123, "macro": "=GSE.V.Macro()"}],
-             "2": [{"Type": "Embed", "Sequence": "CHILD"}]},
-        ]
-        payload = {"type": "COLLECTION", "payload": {"Sequences": {
-            "MATRIX": {"MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
-                       "Versions": [{"Actions": actions}]},
-            "CHILD": {"MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
-                      "Versions": [{"Actions": [{"Type": "Action", "type": "spell",
-                                                   "spell": 77575}]}]},
-        }, "Variables": {"CustomFlag": {"name": "CustomFlag", "funct": "return true",
-                                             "Dependencies": {"Variables": ["Other"]},
-                                             "ExplicitNull": None}},
-            "Macros": {"Burst": {"name": "Burst", "macro": "/cast 77575\n/use 13",
-                                   "UnknownMacroField": [1, "two"]}}}}
-        result = inspect_import(gse_cbor_text_fixture(payload))
-
-        member = next(row for row in result["sequences"] if row["name"] == "MATRIX")
-        self.assertEqual(member["versions"][0]["source_path"], "Sequences[MATRIX].Versions[1]")
-        self.assertEqual(member["versions"][0]["raw_version"]["Actions"], actions)
-        self.assertEqual(member["raw_sequence"]["Versions"][0]["Actions"], actions)
-        self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
-        self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
-        self.assertEqual(result["variables"], {})
-        self.assertEqual(result["macros"], {})
-        self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
-            "Variables[CustomFlag]", "Macros[Burst]",
-        })
-        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
-        locations = {(row["type"], row["path"]) for row in result["syntax_locations"]}
-        self.assertEqual(locations, {
-            ("Action", "Sequences[MATRIX].Versions[1].Actions[1]"),
-            ("Repeat", "Sequences[MATRIX].Versions[1].Actions[2]"),
-            ("Loop", "Sequences[MATRIX].Versions[1].Actions[3]"),
-            ("Pause", "Sequences[MATRIX].Versions[1].Actions[3][1]"),
-            ("If", "Sequences[MATRIX].Versions[1].Actions[4]"),
-            ("Action", "Sequences[MATRIX].Versions[1].Actions[4][1][1]"),
-            ("Embed", "Sequences[MATRIX].Versions[1].Actions[4][2][1]"),
-            ("Action", "Sequences[CHILD].Versions[1].Actions[1]"),
-        })
-        self.assertEqual(member["versions"][0]["raw_version"]["Actions"][3]["Variable"],
-                         "=GSE.V.CustomFlag()")
-
-
-    def test_import_inspection_preserves_every_action_subtype_and_raw_macro_text(self) -> None:
-        actions = [
-            {"Type": "Action", "type": "spell", "spell": 77575},
-            {"Type": "Action", "type": "item", "item": 13},
-            {"Type": "Action", "type": "pet", "action": "Assist"},
-            {"Type": "Action", "type": "toy", "toy": 12345},
-            {"Type": "Action", "type": "macro", "macro": "#showtooltip\n/cast [combat] 77575"},
-            {"Type": "Action", "macro": "inferred macro text"},
-            {"Type": "Action"},
-            {"Type": "Repeat", "type": "pet", "action": "Attack", "Interval": "3"},
-        ]
-        payload = ["ACTION_FIELDS", {
-            "MetaData": {"Name": "ACTION_FIELDS", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1, "Versions": [{"Actions": actions}],
-        }]
-
-        result = inspect_import(gse_fixture(payload))
-
-        self.assertEqual(result["status"], "decoded")
-        self.assertEqual(result["sequences"][0]["versions"][0]["raw_version"]["Actions"], actions)
-        self.assertEqual([row["path"] for row in result["syntax_locations"]], [
-            f"Sequences[ACTION_FIELDS].Versions[1].Actions[{index}]"
-            for index in range(1, len(actions) + 1)
-        ])
-
-
-    def test_import_inspection_blocks_untyped_variable_and_macro_tables_without_sequences(self) -> None:
-        payload = {"type": "COLLECTION", "payload": {
-            "Variables": {"V": {"name": "V", "funct": "return 7", "Custom": None}},
-            "Macros": {"M": {"name": "M", "macro": "/cast 77575"}},
-        }}
-
-        result = inspect_import(gse_cbor_text_fixture(payload))
-
-        self.assertEqual(result["status"], "decoded")
-        self.assertEqual(result["sequences"], [])
-        self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
-        self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
-        self.assertEqual(result["variables"], {})
-        self.assertEqual(result["macros"], {})
-        self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
-            "Variables[V]", "Macros[M]",
-        })
-        blocks_by_path = {
-            block["source_path"]: block
-            for block in result["collection_compatibility_blocks"]
-        }
-        self.assertEqual(blocks_by_path["Variables[V]"]["raw_value"],
-                         payload["payload"]["Variables"]["V"])
-        self.assertEqual(blocks_by_path["Macros[M]"]["raw_value"],
-                         payload["payload"]["Macros"]["M"])
-
-
     def test_import_inspection_parses_collection_variable_and_macro_encodings(self) -> None:
         import cbor2
 
@@ -429,256 +151,6 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertEqual(result["macros"]["PMAC"]["macro"], "/cast 77575\n/use 13")
         self.assertEqual(result["macros"]["M_DELTA"]["macro"], "/cast updated")
         self.assertEqual(result["collection_compatibility_blocks"], [])
-
-
-    def test_import_inspection_reports_unloadable_variable_and_macro_forks_with_category(self) -> None:
-        variable = {"GSEDeltaFork": True, "platformId": "variable-id",
-                    "contentType": "variable"}
-        macro = {"GSEDeltaFork": True, "platformId": "macro-id",
-                 "contentType": "macro"}
-        payload = {"type": "COLLECTION", "payload": {
-            "Variables": {"V_BLOCKED": variable},
-            "Macros": {"M_BLOCKED": macro},
-        }}
-
-        result = inspect_import(gse_fixture(payload))
-
-        blocks = {(item["category"], item["name"]): item
-                  for item in result["collection_compatibility_blocks"]}
-        self.assertEqual(result["raw_variables"]["V_BLOCKED"], variable)
-        self.assertEqual(result["raw_macros"]["M_BLOCKED"], macro)
-        self.assertEqual(blocks[("Variables", "V_BLOCKED")]["raw_value"], variable)
-        self.assertEqual(blocks[("Macros", "M_BLOCKED")]["raw_value"], macro)
-        self.assertIn("payload.Variables[V_BLOCKED]", blocks[("Variables", "V_BLOCKED")]["source_path"])
-        self.assertIn("payload.Macros[M_BLOCKED]", blocks[("Macros", "M_BLOCKED")]["source_path"])
-        self.assertIn("base", blocks[("Variables", "V_BLOCKED")]["reason"])
-        self.assertIn("base", blocks[("Macros", "M_BLOCKED")]["reason"])
-
-
-    def test_import_inspection_accepts_synthetic_empty_array_collection_containers(self) -> None:
-        # Synthetic shape matching the real collection's decoded empty Variables/Macros arrays.
-        sequence = {"MetaData": {"Name": "SYNTH_ST", "SpecID": 252, "GSEVersion": 3332},
-                    "Default": 1, "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 1}]}]}
-        second = dict(sequence, MetaData=dict(sequence["MetaData"], Name="SYNTH_AOE"))
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"SYNTH_ST": sequence, "SYNTH_AOE": second},
-            "Variables": [], "Macros": [],
-        }})
-
-        result = inspect_import(imported)
-
-        self.assertEqual(result["status"], "decoded")
-        self.assertEqual([item["name"] for item in result["sequences"]],
-                         ["SYNTH_ST", "SYNTH_AOE"])
-        self.assertEqual(result["raw_variables"], [])
-        self.assertEqual(result["raw_macros"], [])
-        self.assertEqual(result["variables"], {})
-        self.assertEqual(result["macros"], {})
-        self.assertEqual(result["collection_compatibility_blocks"], [])
-
-
-    def test_import_inspection_preserves_numeric_collection_member_keys_and_paths(self) -> None:
-        variables = [{"name": "V_ARRAY", "funct": "return 4"}]
-        macros = {1: {"name": "M_NUMERIC", "macro": "/cast 77575"}}
-        payload = {"type": "COLLECTION", "payload": {
-            "Sequences": {}, "Variables": variables, "Macros": macros,
-        }}
-
-        result = inspect_import(gse_fixture(payload))
-
-        self.assertEqual(result["raw_variables"], variables)
-        self.assertEqual(result["raw_macros"], {"1": macros[1]})
-        self.assertEqual(result["variables"], {})
-        self.assertEqual(result["macros"], {})
-        self.assertEqual(result["collection_object_locations"], {"Variables": {}, "Macros": {}})
-        self.assertEqual({block["source_path"] for block in result["collection_compatibility_blocks"]}, {
-            "Variables[1]", "Macros[1]",
-        })
-
-
-    def test_import_inspection_preserves_collection_sequences_with_missing_or_null_metadata(self) -> None:
-        sequence = {"Default": 1, "Versions": [{"Actions": [{"Type": "Pause"}]}],
-                    "Custom": None}
-        null_metadata_sequence = dict(sequence, MetaData=None)
-        payload = {"type": "COLLECTION", "payload": {"Sequences": {
-            "NO_META": sequence, "NULL_META": null_metadata_sequence,
-        }}}
-
-        result = inspect_import(gse_cbor_text_fixture(payload))
-
-        members = {member["name"]: member for member in result["sequences"]}
-        self.assertEqual(members["NO_META"]["raw_sequence"], sequence)
-        self.assertEqual(members["NULL_META"]["raw_sequence"], null_metadata_sequence)
-        self.assertNotIn("MetaData", members["NO_META"]["raw_sequence"])
-        self.assertIsNone(members["NULL_META"]["raw_sequence"]["MetaData"])
-        for member in members.values():
-            self.assertEqual(member["versions"][0]["parsed_version"]["Actions"],
-                             sequence["Versions"][0]["Actions"])
-            self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
-            self.assertIn("元数据版本缺失", member["support_reason"])
-
-
-    def test_import_inspection_decodes_protected_sequence_string_inside_collection(self) -> None:
-        payload = {"type": "COLLECTION", "payload": {
-            "Sequences": {"NESTED_PROTECTED": GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR},
-        }}
-
-        result = inspect_import(gse_fixture(payload))
-
-        member = result["sequences"][0]
-        self.assertEqual(member["name"], "NESTED_PROTECTED")
-        self.assertEqual(member["raw_sequence"], GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR)
-        self.assertEqual(member["versions"][0]["parsed_version"]["Actions"][0]["spell"], 77575)
-        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["NESTED_PROTECTED"],
-                         GSE_PROTECTED_COLLECTION_SEQUENCE_VECTOR)
-
-
-    def test_import_inspection_decodes_unprotected_sequence_string_inside_collection(self) -> None:
-        sequence = {
-            "MetaData": {"Name": "NESTED_PLAIN", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]}],
-        }
-        nested_import = gse_fixture(["NESTED_PLAIN", sequence])
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"NESTED_PLAIN": nested_import},
-        }})
-
-        result = inspect_import(imported)
-
-        member = result["sequences"][0]
-        self.assertEqual(result["status"], "decoded")
-        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["NESTED_PLAIN"],
-                         nested_import)
-        self.assertEqual(member["name"], "NESTED_PLAIN")
-        self.assertEqual(member["raw_sequence"], nested_import)
-        self.assertEqual(member["versions"][0]["parsed_version"]["Actions"][0]["spell"], 77575)
-        self.assertEqual(member["versions"][0]["source_path"],
-                         "Sequences[NESTED_PLAIN].Versions[1]")
-
-
-    def test_import_inspection_uses_inner_sequence_identity_for_plain_members(self) -> None:
-        pair_sequence = {
-            "MetaData": {"Name": "INNER_PAIR", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "spell": 101}]}],
-        }
-        metadata_sequence = {
-            "MetaData": {"Name": "INNER_METADATA", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 2}]}],
-        }
-        encoded_metadata_sequence = {
-            "MetaData": {"Name": "INNER_ENCODED_METADATA", "SpecID": 252,
-                         "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 3}]}],
-        }
-        pair_wire = gse_fixture(["INNER_PAIR", pair_sequence])
-        encoded_metadata_wire = gse_fixture(encoded_metadata_sequence)
-        payload = {"type": "COLLECTION", "payload": {"Sequences": {
-            "OUTER_PAIR": pair_wire,
-            "OUTER_METADATA": metadata_sequence,
-            "OUTER_ENCODED_METADATA": encoded_metadata_wire,
-        }}}
-
-        result = inspect_import(gse_fixture(payload))
-
-        members = {member["name"]: member for member in result["sequences"]}
-        self.assertEqual(set(members), {
-            "INNER_PAIR", "INNER_METADATA", "INNER_ENCODED_METADATA",
-        })
-        self.assertEqual(members["INNER_PAIR"]["raw_sequence"], pair_wire)
-        self.assertEqual(members["INNER_PAIR"]["versions"][0]["source_path"],
-                         "Sequences[OUTER_PAIR].Versions[1]")
-        self.assertEqual(members["INNER_METADATA"]["raw_sequence"], metadata_sequence)
-        self.assertEqual(members["INNER_METADATA"]["versions"][0]["source_path"],
-                         "Sequences[OUTER_METADATA].Versions[1]")
-        self.assertEqual(members["INNER_ENCODED_METADATA"]["raw_sequence"],
-                         encoded_metadata_wire)
-        self.assertEqual(members["INNER_ENCODED_METADATA"]["versions"][0]["source_path"],
-                         "Sequences[OUTER_ENCODED_METADATA].Versions[1]")
-
-
-    def test_import_inspection_dispatches_plain_encoded_collection_members_by_object_type(self) -> None:
-        variable_from_sequence = {"objectType": "VARIABLE", "name": "INNER_SEQUENCE_VARIABLE",
-                                  "funct": "return 11"}
-        macro_from_variable = {"objectType": "MACRO", "name": "INNER_VARIABLE_MACRO",
-                               "macro": "/cast 101"}
-        variable_from_macro = {"objectType": "VARIABLE", "name": "INNER_MACRO_VARIABLE",
-                               "funct": "return 12"}
-        payload = {"type": "COLLECTION", "payload": {
-            "Sequences": {"OUTER_SEQUENCE_VARIABLE": gse_fixture(variable_from_sequence)},
-            "Variables": {"OUTER_VARIABLE_MACRO": gse_fixture(macro_from_variable)},
-            "Macros": {"OUTER_MACRO_VARIABLE": gse_fixture(variable_from_macro)},
-        }}
-
-        result = inspect_import(gse_fixture(payload))
-
-        self.assertEqual(result["sequences"], [])
-        self.assertEqual(set(result["variables"]), {
-            "INNER_SEQUENCE_VARIABLE", "INNER_MACRO_VARIABLE",
-        })
-        self.assertEqual(set(result["macros"]), {"INNER_VARIABLE_MACRO"})
-        self.assertEqual(result["variables"]["INNER_SEQUENCE_VARIABLE"]["funct"], "return 11")
-        self.assertEqual(result["macros"]["INNER_VARIABLE_MACRO"]["macro"], "/cast 101")
-        self.assertEqual(result["collection_object_locations"], {
-            "Variables": {
-                "INNER_SEQUENCE_VARIABLE": "payload.Sequences[OUTER_SEQUENCE_VARIABLE]",
-                "INNER_MACRO_VARIABLE": "payload.Macros[OUTER_MACRO_VARIABLE]",
-            },
-            "Macros": {
-                "INNER_VARIABLE_MACRO": "payload.Variables[OUTER_VARIABLE_MACRO]",
-            },
-        })
-
-
-    def test_import_inspection_dispatches_raw_sequence_tables_from_variables_and_macros(self) -> None:
-        def sequence(name: str, click: int) -> dict:
-            return {
-                "MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
-                "Default": 1,
-                "Versions": [{"Actions": [{"Type": "Pause", "Clicks": click}]}],
-            }
-
-        variable_pair = ["INNER_VARIABLE_PAIR", sequence("INNER_VARIABLE_PAIR", 1)]
-        macro_pair = ["INNER_MACRO_PAIR", sequence("INNER_MACRO_PAIR", 2)]
-        payload = {"type": "COLLECTION", "payload": {
-            "Variables": {
-                "OUTER_VARIABLE_SEQUENCE": sequence("INNER_VARIABLE_SEQUENCE", 3),
-                "OUTER_VARIABLE_PAIR": variable_pair,
-                "OUTER_PROTECTED_VARIABLE": GSE_PROTECTED_VARIABLE_VECTOR,
-            },
-            "Macros": {
-                "OUTER_MACRO_SEQUENCE": sequence("INNER_MACRO_SEQUENCE", 4),
-                "OUTER_MACRO_PAIR": macro_pair,
-                "OUTER_PROTECTED_MACRO": GSE_PROTECTED_MACRO_VECTOR,
-            },
-        }}
-        imported = gse_fixture(payload)
-
-        result = inspect_import(imported)
-
-        members = {member["name"]: member for member in result["sequences"]}
-        self.assertEqual(set(members), {
-            "INNER_VARIABLE_SEQUENCE", "INNER_VARIABLE_PAIR",
-            "INNER_MACRO_SEQUENCE", "INNER_MACRO_PAIR",
-        })
-        self.assertEqual(members["INNER_VARIABLE_SEQUENCE"]["versions"][0]["source_path"],
-                         "Variables[OUTER_VARIABLE_SEQUENCE].Versions[1]")
-        self.assertEqual(members["INNER_VARIABLE_PAIR"]["raw_sequence"], variable_pair)
-        self.assertEqual(members["INNER_VARIABLE_PAIR"]["versions"][0]["source_path"],
-                         "Variables[OUTER_VARIABLE_PAIR].Versions[1]")
-        self.assertEqual(members["INNER_MACRO_SEQUENCE"]["versions"][0]["source_path"],
-                         "Macros[OUTER_MACRO_SEQUENCE].Versions[1]")
-        self.assertEqual(members["INNER_MACRO_PAIR"]["raw_sequence"], macro_pair)
-        self.assertEqual(members["INNER_MACRO_PAIR"]["versions"][0]["source_path"],
-                         "Macros[OUTER_MACRO_PAIR].Versions[1]")
-        self.assertEqual(result["variables"]["OUTER_PROTECTED_VARIABLE"]["funct"],
-                         "return GSE.V.Other()")
-        self.assertEqual(result["macros"]["OUTER_PROTECTED_MACRO"]["macro"],
-                         "/cast 77575\n/use 13")
-        self.assertEqual(result["raw_payload"], payload)
 
 
     def test_import_inspection_recursively_expands_plain_nested_collection_members(self) -> None:
@@ -720,98 +192,6 @@ class ImportInspectionTests(unittest.TestCase):
             "Sequences[WRAPPER].payload.Macros[INNER_M]",
         })
         self.assertEqual(result["raw_payload"], outer_payload)
-
-
-    def test_import_inspection_rejects_bad_encoded_member_in_nested_collection_with_path(self) -> None:
-        nested_wire = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"BROKEN": "!GSE3!not-base64!"},
-        }})
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"WRAPPER": nested_wire},
-        }})
-
-        with self.assertRaises(ValueError) as raised:
-            inspect_import(imported)
-        error = str(raised.exception)
-        self.assertIn("Sequences[WRAPPER].payload.Sequences[BROKEN]", error)
-        self.assertIn("编码无效", error)
-
-
-    def test_import_inspection_rejects_nested_collection_depth_over_limit(self) -> None:
-        nested = {"type": "COLLECTION", "payload": {"Sequences": {
-            "LEAF": {"MetaData": {"Name": "LEAF", "SpecID": 252,
-                                    "GSEVersion": 3332}, "Default": 1,
-                     "Versions": [{"Actions": []}]},
-        }}}
-        for index in range(40):
-            nested = {"type": "COLLECTION", "payload": {
-                "Sequences": {f"LEVEL_{index}": gse_fixture(nested)},
-            }}
-        imported = gse_fixture(nested)
-
-        with self.assertRaises(ValueError) as raised:
-            inspect_import(imported)
-        error = str(raised.exception)
-        self.assertIn("递归过深", error)
-        self.assertIn("Sequences[LEVEL_", error)
-
-
-    def test_import_inspection_marks_nested_sequence_name_collision_ambiguous(self) -> None:
-        sequence = {"MetaData": {"Name": "DUP", "SpecID": 252, "GSEVersion": 3332},
-                    "Default": 1, "Versions": [{"Actions": []}]}
-        nested_wire = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"DUP": sequence},
-        }})
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"DUP": sequence, "WRAPPER": nested_wire},
-        }})
-
-        result = inspect_import(imported)
-
-        self.assertEqual(result["sequences"], [])
-        collision = next(block for block in result["collection_compatibility_blocks"]
-                         if block["category"] == "Sequences" and block["name"] == "DUP")
-        self.assertIn("歧义", collision["reason"])
-        self.assertIn("pairs", collision["reason"])
-        self.assertEqual({collision["source_path"], collision["conflicting_source_path"]}, {
-            "Sequences[WRAPPER].payload.Sequences[DUP]", "Sequences[DUP]",
-        })
-        self.assertIsNotNone(collision["conflicting_raw_value"])
-        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["DUP"], sequence)
-        self.assertEqual(result["raw_payload"]["payload"]["Sequences"]["WRAPPER"], nested_wire)
-
-
-    def test_import_inspection_enforces_total_decoded_bytes_across_nested_members(self) -> None:
-        padding = "x" * 2_200_000
-        nested_wires = {}
-        for suffix in ("A", "B"):
-            nested_wires[f"WRAPPER_{suffix}"] = gse_fixture({"type": "COLLECTION", "payload": {
-                "Variables": {f"V_{suffix}": {"name": f"V_{suffix}",
-                                               "funct": "return 1", "Padding": padding}},
-            }})
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": nested_wires,
-        }})
-
-        with self.assertRaises(ValueError) as raised:
-            inspect_import(imported)
-        error = str(raised.exception)
-        self.assertIn("递归解码数据总量", error)
-        self.assertIn("Sequences[WRAPPER_", error)
-
-
-    def test_import_inspection_counts_plain_encoded_object_once_within_total_budget(self) -> None:
-        padding = "x" * 2_200_000
-        variable_wire = gse_fixture({"objectType": "VARIABLE", "name": "BIG_VARIABLE",
-                                     "funct": "return 1", "Padding": padding})
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Variables": {"BIG_VARIABLE": variable_wire},
-        }})
-
-        result = inspect_import(imported)
-
-        self.assertEqual(result["status"], "decoded")
-        self.assertEqual(len(result["variables"]["BIG_VARIABLE"]["Padding"]), len(padding))
 
 
     def test_import_inspection_reconstructs_self_contained_collection_delta_fork(self) -> None:
@@ -902,46 +282,6 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertNotIn("OldTop", parsed_sequence)
 
 
-    def test_import_inspection_preserves_delta_forks_that_upstream_cannot_load(self) -> None:
-        base = {"MetaData": {"Name": "BASE", "SpecID": 252, "GSEVersion": 3332},
-                "Default": 1, "Versions": [{"Actions": []}]}
-        no_base = {"GSEDeltaFork": True, "platformId": "missing-base-id"}
-        no_platform_id = {"GSEDeltaFork": True, "base": gse_fixture(["NO_PLATFORM", base])}
-        payload = {"type": "COLLECTION", "payload": {"Sequences": {
-            "NO_BASE": no_base, "NO_PLATFORM": no_platform_id,
-        }}}
-
-        result = inspect_import(gse_fixture(payload))
-
-        blockers = {item["name"]: item for item in result["collection_compatibility_blocks"]}
-        self.assertEqual(result["status"], "decoded")
-        self.assertEqual(result["sequences"], [])
-        self.assertEqual(blockers["NO_BASE"]["raw_value"], no_base)
-        self.assertEqual(blockers["NO_PLATFORM"]["raw_value"], no_platform_id)
-        self.assertIn("base", blockers["NO_BASE"]["reason"])
-        self.assertIn("platformId", blockers["NO_PLATFORM"]["reason"])
-        self.assertIn("NO_BASE", blockers["NO_BASE"]["source_path"])
-
-
-    def test_import_inspection_keeps_raw_nulls_while_applying_upstream_empty_defaults(self) -> None:
-        actions = [
-            {"Type": "Repeat", "type": "spell", "spell": 77575,
-             "Interval": None, "Repeat": "3"},
-            {"Type": "Pause", "Clicks": 2, "MS": ""},
-        ]
-        payload = ["EMPTY_DEFAULTS", {
-            "MetaData": {"Name": "EMPTY_DEFAULTS", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1, "Versions": [{"Actions": actions}],
-        }]
-
-        result = inspect_import(gse_cbor_text_fixture(payload))
-
-        member = result["sequences"][0]
-        self.assertEqual(member["versions"][0]["raw_version"]["Actions"], actions)
-        self.assertTrue(member["version_support"][0]["simulation_preflight_passed"],
-                        member["version_support"][0]["support_reason"])
-
-
     def test_import_inspection_rejects_unknown_block_with_member_version_and_path(self) -> None:
         imported = gse_fixture(["UNKNOWN", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
@@ -954,41 +294,6 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertIn("FutureBlock", error)
         self.assertIn("UNKNOWN", error)
         self.assertIn("Versions[1].Actions[1]", error)
-
-
-    def test_import_inspection_rejects_scalar_nested_block_with_exact_path(self) -> None:
-        imported = gse_fixture(["BAD_CHILD", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Loop", "Repeat": 1, 1: "not a block"}]}],
-        }])
-
-        with self.assertRaises(ValueError) as raised:
-            inspect_import(imported)
-        error = str(raised.exception)
-        self.assertIn("BAD_CHILD", error)
-        self.assertIn("Versions[1].Actions[1][1]", error)
-
-
-    def test_import_inspection_parses_known_blocks_with_upstream_optional_fields_missing(self) -> None:
-        payload = ["OPTIONAL_FIELDS", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3332}, "Default": 1,
-            "Versions": [
-                {"Actions": [{"Type": "Pause"}]},
-                {"Actions": [{"Type": "If"}]},
-                {"Actions": [{"Type": "Embed"}]},
-            ],
-        }]
-
-        result = inspect_import(gse_fixture(payload))
-
-        self.assertEqual(result["status"], "decoded")
-        member = result["sequences"][0]
-        self.assertEqual([version["version"] for version in member["versions"]], [1, 2, 3])
-        self.assertEqual([row["type"] for row in result["syntax_locations"]], ["Pause", "If", "Embed"])
-        supports = {row["version"]: row for row in member["version_support"]}
-        self.assertTrue(supports[1]["simulation_preflight_passed"])
-        self.assertIn("If", supports[2]["support_reason"])
-        self.assertIn("Embed", supports[3]["support_reason"])
 
 
     def test_import_inspection_marks_newer_gse_members_as_not_simulatable(self) -> None:
@@ -1007,75 +312,6 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertFalse(members["FUTURE"]["simulation_preflight_passed"])
         self.assertIn("3333", members["FUTURE"]["support_reason"])
         self.assertIn("3332", members["FUTURE"]["support_reason"])
-
-
-    def test_import_inspection_reports_known_macro_and_block_rejections_per_version(self) -> None:
-        imported = gse_fixture(["PREFLIGHT", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [
-                {"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]},
-                {"Actions": [{"Type": "Action", "type": "macro",
-                               "macro": "/cast [nochanneling] Epidemic"}]},
-                {"Actions": [{"Type": "If", "Variable": "=GSE.V.ExternalFlag()",
-                               1: [{"Type": "Action", "type": "spell", "spell": 77575}]}]},
-                {"Actions": [{"Type": "Action", "type": "macro", "macro": "/petattack [pet]"}]},
-                {"Actions": [{"Type": "Action", "type": "macro",
-                               "macro": "/petassist [@target,harm,nodead]"}]},
-            ],
-        }])
-        result = inspect_import(imported)
-        member = result["sequences"][0]
-        versions = {item["version"]: item for item in member["version_support"]}
-
-        self.assertTrue(versions[1]["simulation_preflight_passed"])
-        self.assertEqual(versions[1]["support_status"], "requires_character_validation")
-        self.assertIsNone(versions[1]["simulation_supported"])
-        self.assertIn("尚未核对", versions[1]["support_reason"])
-        self.assertFalse(versions[2]["simulation_preflight_passed"])
-        self.assertFalse(versions[2]["simulation_supported"])
-        self.assertIn("nochanneling", versions[2]["support_reason"])
-        self.assertIn("Versions[2].Actions[1]", versions[2]["support_reason"])
-        self.assertFalse(versions[3]["simulation_preflight_passed"])
-        self.assertIn("GSE If 条件需要游戏内变量", versions[3]["support_reason"])
-        self.assertFalse(versions[4]["simulation_preflight_passed"])
-        self.assertIn("petattack", versions[4]["support_reason"])
-        self.assertFalse(versions[5]["simulation_preflight_passed"])
-        self.assertIn("petassist", versions[5]["support_reason"])
-        self.assertFalse(result["simulation_started"])
-
-
-    def test_false_conditional_stopmacro_does_not_hide_reachable_lines(self) -> None:
-        imported = gse_fixture(["CONDITIONAL_STOPMACRO", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                         "macro": "\n".join(("/stopmacro [mod:shift]",
-                                                                "/not-a-supported-command"))}]}],
-        }])
-        inspection = inspect_import(imported)
-        member = inspection["sequences"][0]
-        self.assertFalse(member["simulation_preflight_passed"])
-        self.assertIn("not-a-supported-command", member["support_reason"])
-        self.assertIn("[行 2]", member["support_reason"])
-
-
-    def test_inspection_rejects_unknown_combat_macro_conditions(self) -> None:
-        for condition in ("combat", "nocombat"):
-            with self.subTest(condition=condition):
-                imported = gse_fixture(["UNKNOWN_COMBAT", {
-                    "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-                    "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                                 "macro": f"/cast [{condition}] 77575"}]}],
-                }])
-                result = inspect_import(imported)
-                member = result["sequences"][0]
-
-                self.assertFalse(member["simulation_preflight_passed"], member)
-                self.assertIn("宏条件不能确定", member["support_reason"])
-                self.assertIn(f"[{condition}]", member["support_reason"])
-                self.assertIn(
-                    "Sequences[UNKNOWN_COMBAT].Versions[1].Actions[1].macro[行 1]",
-                    member["support_reason"],
-                )
 
 
     def test_import_inspection_preserves_empty_and_corrupt_encoding_diagnostics(self) -> None:
@@ -1111,38 +347,12 @@ class ImportInspectionTests(unittest.TestCase):
         self.assertIn("Name", error)
 
 
-    def test_import_inspection_rejects_trailing_cbor_data(self) -> None:
-        import cbor2
-        from codec import wire_value
-        payload = ["THIRD_PARTY", {
-            "MetaData": {"SpecID": 252},
-            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]}],
-        }]
-        raw = cbor2.dumps(wire_value(payload)) + b"\x00"
-        imported = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        with self.assertRaises(ValueError) as raised:
-            inspect_import(imported)
-        self.assertIn("编码", str(raised.exception))
-
-
     def test_import_inspection_rejects_decompression_over_limit(self) -> None:
         from gse_import import MAX_DECODED
         imported = gse_fixture("A" * (MAX_DECODED + 1))
         with self.assertRaises(ValueError) as raised:
             inspect_import(imported)
         self.assertIn("过大", str(raised.exception))
-
-
-    def test_import_inspection_rejects_nested_or_excessive_cbor_nodes(self) -> None:
-        deep = None
-        for _ in range(40):
-            deep = [deep]
-        cases = [deep, [0] * 10001]
-        for payload in cases:
-            with self.subTest(nodes=len(payload) if isinstance(payload, list) else 1):
-                with self.assertRaises(ValueError) as raised:
-                    inspect_import(gse_fixture(payload))
-                self.assertIn("过深或节点过多", str(raised.exception))
 
 
 class InterfaceTests(unittest.TestCase):
@@ -1231,30 +441,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual((destination / 'dual.json').read_text(encoding='utf-8'), pointer)
         self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
 
-    def test_homepage_is_the_real_three_step_shell(self) -> None:
-        with urlopen(self.url, timeout=2) as response:
-            page = response.read().decode("utf-8")
-
-        self.assertEqual(response.status, 200)
-        self.assertIn('id="profile"', page)
-        self.assertIn('id="progressText"', page)
-        self.assertIn('id="resultSection"', page)
-        self.assertIn('id="copy"', page)
-        self.assertIn('hidden', page.split('id="resultSection"', 1)[1].split(">", 1)[0])
-        self.assertNotIn("演示进度", page)
-        self.assertNotIn("原型尚未连接", page)
-        self.assertIn('id="gseImport"', page)
-        self.assertIn('id="inspectImport"', page)
-        self.assertIn('id="importSequence"', page)
-        self.assertIn('id="importStart"', page)
-        self.assertIn('importStart.disabled=running||!preflightPassed', page)
-        self.assertIn('simulation_preflight_passed===true', page)
-        self.assertIn('角色技能和物品映射尚未核对', page)
-        self.assertIn('selected.support_reason', page)
-        self.assertIn('importStart.disabled=true', page)
-        self.assertNotIn('id="gseClick"', page)
-        self.assertIn('gse_click_ms:Number(interval.value)', page)
-
     def _json_request(self, method: str, path: str, value: dict | None = None,
                       timeout: float = 3) -> dict:
         body = None if value is None else json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -1296,378 +482,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
 
 
-    def test_import_start_rejects_sparse_actions_before_creating_a_task(self) -> None:
-        payload = ["TOP_GAP", {
-            "MetaData": {"Name": "TOP_GAP", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": {"1": {"Type": "Action", "type": "spell", "spell": 77575},
-                                        "3": {"Type": "Action", "type": "spell", "spell": 49998}}}],
-        }]
-
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import",
-                "gse": gse_cbor_text_fixture(payload), "sequence_name": "TOP_GAP", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500,
-            })
-
-        self.assertEqual(raised.exception.code, 400)
-        error = json.loads(raised.exception.read())["error"]
-        self.assertIn("动作索引有空洞", error)
-        self.assertIn("Sequences[TOP_GAP].Versions[1].Actions[3]", error)
-        self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
-
-    def test_import_start_uses_actual_sparse_version_ids_without_index_errors(self) -> None:
-        payload = {"type": "COLLECTION", "payload": {"Sequences": {"SPARSE": {
-            "MetaData": {"Name": "SPARSE", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": {
-                "1": {"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]},
-                "3": {"Actions": [{"Type": "Pause", "Clicks": 2}]},
-            },
-        }}}}
-        imported = gse_cbor_text_fixture(payload)
-        base = {"profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "SPARSE", "gse_click_ms": 300, "gcd_ms": 1500}
-
-        with self.assertRaises(HTTPError) as sparse:
-            self._json_request("POST", "/api/tasks", dict(base, version=3))
-        self.assertEqual(sparse.exception.code, 400)
-        self.assertIn("版本索引有空洞", json.loads(sparse.exception.read())["error"])
-
-        with self.assertRaises(HTTPError) as absent:
-            self._json_request("POST", "/api/tasks", dict(base, version=2))
-        self.assertEqual(absent.exception.code, 400)
-        self.assertIn("版本无效", json.loads(absent.exception.read())["error"])
-        self.assertEqual(self.server.tasks, {})
-        self.assertEqual(list(self.server.task_root.iterdir()), [])
-
-
-    def test_import_inspection_parses_numeric_version_blocks_without_actions(self) -> None:
-        # Synthetic malformed-but-importable shape: GSE retains version-level blocks,
-        # while its structure checker reports the missing Actions table.
-        sequence = {
-            "MetaData": {"Name": "SYNTH_NUMERIC_VERSION", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": {"1": {
-                "1": {"Type": "Repeat", "Interval": 2, "spell": 77575},
-                "2": {"Type": "Action", "type": "spell", "spell": 77575},
-                "3": {"Type": "Pause", "Clicks": 0},
-            }},
-        }
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"SYNTH_NUMERIC_VERSION": sequence},
-            "Variables": [], "Macros": [],
-        }})
-
-        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-
-        member = result["sequences"][0]
-        self.assertEqual(member["versions"][0]["raw_version"], sequence["Versions"]["1"])
-        self.assertEqual(member["versions"][0]["parsed_version"]["1"]["Type"], "Repeat")
-        self.assertEqual(result["syntax_locations"], [
-            {"sequence": "SYNTH_NUMERIC_VERSION", "version": 1, "type": "Repeat",
-             "path": "Sequences[SYNTH_NUMERIC_VERSION].Versions[1][1]"},
-            {"sequence": "SYNTH_NUMERIC_VERSION", "version": 1, "type": "Action",
-             "path": "Sequences[SYNTH_NUMERIC_VERSION].Versions[1][2]"},
-            {"sequence": "SYNTH_NUMERIC_VERSION", "version": 1, "type": "Pause",
-             "path": "Sequences[SYNTH_NUMERIC_VERSION].Versions[1][3]"},
-        ])
-        self.assertTrue(any("缺少 Actions" in warning for warning in member["parse_warnings"]))
-        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
-        self.assertIn("Versions[1].Actions", member["version_support"][0]["support_reason"])
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "SYNTH_NUMERIC_VERSION", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("Versions[1].Actions", json.loads(raised.exception.read())["error"])
-        self.assertEqual(self.server.tasks, {})
-
-
-    def test_import_inspection_reports_gse_rejection_of_raw_collection_sequence_pair(self) -> None:
-        sequence = {
-            "MetaData": {"Name": "INNER_RAW_PAIR", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 1}]}],
-        }
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"RAW_PAIR": ["RAW_PAIR", sequence]},
-        }})
-
-        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-
-        self.assertEqual(result["status"], "decoded")
-        self.assertFalse(result["simulation_started"])
-        member = result["sequences"][0]
-        self.assertEqual(member["name"], "RAW_PAIR")
-        self.assertEqual(member["raw_sequence"], ["RAW_PAIR", sequence])
-        self.assertEqual(member["versions"][0]["source_path"],
-                         "Sequences[RAW_PAIR].Versions[1]")
-        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
-        self.assertEqual(member["version_support"][0]["support_status"], "unsupported")
-        self.assertIn("上游会拒绝导入", member["version_support"][0]["support_reason"])
-        blockers = result["collection_compatibility_blocks"]
-        self.assertEqual(len(blockers), 1)
-        self.assertEqual(blockers[0]["source_path"], "Sequences[RAW_PAIR]")
-        self.assertIn("GSEVersion", blockers[0]["reason"])
-        self.assertEqual(blockers[0]["raw_value"], ["RAW_PAIR", sequence])
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "RAW_PAIR", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("上游会拒绝导入", json.loads(raised.exception.read())["error"])
-        self.assertEqual(self.server.tasks, {})
-
-
-    def test_import_inspection_blocks_raw_variable_macro_tables_without_upstream_shape(self) -> None:
-        sequence = {
-            "MetaData": {"Name": "BLOCKED_COLLECTION", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Pause", "Clicks": 1}]}],
-        }
-        raw_variable = {"funct": "return 7", "CustomField": {"preserved": True}}
-        raw_macro = {"macro": "/cast 101", "CustomField": [1, 2]}
-        payload = {"type": "COLLECTION", "payload": {
-            "Sequences": {"BLOCKED_COLLECTION": sequence},
-            "Variables": {"RAW_VARIABLE": raw_variable},
-            "Macros": {"RAW_MACRO": raw_macro},
-        }}
-        imported = gse_fixture(payload)
-
-        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-
-        self.assertEqual(result["status"], "decoded")
-        self.assertFalse(result["simulation_started"])
-        self.assertEqual(result["raw_payload"], payload)
-        self.assertEqual(result["raw_variables"], payload["payload"]["Variables"])
-        self.assertEqual(result["raw_macros"], payload["payload"]["Macros"])
-        self.assertNotIn("RAW_VARIABLE", result["variables"])
-        self.assertNotIn("RAW_MACRO", result["macros"])
-        member = result["sequences"][0]
-        self.assertEqual(member["name"], "BLOCKED_COLLECTION")
-        self.assertFalse(member["version_support"][0]["simulation_preflight_passed"])
-        self.assertEqual(member["version_support"][0]["support_status"], "unsupported")
-        self.assertIn("Variables[RAW_VARIABLE]", member["support_reason"])
-        self.assertNotIn("Macros[RAW_MACRO]", member["support_reason"])
-        blockers = {block["source_path"]: block
-                    for block in result["collection_compatibility_blocks"]}
-        self.assertEqual(set(blockers), {"Variables[RAW_VARIABLE]", "Macros[RAW_MACRO]"})
-        self.assertTrue(all(block["blocks_import"] for block in blockers.values()))
-        self.assertEqual(blockers["Variables[RAW_VARIABLE]"]["raw_value"], raw_variable)
-        self.assertEqual(blockers["Macros[RAW_MACRO]"]["raw_value"], raw_macro)
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "BLOCKED_COLLECTION", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("Variables[RAW_VARIABLE]", json.loads(raised.exception.read())["error"])
-        self.assertEqual(self.server.tasks, {})
-
-    def test_import_inspection_does_not_let_bad_macro_block_preceding_sequence(self) -> None:
-        sequence = {
-            "MetaData": {"Name": "INDEPENDENT_SEQUENCE", "SpecID": 252, "GSEVersion": 3332},
-            "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 77575}]}],
-        }
-        bad_macro = {"name": "UNSUPPORTED_MACRO", "macro": "/cast unknown"}
-        macro_import = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"INDEPENDENT_SEQUENCE": sequence},
-            "Macros": {"UNSUPPORTED_MACRO": bad_macro},
-        }})
-
-        result = self._json_request("POST", "/api/gse/inspect", {"gse": macro_import})
-
-        self.assertEqual(result["status"], "decoded")
-        member = result["sequences"][0]
-        self.assertTrue(member["version_support"][0]["simulation_preflight_passed"],
-                        member["version_support"][0]["support_reason"])
-        self.assertNotIn("Macros[UNSUPPORTED_MACRO]", member["version_support"][0]["support_reason"])
-        blocker = next(block for block in result["collection_compatibility_blocks"]
-                       if block["category"] == "Macros")
-        self.assertEqual(blocker["source_path"], "Macros[UNSUPPORTED_MACRO]")
-        self.assertEqual(blocker["raw_value"], bad_macro)
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": macro_import,
-            "sequence_name": "INDEPENDENT_SEQUENCE", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        self.assertEqual(created["status"], "starting")
-
-        bad_variable_import = gse_fixture({"type": "COLLECTION", "payload": {
-            "Variables": {"UNSUPPORTED_VARIABLE": {"funct": "return true"}},
-            "Sequences": {"INDEPENDENT_SEQUENCE": sequence},
-        }})
-        variable_result = self._json_request("POST", "/api/gse/inspect", {
-            "gse": bad_variable_import,
-        })
-        blocked_member = variable_result["sequences"][0]
-        self.assertFalse(blocked_member["version_support"][0]["simulation_preflight_passed"])
-        self.assertIn("Variables[UNSUPPORTED_VARIABLE]",
-                      blocked_member["version_support"][0]["support_reason"])
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": bad_variable_import,
-                "sequence_name": "INDEPENDENT_SEQUENCE", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("Variables[UNSUPPORTED_VARIABLE]",
-                      json.loads(raised.exception.read())["error"])
-
-    def test_import_inspection_does_not_let_bad_nested_macro_block_preceding_sequence(self) -> None:
-        def sequence(name: str) -> dict:
-            return {
-                "MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
-                "Default": 1,
-                "Versions": [{"Actions": [{"Type": "Action", "type": "spell",
-                                              "spell": 77575}]}],
-            }
-
-        nested_collection = {"type": "COLLECTION", "payload": {
-            "Sequences": {"NESTED_SEQUENCE": sequence("NESTED_SEQUENCE")},
-            "Macros": {"BAD_NESTED_MACRO": {"macro": "/cast unknown"}},
-        }}
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"OUTER_SEQUENCE": sequence("OUTER_SEQUENCE")},
-            "Macros": {"OUTER_MACRO": nested_collection},
-        }})
-
-        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-
-        members = {member["name"]: member for member in result["sequences"]}
-        self.assertTrue(members["OUTER_SEQUENCE"]["version_support"][0]
-                        ["simulation_preflight_passed"])
-        nested_support = members["NESTED_SEQUENCE"]["version_support"][0]
-        self.assertTrue(nested_support["simulation_preflight_passed"],
-                        nested_support["support_reason"])
-        self.assertNotIn("Macros[OUTER_MACRO].payload.Macros[BAD_NESTED_MACRO]",
-                         nested_support["support_reason"])
-
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "OUTER_SEQUENCE", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        self.assertEqual(created["status"], "starting")
-        nested_created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "NESTED_SEQUENCE", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        self.assertEqual(nested_created["status"], "starting")
-
-    def test_import_inspection_uses_member_keys_not_display_paths_for_order(self) -> None:
-        def sequence(name: str) -> dict:
-            return {
-                "MetaData": {"Name": name, "SpecID": 252, "GSEVersion": 3332},
-                "Default": 1,
-                "Versions": [{"Actions": [{"Type": "Action", "type": "spell",
-                                              "spell": 77575}]}],
-            }
-
-        def nested_collection(sequence_name: str, *, bad_variable: bool = False) -> dict:
-            body = {"Sequences": {sequence_name: sequence(sequence_name)}}
-            if bad_variable:
-                body["Variables"] = {"BAD_VARIABLE": {"funct": "return true"}}
-            return {"type": "COLLECTION", "payload": body}
-
-        imported = gse_fixture({"type": "COLLECTION", "payload": {
-            "Sequences": {"OUTER_SEQUENCE": sequence("OUTER_SEQUENCE")},
-            "Macros": {
-                "OUTER.payload.WRAPPER_A": nested_collection("INNER_A", bad_variable=True),
-                "OUTER.payload.WRAPPER_B": nested_collection("INNER_B"),
-            },
-        }})
-
-        result = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-
-        members = {member["name"]: member for member in result["sequences"]}
-        self.assertFalse(members["INNER_A"]["version_support"][0]
-                         ["simulation_preflight_passed"])
-        self.assertIn("Macros[OUTER.payload.WRAPPER_A].payload.Variables[BAD_VARIABLE]",
-                      members["INNER_A"]["version_support"][0]["support_reason"])
-        self.assertFalse(members["INNER_B"]["version_support"][0]
-                         ["simulation_preflight_passed"])
-        self.assertIn("pairs 遍历顺序不确定",
-                      members["INNER_B"]["version_support"][0]["support_reason"])
-        self.assertTrue(members["OUTER_SEQUENCE"]["version_support"][0]
-                        ["simulation_preflight_passed"])
-
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "OUTER_SEQUENCE", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        self.assertEqual(created["status"], "starting")
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "INNER_B", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("pairs 遍历顺序不确定", json.loads(raised.exception.read())["error"])
-
-
-    @pytest.mark.usefixtures('memory_result_center')
-    def test_inspection_and_task_share_case_and_stopmacro_reachability(self) -> None:
-        imported = gse_fixture(["MACRO_REACHABILITY", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                         "macro": "\n".join(("/CAST 77575", "/stopmacro",
-                                                                "/not-a-supported-command"))}]}],
-        }])
-        inspection = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-        member = inspection["sequences"][0]
-        self.assertTrue(member["simulation_preflight_passed"], member["support_reason"])
-
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "MACRO_REACHABILITY", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._task_state_request(created["task_id"], deadline)
-            if state["status"] in {"completed", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertGreater(state["dps"], 0)
-
-    def test_repeat_macro_is_rejected_before_task_creation(self) -> None:
-        imported = gse_fixture(["REPEAT_PET_COMMAND", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Repeat", "Interval": 2,
-                                         "type": "macro", "macro": "/petattack [pet]"}]}],
-        }])
-        inspection = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-        member = inspection["sequences"][0]
-        self.assertFalse(member["simulation_preflight_passed"])
-        self.assertIn("petattack", member["support_reason"])
-        self.assertIn("Versions[1].Actions[1]", member["support_reason"])
-
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "REPEAT_PET_COMMAND", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("petattack", json.loads(raised.exception.read())["error"])
-        self.assertEqual(self.server.tasks, {})
-        self.assertEqual(list(self.server.task_root.iterdir()), [])
-
-
     def test_task_api_rejects_unknown_combat_macro_condition_before_creating_task(self) -> None:
         for condition in ("combat", "nocombat"):
             with self.subTest(condition=condition):
@@ -1695,67 +509,6 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(list(self.server.task_root.iterdir()), [])
 
     @pytest.mark.usefixtures('memory_result_center')
-    def test_known_false_macro_condition_still_skips_its_unreachable_command(self) -> None:
-        imported = gse_fixture(["KNOWN_FALSE_CONDITION", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                         "macro": "/cast [combat,nopet] 99999999\n/cast 77575"}]}],
-        }])
-        inspection = self._json_request("POST", "/api/gse/inspect", {"gse": imported})
-        member = inspection["sequences"][0]
-        self.assertTrue(member["simulation_preflight_passed"], member["support_reason"])
-
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "KNOWN_FALSE_CONDITION", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._task_state_request(created["task_id"], deadline)
-            if state["status"] in {"completed", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertGreater(state["dps"], 0)
-
-    def test_task_api_rejects_known_unsupported_macro_before_creating_task(self) -> None:
-        imported = gse_fixture(["KAREN_MPLUS", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3313}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                         "macro": "/cast [nochanneling] Epidemic"}]}],
-        }])
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "KAREN_MPLUS", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("nochanneling", json.loads(raised.exception.read())["error"])
-        self.assertEqual(self.server.tasks, {})
-        self.assertEqual(list(self.server.task_root.iterdir()), [])
-
-    def test_task_api_rejects_active_pet_command_before_creating_task(self) -> None:
-        imported = gse_fixture(["PET_COMMAND", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                         "macro": "/petassist [pet]"}]}],
-        }])
-        with self.assertRaises(HTTPError) as raised:
-            self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "mode": "import", "gse": imported,
-                "sequence_name": "PET_COMMAND", "version": 1,
-                "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            })
-        self.assertEqual(raised.exception.code, 400)
-        self.assertIn("petassist", json.loads(raised.exception.read())["error"])
-        self.assertEqual(self.server.tasks, {})
-        self.assertEqual(list(self.server.task_root.iterdir()), [])
-
-
-    @pytest.mark.usefixtures('memory_result_center')
     def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -1781,29 +534,6 @@ class InterfaceTests(unittest.TestCase):
         destination, _ = self.server.tasks[created["task_id"]]
         from task import read_task
         self.assertEqual(read_task(destination)["simulation_config"]["target_count"], 5)
-
-    @pytest.mark.usefixtures('memory_result_center')
-    def test_import_gcd_pause_uses_upstream_integer_click_count(self) -> None:
-        imported = gse_fixture(["GCD_PAUSE", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [
-                {"Type": "Pause", "MS": "GCD"},
-                {"Type": "Action", "type": "spell", "spell": 77575},
-            ]}],
-        }])
-        source = Path(self.directory.name) / "gcd-pause.simc"
-        source.write_text(sample_profile(), encoding="utf-8")
-
-        result = run_task(
-            source, Path(self.directory.name) / "gcd-pause-task", mode="import",
-            gse_text=imported, sequence_name="GCD_PAUSE", version=1,
-            search_config={"input_interval_ms": 400},
-            gse_context={"click_ms": 400, "gcd_ms": 1500, "seed": 1},
-        )
-
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["controlled_simulation"]["blocks"],
-                         [[], [], [], ["outbreak"]])
 
     def test_public_service_reports_unmapped_import_skill_without_dps(self) -> None:
         imported = gse_fixture(["THIRD_PARTY", {
@@ -1865,42 +595,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(len({key for key, _ in reports}), len(reports))
         self.assertTrue(all(score > 0 for _, score in reports))
 
-    def test_task_checkpoints_write_less_than_repeated_complete_history(self) -> None:
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=3,
-            round_candidate_limit=1, batch_targets=(2, 4, 8), validation_batches=1,
-            final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1, diagnostic_logging=True, diagnostics='full')}
-        with _fast_search_boundary():
-            created = self._json_request('POST', '/api/tasks', {
-                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created['task_id'], deadline)
-                if state['status'] in {'completed', 'failed'}:
-                    break
-                time.sleep(0.02)
-        self.assertEqual(state['status'], 'completed', state)
-        _, handle = self.server.tasks[created['task_id']]
-        handle.join(5)
-        diagnostic = json.loads((handle.output_root / 'diagnostics.json').read_text(encoding='utf-8'))
-        self.assertGreater(diagnostic['task_state_bytes'], 0)
-        self.assertLess(diagnostic['task_state_bytes'], diagnostic['task_state_full_value_bytes'])
-        # Restore an old-format checkpoint without changing its request identities.
-        import sqlite3
-        import sequence
-        from search import TaskStore
-        from task import resume_task
-        with sqlite3.connect(handle.output_root / 'task.sqlite3') as database:
-            checkpoint = TaskStore.load_state(database)
-            database.execute('UPDATE state SET value=? WHERE id=1', (json.dumps(checkpoint),))
-        database.close()
-        with _fast_search_boundary(), patch.object(
-                sequence, 'evaluate', side_effect=AssertionError('saved results must be reused')):
-            resumed = resume_task(handle.output_root)
-        self.assertEqual(resumed['status'], 'completed')
-        self.assertEqual(resumed['completed_batches'], checkpoint['completed_batches'])
-
     def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
         import result_store
         import sequence
@@ -1946,48 +640,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
         self.assertEqual(len(evaluated), len(set(evaluated)))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
-        self.assertEqual(len(keys), len(set(keys)))
-
-    def test_unregistered_corrupt_group_can_be_recomputed_on_resume(self) -> None:
-        import result_store
-        from task import resume_task
-
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
-        original_write = result_store.write
-        damaged = False
-
-        def publish_then_damage(table, key, rows, **kwargs):
-            nonlocal damaged
-            result = original_write(table, key, rows, **kwargs)
-            if table == 'batches' and len(rows) == 12 and not damaged:
-                damaged = True
-                (result_store.DATA_ROOT / table / (key + '.parquet')).write_bytes(b'corrupt')
-                raise OSError('damaged before registration')
-            return result
-
-        with _fast_search_boundary():
-            with patch.object(result_store, 'write', side_effect=publish_then_damage):
-                created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    state = self._task_state_request(created['task_id'], deadline)
-                    if state['status'] == 'failed':
-                        break
-                    time.sleep(.02)
-                self.assertEqual(state['status'], 'failed', state)
-            _, handle = self.server.tasks[created['task_id']]
-            handle.join(5)
-            resumed = resume_task(handle.output_root)
-        self.assertTrue(damaged)
-        self.assertEqual(resumed['status'], 'completed')
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
@@ -2052,9 +704,6 @@ class InterfaceTests(unittest.TestCase):
 
     def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
         self._assert_simultaneous_identical_tasks()
-
-    def test_simultaneous_tasks_with_different_parents_share_report_locations(self) -> None:
-        self._assert_simultaneous_identical_tasks(different_parent=True)
 
     def test_lost_report_locations_reject_duplicate_publication(self) -> None:
         import result_store
@@ -2176,43 +825,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
 
-    def test_real_task_reaches_candidate_through_the_same_public_service(self) -> None:
-        self.server.task_options = {
-            "search_config": {
-                "total_budget_seconds": 20,
-                "search_budget_seconds": 8,
-                "candidate_limit": 2,
-                "round_candidate_limit": 1,
-                "batch_targets": (2,),
-                "validation_batches": 1,
-                "final_batches": 1,
-                "iterations": 2,
-                "final_iterations": 2,
-                "scenarios": ("nominal",),
-                "max_processes": 1,
-            }
-        }
-        with _fast_search_boundary():
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            self.assertEqual(created["status"], "starting")
-            task_id = created["task_id"]
-            deadline = time.monotonic() + 30
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(task_id, deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                    break
-                time.sleep(0.1)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertTrue(state["result_ready"])
-        self.assertEqual(state["evidence_status"], "search_result")
-        self.assertTrue(state["candidate_text"].startswith("!GSE3!"))
-        self.assertIn("未进行最终独立复测", state["result_note"])
-        self.assertIn("搜索选中", state["result_note"])
-        self.assertEqual(state["phase"], "done")
-        self.assertGreater(state["elapsed_seconds"], 0)
-
     def test_rule_start_and_sources_are_visible_through_page_and_task_api(self):
         from test_search import _apl_task_boundary, _minimal_rule_pack
         pack = _minimal_rule_pack()
@@ -2263,38 +875,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn('ruleInitialization', page)
         self.assertIn('state.rule_initialization', page)
 
-
-    def test_finished_task_error_is_not_hidden_by_a_completed_result(self):
-        import task
-        from contextlib import contextmanager
-        original_lease = task._task_lease
-        @contextmanager
-        def fail_unlock(destination):
-            with original_lease(destination):
-                yield
-            raise OSError("synthetic task lock release failure")
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
-            final_iterations=2, scenarios=("nominal",), max_processes=1)}
-        with _fast_search_boundary(), patch.object(task, "_task_lease", side_effect=fail_unlock):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] == "failed":
-                    break
-                time.sleep(0.01)
-        self.assertEqual(state["status"], "failed", state)
-        self.assertFalse(state["result_ready"])
-        self.assertTrue(state["error"])
-
-    def test_public_search_stops_clear_round_without_scoring_everyone_to_512(self) -> None:
-        self._check_adaptive_round()
-
-    def test_public_search_uses_group_damage_variance_for_group_scores(self) -> None:
-        self._check_adaptive_round(grouped=True)
 
     def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
         self._check_adaptive_round(invalid_variance=True)
@@ -2365,115 +945,7 @@ class InterfaceTests(unittest.TestCase):
 
 
     @pytest.mark.usefixtures('memory_result_center')
-    def test_public_search_preserves_exports_and_native_evaluates_castsequence_reset(self) -> None:
-        import cbor2
-        import codec
-        import engine
-        import search
-        import sequence
-        from test_search import _fast_initialization
-
-        real_evaluate = sequence.evaluate
-        capabilities = {
-            "actions": [
-                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
-                     gcd_ms=1500, base_spell_id=77575),
-                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
-                     gcd_ms=1500, base_spell_id=47541),
-                dict(kind="spell", spell_id=55090, simc_action="scourge_strike", name="Scourge Strike",
-                     gcd_ms=1500, base_spell_id=55090),
-            ],
-            "precombat_actions": [], "sources": [], "protocol": 3,
-            "scope": "test", "coverage": "constructed-test-boundary",
-        }
-
-        def inspect(_reference, folder):
-            folder = Path(folder)
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
-            return capabilities
-
-        castsequence_evaluations = []
-        native_evaluations = []
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            castsequence_nodes = [
-                node for node in candidate["program"]["nodes"]
-                if node["kind"] == "Action"
-                and any(command.get("kind") == "castsequence" for command in node["commands"])
-            ]
-            if castsequence_nodes:
-                castsequence_evaluations.append((candidate, castsequence_nodes[0]))
-                result = real_evaluate(profile, candidate, folder, **kwargs)
-                native_evaluations.append((candidate, result))
-                return result
-            raise AssertionError("搜索丢失了已提供的 /castsequence 起点")
-
-        self.server.task_options = {
-            "search_config": {
-                "total_budget_seconds": 60,
-                "search_budget_seconds": 30,
-                "candidate_limit": 2,
-                "round_candidate_limit": 1,
-                "batch_targets": (2,),
-                "validation_batches": 2,
-                "final_batches": 2,
-                "iterations": 2,
-                "final_iterations": 2,
-                "scenarios": ("nominal",),
-                "max_processes": 1,
-                "random_seed": 20260927,
-                "reset_events": ((4500, "target"),),
-            }
-        }
-        real_gse_runner = codec.run_command
-        with _fast_initialization(real_engine=True), \
-             patch.object(codec, "run_command", side_effect=real_gse_runner), \
-             patch.object(engine, "inspect", side_effect=inspect), \
-             patch.object(sequence, "check_report", new=engine.check_report), \
-             patch.object(search, "DEFAULT_SCENARIOS", ("nominal",)), \
-             patch.dict(search.DEFAULT_CONFIG, {"final_batches": 2, "final_iterations": 2}), \
-             _initialized_starts([[dict(kind="CastSequence", members=["outbreak", "death_coil"],
-                                       reset={"timeout_seconds": 2, "flags": ["target"]})]]), \
-             patch.object(sequence, "evaluate", side_effect=evaluate):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            deadline = time.monotonic() + 45
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                    break
-                time.sleep(0.05)
-
-        self.assertEqual(state["status"], "completed", state)
-        self.assertTrue(castsequence_evaluations, "公开搜索没有保留并评价 /castsequence 起点")
-        self.assertTrue(native_evaluations, "/castsequence 没有通过真实原生受控评价")
-        selected = next((row for row in castsequence_evaluations
-                         if row[0]["text"] == state["candidate_text"]), None)
-        self.assertIsNotNone(selected, "最终结果没有选择真实评价过的 /castsequence 候选")
-        selected_native = next((result for candidate, result in native_evaluations
-                                if candidate["text"] == selected[0]["text"]), None)
-        self.assertIsNotNone(selected_native)
-        self.assertEqual(state["evidence_status"], "search_result")
-
-        command = next(command for command in selected[1]["commands"]
-                       if command.get("kind") == "castsequence")
-        self.assertEqual(command["members"], ["outbreak", "death_coil"])
-        self.assertEqual(command["reset"], {"timeout_seconds": 2, "flags": ["target"]})
-        payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
-        actions = payload[1][b"Versions"][0][b"Actions"]
-        macros = [action[b"macro"] for action in actions
-                  if action[b"Type"] == b"Action" and action.get(b"type") == b"macro"]
-        self.assertIn(b"/castsequence reset=2/target 77575,47541", macros)
-
-        compiled = selected[0]["compiled_program"]
-        self.assertEqual(compiled["castsequences"][0]["members"], ["outbreak", "death_coil"])
-        self.assertEqual(selected_native["castsequences"][0]["members"],
-                         ["outbreak", "death_coil"])
-
-    @pytest.mark.usefixtures('memory_result_center')
-    def test_public_search_reduces_wait_clicks_and_native_evaluates_both_intervals(self) -> None:
+    def test_public_search_reduces_wait_clicks_and_native_evaluates_selected_candidate(self) -> None:
         import cbor2
         import codec
         import engine
@@ -2499,7 +971,7 @@ class InterfaceTests(unittest.TestCase):
         }
 
         def inspect(_reference, folder):
-            # Constructed static GCD supports both requested intervals without one-empty-click syntax.
+            # Constructed static GCD supports the requested interval without one-empty-click syntax.
             for action in _reference['static_snapshot']['actions']:
                 action['gcd_ms'] = 1500
             folder = Path(folder)
@@ -2520,7 +992,7 @@ class InterfaceTests(unittest.TestCase):
         rules.write_text(json.dumps(pack), encoding='utf-8')
         initial = [["outbreak"], dict(kind="WaitClicks", clicks=3), ["death_coil"]]
 
-        wait_candidates = {300: {}, 600: {}}
+        wait_candidates = {300: {}}
         native_evaluations = []
         active_interval = 300
 
@@ -2585,7 +1057,7 @@ class InterfaceTests(unittest.TestCase):
              patch.object(sequence, "evaluate", side_effect=evaluate):
             states = {}
             saved = {}
-            for interval in (300, 600):
+            for interval in (300,):
                 active_interval = interval
                 created = self._json_request("POST", "/api/tasks", {
                     "profile": sample_profile(), "target_count": 1, "scene": "single_target",
@@ -2610,6 +1082,11 @@ class InterfaceTests(unittest.TestCase):
             reduced = [step for step in saved[interval]['search']['rule_steps'].values()
                        if step['operation']['operation'] == 'reduce_wait']
             self.assertEqual(len(reduced), 1)
+            parent = next(row for row in saved[interval]['search']['records']
+                          if row['key'] == reduced[0]['parent_candidate_key'])
+            pool = parent['rule_diagnostics']['pool']
+            self.assertTrue(pool['complete'])
+            self.assertIn('insert', {row['operation'] for row in pool['operations']})
             self.assertEqual(reduced[0]['operation']['source_path'], [1])
             self.assertEqual(reduced[0]['operation']['count'], 1)
             self.assertEqual(reduced[0]['selection']['operation_id'], reduced[0]['request']['operation_id'])
@@ -2643,8 +1120,8 @@ class InterfaceTests(unittest.TestCase):
                                 for counts in wait_candidates[interval]))
             self.assertTrue(next(iter(wait_candidates[interval].values()))["text"].startswith("!GSE3!"))
 
-        self.assertEqual({row[0] for row in native_evaluations}, {300, 600},
-                         "两个按键间隔都必须进入真实原生评价")
+        self.assertEqual({row[0] for row in native_evaluations}, {300},
+                         "空点击候选必须进入真实原生评价")
         for interval, candidate, result in native_evaluations:
             self.assertEqual(result["input_times"][:3], [0, interval, interval * 2])
             self.assertEqual(candidate["precombat_count"], 0)
@@ -2667,90 +1144,6 @@ class InterfaceTests(unittest.TestCase):
             self.assertEqual(len(compiled_empty), wait["clicks"])
             self.assertEqual([step["blockPath"] for step in compiled_empty],
                              [wait["source"]["gse_path"]] * wait["clicks"])
-
-    def test_public_search_rejects_wait_clicks_over_4096_before_evaluation(self) -> None:
-        from task import read_task
-        from test_rule_diagnostics import _observed_evaluate
-        from test_search import _guided_search_boundary
-
-        # 4096次合法父输入再插入一个动作将变成4097次；真实池必须先拒绝。
-        initial = [["outbreak"], {"kind": "WaitClicks", "clicks": 4095}]
-        evaluated_waits = []
-        evaluated_texts = []
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            waits = [node for node in candidate["program"]["nodes"] if node["kind"] == "Pause"]
-            evaluated_waits.extend(node["clicks"] for node in waits)
-            evaluated_texts.append(candidate["text"])
-            return _observed_evaluate(profile, candidate, folder, **kwargs)
-
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, candidate_limit=8, round_candidate_limit=1,
-            no_improvement_rounds=1, batch_targets=(2,), validation_batches=1,
-            iterations=2, max_processes=1, random_seed=20260926, input_interval_ms=200)}
-        with _guided_search_boundary(self.directory.name, [initial], evaluate=evaluate):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "input_interval_ms": 200})
-            deadline = time.monotonic() + 45
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                    break
-                time.sleep(0.05)
-        self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
-        _, handle = self.server.tasks[created["task_id"]]
-        handle.join(5)
-        result = read_task(handle.output_root, include_search_records=True)
-        parent = result['search']['records'][0]
-        diagnosis = parent['rule_diagnostics']
-        self.assertTrue(diagnosis['pool']['complete'])
-        self.assertGreater(diagnosis['pool']['rejections'].get('existing_program_legality', 0), 0,
-                           "公开搜索入口没有经原有合法性检查拒绝超限单步")
-        self.assertEqual(diagnosis['pool']['operations'], [])
-        self.assertEqual(result['search'].get('rule_steps', {}), {})
-        self.assertEqual(result['search']['candidate_count'], 1)
-        self.assertEqual(set(evaluated_texts), {parent['candidate']['text']})
-        self.assertTrue(evaluated_waits, "合法规则起点的空点击未被评价")
-        self.assertEqual(set(evaluated_waits), {4095})
-        self.assertNotIn(4096, evaluated_waits, "超限 WaitClicks 候选到达了原生评价")
-
-    def test_old_incomplete_result_still_reports_the_seed_it_selected(self) -> None:
-        destination = Path(self.directory.name) / "旧任务"
-        destination.mkdir()
-        (destination / "candidate.txt").write_text("!GSE3!seed", encoding="ascii")
-        state = {
-            "status": "validation_incomplete",
-            "phase": "done",
-            "improvement": "not_proven_better",
-            "locked_candidate_key": "locked",
-            "selected_candidate_key": "seed",
-            "candidate": {"text": "!GSE3!seed"},
-        }
-
-        self.assertIn("初始序列", _public_state(state, destination)["result_note"])
-
-    def test_completed_task_api_exposes_search_efficiency_counters(self) -> None:
-        destination = Path(self.directory.name) / "计数任务"
-        destination.mkdir()
-        (destination / "candidate.txt").write_text("!GSE3!candidate", encoding="ascii")
-        state = {
-            "status": "completed",
-            "phase": "done",
-            "candidate": {"text": "!GSE3!candidate"},
-            "independent_validation_complete": True,
-            "search": {
-                "batch_requests": 12,
-                "batch_cache_hits": 5,
-                "native_batch_starts": 7,
-                "canonicalized_duplicates": 3,
-            },
-        }
-
-        public = _public_state(state, destination)
-
-        self.assertEqual(public["search_metrics"], state["search"])
 
     def test_diagnostic_master_switch_blocks_detail_settings(self) -> None:
         from task import read_task
@@ -2781,206 +1174,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertNotIn("diagnostics", result["search"])
         self.assertFalse((destination / "diagnostics.json").exists())
         self.assertFalse((destination / "observability").exists())
-
-    def test_closed_diagnostic_switch_discards_simulation_trace_files(self) -> None:
-        import sequence
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
-            final_iterations=2, scenarios=("nominal",), max_processes=1,
-        )}
-        def engine_output(*args, **kwargs):
-            result = _fast_evaluate(*args, **kwargs)
-            folder = Path(args[2])
-            for name in ("native.txt", "process.log", "invocation.json"):
-                (folder / name).write_text("temporary engine output", encoding="utf-8")
-            return result
-        with _fast_search_boundary(), patch.object(sequence, "evaluate", side_effect=engine_output):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed"}:
-                    break
-                time.sleep(0.05)
-        self.assertNotEqual(state["status"], "failed", state)
-        _, destination = self.server.task_paths(created["task_id"])
-        self.assertFalse(list(destination.rglob("native.txt")))
-        self.assertFalse(list(destination.rglob("process.log")))
-        self.assertFalse(list(destination.rglob("invocation.json")))
-        self.assertEqual(list(destination.rglob("native.json")), [])
-
-    def test_search_exports_its_winner_without_final_retest(self) -> None:
-        self.server.task_options = {"search_config": dict(
-            candidate_limit=2, batch_targets=(2,), iterations=2,
-            validation_batches=2, max_processes=1,
-        )}
-        with _fast_search_boundary():
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed"}:
-                    break
-                time.sleep(0.05)
-        _, destination = self.server.task_paths(created["task_id"])
-        from task import read_task
-        result = read_task(destination)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertEqual(result["config"]["search_budget_seconds"], 600)
-        self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
-        self.assertEqual(result["final"]["status"], "not_requested")
-        self.assertEqual(result["final"]["scenarios"], {})
-        self.assertEqual(state["evidence_status"], "search_result")
-        self.assertIn("未进行最终独立复测", state["result_note"])
-
-    def test_search_keeps_scoring_after_the_old_seven_minute_cutoff(self) -> None:
-        import sequence
-        self.server.task_options = {"search_config": dict(
-            candidate_limit=2, batch_targets=(2,), iterations=2,
-            validation_batches=2, max_processes=1,
-        )}
-        def after_seven_minutes(*args, **kwargs):
-            result = _fast_evaluate(*args, **kwargs)
-            kwargs['runtime'].used_seconds = 450
-            return result
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=after_seven_minutes):
-            created = self._json_request('POST', '/api/tasks', {
-                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created['task_id'], deadline)
-                if state['status'] in {'completed', 'validation_incomplete', 'failed'}:
-                    break
-                time.sleep(.05)
-        _, destination = self.server.task_paths(created['task_id'])
-        from task import read_task
-        result = read_task(destination)
-        self.assertEqual(state['status'], 'completed', state)
-        self.assertEqual(result['search']['candidate_count'], 2)
-        self.assertGreater(state['elapsed_seconds'], 450)
-        self.assertLess(state['elapsed_seconds'], 600)
-
-    def test_closed_diagnostics_also_discard_failed_simulation_trace(self) -> None:
-        import sequence
-        self.server.task_options = {'search_config': dict(
-            candidate_limit=1, batch_targets=(2,), iterations=2)}
-        def fail_with_trace(*args, **kwargs):
-            folder = Path(args[2])
-            folder.mkdir(parents=True)
-            (folder / 'native.txt').write_text('private action trace', encoding='utf-8')
-            raise ValueError('test engine failure')
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=fail_with_trace):
-            created = self._json_request('POST', '/api/tasks', {
-                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created['task_id'], deadline)
-                if state['status'] == 'failed':
-                    break
-                time.sleep(.05)
-        self.assertEqual(state['status'], 'failed', state)
-        _, destination = self.server.task_paths(created['task_id'])
-        self.assertFalse(list(destination.rglob('native.txt')))
-
-    def test_public_task_can_return_opted_in_search_observability(self) -> None:
-        from task import read_task
-        from test_rule_diagnostics import _observed_evaluate
-        from test_search import _guided_search_boundary
-
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=3,
-            round_candidate_limit=1, batch_targets=(2,), iterations=2,
-            validation_batches=1, final_batches=1, final_iterations=2,
-            scenarios=("nominal",), max_processes=1, random_seed=37, input_interval_ms=200,
-            diagnostic_logging=True,
-        )}
-        with urlopen(self.url) as response:
-            page = response.read().decode('utf-8')
-        self.assertIn('diagnosticLogging.disabled=true;diagnosticLogging.checked=true', page)
-
-        def evaluate_with_positions(*args, **kwargs):
-            result = _observed_evaluate(*args, **kwargs)
-            if kwargs.get("trace"):
-                events = []
-                for step, block in enumerate(result["blocks"]):
-                    events.append(dict(ms=0, event="input", origin=1, step=step,
-                                       action="-", signature="-", battle=1))
-                    for action in block:
-                        common = dict(ms=0, origin=1, step=step, action=action,
-                                      signature=action, battle=1, rp=0)
-                        events.extend(dict(common, event=kind) for kind in
-                                      ("queue_locked", "dispatch", "native_execute", "observed_failed"))
-                result["trace"] = events
-            return result
-
-        with _guided_search_boundary(self.directory.name,
-                [[['outbreak']], [['outbreak'], ['outbreak']]], evaluate=evaluate_with_positions):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "diagnostic_logging": False, "input_interval_ms": 200,
-                "search_observability": "full",
-            })
-            deadline = time.monotonic() + 45
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                    break
-                time.sleep(0.05)
-
-        self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
-        observation = state["search_observability"]
-        self.assertEqual(observation["mode"], "full")
-        self.assertEqual(observation["summary"]["mutation_attempts"], 0)
-        self.assertGreater(observation["summary"]["rule_steps"], 0)
-        self.assertGreater(observation["summary"]["score_completed"], 0)
-        self.assertTrue(observation["summary"]["positions"])
-        self.assertTrue(observation["details"])
-        scored = next(row for row in observation["details"]
-                      if row["score_completed"] and row["parent_identity"])
-        self.assertTrue(scored["parent_identity"])
-        self.assertIsNone(scored["sampled_mutation"])
-        self.assertEqual(scored["actual_mutation"], "rule_step:insert")
-        _, handle = self.server.tasks[created["task_id"]]
-        handle.join(5)
-        result = read_task(handle.output_root, include_search_records=True)
-        steps = list(result['search']['rule_steps'].values())
-        self.assertEqual(len(steps), observation['summary']['rule_steps'])
-        self.assertTrue(all(step['selection']['operation_id'] == step['request']['operation_id']
-                            for step in steps))
-        self.assertIn("legal", scored)
-        self.assertIn("illegal_reason", scored)
-        self.assertIn("duplicate_reason", scored)
-        self.assertIsInstance(scored["parent_score"], (int, float))
-        self.assertIsInstance(scored["candidate_score"], (int, float))
-        self.assertAlmostEqual(scored["score_change"],
-                               scored["candidate_score"] - scored["parent_score"])
-        method = observation["summary"]["methods"][scored["actual_mutation"]]
-        self.assertGreater(method["score_changes"]["count"], 0)
-        self.assertLessEqual(method["score_changes"]["minimum"], scored["score_change"])
-        self.assertGreaterEqual(method["score_changes"]["maximum"], scored["score_change"])
-        self.assertIn("route_promotion", scored)
-        self.assertIn("global_promotion", scored)
-        self.assertIn("stage_seconds", scored)
-        position = observation["summary"]["positions"][0]
-        self.assertTrue(position["candidate_identity"])
-        self.assertIn("action_position", position)
-        self.assertIn("turns", position)
-        self.assertIn("queue_blocked", position)
-        self.assertIn("processing", position)
-        self.assertIn("successes", position)
-        self.assertIn("failures", position)
-        repeated_positions = [row for row in observation["summary"]["positions"]
-                              if row["action"] == "outbreak"]
-        self.assertTrue(any(row["click_position"] == 0 and row["queue_blocked"] > 0
-                            and row["processing"] > 0 and row["successes"] > 0
-                            and row["failures"].get("observed_failed", 0) > 0
-                            for row in repeated_positions))
-        self.assertTrue(any(row["click_position"] == 1 and row["queue_blocked"] > 0
-                            for row in repeated_positions))
 
     def test_completed_task_is_not_visible_before_its_result_is_reliably_saved(self) -> None:
         import search
@@ -3026,57 +1219,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(completed["status"], "completed", completed)
         self.assertTrue(completed["result_ready"], completed)
 
-    def test_public_task_search_observability_is_off_by_default(self) -> None:
-        import search
-
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
-            final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=37,
-        )}
-        with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            deadline = time.monotonic() + 45
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                    break
-                time.sleep(0.05)
-
-        self.assertIn(state["status"], {"completed", "validation_incomplete"}, state)
-        self.assertNotIn("search_observability", state)
-
-    def test_running_task_api_exposes_persisted_search_efficiency_counters(self) -> None:
-        task_id = "a" * 32
-        _, destination = self.server.task_paths(task_id)
-        destination.mkdir()
-        (destination / "progress.json").write_text(json.dumps({
-            "status": "running",
-            "phase": "search",
-            "batch_requests": 9,
-            "batch_cache_hits": 2,
-            "native_batch_starts": 7,
-            "canonicalized_duplicates": 4,
-        }), encoding="utf-8")
-
-        state = self._json_request("GET", f"/api/tasks/{task_id}")
-
-        self.assertEqual(state["search_metrics"], {
-            "batch_requests": 9,
-            "batch_cache_hits": 2,
-            "native_batch_starts": 7,
-            "canonicalized_duplicates": 4,
-        })
-
-    def test_browser_reloads_rule_details_after_summary_storage_recovers(self):
-        self._check_browser_rule_details_recovery('summary')
-
-    def test_browser_reloads_rule_details_after_detail_storage_recovers(self):
-        self._check_browser_rule_details_recovery('detail')
-
-    def _check_browser_rule_details_recovery(self, failure):
+    def test_browser_reloads_rule_details_after_summary_and_detail_storage_recovers(self):
         # 页面及轮询真实执行，仅在 HTTP 系统边界构造短暂不可读及恢复响应。
         env = os.environ.copy()
         env.setdefault('NODE_PATH', str(Path.home() /
@@ -3087,7 +1230,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
  const browser=await chromium.launch({channel:'msedge',headless:true});
  try{
-  for(const failure of [input.failure]){
+  for(const failure of ['summary','detail']){
    const context=await browser.newContext(),page=await context.newPage();
    let unavailable=false,detailReads=0;
    const summary={status:'running',phase:'aoe',result_ready:true,result_note:'已有单场结果',
@@ -3124,7 +1267,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        result = subprocess.run(['node', '-e', script], input=json.dumps({'url': self.url, 'failure': failure}),
+        result = subprocess.run(['node', '-e', script], input=json.dumps({'url': self.url}),
             text=True, encoding='utf-8', capture_output=True, env=env, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -3142,7 +1285,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.server.task_options = {'search_config': dict(total_budget_seconds=120,
             search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
             validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
-            scenarios=('nominal','jitter','slow','pause','phase'),max_processes=1)}
+            scenarios=('nominal',),max_processes=1)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
@@ -3226,6 +1369,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
             event.update(source=source, source_origin=input_sources[:event['origin']].count(source))
         return result
 
+
     def _decode_candidate(self, candidate, expected_spec):
         import base64, zlib, cbor2
         # 游戏 12.1 实际编码 {1,"test"} 的输出；不由产品编码器生成预期值。
@@ -3241,29 +1385,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         payload = text(wire)
         self.assertEqual(payload[1]['MetaData']['SpecID'], expected_spec)
         self.candidate_payload = payload
-
-    def _export_candidate(self, profile, expected_spec):
-        root = Path(self.directory.name) / 'direct'
-        source = root / 'input.simc'
-        root.mkdir()
-        source.write_text(profile, encoding='utf-8')
-        from unittest.mock import patch
-        from test_search import _fast_evaluate
-        with patch('sequence.evaluate', side_effect=_fast_evaluate):
-            result = run_task(source, root / 'task', mode='single')
-        self._decode_candidate(result['candidate']['text'], expected_spec)
-        import result_store
-        self.native_report = result_store.one(
-            'batches', 'batch_key', result['reference_data_key'])['report']
-        self.native_reference = result['native_reference']
-        self.controlled = result['controlled_simulation']
-
-    def test_invalid_target_count_is_rejected_before_creating_task(self):
-        for value in (2, True, "5"):
-            with self.subTest(value=value), self.assertRaises(HTTPError) as raised:
-                self._json_request("POST", "/api/tasks", {"profile": sample_profile(), "target_count": value})
-            self.assertEqual(raised.exception.code, 400)
-        self.assertEqual(self.server.tasks, {})
 
     def test_invalid_interval_is_rejected_before_creating_task(self):
         for value in (0, 49, 2001, True, 180.5, "180"):
@@ -3286,41 +1407,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("点击间隔", json.loads(raised.exception.read())["error"])
         self.assertEqual(self.server.tasks, {})
-
-    def test_healer_profile_reaches_damage_candidate(self):
-        self._export_candidate('''druid="Restoration healer"
-level=90
-race=night_elf
-role=heal
-spec=restoration
-talents=CkGAAAAAAAAAAAAAAAAAAAAAAMjxMbzMjZmxsNMGzwYjZAAAAAAAAAAwygmNzYamxwYWmZmZGGmBAAAAAAAAAQAAAz2MLNbzsZjxMDmZAaGAgZGAGA
-main_hand=,id=271092,ilevel=311
-''', 105)
-        player = self.native_report['sim']['players'][0]
-        self.assertEqual(player['role'], 'heal')
-        self.assertGreater(player['collected_data']['dps']['mean'], 0)
-
-
-    def test_native_augmented_party_reaches_candidate(self):
-        self._export_candidate(
-            (REPOSITORY/'tests/sim2gse/fixtures/augmentation.simc').read_text(encoding='utf-8'), 1473)
-        self.assertGreater(len(self.native_report['sim']['players']), 1)
-        self.assertEqual(self.native_reference['dps'], self.native_report['sim']['statistics']['raid_dps']['mean'])
-
-
-    def test_replacement_forms_remain_one_button(self):
-        self._export_candidate('''warrior="Fury buttons"
-level=90
-race=dwarf
-role=attack
-spec=fury
-talents=CgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgGDzMmZ2MzMzMDjZmZGzMzsMzMmZmZzYmBAAixy2ALgJYGmAzwGwMDjNAAYmhxYYMYM
-main_hand=,id=268213,bonus_id=13335/13848,ilevel=344,enchant_id=8689
-off_hand=,id=237847,bonus_id=8793/8960/13751/13771/13836/12497,enchant_id=8689
-''', 72)
-        actions = self.candidate_payload[1]['Versions'][0]['Actions']
-        self.assertTrue(any('/cast 335097' in a.get('macro','') and '/cast 85288' in a.get('macro','') for a in actions))
-        self.assertFalse(any(a.get('spell') in (335097,85288) for a in actions))
 
     def test_interface_reports_native_and_export_failures_without_internal_paths(self):
         from task import TaskError

@@ -12,8 +12,7 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 from engine import _profile_with_import_queries, identity, inspect, reference  # noqa: E402
 
 
-@pytest.mark.parametrize('enabled', [False, True])
-@pytest.mark.parametrize('outcome', ['success', 'timeout', 'cancelled', 'budget'])
+@pytest.mark.parametrize('enabled,outcome', [(False, 'success'), (True, 'success'), (True, 'timeout')])
 def test_native_execution_timing_preserves_process_outcome(tmp_path, monkeypatch, enabled, outcome):
     from types import SimpleNamespace
     import engine

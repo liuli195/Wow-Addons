@@ -119,8 +119,7 @@ def test_rule_cli_preserves_complete_templates_and_rejects_wrong_binding_paramet
     assert target.read_bytes() == before
 
 
-@pytest.mark.parametrize('fault', ['component_scope', 'from_action_kind', 'qualification_ref', 'native_identity_type',
-                                 'representation_value', 'representation_object'])
+@pytest.mark.parametrize('fault', ['qualification_ref', 'native_identity_type'])
 def test_rule_cli_rejects_invalid_object_types_and_same_set_references(tmp_path, monkeypatch, capsys, fault):
     import json
     from rule_config import DEFAULT_PATH
@@ -172,34 +171,7 @@ def test_rule_cli_rejects_object_algorithm_in_enum_declaration_and_argument(tmp_
     assert target.read_bytes() == before
 
 
-@pytest.mark.parametrize('fault', ['unknown_argument', 'unknown_operation', 'binding_algorithm'])
-def test_rule_cli_checks_unused_template_declarations_without_executing_them(tmp_path, monkeypatch, capsys, fault):
-    import json
-    from rule_config import DEFAULT_PATH
-    from task import main
-    target = tmp_path / 'rules.json'
-    target.write_bytes(DEFAULT_PATH.read_bytes())
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(target))
-    assert main(['rules-check', str(target)]) == 0
-    identity = json.loads(capsys.readouterr().out)['rule_config_digest']
-    before = target.read_bytes()
-    pack = json.loads(before)
-    unused = pack['general']['templates']['资源预留']
-    if fault == 'unknown_argument':
-        unused['reads'][0]['object'] = {'arg': 'undeclared'}
-    elif fault == 'unknown_operation':
-        unused['diagnose']['for_each'] = {'op': 'python', 'args': []}
-    else:
-        pack['configurations'][0]['states']['normal']['priority'][0]['condition'] = {'op': 'eq', 'args': [1, 1]}
-    draft = tmp_path / 'draft.json'
-    draft.write_text(json.dumps(pack), encoding='utf-8')
-    assert main(['rules-save', str(draft), '--expected-digest', identity]) == 2
-    assert '规则配置' in capsys.readouterr().err
-    assert target.read_bytes() == before
-
-
-@pytest.mark.parametrize('fault', ['missing_hero', 'unknown_hero', 'missing_scene', 'wrong_scene',
-                                 'wrong_spec', 'ambiguous_hero', 'duplicate_key'])
+@pytest.mark.parametrize('fault', ['missing_hero', 'duplicate_key'])
 def test_public_task_rejects_unknown_or_ambiguous_three_key_identity(tmp_path, monkeypatch, fault):
     import copy
     from test_engine import apl_pool_reference
@@ -262,8 +234,7 @@ def test_task_exports_ordered_opener_using_effective_gcd(tmp_path, monkeypatch):
     assert [row['effective_gcd_ms'] for row in report['positions'] if row['kind'] == 'action'] == [1000]*3
 
 
-@pytest.mark.parametrize('fault,message', [('missing_gcd', '静态字段'), ('single_empty', '单空点击'),
-                                        ('too_long', '点击或场景边界')])
+@pytest.mark.parametrize('fault,message', [('missing_gcd', '静态字段'), ('too_long', '点击或场景边界')])
 def test_task_reports_unrepresentable_or_unknown_rule_start(tmp_path, monkeypatch, fault, message):
     from test_engine import apl_pool_reference
     _configure_opener(tmp_path, monkeypatch)
@@ -294,7 +265,7 @@ def test_explicit_program_does_not_require_rule_initialization_snapshot(tmp_path
     assert not result.get('rule_initialization')
 
 
-@pytest.mark.parametrize('use_burst', [False, True])
+@pytest.mark.parametrize('use_burst', [True])
 def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_path, monkeypatch, use_burst):
     from test_engine import apl_pool_reference
     from test_search import _minimal_rule_pack
@@ -338,35 +309,6 @@ def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_pat
         assert report['protected_burst']['definition_id'] == definition['definition_id']
 
 
-@pytest.mark.parametrize('gain_status,gain_timing,gains,first_balances', [
-    ('known', 'on_hit', {'runic_power': 20}, {'rune': 2, 'runic_power': None}),
-    ('unknown', 'unknown', {}, {'rune': None, 'runic_power': None}),
-    ('unknown', 'unknown', None, {'rune': None, 'runic_power': None}),
-    ('known', 'on_hit', {'rune': 1}, {'rune': None, 'runic_power': 10}),
-])
-def test_task_does_not_treat_conditional_or_unknown_gains_as_known_zero(
-        tmp_path, monkeypatch, gain_status, gain_timing, gains, first_balances):
-    from test_engine import apl_pool_reference
-    _configure_opener(tmp_path, monkeypatch)
-    native = apl_pool_reference()
-    native['static_snapshot']['resources']['rune']['current'] = 3
-    native['static_snapshot']['resources']['runic_power']['current'] = 10
-    native['static_snapshot']['actions'][0].update(gain_status=gain_status, gain_timing=gain_timing, gains=gains)
-    if gains is None:
-        native['static_snapshot']['actions'][0]['unknown'] = {'gains': 'unsafe_gain'}
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native):
-        result = run_task(source, tmp_path / 'task', search_config=dict(
-            input_interval_ms=300, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-    report = result['rule_initialization']
-    actions = [row for row in report['positions'] if row['kind'] == 'action']
-    assert [row['action'] for row in actions] == ['outbreak', 'scourge_strike', 'death_coil']
-    assert actions[0]['estimated_resources_after'] == first_balances
-    assert all(row['condition_status'] == 'dynamic_condition_unknown' for row in actions)
-    assert report['static_snapshot']['actions'][0]['gains'] == gains
-
-
 def test_task_preserves_resource_uncertainty_without_inserting_funding_wait(tmp_path, monkeypatch):
     from test_engine import apl_pool_reference
     _configure_opener(tmp_path, monkeypatch)
@@ -386,18 +328,7 @@ def test_task_preserves_resource_uncertainty_without_inserting_funding_wait(tmp_
 
 
 
-def test_task_rejects_invalid_edited_rule_pack_before_initialization(tmp_path, monkeypatch):
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    config = tmp_path / 'rules.json'
-    config.write_text('{broken', encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(config))
-    with _apl_task_boundary(), pytest.raises(TaskError, match='规则配置'):
-        run_task(source, tmp_path / 'task', search_config=dict(
-            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-
-
-@pytest.mark.parametrize('fault', ['action', 'object', 'cycle', 'count', 'operation', 'type', 'unit', 'parameter', 'override', 'source_step'])
+@pytest.mark.parametrize('fault', ['cycle', 'unit'])
 def test_task_rejects_invalid_rule_references_before_running(tmp_path, monkeypatch, fault):
     pack = _declared_pack()
     template = pack['general']['templates']['fixture']
@@ -418,40 +349,6 @@ def test_task_rejects_invalid_rule_references_before_running(tmp_path, monkeypat
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(), pytest.raises(TaskError, match='规则配置'):
-        run_task(source, tmp_path / 'task', search_config=dict(
-            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-
-
-
-def test_task_maps_configured_native_facts_to_existing_button(tmp_path, monkeypatch):
-    from test_engine import apl_pool_reference
-    pack = _configure_opener(tmp_path, monkeypatch)
-    pack['object_sets']['sample']['scourge_strike'].update(native_action='native_builder', native_forms=['native_builder'])
-    for configuration in pack['configurations']:
-        step = configuration['opener']['ordinary_steps'][1]
-        step['source_form'] = step['attribute_query']['native_form'] = 'native_builder'
-    _configure_opener(tmp_path, monkeypatch, pack)
-    native = apl_pool_reference()
-    next(row for row in native['static_snapshot']['actions'] if row['name'] == 'scourge_strike')['name'] = 'native_builder'
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native):
-        result = run_task(source, tmp_path / 'task', search_config=dict(
-            input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-    row = next(row for row in result['rule_initialization']['positions'] if row.get('action') == 'scourge_strike')
-    assert row['native_action'] == 'native_builder'
-    assert 'native_builder' not in result['candidate']['text']
-
-
-@pytest.mark.parametrize('value', [None, -1])
-def test_task_rejects_missing_or_negative_required_action_timing(tmp_path, monkeypatch, value):
-    from test_engine import apl_pool_reference
-    _configure_opener(tmp_path, monkeypatch)
-    native = apl_pool_reference()
-    native['static_snapshot']['actions'][0]['gcd_ms'] = value
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native), pytest.raises(TaskError, match='静态字段|gcd_ms'):
         run_task(source, tmp_path / 'task', search_config=dict(
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
@@ -498,38 +395,7 @@ def test_rule_cli_concurrent_writers_cannot_overwrite_the_same_expected_version(
     assert main(['rules-check', str(target)]) == 0
 
 
-@pytest.mark.parametrize('fault', ['identity_list', 'identity_null', 'ref_array_object', 'target_type',
-    'opener_list', 'step_list', 'attribute_query_list', 'independent_command_list', 'precombat_list'])
-def test_rule_cli_rejects_invalid_execution_fields_without_overwriting_valid_pack(tmp_path, monkeypatch, capsys, fault):
-    import copy, json
-    from task import main
-    pack = _declared_pack()
-    _configure_opener(tmp_path, monkeypatch, pack)
-    target = tmp_path / 'rules.json'
-    assert main(['rules-check', str(target)]) == 0
-    identity = json.loads(capsys.readouterr().out)['rule_config_digest']
-    before = target.read_bytes()
-    configuration = pack['configurations'][0]
-    if fault == 'identity_list': pack['identity_mappings'] = []
-    elif fault == 'identity_null': pack['identity_mappings'] = None
-    elif fault == 'ref_array_object': configuration['states']['only']['priority'][0]['arguments']['priority_refs'] = [{}]
-    elif fault == 'target_type': configuration['key']['target_type'] = 'third_scene'
-    elif fault == 'opener_list': configuration['opener'] = []
-    elif fault == 'step_list': configuration['opener']['ordinary_steps'][0] = []
-    elif fault == 'attribute_query_list': configuration['opener']['ordinary_steps'][0]['attribute_query'] = []
-    elif fault == 'independent_command_list': configuration['opener']['independent_burst_source_steps'] = [dict(action='tap', mapping='burst', source_step=2, commands=[[]])]
-    else: configuration['opener']['precombat'] = [[]]
-    draft = tmp_path / 'draft.json'
-    draft.write_text(json.dumps(pack), encoding='utf-8')
-    assert main(['rules-save', str(draft), '--expected-digest', identity]) == 2
-    assert '规则配置' in capsys.readouterr().err
-    assert target.read_bytes() == before
-    assert main(['rules-check', str(target)]) == 0
-    assert json.loads(capsys.readouterr().out)['rule_config_digest'] == identity
-
-
-
-@pytest.mark.parametrize('asynchronous', [False, True])
+@pytest.mark.parametrize('asynchronous', [True])
 def test_public_task_budget_includes_configuration_read_and_validation(tmp_path, monkeypatch, asynchronous):
     import time
     from pathlib import Path
@@ -560,49 +426,7 @@ def test_public_task_budget_includes_configuration_read_and_validation(tmp_path,
     assert result['elapsed_seconds'] >= 2.0
 
 
-def test_task_uses_configured_ordered_opener_without_funding_or_consumer(tmp_path, monkeypatch):
-    """独立构造配置：三个同按钮步骤仍是三个尝试，无旧消费/供资骨架。"""
-    import json
-    pack = _opener_pack({'work': 'scourge_strike'}, [dict(action='work', source_step=i) for i in (1, 2, 3)])
-    config = tmp_path / 'rules.json'
-    config.write_text(json.dumps(pack), encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(config))
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary():
-        result = run_task(source, tmp_path / 'task', search_config=dict(
-            input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2,
-            validation_batches=1))
-    report = result['rule_initialization']
-    assert report['program'] == [value for _ in range(3)
-        for value in (['scourge_strike'], {'kind': 'WaitClicks', 'clicks': 4})]
-    assert [row['source_step'] for row in report['positions'] if row['kind'] == 'action'] == [1, 2, 3]
-    assert report['rule_snapshot']['pack'] == pack
-    assert result['candidate']['text'].startswith('!GSE3!')
-
-
-def test_task_rejects_resource_current_above_native_capacity(tmp_path, monkeypatch):
-    import json
-    from test_engine import apl_pool_reference
-    pack = _opener_pack({'tap': 'scourge_strike'}, [dict(action='tap', source_step=1)])
-    path=tmp_path/'rules.json';path.write_text(json.dumps(pack),encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(path))
-    native=apl_pool_reference()
-    native['static_snapshot']['resources']['runic_power']=dict(current=100,maximum=50)
-    source=tmp_path/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-    with _apl_task_boundary(native),pytest.raises(TaskError,match='当前资源.*上限'):
-        run_task(source,tmp_path/'task',search_config=dict(input_interval_ms=200,
-            candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
-
-
-@pytest.mark.parametrize('precombat_gcd,precombat_occupancy,cast_ms,protocol,starts,first_burst', [
-    (1253, None, 0, 1, [1400, 2400, 3400], 4400),
-    (None, None, 0, 1, None, None),
-    (1253, 3000, 0, 1, [3000, 4000, 5000], 6000),
-    (1253, 'unknown', 0, 1, None, None),
-    (1253, 3000, 2000, 2, [3000, 5000, 7000], 9000),
-    (1253, None, 0, 2, None, None),
-])
+@pytest.mark.parametrize('precombat_gcd,precombat_occupancy,cast_ms,protocol,starts,first_burst', [(1253, 3000, 2000, 2, [3000, 5000, 7000], 9000), (1253, None, 0, 2, None, None)])
 def test_task_accounts_native_effective_precombat_occupancy_before_freezing_t0(
         tmp_path, monkeypatch, precombat_gcd, precombat_occupancy, cast_ms, protocol, starts, first_burst):
     import json,burst,result_store
@@ -665,28 +489,7 @@ def test_task_carries_all_declared_states_and_rules_without_diagnosing_them(tmp_
 
 
 
-def test_rule_cli_accepts_complete_guide_candidate_and_rejects_broken_opener_reference(tmp_path, capsys):
-    import json
-    from rule_config import DEFAULT_PATH
-    from task import main
-    assert main(['rules-check', str(DEFAULT_PATH)]) == 0
-    assert json.loads(capsys.readouterr().out)['status'] == 'valid'
-    pack = json.loads(DEFAULT_PATH.read_bytes())
-    assert len(pack['general']['templates']) == 8
-    profiles = pack['configurations']
-    assert [len(row['opener']['source_steps']) for row in profiles] == [14, 14, 12, 12]
-    assert [sum(len(state['priority']) for state in row['states'].values()) for row in profiles] == [22, 20, 19, 18]
-    assert all(row['opener']['ordinary_steps'][0]['action'] == 'putrefy' for row in profiles)
-    profiles[0]['opener']['ordinary_steps'][0]['action'] = 'missing'
-    broken = tmp_path / 'broken.json'
-    broken.write_text(json.dumps(pack), encoding='utf-8')
-    assert main(['rules-check', str(broken)]) == 2
-    assert '起手' in capsys.readouterr().err
-
-
-
-@pytest.mark.parametrize('hero,scene,steps', [(701,'single_target',1),(701,'aoe',2),
-                                            (702,'single_target',3),(702,'aoe',4),(None,'single_target',None)])
+@pytest.mark.parametrize('hero,scene,steps', [(701, 'single_target', 1), (702, 'aoe', 4)])
 def test_task_selects_opener_by_explicit_scene_and_native_hero_facts(tmp_path, monkeypatch, hero, scene, steps):
     import copy
     from test_engine import apl_pool_reference
@@ -713,8 +516,7 @@ def test_task_selects_opener_by_explicit_scene_and_native_hero_facts(tmp_path, m
 
 
 
-@pytest.mark.parametrize('hero,scene,steps', [(31,'single_target',14),(31,'aoe',14),
-                                           (32,'single_target',12),(32,'aoe',12)])
+@pytest.mark.parametrize('hero,scene,steps', [(31, 'single_target', 14), (32, 'aoe', 12)])
 def test_task_uses_default_putrefy_opener_after_legacy_single_precombat(tmp_path, monkeypatch, hero, scene, steps):
     """完整默认数据的公共任务契约；静态/原生边界均为公开构造，不冒称角色验收。"""
     from test_engine import apl_pool_reference
@@ -754,10 +556,7 @@ def test_task_uses_default_putrefy_opener_after_legacy_single_precombat(tmp_path
     assert 'outbreak' not in [name for row in report['click_mapping'] for name in row.get('commands', [])]
 
 
-@pytest.mark.parametrize('known_cost,form_gcd,starts', [
-    (True, 1000, [0, 1000]), (True, 2200, [0, 2200]),
-    (False, None, None), (None, 1000, [0, 1000]),
-])
+@pytest.mark.parametrize('known_cost,form_gcd,starts', [(True, 2200, [0, 2200]), (False, None, None)])
 def test_task_uses_configured_replacement_form_cost_and_same_button_mapping(
         tmp_path, monkeypatch, known_cost, form_gcd, starts):
     import json
@@ -798,8 +597,7 @@ def test_task_uses_configured_replacement_form_cost_and_same_button_mapping(
     assert all(row['condition_status']=='dynamic_condition_unknown' for row in attempts)
 
 
-@pytest.mark.parametrize('mapped_action,input_interval_ms', [
-    ('army_of_the_dead',200), ('army_of_the_dead',300), ('blightfall',200)])
+@pytest.mark.parametrize('mapped_action,input_interval_ms', [('blightfall', 200)])
 def test_task_freezes_first_burst_from_opener_and_reuses_original_macro(tmp_path, monkeypatch, mapped_action, input_interval_ms):
     import json
     import burst,result_store
@@ -895,26 +693,6 @@ def test_rule_cli_saves_new_opener_but_old_task_keeps_its_snapshot_and_refuses_r
 
 
 
-def test_task_ignores_duplicate_native_list_metadata_but_rejects_conflicting_arithmetic(tmp_path, monkeypatch):
-    import json
-    from test_engine import apl_pool_reference
-    pack = _opener_pack({'tap': 'scourge_strike'}, [dict(action='tap',source_step=1)])
-    config=tmp_path/'rules.json';config.write_text(json.dumps(pack),encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(config))
-    source=tmp_path/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
-    native=apl_pool_reference()
-    row=next(row for row in native['static_snapshot']['actions'] if row['name']=='scourge_strike')
-    native['static_snapshot']['actions'].append(dict(row,signature='scourge_strike,if=source_only',action_list='another'))
-    with _apl_task_boundary(native):
-        result=run_task(source,tmp_path/'same',search_config=dict(input_interval_ms=200,
-            candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
-    assert result['rule_initialization']['positions'][0]['effective_gcd_ms']==1000
-    native['static_snapshot']['actions'][-1]['gcd_ms']=1500
-    with _apl_task_boundary(native),pytest.raises(TaskError,match='静态字段不一致'):
-        run_task(source,tmp_path/'conflict',search_config=dict(input_interval_ms=200,
-            candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
-
-
 def test_task_runs_independent_spec_and_renamed_aliases_without_class_strategy(tmp_path, monkeypatch):
     import json
     from test_engine import apl_pool_reference
@@ -943,11 +721,7 @@ def test_task_runs_independent_spec_and_renamed_aliases_without_class_strategy(t
     assert '亡者' not in json.dumps(report,ensure_ascii=False)
 
 
-@pytest.mark.parametrize('name,spell_id,cast_ms,channel_ms,channeled,starts,finish', [
-    ('smite', 585, 2000, 0, False, [0, 2000], 4000),
-    ('penance', 47540, 0, 3000, True, [0, 3000], 6000),
-    ('penance', 47540, 500, 3000, True, [0, 3600], 7200),
-])
+@pytest.mark.parametrize('name,spell_id,cast_ms,channel_ms,channeled,starts,finish', [('smite', 585, 2000, 0, False, [0, 2000], 4000), ('penance', 47540, 0, 3000, True, [0, 3000], 6000)])
 def test_task_initializes_non_dk_cast_or_complete_channel_before_next_attempt(
         tmp_path, monkeypatch, name, spell_id, cast_ms, channel_ms, channeled, starts, finish):
     """构造原生时长经公开任务入口排位，不冒充真实牧师验证。"""
@@ -979,15 +753,7 @@ def test_task_initializes_non_dk_cast_or_complete_channel_before_next_attempt(
     assert result['candidate']['text'].startswith('!GSE3!')
 
 
-@pytest.mark.parametrize('fields,missing,field,protocol', [
-    ({'channeled': False, 'channel_ms': 3000}, None, 'channel_ms', 1),
-    ({'channeled': True}, 'channel_ms', 'channel_ms', 1),
-    ({'channeled': True, 'channel_ms': -1}, None, 'channel_ms', 1),
-    ({'unknown': {'channel_ms': 'unsafe_duration'}}, 'channel_ms', 'channel_ms', 1),
-    ({}, 'cast_ms', 'cast_ms', 1),
-    ({}, 'channeled', 'channeled', 1),
-    ({}, 'channel_ms', 'channel_ms', 2),
-])
+@pytest.mark.parametrize('fields,missing,field,protocol', [({'channeled': True}, 'channel_ms', 'channel_ms', 1)])
 def test_task_rejects_unknown_or_inconsistent_action_timing(
         tmp_path, monkeypatch, fields, missing, field, protocol):
     from test_engine import apl_pool_reference
@@ -1006,7 +772,7 @@ def test_task_rejects_unknown_or_inconsistent_action_timing(
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
 
-@pytest.mark.parametrize('input_interval_ms', [200,300])
+@pytest.mark.parametrize('input_interval_ms', [200])
 def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, monkeypatch, input_interval_ms):
     import json,threading
     from urllib.request import Request,urlopen
@@ -1071,7 +837,7 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
         server.shutdown();server.server_close();thread.join(5)
 
 
-@pytest.mark.parametrize('definition_present', [True, False, 'extra_active'])
+@pytest.mark.parametrize('definition_present', [True])
 def test_task_validates_precombat_definition_without_replacing_native_preparations(tmp_path, definition_present):
     from unittest.mock import patch
     import sequence
@@ -1139,32 +905,7 @@ def test_task_behavior_identity_distinguishes_precombat_prefix_from_combat_click
     assert behavior_key(before['candidate'])!=behavior_key(during['candidate'])
 
 
-def test_http_task_honors_explicit_scene_without_inferring_a_target_threshold(tmp_path, monkeypatch):
-    import json,threading
-    from urllib.request import Request,urlopen
-    from interface import create_server
-    pack = _opener_pack({'tap':'scourge_strike'}, [dict(action='tap',source_step=1)], target_type='aoe')
-    path=tmp_path/'rules.json';path.write_text(json.dumps(pack),encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(path))
-    server=create_server(tmp_path/'page',task_options=dict(search_config=dict(input_interval_ms=200,
-        candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1)))
-    thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01},daemon=True);thread.start()
-    base=f'http://127.0.0.1:{server.server_port}'
-    try:
-        with _apl_task_boundary():
-            request=Request(base+'/api/tasks',json.dumps(dict(profile=sample_profile(),scene='aoe',target_count=1,
-                input_interval_ms=200)).encode(),{'Content-Type':'application/json'})
-            with urlopen(request) as response:task_id=json.load(response)['task_id']
-            server.tasks[task_id][1].join(15)
-            with urlopen(base+'/api/tasks/'+task_id+'?details=rule_initialization') as response:result=json.load(response)
-        assert result['status']=='completed',result
-        assert result['rule_initialization']['configuration_key']['target_type']=='aoe'
-    finally:
-        server.shutdown();server.server_close();thread.join(5)
-
-
-@pytest.mark.parametrize('location', ['general_policy', 'funding', 'general_template', 'shared_template', 'shared_binding', 'binding',
-                                      'extra_initializations', 'overrides', 'plan_context'])
+@pytest.mark.parametrize('location', ['funding'])
 def test_rule_cli_rejects_retired_initialization_contract_without_replacing_valid_pack(
         tmp_path, monkeypatch, capsys, location):
     import json

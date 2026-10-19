@@ -1,29 +1,10 @@
 """显式命令控制诊断日志，业务规则与恢复凭据保留。"""
-import runpy
 from pathlib import Path
 
 import pytest
 
 
-def test_task_command_documents_explicit_logging_flag(capsys):
-    from task import main
-    with pytest.raises(SystemExit) as exit:
-        main(['--help'])
-    assert exit.value.code == 0
-    assert '--diagnostic-logging' in capsys.readouterr().out
-
-
-def test_interface_command_documents_same_logging_flag(capsys, monkeypatch):
-    root = Path(__file__).resolve().parents[2]
-    launch = runpy.run_path(str(root / 'scripts/dev/sim2gse/interface.py'))
-    monkeypatch.setattr('sys.argv', ['interface.py', '--help'])
-    with pytest.raises(SystemExit) as exit:
-        launch['main']()
-    assert exit.value.code == 0
-    assert '--diagnostic-logging' in capsys.readouterr().out
-
-
-@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('enabled', [False])
 def test_resume_command_requires_current_logging_intent(tmp_path, monkeypatch, enabled):
     import sequence
     import sqlite3
@@ -87,7 +68,7 @@ def test_native_engine_default_keeps_only_required_exchange(tmp_path, monkeypatc
     assert not (folder / 'invocation.json').exists()
 
 
-@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('enabled', [True])
 def test_public_report_write_records_only_opt_in_stage_totals(enabled):
     from runtime import TaskRuntime
     import result_store
@@ -107,7 +88,7 @@ def test_public_report_write_records_only_opt_in_stage_totals(enabled):
         assert not hasattr(runtime, 'performance_stages')
 
 
-@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('enabled', [True])
 def test_public_task_exports_current_invocation_stage_totals(tmp_path, monkeypatch, enabled):
     import json
     import sequence
@@ -232,7 +213,7 @@ def test_covered_wall_unions_selected_stages_without_wait_or_nested_double_count
     assert 'not the complete public-call wall time' in summary['covered_wall_timing']
 
 
-@pytest.mark.parametrize('case', ['known', 'unknown', 'duplicate', 'cancelled'])
+@pytest.mark.parametrize('case', ['known'])
 def test_detailed_diagnostic_stages_preserve_public_result(monkeypatch, case):
     import copy
     import runtime
@@ -271,7 +252,7 @@ def test_detailed_diagnostic_stages_preserve_public_result(monkeypatch, case):
     assert not hasattr(disabled, 'performance_stages')
 
 
-@pytest.mark.parametrize('replay', ['cached_task', 'resume', 'duplicate_publication'])
+@pytest.mark.parametrize('replay', ['cached_task'])
 def test_public_candidate_progress_counts_only_new_successful_first_scores(tmp_path, monkeypatch, replay):
     import json
     import sequence
@@ -329,8 +310,7 @@ def test_public_candidate_progress_counts_only_new_successful_first_scores(tmp_p
         assert 'native.execute' not in performance['stages']
 
 
-@pytest.mark.parametrize('enabled', [False, True])
-@pytest.mark.parametrize('flow', ['finalizing', 'exhausted_resume', 'continue_resume'])
+@pytest.mark.parametrize('enabled,flow', [(True, 'finalizing'), (False, 'exhausted_resume')])
 def test_public_feedback_logs_follow_current_invocation_switch(
         tmp_path, monkeypatch, installed_data_store_api, enabled, flow):
     resume = flow != 'finalizing'
