@@ -281,11 +281,21 @@ def _snapshot(learner, *, version=0, reservations=None, settled=None, model=True
             reservations=reservations if reservations is not None else [],
             settled=settled if settled is not None else {})
         if model:
+            import numpy as np
+            theta, inverse = learner._theta, learner._A_inv
+            if theta is None or inverse is None:
+                if (theta is not None or inverse is not None or version != 0
+                        or record['rng_state'] != 1 or record['reservations'] or record['settled']):
+                    raise ValueError('共享选择器仅严格空初始版本允许没有矩阵')
+            elif (not isinstance(theta, np.ndarray) or not isinstance(inverse, np.ndarray)
+                    or theta.shape != (MODEL_DIMENSION,)
+                    or inverse.shape != (MODEL_DIMENSION, MODEL_DIMENSION)
+                    or theta.dtype != np.dtype('float64') or inverse.dtype != np.dtype('float64')
+                    or not np.isfinite(theta).all() or not np.isfinite(inverse).all()):
+                raise ValueError('共享选择器矩阵必须具有固定形状、float64类型和全部有限值')
             record.update(theta=None, a_inv=None, matrix_format=MATRIX_FORMAT,
-                theta_bytes=learner._theta.astype('<f8', copy=False).tobytes()
-                    if learner._theta is not None else None,
-                a_inv_bytes=learner._A_inv.astype('<f8', copy=False).tobytes()
-                    if learner._A_inv is not None else None)
+                theta_bytes=theta.astype('<f8', copy=False).tobytes() if theta is not None else None,
+                a_inv_bytes=inverse.astype('<f8', copy=False).tobytes() if inverse is not None else None)
         return record
     finally:
         if logging:

@@ -286,6 +286,28 @@ def test_selector_recovers_atomic_write_errors_without_duplicate_prediction_or_l
     assert first == selector.reserve(_intent())
     # With this native seed, the first equal-valued action is selected with probability 1/2.
     assert first['operation_id'] == 'first' and first['probability'] == .5
+    if not after_replace:
+        from coba.learners import LinUCBLearner
+        from unittest.mock import Mock
+        learn = LinUCBLearner.learn
+        def invalid_learning(learner, *args, **kwargs):
+            learn(learner, *args, **kwargs)
+            learner._theta[0] = float('nan')
+            learner._A_inv[0, 0] = float('inf')
+        paths = [result_store.DATA_ROOT / table / (selector.MODEL_KEY + '.parquet')
+                 for table in ('search_learners', 'search_learner_controls')]
+        original_bytes = [path.read_bytes() for path in paths]
+        pending = result_store.read_search_learner(selector.MODEL_KEY)
+        writes = Mock(wraps=result_store._SKILL_API['write'])
+        with monkeypatch.context() as scoped:
+            scoped.setattr(LinUCBLearner, 'learn', invalid_learning)
+            scoped.setitem(result_store._SKILL_API, 'write', writes)
+            with pytest.raises(ValueError, match='有限'):
+                selector.settle(first, .25, 1)
+        writes.assert_not_called()
+        assert [path.read_bytes() for path in paths] == original_bytes
+        assert result_store.read_search_learner(selector.MODEL_KEY) == pending
+        assert selector.reserve(_intent()) == first
     fail_once()
     feedback = selector.settle(first, .25, 1)
     assert feedback['status'] == 'learned'
