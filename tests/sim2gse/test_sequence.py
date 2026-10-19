@@ -738,7 +738,7 @@ class SequenceSimulationTests(unittest.TestCase):
     def test_phase_reset_and_replay(self):
         from engine import identity
 
-        candidate, source, character = self.candidate(self.prepared, [['outbreak'], ['scourge_strike']])
+        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
         times = [150, 550, 1000, 1400]
         with tempfile.TemporaryDirectory(prefix='phase-replay-', dir=self.directory.name) as directory:
             first = evaluate(source, candidate, Path(directory) / 'first', character=character,

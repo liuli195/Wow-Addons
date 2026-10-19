@@ -263,7 +263,7 @@ class CharacterExportTests(unittest.TestCase):
             folder = Path(directory)
             text = (sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
                     .replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311'))
-            source = folder / '角色.simc'
+            source = folder / 'input.simc'
             source.write_text(text, encoding='utf-8', newline='')
             native = reference(source, folder / 'reference', parse_character(text), iterations=2)
             capabilities = inspect(native, folder / 'capabilities')
