@@ -29,6 +29,8 @@ m=runpy.run_path(sys.argv[1]);m['ensure_available']()
 assert m['write']('measurements','one',[{'score':7,'parts':[{'value':4}]}])==1
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':7})==[{'score':7}]
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':8})==[]
+assert m['write']('binary_measurements','one',[{'score':8,'payload':bytes([0,255])}],schema={'score':'INTEGER','payload':'BLOB'},binary=True)==1
+assert m['read_records']('binary_measurements','one',columns=['payload'],filters={'score':8})==[{'payload':bytes([0,255])}]
 print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM measurements',tables=['measurements']))))
 """
     result = subprocess.run([sys.executable, "-c", program, str(adapter)], env=env,
