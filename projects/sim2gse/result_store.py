@@ -53,9 +53,11 @@ SEARCH_LEARNER_SCHEMA = dict(
     numpy_version='VARCHAR', dimension='UBIGINT', alpha='DOUBLE', features='JSON',
     seed='BIGINT', rng_state='BIGINT', theta='DOUBLE[]', a_inv='DOUBLE[][]',
     reservations='JSON', settled='JSON',
+    theta_bytes='BLOB', a_inv_bytes='BLOB', matrix_format='VARCHAR',
 )
 SEARCH_LEARNER_CONTROL_SCHEMA = dict(
-    **{name: kind for name, kind in SEARCH_LEARNER_SCHEMA.items() if name not in ('theta', 'a_inv')},
+    **{name: kind for name, kind in SEARCH_LEARNER_SCHEMA.items()
+       if name not in ('theta', 'a_inv', 'theta_bytes', 'a_inv_bytes', 'matrix_format')},
     base_version='UBIGINT', phase='VARCHAR',
 )
 _SKILL_API = None
@@ -321,7 +323,7 @@ def read_search_learner_metadata(model_key):
     """Caller holds the shared lock; inspect the same record's version and parameters."""
     rows = read_records('search_learners', model_key, columns=[
         'model_key', 'version', 'state_version', 'feature_version', 'reward_version',
-        'coba_version', 'numpy_version', 'dimension', 'alpha', 'features', 'seed'])
+        'coba_version', 'numpy_version', 'dimension', 'alpha', 'features', 'seed', 'matrix_format'])
     if not rows:
         return None
     if (len(rows) != 1 or rows[0].get('model_key') != model_key
@@ -362,11 +364,12 @@ def write_search_learner(record, *, runtime=None):
     else:
         started = None
     try:
-        return write('search_learners', record['model_key'], [record], schema=SEARCH_LEARNER_SCHEMA)
+        return write('search_learners', record['model_key'], [record], schema=SEARCH_LEARNER_SCHEMA,
+                     binary=record.get('state_version') == 3)
     finally:
         if logging:
             try:
-                diagnostic_finish(runtime, 'model.full_write', started, rows=1, dimension=record['dimension'], matrix_values=(record['dimension'] * (record['dimension'] + 1) if record.get('theta') is not None else 0), reservations=len(record['reservations']), settled=len(record['settled']))
+                diagnostic_finish(runtime, 'model.full_write', started, rows=1, dimension=record['dimension'], matrix_values=(record['dimension'] * (record['dimension'] + 1) if record.get('theta') is not None or record.get('theta_bytes') is not None else 0), reservations=len(record['reservations']), settled=len(record['settled']))
             except Exception:
                 pass
 

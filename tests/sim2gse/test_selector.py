@@ -5,7 +5,29 @@ import pytest
 
 MODEL_HEADER_COLUMNS = [
     'model_key', 'version', 'state_version', 'feature_version', 'reward_version',
-    'coba_version', 'numpy_version', 'dimension', 'alpha', 'features', 'seed']
+    'coba_version', 'numpy_version', 'dimension', 'alpha', 'features', 'seed', 'matrix_format']
+
+
+def _matrix(record, name):
+    import numpy as np
+    values = np.frombuffer(record[name + '_bytes'], dtype='<f8')
+    return values.reshape(1072, 1072) if name == 'a_inv' else values
+
+
+def _legacy_record(record, state_version=1):
+    legacy = {name: value for name, value in record.items()
+              if name not in ('theta_bytes', 'a_inv_bytes', 'matrix_format')}
+    legacy.update(state_version=state_version,
+        theta=_matrix(record, 'theta').tolist() if record['theta_bytes'] is not None else None,
+        a_inv=_matrix(record, 'a_inv').tolist() if record['a_inv_bytes'] is not None else None)
+    return legacy
+
+
+def _write_legacy(record):
+    import result_store
+    schema = {name: kind for name, kind in result_store.SEARCH_LEARNER_SCHEMA.items()
+              if name not in ('theta_bytes', 'a_inv_bytes', 'matrix_format')}
+    result_store.write('search_learners', record['model_key'], [record], schema=schema)
 
 
 def _intent(task='one', decision=1):
@@ -20,7 +42,7 @@ def test_selector_reserves_once_and_settles_shared_latest_model():
 
     first = selector.reserve(_intent())
     initialized = result_store.read_search_learner(selector.MODEL_KEY)
-    assert initialized['theta'] is not None and initialized['a_inv'][0][0] == 1
+    assert initialized['theta_bytes'] is not None and _matrix(initialized, 'a_inv')[0][0] == 1
     assert first == selector.reserve(_intent())
     other = selector.reserve(_intent('two'))
     assert other['model_version'] > first['model_version']
@@ -28,7 +50,7 @@ def test_selector_reserves_once_and_settles_shared_latest_model():
     learned = selector.settle(first, 0, 1)
     assert learned['status'] == 'learned'
     trained = result_store.read_search_learner(selector.MODEL_KEY)
-    assert trained['a_inv'][0][0] == .5
+    assert _matrix(trained, 'a_inv')[0][0] == .5
     assert trained['settled'] == {'one': 1}
     assert trained['reservations'] == [other]
     assert selector.settle(first, 0, 1)['status'] == 'already_settled'
@@ -101,8 +123,8 @@ def test_selector_reloads_when_an_independent_instance_updates_the_shared_versio
     assert reads == [MODEL_HEADER_COLUMNS, None, MODEL_HEADER_COLUMNS]
     record = result_store.read_search_learner(selector.MODEL_KEY)
     assert record['settled'] == {'one': 2, 'two': 1}
-    assert record['theta'][0] == pytest.approx(.0625)
-    assert record['a_inv'][0][0] == pytest.approx(.25)
+    assert _matrix(record, 'theta')[0] == pytest.approx(.0625)
+    assert _matrix(record, 'a_inv')[0][0] == pytest.approx(.25)
 
 
 def test_selector_reloads_after_authoritative_version_read_failure(monkeypatch):
@@ -269,8 +291,8 @@ def test_selector_recovers_atomic_write_errors_without_duplicate_prediction_or_l
     assert feedback['status'] == 'learned'
     record = result_store.read_search_learner(selector.MODEL_KEY)
     assert record['version'] == 2 and record['reservations'] == [] and record['settled'] == {'one': 1}
-    assert record['theta'][0] == .125
-    assert record['a_inv'][0][0] == .5
+    assert _matrix(record, 'theta')[0] == .125
+    assert _matrix(record, 'a_inv')[0][0] == .5
     assert selector.settle(first, .25, 1)['status'] == 'already_settled'
     assert result_store.read_search_learner(selector.MODEL_KEY) == record
 
@@ -293,12 +315,68 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     next_intent = _intent(decision=2)
     next_intent['actions'].append(dict(operation_id='third', features=[0.0] * 21))
     expected = selector.reserve(next_intent)
+    pending_control = result_store.read_search_learner_control(selector.MODEL_KEY)
     selector.settle(expected, -.5, 1)
     expected_state = result_store.read_search_learner(selector.MODEL_KEY)
+    future_intent = _intent(decision=3)
+    future = selector.reserve(future_intent)
+    selector.settle(future, .125, 1)
+    future_state = result_store.read_search_learner(selector.MODEL_KEY)
+    # Preserve a real v2 matrix checkpoint m and its newer pending control c.
+    import numpy as np
+    legacy = {name: value for name, value in snapshot.items()
+              if name not in ('theta_bytes', 'a_inv_bytes', 'matrix_format')}
+    legacy.update(state_version=2,
+        theta=np.frombuffer(snapshot['theta_bytes'], dtype='<f8').tolist(),
+        a_inv=np.frombuffer(snapshot['a_inv_bytes'], dtype='<f8').reshape(1072, 1072).tolist())
+    pending_control = dict(pending_control, state_version=2)
+    monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'legacy-v2-center')
+    old_schema = {name: kind for name, kind in result_store.SEARCH_LEARNER_SCHEMA.items()
+                  if name not in ('theta_bytes', 'a_inv_bytes', 'matrix_format')}
+    result_store.write('search_learners', selector.MODEL_KEY, [legacy], schema=old_schema)
+    # An untouched historical key keeps its original typed arrays in the same table.
+    result_store.write('search_learners', 'untouched-history',
+                       [dict(legacy, model_key='untouched-history')], schema=old_schema)
+    result_store.write('search_learner_controls', selector.MODEL_KEY, [pending_control],
+                       schema=result_store.SEARCH_LEARNER_CONTROL_SCHEMA)
+    native_write = result_store._SKILL_API['write']
+    publications = []
+    def observe_write(root, table, key, rows, **kwargs):
+        publications.append((table, rows[0]['version'], rows[0].get('phase'), kwargs.get('binary')))
+        return native_write(root, table, key, rows, **kwargs)
+    with monkeypatch.context() as scoped:
+        scoped.setitem(result_store._SKILL_API, 'write', observe_write)
+        capabilities = result_store._SKILL_API['DATA_STORE_CAPABILITIES']
+        scoped.setitem(result_store._SKILL_API, 'DATA_STORE_CAPABILITIES', ())
+        with pytest.raises(result_store.DataReadError, match='binary-write-v1'):
+            selector.reserve(next_intent)
+        assert publications == []
+        scoped.setitem(result_store._SKILL_API, 'DATA_STORE_CAPABILITIES', capabilities)
+        assert selector.reserve(next_intent) == expected
+    assert publications == [
+        ('search_learner_controls', pending_control['version'], 'migrating', None),
+        ('search_learners', snapshot['version'], None, True),
+        ('search_learner_controls', pending_control['version'], 'active', None)]
+    migrated = result_store.read_search_learner(selector.MODEL_KEY)
+    migrated_control = result_store.read_search_learner_control(selector.MODEL_KEY)
+    assert migrated['version'] == snapshot['version']
+    assert migrated_control == dict(pending_control, state_version=3)
+    assert migrated['theta_bytes'] == snapshot['theta_bytes']
+    assert migrated['a_inv_bytes'] == snapshot['a_inv_bytes']
+    assert sorted(result_store.iter_rows(
+        'SELECT model_key,state_version FROM search_learners', tables=['search_learners']),
+        key=lambda row: row['model_key']) == sorted([
+            dict(model_key=selector.MODEL_KEY, state_version=3),
+            dict(model_key='untouched-history', state_version=2)], key=lambda row: row['model_key'])
+    selector.settle(expected, -.5, 1)
+    assert result_store.read_search_learner(selector.MODEL_KEY) == expected_state
+    assert selector.reserve(future_intent) == future
+    selector.settle(future, .125, 1)
+    assert result_store.read_search_learner(selector.MODEL_KEY) == future_state
     monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'restored-center')
     with result_store.search_learner_lock():
-        result_store.write_search_learner_control(control)
-        result_store.write_search_learner(snapshot)
+        result_store.write_search_learner_control(dict(control, state_version=2))
+        _write_legacy(legacy)
     actual = selector.reserve(next_intent)
     assert actual == expected
     selector.settle(actual, -.5, 1)
@@ -320,20 +398,35 @@ def test_selector_restarts_each_format_publication_step_without_repredicting(
     previous = None
     if phase == 'migrating':
         previous = selector.reserve(_intent())
-        legacy = result_store.read_search_learner(selector.MODEL_KEY)
-        legacy['state_version'] = 1
+        legacy = _legacy_record(result_store.read_search_learner(selector.MODEL_KEY))
+        if boundary == 'prepare':
+            selector.reserve(_intent('two'))
+            legacy['state_version'] = 2
+            legacy_control = dict(result_store.read_search_learner_control(selector.MODEL_KEY), state_version=2)
         monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'legacy-center')
-        result_store.write('search_learners', selector.MODEL_KEY, [legacy],
-                           schema=result_store.SEARCH_LEARNER_SCHEMA)
+        _write_legacy(legacy)
+        if boundary == 'prepare':
+            result_store.write_search_learner_control(legacy_control)
+        else:
+            prepared = {name: value for name, value in legacy.items() if name not in ('theta', 'a_inv')}
+            prepared.update(state_version=2, base_version=legacy['version'], phase='migrating')
+            result_store.write_search_learner_control(prepared)
+    elif boundary == 'prepare':
+        result_store.write_search_learner_control(dict(
+            model_key=selector.MODEL_KEY, version=0, state_version=2,
+            feature_version=selector.FEATURE_VERSION, reward_version=selector.REWARD_VERSION,
+            coba_version=selector.COBA_VERSION, numpy_version=selector.NUMPY_VERSION,
+            dimension=1072, alpha=1, features=selector.FEATURES, seed=1, rng_state=1,
+            reservations=[], settled={}, base_version=0, phase='bootstrap'))
     native_write = result_store._SKILL_API['write']
     expected_version = 0 if phase == 'bootstrap' else 1
 
     def crash(root, table, key, rows, **kwargs):
         record = rows[0]
-        targeted = (table == 'search_learners' and record.get('state_version') == 2
+        targeted = (table == 'search_learners' and record.get('state_version') == 3
                     and record.get('version') == expected_version) if boundary == 'model' else (
             table == 'search_learner_controls' and record.get('phase') == phase
-            and record.get('version') == expected_version)
+            and record.get('version') == (2 if phase == 'migrating' else expected_version))
         if targeted:
             # 下一次写入前与本次替换后具有相同持久状态，只保留这两个不同恢复点。
             native_write(root, table, key, rows, **kwargs)
@@ -357,8 +450,8 @@ def test_selector_restarts_each_format_publication_step_without_repredicting(
     assert restarted['settle'](first, .25, 1)['status'] == 'learned'
     assert restarted['settle'](first, .25, 1)['status'] == 'already_settled'
     record = result_store.read_search_learner(selector.MODEL_KEY)
-    assert record['state_version'] == 2 and record['version'] == 3
-    assert record['theta'][0] == .125 and record['a_inv'][0][0] == .5
+    assert record['state_version'] == 3 and record['version'] == 3
+    assert _matrix(record, 'theta')[0] == .125 and _matrix(record, 'a_inv')[0][0] == .5
 
 
 @pytest.mark.parametrize('damage', ['missing', 'wrong_base'])
@@ -393,16 +486,15 @@ def test_selector_refuses_a_legacy_writer_update_during_prepared_migration(tmp_p
     import selector
 
     selector.reserve(_intent())
-    legacy = result_store.read_search_learner(selector.MODEL_KEY)
-    legacy['state_version'] = 1
+    legacy = _legacy_record(result_store.read_search_learner(selector.MODEL_KEY))
     prepared = {name: value for name, value in legacy.items() if name not in ('theta', 'a_inv')}
-    prepared.update(state_version=2, base_version=1, phase='migrating')
+    prepared.update(state_version=3, base_version=1, phase='migrating')
     monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'interrupted-migration')
     # While v1 is still visible, an old writer can settle the receipt without learning.
     legacy.update(version=2, reservations=[], settled={'one': 1})
     with result_store.search_learner_lock():
         result_store.write_search_learner_control(prepared)
-        result_store.write_search_learner(legacy)
+        _write_legacy(legacy)
     restarted = runpy.run_path(selector.__file__)
     with pytest.raises(result_store.DataReadError, match='迁移控制记录冲突'):
         restarted['reserve'](_intent('two'))
@@ -418,7 +510,7 @@ def test_selector_does_not_reinitialize_missing_matrices_as_new_experience():
     first = selector.reserve(_intent())
     selector.settle(first, .25, 1)
     broken = result_store.read_search_learner(selector.MODEL_KEY)
-    broken.update(theta=None, a_inv=None)
+    broken.update(theta_bytes=None, a_inv_bytes=None)
 
     with result_store.search_learner_lock():
         result_store.write_search_learner(broken)

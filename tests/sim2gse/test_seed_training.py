@@ -106,19 +106,24 @@ def memory_result_center(installed_data_store_api, monkeypatch):
     groups = {}
     lock = threading.RLock()
     with duckdb.connect(':memory:', config={'threads': 1}) as database, monkeypatch.context() as scoped:
-        def write(root, table, key, rows, *, schema=None):
+        def write(root, table, key, rows, *, schema=None, binary=False):
             table = installed_data_store_api['_name'](table, table=True)
             key = installed_data_store_api['_name'](key)
-            payload = json.dumps(rows, ensure_ascii=False, allow_nan=False)
             group = f'"_memory_{table}_{key}"'
             with lock, database.cursor() as cursor:
-                structure = (json.dumps([schema]) if schema is not None else
-                             cursor.execute('SELECT json_structure(?)', [payload]).fetchone()[0])
-                if schema is None and installed_data_store_api['_opaque'](json.loads(structure)):
-                    raise ValueError('无法推断有类型的记录，请明确提供字段类型')
-                transform = 'from_json_strict' if schema is not None else 'from_json'
-                cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT record.* FROM '
-                               f'(SELECT unnest({transform}(?, ?)) AS record)', [payload, structure])
+                if binary:
+                    records = installed_data_store_api['_binary_records'](cursor, rows, schema)
+                    records.create('_binary_records_view')
+                    cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT * FROM _binary_records_view')
+                else:
+                    payload = json.dumps(rows, ensure_ascii=False, allow_nan=False)
+                    structure = (json.dumps([schema]) if schema is not None else
+                                 cursor.execute('SELECT json_structure(?)', [payload]).fetchone()[0])
+                    if schema is None and installed_data_store_api['_opaque'](json.loads(structure)):
+                        raise ValueError('无法推断有类型的记录，请明确提供字段类型')
+                    transform = 'from_json_strict' if schema is not None else 'from_json'
+                    cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT record.* FROM '
+                                   f'(SELECT unnest({transform}(?, ?)) AS record)', [payload, structure])
                 groups.setdefault(table, {})[key] = group
                 sources = ' UNION ALL BY NAME '.join(f'SELECT * FROM {name}'
                                                     for name in groups[table].values())
@@ -159,6 +164,7 @@ def memory_result_center(installed_data_store_api, monkeypatch):
                              list(filters.values()) if filters else [], tables=[table])
 
         api = dict(write=write, query=query, read_key=read_key, read_keys=read_keys,
+                   DATA_STORE_CAPABILITIES=installed_data_store_api.get('DATA_STORE_CAPABILITIES', ()),
                    **{name: installed_data_store_api[name] for name in ('MissingKeyError', 'CorruptDataError')})
         scoped.setattr(result_store, '_api', lambda: api)
         yield

@@ -12,7 +12,9 @@ from runtime import diagnostic_start, diagnostic_finish
 
 FEATURE_VERSION = 'c50-a21-v1'
 REWARD_VERSION = 'relative-common-batches-v1'
-STATE_VERSION = 2
+STATE_VERSION = 3
+MATRIX_FORMAT = 'f64-le-v1'
+MATRIX_FIELDS = ('theta', 'a_inv', 'theta_bytes', 'a_inv_bytes', 'matrix_format')
 MODEL_KEY = 'linucb_c50_a21_feature_v1_reward_v1'
 CONTEXT_DIMENSION, ACTION_DIMENSION, MODEL_DIMENSION = 50, 21, 1072
 COBA_VERSION, NUMPY_VERSION = '8.1.0', '2.4.4'
@@ -279,8 +281,11 @@ def _snapshot(learner, *, version=0, reservations=None, settled=None, model=True
             reservations=reservations if reservations is not None else [],
             settled=settled if settled is not None else {})
         if model:
-            record.update(theta=learner._theta.tolist() if learner._theta is not None else None,
-                          a_inv=learner._A_inv.tolist() if learner._A_inv is not None else None)
+            record.update(theta=None, a_inv=None, matrix_format=MATRIX_FORMAT,
+                theta_bytes=learner._theta.astype('<f8', copy=False).tobytes()
+                    if learner._theta is not None else None,
+                a_inv_bytes=learner._A_inv.astype('<f8', copy=False).tobytes()
+                    if learner._A_inv is not None else None)
         return record
     finally:
         if logging:
@@ -324,6 +329,21 @@ def _restore(record, *, state_version=None):
     _validate_parameters(record, state_version=state_version)
     _validate_state(record)
     theta, inverse = record.get('theta'), record.get('a_inv')
+    if record['state_version'] in (1, 2) and any(
+            record.get(name) is not None for name in ('theta_bytes', 'a_inv_bytes', 'matrix_format')):
+        raise ValueError('旧格式必须使用原生数组列，不能包含新矩阵格式')
+    if record['state_version'] == STATE_VERSION:
+        if (not set(MATRIX_FIELDS) <= record.keys() or theta is not None or inverse is not None
+                or record['matrix_format'] != MATRIX_FORMAT):
+            raise ValueError('共享选择器矩阵格式无效，保留原状态')
+        theta, inverse = record['theta_bytes'], record['a_inv_bytes']
+        if theta is not None or inverse is not None:
+            if (not isinstance(theta, bytes) or not isinstance(inverse, bytes)
+                    or len(theta) != MODEL_DIMENSION * 8
+                    or len(inverse) != MODEL_DIMENSION * MODEL_DIMENSION * 8):
+                raise ValueError('共享选择器矩阵字节长度或类型无效，保留原状态')
+            theta = np.frombuffer(theta, dtype='<f8').copy()
+            inverse = np.frombuffer(inverse, dtype='<f8').reshape(MODEL_DIMENSION, MODEL_DIMENSION).copy()
     if not {'theta', 'a_inv'} <= record.keys() or (theta is None) != (inverse is None):
         raise ValueError('共享选择器矩阵不完整，保留原状态')
     if theta is None and (record['version'] != 0 or record['rng_state'] != 1
@@ -378,21 +398,38 @@ def _validate_receipt(receipt):
 
 
 def _control(record, base_version, phase='active'):
-    return dict({key: value for key, value in record.items() if key not in ('theta', 'a_inv')},
+    return dict({key: value for key, value in record.items() if key not in MATRIX_FIELDS},
                 base_version=base_version, phase=phase)
 
 
-def _validate_control(record):
-    _validate_parameters(record)
+def _validate_control(record, *, state_version=None):
+    _validate_parameters(record, state_version=state_version)
     _validate_state(record)
+    if any(name in record for name in MATRIX_FIELDS):
+        raise result_store.DataReadError('共享选择器控制记录不得包含矩阵字段')
     if (record.get('phase') not in ('bootstrap', 'migrating', 'active')
             or type(record.get('base_version')) is not int
             or not 0 <= record['base_version'] <= record['version']):
         raise result_store.DataReadError('共享选择器控制阶段或基础版本无效')
 
 
+def _binary_available():
+    if "binary-write-v1" not in result_store._api().get("DATA_STORE_CAPABILITIES", ()):
+        raise result_store.DataReadError('data-store 缺少 binary-write-v1 能力，请更新技能并重启当前进程')
+
+
+def _related(record, control):
+    if control['version'] >= record['version']:
+        if control['base_version'] != record['version']:
+            raise result_store.DataReadError('共享选择器控制记录与模型基础版本冲突')
+        if control['version'] == record['version'] and any(
+                control[key] != record[key] for key in ('rng_state', 'reservations', 'settled')):
+            raise result_store.DataReadError('共享选择器同版本控制内容冲突')
+
+
 def _activate(runtime=None):
-    """Finish only the bounded empty bootstrap or same-version v1 migration, under the lock."""
+    """Complete this key's bootstrap or physical migration under the existing shared lock."""
+    _binary_available()
     for attempt in range(2):
         try:
             record = result_store.read_search_learner(MODEL_KEY)
@@ -403,29 +440,67 @@ def _activate(runtime=None):
                 if control is None:
                     result_store.write_search_learner_control(prepared, runtime=runtime)
                     control = prepared
-                if control != prepared:
-                    raise result_store.DataReadError('共享选择器完整记录丢失，不能重建已有经验')
-                result_store.write_search_learner(empty, runtime=runtime)
-                record = empty
-            elif record.get('state_version') == 1:
-                _restore(record, state_version=1)
-                record = dict(record, state_version=STATE_VERSION)
-                prepared = _control(record, record['version'], 'migrating')
-                if control is None:
+                elif control.get('state_version') == 2:
+                    _validate_control(control, state_version=2)
+                    if control != dict(prepared, state_version=2):
+                        raise result_store.DataReadError('共享选择器旧初始化控制记录冲突')
                     result_store.write_search_learner_control(prepared, runtime=runtime)
                     control = prepared
                 if control != prepared:
-                    raise result_store.DataReadError('共享选择器旧格式与迁移控制记录冲突，请先停止旧写入进程')
-                result_store.write_search_learner(record, runtime=runtime)
-            _validate_parameters(record)
+                    raise result_store.DataReadError('共享选择器完整记录缺失，不能重建已有经验')
+                result_store.write_search_learner(empty, runtime=runtime)
+                record = empty
+            elif record.get('state_version') in (1, 2):
+                old_version = record['state_version']
+                learner = _restore(record, state_version=old_version)
+                upgraded = _snapshot(learner, version=record['version'],
+                    reservations=record['reservations'], settled=record['settled'], runtime=runtime)
+                if control is None:
+                    if old_version != 1:
+                        raise result_store.DataReadError('共享选择器控制记录缺失')
+                    prepared = _control(upgraded, record['version'], 'migrating')
+                elif (old_version == 1 and control.get('state_version') == 2
+                      and control.get('phase') == 'migrating'):
+                    _validate_control(control, state_version=2)
+                    prepared = _control(upgraded, record['version'], 'migrating')
+                    if control != dict(prepared, state_version=2):
+                        raise result_store.DataReadError('共享选择器迁移控制记录冲突')
+                elif control.get('state_version') == STATE_VERSION:
+                    _validate_control(control)
+                    if control['phase'] != 'migrating':
+                        raise result_store.DataReadError('共享选择器旧格式与迁移控制记录冲突')
+                    if (control['base_version'] != record['version']
+                            or control['version'] < record['version']):
+                        raise result_store.DataReadError('共享选择器迁移控制记录冲突，旧写入者已改变模型')
+                    _related(record, control)
+                    prepared = control
+                    if old_version == 1 and control != _control(upgraded, record['version'], 'migrating'):
+                        raise result_store.DataReadError('共享选择器迁移控制记录冲突')
+                else:
+                    _validate_control(control, state_version=old_version)
+                    if control['phase'] == 'bootstrap' and control == dict(
+                            _control(upgraded, 0, 'bootstrap'), state_version=old_version):
+                        if upgraded != _snapshot(_learner(), runtime=runtime):
+                            raise result_store.DataReadError('共享选择器旧初始化已有非空经验')
+                    elif control['phase'] != 'active':
+                        raise result_store.DataReadError('共享选择器旧控制阶段无效')
+                    _related(record, control)
+                    prepared = (_control(upgraded, record['version'], 'migrating')
+                                if control['version'] < record['version'] else
+                                dict(control, state_version=STATE_VERSION, phase='migrating'))
+                if control != prepared:
+                    result_store.write_search_learner_control(prepared, runtime=runtime)
+                control = prepared
+                result_store.write_search_learner(upgraded, runtime=runtime)
+                record = upgraded
+            _restore(record)
             if control is None:
-                raise result_store.DataReadError('共享选择器控制记录丢失')
+                raise result_store.DataReadError('共享选择器控制记录缺失')
             _validate_control(control)
+            _related(record, control)
             if control['phase'] != 'active':
                 if control['phase'] == 'bootstrap' and record != _snapshot(_learner(), runtime=runtime):
                     raise result_store.DataReadError('共享选择器初始化阶段已有非空经验，不能覆盖')
-                if control != _control(record, record['version'], control['phase']):
-                    raise result_store.DataReadError('共享选择器准备记录与完整版本冲突')
                 control = dict(control, phase='active')
                 result_store.write_search_learner_control(control, runtime=runtime)
             return record, control
@@ -452,6 +527,7 @@ def _load(runtime=None):
     started = diagnostic_start() if logging else None
     try:
         from coba.random import CobaRandom
+        _binary_available()
         global _CACHED_LEARNER, _SEEN_VERSION
         cached, _CACHED_LEARNER = _CACHED_LEARNER, None
         source = result_store.DATA_ROOT.resolve(), MODEL_KEY
@@ -461,12 +537,14 @@ def _load(runtime=None):
         record = (result_store.read_search_learner_metadata(MODEL_KEY) if cached
                   else result_store.read_search_learner(MODEL_KEY))
         control = result_store.read_search_learner_control(MODEL_KEY)
-        if record is None or record.get('state_version') == 1:
+        if record is None or record.get('state_version') in (1, 2):
             if _SEEN_VERSION is not None:
                 raise result_store.DataReadError('共享选择器权威记录丢失或格式回退，保留已知经验版本')
             record, control = _activate(runtime)
             cached = None
         _validate_parameters(record)
+        if record.get('matrix_format') != MATRIX_FORMAT:
+            raise result_store.DataReadError('共享选择器矩阵格式标记无效')
         if control is None:
             raise result_store.DataReadError('共享选择器控制记录丢失，保留已有经验')
         _validate_control(control)
