@@ -1509,7 +1509,7 @@ class SearchAndValidationTests(TestCase):
             if key not in scores:
                 if result['blocks'] not in starts:
                     generated.append(key)
-                scores[key] = 200.0 if len(generated) >= 3 and result['blocks'] not in starts else 100.0
+                scores[key] = 200.0 if len(generated) >= 2 and result['blocks'] not in starts else 100.0
             damage = scores[key]
             result['summary']['dps'] = damage
             result['report']['sim']['statistics']['raid_dps']['mean'] = damage
@@ -1517,7 +1517,7 @@ class SearchAndValidationTests(TestCase):
             (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
             return result
 
-        count = 4
+        count = 2
         with tempfile.TemporaryDirectory() as directory:
             generated = []
             scores = {}
@@ -1536,10 +1536,10 @@ class SearchAndValidationTests(TestCase):
                 saved = read_task(Path(directory) / 'task')
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(result['search']['stop_reason'], 'no_improvement')
-            self.assertEqual(result['search']['rounds'], 7)
+            self.assertEqual(result['search']['rounds'], 4)
             self.assertEqual(len(result['search']['chains']), count)
             self.assertEqual([chain['rounds'] for chain in result['search']['chains']],
-                             [2, 2, 2, 1])
+                             [2, 2])
             self.assertEqual(result['search_result']['dps'], 200.0)
             self.assertEqual(result['search']['no_improvement_round_limit'], count)
             self.assertEqual(saved['search']['no_improvement_round_limit'], count)

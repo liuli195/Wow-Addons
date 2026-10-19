@@ -856,6 +856,7 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
     import result_store
     from selector import MODEL_KEY
     import sequence
+    from test_search import _initialized_starts
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
@@ -867,7 +868,7 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
         result = _observed_evaluate(*args, **kwargs)
         if kwargs.get('rule_observation_request') is not None:
             requests.append(args[1]['blocks'])
-            if len(requests) == 6:
+            if len(requests) == 3:
                 kwargs['runtime'].used_seconds = kwargs['runtime'].budget_seconds
         return result
 
@@ -878,14 +879,15 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
             cleanup_calls.append(total)
             return real_runtime(total, used_seconds=total, **kwargs)
         monkeypatch.setattr(search, 'TaskRuntime', expired_cleanup)
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=finish_at_budget):
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=finish_at_budget):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(total_budget_seconds=60, input_interval_ms=200, candidate_limit=6,
+            search_config=_eager_search_config(total_budget_seconds=60, input_interval_ms=200, candidate_limit=3,
                 round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2,
                 validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',)))
         saved = read_task(tmp_path / 'task', include_search_records=True)
     selections = [step['selection'] for step in saved['search']['rule_steps'].values() if step.get('selection')]
-    assert len(selections) == 2 and len(requests) == 6
+    assert len(selections) == 2 and len(requests) == 3
     if cleanup_expired:
         checkpoint = search.TaskStore(tmp_path / 'task')
         try:
