@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "scenarios": DEFAULT_SCENARIOS,
     "random_seed": 20260912,
     "trace_search": False,
+    "rule_diagnostics_policy": "on_demand",
     "diagnostic_logging": False,
     "diagnostics": "off",
     "search_observability": "off",
@@ -59,10 +60,13 @@ def verify_behavior_identity_state(state):
         raise ValueError('候选行为身份版本已变化，请创建新任务')
 
 
-def config_for(values=None, *, training=False):
+def config_for(values=None, *, training=False, legacy=False):
     if type(training) is not bool:
         raise ValueError('训练配置开关必须为布尔值')
     config = dict(DEFAULT_CONFIG)
+    legacy_policy = legacy and 'rule_diagnostics_policy' not in (values or {})
+    if legacy_policy:
+        config['rule_diagnostics_policy'] = 'eager'
     if values:
         if set(values)-set(config):
             raise ValueError('未知搜索配置')
@@ -84,6 +88,8 @@ def config_for(values=None, *, training=False):
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
     if config['diagnostics'] not in {'off', 'summary', 'full'}:
         raise ValueError('诊断模式必须是 off、summary 或 full')
+    if config['rule_diagnostics_policy'] not in ('eager', 'on_demand'):
+        raise ValueError('规则诊断策略必须是 eager 或 on_demand')
     if (not isinstance(config['search_observability'], str) or
             config['search_observability'] not in ('off', 'summary', 'full')):
         raise ValueError('搜索记录模式必须是 off、summary 或 full')
@@ -116,6 +122,8 @@ def config_for(values=None, *, training=False):
                 any(ms % config['input_interval_ms'] for ms, kind in config['reset_events']
                     if kind in {'shift', 'ctrl', 'alt'})):
             raise ValueError('修饰键 Reset 事件只支持与 nominal 情景点击对齐')
+    if legacy_policy:
+        config.pop('rule_diagnostics_policy')
     return config
 
 
@@ -778,7 +786,7 @@ def _checkpoint_copy(value):
 def _checkpoint_diagnostic_reference(record):
     """Project only an equivalent top-level copy; keep its scored evidence locally."""
     diagnostic = record.get('rule_diagnostics')
-    for source in ('batches', 'score_batches'):
+    for source in ('batches', 'score_batches', 'diagnostic_batches'):
         rows = record.get(source)
         if (isinstance(diagnostic, dict) and all(isinstance(diagnostic.get(key), str) and diagnostic[key]
                 for key in ('version', 'parent_identity')) and isinstance(diagnostic.get('evidence'), dict)
@@ -799,7 +807,7 @@ def _restore_checkpoint_diagnostics(state):
         reference = record.pop('rule_diagnostics_ref', None)
         if has_reference:
             if (not isinstance(reference, dict) or type(reference.get('version')) is not int or reference['version'] != 1
-                    or reference.get('source') not in ('batches', 'score_batches')):
+                    or reference.get('source') not in ('batches', 'score_batches', 'diagnostic_batches')):
                 raise ValueError('任务诊断引用版本或来源无效')
             rows = record.get(reference['source'])
             diagnostic = (rows[0].get('rule_diagnostics') if isinstance(rows, list) and rows
@@ -814,7 +822,7 @@ def _restore_checkpoint_diagnostics(state):
             record['rule_diagnostics'] = diagnostic
         else:
             # Legacy JSON duplicated the same value. Compare once on load, never per save.
-            for source in ('batches', 'score_batches'):
+            for source in ('batches', 'score_batches', 'diagnostic_batches'):
                 rows = record.get(source)
                 if (isinstance(rows, list) and rows and isinstance(rows[0], dict)
                         and record.get('rule_diagnostics') == rows[0].get('rule_diagnostics')):
@@ -839,11 +847,12 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
             or (saved.get('reset_events') or []) != [
                 dict(ms=ms, kind=kind) for ms, kind in request['reset_events']]):
         raise ValueError('缓存报告或请求身份缺失')
-    if 'rule_observations' in request:
-        declaration = saved.get('rule_observations')
-        if isinstance(declaration, str): declaration = json.loads(declaration)
-        if declaration != request['rule_observations']:
-            raise ValueError('缓存规则观察请求身份不符')
+    declaration = saved.get('rule_observations')
+    if isinstance(declaration, str): declaration = json.loads(declaration)
+    if declaration != request.get('rule_observations'):
+        raise ValueError('缓存规则观察请求身份不符')
+    if saved.get('source_scoring_batch_key') != request.get('source_scoring_batch_key'):
+        raise ValueError('缓存诊断来源批次身份不符')
     summary = check_report(report, character, request['iterations'], simulation_config=simulation_config)
     if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
             or _score_variance(report, character) != cached['variance']
@@ -897,13 +906,13 @@ class TaskStore:
         from result_store import DATA_ROOT, ReportLocations
         self.report_locations = ReportLocations(DATA_ROOT)
         self.persisted_batches = self.db.execute(
-            "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
+            "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
         self.db.commit()
 
     @property
     def diagnostic_logging(self):
         config = self.state.get('config')
-        return bool(config and config.get('diagnostic_logging', False))
+        return getattr(self, 'diagnostic_logging_override', bool(config and config.get('diagnostic_logging', False)))
 
     @staticmethod
     def load_state(database):
@@ -998,7 +1007,7 @@ class TaskStore:
                     self.db.execute('INSERT OR REPLACE INTO state_archive VALUES (?,?,?)', (key, ordinal, payload))
                     self.saved_archive[key] = (ordinal, _checkpoint_copy(record), size)
                     written += size
-            if self.state.get('config', {}).get('diagnostic_logging', False):
+            if self.diagnostic_logging:
                 self.state_write_count += 1
                 self.state_bytes += written
                 self.full_state_value_bytes += sum(value[1] for value in self.saved_fields.values()) + sum(value[2] for value in self.saved_archive.values())
@@ -1025,7 +1034,8 @@ class TaskStore:
             self.report_buffer.append((key, row, prepare_batch(
                 stored, diagnostic_logging=diagnostic_logging, runtime=getattr(self, 'runtime', None))))
             self.verified_batches[key] = row
-            self.state['completed_batches'] += 1
+            if row['request']['purpose'] != 'diagnostic':
+                self.state['completed_batches'] += 1
             if replace_group or len(self.report_buffer) >= 12:
                 self.flush_reports(replace_group=replace_group)
 
@@ -1128,7 +1138,7 @@ class TaskStore:
                     self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, _json(row)))
                 self.verified_batches[key] = row
             self.state['completed_batches'] = self.db.execute(
-                "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0]
+                "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
             self.persisted_batches = self.state['completed_batches']
             self.state['next_report_group'] = max(number + 1, self.state.get('next_report_group', 0))
             if checkpoint:
@@ -1218,7 +1228,7 @@ class TaskStore:
                       'batch_requests', 'batch_cache_hits', 'native_batch_starts',
                       'canonicalized_duplicates', 'error')}
             brief['completed_batches'] = self.persisted_batches
-            if not self.state.get('config', {}).get('diagnostic_logging', False):
+            if not self.diagnostic_logging:
                 for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):
                     brief.pop(key, None)
             observation = self.state.get("search_observability")
@@ -1231,7 +1241,7 @@ class TaskStore:
 
     def note_lua_start(self):
         with self.lock:
-            if self.state.get('config', {}).get('diagnostic_logging', False):
+            if self.diagnostic_logging:
                 self.lua_compiler_starts += 1
 
     def batch(self, key):
@@ -1259,10 +1269,13 @@ class TaskStore:
             if value.get('status')=='success' and value['request']['purpose']!='final':
                 self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
             self.state['completed_batches'] = self.db.execute(
-                "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success'").fetchone()[0] + len(self.report_buffer)
-            self.persisted_batches = self.state['completed_batches'] - len(self.report_buffer)
-            if counter is not None and self.state.get('config', {}).get('diagnostic_logging', False):
-                self.state[counter] = self.state.get(counter, 0) + 1
+                "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
+            self.persisted_batches = self.state['completed_batches']
+            self.state['completed_batches'] += sum(row['request']['purpose'] != 'diagnostic'
+                                                   for _, row, _ in self.report_buffer)
+            if counter is not None and self.diagnostic_logging:
+                counters = getattr(self, 'counter_target', self.state)
+                counters[counter] = counters.get(counter, 0) + 1
             if not self.report_buffer:
                 self._persist_state()
             self._save_progress()
@@ -1315,6 +1328,13 @@ class TaskStore:
 
 def _score(rows):
     return sum(r['dps'] * r['samples'] for r in rows) / sum(r['samples'] for r in rows)
+
+
+def rule_diagnostic_status(record):
+    diagnostic = record.get('rule_diagnostics')
+    if diagnostic:
+        return 'complete' if diagnostic['pool']['complete'] else 'incomplete'
+    return record.get('rule_diagnostic_status', 'not_diagnosed')
 
 
 def freeze_selection_feedback(store, work, rows, *, reason=None):
@@ -1455,7 +1475,8 @@ def _tuple(value):
 
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
-             config, condition_key, store, simulation_config=None, training=False, rule_step=None):
+             config, condition_key, store, simulation_config=None, training=False, rule_step=None,
+             diagnostic_candidate_key=None):
     store.character = character
     store.simulation_config = simulation_config
     from engine import check_report, player_report, damage_statistics, CandidateError
@@ -1464,9 +1485,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
+    batch_counters = getattr(store, 'counter_target', state)
     verify_behavior_identity_state(state)
-    reconcile_selection_feedback(store, runtime, finalizing=state.get('stop_reason') == 'search_deadline')
-    observation_mode = config['search_observability']
+    if diagnostic_candidate_key is None:
+        reconcile_selection_feedback(store, runtime, finalizing=state.get('stop_reason') == 'search_deadline')
+    observation_mode = config['search_observability'] if diagnostic_candidate_key is None else 'off'
     observability = None
     observation_events = {}
     position_jobs = []
@@ -1799,7 +1822,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('evaluated_keys', [])
     if config['diagnostic_logging']:
         for name in ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts'):
-            state.setdefault(name, 0)
+            batch_counters.setdefault(name, 0)
     state.setdefault('completed_batches', 0)
     state.setdefault('batch_estimate', 0.25)
     starts = state.get('starts')
@@ -1813,6 +1836,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('starts', starts)
     from rule_diagnostics import observation_request, VERSION as RULE_DIAGNOSTICS_VERSION
     rule_observation_request = observation_request(state['rule_initialization']) if state.get('rule_initialization') else None
+    eager_diagnostics = config.get('rule_diagnostics_policy', 'eager') == 'eager'
     if rule_step is not None:
         from rule_diagnostics import enqueue
         enqueue(state, rule_step, config, max(runtime.elapsed_seconds, state.get('elapsed_seconds', 0)))
@@ -1823,6 +1847,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 reserve_rule_step_observation(work)
         store.save()
     candidates = {}
+    diagnostic_sources = set()
     burst_context = state.get('burst')
     def planned_inputs(times):
         if burst_context is None:
@@ -1939,9 +1964,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         receipt.update(rule_diagnostics=diagnostic, diagnostics_replayed=True)
         return True
 
-    def batch(program, purpose, index, iterations, scenario='nominal', trace=False, *, prepared_candidate=None):
+    def batch(program, purpose, index, iterations, scenario='nominal', trace=False, *, prepared_candidate=None,
+              source_batch=None):
         runtime.check()
-        seed_offset = {'search': 0, 'validation': 100000, 'final': 200000}[purpose]
+        seed_offset = {'search': 0, 'validation': 100000, 'final': 200000, 'diagnostic': 0}[purpose]
         # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
         nonce = int(state['run_nonce'][:8], 16) % 100000000 if purpose == 'final' else 0
         seed = config['random_seed'] + seed_offset + index + DEFAULT_SCENARIOS.index(scenario) * 1000 + nonce
@@ -1955,7 +1981,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         seed=seed, input_seed=input_seed, iterations=iterations, times=times,
                         stats=STATS_VERSION, trace=trace,
                         reset_events=[list(row) for row in config['reset_events']])
-        if purpose == 'search' and index == 0:
+        if eager_diagnostics and purpose == 'search' and index == 0:
             request['rule_observations'] = dict(version=RULE_DIAGNOSTICS_VERSION,
                                                 request=rule_observation_request)
         if burst_context is not None:
@@ -1963,6 +1989,19 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                     program=compiled_identity(burst_context['candidate']),
                                     plan=burst_context['plan'], interval_ms=config['input_interval_ms'],
                                     sources=burst_options['input_sources'])
+        if purpose == 'diagnostic':
+            original = source_batch['request']
+            if (original['purpose'] != 'search' or original['condition'] != condition_key
+                    or original['program'] != request['program'] or original['behavior_identity'] != behavior_id):
+                raise ValueError('补采诊断的原评分程序或条件不符')
+            request = dict(original, purpose='diagnostic', source_scoring_batch_key=source_batch['data_key'],
+                           rule_observations=dict(version=RULE_DIAGNOSTICS_VERSION,
+                                                  request=rule_observation_request))
+            seed, input_seed, iterations, times, trace = (request[name] for name in
+                ('seed', 'input_seed', 'iterations', 'times', 'trace'))
+            if request.get('burst'):
+                burst_options = dict(burst_candidate=burst_context['candidate'],
+                                     input_sources=request['burst']['sources'])
         key = digest(request)
         def count_scored_candidate():
             if purpose == 'search' and behavior_id not in state['evaluated_keys']:
@@ -1971,14 +2010,14 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                       sort_keys=True, separators=(',', ':'))
         with store.lock:
             if config['diagnostic_logging']:
-                state['batch_requests'] += 1
+                batch_counters['batch_requests'] += 1
             verified = store.verified_batches.get(key)
             if (verified is not None and verified.get('rule_diagnostics') and
                     not verified['rule_diagnostics']['pool']['complete']):
                 store.flush_reports()
                 verified = None  # Reuse the validated stored report below, not another score.
             if verified is not None and config['diagnostic_logging']:
-                state['batch_cache_hits'] += 1
+                batch_counters['batch_cache_hits'] += 1
         if verified is not None:
             runtime.check()
             with store.lock:
@@ -2004,7 +2043,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config)
             except (BudgetExceeded, TaskCancelled):
                 raise
-            except (ValueError, KeyError, TypeError, RuntimeError):
+            except (ValueError, KeyError, TypeError, RuntimeError) as error:
+                if purpose == 'diagnostic':
+                    raise ValueError('补采诊断缓存来源不可核验，不能重新采集掩盖差异') from error
                 store.put_batch(key, dict(status='invalid', request=request))
             else:
                 runtime.check()
@@ -2014,7 +2055,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     from rule_diagnostics import rebind
                     cached = dict(cached, rule_diagnostics=rebind(cached['rule_diagnostics'], state['run_id'],
                         diagnostic_logging=config['diagnostic_logging']))
-                if purpose == 'search' and index == 0:
+                if purpose == 'diagnostic' or eager_diagnostics and purpose == 'search' and index == 0:
                     replay_incomplete_diagnostic(program, cached, saved)
                 store.put_batch(key, cached, counter='batch_cache_hits', verified=True)
                 return dict(cached, cached=True)
@@ -2025,7 +2066,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             raise BudgetExceeded('剩余阶段时间不足一个预计批次')
         allowance = min(30, runtime.remaining_seconds)
         with store.lock:
-            state.setdefault('inflight', {})[key] = dict(start=runtime.elapsed_seconds, allowance=allowance)
+            if diagnostic_candidate_key is None:
+                state.setdefault('inflight', {})[key] = dict(start=runtime.elapsed_seconds, allowance=allowance)
             count_scored_candidate()
             store.save()
         folder = destination / 'batches' / key
@@ -2034,11 +2076,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         center_stored = False
         try:
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
-            if purpose == 'search' and index == 0 and rule_observation_request is not None:
+            if (purpose == 'diagnostic' or eager_diagnostics and purpose == 'search' and index == 0) and rule_observation_request is not None:
                 kwargs['rule_observation_request'] = rule_observation_request
             def native_started():
                 with store.lock:
-                    state['native_batch_starts'] = state.get('native_batch_starts', 0) + 1
+                    batch_counters['native_batch_starts'] = batch_counters.get('native_batch_starts', 0) + 1
                     if config['diagnostic_logging'] and purpose == 'search' and index == 0:
                         if not hasattr(store, 'diagnostic_new_batches'):
                             store.diagnostic_new_batches = set()
@@ -2057,13 +2099,20 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
                            player_report(result['report'], character)['collected_data'].get('resource_overflowed',{}).get(reference['identity']['resource'],{}).get('mean',0)>0,
                            {v['simc_action']: a['simc_action'] for a in capabilities['actions'] for v in a.get('variants',[a])}) if trace else None)
-            if purpose == 'search' and index == 0:
+            mismatch = purpose == 'diagnostic' and any(row[name] != source_batch[name]
+                                                       for name in ('dps', 'samples', 'variance'))
+            if mismatch:
+                row['rule_diagnostic_status'] = 'mismatch'
+            elif purpose == 'diagnostic' or eager_diagnostics and purpose == 'search' and index == 0:
                 from rule_diagnostics import diagnose, feedback_observations
                 row['rule_diagnostics'] = diagnose(program, capabilities, state['rule_initialization'],
                     result['report'], task_run_id=state['run_id'], batch_key=key,
                     behavior_identity=behavior_id, runtime=runtime, requested_iterations=iterations,
                     batch_request=request)
                 encode_selection_context(row['rule_diagnostics'], result['report'])
+                row['rule_diagnostic_status'] = rule_diagnostic_status(row)
+            if eager_diagnostics and purpose == 'search' and index == 0:
+                from rule_diagnostics import feedback_observations
                 events, feedback_evidence = feedback_observations(
                     player_report(result['report'], character).get('sim2gse_rule_observations'), iterations,
                     observation_request=rule_observation_request)
@@ -2087,7 +2136,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                           input_seed=request['input_seed'], iterations=iterations,
                           times=request['times'], trace=trace, dps=row['dps'],
                           samples=row['samples'], variance=row['variance'],
-                          requested_iterations=iterations, report=result['report'])
+                          requested_iterations=iterations, report=result['report'],
+                          rule_observations=None, rule_diagnostics=None,
+                          source_scoring_batch_key=request.get('source_scoring_batch_key'),
+                          rule_diagnostic_status=row.get('rule_diagnostic_status'))
             if 'rule_observations' in request:
                 stored['rule_observations'] = json.dumps(request['rule_observations'], ensure_ascii=False)
             if 'rule_diagnostics' in row:
@@ -2100,8 +2152,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 write_traces(trace_key, state['run_id'], result['trace'], batch_key=key)
                 row['trace_source'] = dict(run_id=state['run_id'], batch_key=key, storage_key=trace_key)
             with store.lock:
-                state['inflight'].pop(key, None)
-                state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
+                if diagnostic_candidate_key is None:
+                    state['inflight'].pop(key, None)
+                    state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
                 store.stage_report(key, row, stored, diagnostic_logging=config['diagnostic_logging'],
                                    replace_group=(cached.get('storage_group_key') or key)
                                    if cached and cached['status'] == 'success' else None)
@@ -2120,8 +2173,49 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 from engine import discard_diagnostic_files
                 discard_diagnostic_files(folder)
             with store.lock:
-                if state.setdefault('inflight', {}).pop(key, None) is not None:
+                if diagnostic_candidate_key is None and state.setdefault('inflight', {}).pop(key, None) is not None:
                     store.save()
+
+    def ensure_rule_diagnostics(record):
+        if eager_diagnostics and rule_diagnostic_status(record) == 'complete':
+            return
+        if eager_diagnostics:
+            receipt = record['batches'][0]
+            replay_incomplete_diagnostic(record['program'], receipt)
+        else:
+            source = record['batches'][0]
+            if digest(source['request']) != source['data_key']:
+                raise ValueError('补采诊断的原评分请求摘要不符')
+            if source['data_key'] not in diagnostic_sources:
+                from result_store import one as read_record
+                saved = read_record('batches', 'batch_key', source['data_key'],
+                    group_key=source.get('storage_group_key'))
+                _validate_saved_batch(saved, source['data_key'], source, character, 0, 'nominal', simulation_config)
+                diagnostic_sources.add(source['data_key'])
+            receipt = batch(record['program'], 'diagnostic', 0, source['request']['iterations'],
+                            source_batch=source)
+            if any(receipt[name] != source[name] for name in ('dps', 'samples', 'variance')):
+                receipt.pop('rule_diagnostics', None)
+                receipt['rule_diagnostic_status'] = 'mismatch'
+            record['diagnostic_batches'] = [receipt]
+            record['rule_diagnostic_source'] = dict(kind='on_demand_replay',
+                scoring_batch_key=source['data_key'], diagnostic_batch_key=receipt['data_key'])
+        record['rule_diagnostics'] = receipt.get('rule_diagnostics')
+        if receipt.get('diagnostics_replayed'):
+            record['diagnostics_replayed'] = True
+        record['rule_diagnostic_status'] = rule_diagnostic_status(receipt)
+        store.flush_reports()
+        store.save(archive_keys=(record['key'],), fields=())
+        if record['rule_diagnostic_status'] == 'mismatch':
+            raise ValueError('补采诊断与原评分成绩不一致；原评分和奖励保持不变')
+        runtime.check()
+
+    if diagnostic_candidate_key is not None:
+        record = next((row for row in state['archive'] if row['key'] == diagnostic_candidate_key), None)
+        if record is None or not record.get('batches'):
+            raise ValueError('明确诊断的候选没有原评分记录')
+        ensure_rule_diagnostics(record)
+        return record
 
     def pair(first, second, purpose, count, scenario='nominal'):
         rows = [[], []]
@@ -2228,6 +2322,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return dict(key=key, program=program, batches=rows, score=_score(rows),
                     candidate=compiled,candidate_sha256=digest(compiled),
                     rule_diagnostics=rows[0].get('rule_diagnostics') if rows else None,
+                    rule_diagnostic_status=rule_diagnostic_status(rows[0]) if rows else 'not_diagnosed',
                     **(dict(diagnostics_replayed=True) if rows and rows[0].get('diagnostics_replayed') else {}))
 
     def finish_rule_step(work, status, **outcome):
@@ -2314,6 +2409,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 lane_index = generation['lane']
                 lane = state['chains'][lane_index]
                 base = next(row for row in state['archive'] if row['key'] == generation['parent'])
+                ensure_rule_diagnostics(base)
                 diagnostic = base.get('rule_diagnostics') or {}
                 pool = diagnostic.get('pool') or {}
                 context = diagnostic.get('selection_context') or {}
@@ -2522,7 +2618,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         try:
             scored = [(row, row['batches'][0]) for row in state['archive'] if row.get('batches')]
             scored += [(work, work['score_batches'][0]) for work in state['pending'] if work.get('score_batches')]
-            for observed, receipt in scored:
+            for observed, receipt in scored if eager_diagnostics else ():
                 if replay_incomplete_diagnostic(observed['program'], receipt):
                     observed.update(rule_diagnostics=receipt['rule_diagnostics'], diagnostics_replayed=True)
                     store.save()
@@ -2626,6 +2722,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                   selected_candidate_key=chosen['key'], native_reference=reference,
                   elapsed_seconds=runtime.elapsed_seconds, completed_batches=state['completed_batches'])
     result['search']['rule_diagnostics'] = chosen.get('rule_diagnostics')
+    result['search']['rule_diagnostic_status'] = rule_diagnostic_status(chosen)
     result['search']['rule_diagnostics_version'] = RULE_DIAGNOSTICS_VERSION
     if config['diagnostic_logging']:
         result['search'].update({name: state[name] for name in

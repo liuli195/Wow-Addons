@@ -421,11 +421,12 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'no_improvement_round_limit', 'rule_diagnostics',
-                           'rule_diagnostics_version')
+                           'rule_diagnostics_version', 'rule_diagnostic_status', 'diagnostic_operations')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
     if state and state.get('rule_steps'):
         search_metrics['rule_steps'] = state['rule_steps']
-    replays = {row['key']: dict(batch_key=row['batches'][0]['data_key'], diagnostic=row['rule_diagnostics'])
+    replays = {row['key']: dict(batch_key=(row.get('diagnostic_batches') or row['batches'])[0]['data_key'],
+                              diagnostic=row['rule_diagnostics'])
                for row in (state or {}).get('archive', []) if row.get('diagnostics_replayed')}
     if replays:
         search_metrics['rule_diagnostic_replays'] = replays
@@ -464,7 +465,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         reference_identity=native.get('identity', {}), reference_summary=native,
         search_dps=summary.get('dps'), search_samples=summary.get('samples'),
         search_reference_ratio=summary.get('reference_ratio'),
-        search_candidate_count=search.get('candidate_count'),
+        search_candidate_count=search.get('candidate_count', len((state or {}).get('evaluated_keys', []))),
         search_unique_candidates=search.get('unique_candidates'),
         search_rounds=search.get('rounds'), search_partial_round=search.get('partial_round'),
         search_stop_reason=search.get('stop_reason'), search_chains=search.get('chains', []),
@@ -1006,7 +1007,7 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
                 or decode(run['engines']) != state['engines']
                 or decode(run['simulation_config']) != state['simulation_config']
                 or set(config_without_logging(config)) != set(config_without_logging(state['config']))
-                or config_without_logging(config_for(config)) != config_without_logging(state['config'])
+                or config_without_logging(config_for(config, legacy=True)) != config_without_logging(state['config'])
                 or source_context != current_context or not run['condition_key']
                 or run['selected_candidate_key'] != run['locked_candidate_key']
                 or not run['selected_candidate_key'] or candidate is None
@@ -1636,7 +1637,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
     else:
         gse_program = None
     from search import config_for
-    config = config_for(search_config)
+    config = config_for(search_config, legacy=resume)
     from result_store import ensure_available
     ensure_available()
     simulation_config = simulation_config_for(simulation_config)
@@ -1783,7 +1784,99 @@ def cancel_task(task):
     return read_task(handle.output_root) if (handle.output_root / "result.json").exists() else {"status": "stopping"}
 
 
+
+def _diagnose_saved_candidate(destination, store, candidate_key, budget_seconds, *, cancel_event=None,
+                              diagnostic_logging=False):
+    """显式独立操作复用评分/报告存储，不进入搜索或改变原任务计时。"""
+    from search import optimize, rule_diagnostic_status, config_for
+    from result_store import one, write, RUN_SCHEMA
+    state = store.state
+    record = next((row for row in state.get('archive', []) if row['key'] == candidate_key), None)
+    if record is None or not record.get('batches'):
+        raise TaskError('明确诊断的候选没有原评分记录')
+    character = parse_character((destination / 'input.simc').read_text(encoding='utf-8-sig'))
+    character = replace(character, spec_id=state['native']['identity']['spec_id'], race=state['native']['identity']['race'])
+    operation_config = config_for(dict(state['config'], diagnostic_logging=diagnostic_logging,
+        diagnostics='summary' if diagnostic_logging else 'off'), legacy=True)
+    runtime = TaskRuntime(budget_seconds, cancel_event=cancel_event, diagnostic_logging=diagnostic_logging)
+    store.diagnostic_logging_override = diagnostic_logging
+    # 不使用 active：它的心跳属于原搜索额度。独立运行仍受现有任务锁及 Runtime 约束。
+    store.runtime = runtime
+    previous = state.get('diagnostic_operations', {}).get(candidate_key, {})
+    previous_elapsed = previous.get('elapsed_seconds', 0)
+    operation = dict(previous, budget_seconds=budget_seconds, status='running',
+                     elapsed_seconds=previous_elapsed, diagnostic_logging=diagnostic_logging,
+                     publication_status='pending')
+    state.setdefault('diagnostic_operations', {})[candidate_key] = operation
+    store.counter_target = operation
+    operation.pop('error', None)
+    store.save()
+    failure = None
+    try:
+        store.recover_reports(character, state['simulation_config'])
+        optimize(profile=destination / 'input.simc', character=character,
+            capabilities=state['capabilities'], reference=state['native'], destination=destination,
+            runtime=runtime, config=operation_config, condition_key=state['condition'], store=store,
+            simulation_config=state['simulation_config'], diagnostic_candidate_key=candidate_key)
+        operation['status'] = rule_diagnostic_status(record)
+    except (TaskCancelled, BudgetExceeded) as error:
+        operation.update(status='cancelled' if isinstance(error, TaskCancelled) else 'incomplete', error=str(error))
+    except Exception as error:
+        operation.update(status='failed', error=str(error))
+        failure = error
+    finally:
+        saved, result = None, None
+        published = False
+        try:
+            # 主体发布与结果回读均计独立操作耗时；原任务计时及成绩保持不变。
+            store.flush_reports()
+            store.save()
+            saved = one('runs', 'run_id', state['run_id'])
+            if saved is not None:
+                saved = {name: json.loads(value) if RUN_SCHEMA.get(name) == 'JSON' and isinstance(value, str)
+                         else value for name, value in saved.items()}
+                metrics = saved.get('search_metrics') or {}
+                metrics['diagnostic_operations'] = state['diagnostic_operations']
+                metrics.setdefault('rule_diagnostic_replays', {})[candidate_key] = dict(
+                    batch_key=(record.get('diagnostic_batches') or record['batches'])[0]['data_key'],
+                    diagnostic=record.get('rule_diagnostics'))
+                if candidate_key == saved['selected_candidate_key']:
+                    metrics.update(rule_diagnostics=record.get('rule_diagnostics'),
+                                   rule_diagnostic_status=rule_diagnostic_status(record))
+                saved.update(search_metrics=metrics, batch_keys=sorted(set(saved['batch_keys'] or []) | {
+                    row['data_key'] for row in record.get('diagnostic_batches', [])}))
+                write('runs', state['run_id'], [saved], schema=RUN_SCHEMA)
+            store.publish()
+            result = read_task(destination, include_search_records=True)
+            operation['publication_status'] = 'complete'
+            published = True
+        finally:
+            operation['invocation_elapsed_seconds'] = runtime.elapsed_seconds
+            operation['elapsed_seconds'] = previous_elapsed + operation['invocation_elapsed_seconds']
+            # 仅最后两次账本写入有不可自包含的小尾差；失败重发的实耗继续累加。
+            store.save()
+            if published and saved is not None:
+                write('runs', state['run_id'], [saved], schema=RUN_SCHEMA)
+                result['search']['diagnostic_operations'][candidate_key] = dict(operation)
+    if failure is not None:
+        raise TaskError(str(failure)) from failure
+    return result
+
+
+
 def _resume_task(output_root, **kwargs):
+    diagnostic_candidate_key = kwargs.pop('diagnostic_candidate_key', None)
+    diagnostic_budget_seconds = kwargs.pop('diagnostic_budget_seconds', None)
+    if diagnostic_candidate_key is not None:
+        import math
+        if (not isinstance(diagnostic_candidate_key, str) or not diagnostic_candidate_key
+                or type(diagnostic_budget_seconds) not in (int, float)
+                or not math.isfinite(diagnostic_budget_seconds) or diagnostic_budget_seconds <= 0):
+            raise TaskError('明确诊断必须提供正数 diagnostic_budget_seconds')
+        if kwargs.get('rule_step') is not None:
+            raise TaskError('明确诊断不能同时提交规则单步')
+    elif diagnostic_budget_seconds is not None:
+        raise TaskError('diagnostic_budget_seconds 必须同时指定 diagnostic_candidate_key')
     destination = Path(output_root).resolve()
     simulation_config = simulation_config_for(kwargs.pop("simulation_config", None))
     from result_store import ensure_available
@@ -1840,16 +1933,22 @@ def _resume_task(output_root, **kwargs):
                 raise TaskError('任务缺少恢复模拟配置')
             if simulation_config != simulation_config_for(state['simulation_config']):
                 raise TaskError('恢复模拟配置发生变化，请创建新任务')
-            config = config_for(kwargs.pop('search_config', None) or state['config'])
+            config = config_for(kwargs.pop('search_config', None) or state['config'], legacy=True)
+            if config.get('rule_diagnostics_policy', 'eager') == state['config'].get('rule_diagnostics_policy', 'eager'):
+                if 'rule_diagnostics_policy' in state['config']:
+                    config['rule_diagnostics_policy'] = state['config']['rule_diagnostics_policy']
+                else:
+                    config.pop('rule_diagnostics_policy', None)
             logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability')
             if ({key: value for key, value in config.items() if key not in logging_keys} !=
-                    {key: value for key, value in config_for(state['config']).items()
+                    {key: value for key, value in config_for(state['config'], legacy=True).items()
                      if key not in logging_keys}):
                 raise TaskError('恢复配置发生变化，请创建新任务')
             logging = kwargs.pop('diagnostic_logging', False)
-            config = config_for(dict(config, diagnostic_logging=logging,
-                diagnostics=(config['diagnostics'] if config['diagnostics'] != 'off' else 'summary')))
-            state['config'] = config
+            if diagnostic_candidate_key is None:
+                config = config_for(dict(config, diagnostic_logging=logging,
+                    diagnostics=(config['diagnostics'] if config['diagnostics'] != 'off' else 'summary')), legacy=True)
+                state['config'] = config
             from engine import identity
             # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
             verified = getattr(kwargs.get('_runtime'), 'identities', {})
@@ -1861,6 +1960,9 @@ def _resume_task(output_root, **kwargs):
                     raise TaskError('恢复任务的版本或编译规则已变化，请创建新任务')
             except (ValueError, OSError) as error:
                 raise TaskError(str(error)) from error
+            if diagnostic_candidate_key is not None:
+                return _diagnose_saved_candidate(destination, store, diagnostic_candidate_key,
+                    diagnostic_budget_seconds, cancel_event=kwargs.get('cancel_event'), diagnostic_logging=logging)
             used = float(state.get('elapsed_seconds',0))
             terminal_rule_step = False
             if kwargs.get('rule_step') is not None:
@@ -2005,7 +2107,7 @@ def read_task(output_root, *, include_search_records=False, include_reports=Fals
         raise TaskError(str(error)) from error
 
 
-def _batch_locations(destination, keys):
+def _batch_locations(destination, keys, *, receipts=None):
     """Read only requested batch locators from the existing read-only checkpoint."""
     from result_store import DataReadError, DATA_ROOT, report_locations
     keys = list(dict.fromkeys(key for key in keys if key))
@@ -2023,6 +2125,8 @@ def _batch_locations(destination, keys):
                     if not isinstance(row, dict):
                         raise ValueError('批次位置记录必须是对象')
                     locations[key] = row.get('storage_group_key') or row.get('data_key') or key
+                    if receipts is not None:
+                        receipts[key] = row
         except (sqlite3.Error, ValueError, TypeError) as error:
             raise DataReadError('任务批次位置不可读取') from error
         finally:
@@ -2152,8 +2256,9 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             selected_version=candidate['selected_version'], import_sha256=candidate['import_sha256'],
             game_validation=candidate['game_validation'])
 
+    batch_receipts = {}
     locations = _batch_locations(destination, [saved['controlled_data_key'],
-                         *(search['batch_keys'] if include_search_records else [])])
+                         *(search['batch_keys'] if include_search_records else [])], receipts=batch_receipts)
     if saved['controlled_data_key']:
         controlled = read_record('batches', 'batch_key', saved['controlled_data_key'],
                                  group_key=locations.get(saved['controlled_data_key']),
@@ -2173,8 +2278,10 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         columns = ['batch_key', 'candidate_key', 'purpose', 'condition_key', 'program_identity',
                    'batch_index', 'scenario', 'stats_version', 'seed', 'input_seed', 'iterations',
                    'times', 'trace', 'dps', 'samples', 'variance', 'requested_iterations']
-        if search.get('rule_diagnostics_version'):
+        if search.get('rule_diagnostics_version') or task_result['config'].get('rule_diagnostics_policy') == 'on_demand':
             columns += ['rule_diagnostics', 'rule_observations']
+        if task_result['config'].get('rule_diagnostics_policy') == 'on_demand':
+            columns += ['source_scoring_batch_key', 'rule_diagnostic_status']
         batches = {row['batch_key']: row for row in read_many('batches', groups, columns=columns)
                    if row['batch_key'] in wanted}
         candidate_keys = list(dict.fromkeys(row['candidate_key'] for row in batches.values()
@@ -2202,7 +2309,15 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
                          scenario=row['scenario'])
             if row.get('rule_observations') is not None:
                 request['rule_observations'] = decode(row['rule_observations'])
-            record = grouped.setdefault(key, dict(key=key, batches=[]))
+            if task_result['config'].get('rule_diagnostics_policy') == 'on_demand':
+                frozen = batch_receipts.get(row['batch_key'], {}).get('request')
+                if frozen is not None:
+                    if {name: value for name, value in frozen.items() if name != 'burst'} != request:
+                        raise TaskError('原评分冻结请求与已发布报告不符')
+                    request = batch['request'] = frozen
+                if digest(request) != row['batch_key']:
+                    raise TaskError('原评分冻结请求摘要不符')
+            record = grouped.setdefault(key, dict(key=key, batches=[], rule_diagnostic_status='not_diagnosed'))
             if row.get('rule_diagnostics') is not None:
                 from rule_diagnostics import rebind
                 record['rule_diagnostics'] = rebind(decode(row['rule_diagnostics']), run_id,
@@ -2221,8 +2336,41 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
                                            program=decode(candidate['program']),
                                            text=candidate['export_text'],
                                            simulation=candidate['simulation'])
+        for row in batches.values():
+            if row['purpose'] != 'diagnostic':
+                continue
+            record = grouped.get(row['candidate_key'])
+            if record is None:
+                continue
+            source = next((batch for batch in record['batches']
+                           if batch['data_key'] == row['source_scoring_batch_key']), None)
+            if source is None:
+                raise TaskError('诊断补采缺少原评分来源')
+            request = dict(source['request'], purpose='diagnostic', source_scoring_batch_key=row['source_scoring_batch_key'],
+                           rule_observations=decode(row['rule_observations']))
+            if digest(request) != row['batch_key']:
+                raise TaskError('诊断补采冻结请求摘要不符')
+            receipt = dict(status='success', data_key=row['batch_key'], request=request,
+                dps=row['dps'], samples=row['samples'], variance=row['variance'],
+                requested_iterations=row['requested_iterations'], batch_index=row['batch_index'], scenario=row['scenario'])
+            record.update(diagnostic_batches=[receipt], rule_diagnostic_status=row['rule_diagnostic_status'],
+                rule_diagnostic_source=dict(kind='on_demand_replay', scoring_batch_key=row['source_scoring_batch_key'],
+                                            diagnostic_batch_key=row['batch_key']))
+            if row.get('rule_diagnostics') is not None:
+                from rule_diagnostics import rebind
+                diagnostic = rebind(decode(row['rule_diagnostics']), run_id,
+                    diagnostic_logging=task_result['config'].get('diagnostic_logging', False))
+                receipt['rule_diagnostics'] = record['rule_diagnostics'] = diagnostic
         records = []
         for record in grouped.values():
+            replay = search.get('rule_diagnostic_replays', {}).get(record['key'])
+            if replay:
+                receipt = next((batch for batch in record['batches'] + record.get('diagnostic_batches', [])
+                                if batch['data_key'] == replay['batch_key']), None)
+                if receipt is not None:
+                    receipt['rule_diagnostics'] = record['rule_diagnostics'] = replay['diagnostic']
+            from search import rule_diagnostic_status
+            record['rule_diagnostic_status'] = rule_diagnostic_status(record)
             rows = record['batches']
             samples = sum(row['samples'] for row in rows)
             record['score'] = (sum(row['dps'] * row['samples'] for row in rows) / samples

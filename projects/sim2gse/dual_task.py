@@ -97,8 +97,10 @@ def _publish_export(row, purpose, compiled):
 
 def _child_matches(row, child, targets, scene):
     logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability')
-    business_config = lambda value: {key: item for key, item in config_for(value).items()
-                                     if key not in logging_keys}
+    def business_config(value):
+        frozen = config_for(value, legacy=True)
+        frozen.setdefault('rule_diagnostics_policy', 'eager')
+        return {key: item for key, item in frozen.items() if key not in logging_keys}
     if (child['profile']['input_original_sha256'] != row['input_sha256']
             or child['simulation_config'] != dict(row['simulation_config'], target_count=targets, scene=scene)
             or business_config(child['config']) != business_config(row['config'])
@@ -179,7 +181,8 @@ def _worker(handle):
                         child_path = destination / row[purpose + '_path']
                     child = task.run_task(destination / 'input.original.simc', child_path,
                         use_burst=True, burst_identity={key: row[key] for key in ('spec_id', 'definition_id')},
-                        cancel_event=handle.cancel_event, search_config=row['config'], _runtime=runtime,
+                        cancel_event=handle.cancel_event, search_config=dict(row['config'],
+                            rule_diagnostics_policy=row['config'].get('rule_diagnostics_policy', 'eager')), _runtime=runtime,
                         simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
                             _rule_snapshot=row['rule_snapshot'])
                 if child.get('status') == 'cancelled':
@@ -283,7 +286,7 @@ def resume(destination, *, diagnostic_logging=False):
         _verify(row, destination, identities, current_rules=True)
         row['config'] = config_for(dict(row['config'], diagnostic_logging=diagnostic_logging,
             diagnostics=(row['config'].get('diagnostics') if row['config'].get('diagnostics') != 'off'
-                         else 'summary')))
+                         else 'summary')), legacy=True)
         _save(row)
     return _launch(destination, identities)
 

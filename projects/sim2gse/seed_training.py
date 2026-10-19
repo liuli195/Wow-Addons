@@ -950,15 +950,26 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         if bool(stored_burst) != use_burst or (use_burst and
                 stored_burst['definition_id'] != definition['definition_id']):
             continue
-        current_input = training_condition_input(template_sha, engines, config, simulation_config,
+        # 恢复只继承既有策略；其余输入、源码与 binary 仍沿完整身份核验。
+        matching_config = dict(config)
+        frozen_config = manifest['condition_input']['config']
+        if 'rule_diagnostics_policy' in frozen_config:
+            policy = frozen_config['rule_diagnostics_policy']
+            if policy not in ('eager', 'on_demand'):
+                raise ValueError('训练冻结诊断策略无效')
+            matching_config['rule_diagnostics_policy'] = policy
+        else:
+            matching_config.pop('rule_diagnostics_policy', None)  # 旧缺字段保持 eager 的原身份投影。
+        current_input = training_condition_input(template_sha, engines, matching_config, simulation_config,
                                                  burst_context=stored_burst, rule_snapshot=inputs['rule_snapshot'])
         if semantic_condition(current_input, semantic_versions()) == manifest['semantic_condition']:
             _validate_identity(path.parent, manifest, current_input,
                                processed=processed, selected=all_selected)
-            matches.append((path.parent, manifest))
+            matches.append((path.parent, manifest, matching_config))
     if len(matches) > 1:
         raise ValueError('同一训练语义存在多个批次，必须明确保留一个运行目录')
-    batch, manifest = matches[0] if matches else (None, None)
+    batch, manifest, config = matches[0] if matches else (None, None, config)
+    inputs['config'] = config
     states = {}
     if manifest:
         burst_context = manifest['condition_input'].get('burst')

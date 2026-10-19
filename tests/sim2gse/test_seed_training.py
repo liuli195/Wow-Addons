@@ -352,11 +352,12 @@ def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed
 
 
 @pytest.mark.parametrize('diagnostic_logging', [False, True])
-def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
+def test_training_command_diagnoses_only_parents_and_reuses_on_demand_reports(
         tmp_path, capsys, monkeypatch, diagnostic_logging):
     from unittest.mock import patch
     from test_character_export import sample_profile
     from test_rule_diagnostics import _condition_pack, _observed_evaluate
+    from test_search import _fast_evaluate
     from test_rule_initialization import _configure_opener
     import result_store
     import sequence
@@ -386,7 +387,8 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
         kwargs.pop('input_sources', None)
         kwargs.pop('burst_candidate', None)
         kwargs['score'] = 100.0  # Equal real boundary scores keep this finite; no learner stub.
-        return _observed_evaluate(*args, **kwargs)
+        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
+                else _fast_evaluate)(*args, **kwargs)
 
     with training_boundary(), patch.object(sequence, 'evaluate', side_effect=observed):
         assert command(tmp_path, args) == 0
@@ -395,15 +397,25 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
     assert len(processed) == 2 and all(row['status'] == 'completed' for row in processed)
     assert sorted(json.loads(row['initial_program']) for row in processed) == sorted(starts)
     batches = list(result_store.iter_rows(
-        "SELECT batch_key,candidate_key FROM batches WHERE purpose='search' AND batch_index=0",
+        "SELECT batch_key,candidate_key,source_scoring_batch_key FROM batches WHERE purpose='diagnostic'",
         tables=['batches']))
-    assert len(batches) == len(requests) > len(starts)
+    assert len(batches) == len(requests) >= len(starts)
+    scores = list(result_store.iter_rows(
+        "SELECT batch_key,rule_observations FROM batches WHERE purpose='search' AND batch_index=0",
+        tables=['batches']))
+    assert len(scores) > len(batches)
+    assert all(row['rule_observations'] is None for row in scores)
     diagnostics = []
     for batch in batches:
         saved = result_store.one('batches', 'batch_key', batch['batch_key'])
         diagnostic = json.loads(saved['rule_diagnostics'])
         assert ('costs' in diagnostic) is diagnostic_logging
         assert diagnostic['evidence']['batch_key'] == batch['batch_key']
+        assert diagnostic['evidence']['kind'] == 'on_demand_replay'
+        assert diagnostic['evidence']['source_scoring_batch_key'] == batch['source_scoring_batch_key']
+        original = result_store.one('batches', 'batch_key', batch['source_scoring_batch_key'])
+        assert original['purpose'] == 'search'
+        assert all(saved[name] == original[name] for name in ('dps', 'samples', 'variance'))
         assert diagnostic['parent']['behavior_identity'] == batch['candidate_key']
         assert [row['name'] for row in diagnostic['rules']] == [
             'supported opportunity', 'inactive condition']
@@ -417,6 +429,9 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
         try:
             assert store.state['starts'] == [json.loads(material['initial_program'])]
             assert store.state['config']['diagnostic_logging'] is diagnostic_logging
+            assert store.state['config']['rule_diagnostics_policy'] == 'on_demand'
+            assert any(row.get('rule_diagnostic_status') == 'not_diagnosed'
+                       for row in store.state['archive'])
             choices = [row['selection'] for row in store.state['rule_steps'].values()]
             assert choices
             assert all(row['feedback']['status'] == 'learned' and row['feedback']['reward'] == 0
@@ -433,6 +448,51 @@ def test_training_command_diagnoses_each_preserved_start_and_rereads_same_batch(
     assert [json.loads(result_store.one('batches', 'batch_key', row['batch_key'])['rule_diagnostics'])
             for row in batches] == diagnostics
     assert result_store.read_search_learner(selector.MODEL_KEY) == model
+
+
+
+def test_training_resume_reuses_missing_eager_policy_manifest_without_new_batch(tmp_path, monkeypatch,
+                                                                            capsys, four_candidate_training_rounds):
+    import result_store, seed_training, sequence
+    from unittest.mock import patch
+    from test_character_export import sample_profile
+    source = tmp_path / 'source.json'
+    source.write_text(json.dumps(dict(label='legacy policy source', class_name='deathknight', spec='unholy',
+        source='constructed-boundary', original='preserved input', instructions='repeat', semantic='preserved',
+        changes=[], family='plain', core=[['outbreak']],
+        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    config_for = seed_training.config_for
+    def old_configuration(values=None, **kwargs):
+        config = config_for(values, **kwargs)
+        config.pop('rule_diagnostics_policy', None)
+        return config
+    with training_round_boundary(tmp_path), patch.object(seed_training, 'config_for', side_effect=old_configuration):
+        assert command(tmp_path, args) == 0
+    manifests = list((tmp_path / 'work/1').glob('*/identity.json'))
+    manifest, = manifests
+    original = json.loads(manifest.read_text())
+    assert 'rule_diagnostics_policy' not in original['condition_input']['config']
+    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    paths = {row['task_path'] for row in processed}
+    batch_keys = [row['batch_key'] for row in result_store.iter_rows('SELECT batch_key FROM batches', tables=['batches'])]
+    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('旧训练恢复不能新建批次或重评分')):
+        assert command(tmp_path, args) == 0
+    assert list((tmp_path / 'work/1').glob('*/identity.json')) == manifests
+    restored = result_store.read_records('seed_processed', 'deathknight-unholy-1')
+    assert {row['task_path'] for row in restored} == paths
+    assert [row['batch_key'] for row in result_store.iter_rows('SELECT batch_key FROM batches', tables=['batches'])] == batch_keys
+    assert json.loads(manifest.read_text())['condition'] == original['condition']
+    from search import TaskStore
+    for path in paths:
+        with sqlite3.connect(Path(path) / 'task.sqlite3') as database:
+            state = TaskStore.load_state(database)
+        assert 'rule_diagnostics_policy' not in state['config']
+        assert all('rule_observations' in row['batches'][0]['request'] for row in state['archive'])
+        assert all('diagnostic_batches' not in row for row in state['archive'])
 
 
 def test_training_command_preserves_matched_work_for_two_and_four_processes(tmp_path, capsys, monkeypatch,

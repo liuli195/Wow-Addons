@@ -11,6 +11,613 @@ from test_rule_initialization import _configure_opener, _opener_pack
 from test_search import _apl_task_boundary, _fast_evaluate
 
 
+def test_public_on_demand_scores_without_observations_and_reads_without_replay(tmp_path, monkeypatch):
+    import sequence
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    requests = []
+
+    def scoring(*args, **kwargs):
+        requests.append(kwargs.get('rule_observation_request'))
+        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
+                else _fast_evaluate)(*args, **kwargs)
+
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,),
+                               iterations=2, validation_batches=1))
+        before = calls.call_count
+        saved = read_task(tmp_path / 'task', include_search_records=True, include_reports=True)
+        assert calls.call_count == before
+    assert result['config']['rule_diagnostics_policy'] == 'on_demand'
+    assert requests and all(request is None for request in requests)
+    assert result['status'] == saved['status'] == 'completed'
+    assert saved['candidate']['text'] == result['candidate']['text']
+    assert len(saved['search']['records']) == 2
+    assert saved['search']['rule_diagnostic_status'] == 'not_diagnosed'
+    for record in [*result['search']['records'], *saved['search']['records']]:
+        assert record['rule_diagnostic_status'] == 'not_diagnosed'
+        assert record.get('rule_diagnostics') is None
+        assert all('rule_observations' not in batch['request'] for batch in record['batches'])
+
+
+def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_path, monkeypatch):
+    import sequence
+    from result_store import one
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    requests = []
+
+    def scoring(*args, **kwargs):
+        requests.append(dict(seed=kwargs['seed'], iterations=kwargs['iterations'],
+                             observed=kwargs.get('rule_observation_request') is not None))
+        return (_observed_evaluate if requests[-1]['observed'] else _fast_evaluate)(*args, **kwargs)
+
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                               batch_targets=(2,), iterations=2, validation_batches=1))
+        saved = read_task(tmp_path / 'task', include_search_records=True)
+        before = calls.call_count
+        resumed = resume_task(tmp_path / 'task')
+        assert calls.call_count == before
+    assert sum(row['observed'] for row in requests) == 1
+    assert saved['search']['candidate_count'] == 5
+    assert saved['search']['native_batch_starts_total'] == len(requests)
+    step, = [row for row in saved['search']['rule_steps'].values() if row.get('selection')]
+    parent = next(row for row in saved['search']['records'] if row['key'] == step['parent_candidate_key'])
+    child = next(row for row in saved['search']['records'] if row['key'] == step['candidate_key'])
+    assert parent['rule_diagnostic_status'] == 'complete'
+    assert child['rule_diagnostic_status'] == 'not_diagnosed'
+    assert len(step['selection']['context']) == 50
+    diagnostic_batch, = parent['diagnostic_batches']
+    score_batch, = parent['batches']
+    assert diagnostic_batch['data_key'] != score_batch['data_key']
+    assert parent['rule_diagnostic_source'] == dict(kind='on_demand_replay',
+        scoring_batch_key=score_batch['data_key'], diagnostic_batch_key=diagnostic_batch['data_key'])
+    assert parent['rule_diagnostics']['evidence']['batch_key'] == diagnostic_batch['data_key']
+    assert diagnostic_batch['request']['source_scoring_batch_key'] == score_batch['data_key']
+    assert diagnostic_batch['request']['iterations'] == score_batch['request']['iterations'] == 2
+    assert diagnostic_batch['dps'] == score_batch['dps']
+    diagnostic = parent['rule_diagnostics']
+    assert diagnostic['evidence']['kind'] == 'on_demand_replay'
+    assert diagnostic['evidence']['source_scoring_batch_key'] == score_batch['data_key']
+    assert diagnostic['parent_identity'] == __import__('search').digest(diagnostic['parent'])
+    assert {name: value for name, value in diagnostic_batch['request'].items()
+            if name not in ('purpose', 'source_scoring_batch_key', 'rule_observations')} == {
+            name: value for name, value in score_batch['request'].items() if name != 'purpose'}
+    feedback = step['selection']['feedback']
+    assert feedback['status'] == 'learned'
+    assert feedback['evidence'][0]['parent_batch'] == score_batch['data_key']
+    assert feedback['reward'] == pytest.approx((child['score'] - parent['score']) / parent['score'])
+    assert resumed['search_result'] == result['search_result']
+    # Ordinary and observation reports share the real typed storage/restore boundary.
+    ordinary = one('batches', 'batch_key', score_batch['data_key'])
+    observed = one('batches', 'batch_key', diagnostic_batch['data_key'])
+    assert ordinary['rule_observations'] is None
+    assert observed['rule_observations'] is not None
+    assert 'rule_observations' not in score_batch['request']
+    assert ordinary['report']['sim']['players'][0].get('sim2gse_rule_observations') is None
+
+
+
+@pytest.mark.parametrize('different', ['dps', 'samples', 'variance'])
+def test_public_on_demand_mismatch_preserves_scores_and_never_selects(tmp_path, monkeypatch, different):
+    import sequence
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    observations = []
+
+    def scoring(*args, **kwargs):
+        observed = kwargs.get('rule_observation_request') is not None
+        result = (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs)
+        if observed:
+            observations.append(result)
+            player = result['report']['sim']['players'][0]
+            if different == 'dps':
+                result['summary']['dps'] += 1
+                player['collected_data']['dps']['mean'] += 1
+            elif different == 'samples':
+                result['summary']['samples'] += 1
+                player['collected_data']['dps']['count'] += 1
+            else:
+                player['collected_data']['dps']['variance'] += 1
+        return result
+
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring):
+        with pytest.raises(TaskError, match='原评分成绩不一致'):
+            run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
+                search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                                   batch_targets=(2,), iterations=2, validation_batches=1))
+        saved = read_task(tmp_path / 'task', include_search_records=True)
+    assert len(observations) == 1
+    assert not saved['search'].get('rule_steps')
+    parent, = [row for row in saved['search']['records'] if row['rule_diagnostic_status'] == 'mismatch']
+    original, = parent['batches']
+    capture, = parent['diagnostic_batches']
+    assert parent['score'] == original['dps']
+    assert parent.get('rule_diagnostics') is None
+    assert capture[different] != original[different]
+    assert saved['search']['candidate_count'] == 4
+
+
+
+def test_public_on_demand_cancelled_capture_reuses_published_report_without_sweeping(tmp_path, monkeypatch):
+    import sequence
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    captures = []
+
+    def scoring(*args, **kwargs):
+        observed = kwargs.get('rule_observation_request') is not None
+        result = (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs)
+        if observed:
+            captures.append(kwargs['seed'])
+            if len(captures) == 1:
+                kwargs['runtime'].cancel()
+        return result
+
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                               batch_targets=(2,), iterations=2, validation_batches=1))
+        stopped = read_task(tmp_path / 'task', include_search_records=True)
+        assert stopped['status'] == 'cancelled'
+        parent, = [row for row in stopped['search']['records'] if row.get('diagnostic_batches')]
+        assert parent['rule_diagnostic_status'] == 'incomplete'
+        assert sum(row['rule_diagnostic_status'] == 'not_diagnosed' for row in stopped['search']['records']) == 3
+        before = calls.call_count
+        read_task(tmp_path / 'task', include_search_records=True, include_reports=True)
+        assert calls.call_count == before
+        resume_task(tmp_path / 'task')
+        saved = read_task(tmp_path / 'task', include_search_records=True)
+    assert len(captures) == 1
+    assert saved['status'] == 'completed'
+    restored = next(row for row in saved['search']['records'] if row['key'] == parent['key'])
+    assert restored['rule_diagnostic_status'] == 'complete'
+    assert restored['diagnostic_batches'][0]['data_key'] == parent['diagnostic_batches'][0]['data_key']
+    assert restored['batches'] == parent['batches']
+    assert sum(row['rule_diagnostic_status'] == 'not_diagnosed' for row in saved['search']['records']) == 4
+    assert len(restored['rule_diagnostics']['selection_context']['values']) == 50
+
+
+
+@pytest.mark.parametrize('diagnostic_logging', [False, True])
+def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished_task(tmp_path, monkeypatch, diagnostic_logging):
+    import sequence
+    import sqlite3
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    destination = tmp_path / 'task'
+    captures = []
+
+    def scoring(*args, **kwargs):
+        observed = kwargs.get('rule_observation_request') is not None
+        if observed: captures.append(kwargs['seed'])
+        return (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs)
+
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        run_task(source, destination, simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2,
+                               diagnostic_logging=diagnostic_logging))
+        before = read_task(destination, include_search_records=True)
+        key = before['selected_candidate_key']
+        for budget in (None, 0, -1, True, float('inf')):
+            with pytest.raises(TaskError, match='diagnostic_budget_seconds'):
+                resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=budget)
+        assert not captures
+        # Emulate a recovered task whose original budget was fully consumed.
+        with sqlite3.connect(destination / 'task.sqlite3') as database:
+            database.execute("UPDATE state_fields SET value='600.0' WHERE key='elapsed_seconds'")
+            database.execute('UPDATE runtime_progress SET elapsed=600.0')
+        from result_store import one, write, RUN_SCHEMA
+        published = one('runs', 'run_id', before['run_id'])
+        published = {name: json.loads(value) if RUN_SCHEMA.get(name) == 'JSON' and isinstance(value, str)
+                     else value for name, value in published.items()}
+        published['elapsed_seconds'] = 600.0
+        write('runs', before['run_id'], [published], schema=RUN_SCHEMA)
+        before = read_task(destination, include_search_records=True)
+        result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+        after = read_task(destination, include_search_records=True)
+        count = calls.call_count
+        resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+        assert calls.call_count == count
+    assert len(captures) == 1
+    assert result['status'] == after['status'] == before['status'] == 'completed'
+    assert after['elapsed_seconds'] == before['elapsed_seconds'] == 600.0
+    assert after['config'] == before['config']
+    assert after['search_result'] == before['search_result']
+    assert after['candidate'] == before['candidate']
+    for name in ('candidate_count', 'unique_candidates', 'rounds', 'native_batch_starts_total'):
+        assert after['search'][name] == before['search'][name]
+    assert after['completed_batches'] == before['completed_batches']
+    assert after['search']['rule_diagnostic_status'] == 'complete'
+    assert len(after['search']['rule_diagnostics']['selection_context']['values']) == 50
+    diagnosed = next(row for row in after['search']['records'] if row['key'] == key)
+    assert diagnosed['rule_diagnostic_status'] == 'complete'
+    assert len(diagnosed['diagnostic_batches']) == 1
+    assert sum(row['rule_diagnostic_status'] == 'not_diagnosed' for row in after['search']['records']) == 1
+    operation = after['search']['diagnostic_operations'][key]
+    assert operation['budget_seconds'] == 10
+    assert 0 < operation['elapsed_seconds'] <= 10
+    assert operation['native_batch_starts'] == 1
+
+
+
+@pytest.mark.parametrize('interrupted', [False, True])
+def test_public_old_missing_policy_preserves_eager_identity_and_refuses_policy_change(tmp_path, monkeypatch, interrupted):
+    import search
+    import sequence
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    original_config_for = search.config_for
+
+    def legacy_configuration(values=None, **kwargs):
+        config = original_config_for(values, **kwargs)
+        config.pop('rule_diagnostics_policy', None)
+        return config
+
+    # Materialize the old public task/config shape, with real task identity and storage.
+    cancelled, requests = [], []
+    def observed(*args, **kwargs):
+        requests.append((kwargs['seed'], tuple(tuple(row['simc_action'] for row in block) for block in args[1]['blocks'])))
+        result = _observed_evaluate(*args, **kwargs)
+        if interrupted and not cancelled:
+            cancelled.append(True)
+            kwargs['runtime'].cancel()
+        return result
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed) as calls:
+        with patch.object(search, 'config_for', side_effect=legacy_configuration):
+            result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
+                search_config=dict(input_interval_ms=200, candidate_limit=2 if interrupted else 1, batch_targets=(2,), iterations=2))
+        assert 'rule_diagnostics_policy' not in result['config']
+        assert result['search']['rule_diagnostic_status'] == ('incomplete' if interrupted else 'complete')
+        count = calls.call_count
+        resumed = resume_task(tmp_path / 'task')
+        assert count == 1
+        assert requests.count(requests[0]) == 1
+        assert 'rule_diagnostics_policy' not in resumed['config']
+        assert resumed['status'] == 'completed'
+        restored = read_task(tmp_path / 'task', include_search_records=True)
+        assert restored['search']['records'][0]['batches'][0]['data_key'] == result['search']['records'][0]['batches'][0]['data_key']
+        assert all('diagnostic_batches' not in row for row in restored['search']['records'])
+        after = calls.call_count
+        with pytest.raises(TaskError, match='恢复配置发生变化'):
+            resume_task(tmp_path / 'task', search_config=dict(result['config'], rule_diagnostics_policy='on_demand'))
+        assert calls.call_count == after
+
+
+
+def test_public_manual_diagnosis_republishes_after_result_write_failure_without_recapture(tmp_path, monkeypatch):
+    import result_store
+    import sequence
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    destination = tmp_path / 'task'
+    def scoring(*args, **kwargs):
+        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
+                else _fast_evaluate)(*args, **kwargs)
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        run_task(source, destination, simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+        before = read_task(destination)
+        key = before['selected_candidate_key']
+        real_write = result_store.write
+        def fail_result(table, *args, **kwargs):
+            if table == 'runs':
+                raise PermissionError('constructed diagnostic result publication interruption')
+            return real_write(table, *args, **kwargs)
+        with patch.object(result_store, 'write', side_effect=fail_result):
+            with pytest.raises((TaskError, PermissionError), match='publication interruption'):
+                resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+        count = calls.call_count
+        result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+        assert calls.call_count == count == 2
+        saved = read_task(destination, include_search_records=True)
+    assert result['search']['rule_diagnostic_status'] == saved['search']['rule_diagnostic_status'] == 'complete'
+    assert saved['search_result'] == before['search_result']
+    assert saved['elapsed_seconds'] == before['elapsed_seconds']
+    assert saved['search']['records'][0]['rule_diagnostic_status'] == 'complete'
+
+
+
+def test_public_on_demand_capture_publication_recovery_never_recaptures_or_relearns(tmp_path, monkeypatch):
+    import result_store
+    import sequence
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    captures, interrupted = [], []
+    def scoring(*args, **kwargs):
+        observed = kwargs.get('rule_observation_request') is not None
+        if observed: captures.append(kwargs['seed'])
+        return (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs)
+    original_write = result_store.write
+    def after_durable_capture(table, key, rows, **kwargs):
+        result = original_write(table, key, rows, **kwargs)
+        if table == 'batches' and any(row.get('purpose') == 'diagnostic' for row in rows) and not interrupted:
+            interrupted.append(True)
+            raise PermissionError('constructed capture published before checkpoint')
+        return result
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        with patch.object(result_store, 'write', side_effect=after_durable_capture):
+            with pytest.raises(TaskError, match='capture published before checkpoint'):
+                run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
+                    search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                                       batch_targets=(2,), iterations=2))
+        resume_task(tmp_path / 'task')
+        saved = read_task(tmp_path / 'task', include_search_records=True)
+        before = calls.call_count
+        resume_task(tmp_path / 'task')
+        assert calls.call_count == before
+    assert interrupted and len(captures) == 1
+    assert saved['status'] == 'completed'
+    assert saved['search']['candidate_count'] == 5
+    steps = [row for row in saved['search']['rule_steps'].values() if row.get('selection')]
+    assert len(steps) == 1 and steps[0]['selection']['feedback']['status'] == 'learned'
+    parent = next(row for row in saved['search']['records'] if row['key'] == steps[0]['parent_candidate_key'])
+    assert parent['rule_diagnostic_status'] == 'complete'
+    assert parent['rule_diagnostics']['evidence']['batch_key'] == parent['diagnostic_batches'][0]['data_key']
+
+
+
+def test_public_manual_capture_preserves_burst_and_full_frozen_request_on_read(tmp_path, monkeypatch):
+    import burst, result_store, sequence
+    from test_burst import reviewed_fixture, character_seed_boundary
+    from search import digest
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    result_store.DATA_ROOT.mkdir()
+    definition, profile = reviewed_fixture()
+    burst.publish(definition)
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(profile, encoding='utf-8')
+    requests = []
+    def scoring(*args, **kwargs):
+        sources = kwargs.pop('input_sources', None)
+        kwargs.pop('burst_candidate', None)
+        requests.append(dict(seed=kwargs['seed'], input_times=kwargs['input_times'],
+                             iterations=kwargs['iterations'], sources=sources))
+        observed = kwargs.get('rule_observation_request') is not None
+        result = (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs)
+        if observed:
+            payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
+            for name in ('inputs', 'action_observations', 'state_observations'):
+                for row, source_name in zip(payload[name], sources, strict=True): row['input_source'] = source_name
+        return result
+    with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        original = run_task(source, tmp_path / 'task', use_burst=True,
+            simulation_config=dict(scene='single_target'), search_config=dict(input_interval_ms=200,
+                candidate_limit=1, batch_targets=(2,), iterations=2))
+        key = original['selected_candidate_key']
+        resume_task(tmp_path / 'task', diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+        saved = read_task(tmp_path / 'task', include_search_records=True)
+        assert calls.call_count == 2
+    assert requests[0] == requests[1]
+    record, = saved['search']['records']
+    scored, = record['batches']
+    capture, = record['diagnostic_batches']
+    original_scored = original['search']['records'][0]['batches'][0]
+    assert scored['request'] == original_scored['request']
+    assert capture['request']['burst'] == scored['request']['burst']
+    assert digest(scored['request']) == scored['data_key']
+    assert digest(capture['request']) == capture['data_key']
+    assert saved['search_result'] == original['search_result']
+
+
+
+@pytest.mark.parametrize('initial_logging, operation_logging', [(True, False), (False, True)])
+def test_public_manual_diagnosis_uses_invocation_logging_and_preserves_original_trace(tmp_path, monkeypatch,
+                                                                                   initial_logging, operation_logging):
+    import result_store, sequence
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    destination = tmp_path / 'task'
+    traces = []
+    def scoring(*args, **kwargs):
+        traces.append(kwargs['trace'])
+        result = (_observed_evaluate if kwargs.get('rule_observation_request') is not None
+                  else _fast_evaluate)(*args, **kwargs)
+        if kwargs['trace']:
+            result['report']['sim']['players'][0]['collected_data']['action_sequence'] = result['trace']
+        return result
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring):
+        original = run_task(source, destination, simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2,
+                               diagnostic_logging=initial_logging, trace_search=True))
+        original = read_task(destination)
+        old_log = (destination / 'diagnostics.json').read_bytes() if initial_logging else None
+        key = original['selected_candidate_key']
+        result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10,
+                             diagnostic_logging=operation_logging)
+        saved = read_task(destination, include_search_records=True)
+    assert traces == [initial_logging, initial_logging]
+    assert result['config'] == saved['config'] == original['config']
+    assert saved['elapsed_seconds'] == original['elapsed_seconds']
+    record, = saved['search']['records']
+    capture, = record['diagnostic_batches']
+    assert capture['request']['trace'] is initial_logging
+    assert ('costs' in record['rule_diagnostics']) is operation_logging
+    stored = result_store.one('batches', 'batch_key', capture['data_key'])
+    assert ('action_sequence' in stored['report']['sim']['players'][0]['collected_data']) is (operation_logging and initial_logging)
+    if operation_logging:
+        log = json.loads((destination / 'diagnostics.json').read_text())
+        assert log['performance']['stages']['diagnostic.total']['calls'] == 1
+        assert log['performance']['stages']['report.prepare']['calls'] == 1
+    else:
+        assert (destination / 'diagnostics.json').read_bytes() == old_log
+    trace_rows = list(result_store.iter_rows('SELECT batch_key FROM traces', tables=['traces'])) if (result_store.DATA_ROOT / 'traces').exists() else []
+    assert any(row['batch_key'] == capture['data_key'] for row in trace_rows) is (operation_logging and initial_logging)
+
+
+
+@pytest.mark.parametrize('failed_publication', [False, True])
+def test_public_manual_diagnosis_accounts_publication_and_retry_time_separately(tmp_path, monkeypatch,
+                                                                               failed_publication):
+    import result_store, sequence, time
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    destination = tmp_path / 'task'
+    def scoring(*args, **kwargs):
+        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
+                else _fast_evaluate)(*args, **kwargs)
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        run_task(source, destination, simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+        original = read_task(destination)
+        key = original['selected_candidate_key']
+        real_write = result_store.write
+        delayed, delay_next, failed = [], [True], []
+        def delayed_publication(table, logical_key, rows, **kwargs):
+            if table == 'runs' and delay_next[0]:
+                delay_next[0] = False
+                metrics = rows[0]['search_metrics']
+                if isinstance(metrics, str): metrics = json.loads(metrics)
+                delayed.append(metrics['diagnostic_operations'][key]['elapsed_seconds'])
+                time.sleep(0.15)
+                if failed_publication and not failed:
+                    failed.append(True)
+                    raise PermissionError('constructed delayed publication failure')
+            return real_write(table, logical_key, rows, **kwargs)
+        with patch.object(result_store, 'write', side_effect=delayed_publication):
+            if failed_publication:
+                with pytest.raises((TaskError, PermissionError), match='delayed publication failure'):
+                    resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+                delay_next[0] = True
+            result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
+        saved = read_task(destination, include_search_records=True)
+        assert calls.call_count == 2
+    operation = saved['search']['diagnostic_operations'][key]
+    assert operation['elapsed_seconds'] >= delayed[-1] + 0.12
+    assert operation['native_batch_starts'] == 1
+    assert saved['elapsed_seconds'] == original['elapsed_seconds'] == result['elapsed_seconds']
+    assert saved['search_result'] == original['search_result']
+
+
+
+def test_public_manual_published_capture_crash_image_keeps_search_accounting_isolated(tmp_path, monkeypatch):
+    import search, sequence, shutil, sqlite3
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    destination, crashed = tmp_path / 'task', tmp_path / 'crashed-task'
+    def restored_state(path):
+        store = search.TaskStore(path)
+        try: return copy.deepcopy(store.state)
+        finally: store.close()
+    def scoring(*args, **kwargs):
+        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
+                else _fast_evaluate)(*args, **kwargs)
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+        original = run_task(source, destination, simulation_config=dict(scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2,
+                               diagnostic_logging=True))
+        key = original['selected_candidate_key']
+        before = restored_state(destination)
+        shutil.copytree(destination, crashed)
+        saved_cut = []
+        original_save = search.TaskStore.save
+        def snapshot_after_ensure(store, **kwargs):
+            result = original_save(store, **kwargs)
+            candidate = next(row for row in store.state['archive'] if row['key'] == key)
+            operation = store.state.get('diagnostic_operations', {}).get(key, {})
+            if (not saved_cut and candidate.get('diagnostic_batches') and operation.get('status') == 'running'
+                    and search.rule_diagnostic_status(candidate) == 'complete'):
+                # Save the exact durable image before manual finally can roll anything back.
+                with sqlite3.connect(crashed / 'task.sqlite3') as snapshot:
+                    store.db.backup(snapshot)
+                saved_cut.append(True)
+            return result
+        with patch.object(search.TaskStore, 'save', snapshot_after_ensure):
+            resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10,
+                        diagnostic_logging=True)
+        assert saved_cut and calls.call_count == 2
+        cut = restored_state(crashed)
+        for name in (*search._TASK_COUNTERS, 'batch_estimate', 'elapsed_seconds', 'inflight'):
+            assert cut.get(name) == before.get(name), name
+        assert cut['diagnostic_operations'][key]['native_batch_starts'] == 1
+        resumed = resume_task(crashed, diagnostic_candidate_key=key, diagnostic_budget_seconds=10,
+                              diagnostic_logging=True)
+        assert calls.call_count == 2
+    assert resumed['search_result'] == original['search_result']
+    assert resumed['elapsed_seconds'] == original['elapsed_seconds']
+    after = restored_state(crashed)
+    for name in (*search._TASK_COUNTERS, 'batch_estimate', 'elapsed_seconds', 'inflight'):
+        assert after.get(name) == before.get(name), name
+    assert after['diagnostic_operations'][key]['native_batch_starts'] == 1
+
+
+
+def test_public_on_demand_restores_declared_state_order_for_full_pool_and_features(tmp_path, monkeypatch):
+    import sequence, selector
+    pack = _condition_pack()
+    state = pack['configurations'][0]['states'].pop('only')
+    pack['configurations'][0]['states'] = {'z_first': state, 'a_second': copy.deepcopy(state),
+                                         'empty': dict(effect=None, expected=True, priority=[])}
+    _configure_opener(tmp_path, monkeypatch, pack)
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    def scoring(*args, **kwargs):
+        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
+                else _fast_evaluate)(*args, **kwargs)
+    config = dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2)
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring):
+        original = run_task(source, tmp_path / 'B', simulation_config=dict(scene='single_target'), search_config=config)
+        resumed = resume_task(tmp_path / 'B', diagnostic_candidate_key=original['selected_candidate_key'],
+                              diagnostic_budget_seconds=10)
+        eager = run_task(source, tmp_path / 'eager', simulation_config=dict(scene='single_target'),
+                         search_config=dict(config, rule_diagnostics_policy='eager'))
+    left = resumed['search']['rule_diagnostics']
+    right = eager['search']['rule_diagnostics']
+    assert [row['state'] for row in left['rules']] == [row['state'] for row in right['rules']] == [
+        'z_first', 'z_first', 'a_second', 'a_second']
+    assert left['pool']['complete'] is right['pool']['complete'] is True
+    assert [[item['state'] for item in operation['contributors']] for operation in left['pool']['operations']] == [
+        [item['state'] for item in operation['contributors']] for operation in right['pool']['operations']]
+    assert left['selection_context'] == right['selection_context']
+    program = original['search']['records'][0]['program']
+    assert selector.action_features(left, program, left['pool']['operations']) == selector.action_features(
+        right, program, right['pool']['operations'])
+
+
+def _eager_search_config(**values):
+    return dict(rule_diagnostics_policy='eager', **values)
+
+
 def _assert_pending_selector_receipts(receipts):
     import result_store
     from selector import MODEL_KEY
@@ -85,7 +692,7 @@ def test_public_task_exposes_same_batch_complete_diagnostics_and_legal_pool(tmp_
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1, diagnostic_logging=diagnostic_logging))
         saved = read_task(tmp_path / 'task', include_search_records=True)
         diagnosis = result['search']['records'][0]['rule_diagnostics']
@@ -118,7 +725,7 @@ def test_public_checkpoint_keeps_one_diagnostic_and_restores_the_complete_result
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     destination = tmp_path / 'task'
-    config = dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+    config = _eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                   iterations=2, validation_batches=1)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
         result = run_task(source, destination, simulation_config=dict(scene='single_target'), search_config=config)
@@ -151,7 +758,7 @@ def test_public_resume_checks_diagnostic_references_and_keeps_legacy_contents(tm
     destination = tmp_path / 'task'
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
         run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         before = read_task(destination, include_search_records=True)
         with sqlite3.connect(destination / 'task.sqlite3') as database:
             key, payload = database.execute('SELECT key,value FROM state_archive').fetchone()
@@ -195,7 +802,7 @@ def test_checkpoint_keeps_replayed_pending_diagnostic_by_the_same_local_referenc
     destination = tmp_path / 'task'
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
         run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         store = TaskStore(destination)
         try:
             parent, = store.state['archive']
@@ -251,7 +858,7 @@ def test_public_effect_state_lookup_keeps_duplicates_unknown_without_per_input_r
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=native_observations):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         saved = read_task(tmp_path / 'task', include_search_records=True)
     rules = saved['search']['rule_diagnostics']['rules']
     present, absent = rules[0], rules[2]
@@ -299,7 +906,7 @@ def test_public_supported_hypothesis_keeps_known_negative_requirements_false(tmp
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=partial_qualification) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         saved = read_task(tmp_path / 'task', include_search_records=True)
     diagnostic = result['search']['rule_diagnostics']
     assert diagnostic == saved['search']['rule_diagnostics']
@@ -343,7 +950,7 @@ def test_public_unmapped_edit_keeps_later_diagnostics_operations_and_priority_ev
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=unmapped_first_input) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         saved = read_task(tmp_path / 'task', include_search_records=True)
     diagnostic = saved['search']['rule_diagnostics']
     assert diagnostic == result['search']['rule_diagnostics']
@@ -373,7 +980,7 @@ def test_public_search_selects_real_linucb_operation_and_learns_common_batches(t
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
                                batch_targets=(2,), iterations=2, validation_batches=1,
                                final_batches=1, final_iterations=2, scenarios=('nominal',),
                                diagnostic_logging=diagnostic_logging))
@@ -408,7 +1015,7 @@ def test_public_two_tasks_share_latest_learner_and_old_resume_does_not_roll_it_b
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
         for name in ('first', 'second'):
             run_task(source, tmp_path / name, simulation_config=dict(scene='single_target'),
-                search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
                     batch_targets=(2,), iterations=2, validation_batches=1,
                     final_batches=1, final_iterations=2, scenarios=('nominal',)))
             saved.append(read_task(tmp_path / name, include_search_records=True))
@@ -444,7 +1051,7 @@ def test_public_auto_selection_cancelled_before_score_resumes_the_saved_decision
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=cancel_once):
         stopped = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
                 batch_targets=(2,), iterations=2, validation_batches=1,
                 final_batches=1, final_iterations=2, scenarios=('nominal',)))
         before = read_task(tmp_path / 'task', include_search_records=True)
@@ -480,7 +1087,7 @@ def test_public_resume_encodes_replayed_complete_parent_without_another_parent_s
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=stop_during_first_diagnosis):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
                 batch_targets=(2,), iterations=2, validation_batches=1,
                 final_batches=1, final_iterations=2, scenarios=('nominal',)))
         before = read_task(tmp_path / 'task', include_search_records=True)
@@ -514,7 +1121,7 @@ def test_public_new_task_replays_incomplete_shared_cache_without_repeating_its_s
                 cancelled = True
                 kwargs['runtime'].cancel()
         return result
-    config = dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+    config = _eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
         batch_targets=(2,), iterations=2, validation_batches=1,
         final_batches=1, final_iterations=2, scenarios=('nominal',))
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed):
@@ -568,7 +1175,7 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
         monkeypatch.setattr(search, 'TaskRuntime', expired_cleanup)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=finish_at_budget):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(total_budget_seconds=60, input_interval_ms=200, candidate_limit=6,
+            search_config=_eager_search_config(total_budget_seconds=60, input_interval_ms=200, candidate_limit=6,
                 round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2,
                 validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',)))
         saved = read_task(tmp_path / 'task', include_search_records=True)
@@ -662,7 +1269,7 @@ def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, mo
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed):
         with pytest.raises(SystemExit, match='after real shared'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
                     batch_targets=(2,), iterations=2, validation_batches=1,
                     final_batches=1, final_iterations=2, scenarios=('nominal',)))
         before = result_store.read_search_learner(MODEL_KEY)
@@ -723,7 +1330,7 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=completed_at_budget):
         with pytest.raises(SystemExit, match='halfway'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=dict(total_budget_seconds=60, input_interval_ms=200, candidate_limit=6,
+                search_config=_eager_search_config(total_budget_seconds=60, input_interval_ms=200, candidate_limit=6,
                     round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2,
                     validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',)))
     checkpoint = search.TaskStore(tmp_path / 'task')
@@ -796,7 +1403,7 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed):
         with pytest.raises(SystemExit, match='one second'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=dict(total_budget_seconds=30, input_interval_ms=200, candidate_limit=6,
+                search_config=_eager_search_config(total_budget_seconds=30, input_interval_ms=200, candidate_limit=6,
                     round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2, validation_batches=1,
                     final_batches=1, final_iterations=2, scenarios=('nominal',)))
     from search import TaskStore
@@ -864,7 +1471,7 @@ def test_public_resume_scores_one_requested_operation_and_keeps_pending_starts(t
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=interrupted_engine):
         stopped = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=3, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=3, batch_targets=(2,),
                                iterations=2, validation_batches=1, diagnostic_logging=True,
                                search_observability='summary'))
         assert stopped['status'] == 'cancelled'
@@ -919,7 +1526,7 @@ def test_public_diagnostics_keep_inactive_state_rules_without_editing_them(tmp_p
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=switched_engine):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert len(diagnosis['rules']) == 4
@@ -944,7 +1551,7 @@ def test_public_cancel_keeps_completed_score_and_marks_rule_pool_incomplete(tmp_
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=completed_then_cancelled) as scoring:
         stopped = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
         saved = read_task(tmp_path / 'task')
         resumed = resume_task(tmp_path / 'task')
@@ -968,7 +1575,7 @@ def test_public_cached_batch_keeps_original_evidence_and_rebinds_current_parent(
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
-    config = dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1)
+    config = _eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
         first = run_task(source, tmp_path / 'task-a', search_config=config,
                          simulation_config=dict(scene='single_target'))
@@ -1003,7 +1610,7 @@ def test_public_unknown_execution_is_not_reported_as_inactive_or_failed(tmp_path
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=missing_outcomes):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert diagnosis['rules'][0]['status'] == 'unknown'
@@ -1035,7 +1642,7 @@ def test_public_not_dispatched_fact_supports_hypothesis_without_claiming_native_
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=explicit_outcome):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     finding, = diagnosis['rules'][0]['findings']
@@ -1065,7 +1672,7 @@ def test_public_diagnostics_use_actual_scored_sample_not_warmup(tmp_path, monkey
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=selected_sample) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=iterations, validation_batches=1))
     assert scoring.call_count == 1
     diagnosis = result['search']['rule_diagnostics']
@@ -1100,7 +1707,7 @@ def test_public_window_template_uses_configured_effect_without_enabling_full_cha
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=window_engine) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
@@ -1119,7 +1726,7 @@ def test_public_pool_respects_configured_edit_unit_range(tmp_path, monkeypatch):
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
@@ -1157,7 +1764,7 @@ def test_public_resource_template_uses_configured_native_resource_identity(tmp_p
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=resource_engine) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
@@ -1201,7 +1808,7 @@ def test_public_reservation_template_enumerates_all_later_positions(tmp_path, mo
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=reservation_engine) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
@@ -1276,7 +1883,7 @@ def test_public_join_keeps_target_components_and_missing_effect_unknown(tmp_path
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=component_engine):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     rule, = result['search']['rule_diagnostics']['rules']
     if scope_case in ('missing_component_key', 'unresolved'):
@@ -1357,7 +1964,7 @@ def test_public_preparation_template_uses_last_supported_input_before_frozen_bur
 
     with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=preparation_engine) as scoring:
         result = run_task(source, tmp_path / 'task', use_burst=True, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
@@ -1418,7 +2025,7 @@ def test_public_idle_template_reduces_one_proven_wait_or_inserts_one_filler(tmp_
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=idle_engine) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
@@ -1453,7 +2060,7 @@ def test_public_search_reuses_parent_score_feedback_without_diagnostic_simulatio
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=feedback_engine):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=5, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, batch_targets=(2,),
                                iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
                                scenarios=('nominal',)))
         saved = read_task(tmp_path / 'task', include_search_records=True)
@@ -1508,7 +2115,7 @@ def test_public_short_window_uses_real_instance_bounds_and_keeps_missing_lifecyc
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=window_engine) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
     diagnosis = result['search']['rule_diagnostics']
     assert scoring.call_count == 1
@@ -1582,7 +2189,7 @@ def test_public_short_window_execution_basis_separates_estimate_and_actual_use(t
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=window_engine) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         saved = read_task(tmp_path / 'task', include_search_records=True)
     diagnosis = result['search']['rule_diagnostics']
     assert diagnosis == saved['search']['rule_diagnostics']
@@ -1615,7 +2222,7 @@ def test_diagnostic_interface_enumerates_every_intermediate_gap_and_keeps_loop_r
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
         task = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
         blocks = [['outbreak'], ['outbreak'], ['outbreak'], ['death_coil']]
         program = [dict(kind='Loop', count=3, blocks=blocks)] if loop else blocks
@@ -1661,7 +2268,7 @@ def test_diagnostic_reuses_rejected_concrete_operations_within_existing_budget(t
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
         task = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
                                iterations=2, validation_batches=1))
         program = [['death_coil']] * 16 + [['outbreak']] * 2
         canonical = canonicalize_search_program(program, task['capabilities'])
@@ -1718,7 +2325,7 @@ def test_public_indexed_any_preserves_unknown_keys_and_true_false_results(tmp_pa
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=indexed_rows):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     assert [row['kind'] for row in result['search']['rule_diagnostics']['rules'][0]['findings']] == [expected]
 
 
@@ -1750,7 +2357,7 @@ def test_public_observation_request_closes_only_declared_object_dependencies(tmp
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=requested_engine):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     request, = requests
     assert set(request['objects']) == {'consumer', 'counter', 'compound', 'first', 'qualification', first_scope, second_scope}
 
@@ -1778,7 +2385,7 @@ def test_public_failed_rule_step_is_terminal_and_repeat_does_not_score(tmp_path,
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=failed_engine):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=3, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=3, batch_targets=(2,), iterations=2))
         parent = read_task(tmp_path / 'task')['search']['rule_diagnostics']
         operation = next(row for row in parent['pool']['operations'] if row['operation'] == 'move')
         request = dict(parent_identity=parent['parent_identity'], operation_id=operation['operation_id'])
@@ -1822,7 +2429,7 @@ def test_public_rule_rejects_known_form_mismatch_but_keeps_declared_base_family(
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=form_engine):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     diagnosis = result['search']['rule_diagnostics']
     assert bool(diagnosis['pool']['operations']) is supported
     if not supported:
@@ -1867,7 +2474,7 @@ def test_public_frozen_burst_protection_blocks_high_rule_without_suppressing_ord
 
     with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=protected_engine):
         result = run_task(source, tmp_path / 'task', use_burst=use_burst,
-            simulation_config=dict(scene='single_target'), search_config=dict(input_interval_ms=200,
+            simulation_config=dict(scene='single_target'), search_config=_eager_search_config(input_interval_ms=200,
                 candidate_limit=1, batch_targets=(2,), iterations=2))
     diagnosis = result['search']['rule_diagnostics']
     high, low = diagnosis['rules']
@@ -1913,7 +2520,7 @@ def test_public_terminal_rule_step_republishes_saved_result_after_storage_crash_
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=interrupted_engine):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=3, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=3, batch_targets=(2,), iterations=2))
         diagnosis = read_task(tmp_path / 'task')['search']['rule_diagnostics']
         operation = next(row for row in diagnosis['pool']['operations'] if row['operation'] == 'move')
         request = dict(parent_identity=diagnosis['parent_identity'], operation_id=operation['operation_id'])
@@ -1940,7 +2547,7 @@ def test_public_logging_off_strips_reused_diagnostic_costs_before_task_checkpoin
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
-    config = dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2)
+    config = _eager_search_config(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
         run_task(source, tmp_path / 'logged', search_config=dict(config, diagnostic_logging=True),
                  simulation_config=dict(scene='single_target'))
@@ -1984,7 +2591,7 @@ def test_public_rule_step_cancelled_during_comparison_resumes_pending_without_re
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=interrupted_engine):
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=3, batch_targets=(2,),
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=3, batch_targets=(2,),
                                iterations=2, validation_batches=1, max_processes=1))
         parent = read_task(tmp_path / 'task')['search']['rule_diagnostics']
         operation = next(row for row in parent['pool']['operations'] if row['operation'] == 'insert')
@@ -2052,7 +2659,7 @@ def test_public_overlapping_short_effects_select_per_input_and_keep_original_ins
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=overlap_engine) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     rule, = result['search']['rule_diagnostics']['rules']
     assignments = [row for row in rule['findings'] if row['kind'] == 'window_assignment']
     assert [(row['window']['instance_id'], row['window']['start'], row['window']['end'], row['inputs'])
@@ -2116,7 +2723,7 @@ def test_public_incomplete_window_keeps_scoped_unknown_trigger_without_erasing_k
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=uncertain_engine):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     higher, lower = result['search']['rule_diagnostics']['rules']
     findings = {(row.get('input_index'), row['kind']) for row in lower['findings']}
     if windows != 'unproven':
@@ -2176,7 +2783,7 @@ def test_public_short_window_keeps_known_existence_with_additional_uncertain_mem
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=known_and_unknown):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     rule, = result['search']['rule_diagnostics']['rules']
     kinds = {row['kind'] for row in rule['findings']}
     if evidence == 'uncertain_only':
@@ -2261,7 +2868,7 @@ def test_public_left_join_keeps_possible_missing_effect_when_only_uncertain_matc
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=possible_effect):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     rule, = result['search']['rule_diagnostics']['rules']
     assert [row['kind'] for row in rule['findings']] == ['proven_no_missing' if membership_known else 'unknown']
 
@@ -2296,7 +2903,7 @@ def test_public_mixed_state_values_keep_types_through_batch_storage_and_cache(tm
         original.append(copy.deepcopy(payload))
         return result
 
-    config = dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1)
+    config = _eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=mixed_states) as scoring:
         first = run_task(source, tmp_path / 'first', simulation_config=dict(scene='single_target'), search_config=config)
         saved = read_task(tmp_path / 'first', include_search_records=True, include_reports=True)
@@ -2473,7 +3080,7 @@ def test_public_boolean_operators_keep_numeric_state_unknown(tmp_path, monkeypat
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=zero_is_not_a_boolean):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     rule, = result['search']['rule_diagnostics']['rules']
     assert [row['kind'] for row in rule['findings']] == ['unknown']
 
@@ -2536,7 +3143,7 @@ def test_public_maintenance_qualification_uses_declared_representation(tmp_path,
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=typed_state):
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
     rule, = result['search']['rule_diagnostics']['rules']
     assert [row['kind'] for row in rule['findings']] == [expected]
 
@@ -2673,7 +3280,7 @@ def test_public_maintenance_reports_initial_gap_from_actual_buff_edges(tmp_path,
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=actual_buff_edges) as scoring:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         saved = read_task(tmp_path / 'task')
     rule = saved['search']['rule_diagnostics']['rules'][0]
     kinds = [row['kind'] for row in rule['findings']]
@@ -2780,7 +3387,7 @@ def test_public_maintenance_uses_identity_bound_estimate_without_fabricating_act
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=estimated_boundary) as scoring:
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         saved = read_task(tmp_path / 'task')
     diagnostic = saved['search']['rule_diagnostics']
     rule, = diagnostic['rules']

@@ -1054,6 +1054,9 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
     evidence = dict(task_run_id=task_run_id, batch_key=batch_key,
                     observation_digest=observation_digest,
                     rule_config_digest=snapshot['rule_config_digest'])
+    if (batch_request or {}).get('purpose') == 'diagnostic':
+        evidence.update(kind='on_demand_replay',
+                        source_scoring_batch_key=batch_request['source_scoring_batch_key'])
     parent = dict(evidence, structure_identity=digest(program), behavior_identity=behavior_identity)
     parent_identity = digest(parent)
     structures, expanded = _structure(program)
@@ -1142,7 +1145,16 @@ def diagnose(program, capabilities, initialization, report, *, task_run_id, batc
                           action_observations=len(collections.get('action_observations', ())),
                           effect_observations=len(collections.get('effect_observations', ())))
         phase_started = diagnostic_start()
-    for state_name, state in configuration['states'].items():
+    states = configuration['states']
+    bindings = initialization['bindings']
+    state_order = list(dict.fromkeys(binding['state'] for binding in bindings))
+    if (set(state_order) != {name for name, state in states.items() if state['priority']}
+            or any([{key: value for key, value in binding.items() if key != 'state'}
+                    for binding in bindings if binding['state'] == name] != states[name]['priority']
+                   for name in state_order)):
+        raise ValueError('冻结状态与有序规则绑定不一致')
+    for state_name in state_order:
+        state = states[state_name]
         if logging:
             detail_started = diagnostic_start()
         state_inputs, unknown_inputs = set(), []

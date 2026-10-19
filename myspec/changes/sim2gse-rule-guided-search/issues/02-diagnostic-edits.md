@@ -4,7 +4,7 @@ Parent: [总开发方案](../spec.md)
 Status: in-progress
 Triage: ready-for-agent
 Assignee: Implementer（实施者）
-Blocked by: 01既有接口已满足；受限前序汇总/源头依赖裁剪已有后续真实运行，当前只补日志及根因小测；按需Python/native两方案待明确批准，不改变原同次完整诊断契约。
+Blocked by: 01既有接口已满足；B按需完整采集与收尾1已获明确批准，沿原门禁进入TDD，不再等待方案选择。原eager证据保留，B仅父predict前/明确单候选请求ensure，最终输出不强补。
 
 ## Current progress（真实进度）
 
@@ -19,7 +19,13 @@ Blocked by: 01既有接口已满足；受限前序汇总/源头依赖裁剪已�
 
 2026-10-19新增已批准的保语义性能范围：受限同序完整前序规则汇总及源头依赖裁剪，准确合同见[总方案](../spec.md#2026-10-19已批准的保语义性能收口)。只复用同输入、同状态的前序trigger（触发）摘要；任意子集/乱序/未识别表达式回退，保三值/缺行/重复关联延迟报错、完整诊断/池/特征及顺序。新原生请求由冻结依赖闭包产生，包含派生读取、状态分区、选择器、反馈及审计字段；完整请求及实际协议在初始化时深拷贝冻结，旧无标记初始化走v1；首次不支持依赖或显式action_events（动作事件）消费者保守冻结v1，未知已冻结协议拒绝，不砍输入/动作/反馈或跨状态整行。仅native controller（原生控制器）省无用输出，不改getter（读取方法）签名或新增hook（钩子）；保内部GCD/施法/引导/CD真实依赖、输入snapshot（快照）及execute actual_form（执行实际形态）。资格记录ready_action用调用方现成name_str（动作名称），不冒充actual_form；保全局事件序号原递增，省略事实行只不构造JSON（结构化文本），旧钩子计数不删，新二进制不绕过旧引擎身份门禁。源头采集与序列化、摘要/缓存身份、生命周期完整性及最小原生不变性按阶段核验；当时原生构建/协议收尾状态已由后续真实运行更新。诊断total/read_validate（内存取数）/preprocess/rules/finalize及报告prepare/write聚合已随总开关接入diagnostics.json.performance.stages，每阶段calls/seconds/units，本次调用含子阶段墙钟；嵌套/并发不能相加，数据存储内部序列化/Parquet细分未实现。后续631.5945秒整任务完成94次首次评分/完整诊断、84归档；只读审计6父供96次选择，88份未供后续选择的诊断累计412.1362/429.5831秒（95.94%），不是整任务可省墙钟。单真实报告细日志off/on均值2.0767/2.1906秒，22规则/82个有序操作及特征相同；64项/45.88秒绿为历史版本证据。先前已勾选项仍只指原限定范围。
 
-按需采集研究只针对一个固定候选的32迭代ABBA，有效31样本；完整战斗报告（仅排除观察内容及5个时间元数据）、DPS 99688.5335、方差30301640.9696和37,664行轨迹一致。原生/JSON读取/准备/仅报告写入阶段之和1.997→0.552秒，不是整流水线。回读 `readback_exact=false` 保留，差异仅NULL补列；两份full观察完全同，和原批恢复结果632,649既有叶值/类型同、仅87,665 NULL补列。尚未核重放Python完整诊断、池、特征与按需来源/奖励/恢复，因此不能据此改“任何候选同次完整诊断”规范。按需Python和native两方案均待明确批准；本次日志原范围恢复验证64项/56.93秒通过（含24项日志及前序规则/检查点），见 `performance-root/recovered-logging-prefix-checkpoint-green.log`、本地提交24a0582。后续流水线定向43项＋7子测试及唯一12候选归因小测已完成：80.632秒、12发布/12持久归档，11份未供后续父选择的诊断累计占95.41%，不是可省墙钟；完整结果和限制见[归因记录](../spec.md#2026-10-19唯一12候选归因小测)，仍只补日志与根因小测。证据与完整限制见[后续实测与恢复状态](../spec.md#2026-10-19后续实测与本次恢复状态)。
+按需采集研究只针对一个固定候选的32迭代ABBA，有效31样本；完整战斗报告（仅排除观察内容及5个时间元数据）、DPS 99688.5335、方差30301640.9696和37,664行轨迹一致。原生/JSON读取/准备/仅报告写入阶段之和1.997→0.552秒，不是整流水线。回读 `readback_exact=false` 保留，差异仅NULL补列；两份full观察完全同，和原批恢复结果632,649既有叶值/类型同、仅87,665 NULL补列。该研究尚未核重放Python完整诊断、池、特征与按需来源/奖励/恢复，不能替代B公共TDD；用户随后已批准B及收尾1，现行诊断时点按下方合同覆盖旧eager。本次日志原范围恢复验证64项/56.93秒通过（含24项日志及前序规则/检查点），见 `performance-root/recovered-logging-prefix-checkpoint-green.log`、本地提交24a0582。后续流水线定向43项＋7子测试及唯一12候选归因小测已完成：80.632秒、12发布/12持久归档，11份未供后续父选择的诊断累计占95.41%，不是可省墙钟；完整结果和限制见[归因记录](../spec.md#2026-10-19唯一12候选归因小测)，以上是B实施前的日志/根因证据。证据与完整限制见[后续实测与恢复状态](../spec.md#2026-10-19后续实测与本次恢复状态)。
+
+2026-10-19最新实施状态：用户已选B（`Sentinel_9838d5f47eb88191ae20bf5b25a5f4e6`）与收尾1（`Sentinel_bd5d76067ea48191a1901d5de1344c63`），产品已到 `ea38c8067fc175cab074531874618982f22ca715`；针对性25项59.04秒通过、301项未选（`performance-root/on-demand-final-repairs-narrow.log`），最终Standards（规范）/Spec（规格）独立审查均0问题。以下新增真实功能证据不等于正式全验证，不以59.04秒冒充正式60秒预算门禁通过；新600秒/400–500候选、游戏及交付仍待。完整批准来源及未变边界见[总方案最新合同](../spec.md#2026-10-19最新有效合同b按需采集与收尾1)。
+
+- 首轮 `1c6bc72` 的5次真实SimC验证发现state字典恢复排序漂移，导致规则/池顺序不同，原失败保留于 `performance-root/b-native-functional-20261019-1302/`。按冻结bindings顺序修复后，仅离线重放同一真实报告、0新增原生，22规则/82完整有序池、50维context与action_features一致，仅evidence/parent两处observation_digest的typed NULL补列差异；不把离线核查当修后公开通过。
+- 修后另一次公开复验 `performance-root/b-native-functional-ea38c80-20261019-1319/summary.json` 最终passed：5次SimC，公开功能步骤墙钟22.7094秒；B薄评分→独立补采后取消→恢复/read/repeat零新增原生，eager读取也零新增。B评分/B补采/eager三路DPS 99688.53352317847、samples31、variance30301640.969619744严格相同。按真实双批出处精确映射后，22有序规则、82有序操作、50维context/操作特征业务差异0；632,649既有叶值/类型相同、87,665新增NULL、0旧值及数组顺序变化，仅两处观察摘要差异原样披露。公开读回程序/归档原程序/编译行为也相同，不称完整JSON逐字相等。
+- 复验后置分析曾误用export program参数，原error/diff保留；禁用原生的只读verifier改用归档原程序后完成，另1.4425秒，未重跑公开/原生步骤。两个任务candidate_limit=1、batch_targets=(32,)；本次只证明补采/取消恢复/复用及eager对照，真实原生自动选择/奖励未被这5进程覆盖，须与既有构造评分边界证据分列。原B验收勾选不据此整体改为通过，详见[总方案限定验证](../spec.md#2026-10-19-b限定验证与真实功能复验)。
 
 ## Shared workflow（共用开发流程）
 
@@ -27,7 +33,17 @@ Blocked by: 01既有接口已满足；受限前序汇总/源头依赖裁剪已�
 
 ## What to build（交付）
 
-现有搜索/训练接纳的任何当前候选，在一次真实评分后，用同次学生证据完整计算当前配置全部适用规则，输出事实、假说、未知/不支持及全部合法具体单步池。现有任务入口提交其中一个操作，沿原编译/模拟取得真实改后评分和说明。不限指南起点，不新增外部GSE编辑产品、导入模式或专用HTTP编辑端点。
+新任务按冻结on_demand（B）普通评分薄数据、不自动诊断；仅在作为父predict前或用户明确单候选请求时，按原评分冻结条件独立真实补采后完整计算全部适用规则、全部合法单步池与上下文。eager保持原每候选首评分同次诊断，旧无策略字段按eager。所有规则仍输出事实、假说、未知/不支持，但not_diagnosed不伪装成全UNKNOWN。现有单步入口提交池中一项，沿原评分得到改后成绩；仅薄增明确单候选诊断调用，不新增GSE编辑产品、导入模式或专用HTTP编辑平台。
+
+
+### B采集、来源与状态契约
+
+- `config.rule_diagnostics_policy=on_demand/eager` 与完整观察请求冻结；不改模板/专精/selector版本，不重置共享学习，不放宽规则源码、真实binary或输入身份守卫。旧无字段eager不等于允许跨版本恢复。
+- 补采request完整复制所引用原评分program/profile/times/seed/input_seed/iterations/reset/burst/trace/binary等输入，仅替换冻结full request及独立诊断用途/来源字段，不按新默认重推；独立purpose=diagnostic、source_scoring_batch_key、真实digest/data_key。`record.diagnostic_batches` 保存旁链，不进入评分batches、候选或有效评分/奖励计数；`record.rule_diagnostic_source={scoring_batch_key,diagnostic_batch_key,kind:on_demand_replay}` 双向定位真实来源。
+- 诊断本体evidence指真正采集批，availability不得伪称same_scoring_batch；模板run/sample/input只在同一真实采集批关联，原评分与补采不混拼事实。保missing/NULL/空对象、类型和数组顺序，typed混合组须经过真实读写核验。
+- `rule_diagnostic_status` 区分not_diagnosed/incomplete/complete/mismatch。补采与所引用原评分批的DPS/samples/variance逐项严格相等且来源有效、池/context完整后，才创建selection_intent、调用reserve/predict；不等或不可核验则不能供selector使用，保原分/原奖励和实际差异，不设容差。取消、预算不足与发布中断不能假称complete或把未诊断当空池；已有选择意图/回执不换父、换报告或重抽。
+- 已可靠发布的完整观察报告复用；Python未完只继续解释，不重复原生采集。B恢复不扫所有未诊断候选，read_task始终零模拟。普通读取、搜索结束、最佳GSE/DPS、导出/冠军/训练完成均不主动ensure；无诊断显示“未诊断”，不增加完成/导出/冠军守卫，不预留或额外追加诊断收尾预算。
+- 明确单候选诊断复用resume_task(diagnostic_candidate_key=..., diagnostic_budget_seconds=...)，必须由调用方给正diagnostic_budget_seconds，无默认额外预算。原任务额度耗尽后仍可仅按本次显式额度诊断，使用独立有界Runtime与单独记账，不修改原600秒、原elapsed/DPS/奖励，不恢复普通搜索。父predict前的补采、诊断、池、保存与等待计入原搜索预算；手动入口若超出既有接缝的最小接入须报告。
 
 ## Templates and parameters（八模板与参数）
 
@@ -46,7 +62,7 @@ Blocked by: 01既有接口已满足；受限前序汇总/源头依赖裁剪已�
 
 ## Evidence and evaluation（事实、让位与诊断）
 
-- 同一run_id/sample_id/input_index关联输入前事实，执行和效果保留各自时刻/事件顺序/身份；初始化静态估计、教师、别候选或别场不能补学生缺口。玩家血量不是目标血量，最大充能不是当前充能，Buff汇总duration不是实时剩余。
+- 同一实际采集批的run_id/sample_id/input_index关联输入前事实，执行和效果保留各自时刻/事件顺序/身份；eager来源是原评分，B来源是相同冻结条件但独立身份的真实补采，不能混拼两批。初始化静态估计、教师、别候选或不匹配场次不能补学生缺口。玩家血量不是目标血量，最大充能不是当前充能，Buff汇总duration不是实时剩余。
 - 数据支持的试探修改已批准：有实际问题＋必要CD/资源/GCD等事实即可提出结构合法假说，真实模拟定效果；完整native资格未知不自动封住全部候选。已知原生禁止（包括已知实际形态不匹配）、越权或结构非法仍拒绝；没有任何相关事实不能乱改。
 - 首末先在有数据支持的机会集合选取，未知另外报告，不能因未观察的更早/更晚项抹掉已有候选，也不宣称穷尽全部native机会。作用完成与占用结束分开，正常瞬发消费同刻Buff结束不能被GCD尾段误报。
 - 本状态按声明顺序计算各规则的当前适用trigger，并只关联此前条目，成功与“还需修复”分开；成功高位也能让当次低位合理让位。规则优先级只解释适用与让位，不决定先修哪条或给候选手写权重。
@@ -65,11 +81,23 @@ SourcePosition是路径，用同次input_index及已有展开映射定位，不�
 
 ## Public seams and TDD（公开接缝）
 
-task.run_task/resume_task已支持可选rule_step={parent_identity,operation_id}，read_task返回当前父的全部诊断及完整池；默认维护候选已经该公开接缝真实评分、验证和重读。operation_id绑定冻结配置、父结构/行为身份、同次证据批次及具体操作，过期/外来/父不符/位置歧义拒绝。指定池中一项→原pending→编译/校验→原score_batch/record→可靠保存及read_task重读，不加诊断模拟、不依赖日志开关。
+task.run_task/resume_task保留可选rule_step={parent_identity,operation_id}；read_task只读返回已存诊断/池或准确未诊断状态，零模拟。operation_id绑定冻结配置、父结构/行为身份、真正采集证据批次及具体操作，过期/外来/父不符/位置歧义拒绝；B尚无完整池不能提交操作。指定一项→原pending→编译/校验→原score_batch/record→可靠保存沿原路径；B必要补采仅在ensure边界，eager不额外诊断模拟，业务均不依赖性能日志开关。
 
 先红后绿覆盖配置改动生效、每规则单模板、四场景/八状态全量、真实断档回溯、同实例消费/同刻终止、正常让位/高位未知、未知形态与已知禁止、所有具体前移参数、整块/Loop影响、保护空池和各空池原因。失败/恢复覆盖坏配置、过期请求、取消/预算/缓存、保存失败、规则/计划变化拒恢复及单步不重复应用；必要原生观察用小范围同条件对照，不以构造例冒充安全完成。
 
 ## Acceptance criteria（验收条件）
+
+### B新增验收（尚未完成）
+
+- [ ] 普通多候选薄评分及read_task零补采/零伪UNKNOWN；父selection_intent/reserve/predict前有完整适用诊断、完整池/context，真实Coba及原评分奖励贯通。
+- [ ] 双批来源与独立diagnostic_batches可靠保存/重读，typed NULL混合组不丢原值；补采不混入评分/候选/奖励计数，common_key不删rule_observations。
+- [ ] DPS/samples/variance严格不一致保原分、不可供selector；重复缓存/resume、取消及发布中断不重复评分/可靠采集，恢复不扫全候选。
+- [ ] 新B/旧无字段eager冻结、规则源码/binary/输入拒错、训练共用路径有公开证据；最终GSE/DPS直接输出，无诊断如实标记，不新增完成/导出/冠军守卫。
+- [ ] 明确单候选入口仅接受显式正diagnostic_budget_seconds并独立记账；原预算耗尽后可诊断但不恢复搜索，无默认额外预算，不改原elapsed/600秒/DPS，普通read及最终输出不触发。先小真链，不冒充新600秒收益验收。
+
+### 历史eager限定验收（2026-10-18，保留原勾选）
+
+以下通过项只覆盖旧eager时点合同；其中“同次评分后”和“不增加模拟”不覆盖新B。其余模板/完整池要求仍有效，B新增验收未据此勾选。
 
 - [x] 八模板本体均为完整可编辑结构化处理，程序无模板ID/职业/技能业务分派；四实例79规则每条唯一模板、参数/对象/同状态前序引用闭合。
 - [x] 全部既有来源当前候选同次评分后完整给出适用/不适用/覆盖/失败/让位/问题假说/未知/不支持，不预挑一条。

@@ -968,6 +968,74 @@ def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path,
                       burst_identity={'spec_id': reviewed['spec_id'], 'definition_id': reviewed['definition_id']})
 
 
+
+@pytest.mark.parametrize('interrupt_second', [False, True])
+def test_dual_resume_preserves_missing_eager_policy_for_old_and_new_children(tmp_path, monkeypatch,
+                                                                          page_task_engine, interrupt_second):
+    import burst, dual_task, result_store, search
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    source = tmp_path / 'legacy-role.simc'
+    source.write_text(raw, encoding='utf-8')
+    destination = tmp_path / 'legacy-dual'
+    original_config_for = search.config_for
+    def legacy_configuration(values=None, **kwargs):
+        config = original_config_for(values, **kwargs)
+        config.pop('rule_diagnostics_policy', None)
+        return config
+    interrupted = []
+    original_write = result_store.write
+    def pause_before_second_scene(table, key, rows, **kwargs):
+        if (table == 'dual_tasks' and rows[0].get('single_target_export')
+                and rows[0].get('burst_export') and rows[0]['aoe_status'] == 'pending' and not interrupted):
+            interrupted.append(True)
+            raise OSError('constructed old parent interruption before second child')
+        return original_write(table, key, rows, **kwargs)
+    with (patch.object(search, 'config_for', side_effect=legacy_configuration),
+          patch.object(dual_task, 'config_for', side_effect=legacy_configuration),
+          patch.object(result_store, 'write', side_effect=pause_before_second_scene)):
+        handle = dual_task.start(source, destination, search_config=dict(candidate_limit=1,
+            batch_targets=(2,), iterations=2, validation_batches=1))
+        handle.join(20)
+        assert handle.done
+    before = dual_task.read(destination)
+    assert interrupted and before['status'] == 'partial'
+    assert not (destination / 'aoe').exists()
+    first = task.read_task(destination / 'single_target', include_search_records=True)
+    assert 'rule_diagnostics_policy' not in first['config']
+    second_cut = []
+    def pause_second_child(table, key, rows, **kwargs):
+        result = original_write(table, key, rows, **kwargs)
+        if (interrupt_second and not second_cut and table == 'batches'
+                and any(row.get('purpose') == 'search' and len(row.get('report', {}).get('sim', {}).get('targets', [])) == 5
+                        for row in rows)):
+            second_cut.append(True)
+            from runtime import TaskCancelled
+            raise TaskCancelled('constructed second child interruption after durable score')
+        return result
+    with patch.object(result_store, 'write', side_effect=pause_second_child):
+        resumed = dual_task.resume(destination)
+        resumed.join(20)
+        assert resumed.done
+    if interrupt_second:
+        assert second_cut and dual_task.read(destination)['status'] == 'cancelled'
+        assert task.read_task(destination / 'aoe')['config']['rule_diagnostics_policy'] == 'eager'
+        resumed = dual_task.resume(destination)
+        resumed.join(20)
+        assert resumed.done
+    saved = dual_task.read(destination)
+    assert saved['status'] == 'completed', saved
+    assert saved['collection_ready']
+    children = [task.read_task(destination / scene, include_search_records=True)
+                for scene in ('single_target', 'aoe')]
+    assert 'rule_diagnostics_policy' not in children[0]['config']
+    assert children[1]['config']['rule_diagnostics_policy'] == 'eager'
+    assert children[0]['search_result'] == first['search_result']
+    assert all('rule_observations' in row['batches'][0]['request']
+               for child in children for row in child['search']['records'])
+    assert all('diagnostic_batches' not in row for child in children for row in child['search']['records'])
+
+
 def test_dual_children_automatically_learn_with_one_frozen_rule_pack(tmp_path, monkeypatch):
     import burst
     import dual_task
