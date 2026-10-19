@@ -240,8 +240,12 @@ class ProgramTests(unittest.TestCase):
             ("CHILD", 1, "1", ["spell_70004"]),
         ]
         clicks = candidate["compiled_program"]["clicks"]
+        self.assertEqual([click["kind"] for click in clicks],
+                         ["Action" if commands else "EmptyClick" for _, _, _, commands in expected])
         self.assertEqual([(click["source"].get("sequence"), click["source"].get("version"),
-                           click["source"]["path"], click["commands"]) for click in clicks], expected)
+                           click["source"]["path"],
+                           click["commands"] if click["kind"] == "Action" else [])
+                          for click in clicks], expected)
         self.assertEqual(len(candidate["source_paths"]), 26)
 
     def test_default_scene_rejects_active_petattack_with_its_source_path(self):

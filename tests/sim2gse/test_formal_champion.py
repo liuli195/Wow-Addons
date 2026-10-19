@@ -148,7 +148,7 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     profile = tmp_path / 'role.simc'
-    profile.write_text(raw, encoding='utf-8')
+    profile.write_text(raw, encoding='utf-8', newline='')
     options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
         search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
             iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
@@ -193,11 +193,15 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
         finally:
             release.set()
         stale = pending.result(20)
+    assert stale['scenes'][0]['formal_champion_snapshot']['condition_key'] == fresh['search'][
+        'formal_champion_snapshot']['condition_key']
     assert stale['scenes'][0]['formal_champion_snapshot']['status'] == 'absent'
     assert stale['scenes'][0]['formal_champion_publication']['status'] == 'conflict'
     assert stale['scenes'][0]['search_result']['samples'] > 0
     inherited = task.run_task(profile, tmp_path / 'inherited', **options)
     assert inherited['status'] == 'completed', inherited
+    assert inherited['search']['formal_champion_snapshot']['condition_key'] == fresh['search'][
+        'formal_champion_snapshot']['condition_key']
     assert inherited['search']['formal_champion_snapshot']['source_run_id'] == fresh['search'][
         'formal_champion_publication']['source_run_id']
 

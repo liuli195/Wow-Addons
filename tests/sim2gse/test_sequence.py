@@ -213,7 +213,9 @@ class SequenceSimulationTests(unittest.TestCase):
                              iterations=2, input_times=times, trace=False)
             self.assertEqual(result['report']['sim']['players'][0]['collected_data'],
                              quiet['report']['sim']['players'][0]['collected_data'])
-            replaced = next(row for row in result['trace']
+            timed = evaluate(source, candidate, root / 'timed', character=character,
+                             iterations=2, input_times=times, failure_events=[])
+            replaced = next(row for row in timed['trace']
                             if row['event'] == 'native_execute' and row['action'] == 'blightfall')
             with self.assertRaisesRegex(ValueError, '已执行后收到否定反馈'):
                 evaluate(source, candidate, root / 'late-feedback', character=character,
@@ -657,8 +659,7 @@ class SequenceSimulationTests(unittest.TestCase):
                           input_times=[0, 1050, 1120, 1200, 1270, 1500],
                           gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
                                       (1270, 1200), (1270, 1200), (1270, 1200)])
-            baseline = evaluate(source, candidate, Path(directory) / 'without-failure',
-                                failure_events=[], **kwargs)
+            baseline = evaluate(source, candidate, Path(directory) / 'without-failure', **kwargs)
             with_failure = evaluate(
                 source, candidate, Path(directory) / 'timed-failure',
                 failure_events=[(1300, 2, 'putrefy')], **kwargs)
