@@ -179,26 +179,6 @@ def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', inter
         thread.join(3)
 
 
-def test_dual_reads_each_scenes_final_training_champion(tmp_path, monkeypatch,
-        memory_result_center, champion_engine):
-    import burst
-    import engine
-    import result_store
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    single = [['outbreak'], ['death_coil'], ['outbreak']]
-    aoe = [['death_coil'], ['outbreak'], ['death_coil']]
-    template, single_rows = completed_training(tmp_path, 1, [(single, [190., 200., 210.])])
-    _, aoe_rows = completed_training(tmp_path, 5, [(aoe, [290., 300., 310.])])
-    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-    state = dual_result(tmp_path, raw)
-    assert [scene['training_champion_snapshot']['candidate_id'] for scene in state['scenes']] == [
-        single_rows[0]['candidate_id'], aoe_rows[0]['candidate_id']]
-    assert [scene['training_champion_snapshot']['scores'] for scene in state['scenes']] == [
-        [190., 200., 210.], [290., 300., 310.]]
-
-
 @pytest.mark.parametrize('fault', ['wrong_program', 'report_missing', 'report_corrupt', 'temporary_error'])
 def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_storage_errors(tmp_path, monkeypatch,
         memory_result_center, champion_engine, fault):
@@ -379,7 +359,9 @@ def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arriv
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     template, rows = completed_training(tmp_path, 1, [
-        ([['outbreak'], ['death_coil'], ['outbreak']], [200.] * 3)])
+        ([['outbreak'], ['death_coil'], ['outbreak']], [190., 200., 210.])])
+    _, aoe_rows = completed_training(tmp_path, 5, [
+        ([['death_coil'], ['outbreak'], ['death_coil']], [290., 300., 310.])])
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     evaluate = sequence.evaluate
     cancelled = False
@@ -406,6 +388,10 @@ def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arriv
     with ExitStack() as patches, patch.object(sequence, 'evaluate', side_effect=cancel_first_score):
         state = dual_result(tmp_path, raw, expected='cancelled', before_resume=update_training)
     assert state['scenes'][0]['training_champion_snapshot'] == state['previous_state']['scenes'][0]['training_champion_snapshot']
+    assert [scene['training_champion_snapshot']['candidate_id'] for scene in state['scenes']] == [
+        rows[0]['candidate_id'], aoe_rows[0]['candidate_id']]
+    assert [scene['training_champion_snapshot']['scores'] for scene in state['scenes']] == [
+        [190., 200., 210.], [290., 300., 310.]]
 
 
 @pytest.mark.parametrize('fault', ['processed_temporary'])

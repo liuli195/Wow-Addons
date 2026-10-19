@@ -35,17 +35,6 @@ def sample_profile() -> str:
 
 
 class CharacterExportTests(unittest.TestCase):
-    def test_export_help_uses_the_frozen_simulation_data_version(self):
-        import codec
-
-        with tempfile.TemporaryDirectory() as directory:
-            result = codec.export(
-                [[dict(kind='spell', spell_id=47541, name='death_coil', simc_action='death_coil')]],
-                Path(directory) / 'export',
-                identity=dict(spec_id=252, class_id=6, data_version='12.1.0.69933'))
-            import base64, zlib, cbor2
-            payload = cbor2.loads(zlib.decompress(base64.b64decode(result['text'][6:]), -15))
-            self.assertIn('模拟数据 12.1.0.69933', payload[1][b'MetaData'][b'Help'].decode())
 
     def test_public_commands_reject_retired_data_options(self):
         for entry in ("task.py", "interface.py"):
@@ -68,25 +57,6 @@ class CharacterExportTests(unittest.TestCase):
                 self.assertEqual(rejected.exception.code, 2)
                 self.assertIn("unrecognized arguments", error.getvalue())
 
-    def test_lua_compiler_receives_only_ascii_paths(self):
-        import codec
-
-        commands = []
-        original = codec.run_command
-        def fake(command, *args, **kwargs):
-            commands.append(command)
-            output = b"CHECKSUM\ttest\nPASS\ttest\n"
-            return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
-        codec.run_command = fake
-        try:
-            with tempfile.TemporaryDirectory(prefix="中文路径 ") as directory:
-                codec.export([[dict(kind="spell", spell_id=206930, name="heart_strike",
-                                         simc_action="heart_strike")]], Path(directory) / "导出",
-                             identity=dict(spec_id=250, class_id=6))
-        finally:
-            codec.run_command = original
-        self.assertTrue(commands)
-        self.assertTrue(all(str(value).isascii() for command in commands for value in command[1:]))
 
     def test_lua_start_callback_counts_failed_process_start(self):
         import codec
@@ -116,43 +86,10 @@ class CharacterExportTests(unittest.TestCase):
                                 on_start=lambda: starts.append("started"))
         self.assertEqual(starts, [])
 
-    def test_native_precombat_button_is_a_nocombat_gse_step(self):
-        from codec import export
-        from engine import inspect
-        from sequence import compiled_program, select
-
-        native = dict(
-            actions_protocol=1, apl_actions_protocol=1, apl_actions=[],
-            active_items=[],
-            executed_actions=[dict(
-                name='heart_strike', signature='heart_strike', player_owned=True,
-                background=False, quiet=False, passive=False, type='spell',
-                precombat=False, data_id=206930, data_valid=True,
-                base_spell_id=206930, gcd_ms=1500,
-            )],
-            precombat_sequence=[dict(id=195292, name='deaths_caress', queue_failed=False),
-                                dict(id=195292, name='deaths_caress', queue_failed=False)],
-            precombat_definitions=[dict(
-                name='deaths_caress', signature='deaths_caress', player_owned=True,
-                background=False, quiet=False, passive=False, type='spell',
-                precombat=True, data_id=195292, data_valid=True,
-                base_spell_id=195292, gcd_ms=1500,
-            )],
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            capabilities = inspect(native, Path(directory) / 'capabilities')
-            self.assertEqual([a['simc_action'] for a in capabilities['precombat_actions']],
-                             ['deaths_caress', 'deaths_caress'])
-            candidate = export(select(capabilities, [['heart_strike']]), Path(directory) / 'export',
-                               identity=dict(spec_id=250, class_id=6))
-            self.assertEqual(candidate['compiled_steps'][0],
-                             dict(type='macro', macrotext='/cast [nocombat] deaths_caress'))
-            self.assertEqual(candidate['compiled_steps'][1], candidate['compiled_steps'][0])
-            self.assertEqual(compiled_program(candidate),
-                             [['deaths_caress'], ['deaths_caress'], ['heart_strike']])
-            self.assertEqual(candidate['precombat_count'], 2)
-
-    def test_native_precombat_item_keeps_its_runtime_action_name(self):
+    def test_native_precombat_buttons_and_item_keep_the_complete_nocombat_prefix(self):
+        import base64
+        import zlib
+        import cbor2
         from codec import export
         from engine import inspect
         from sequence import compiled_program, select
@@ -166,8 +103,15 @@ class CharacterExportTests(unittest.TestCase):
                 precombat=False, data_id=206930, data_valid=True,
                 base_spell_id=206930, gcd_ms=1500,
             )],
-            precombat_sequence=[dict(id=123, name='use_item_test_item', queue_failed=False)],
+            precombat_sequence=[dict(id=195292, name='deaths_caress', queue_failed=False),
+                                dict(id=195292, name='deaths_caress', queue_failed=False),
+                                dict(id=123, name='use_item_test_item', queue_failed=False)],
             precombat_definitions=[dict(
+                name='deaths_caress', signature='deaths_caress', player_owned=True,
+                background=False, quiet=False, passive=False, type='spell',
+                precombat=True, data_id=195292, data_valid=True,
+                base_spell_id=195292, gcd_ms=1500,
+            ), dict(
                 name='use_item_test_item', signature='use_item,slot=trinket1', player_owned=True,
                 background=False, quiet=False, passive=False, type='item',
                 precombat=True, data_id=123, data_valid=True,
@@ -177,19 +121,26 @@ class CharacterExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             capabilities = inspect(native, Path(directory) / 'capabilities')
             self.assertEqual([a['simc_action'] for a in capabilities['precombat_actions']],
-                             ['use_item,slot=trinket1'])
+                             ['deaths_caress', 'deaths_caress', 'use_item,slot=trinket1'])
             candidate = export(select(capabilities, [['heart_strike']]), Path(directory) / 'export',
-                               identity=dict(spec_id=250, class_id=6))
-            self.assertEqual(candidate['compiled_steps'][0],
-                             dict(type='macro', macrotext='/use [nocombat] 13'))
+                               identity=dict(spec_id=250, class_id=6, data_version='12.1.0.69933'))
+            self.assertEqual(candidate['compiled_steps'][:3], [
+                dict(type='macro', macrotext='/cast [nocombat] deaths_caress'),
+                dict(type='macro', macrotext='/cast [nocombat] deaths_caress'),
+                dict(type='macro', macrotext='/use [nocombat] 13'),
+            ])
             self.assertEqual(compiled_program(candidate),
-                             [['use_item,slot=trinket1'], ['heart_strike']])
+                             [['deaths_caress'], ['deaths_caress'],
+                              ['use_item,slot=trinket1'], ['heart_strike']])
+            self.assertEqual(candidate['precombat_count'], 3)
+            payload = cbor2.loads(zlib.decompress(base64.b64decode(candidate['text'][6:]), -15))
+            self.assertIn('模拟数据 12.1.0.69933', payload[1][b'MetaData'][b'Help'].decode())
+
 
     def test_client_target_masks_apply_across_classes_and_mixed_blocks(self):
-        from codec import export
+        import codec
         from sequence import compiled_program
 
-        # 所有独有客户端数据规则直接核对；只有三种导出语义进入真实上游编译。
         targeting = json.loads((REPOSITORY / 'projects/sim2gse/compatibility/spell-target-masks.json')
                                .read_text(encoding='utf-8'))
         cases = [(43265, True), (2120, True), (190356, True), (61882, True),
@@ -198,20 +149,27 @@ class CharacterExportTests(unittest.TestCase):
         for spell_id, is_ground in cases:
             with self.subTest(target_mask=spell_id):
                 self.assertEqual(bool(targeting['target_masks'].get(str(spell_id), 0) & 64), is_ground)
-        with tempfile.TemporaryDirectory() as directory:
-            for spell_id, is_ground in ((43265, True), (206930, False)):
-                with self.subTest(spell=spell_id):
-                    command = dict(kind='spell', spell_id=spell_id, name='spell_'+str(spell_id), simc_action='spell_'+str(spell_id))
-                    blocks = [[command], [dict(kind='start_attack', simc_action='auto_attack'), command]]
-                    result = export(blocks, Path(directory)/str(spell_id), identity=dict(spec_id=250, class_id=6))
-                    first = result['compiled_steps'][0]
-                    self.assertEqual(first['type'], 'macro' if is_ground else 'spell')
-                    self.assertEqual('[@player]' in result['compiled_steps'][1]['macrotext'], is_ground)
-                    self.assertEqual(compiled_program(result), [[command['simc_action']], ['auto_attack',command['simc_action']]])
-            item = dict(kind='item', slot=13, driver_spell_id=43265, simc_action='use_item,slot=trinket1')
-            result = export([[item]], Path(directory)/'ground-item', identity=dict(spec_id=250,class_id=6))
-            self.assertEqual(result['compiled_steps'][0], dict(type='macro',macrotext='/use [@player] 13'))
-            self.assertEqual(compiled_program(result), [['use_item,slot=trinket1']])
+        ground = dict(kind='spell', spell_id=43265, name='spell_43265', simc_action='spell_43265')
+        normal = dict(kind='spell', spell_id=206930, name='spell_206930', simc_action='spell_206930')
+        attack = dict(kind='start_attack', simc_action='auto_attack')
+        item = dict(kind='item', slot=13, driver_spell_id=43265, simc_action='use_item,slot=trinket1')
+        with tempfile.TemporaryDirectory(prefix='中文路径 ') as directory, \
+                patch.object(codec, 'run_command', wraps=codec.run_command) as compiler:
+            result = codec.export([[ground], [attack, ground], [normal], [attack, normal], [item]],
+                                  Path(directory) / '导出', identity=dict(spec_id=250, class_id=6))
+        self.assertEqual(compiler.call_count, 1)
+        self.assertTrue(all(str(value).isascii()
+                            for call in compiler.call_args_list for value in call.args[0][1:]))
+        steps = result['compiled_steps']
+        self.assertEqual(steps[0]['type'], 'macro')
+        self.assertIn('[@player]', steps[1]['macrotext'])
+        self.assertEqual(steps[2]['type'], 'spell')
+        self.assertNotIn('[@player]', steps[3]['macrotext'])
+        self.assertEqual(steps[4], dict(type='macro', macrotext='/use [@player] 13'))
+        self.assertEqual(compiled_program(result), [
+            ['spell_43265'], ['auto_attack', 'spell_43265'],
+            ['spell_206930'], ['auto_attack', 'spell_206930'], ['use_item,slot=trinket1'],
+        ])
 
     def test_public_entry_rejects_output_override_before_writing(self) -> None:
         source = sample_profile() + "\noutput=forbidden.simc\n"

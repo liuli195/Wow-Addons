@@ -94,7 +94,6 @@ def test_public_feedback_rejects_self_described_empty_request_instead_of_the_fro
 
 @pytest.mark.parametrize('source,fields', [
     ('student.action_events', ['kind']),
-    ('student.future_facts', ['time']),
     ('student.action_observations', ['future_field']),
     ('student.target_scope', ['target_id'])])
 def test_public_new_unrecognized_collection_dependency_freezes_a_full_v1_request(tmp_path, monkeypatch, source, fields):

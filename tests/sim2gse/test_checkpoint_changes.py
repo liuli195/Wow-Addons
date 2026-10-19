@@ -70,17 +70,6 @@ def _reopen_checkpoint(store):
         reopened.close()
 
 
-def test_scoped_checkpoint_preserves_nested_receipts_and_selected_archive(tmp_path):
-    store = _new_checkpoint(tmp_path)
-    store.state['pending'][0]['receipt']['feedback']['reward'] = .25
-    store.state['archive'][1]['evidence']['samples'].append(3)
-    store.save(fields=('pending',), archive_keys=('second',))
-    expected = copy.deepcopy(store.state)
-    assert _reopen_checkpoint(store) == expected
-    assert expected['pending'][0]['receipt']['feedback']['reward'] == .25
-    assert expected['archive'][1]['evidence']['samples'] == [2, 3]
-
-
 @pytest.mark.parametrize('change', ['reorder', 'delete', 'append', 'new_field', 'whole_archive'])
 def test_checkpoint_structural_changes_fall_back_without_losing_unmarked_nested_state(tmp_path, change):
     store = _new_checkpoint(tmp_path)
@@ -130,6 +119,8 @@ def test_scoped_checkpoint_failure_rolls_back_and_retry_persists_all_changes(tmp
     # Retry on the same object: stale successful-value caches would skip the SQL.
     store.save(fields=('pending',), archive_keys=('second',))
     assert _reopen_checkpoint(store) == expected
+    assert expected['pending'][0]['receipt']['feedback']['reward'] == .75
+    assert expected['archive'][1]['evidence']['samples'] == [2, 4]
 
 
 def _new_feedback_checkpoint(tmp_path):

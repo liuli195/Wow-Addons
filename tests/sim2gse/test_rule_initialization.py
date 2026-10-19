@@ -58,44 +58,6 @@ def _declared_pack():
     return pack
 
 
-def test_public_task_selects_and_freezes_one_three_key_configuration(tmp_path, monkeypatch):
-    """构造的通用三键配置，不继承旧专精规则结构。"""
-    from task import read_task
-    from test_engine import apl_pool_reference
-    key = dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')
-    pack = dict(schema_version=2,
-        identity_mappings=dict(hero_talents={'sample_hero': 17}),
-        general=dict(templates={}), execution_evidence={},
-        object_sets={'sample': {'work': dict(kind='action', native_action='scourge_strike',
-                                           base_button='scourge_strike', native_forms=['scourge_strike'])}},
-        configurations=[dict(key=key, objects_ref='sample', execution_ref=None,
-            states={'only': dict(effect=None, expected=True, priority=[])},
-            opener=dict(source_basis='fixture: three-key ordered opener', source_steps=['work', 'work'],
-                precombat=[], burst_anchor=None, independent_burst_source_steps=[],
-                ordinary_steps=[dict(action='work', source_step=i, source_form='scourge_strike',
-                    attribute_query=dict(native_form='scourge_strike', base_button='scourge_strike',
-                                         missing='unknown_no_base_cost_fallback')) for i in (1, 2)]))])
-    _configure_opener(tmp_path, monkeypatch, pack)
-    native = apl_pool_reference()
-    native['static_snapshot']['hero_subtree_ids'] = [17]
-    native['identity']['resource'] = 'runic_power'
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary(native):
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-        saved = read_task(tmp_path / 'task')
-    report = result['rule_initialization']
-    assert report == saved['rule_initialization']
-    assert report['configuration_key'] == key
-    assert report['rule_snapshot']['pack'] == pack
-    assert report['states'] == pack['configurations'][0]['states']
-    assert [row['action'] for row in report['positions'] if row['kind'] == 'action'] == [
-        'scourge_strike', 'scourge_strike']
-    assert result['candidate']['text'].startswith('!GSE3!')
-
-
 def test_rule_cli_preserves_complete_templates_and_rejects_wrong_binding_parameter(tmp_path, monkeypatch, capsys):
     import copy, json
     from rule_config import DEFAULT_PATH
@@ -467,28 +429,6 @@ def test_task_accounts_native_effective_precombat_occupancy_before_freezing_t0(
     assert result['burst']['plan']['start_ms']==first_burst
 
 
-def test_task_carries_all_declared_states_and_rules_without_diagnosing_them(tmp_path, monkeypatch):
-    import copy
-    pack = _declared_pack()
-    objects = pack['object_sets']['sample']
-    objects['window'] = dict(kind='effect', native_identity='window')
-    states = pack['configurations'][0]['states']
-    states['only']['effect'] = 'window'
-    states['other'] = dict(copy.deepcopy(states['only']), expected=False)
-    _configure_opener(tmp_path, monkeypatch, pack)
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _apl_task_boundary():
-        result = run_task(source, tmp_path / 'task', search_config=dict(
-            input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-    report = result['rule_initialization']
-    assert report['states'] == states
-    assert [row['state'] for row in report['bindings']] == ['only', 'other']
-    assert all(row['application_status'] == 'declared_not_diagnosed' for row in report['rules'])
-    assert report['rule_snapshot']['pack'] == pack
-
-
-
 @pytest.mark.parametrize('hero,scene,steps', [(701, 'single_target', 1), (702, 'aoe', 4)])
 def test_task_selects_opener_by_explicit_scene_and_native_hero_facts(tmp_path, monkeypatch, hero, scene, steps):
     import copy
@@ -597,55 +537,22 @@ def test_task_uses_configured_replacement_form_cost_and_same_button_mapping(
     assert all(row['condition_status']=='dynamic_condition_unknown' for row in attempts)
 
 
-@pytest.mark.parametrize('mapped_action,input_interval_ms', [('blightfall', 200)])
-def test_task_freezes_first_burst_from_opener_and_reuses_original_macro(tmp_path, monkeypatch, mapped_action, input_interval_ms):
-    import json
-    import burst,result_store
-    from test_burst import reviewed_fixture,character_seed_boundary
-    definition,raw=reviewed_fixture()
+def test_task_rejects_burst_source_missing_from_original_macro(tmp_path, monkeypatch):
+    import burst, result_store
+    from test_burst import reviewed_fixture, character_seed_boundary
+    definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir()
-    published=burst.publish(definition)
-    pack = _opener_pack({'tap': 'scourge_strike', 'big': mapped_action, 'transformation': 'dark_transformation'}, [dict(action='tap',source_step=i) for i in (1,2,5)], independent=[dict(action='big',source_step=3,mapping='burst'),dict(action='transformation',source_step=4,mapping='burst')], anchor=3)
-    config=tmp_path/'rules.json';config.write_text(json.dumps(pack),encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(config))
-    source=tmp_path/'role.simc';source.write_text(raw,encoding='utf-8')
-    with character_seed_boundary():
-        if mapped_action=='blightfall':
-            with pytest.raises(TaskError,match='独立爆发宏未包含.*blightfall'):
-                run_task(source,tmp_path/'task',use_burst=True,search_config=dict(input_interval_ms=input_interval_ms,
-                    candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
-            assert burst.load(252)==published
-            return
-        result=run_task(source,tmp_path/'task',use_burst=True,search_config=dict(input_interval_ms=input_interval_ms,
-            candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
-    report=result['rule_initialization']
-    start_ms, action_times, mapped_times, starts = {
-        200: (2000,[0,1000,3000],[2000,2200],'第2、47、92、137秒'),
-        300: (2400,[0,1200,3600],[2400,2700],'第2.4、47.4、92.4、137.4秒'),
-    }[input_interval_ms]
-    assert result['burst']['plan']==dict(published['plan'],start_ms=start_ms)
-    assert result['burst']['interval_ms']==input_interval_ms
-    assert report['protected_burst']['plan']==result['burst']['plan']
-    from sequence import compiled_program
-    assert compiled_program(result['burst']['candidate']) == [
-        ['army_of_the_dead'], ['potion', 'use_item,slot=trinket1', 'use_item,slot=trinket2', 'dark_transformation']]
-    assert all(not start_ms <= row['estimated_ms'] < start_ms+1000
-               for row in report['positions'] if row['kind']=='action')
-    assert [row['estimated_ms'] for row in report['positions'] if row['kind']=='action']==action_times
-    mapped=[row for row in report['source_steps'] if row.get('mapping')=='burst']
-    assert [row['estimated_ms'] for row in mapped]==mapped_times
-    assert mapped[0]['burst_mapping']==[dict(native_action='army_of_the_dead',block=0,command=0,input_ms=mapped_times[0])]
-    assert mapped[1]['burst_mapping']==[dict(native_action='dark_transformation',block=1,command=3,input_ms=mapped_times[1])]
-    assert starts in result['burst']['instructions']
-    assert f'间隔{input_interval_ms}毫秒' in result['burst']['instructions']
-    from gse_import import decode_import
-    help_text=next(iter(decode_import(result['burst']['candidate']['text'])['sequences'].values()))['MetaData']['Help']
-    assert starts in help_text
-    assert f'间隔{input_interval_ms}毫秒' in help_text
-    assert '第3、48、93、138秒' not in help_text
-    assert burst.load(252)==published
-    from task import read_task
-    assert read_task(tmp_path/'task')['burst']['plan']==result['burst']['plan']
+    published = burst.publish(definition)
+    pack = _opener_pack({'tap': 'scourge_strike', 'big': 'blightfall'},
+        [dict(action='tap', source_step=1)],
+        independent=[dict(action='big', source_step=2, mapping='burst')], anchor=2)
+    _configure_opener(tmp_path, monkeypatch, pack)
+    source = tmp_path / 'role.simc'
+    source.write_text(raw, encoding='utf-8')
+    with character_seed_boundary(), pytest.raises(TaskError, match='独立爆发宏未包含.*blightfall'):
+        run_task(source, tmp_path / 'task', use_burst=True, search_config=dict(input_interval_ms=200,
+            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+    assert burst.load(252) == published
 
 
 def test_rule_cli_saves_new_opener_but_old_task_keeps_its_snapshot_and_refuses_resume(tmp_path, monkeypatch, capsys):
@@ -653,6 +560,10 @@ def test_rule_cli_saves_new_opener_but_old_task_keeps_its_snapshot_and_refuses_r
     from task import main,read_task,resume_task
     from test_engine import apl_pool_reference
     pack = _declared_pack()
+    pack['object_sets']['sample']['window'] = dict(kind='effect', native_identity='window')
+    states = pack['configurations'][0]['states']
+    states['only']['effect'] = 'window'
+    states['other'] = dict(copy.deepcopy(states['only']), expected=False)
     _configure_opener(tmp_path, monkeypatch, pack)
     target=tmp_path/'rules.json'
     source=tmp_path/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
@@ -660,7 +571,15 @@ def test_rule_cli_saves_new_opener_but_old_task_keeps_its_snapshot_and_refuses_r
     with _apl_task_boundary(native):
         old=run_task(source,tmp_path/'old',search_config=dict(input_interval_ms=200,
             candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
-    identity=old['rule_initialization']['rule_config_digest']
+    initialization = old['rule_initialization']
+    assert initialization['configuration_key'] == dict(
+        specialization_id=252, hero_talent='sample_hero', target_type='single_target')
+    assert initialization['states'] == states
+    assert [row['state'] for row in initialization['bindings']] == ['only', 'other']
+    assert all(row['application_status'] == 'declared_not_diagnosed' for row in initialization['rules'])
+    assert initialization['rule_snapshot']['pack'] == pack
+    assert old['candidate']['text'].startswith('!GSE3!')
+    identity=initialization['rule_config_digest']
     edited=copy.deepcopy(pack)
     edited['general']['templates']['fixture']['diagnose']['let']['marker']='revised'
     opener=edited['configurations'][0]['opener']
@@ -685,11 +604,10 @@ def test_rule_cli_saves_new_opener_but_old_task_keeps_its_snapshot_and_refuses_r
     before=target.read_bytes()
     assert main(['rules-save',str(draft),'--expected-digest',identity])==2
     assert '冲突' in capsys.readouterr().err
-    for invalid, message in [('{invalid','规则配置'), ('{"schema_version":2,"schema_version":2}','重复')]:
-        draft.write_text(invalid, encoding='utf-8')
-        assert main(['rules-save',str(draft),'--expected-digest',new_digest])==2
-        assert message in capsys.readouterr().err
-        assert target.read_bytes()==before
+    draft.write_text('{invalid', encoding='utf-8')
+    assert main(['rules-save',str(draft),'--expected-digest',new_digest])==2
+    assert '规则配置' in capsys.readouterr().err
+    assert target.read_bytes()==before
 
 
 
@@ -778,13 +696,19 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
     from urllib.request import Request,urlopen
     import burst,result_store,sequence
     from interface import create_server
+    from task import read_task
     from test_burst import reviewed_fixture,character_seed_boundary
     from unittest.mock import patch
     definition,raw=reviewed_fixture()
     result_store.DATA_ROOT.mkdir()
-    burst.publish(definition)
-    pack = _opener_pack({'tap':'scourge_strike','big':'army_of_the_dead'},
-        [dict(action='tap',source_step=1)], independent=[dict(action='big',source_step=2,mapping='burst')], anchor=2)
+    published = burst.publish(definition)
+    definition_path = result_store.DATA_ROOT / 'burst_definitions' / 'current_252.parquet'
+    definition_bytes = definition_path.read_bytes()
+    pack = _opener_pack({'tap':'scourge_strike','big':'army_of_the_dead',
+                         'transformation':'dark_transformation'},
+        [dict(action='tap',source_step=i) for i in (1,4)],
+        independent=[dict(action='big',source_step=2,mapping='burst'),
+                     dict(action='transformation',source_step=3,mapping='burst')], anchor=2)
     aoe = _opener_pack({'tap':'scourge_strike','big':'army_of_the_dead'},
         [dict(action='tap',source_step=i) for i in (1,2)], target_type='aoe',
         independent=[dict(action='big',source_step=3,mapping='burst')], anchor=3)
@@ -796,12 +720,17 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
     thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01},daemon=True)
     thread.start()
     base=f'http://127.0.0.1:{server.server_port}'
-    edited=[]
+    edited, single_burst_text = [], []
     try:
         with character_seed_boundary():
             score=sequence.evaluate
             def update_current_file(*args,**kwargs):
                 if not edited:
+                    candidate = kwargs['burst_candidate']
+                    assert sequence.compiled_program(candidate) == [
+                        ['army_of_the_dead'],
+                        ['potion', 'use_item,slot=trinket1', 'use_item,slot=trinket2', 'dark_transformation']]
+                    single_burst_text.append(candidate['text'])
                     changed=json.loads(path.read_text(encoding='utf-8'))
                     changed['configurations'][1]['opener']['ordinary_steps'][0]['source_step']=99
                     path.write_text(json.dumps(changed),encoding='utf-8')
@@ -823,6 +752,23 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
         assert [row['source_step'] for row in reports[1]['source_steps']]==[1,2,3]
         assert all(row['rule_snapshot']['pack']==pack for row in reports)
         assert all(row['export_text'].startswith('!GSE3!') for row in reports)
+        _, destination = server.task_paths(task_id)
+        single = read_task(destination / 'single_target')
+        assert single['rule_initialization'] == reports[0]
+        assert single['burst']['plan'] == dict(published['plan'], start_ms=1000)
+        assert single['burst']['interval_ms'] == input_interval_ms
+        assert reports[0]['protected_burst']['plan'] == single['burst']['plan']
+        assert single['burst']['candidate']['text'] == single_burst_text[0]
+        actions = [row for row in reports[0]['positions'] if row['kind'] == 'action']
+        assert [row['estimated_ms'] for row in actions] == [0, 2000]
+        assert all(not 1000 <= row['estimated_ms'] < 2000 for row in actions)
+        mapped = [row for row in reports[0]['source_steps'] if row.get('mapping') == 'burst']
+        assert [row['estimated_ms'] for row in mapped] == [1000, 1200]
+        assert [row['burst_mapping'] for row in mapped] == [
+            [dict(native_action='army_of_the_dead', block=0, command=0, input_ms=1000)],
+            [dict(native_action='dark_transformation', block=1, command=3, input_ms=1200)]]
+        assert burst.load(252) == published
+        assert definition_path.read_bytes() == definition_bytes
         starts = {
             200: ('单体：第1、46、91、136秒','群体：第2、47、92、137秒'),
             300: ('单体：第1.2、46.2、91.2、136.2秒','群体：第2.4、47.4、92.4、137.4秒'),

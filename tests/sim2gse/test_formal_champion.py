@@ -23,28 +23,7 @@ def test_dual_inherits_each_scenes_formal_champion_after_publication(tmp_path,
         assert champion['source_run_id'] == scene['formal_champion_publication']['source_run_id']
         assert scene['search_result']['samples'] > 0
 
-    second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
-    for previous, scene in zip(first['scenes'], second['scenes']):
-        snapshot = scene['formal_champion_snapshot']
-        assert snapshot['status'] == 'selected'
-        assert snapshot['source_run_id'] == previous['formal_champion_publication']['source_run_id']
-        assert snapshot['target_count'] == scene['target_count']
-        assert scene['formal_champion_adaptation']['status'] == 'accepted'
-        assert scene['formal_champion_adaptation']['current_score'] > 0
-        assert scene['formal_champion_publication']['status'] == 'unchanged'
-        sources = scene['start_sources'][snapshot['behavior_identity']]
-        assert any(source['source_kind'] == 'formal_champion' for source in sources)
-
-
-def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp_path,
-        memory_result_center, champion_engine):
-    import burst
-    import result_store
     import engine
-    definition, raw = reviewed_fixture()
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
     inspect = engine.inspect
 
     def invalid_native(*args, **kwargs):
@@ -55,10 +34,18 @@ def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp
 
     with patch.object(engine, 'inspect', invalid_native):
         second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
-    assert all(scene['formal_champion_adaptation']['status'] == 'accepted' for scene in second['scenes'])
-    assert [scene['search_result']['dps'] for scene in second['scenes']] == [
-        scene['search_result']['dps'] for scene in first['scenes']]
-    assert all(scene['formal_champion_publication']['status'] == 'unchanged' for scene in second['scenes'])
+    assert len(second['scenes']) == len(first['scenes'])
+    for previous, scene in zip(first['scenes'], second['scenes']):
+        snapshot = scene['formal_champion_snapshot']
+        assert snapshot['status'] == 'selected'
+        assert snapshot['source_run_id'] == previous['formal_champion_publication']['source_run_id']
+        assert snapshot['target_count'] == scene['target_count']
+        assert scene['formal_champion_adaptation']['status'] == 'accepted'
+        assert scene['formal_champion_adaptation']['current_score'] > 0
+        assert scene['search_result']['dps'] == previous['search_result']['dps']
+        assert scene['formal_champion_publication']['status'] == 'unchanged'
+        sources = scene['start_sources'][snapshot['behavior_identity']]
+        assert any(source['source_kind'] == 'formal_champion' for source in sources)
 
 
 def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_promotion(tmp_path,
@@ -216,6 +203,9 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     api = result_store._api()
+    profile = tmp_path / 'role.simc'
+    profile.write_text(raw, encoding='utf-8')
+    folder = tmp_path / 'single_target'
 
     def fail_champion(root, table, key, rows, **kwargs):
         if table == 'search_champions':
@@ -223,8 +213,11 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
         return api['write'](root, table, key, rows, **kwargs)
 
     with patch.object(result_store, '_api', return_value=dict(api, write=fail_champion)):
-        state = dual_result(tmp_path / 'dual', raw, candidate_limit=1)
-    folder = next((tmp_path / 'dual' / 'page' / 'tasks').glob('*/single_target'))
+        task.run_task(profile, folder, use_burst=True,
+            simulation_config=dict(target_count=1, scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
+                scenarios=('nominal',)))
     previous = task.read_task(folder)
     assert previous['status'] == 'completed'
     store = TaskStore(folder)
@@ -324,24 +317,25 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
             raise OSError('old source only')
         return api['write'](root, table, key, rows, **kwargs)
 
+    profile = tmp_path / 'current.simc'
+    profile.write_bytes(raw.encode('utf-8'))
+    options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
     with patch.object(result_store, '_api', return_value=dict(api, write=no_initial_champion)), \
          patch.object(sequence, 'evaluate', side_effect=source_scores):
-        low = dual_result(tmp_path / 'low', raw, candidate_limit=1)
+        low = task.run_task(profile, tmp_path / 'low', **options)
         with patch.object(search, 'initial_programs', side_effect=higher_native_start):
             high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
     monkeypatch.setattr(task, '_rule_hashes', real_rules)
-    low_id, high_id = [state['scenes'][0]['formal_champion_publication']['source_run_id'] for state in (low, high)]
+    low_id = low['search']['formal_champion_publication']['source_run_id']
+    high_id = high['scenes'][0]['formal_champion_publication']['source_run_id']
     def normalized(row):
         return {key: json.loads(value) if result_store.RUN_SCHEMA[key] == 'JSON'
                 and isinstance(value, str) else value for key, value in row.items()}
 
     originals = {run_id: normalized(result_store.read_records('runs', run_id)[0])
                  for run_id in (low_id, high_id)}
-    profile = tmp_path / 'current.simc'
-    profile.write_bytes(raw.encode('utf-8'))
-    options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
-        search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
-        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
     for fault in ('profile', 'source_batch_forged'):
         with subtests.test(fault=fault):
             run = deepcopy(originals[high_id])

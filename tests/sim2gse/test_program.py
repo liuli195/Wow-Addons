@@ -321,3 +321,13 @@ class ProgramTests(unittest.TestCase):
         self.assertEqual([node["commands"] if node["kind"] == "Action" else []
                           for node in new["compiled_program"]["clicks"]], compiled_program(new))
         self.assertEqual(new["compiled_program"]["clicks"][0]["source"]["path"], "blocks[0]")
+
+
+    def test_overlong_compiled_macro_rejected_before_lua(self):
+        command = dict(kind='spell', spell_id=63560, name='dark_transformation',
+                       simc_action='dark_transformation')
+        with tempfile.TemporaryDirectory() as directory, patch('codec.run_command') as compiler:
+            with self.assertRaisesRegex(ValueError, '255'):
+                export([[command] * 16], Path(directory) / 'export',
+                       identity=dict(class_id=6, spec_id=252))
+        compiler.assert_not_called()

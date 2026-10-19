@@ -11,6 +11,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "projects" / "sim2gse" / "combat_log.py"
+sys.path.insert(0, str(TOOL.parent))
+from combat_log import analyze
 
 
 class CombatLogToolTests(unittest.TestCase):
@@ -33,9 +35,7 @@ class CombatLogToolTests(unittest.TestCase):
                 '9/13/2026 16:41:20.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-1,"训练假人",0,0,50842,"血液沸腾",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,13002,13002,13001,1,0,0,0,nil,nil,nil,ST',
             ]), encoding="utf-8")
 
-            result = self.run_tool(
-                combat, "--duration", "2", "--primary-target", "Creature-1"
-            )
+            result = analyze(combat, "测试者", 2, primary_target="Creature-1")
 
             self.assertEqual(result["primary_target"]["damage"], 33534)
             self.assertEqual(result["primary_target"]["overkill"], 33532)
@@ -58,9 +58,7 @@ class CombatLogToolTests(unittest.TestCase):
                 '9/13/2026 16:41:20.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-2,"次目标",0,0,50842,"血液沸腾",0,Creature-2,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,500,500,100,1,0,0,0,nil,nil,nil,AOE',
             ]), encoding="utf-8")
 
-            result = self.run_tool(
-                combat, "--duration", "2", "--primary-target", "Creature-1"
-            )
+            result = analyze(combat, "测试者", 2, primary_target="Creature-1")
 
             self.assertEqual(result["primary_target"]["effective_dps"], 400)
             self.assertEqual(result["other_affected_targets"], [{
@@ -97,7 +95,7 @@ class CombatLogToolTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = self.run_tool(combat, "--duration", "2", "--owned-source", "常驻宠物")
+            result = analyze(combat, "测试者", 2, owned_sources=("常驻宠物",))
             self.assertEqual(result["primary_target"]["name"], "主训练假人")
             self.assertEqual(result["primary_target"]["damage"], 3750)
             self.assertEqual(result["primary_target"]["dps"], 1875)
@@ -169,8 +167,7 @@ class CombatLogToolTests(unittest.TestCase):
                 ]}}],
             }}), encoding='utf-8')
 
-            result = self.run_tool(combat, '--duration', '2', '--simulation', str(simulation),
-                                   '--primary-target', 'Creature-1')
+            result = analyze(combat, '测试者', 2, simulation=simulation, primary_target='Creature-1')
             actual = {(row['owner_type'], row['spell_id']): row for row in result['damage_sources']}
             self.assertEqual(actual[('player', 100)]['category'], 'button')
             self.assertEqual(actual[('player', 200)]['category'], 'derived')
@@ -186,7 +183,6 @@ class CombatLogToolTests(unittest.TestCase):
             self.assertEqual(sum(row['simulation_dps'] for row in comparison.values()), 1875)
             # The same public analysis accepts the task pointer and reads typed center data.
             import result_store
-            from combat_log import analyze
             task_directory = root / 'task'
             task_directory.mkdir()
             (task_directory / 'result.json').write_text('{"run_id":"analysis"}', encoding='utf-8')
@@ -298,13 +294,8 @@ class CombatLogToolTests(unittest.TestCase):
             })
             self.assertTrue(result['primary_target_within_simulation_sample_range'])
 
-            mismatched = subprocess.run(
-                [sys.executable, str(TOOL), str(combat), '--player', '测试者',
-                 '--duration', '2', '--gse-debug', str(debug), '--gse-utc-offset', '7'],
-                text=True, encoding='utf-8', capture_output=True,
-                env={**os.environ, 'TZ': 'UTC'})
-            self.assertNotEqual(mismatched.returncode, 0)
-            self.assertIn('GSE 调试记录与测试区间不重合', mismatched.stderr)
+            with self.assertRaisesRegex(ValueError, 'GSE 调试记录与测试区间不重合'):
+                analyze(combat, '测试者', 2, gse_debug=debug, gse_utc_offset=7)
 
     def test_rejects_ambiguous_comparison_and_malformed_debug(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -323,31 +314,16 @@ class CombatLogToolTests(unittest.TestCase):
                     'mean': 100, 'min': 80, 'max': 120, 'std_dev': 10,
                 }}}],
             }}), encoding='utf-8')
-            ambiguous = subprocess.run(
-                [sys.executable, str(TOOL), str(combat), '--player', '测试者',
-                 '--duration', '2', '--simulation', str(simulation)],
-                text=True, encoding='utf-8', capture_output=True)
-            self.assertNotEqual(ambiguous.returncode, 0)
-            self.assertIn('--primary-target', ambiguous.stderr)
-
-            mismatched_targets = subprocess.run(
-                [sys.executable, str(TOOL), str(combat), '--player', '测试者',
-                 '--duration', '2', '--simulation', str(simulation),
-                 '--primary-target', '假人一'],
-                text=True, encoding='utf-8', capture_output=True)
-            self.assertEqual(mismatched_targets.returncode, 0, mismatched_targets.stderr)
-            compared = json.loads(mismatched_targets.stdout)
+            with self.assertRaisesRegex(ValueError, '--primary-target'):
+                analyze(combat, '测试者', 2, simulation=simulation)
+            compared = analyze(combat, '测试者', 2, simulation=simulation, primary_target='假人一')
             self.assertEqual(compared['simulation_conditions']['actual_affected_targets'], 2)
             self.assertEqual(compared['simulation_conditions']['secondary_damage_excluded'], 100)
 
             malformed = root / 'gse-debug.txt'
             malformed.write_text('S2G:1,1,1789288879', encoding='utf-8')
-            invalid = subprocess.run(
-                [sys.executable, str(TOOL), str(combat), '--player', '测试者',
-                 '--duration', '2', '--gse-debug', str(malformed)],
-                text=True, encoding='utf-8', capture_output=True)
-            self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn('GSE 调试记录格式错误', invalid.stderr)
+            with self.assertRaisesRegex(ValueError, 'GSE 调试记录格式错误'):
+                analyze(combat, '测试者', 2, gse_debug=malformed)
 
     def test_rejects_non_finite_and_inconsistent_simulation_distributions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -367,13 +343,8 @@ class CombatLogToolTests(unittest.TestCase):
                     'options': {'max_time': 2, 'desired_targets': 1},
                     'players': [{'name': '测试者', 'collected_data': {'dps': distribution}}],
                 }}), encoding='utf-8')
-                invalid = subprocess.run(
-                    [sys.executable, str(TOOL), str(combat), '--player', '测试者',
-                     '--duration', '2', '--simulation', str(simulation),
-                     '--primary-target', '假人'],
-                    text=True, encoding='utf-8', capture_output=True)
-                self.assertNotEqual(invalid.returncode, 0)
-                self.assertIn('SimC 玩家 DPS 分布无效', invalid.stderr)
+                with self.assertRaisesRegex(ValueError, 'SimC 玩家 DPS 分布无效'):
+                    analyze(combat, '测试者', 2, simulation=simulation, primary_target='假人')
 
 
 if __name__ == "__main__":

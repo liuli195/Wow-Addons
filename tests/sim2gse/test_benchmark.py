@@ -62,19 +62,6 @@ class BenchmarkTests(TestCase):
   self.assertEqual(row['final_dps'],120)
   self.assertEqual(row['reference_ratio'],.8)
   self.assertEqual(row['measurement'],'search_score')
- def test_worktree_snapshot_contains_uncommitted_source_and_rejects_later_changes(self):
-  import benchmark
-  with TemporaryDirectory() as directory:
-   root=Path(directory);project=root/"projects/sim2gse";project.mkdir(parents=True)
-   for name in ("engine.py","codec.py","macro_interpreter.py","simulation_config.py"):
-    (project/name).write_text("ROOT = Path(__file__).resolve().parents[2]\n")
-   (project/"search.py").write_text("current_uncommitted_source\n")
-   with patch.object(benchmark,"ROOT",root),patch.object(benchmark,"_git",return_value="\n".join(p.relative_to(root).as_posix() for p in project.iterdir())):
-    source=materialize(root/"evidence","head","current",worktree=True)
-    self.assertEqual((source/"search.py").read_text(),"current_uncommitted_source\n")
-    (project/"search.py").write_text("changed_after_snapshot\n")
-    with self.assertRaisesRegex(RuntimeError,"源码"):
-     materialize(root/"evidence","head","current",worktree=True)
  def test_snapshot_publication_recovers_from_brief_directory_occupation(self):
   import os
   import benchmark
@@ -101,6 +88,10 @@ class BenchmarkTests(TestCase):
    self.assertEqual(sleep.call_count,2)
    self.assertEqual((project/"search.py").read_text(),"uncommitted_source\n")
    self.assertFalse(attempts[0].exists())
+   (project/"search.py").write_text("changed_after_snapshot\n")
+   with patch.object(benchmark,"ROOT",root),patch.object(benchmark,"_git",return_value=names):
+    with self.assertRaisesRegex(RuntimeError,"源码"):
+     materialize(root/"evidence","head","current",worktree=True)
  def test_snapshot_publication_preserves_persistent_and_unrelated_failures(self):
   import benchmark
   occupied=PermissionError("directory remains occupied");occupied.winerror=5

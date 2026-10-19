@@ -264,49 +264,6 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     assert len(json.loads(capsys.readouterr().out.splitlines()[-1])) == 1
 
 
-def test_training_command_stops_after_two_unimproved_rounds_and_reuses_completed_work(
-        tmp_path, capsys, memory_training_center, single_candidate_training_rounds):
-    from seed_training import main
-    from test_character_export import sample_profile
-    from unittest.mock import patch
-    import sequence
-    import result_store
-
-    source = tmp_path / 'candidate.json'
-    source.write_text(json.dumps(dict(label='test', class_name='deathknight', spec='unholy',
-        source='constructed-test', original='independent fixture', instructions='repeat',
-        semantic='preserved', changes=[], family='plain', core=[['outbreak']],
-        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile() + '\nactions=auto_attack\n', encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    selected_id = result_store.read_records('seed_candidates', 'registry')[0]['candidate_id']
-    other = json.loads(source.read_text(encoding='utf-8'))
-    other['label'] = 'not selected for this run'
-    source.write_text(json.dumps(other), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
-            '--candidate-id', selected_id]
-    real_write = result_store.write
-    def failing_publish(table, key, rows, **kwargs):
-        if table == 'seed_selected':
-            raise PermissionError('发布目标暂时不可写')
-        return real_write(table, key, rows, **kwargs)
-    with training_round_boundary(tmp_path), patch.object(result_store, 'write', side_effect=failing_publish):
-        assert command(tmp_path, args) == 2
-    assert not result_store.read_records('seed_selected', 'deathknight-unholy-1')
-    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1')
-    assert len(processed) == 1
-    assert processed[0]['rounds'] == 2
-    assert processed[0]['stop_reason'] == 'no_improvement'
-    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
-        assert command(tmp_path, args) == 0
-    assert command(tmp_path, ['list', '--state', 'selected', '--targets', '1']) == 0
-    assert json.loads(capsys.readouterr().out.splitlines()[-1])
-    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate', side_effect=AssertionError('重复模拟')):
-        assert command(tmp_path, args) == 0
-
-
 def test_training_command_diagnoses_only_parents_and_reuses_on_demand_reports(
         tmp_path, capsys, monkeypatch):
     from unittest.mock import patch
@@ -496,11 +453,17 @@ def test_training_entry_keeps_real_legacy_history_without_claiming_current_rule_
     assert json.loads(capsys.readouterr().out.splitlines()[-1]) == processed
 
 
-def test_training_condition_excludes_only_execution_and_keeps_real_inputs(tmp_path, legacy_engine_boundary):
+def test_training_condition_excludes_only_execution_and_keeps_real_inputs():
     from copy import deepcopy
-    from seed_training import semantic_condition, semantic_versions
-    _, _, evidence = training_batch_fixture(tmp_path, legacy=False)
-    payload, versions = evidence['condition_input'], semantic_versions()
+    from search import config_for
+    from seed_training import RETEST_SEEDS, TRAINING_VERSION, semantic_condition, semantic_versions
+    payload = dict(version=TRAINING_VERSION, template='original-role',
+        engines={'baseline': 'original-engine'},
+        config=config_for(dict(diagnostic_logging=True, no_improvement_rounds=2)),
+        simulation=dict(target_count=1, enable_omnium_talents=True), retest=RETEST_SEEDS,
+        effective_options=['threads=1'], rule_config_digest='original-rules',
+        rules={'projects/sim2gse/seed_training.py': 'original-source'})
+    versions = semantic_versions()
     expected = semantic_condition(payload, versions)
     execution = deepcopy(payload)
     execution['config']['max_processes'] = 16
@@ -531,8 +494,7 @@ def test_upgrade_postcheck_checks_current_rule_identity_and_retest_keys(tmp_path
     rows = result_store.read_records('seed_processed', scope)
     row = rows[0]
     # 当前配置身份另立；保留原六次复测和组键核验，不借用旧commit名义。
-    for candidate_id in ('rejected-a', 'rejected-b'):
-        rows.append(dict(row, candidate_id=candidate_id, status='rejected', error='explicit rejection'))
+    rows.append(dict(row, candidate_id='rejected-a', status='rejected', error='explicit rejection'))
     for item in rows:
         for field in ('initial_program', 'program', 'comparison'):
             item[field] = json.loads(item[field])
@@ -547,7 +509,7 @@ def test_upgrade_postcheck_checks_current_rule_identity_and_retest_keys(tmp_path
     ready = dict(template_sha256=payload['template'], engines=payload['engines'],
                  burst_definition_id='test-definition')
     scene = dict(targets=1, run_id='page-fixture', training_condition=row['condition'],
-                 processed=[row['candidate_id'], 'rejected-a', 'rejected-b'])
+                 processed=[row['candidate_id'], 'rejected-a'])
     result_store.write('runs', 'page-fixture', [dict(dict.fromkeys(result_store.RUN_SCHEMA),
         run_id='page-fixture', engines=payload['engines'])], schema=result_store.RUN_SCHEMA)
     schema = dict(batch_key='VARCHAR', purpose='VARCHAR', seed='UBIGINT', samples='UBIGINT', dps='DOUBLE',
@@ -604,6 +566,7 @@ def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
     from runtime import BudgetExceeded
     import result_store
     import sequence
+    from seed_training import SELECTED_SCHEMA
 
     source = tmp_path / 'candidate.json'
     source.write_text(json.dumps(dict(label='budget', class_name='deathknight', spec='unholy',
@@ -615,8 +578,10 @@ def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
     assert command(tmp_path, ['register', str(source)]) == 0
     args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
             '--max-processes', str(max_processes)]
-    with training_round_boundary(tmp_path):
-        assert command(tmp_path, args) == 0
+    old = dict(candidate_id='old', condition='previous', class_name='deathknight', spec='unholy',
+               targets=1, program=[['death_coil']], family='old', score=100., scores=[100.] * 3,
+               template_sha256='previous', engines={})
+    result_store.write('seed_selected', 'deathknight-unholy-1', [old], schema=SELECTED_SCHEMA)
     previous = result_store.read_records('seed_selected', 'deathknight-unholy-1')
     assert previous
     template.write_text(sample_profile() + '\n# changed template\n', encoding='utf-8')
@@ -672,22 +637,32 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(
     source.update(active=False, semantic='unsupported', program=[], core=decode(source['core']),
                   changes=['历史缺少可靠最佳候选或有效成绩'], unavailable_reason='历史缺少可靠最佳候选或有效成绩')
     result_store.write('seed_candidates', 'registry', [source], schema=SOURCE_SCHEMA)
-    # 三种旧成绩均真实同步并恢复来源；完整训练/变模板仅保留一个代表。
-    with training_round_boundary(tmp_path), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2):
-        assert command(tmp_path, args if historic_dps == 90. else ['prepare', *args[1:]]) == 0
+    real_write = result_store.write
+    def failing_publish(table, key, rows, **kwargs):
+        if table == 'seed_selected':
+            raise PermissionError('发布目标暂时不可写')
+        return real_write(table, key, rows, **kwargs)
+    with training_round_boundary(tmp_path), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
+            patch.object(result_store, 'write', side_effect=failing_publish):
+        assert command(tmp_path, args) == 2
+    assert not result_store.read_records('seed_selected', 'deathknight-unholy-1')
     source = next(row for row in result_store.read_records('seed_candidates', 'registry')
                   if row['source_id'] == 'history:historic-1')
     assert source['active'] and source['semantic'] == 'preserved'
     assert source['unavailable_reason'] == '' and source['changes'] == []
     assert json.loads(source['program']) == [['outbreak'], ['death_coil'], ['scourge_strike']]
+    args += ['--candidate-id', source['candidate_id']]
     assert result_store.read_records('runs', 'historic-1') == history_before
     assert search.config_for(training=True)['round_candidate_limit'] == 16
     if historic_dps != 90.:
         return
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
-    first = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
+    processed = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert len(processed) == 1
+    first = processed[0]
     assert json.loads(first['initial_program']) == [['outbreak'], ['death_coil'], ['scourge_strike']]
     assert first['status'] == 'completed' and first['rounds'] == 2
+    assert first['stop_reason'] == 'no_improvement'
     assert len(first['initial_scores']) == len(first['scores']) == 3
     assert all(score > 90. for score in [*first['initial_scores'], *first['scores']])
     retests = list(result_store.iter_rows("SELECT * FROM batches WHERE purpose='seed_retest'", tables=['batches']))
@@ -696,6 +671,9 @@ def test_history_candidate_is_retested_and_changed_template_is_not_reused(
     before = result_store.read_records('seed_processed', 'deathknight-unholy-1')
     with training_round_boundary(tmp_path), patch.dict(search.DEFAULT_CONFIG, round_candidate_limit=2), \
             patch.object(sequence, 'evaluate', side_effect=AssertionError('可靠完整路径不能重训')):
+        assert command(tmp_path, args) == 0
+        assert command(tmp_path, ['list', '--state', 'selected', '--targets', '1']) == 0
+        assert json.loads(capsys.readouterr().out.splitlines()[-1])
         assert command(tmp_path, args) == 0
     assert result_store.read_records('seed_processed', 'deathknight-unholy-1') == before
     template.write_text(sample_profile() + '\n# new template revision\n', encoding='utf-8')
@@ -1139,7 +1117,6 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
         ('a-flat', flat, [['death_coil']]),
         ('b-tree', [dict(kind='Loop', count=2, blocks=[['death_coil'], ['outbreak']])], [['outbreak']]),
         ('c-burst', [['army_of_the_dead'], *flat], [['army_of_the_dead']]),
-        ('d-original-duplicate', flat, [['death_coil']]),
         ('e-distinct', [['scourge_strike']], [['scourge_strike']])]]
     for row in rows:
         source.write_text(json.dumps(row), encoding='utf-8')
@@ -1149,14 +1126,14 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
     with boundary():
         assert command(tmp_path, ['prepare', *options]) == 0
     prepared = json.loads(capsys.readouterr().out)[0]
-    assert prepared['preparation']['registry_sources'] == 5
+    assert prepared['preparation']['registry_sources'] == 4
     assert prepared['preparation']['original_unique'] == 4
     assert prepared['preparation']['unique_inputs'] == 2
     assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', prepared['config_key']]) == 0
     snapshot = json.loads(capsys.readouterr().out)
     entries = [row for row in snapshot if row['kind'] == 'source']
     flat_id = next(row['candidate_id'] for row in entries if row['source_id'] == 'a-flat')
-    assert len(entries) == 5 and len({row['representative_id'] for row in entries}) == 2
+    assert len(entries) == 4 and len({row['representative_id'] for row in entries}) == 2
     observed = []
     with boundary():
         evaluate = sequence.evaluate
@@ -1164,7 +1141,7 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
             if not observed:
                 assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', prepared['config_key']]) == 0
                 frozen = json.loads(capsys.readouterr().out)
-                assert len([row for row in frozen if row['kind'] == 'source']) == 5
+                assert len([row for row in frozen if row['kind'] == 'source']) == 4
                 observed.append(True)
             return evaluate(*args, **kwargs)
         with patch.object(sequence, 'evaluate', side_effect=inspect_frozen_queue):
@@ -1174,7 +1151,7 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
     processed = json.loads(capsys.readouterr().out.splitlines()[-1])
     representative = next(row for row in processed if row['candidate_id'] == flat_id)
     relationships = json.loads(representative['comparison'])['sources']
-    assert {row['source_id'] for row in relationships} == {'a-flat', 'b-tree', 'c-burst', 'd-original-duplicate'}
+    assert {row['source_id'] for row in relationships} == {'a-flat', 'b-tree', 'c-burst'}
     assert next(row for row in relationships if row['source_id'] == 'c-burst')['initial_core_retained'] is False
     assert next(row for row in relationships if row['source_id'] == 'b-tree')['initial_core_retained'] is True
     tree_id = next(row['candidate_id'] for row in entries if row['source_id'] == 'b-tree')

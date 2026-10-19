@@ -556,45 +556,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("99999999", state["error"])
         self.assertNotIn("dps", state)
 
-    def test_search_publishes_grouped_complete_reports_through_task_service(self) -> None:
-        import result_store
-
-        self.server.task_options = {"search_config": {
-            "total_budget_seconds": 20, "search_budget_seconds": 8,
-            "candidate_limit": 1, "round_candidate_limit": 1,
-            "batch_targets": tuple(range(2, 30, 2)), "validation_batches": 1,
-            "final_batches": 1, "iterations": 2, "final_iterations": 2,
-            "scenarios": ("nominal",), "max_processes": 1,
-        }}
-        with _fast_search_boundary():
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            deadline = time.monotonic() + 30
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "failed", "cancelled"}:
-                    break
-                time.sleep(0.05)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertTrue(state["result_ready"])
-        with result_store.query(
-            "SELECT storage_group_key, count(*) FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
-        , tables=['batches']) as cursor:
-            groups = cursor.fetchall()
-        self.assertGreater(sum(row[1] for row in groups), 12)
-        self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
-        self.assertEqual(len(groups), (sum(row[1] for row in groups) + 11) // 12)
-        with result_store.query(
-            "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final')"
-        , tables=['batches']) as cursor:
-            reports = cursor.fetchall()
-        self.assertEqual(len(reports), sum(row[1] for row in groups))
-        self.assertEqual(len({key for key, _ in reports}), len(reports))
-        self.assertTrue(all(score > 0 for _, score in reports))
-
     def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
         import result_store
         import sequence
@@ -637,6 +598,7 @@ class InterfaceTests(unittest.TestCase):
             handle.join(5)
             resumed = resume_task(handle.output_root, diagnostic_logging=True)
         self.assertEqual(resumed['status'], 'completed')
+        self.assertTrue(_public_state(resumed, handle.output_root)['result_ready'])
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
         self.assertEqual(len(evaluated), len(set(evaluated)))
@@ -644,6 +606,23 @@ class InterfaceTests(unittest.TestCase):
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
         self.assertEqual(len(keys), len(set(keys)))
+        with result_store.query(
+            "SELECT storage_group_key, count(*) FROM batches "
+            "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
+        , tables=['batches']) as cursor:
+            groups = cursor.fetchall()
+        self.assertGreater(sum(row[1] for row in groups), 12)
+        self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
+        self.assertEqual(len(groups), (sum(row[1] for row in groups) + 11) // 12)
+        with result_store.query(
+            "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
+            "WHERE purpose IN ('search', 'validation', 'final')"
+        , tables=['batches']) as cursor:
+            reports = cursor.fetchall()
+        self.assertEqual(len(reports), sum(row[1] for row in groups))
+        self.assertEqual(len({key for key, _ in reports}), len(reports))
+        self.assertTrue(all(score > 0 for _, score in reports))
+
 
     def test_resume_after_partial_group_commit_uses_unused_group_number(self) -> None:
         import sqlite3
@@ -834,11 +813,12 @@ class InterfaceTests(unittest.TestCase):
         rules.write_text(json.dumps(pack), encoding='utf-8')
         self.server.task_options = {'search_config': dict(
             candidate_limit=1, batch_targets=(2,), iterations=2,
-            validation_batches=1, input_interval_ms=200)}
+            validation_batches=1, input_interval_ms=200, diagnostics='full')}
         with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), _apl_task_boundary():
             page = urlopen(self.url).read().decode('utf-8')
             created = self._json_request('POST', '/api/tasks', {'profile': sample_profile(),
-                                       'input_interval_ms': 200, 'target_count': 1, 'scene': 'single_target'})
+                                       'input_interval_ms': 200, 'target_count': 1, 'scene': 'single_target',
+                                       'diagnostic_logging': True, 'search_observability': 'full'})
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 state = self._task_state_request(created['task_id'], deadline)
@@ -874,6 +854,14 @@ class InterfaceTests(unittest.TestCase):
                          configuration['opener']['source_basis'])
         self.assertIn('ruleInitialization', page)
         self.assertIn('state.rule_initialization', page)
+        self.assertIn('diagnosticLogging.disabled=true;diagnosticLogging.checked=false', page)
+        self.assertNotIn('search_observability', state)
+        from task import read_task
+        _, destination = self.server.task_paths(created['task_id'])
+        result = read_task(destination)
+        self.assertNotIn('diagnostics', result['search'])
+        self.assertFalse((destination / 'diagnostics.json').exists())
+        self.assertFalse((destination / 'observability').exists())
 
 
     def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
@@ -1145,35 +1133,6 @@ class InterfaceTests(unittest.TestCase):
             self.assertEqual([step["blockPath"] for step in compiled_empty],
                              [wait["source"]["gse_path"]] * wait["clicks"])
 
-    def test_diagnostic_master_switch_blocks_detail_settings(self) -> None:
-        from task import read_task
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
-            final_iterations=2, scenarios=("nominal",), max_processes=1,
-            diagnostics="full",
-        )}
-        with urlopen(self.url) as response:
-            page = response.read().decode('utf-8')
-        self.assertIn('diagnosticLogging.disabled=true;diagnosticLogging.checked=false', page)
-        with _fast_search_boundary():
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "diagnostic_logging": True,
-                "search_observability": "full",
-            })
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed"}:
-                    break
-                time.sleep(0.05)
-        self.assertNotIn("search_observability", state)
-        _, destination = self.server.task_paths(created["task_id"])
-        result = read_task(destination)
-        self.assertNotIn("diagnostics", result["search"])
-        self.assertFalse((destination / "diagnostics.json").exists())
-        self.assertFalse((destination / "observability").exists())
 
     def test_completed_task_is_not_visible_before_its_result_is_reliably_saved(self) -> None:
         import search
@@ -1463,7 +1422,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
             with patch.object(sequence, 'evaluate', side_effect=edit_after_start):
                 created = self._json_request('POST', '/api/tasks', {'profile':profile, 'mode':'dual',
                     'input_interval_ms':200})
-                self.server.tasks[created['task_id']][1].join(20)
+                handle = self.server.tasks[created['task_id']][1]
+                handle.join(20)
+                self.assertTrue(handle.done)
                 detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
         self.assertEqual(detail['status'], 'completed', detail)
         self.assertTrue(edited)
@@ -1472,6 +1433,19 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         for report in reports:
             self.assertTrue(all(configuration['opener']['source_basis'] == original_source
                                 for configuration in report['rule_snapshot']['pack']['configurations']))
+        moved = result_store.DATA_ROOT.with_name('temporarily-unavailable')
+        result_store.DATA_ROOT.rename(moved)
+        try:
+            state = self._json_request('GET', '/api/tasks/' + created['task_id'])
+            self.assertEqual(state['status'], 'failed')
+            self.assertTrue(state['recoverable'])
+            self.assertIn('存储', state['error'])
+            self.assertFalse(state['result_ready'])
+        finally:
+            moved.rename(result_store.DATA_ROOT)
+        restored = self._json_request('GET', '/api/tasks/' + created['task_id'])
+        self.assertEqual(restored['status'], 'completed')
+        self.assertTrue(restored['collection_ready'])
 
 
 if __name__ == "__main__":

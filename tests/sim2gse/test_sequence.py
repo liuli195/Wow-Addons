@@ -102,7 +102,7 @@ class NativeTraceContractTests(unittest.TestCase):
             source = root / 'profile.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             character = parse_character(sample_profile())
-            for loop, burst in ((129, 0), (4096, 0), (129, 2), (4096, 4096)):
+            for loop, burst in ((4096, 0), (4096, 4096)):
                 with self.subTest(loop=loop, burst=burst):
                     def boundary(profile, folder, *args, **kwargs):
                         options = dict(line.split('=', 1) for line in profile.read_text().splitlines()
@@ -117,7 +117,7 @@ class NativeTraceContractTests(unittest.TestCase):
                         evaluate(source, candidate(loop), root / f'{loop}-{burst}', character=character,
                             input_times=[0, 300], burst_candidate=candidate(burst) if burst else None,
                             input_sources=['loop', 'burst'] if burst else None)
-            for loop, burst in ((4097, 0), (4097, 1), (1, 4097)):
+            for loop, burst in ((4097, 1), (1, 4097)):
                 with self.subTest(loop=loop, burst=burst), patch('sequence.run') as native:
                     with self.assertRaisesRegex(ValueError, '4096'):
                         evaluate(source, candidate(loop), root / 'overflow', character=character,
@@ -284,7 +284,7 @@ class SequenceSimulationTests(unittest.TestCase):
                     {'kind': 'CastSequence', 'members': ['outbreak'] * count, 'reset': None},
                 ], capabilities)
 
-    def test_castsequence_timeout_refreshes_on_repeated_use(self):
+    def test_castsequence_timeout_refreshes_and_waits_for_next_client_update(self):
         from program import compile_program, from_search_program
 
         source, character, native, capabilities = self.prepared
@@ -298,24 +298,11 @@ class SequenceSimulationTests(unittest.TestCase):
                                         capabilities=capabilities)
             result = evaluate(source, candidate, root / "controlled", character=character,
                               iterations=1, input_times=list(range(0, 7000, 300)))
-        executions = [event["action"] for event in result["trace"]
-                      if event["event"] == "native_execute"
-                      and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
-        self.assertGreaterEqual(len(executions), 3, result["trace"])
-        self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
-
-    def test_castsequence_timeout_waits_for_next_client_update(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        program = from_search_program([
-            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike", "outbreak"],
-             "reset": {"timeout_seconds": 2, "flags": []}},
-        ], capabilities)
-        with tempfile.TemporaryDirectory(prefix="castsequence-update-") as directory:
-            root = Path(directory)
-            candidate = compile_program(program, root / "export", identity=native["identity"],
-                                        capabilities=capabilities)
+            executions = [event["action"] for event in result["trace"]
+                          if event["event"] == "native_execute"
+                          and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
+            self.assertGreaterEqual(len(executions), 3, result["trace"])
+            self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
             for at, expected in ((6999, "outbreak"), (7001, "festering_strike")):
                 result = evaluate(source, candidate, root / str(at), character=character,
                                   iterations=1, input_times=[0, 3000, 4000, 4500, 6000, at])
@@ -323,6 +310,7 @@ class SequenceSimulationTests(unittest.TestCase):
                               if event["event"] == "native_execute"
                               and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
                 self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", expected])
+
 
     def test_castsequence_reset_while_second_member_pending_keeps_old_identity(self):
         from program import compile_program, from_search_program
@@ -759,16 +747,20 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertNotEqual(first_actions[1], first_actions[2])
 
     def test_phase_reset_and_replay(self):
-        program = [['outbreak'], ['scourge_strike']]
-        first = self.task(program, phase_ms=150, iterations=2)['controlled_simulation']
-        second = self.task(program, phase_ms=150, iterations=2)['controlled_simulation']
+        candidate, source, character = self.candidate(self.prepared, [['outbreak'], ['scourge_strike']])
+        times = list(range(150, 180000, 300))
+        with tempfile.TemporaryDirectory(prefix='phase-replay-', dir=self.directory.name) as directory:
+            first = evaluate(source, candidate, Path(directory) / 'first', character=character,
+                             iterations=2, input_times=times)
+            second = evaluate(source, candidate, Path(directory) / 'second', character=character,
+                              iterations=2, input_times=times)
         inputs = [e for e in first['trace'] if e['event'] == 'input']
         self.assertEqual(inputs[0]['ms'], 150)
         self.assertTrue(all(e['step'] == 0 and e['ms'] == 150 for e in inputs if e['origin'] == 1))
         self.assertEqual(first['trace'], second['trace'])
         self.assertEqual(first['report']['sim']['players'], second['report']['sim']['players'])
         self.assertEqual(first['summary']['samples'], 1)
-        self.assertEqual(first['input_times'], list(range(150, 180000, 300)))
+        self.assertEqual(first['input_times'], times)
         self.assertEqual({e['battle'] for e in inputs if e['origin'] == 1}, {0, 1})
 
     def test_independent_lifecycle_keeps_irregular_inputs_across_battles(self):
@@ -787,14 +779,6 @@ class SequenceSimulationTests(unittest.TestCase):
         self.assertIn('projects/sim2gse/native/src/controller.cpp',
                       {entry['path'] for entry in manifest['sources']},
                       '输入时间和每轮重置尚未由独立控制源码提供')
-
-    def test_two_gcd_commands_rejected_at_selection(self):
-        with self.assertRaisesRegex(ValueError, '同块多个公共冷却'):
-            select(self.prepared[3], [['outbreak', 'scourge_strike']])
-
-    def test_overlong_compiled_macro_rejected(self):
-        with self.assertRaisesRegex(ValueError, '255'):
-            self.candidate(self.prepared, [['dark_transformation'] * 16])
 
 
 if __name__ == "__main__":

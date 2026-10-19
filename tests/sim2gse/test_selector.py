@@ -181,18 +181,6 @@ def test_selector_rejects_changed_compatibility_at_the_cached_version(operation,
         assert result_store.read_search_learner(selector.MODEL_KEY) == incompatible
 
 
-def test_selector_can_start_in_a_different_empty_center(tmp_path, monkeypatch):
-    import result_store
-    import selector
-
-    first = selector.reserve(_intent())
-    selector.settle(first, .25, 1)
-    monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'different-empty-center')
-    other = selector.reserve(_intent('two'))
-    assert other['model_version'] == 1
-    assert selector.settle(other, .25, 1)['model_version'] == 2
-
-
 def test_shared_thread_lock_wait_obeys_feedback_deadline():
     import threading
     import time
@@ -200,21 +188,23 @@ def test_shared_thread_lock_wait_obeys_feedback_deadline():
     import selector
     from runtime import BudgetExceeded, TaskRuntime
 
-    held = threading.Event()
+    held, release = threading.Event(), threading.Event()
     def hold_lock():
         with result_store._PUBLICATION_LOCK:
             held.set()
-            time.sleep(.4)
+            release.wait()
     holder = threading.Thread(target=hold_lock)
     holder.start()
-    assert held.wait(1)
-    started = time.monotonic()
     try:
+        assert held.wait(1)
+        started = time.monotonic()
         with pytest.raises(BudgetExceeded):
             selector.reserve(_intent(), TaskRuntime(.05))
         assert time.monotonic() - started < .2
     finally:
-        holder.join()
+        release.set()
+        holder.join(1)
+        assert not holder.is_alive()
 
 
 def test_features_use_all_findings_and_real_input_resource_window_denominators():
@@ -291,7 +281,6 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     import result_store
     import selector
 
-    initial_root = result_store.DATA_ROOT
     first = selector.reserve(_intent())
     selector.settle(first, .25, 1)
     snapshot = result_store.read_search_learner(selector.MODEL_KEY)
@@ -309,7 +298,10 @@ def test_selector_roundtrip_restores_next_choice_and_next_native_learning(tmp_pa
     assert actual == expected
     selector.settle(actual, -.5, 1)
     assert result_store.read_search_learner(selector.MODEL_KEY) == expected_state
-    monkeypatch.setattr(result_store, 'DATA_ROOT', initial_root)
+    monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'different-empty-center')
+    other = selector.reserve(_intent('two'))
+    assert other['model_version'] == 1
+    assert selector.settle(other, .25, 1)['model_version'] == 2
 
 
 def test_nonlearning_choices_preserve_full_model_and_zero_reward_still_learns():

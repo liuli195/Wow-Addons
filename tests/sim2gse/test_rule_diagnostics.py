@@ -8,40 +8,7 @@ from task import TaskError, read_task, resume_task, run_task
 from test_character_export import sample_profile
 from test_engine import apl_pool_reference
 from test_rule_initialization import _configure_opener, _opener_pack
-from test_search import _apl_task_boundary, _fast_evaluate
-
-
-def test_public_on_demand_scores_without_observations_and_reads_without_replay(tmp_path, monkeypatch):
-    import sequence
-    _configure_opener(tmp_path, monkeypatch, _condition_pack())
-    native = apl_pool_reference()
-    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    requests = []
-
-    def scoring(*args, **kwargs):
-        requests.append(kwargs.get('rule_observation_request'))
-        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
-                else _fast_evaluate)(*args, **kwargs)
-
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
-        result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,),
-                               iterations=2, validation_batches=1))
-        before = calls.call_count
-        saved = read_task(tmp_path / 'task', include_search_records=True, include_reports=True)
-        assert calls.call_count == before
-    assert result['config']['rule_diagnostics_policy'] == 'on_demand'
-    assert requests and all(request is None for request in requests)
-    assert result['status'] == saved['status'] == 'completed'
-    assert saved['candidate']['text'] == result['candidate']['text']
-    assert len(saved['search']['records']) == 2
-    assert saved['search']['rule_diagnostic_status'] == 'not_diagnosed'
-    for record in [*result['search']['records'], *saved['search']['records']]:
-        assert record['rule_diagnostic_status'] == 'not_diagnosed'
-        assert record.get('rule_diagnostics') is None
-        assert all('rule_observations' not in batch['request'] for batch in record['batches'])
+from test_search import _apl_task_boundary, _fast_evaluate, _initialized_starts
 
 
 def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_path, monkeypatch):
@@ -114,7 +81,7 @@ def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_pa
 
 
 
-@pytest.mark.parametrize('different', ['dps'])
+@pytest.mark.parametrize('different', ['dps', 'samples', 'variance'])
 def test_public_on_demand_mismatch_preserves_scores_and_never_selects(tmp_path, monkeypatch, different):
     import sequence
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
@@ -122,11 +89,14 @@ def test_public_on_demand_mismatch_preserves_scores_and_never_selects(tmp_path, 
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
-    observations = []
+    observations, scores = [], []
 
     def scoring(*args, **kwargs):
         observed = kwargs.get('rule_observation_request') is not None
         result = (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs)
+        if not observed:
+            statistics = result['report']['sim']['players'][0]['collected_data']['dps']
+            scores.append(dict(result['summary'], variance=statistics['variance']))
         if observed:
             observations.append(result)
             player = result['report']['sim']['players'][0]
@@ -140,10 +110,11 @@ def test_public_on_demand_mismatch_preserves_scores_and_never_selects(tmp_path, 
                 player['collected_data']['dps']['variance'] += 1
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring):
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=scoring):
         with pytest.raises(TaskError, match='原评分成绩不一致'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                search_config=dict(input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
                                    batch_targets=(2,), iterations=2, validation_batches=1))
         saved = read_task(tmp_path / 'task', include_search_records=True)
     assert len(observations) == 1
@@ -151,10 +122,12 @@ def test_public_on_demand_mismatch_preserves_scores_and_never_selects(tmp_path, 
     parent, = [row for row in saved['search']['records'] if row['rule_diagnostic_status'] == 'mismatch']
     original, = parent['batches']
     capture, = parent['diagnostic_batches']
+    assert len(scores) == 1
+    assert {field: original[field] for field in ('dps', 'samples', 'variance')} == scores[0]
     assert parent['score'] == original['dps']
     assert parent.get('rule_diagnostics') is None
     assert capture[different] != original[different]
-    assert saved['search']['candidate_count'] == 4
+    assert saved['search']['candidate_count'] == 1
 
 
 
@@ -211,18 +184,31 @@ def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     destination = tmp_path / 'task'
-    captures = []
+    captures, requests = [], []
 
     def scoring(*args, **kwargs):
-        observed = kwargs.get('rule_observation_request') is not None
+        requests.append(kwargs.get('rule_observation_request'))
+        observed = requests[-1] is not None
         if observed: captures.append(kwargs['seed'])
         return (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs)
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
-        run_task(source, destination, simulation_config=dict(scene='single_target'),
+        original = run_task(source, destination, simulation_config=dict(scene='single_target'),
             search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2,
                                diagnostic_logging=diagnostic_logging))
-        before = read_task(destination, include_search_records=True)
+        count = calls.call_count
+        before = read_task(destination, include_search_records=True, include_reports=True)
+        assert calls.call_count == count
+        assert original['config']['rule_diagnostics_policy'] == 'on_demand'
+        assert requests and all(request is None for request in requests)
+        assert original['status'] == before['status'] == 'completed'
+        assert before['candidate']['text'] == original['candidate']['text']
+        assert len(before['search']['records']) == 2
+        assert before['search']['rule_diagnostic_status'] == 'not_diagnosed'
+        for record in [*original['search']['records'], *before['search']['records']]:
+            assert record['rule_diagnostic_status'] == 'not_diagnosed'
+            assert record.get('rule_diagnostics') is None
+            assert all('rule_observations' not in batch['request'] for batch in record['batches'])
         key = before['selected_candidate_key']
         for budget in (None, 0, -1, True, float('inf')):
             with pytest.raises(TaskError, match='diagnostic_budget_seconds'):
@@ -313,42 +299,6 @@ def test_public_old_missing_policy_preserves_eager_identity_and_refuses_policy_c
 
 
 
-def test_public_manual_diagnosis_republishes_after_result_write_failure_without_recapture(tmp_path, monkeypatch):
-    import result_store
-    import sequence
-    _configure_opener(tmp_path, monkeypatch, _condition_pack())
-    native = apl_pool_reference()
-    for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    destination = tmp_path / 'task'
-    def scoring(*args, **kwargs):
-        return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
-                else _fast_evaluate)(*args, **kwargs)
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
-        run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
-        before = read_task(destination)
-        key = before['selected_candidate_key']
-        real_write = result_store.write
-        def fail_result(table, *args, **kwargs):
-            if table == 'runs':
-                raise PermissionError('constructed diagnostic result publication interruption')
-            return real_write(table, *args, **kwargs)
-        with patch.object(result_store, 'write', side_effect=fail_result):
-            with pytest.raises((TaskError, PermissionError), match='publication interruption'):
-                resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
-        count = calls.call_count
-        result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
-        assert calls.call_count == count == 2
-        saved = read_task(destination, include_search_records=True)
-    assert result['search']['rule_diagnostic_status'] == saved['search']['rule_diagnostic_status'] == 'complete'
-    assert saved['search_result'] == before['search_result']
-    assert saved['elapsed_seconds'] == before['elapsed_seconds']
-    assert saved['search']['records'][0]['rule_diagnostic_status'] == 'complete'
-
-
-
 def test_public_on_demand_capture_publication_recovery_never_recaptures_or_relearns(tmp_path, monkeypatch):
     import result_store
     import sequence
@@ -369,20 +319,22 @@ def test_public_on_demand_capture_publication_recovery_never_recaptures_or_relea
             interrupted.append(True)
             raise PermissionError('constructed capture published before checkpoint')
         return result
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
         with patch.object(result_store, 'write', side_effect=after_durable_capture):
             with pytest.raises(TaskError, match='capture published before checkpoint'):
                 run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                    search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                    search_config=dict(input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
                                        batch_targets=(2,), iterations=2))
         resume_task(tmp_path / 'task')
         saved = read_task(tmp_path / 'task', include_search_records=True)
         before = calls.call_count
         resume_task(tmp_path / 'task')
         assert calls.call_count == before
-    assert interrupted and len(captures) == 1
+    assert interrupted == [True] and len(captures) == 1
+    assert calls.call_count == 3
     assert saved['status'] == 'completed'
-    assert saved['search']['candidate_count'] == 5
+    assert saved['search']['candidate_count'] == 2
     steps = [row for row in saved['search']['rule_steps'].values() if row.get('selection')]
     assert len(steps) == 1 and steps[0]['selection']['feedback']['status'] == 'learned'
     parent = next(row for row in saved['search']['records'] if row['key'] == steps[0]['parent_candidate_key'])
@@ -524,6 +476,8 @@ def test_public_manual_diagnosis_accounts_publication_and_retry_time_separately(
             result = resume_task(destination, diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
         saved = read_task(destination, include_search_records=True)
         assert calls.call_count == 2
+    assert result['search']['rule_diagnostic_status'] == saved['search']['rule_diagnostic_status'] == 'complete'
+    assert saved['search']['records'][0]['rule_diagnostic_status'] == 'complete'
     operation = saved['search']['diagnostic_operations'][key]
     assert operation['elapsed_seconds'] >= delayed[-1] + 0.12
     assert operation['native_batch_starts'] == 1
@@ -827,13 +781,14 @@ def test_public_auto_selection_cancelled_before_score_resumes_the_saved_decision
         if kwargs.get('rule_observation_request') is not None:
             normal_requests.append(tuple(tuple(command['simc_action'] for command in block)
                                          for block in args[1]['blocks']))
-            if len(normal_requests) == 5:
+            if len(normal_requests) == 2:
                 raise TaskCancelled('constructed external boundary before selected score')
         return _observed_evaluate(*args, **kwargs)
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=cancel_once):
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=cancel_once):
         stopped = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+            search_config=_eager_search_config(input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
                 batch_targets=(2,), iterations=2, validation_batches=1,
                 final_batches=1, final_iterations=2, scenarios=('nominal',)))
         before = read_task(tmp_path / 'task', include_search_records=True)
@@ -845,8 +800,9 @@ def test_public_auto_selection_cancelled_before_score_resumes_the_saved_decision
     assert step['selection']['decision_id'] == queued['selection']['decision_id']
     assert step['selection']['model_version'] == queued['selection']['model_version']
     assert step['selection']['feedback']['status'] == 'learned'
-    assert step['status'] == 'scored' and after['search']['candidate_count'] == 5
+    assert step['status'] == 'scored' and after['search']['candidate_count'] == 2
     assert after['status'] == 'completed' and after['search']['stop_reason'] == 'candidate_limit'
+    assert len(normal_requests) == 3
     assert normal_requests[-1] == normal_requests[-2]
 
 
@@ -943,7 +899,7 @@ def test_public_budget_end_learns_completed_pending_common_batches_without_more_
 
 
 @pytest.mark.parametrize('stage,supplied_runtime', [('learning', True)])
-def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, monkeypatch, installed_data_store_api, stage, supplied_runtime):
+def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, monkeypatch, stage, supplied_runtime):
     import time
     import result_store
     import sequence
@@ -955,7 +911,8 @@ def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, mo
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
-    real_write = installed_data_store_api['write']
+    api = result_store._api()
+    real_write = api['write']
     interrupted = False
     normal_requests = []
 
@@ -972,15 +929,17 @@ def test_public_selector_recovers_process_exit_after_shared_publish(tmp_path, mo
             normal_requests.append(args[1]['blocks'])
         return _observed_evaluate(*args, **kwargs)
 
-    monkeypatch.setitem(installed_data_store_api, 'write', published_then_exit)
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed):
+    monkeypatch.setitem(api, 'write', published_then_exit)
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=observed):
         with pytest.raises(SystemExit, match='after real shared'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=_eager_search_config(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+                search_config=_eager_search_config(input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
                     batch_targets=(2,), iterations=2, validation_batches=1,
                     final_batches=1, final_iterations=2, scenarios=('nominal',)))
         before = result_store.read_search_learner(MODEL_KEY)
         requests_before = len(normal_requests)
+        assert interrupted and requests_before == 2
         checkpoint = TaskStore(tmp_path / 'task')
         try:
             used_before = checkpoint.state['elapsed_seconds']
@@ -1022,7 +981,7 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
         result = _observed_evaluate(*args, **kwargs)
         if kwargs.get('rule_observation_request') is not None:
             requests.append(args[1]['blocks'])
-            if len(requests) == 6:
+            if len(requests) == 3:
                 kwargs['runtime'].used_seconds = kwargs['runtime'].budget_seconds
         return result
     real_freeze = search.freeze_selection_feedback
@@ -1034,12 +993,14 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
             exited = True
             raise SystemExit('constructed exit halfway through terminal feedback freezing')
     monkeypatch.setattr(search, 'freeze_selection_feedback', exit_after_first_intent)
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=completed_at_budget):
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=completed_at_budget):
         with pytest.raises(SystemExit, match='halfway'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=_eager_search_config(total_budget_seconds=60, input_interval_ms=200, candidate_limit=6,
+                search_config=_eager_search_config(total_budget_seconds=60, input_interval_ms=200, candidate_limit=3,
                     round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2,
                     validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',)))
+    assert exited
     checkpoint = search.TaskStore(tmp_path / 'task')
     try:
         assert len(checkpoint.state['selection_feedback_intents']) == 1
@@ -1062,7 +1023,7 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
             _assert_pending_selector_receipts(frozen_receipts)
             cancellation.clear()
             resume_task(tmp_path / 'task', cancel_event=cancellation)
-    assert len(requests) == 6
+    assert len(requests) == 3
     assert result_store.read_search_learner(MODEL_KEY)['reservations'] == []
     saved = read_task(tmp_path / 'task', include_search_records=True)
     assert len(saved['search']['rule_steps']) == 2
@@ -1071,18 +1032,20 @@ def test_public_budget_recovery_freezes_remaining_pending_after_partial_freeze_e
 
 
 @pytest.mark.parametrize('saved_running', [True])
-def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_path, monkeypatch, installed_data_store_api, saved_running):
+def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_path, monkeypatch, saved_running):
     import time
-    import sequence
+    import sequence, result_store
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
     for row in native['static_snapshot']['actions']: row['gcd_ms'] = 200
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
-    real_write, real_read = installed_data_store_api['write'], installed_data_store_api['read_key']
+    api = result_store._api()
+    real_write, real_read = api['write'], api['read_key']
     active_runtime = None
     interrupted = False
     delayed = False
+    score_calls = 0
 
     def publish_then_exit(root, table, key, rows, **kwargs):
         nonlocal interrupted
@@ -1102,17 +1065,20 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
         return real_read(root, table, key, **kwargs)
 
     def observed(*args, **kwargs):
-        nonlocal active_runtime
+        nonlocal active_runtime, score_calls
+        score_calls += 1
         active_runtime = kwargs['runtime']
         return _observed_evaluate(*args, **kwargs)
 
-    monkeypatch.setitem(installed_data_store_api, 'write', publish_then_exit)
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed):
+    monkeypatch.setitem(api, 'write', publish_then_exit)
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=observed):
         with pytest.raises(SystemExit, match='one second'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=_eager_search_config(total_budget_seconds=30, input_interval_ms=200, candidate_limit=6,
+                search_config=_eager_search_config(total_budget_seconds=30, input_interval_ms=200, candidate_limit=3,
                     round_candidate_limit=2, max_processes=1, batch_targets=(2,), iterations=2, validation_batches=1,
                     final_batches=1, final_iterations=2, scenarios=('nominal',)))
+    assert interrupted and score_calls == 3
     from search import TaskStore
     checkpoint = TaskStore(tmp_path / 'task')
     try:
@@ -1122,7 +1088,7 @@ def test_public_feedback_recovery_time_exhausts_budget_before_any_new_score(tmp_
             checkpoint.save()  # A process can exit before its running marker is cleared.
     finally:
         checkpoint.close()
-    monkeypatch.setitem(installed_data_store_api, 'read_key', delayed_read)
+    monkeypatch.setitem(api, 'read_key', delayed_read)
     import search
     original_clock = search.TaskRuntime
     recovery_clocks = []

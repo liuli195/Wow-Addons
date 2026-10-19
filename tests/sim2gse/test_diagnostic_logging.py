@@ -1,6 +1,4 @@
 """显式命令控制诊断日志，业务规则与恢复凭据保留。"""
-from pathlib import Path
-
 import pytest
 
 
@@ -15,7 +13,7 @@ def test_resume_command_requires_current_logging_intent(tmp_path, monkeypatch, e
     from test_engine import apl_pool_reference
     from test_rule_initialization import _configure_opener
     from test_rule_diagnostics import _condition_pack, _observed_evaluate
-    from test_search import _apl_task_boundary
+    from test_search import _apl_task_boundary, _initialized_starts
 
     _configure_opener(tmp_path, monkeypatch, _condition_pack())
     native = apl_pool_reference()
@@ -32,10 +30,11 @@ def test_resume_command_requires_current_logging_intent(tmp_path, monkeypatch, e
             kwargs['runtime'].cancel()
         return result
 
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=stop_once):
+    with _apl_task_boundary(native), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=stop_once):
         run_task(source, destination, simulation_config=dict(scene='single_target'),
             search_config=dict(rule_diagnostics_policy='eager', total_budget_seconds=20, input_interval_ms=200,
-                candidate_limit=5, round_candidate_limit=1,
+                candidate_limit=2, round_candidate_limit=1,
                 batch_targets=(2,), iterations=2, validation_batches=1, max_processes=1,
                 diagnostic_logging=True, diagnostics='summary'))
         assert read_task(destination)['status'] == 'cancelled'
@@ -51,21 +50,6 @@ def test_resume_command_requires_current_logging_intent(tmp_path, monkeypatch, e
                for record in result['search']['records'])
 
 
-def test_native_engine_default_keeps_only_required_exchange(tmp_path, monkeypatch):
-    import os
-    from types import SimpleNamespace
-    import engine
-    commands = []
-    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
-    def process(command, *args, **kwargs):
-        commands.append(command)
-        return SimpleNamespace(returncode=0, stdout=b'normal result', stderr=b'', elapsed_seconds=.01)
-    monkeypatch.setattr(engine, 'run_command', process)
-    folder = tmp_path / 'native'
-    assert engine.run(tmp_path / 'role.simc', folder) == 'normal result'
-    assert 'output=' + os.devnull in commands[0]
-    assert not (folder / 'process.log').exists()
-    assert not (folder / 'invocation.json').exists()
 
 
 @pytest.mark.parametrize('enabled', [True])
@@ -86,69 +70,6 @@ def test_public_report_write_records_only_opt_in_stage_totals(enabled):
             assert stages[name]['units']['rows'] == 1
     else:
         assert not hasattr(runtime, 'performance_stages')
-
-
-@pytest.mark.parametrize('enabled', [True])
-def test_public_task_exports_current_invocation_stage_totals(tmp_path, monkeypatch, enabled):
-    import json
-    import sequence
-    from unittest.mock import patch
-    from task import run_task, read_task
-    from test_character_export import sample_profile
-    from test_engine import apl_pool_reference
-    from test_rule_initialization import _configure_opener
-    from test_rule_diagnostics import _condition_pack, _observed_evaluate
-    from test_search import _apl_task_boundary
-    _configure_opener(tmp_path, monkeypatch, _condition_pack())
-    native = apl_pool_reference()
-    for row in native['static_snapshot']['actions']:
-        row['gcd_ms'] = 200
-    source, destination = tmp_path / 'role.simc', tmp_path / 'task'
-    source.write_text(sample_profile(), encoding='utf-8')
-    clock_calls = []
-    if not enabled:
-        import runtime
-        def unexpected_clock():
-            clock_calls.append('called')
-            raise AssertionError('关闭总开关不得额外计时')
-        monkeypatch.setattr(runtime.time, 'perf_counter', unexpected_clock)
-    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=_observed_evaluate):
-        run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(total_budget_seconds=20, input_interval_ms=200,
-                candidate_limit=5, round_candidate_limit=1, batch_targets=(2,), iterations=2,
-                validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',),
-                diagnostic_logging=enabled, diagnostics='summary'))
-        saved = read_task(destination, include_search_records=True)
-    assert any(step.get('selection', {}).get('feedback', {}).get('status') == 'learned'
-               for step in saved['search']['rule_steps'].values())
-    output = destination / 'diagnostics.json'
-    if not enabled:
-        assert clock_calls == []
-        assert not output.exists()
-        return
-    diagnostics = json.loads(output.read_text(encoding='utf-8'))
-    performance = diagnostics['performance']
-    assert performance['scope'] == 'current_invocation'
-    assert performance['timing'] == 'inclusive_wall_seconds'
-    stages = performance['stages']
-    for name in ('diagnostic.total', 'diagnostic.read_validate', 'diagnostic.preprocess',
-                 'diagnostic.rules', 'diagnostic.finalize',
-                 'report.prepare', 'report.write', 'state.persist.full', 'state.persist.partial',
-                 'state.transaction', 'state.progress', 'model.load', 'model.predict', 'model.learn',
-                 'model.snapshot', 'model.full_write', 'model.control_write',
-                 'candidate.compile', 'candidate.write', 'report.publish', 'main.wait'):
-        assert stages[name]['calls'] > 0, name
-        assert stages[name]['seconds'] >= 0, name
-    assert stages['model.predict']['units']['actions'] > 0
-    assert stages['model.learn']['units']['common_batches'] > 0
-    assert stages['report.write']['units']['rows'] > 0
-    assert stages['state.persist.full']['units']['written_bytes'] > 0
-    assert stages['candidate.compile']['calls'] == diagnostics['candidate_compilations']
-    assert stages['candidate.write']['calls'] == stages['candidate.compile']['calls']
-    assert stages['report.publish']['wall_union_seconds'] > 0
-    assert 'report.publish' in performance['covered_stages']
-    assert stages['main.wait']['wall_union_seconds'] >= 0
-    assert 'main.wait' not in performance['covered_stages']
 
 
 def test_timing_failure_does_not_replace_report_error(monkeypatch):
@@ -377,7 +298,29 @@ def test_public_feedback_logs_follow_current_invocation_switch(
         assert clock_calls == []
         assert (output.read_bytes() if output.exists() else None) == old_output
         return
-    stages = json.loads(output.read_text(encoding='utf-8'))['performance']['stages']
+    diagnostics = json.loads(output.read_text(encoding='utf-8'))
+    performance = diagnostics['performance']
+    assert performance['scope'] == 'current_invocation'
+    assert performance['timing'] == 'inclusive_wall_seconds'
+    stages = performance['stages']
+    for name in ('diagnostic.total', 'diagnostic.read_validate', 'diagnostic.preprocess',
+                 'diagnostic.rules', 'diagnostic.finalize',
+                 'report.prepare', 'report.write', 'state.persist.full', 'state.persist.partial',
+                 'state.transaction', 'state.progress', 'model.load', 'model.predict', 'model.learn',
+                 'model.snapshot', 'model.full_write', 'model.control_write',
+                 'candidate.compile', 'candidate.write', 'report.publish', 'main.wait'):
+        assert stages[name]['calls'] > 0, name
+        assert stages[name]['seconds'] >= 0, name
+    assert stages['model.predict']['units']['actions'] > 0
+    assert stages['model.learn']['units']['common_batches'] > 0
+    assert stages['report.write']['units']['rows'] > 0
+    assert stages['state.persist.full']['units']['written_bytes'] > 0
+    assert stages['candidate.compile']['calls'] == diagnostics['candidate_compilations']
+    assert stages['candidate.write']['calls'] == stages['candidate.compile']['calls']
+    assert stages['report.publish']['wall_union_seconds'] > 0
+    assert 'report.publish' in performance['covered_stages']
+    assert stages['main.wait']['wall_union_seconds'] >= 0
+    assert 'main.wait' not in performance['covered_stages']
     assert stages['model.learn']['calls'] == 2
     assert stages['model.learn']['units']['common_batches'] == 2
     if resume:

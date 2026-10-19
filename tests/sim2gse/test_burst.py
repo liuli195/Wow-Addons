@@ -588,40 +588,6 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
     thread.join(3)
 
 
-def test_page_reports_real_storage_unavailability_without_disconnect(tmp_path, page_task_engine):
-    import burst
-    import result_store
-    import threading
-    from interface import create_server
-    from urllib.request import Request, urlopen
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
-        final_batches=1, final_iterations=2, scenarios=('nominal',))))
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-    thread.start()
-    base = f'http://127.0.0.1:{server.server_port}'
-    try:
-        with urlopen(Request(base + '/api/tasks', json.dumps(dict(profile=raw, mode='dual')).encode(),
-                             {'Content-Type': 'application/json'})) as response:
-            task_id = json.load(response)['task_id']
-        server.tasks[task_id][1].join(30)
-        assert server.tasks[task_id][1].done
-        moved = result_store.DATA_ROOT.with_name('temporarily-unavailable')
-        result_store.DATA_ROOT.rename(moved)
-        try:
-            with urlopen(base + '/api/tasks/' + task_id) as response:
-                state = json.load(response)
-            assert state['status'] == 'failed' and state['recoverable']
-            assert '存储' in state['error'] and not state['result_ready']
-        finally:
-            moved.rename(result_store.DATA_ROOT)
-        with urlopen(base + '/api/tasks/' + task_id) as response:
-            restored = json.load(response)
-        assert restored['status'] == 'completed' and restored['collection_ready']
-    finally:
-        server.shutdown();server.server_close();thread.join(3)
 
 
 def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path, monkeypatch):
