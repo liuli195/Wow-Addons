@@ -186,6 +186,7 @@ def _api():
                 if any(name not in functions for name in required):
                     raise DataReadError("data-store 技能缺少逻辑键点读能力，请同步已安装的技能后重启")
                 _SKILL_API = {name: functions[name] for name in required}
+                _SKILL_API["DATA_STORE_CAPABILITIES"] = functions.get("DATA_STORE_CAPABILITIES", ())
     return _SKILL_API
 
 
@@ -198,9 +199,14 @@ def ensure_available() -> None:
         raise RuntimeError("缺少 DuckDB，请使用 data-store 技能 requirements.txt 准备当前 Python 环境") from error
 
 
-def write(table: str, key: str, rows: list[dict], *, schema=None) -> int:
+def write(table: str, key: str, rows: list[dict], *, schema=None, binary=False) -> int:
     """Write caller-defined typed records through the installed skill."""
-    return _api()["write"](DATA_ROOT, table, key, rows, schema=schema)
+    api = _api()
+    if binary:
+        if "binary-write-v1" not in api.get("DATA_STORE_CAPABILITIES", ()):
+            raise DataReadError("data-store 缺少 binary-write-v1 能力，请更新技能并重启当前进程")
+        return api["write"](DATA_ROOT, table, key, rows, schema=schema, binary=True)
+    return api["write"](DATA_ROOT, table, key, rows, schema=schema)
 
 
 

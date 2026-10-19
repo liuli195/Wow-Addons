@@ -31,6 +31,16 @@ assert m['read_records']('measurements','one',columns=['score'],filters={'score'
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':8})==[]
 assert m['write']('binary_measurements','one',[{'score':8,'payload':bytes([0,255])}],schema={'score':'INTEGER','payload':'BLOB'},binary=True)==1
 assert m['read_records']('binary_measurements','one',columns=['payload'],filters={'score':8})==[{'payload':bytes([0,255])}]
+from unittest.mock import Mock,patch
+blocked_write=Mock()
+with patch.dict(m['_api'](),{'DATA_STORE_CAPABILITIES':(), 'write':blocked_write}):
+    try:
+        m['write']('binary_measurements','blocked',[{'payload':bytes([0,255])}],schema={'payload':'BLOB'},binary=True)
+    except m['DataReadError'] as error:
+        assert 'binary-write-v1' in str(error) and '更新技能' in str(error) and '重启' in str(error)
+    else:
+        raise AssertionError('missing capability must fail before writing')
+blocked_write.assert_not_called()
 print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM measurements',tables=['measurements']))))
 """
     result = subprocess.run([sys.executable, "-c", program, str(adapter)], env=env,
