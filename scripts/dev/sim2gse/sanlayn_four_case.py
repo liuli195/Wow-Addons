@@ -55,8 +55,17 @@ def checked_files(root, files):
 
 
 def experiment_source(source, early_stop):
+    if early_stop not in ('on', 'off', 'route-progress'):
+        raise ValueError('Unknown experiment early-stop policy')
     if source.count(STOP) != 1:
         raise ValueError('Expected exactly one original no-improvement condition')
+    if early_stop == 'route-progress':
+        marker = "                    state['round_improved'] = True\n"
+        if source.count(marker) != 1:
+            raise ValueError('Expected exactly one original global-improvement update')
+        return source.replace(marker,
+            "                if global_promoted or (route_promoted and not work['start']):\n"
+            + marker, 1)
     return source if early_stop == 'on' else source.replace(STOP, 'if False and ' + STOP[3:], 1)
 
 
@@ -77,7 +86,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--expected-commit', required=True)
     parser.add_argument('--source-manifest', type=Path)
-    parser.add_argument('--early-stop', choices=('on', 'off'), required=True)
+    parser.add_argument('--early-stop', choices=('on', 'off', 'route-progress'), required=True)
     parser.add_argument('--run', action='store_true')
     args = parser.parse_args()
     root, output, snapshot = args.repo.resolve(), args.out.resolve(), args.center_snapshot.resolve()
