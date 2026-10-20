@@ -903,6 +903,7 @@ class TaskStore:
         self.lua_compiler_starts = 0
         self.verified_batches = {}
         self.report_buffer = []
+        self.unsaved_batches = {}
         from result_store import DATA_ROOT, ReportLocations
         self.report_locations = ReportLocations(DATA_ROOT)
         self.persisted_batches = self.db.execute(
@@ -1018,6 +1019,8 @@ class TaskStore:
                                   archive_records=len(changed_archive))
 
     def save(self, *, fields=None, archive_keys=()):
+        if getattr(self, 'defer_persistence', False):
+            return
         with self.lock, self._transaction():
             if not self.report_buffer:
                 if fields is None:
@@ -1026,21 +1029,53 @@ class TaskStore:
                     self._persist_changes(fields, archive_keys)
             self._save_progress()
 
-    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None):
-        from result_store import prepare_batch
+    def checkpoint(self):
+        """Only the explicit business boundary publishes the live search segment."""
         with self.lock:
-            if replace_group:
+            deferred = getattr(self, 'defer_persistence', False)
+            self.defer_persistence = False
+            try:
                 self.flush_reports()
-            self.report_buffer.append((key, row, prepare_batch(
-                stored, diagnostic_logging=diagnostic_logging, runtime=getattr(self, 'runtime', None))))
+                if self.unsaved_batches:
+                    with self._transaction():
+                        for key, value in self.unsaved_batches.items():
+                            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
+                            if value.get('status') == 'success' and value['request']['purpose'] != 'final':
+                                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, _json(value)))
+                        self.persisted_batches = self.db.execute(
+                            "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
+                        self.state['completed_batches'] = self.persisted_batches
+                    self.unsaved_batches.clear()
+                reconcile_selection_feedback(self)
+                self.save()
+            finally:
+                self.defer_persistence = deferred
+
+    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None):
+        with self.lock:
+            # Native output already exists on disk; do not retain complete reports in RAM.
+            metadata = {name: value for name, value in stored.items() if name != 'report'}
+            metadata['_diagnostic_logging'] = diagnostic_logging
+            metadata['_replace_group'] = replace_group
+            self.report_buffer.append((key, row, metadata))
             self.verified_batches[key] = row
             if row['request']['purpose'] != 'diagnostic':
                 self.state['completed_batches'] += 1
-            if replace_group or len(self.report_buffer) >= 12:
-                self.flush_reports(replace_group=replace_group)
+            if not getattr(self, 'defer_persistence', False):
+                self.flush_reports()
+
+    def staged_report(self, key):
+        for stored_key, _, metadata in self.report_buffer:
+            if stored_key == key:
+                return dict({name: value for name, value in metadata.items()
+                             if not name.startswith('_')},
+                            report=json.loads((self.destination / 'batches' / key / 'native.json').read_text(encoding='utf-8')))
+        return None
 
     def flush_reports(self, *, replace_group=None):
-        from result_store import write, _api, DATA_ROOT
+        if getattr(self, 'defer_persistence', False):
+            return
+        from result_store import write, _api, DATA_ROOT, prepare_batch
         publish_started = diagnostic_start() if self.diagnostic_logging else None
         try:
             with self.lock:
@@ -1056,8 +1091,9 @@ class TaskStore:
                                          if group.startswith(prefix) and group[len(prefix):].isdigit()), default=0))
                 new_group = prefix + str(number)
                 plans = {}
+                new_group_count = 0
                 for key, row, stored in self.report_buffer:
-                    group = replace_group or locations.entries.get(key)
+                    group = stored.get('_replace_group') or replace_group or locations.entries.get(key)
                     target = group or key  # Legacy reports use their original logical key.
                     existing = None
                     try:
@@ -1087,6 +1123,9 @@ class TaskStore:
                                 pass
                             else:
                                 raise ValueError('同请求可靠报告成绩冲突: ' + key)
+                    if group == new_group:
+                        group = prefix + str(number + new_group_count // 12)
+                        new_group_count += 1
                     plan = plans.setdefault(group, dict(metadata=[], replacements={}))
                     plan['metadata'].append((key, dict(row, storage_group_key=group,
                                                       batch_index=stored['batch_index'], scenario=stored['scenario'])))
@@ -1094,9 +1133,10 @@ class TaskStore:
                         plan['replacements'][key] = dict(stored, storage_group_key=group)
                 for position, (group, plan) in enumerate(plans.items()):
                     metadata = plan['metadata']
+                    group_number = int(group[len(prefix):]) if group.startswith(prefix) and group[len(prefix):].isdigit() else number
                     with self.db:
                         self.db.execute('INSERT OR REPLACE INTO report_intents VALUES (?,?)',
-                                        (group, _json(dict(number=number, rows=metadata,
+                                        (group, _json(dict(number=group_number, rows=metadata,
                                                           counters={key: self.state.get(key, 0) for key in _TASK_COUNTERS}))))
                     locations.reserve(group, [key for key, _ in metadata])
                     if plan['replacements']:
@@ -1108,7 +1148,11 @@ class TaskStore:
                                             if (record := dict(zip(names, values)))}
                         except (api['MissingKeyError'], api['CorruptDataError']):
                             pass
-                        retained.update(plan['replacements'])
+                        for key, metadata_row in plan['replacements'].items():
+                            stored = {name: value for name, value in metadata_row.items()
+                                      if not name.startswith('_')}
+                            stored['report'] = json.loads((self.destination / 'batches' / key / 'native.json').read_text(encoding='utf-8'))
+                            retained[key] = prepare_batch(stored, diagnostic_logging=metadata_row['_diagnostic_logging'])
                         if len(retained) > 12:
                             raise ValueError('报告组超过十二份')
                         logging = self.diagnostic_logging
@@ -1120,7 +1164,7 @@ class TaskStore:
                                 diagnostic_finish(self, 'report.write', started, rows=len(retained), groups=1,
                                                   replacements=len(plan['replacements']))
                     last = position == len(plans) - 1
-                    self._commit_report_group(group, number, metadata, checkpoint=last,
+                    self._commit_report_group(group, group_number, metadata, checkpoint=last,
                                               clear_intents=tuple(plans) if last else ())
                 for key, row, _ in self.report_buffer:
                     row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
@@ -1199,12 +1243,12 @@ class TaskStore:
                         if key in self.state}
             for key, _, _ in self.report_buffer:
                 self.verified_batches.pop(key, None)
-            if self.report_buffer:
-                self.state.clear()
-                self.state.update(self.load_state(self.db))
-                self.state.update(progress, inflight={})
-                self.state['completed_batches'] = self.persisted_batches
-                self.report_buffer.clear()
+            self.state.clear()
+            self.state.update(self.load_state(self.db))
+            self.state.update(progress, inflight={})
+            self.state['completed_batches'] = self.persisted_batches
+            self.report_buffer.clear()
+            self.unsaved_batches.clear()
 
     def _save_progress(self):
         self.db.execute('INSERT OR REPLACE INTO runtime_progress VALUES (1,?,?,?)',
@@ -1212,6 +1256,8 @@ class TaskStore:
                          _json(self.state.get('inflight', {}))))
 
     def save_runtime(self):
+        if getattr(self, 'defer_persistence', False):
+            return
         logging = self.diagnostic_logging
         started = diagnostic_start() if logging else None
         try:
@@ -1245,6 +1291,8 @@ class TaskStore:
                 self.lua_compiler_starts += 1
 
     def batch(self, key):
+        if key in self.unsaved_batches:
+            return self.unsaved_batches[key]
         with self.lock:
             row = self.db.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()
             if row is None:
@@ -1263,6 +1311,14 @@ class TaskStore:
             return None
 
     def put_batch(self, key, value, *, counter=None, verified=False):
+        if getattr(self, 'defer_persistence', False):
+            self.unsaved_batches[key] = value
+            if verified and value.get('status') == 'success':
+                self.verified_batches[key] = value
+            if counter is not None and self.diagnostic_logging:
+                counters = getattr(self, 'counter_target', self.state)
+                counters[counter] = counters.get(counter, 0) + 1
+            return
         with self.lock, self._transaction():
             self.verified_batches.pop(key, None)
             self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
@@ -1299,6 +1355,7 @@ class TaskStore:
                 beat()
         self.state['status'] = 'running'
         self.save()
+        self.defer_persistence = True
         beat()
         thread = threading.Thread(target=heartbeat, daemon=True)
         thread.start()
@@ -1308,6 +1365,7 @@ class TaskStore:
             stop.set()
             thread.join()
             beat()
+            self.defer_persistence = False
 
     def close(self):
         self.db.close()
@@ -1384,7 +1442,12 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
             store.state['selection_feedback_incomplete'] = False
             store.save(fields=('selection_feedback_incomplete', 'pending', 'rule_steps', 'search_observability'))
         return
-    from selector import settle
+    from selector import settle, commit_feedback
+    sparse = store.state.get('sparse_selection', False)
+    deferred = sparse and getattr(store, 'defer_persistence', False)
+    if deferred:
+        settle = store.selection_session.settle
+        intents = dict(intents)
     started = time.monotonic()
     elapsed_before = store.state.get('elapsed_seconds', 0)
     # 整批以既有锁等待上限为收尾截止；不增加搜索预算，到期保留意图。
@@ -1409,9 +1472,17 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
             # 原终止和半批冻结后恢复共用；全部意图先落盘，结算截止不丢后项。
             freeze_pending()
             intents = store.state.get('selection_feedback_intents', {})
+            if deferred:
+                intents = dict(intents)
+        if sparse and not deferred and not pending_frozen and elapsed_before >= store.state.get('config', {}).get('total_budget_seconds', math.inf):
+            freeze_pending()
+            intents = store.state.get('selection_feedback_intents', {})
+            pending_frozen = True
+        committed = commit_feedback(intents, runtime=recovery,
+            session=getattr(store, 'selection_session', None)) if sparse and not deferred and intents else None
         while True:
             # 补发本身也可能耗尽任务；仍沿同一收尾截止补齐剩余意图。
-            if (runtime is None and not pending_frozen and
+            if (not sparse and runtime is None and not pending_frozen and
                     elapsed_before + time.monotonic()-started >=
                     store.state.get('config', {}).get('total_budget_seconds', math.inf)):
                 freeze_pending()
@@ -1424,8 +1495,9 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
             receipt = intent['receipt']
             try:
                 recovery.check()
-                feedback = settle(receipt, intent['reward'], intent['common_batches'],
-                                  reason=intent['reason'], runtime=recovery)
+                feedback = (committed[key] if committed is not None else
+                    settle(receipt, intent['reward'], intent['common_batches'],
+                           reason=intent['reason'], runtime=recovery))
             except (BudgetExceeded, TaskCancelled):
                 stopped = True
                 continue
@@ -1447,12 +1519,13 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
                         if collection == 'archive':
                             changed_archive.append(item['key'])
             del intents[key]
-            store.state['selection_feedback_incomplete'] = bool(intents)
+            store.state['selection_feedback_incomplete'] = bool(store.state.get('selection_feedback_intents'))
             if runtime is None:
                 store.state['elapsed_seconds'] = elapsed_before + time.monotonic()-started
-            flushed_reports = bool(store.report_buffer)
-            store.flush_reports()
-            store.save(fields=None if flushed_reports else changed_fields, archive_keys=changed_archive)
+            if not sparse:
+                flushed_reports = bool(store.report_buffer)
+                store.flush_reports()
+                store.save(fields=None if flushed_reports else changed_fields, archive_keys=changed_archive)
     finally:
         store.state['selection_feedback_incomplete'] = bool(store.state.get('selection_feedback_intents'))
         if runtime is None:
@@ -1487,6 +1560,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state = store.state
     batch_counters = getattr(store, 'counter_target', state)
     verify_behavior_identity_state(state)
+    if diagnostic_candidate_key is None and state.get('sparse_selection'):
+        from selector import MemorySelection
+        store.selection_session = MemorySelection(state, runtime)
     if diagnostic_candidate_key is None:
         reconcile_selection_feedback(store, runtime, finalizing=state.get('stop_reason') == 'search_deadline')
     observation_mode = config['search_observability'] if diagnostic_candidate_key is None else 'off'
@@ -1952,7 +2028,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         runtime.check()
         if saved is None:
             from result_store import one as read_record
-            saved = read_record('batches', 'batch_key', receipt['data_key'],
+            saved = store.staged_report(receipt['data_key']) or read_record('batches', 'batch_key', receipt['data_key'],
                 group_key=receipt.get('storage_group_key'))
             _validate_saved_batch(saved, receipt['data_key'], receipt, character, 0, 'nominal', simulation_config)
         from rule_diagnostics import diagnose
@@ -2014,8 +2090,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             verified = store.verified_batches.get(key)
             if (verified is not None and verified.get('rule_diagnostics') and
                     not verified['rule_diagnostics']['pool']['complete']):
-                store.flush_reports()
-                verified = None  # Reuse the validated stored report below, not another score.
+                saved = store.staged_report(key)
+                if saved is not None:
+                    replay_incomplete_diagnostic(program, verified, saved)
+                else:
+                    verified = None  # Reuse the validated stored report below, not another score.
             if verified is not None and config['diagnostic_logging']:
                 batch_counters['batch_cache_hits'] += 1
         if verified is not None:
@@ -2188,7 +2267,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 raise ValueError('补采诊断的原评分请求摘要不符')
             if source['data_key'] not in diagnostic_sources:
                 from result_store import one as read_record
-                saved = read_record('batches', 'batch_key', source['data_key'],
+                saved = store.staged_report(source['data_key']) or read_record('batches', 'batch_key', source['data_key'],
                     group_key=source.get('storage_group_key'))
                 _validate_saved_batch(saved, source['data_key'], source, character, 0, 'nominal', simulation_config)
                 diagnostic_sources.add(source['data_key'])
@@ -2436,7 +2515,14 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         flushed_reports = bool(store.report_buffer)
                         store.flush_reports()
                         store.save(fields=None if flushed_reports else ('selection_sequence', 'selection_intent'))
-                    receipt = reserve(intent, runtime=runtime)
+                    if not hasattr(store, 'selection_session'):
+                        from selector import MemorySelection
+                        store.selection_session = MemorySelection(state, runtime)
+                        state['sparse_selection'] = True
+                        if intent['decision_id'] <= store.selection_session.watermark:
+                            intent['decision_id'] = state['selection_sequence'] + 1
+                            state['selection_sequence'] = intent['decision_id']
+                    receipt = store.selection_session.reserve(intent, runtime=runtime)
                     operation = next(row for row in pool['operations'] if row['operation_id'] == receipt['operation_id'])
                     request = dict(parent_identity=diagnostic['parent_identity'], operation_id=operation['operation_id'])
                     step = dict(request=request, parent_candidate_key=base['key'], parent_score=base['score'],
@@ -2607,6 +2693,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 elif state['full_round']:
                     state['no_improvement'] += 1
             store.save()
+            if current and global_promoted:
+                store.checkpoint()
             if (config['diagnostic_logging'] and current
                     and key in getattr(store, 'diagnostic_new_behaviors', ())):
                 diagnostic_candidate(store, 'screening_archived', key, runtime)

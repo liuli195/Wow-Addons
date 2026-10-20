@@ -539,7 +539,7 @@ def _remember(record, learner, *, full_version=None):
     return state, learner
 
 
-def _load(runtime=None):
+def _load(runtime=None, *, initialize=True):
     logging = runtime is not None and runtime.diagnostic_logging
     started = diagnostic_start() if logging else None
     try:
@@ -554,6 +554,9 @@ def _load(runtime=None):
         record = (result_store.read_search_learner_metadata(MODEL_KEY) if cached
                   else result_store.read_search_learner(MODEL_KEY))
         control = result_store.read_search_learner_control(MODEL_KEY)
+        if record is None and control is None and not initialize:
+            learner = _learner()
+            return _snapshot(learner, runtime=runtime), learner
         if record is None or record.get('state_version') in (1, 2):
             if _SEEN_VERSION is not None:
                 raise result_store.DataReadError('共享选择器权威记录丢失或格式回退，保留已知经验版本')
@@ -602,6 +605,30 @@ def _receipt(record, task, decision):
                  if row['task_run_id'] == task and row['decision_id'] == decision), None)
 
 
+def _predict(learner, intent, runtime, version):
+    task, decision = intent['task_run_id'], intent['decision_id']
+    intent_digest = _digest(intent)
+    context = _dense(intent['context'], CONTEXT_DIMENSION)
+    actions = [_dense(row['features'], ACTION_DIMENSION) for row in intent['actions']]
+    logging = runtime is not None and runtime.diagnostic_logging
+    started = diagnostic_start() if logging else None
+    try:
+        selected, probability = learner.predict(context, actions)
+    finally:
+        if logging:
+            diagnostic_finish(runtime, 'model.predict', started, actions=len(actions), context_dimension=CONTEXT_DIMENSION, action_dimension=ACTION_DIMENSION)
+    index = next((i for i, action in enumerate(actions) if action is selected), None)
+    if index is None:
+        raise ValueError('Coba返回的动作不是原具体操作对象')
+    receipt = dict(task_run_id=task, decision_id=decision,
+        parent_identity=intent['parent_identity'], pool_digest=intent['pool_digest'],
+        intent_digest=intent_digest, operation_id=intent['actions'][index]['operation_id'],
+        context=context, action_features=selected, probability=float(probability),
+        model_key=MODEL_KEY, model_version=version)
+    _validate_receipt(receipt)
+    return receipt
+
+
 def reserve(intent, runtime=None):
     """Predict once and atomically reserve the native RNG progress with its receipt."""
     global _CACHED_LEARNER
@@ -625,26 +652,9 @@ def reserve(intent, runtime=None):
                 raise ValueError('选择器决策序号须连续递增')
             if runtime is not None:
                 runtime.check()
-            context = _dense(intent['context'], CONTEXT_DIMENSION)
-            actions = [_dense(row['features'], ACTION_DIMENSION) for row in intent['actions']]
             initialized = learner._A_inv is None
-            _CACHED_LEARNER = None  # Predict mutates RNG; publish only after the atomic write.
-            logging = runtime is not None and runtime.diagnostic_logging
-            started = diagnostic_start() if logging else None
-            try:
-                selected, probability = learner.predict(context, actions)
-            finally:
-                if logging:
-                    diagnostic_finish(runtime, 'model.predict', started, actions=len(actions), context_dimension=CONTEXT_DIMENSION, action_dimension=ACTION_DIMENSION)
-            index = next((i for i, action in enumerate(actions) if action is selected), None)
-            if index is None:
-                raise ValueError('Coba返回的动作不是原具体操作对象')
-            receipt = dict(task_run_id=task, decision_id=decision,
-                parent_identity=intent['parent_identity'], pool_digest=intent['pool_digest'],
-                intent_digest=intent_digest, operation_id=intent['actions'][index]['operation_id'],
-                context=context, action_features=selected, probability=float(probability),
-                model_key=MODEL_KEY, model_version=record['version']+1)
-            _validate_receipt(receipt)
+            _CACHED_LEARNER = None
+            receipt = _predict(learner, intent, runtime, record['version'] + 1)
             updated = _snapshot(learner, version=record['version']+1,
                 reservations=[*record['reservations'], receipt], settled=record['settled'], model=initialized, runtime=runtime)
             if not initialized:
@@ -724,3 +734,93 @@ def settle(receipt, reward, common_batches, reason=None, runtime=None):
                     _CACHED_LEARNER = None
                     raise
         raise AssertionError('unreachable')
+
+
+class MemorySelection:
+    """One task's live model and independent native random stream, never a shared writer."""
+
+    def __init__(self, state, runtime=None):
+        global _CACHED_LEARNER
+        from coba.random import CobaRandom
+        with result_store.search_learner_lock(runtime):
+            record, self.learner = _load(runtime, initialize=False)
+            _CACHED_LEARNER = None  # The task owns this matrix until its next checkpoint.
+        self.state = state
+        self.version = record['version']
+        self.watermark = record['settled'].get(state['run_id'], 0)
+        state['selection_sequence'] = max(state.get('selection_sequence', 0), self.watermark)
+        rng = state.get('selection_rng_state', state['config']['random_seed'])
+        self.learner._pred._pmfrng._randu = CobaRandom(rng)._randu
+        self.feedback = {}
+
+    def reserve(self, intent, runtime=None):
+        _validate_intent(intent)
+        if runtime is not None:
+            runtime.check()
+        receipt = _predict(self.learner, intent, runtime, self.version + 1)
+        self.state['selection_rng_state'] = _rng_state(self.learner)
+        return receipt
+
+    def settle(self, receipt, reward, common_batches, reason=None, runtime=None):
+        _validate_receipt(receipt)
+        decision = receipt['decision_id']
+        if decision not in self.feedback:
+            valid = _finite(reward) and common_batches > 0
+            if valid:
+                self.learner.learn(receipt['context'], receipt['action_features'],
+                                   float(reward), receipt['probability'])
+            self.feedback[decision] = dict(status='learned' if valid else 'no_learn',
+                reward=float(reward) if valid else None, common_batches=common_batches,
+                reason=reason, task_run_id=receipt['task_run_id'], decision_id=decision)
+        return dict(self.feedback[decision])
+
+    def refresh(self, record, learner):
+        from coba.random import CobaRandom
+        rng = _rng_state(self.learner)
+        self.learner = learner
+        self.learner._pred._pmfrng._randu = CobaRandom(rng)._randu
+        self.version = record['version']
+        self.feedback.clear()
+
+
+def commit_feedback(intents, runtime=None, session=None):
+    """Merge actual task feedback once into the latest model under the existing lock."""
+    global _CACHED_LEARNER
+    with result_store.search_learner_lock(runtime):
+        record, learner = _load(runtime)
+        settled = dict(record['settled'])
+        feedbacks = {}
+        changed = False
+        _CACHED_LEARNER = None
+        for key in sorted(intents, key=int):
+            intent = intents[key]
+            receipt = intent['receipt']
+            _validate_receipt(receipt)
+            task, decision = receipt['task_run_id'], receipt['decision_id']
+            valid = _finite(intent['reward']) and intent['common_batches'] > 0
+            feedbacks[key] = dict(status='learned' if valid else 'no_learn',
+                reward=float(intent['reward']) if valid else None,
+                common_batches=intent['common_batches'], reason=intent['reason'],
+                task_run_id=task, decision_id=decision)
+            if decision <= settled.get(task, 0):
+                continue
+            if runtime is not None:
+                runtime.check()
+            if learner._A_inv is None:
+                learner._initialize(receipt['context'], receipt['action_features'])
+            if valid:
+                learner.learn(receipt['context'], receipt['action_features'],
+                              float(intent['reward']), receipt['probability'])
+            settled[task] = decision
+            changed = True
+        if changed:
+            # No task's older matrix or RNG replaces another task's experience.
+            updated = _snapshot(learner, version=record['version'] + 1,
+                reservations=[row for row in record['reservations']
+                              if row['decision_id'] > settled.get(row['task_run_id'], 0)],
+                settled=settled, runtime=runtime)
+            result_store.write_search_learner(updated, runtime=runtime)
+            record = updated
+        if session is not None:
+            session.refresh(record, learner)
+        return feedbacks

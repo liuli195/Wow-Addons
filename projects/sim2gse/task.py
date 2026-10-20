@@ -1511,6 +1511,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         adaptation.update(current_score=scored.get('score'),
                                           current_samples=sum(batch.get('samples', 0)
                                                               for batch in scored.get('batches', [])))
+            store.checkpoint()
+            store.defer_persistence = False
             _prepare_formal_publication(store, result)
             store.save()  # Intent freezes the completed archive while heartbeats remain nonterminal.
             pointer = _store_run(destination, result, state=state)
@@ -1524,7 +1526,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             return result
     except (TaskCancelled, BudgetExceeded) as error:
         try:
-            store.flush_reports()
+            store.checkpoint()
         except Exception as storage_error:
             store.discard_unsaved_reports()
             state.update(status='failed', elapsed_seconds=runtime.elapsed_seconds,
