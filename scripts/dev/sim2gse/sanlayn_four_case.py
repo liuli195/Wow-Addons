@@ -7,6 +7,8 @@ Snapshot manifest: {"files": {"center/relative/path": "sha256"},
 External training evidence stays at its original path (path is part of its identity).
 Each invocation copies the same snapshot to a fresh isolated writable center.
 Default is preflight only. Never use an existing case output for a second invocation.
+For the current two-case MVP use --timeline with both on and route-progress.
+It records data only; comparison charts are rendered offline, not by the product.
 """
 from pathlib import Path
 import argparse
@@ -54,7 +56,7 @@ def checked_files(root, files):
             raise ValueError('Snapshot file mismatch: ' + str(path))
 
 
-def experiment_source(source, early_stop):
+def experiment_source(source, early_stop, *, observe=False):
     if early_stop not in ('on', 'off', 'route-progress'):
         raise ValueError('Unknown experiment early-stop policy')
     if source.count(STOP) != 1:
@@ -63,10 +65,92 @@ def experiment_source(source, early_stop):
         marker = "                    state['round_improved'] = True\n"
         if source.count(marker) != 1:
             raise ValueError('Expected exactly one original global-improvement update')
-        return source.replace(marker,
+        source = source.replace(marker,
             "                if global_promoted or (route_promoted and not work['start']):\n"
             + marker, 1)
-    return source if early_stop == 'on' else source.replace(STOP, 'if False and ' + STOP[3:], 1)
+    elif early_stop == 'off':
+        source = source.replace(STOP, 'if False and ' + STOP[3:], 1)
+    if observe:
+        replacements = [
+            ("                if generation is None:\n                    if all(",
+             "                if generation is None:\n"
+             "                    _experiment_event('paths', state)\n                    if all("),
+            ("            state['seen'].append(key)\n",
+             "            if current and (global_promoted or (len(state['archive']) == 1\n"
+             "                    and state['best'] == current['key'])):\n"
+             "                _experiment_event('best', state, current,\n"
+             "                    'global' if global_promoted else 'initial')\n"
+             "            state['seen'].append(key)\n"),
+            ("            if current and global_promoted:\n                store.checkpoint()\n",
+             "            if current and global_promoted:\n                store.checkpoint()\n"
+             "                _experiment_event('checkpoint', state)\n"),
+            ("            search()\n        except (BudgetExceeded, TaskCancelled) as error:\n",
+             "            search()\n            _experiment_event('search_stopped', state)\n"
+             "        except (BudgetExceeded, TaskCancelled) as error:\n"),
+            ("                                    else 'search_deadline')\n            pending_outcome",
+             "                                    else 'search_deadline')\n"
+             "            _experiment_event('search_stopped', state)\n            pending_outcome"),
+        ]
+        for original, replacement in replacements:
+            if source.count(original) != 1:
+                raise ValueError('Expected exactly one timeline observation site: ' + original.strip())
+            source = source.replace(original, replacement, 1)
+    return source
+
+
+class Timeline:
+    """One experiment call's in-memory observations, separate from persistence."""
+
+    def __init__(self, policy, *, expected_paths=4, expected_burst_start_ms=None,
+                 clock=time.perf_counter):
+        self.policy, self.clock = policy, clock
+        self.expected_paths, self.expected_burst_start_ms = expected_paths, expected_burst_start_ms
+        self.started = clock()
+        self.events, self.checkpoints = [], []
+        self.search_stop_seconds = self.stop_reason = self.actual_paths = None
+
+    def record(self, kind, state, row=None, reason=None):
+        elapsed = self.clock() - self.started
+        if kind in ('paths', 'search_stopped'):
+            self.actual_paths = len(state['chains'])
+        if kind == 'paths':
+            if self.actual_paths != self.expected_paths:
+                raise ValueError(f'Expected {self.expected_paths} effective paths, got {self.actual_paths}')
+            if self.expected_burst_start_ms is not None:
+                actual = (state.get('burst') or {}).get('plan', {}).get('start_ms')
+                if actual != self.expected_burst_start_ms:
+                    raise ValueError(f'Expected burst start {self.expected_burst_start_ms}ms, got {actual}')
+        if kind == 'best':
+            if row['key'] != state['best'] or not math.isfinite(row['score']) or row['score'] <= 0:
+                raise ValueError('Invalid observed global best')
+            validation = row.get('global_validation') or row.get('validation') or {}
+            self.events.append(dict(wall_seconds=elapsed, kind=reason, candidate_key=row['key'],
+                dps=row['score'], samples=sum(batch['samples'] for batch in row['batches']),
+                validation_ci95=validation.get('comparison', {}).get('ci95')))
+        elif kind == 'checkpoint':
+            self.checkpoints.append(dict(wall_seconds=elapsed, candidate_key=state.get('best')))
+        elif kind == 'search_stopped':
+            self.search_stop_seconds, self.stop_reason = elapsed, state.get('stop_reason')
+
+    def finish(self, status):
+        elapsed = self.clock() - self.started
+        samples, index, current = [], 0, None
+        for second in range(10, 601, 10):
+            while index < len(self.events) and self.events[index]['wall_seconds'] <= second:
+                current = self.events[index]
+                index += 1
+            phase = ('stopped' if status == 'completed' else 'incomplete') if second >= elapsed else (
+                'finalizing' if self.search_stop_seconds is not None and second >= self.search_stop_seconds
+                else 'searching')
+            samples.append(dict(seconds=second, dps=current['dps'] if current else None,
+                candidate_key=current['candidate_key'] if current else None, status=phase))
+        return dict(schema_version=1, policy=self.policy, clock='outer_wall_seconds', status=status,
+            events=self.events, checkpoints=self.checkpoints, samples=samples,
+            actual_effective_path_count=self.actual_paths, search_stop_seconds=self.search_stop_seconds,
+            stop_reason=self.stop_reason, call_seconds=elapsed,
+            finalization_seconds=None if self.search_stop_seconds is None else elapsed-self.search_stop_seconds,
+            result_saved_seconds=elapsed if status == 'completed' else None,
+            note='Stopped samples hold an earlier result; they do not represent continued search.')
 
 
 def decoded(value):
@@ -87,8 +171,11 @@ def main():
     parser.add_argument('--expected-commit', required=True)
     parser.add_argument('--source-manifest', type=Path)
     parser.add_argument('--early-stop', choices=('on', 'off', 'route-progress'), required=True)
+    parser.add_argument('--timeline', action='store_true', help='Record MVP wall-clock DPS events and 60 samples')
     parser.add_argument('--run', action='store_true')
     args = parser.parse_args()
+    if args.early_stop == 'route-progress' and not args.timeline:
+        parser.error('route-progress requires --timeline; use it for the paired on case too')
     root, output, snapshot = args.repo.resolve(), args.out.resolve(), args.center_snapshot.resolve()
     project = root / 'projects/sim2gse'
     if output.exists() or output == snapshot or snapshot.is_relative_to(output):
@@ -133,7 +220,7 @@ def main():
 
     check_external()
     original = (project / 'search.py').read_text(encoding='utf-8')
-    effective = experiment_source(original, args.early_stop)
+    effective = experiment_source(original, args.early_stop, observe=args.timeline)
     source_hashes = {p.relative_to(root).as_posix(): sha(p) for p in project.rglob('*') if p.is_file() and '__pycache__' not in p.parts}
     output.mkdir(parents=True)
     center = output / 'center'
@@ -192,7 +279,7 @@ def main():
     finally:
         runtime._create_process = real_process
     metadata = dict(commit=args.expected_commit, actual_head=actual_head, product_tree=product_tree, repo=str(root), input_sha256=INPUT_SHA,
-        early_stop=args.early_stop, loaded_modules=loaded_modules, config=config, simulation_config=simulation, engines=engines,
+        early_stop=args.early_stop, timeline_enabled=args.timeline, loaded_modules=loaded_modules, config=config, simulation_config=simulation, engines=engines,
         original_source_sha256=sha(project / 'search.py'),
         effective_search_sha256=hashlib.sha256(effective.encode()).hexdigest(),
         snapshot_manifest_sha256=sha(args.snapshot_manifest), source_sha256=source_hashes,
@@ -219,7 +306,10 @@ def main():
         return process
     runtime._create_process = observed_process
     write(output / 'run-started.json', dict(started_unix=time.time()))
-    started, result = time.perf_counter(), None
+    timeline = Timeline(args.early_stop, expected_burst_start_ms=5000) if args.timeline else None
+    started, result = timeline.started if timeline else time.perf_counter(), None
+    if timeline:
+        search._experiment_event = timeline.record
     try:
         result = task.run_task(args.input, output / 'task', mode='optimize', search_config=config,
                                simulation_config=simulation, use_burst=True)
@@ -232,6 +322,11 @@ def main():
         metadata['native_processes'] = native
         metadata['native_process_count'] = len(native)
         try:
+            if timeline:
+                timeline_data = timeline.finish(result.get('status', 'incomplete') if result else 'incomplete')
+                metadata['wall_seconds_including_finalization'] = timeline_data['call_seconds']
+                write(output / 'timeline.json', timeline_data)
+                metadata['timeline_file'] = 'timeline.json'
             if result:
                 searched = result.get('search') or {}
                 metadata.update(status=result.get('status'), search_result=result.get('search_result'),
