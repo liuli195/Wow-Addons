@@ -711,7 +711,7 @@ def _rule_hashes(*, relative_to=None):
             for path in sources}
 
 
-def _seed_programs(starts, snapshot, *, character, targets, engines,
+def _seed_programs(starts, snapshot, *, character, targets,
                    capabilities, runtime):
     """Append selected programs after role mapping and shared export checks."""
     if not snapshot:
@@ -792,14 +792,6 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
             break
         if (not isinstance(row, dict) or row.get('class_name') != character.class_name
                 or row.get('spec') != character.spec or row.get('targets') != targets):
-            continue
-        row_engines = row.get('engines')
-        if isinstance(row_engines, str):
-            try:
-                row_engines = json.loads(row_engines)
-            except ValueError:
-                continue
-        if row_engines != engines:
             continue
         program = row.get('program')
         if isinstance(program, str):
@@ -1423,12 +1415,12 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     store.save()
                 state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
-                    targets=simulation_config['target_count'], engines=identities,
+                    targets=simulation_config['target_count'],
                     capabilities=capabilities, runtime=runtime)
                 champion = state['training_champion_snapshot']
                 state['starts'], adaptations = _seed_programs(
                     state['starts'], [champion] if champion.get('status') == 'selected' else [],
-                    character=character, targets=simulation_config['target_count'], engines=identities,
+                    character=character, targets=simulation_config['target_count'],
                     capabilities=capabilities, runtime=runtime)
                 state['training_champion_adaptation'] = adaptations[0] if adaptations else None
                 from program import canonicalize_search_program
