@@ -1051,12 +1051,14 @@ class TaskStore:
             finally:
                 self.defer_persistence = deferred
 
-    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None):
+    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None, report_path=None):
         with self.lock:
             # Native output already exists on disk; do not retain complete reports in RAM.
             metadata = {name: value for name, value in stored.items() if name != 'report'}
             metadata['_diagnostic_logging'] = diagnostic_logging
             metadata['_replace_group'] = replace_group
+            metadata['_report_path'] = Path(report_path) if report_path is not None else self.destination / 'batches' / key / 'native.json'
+            self.unsaved_batches.pop(key, None)
             self.report_buffer.append((key, row, metadata))
             self.verified_batches[key] = row
             if row['request']['purpose'] != 'diagnostic':
@@ -1069,7 +1071,7 @@ class TaskStore:
             if stored_key == key:
                 return dict({name: value for name, value in metadata.items()
                              if not name.startswith('_')},
-                            report=json.loads((self.destination / 'batches' / key / 'native.json').read_text(encoding='utf-8')))
+                            report=json.loads(metadata['_report_path'].read_text(encoding='utf-8')))
         return None
 
     def flush_reports(self, *, replace_group=None):
@@ -1151,8 +1153,9 @@ class TaskStore:
                         for key, metadata_row in plan['replacements'].items():
                             stored = {name: value for name, value in metadata_row.items()
                                       if not name.startswith('_')}
-                            stored['report'] = json.loads((self.destination / 'batches' / key / 'native.json').read_text(encoding='utf-8'))
-                            retained[key] = prepare_batch(stored, diagnostic_logging=metadata_row['_diagnostic_logging'])
+                            stored['report'] = json.loads(metadata_row['_report_path'].read_text(encoding='utf-8'))
+                            retained[key] = prepare_batch(stored, diagnostic_logging=metadata_row['_diagnostic_logging'],
+                                                          runtime=getattr(self, 'runtime', None))
                         if len(retained) > 12:
                             raise ValueError('报告组超过十二份')
                         logging = self.diagnostic_logging
@@ -1166,9 +1169,9 @@ class TaskStore:
                     last = position == len(plans) - 1
                     self._commit_report_group(group, group_number, metadata, checkpoint=last,
                                               clear_intents=tuple(plans) if last else ())
-                for key, row, _ in self.report_buffer:
+                for key, row, metadata_row in self.report_buffer:
                     row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
-                    (self.destination / 'batches' / key / 'native.json').unlink(missing_ok=True)
+                    metadata_row['_report_path'].unlink(missing_ok=True)
                 self.report_buffer.clear()
         finally:
             if self.diagnostic_logging:
@@ -1361,6 +1364,13 @@ class TaskStore:
         thread.start()
         try:
             yield
+        except (TaskCancelled, BudgetExceeded):
+            if self.defer_persistence:
+                self.checkpoint()
+            raise
+        else:
+            if self.defer_persistence:
+                self.checkpoint()
         finally:
             stop.set()
             thread.join()

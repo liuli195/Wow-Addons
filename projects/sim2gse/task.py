@@ -1526,7 +1526,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             return result
     except (TaskCancelled, BudgetExceeded) as error:
         try:
-            store.checkpoint()
+            store.flush_reports()
         except Exception as storage_error:
             store.discard_unsaved_reports()
             state.update(status='failed', elapsed_seconds=runtime.elapsed_seconds,

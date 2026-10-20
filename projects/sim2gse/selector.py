@@ -766,7 +766,7 @@ class MemorySelection:
         decision = receipt['decision_id']
         if decision not in self.feedback:
             valid = _finite(reward) and common_batches > 0
-            if valid:
+            if valid and decision > self.watermark:
                 self.learner.learn(receipt['context'], receipt['action_features'],
                                    float(reward), receipt['probability'])
             self.feedback[decision] = dict(status='learned' if valid else 'no_learn',
@@ -780,6 +780,7 @@ class MemorySelection:
         self.learner = learner
         self.learner._pred._pmfrng._randu = CobaRandom(rng)._randu
         self.version = record['version']
+        self.watermark = record['settled'].get(self.state['run_id'], 0)
         self.feedback.clear()
 
 

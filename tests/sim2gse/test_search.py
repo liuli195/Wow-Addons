@@ -1156,6 +1156,10 @@ class SearchAndValidationTests(TestCase):
                 shard.write_bytes(b'corrupt parquet')
                 second = run_task(source, Path(directory) / 'second', search_config=config)
 
+            with __import__('sqlite3').connect(Path(directory) / 'second' / 'task.sqlite3') as database:
+                persisted = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (batch_key,)).fetchone()[0])
+                self.assertEqual(persisted['status'], 'success')
+                self.assertEqual(TaskStore.load_state(database)['completed_batches'], 1)
             self.assertEqual(len(calls), 2)
             self.assertFalse(second['search']['records'][0]['batches'][0].get('cached', False))
             self.assertIsNotNone(result_store.one('batches', 'batch_key', batch_key)['report'])

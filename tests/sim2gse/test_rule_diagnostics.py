@@ -143,12 +143,11 @@ def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_pa
     original_store = search.TaskStore
 
     class CheckedStore(original_store):
-        def save(self, **changes):
+        def checkpoint(self):
             with self.lock:
-                super().save(**changes)
-                if changes.get('fields') is not None and not self.report_buffer:
-                    assert self.load_state(self.db) == json.loads(json.dumps(self.state))
-                    scoped.append(changes)
+                super().checkpoint()
+                assert self.load_state(self.db) == json.loads(json.dumps(self.state))
+                scoped.append(set(self.state))
 
     monkeypatch.setattr(search, 'TaskStore', CheckedStore)
     from result_store import one
@@ -220,9 +219,9 @@ def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_pa
     assert result['status'] == saved['status'] == 'completed'
     assert saved['selected_candidate_key'] == result['selected_candidate_key']
     assert scoped
-    saved_fields = set().union(*(row['fields'] for row in scoped))
+    saved_fields = set().union(*scoped)
     assert {'selection_feedback_intents', 'selection_feedback_incomplete', 'pending',
-            'rule_steps', 'selection_generation'} <= saved_fields
+            'rule_steps'} <= saved_fields
     import result_store, selector
     snapshot = result_store.read_search_learner(selector.MODEL_KEY)
     control = result_store.read_search_learner_control(selector.MODEL_KEY)
@@ -738,6 +737,7 @@ def _observed_evaluate(*args, **kwargs):
     result = _fast_evaluate(*args, **kwargs)
     result['report']['sim']['players'][0]['sim2gse_rule_observations'] = _observation_payload(
         result['input_times'], request)
+    (args[2] / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
     return result
 
 

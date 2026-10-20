@@ -343,7 +343,7 @@ def retest(profile, program, character, capabilities, native, folder, simulation
             batch_index=index, scenario='nominal', stats_version=STATS_VERSION, times=times,
             trace=False, report=result['report'])
         # 成功报告先可靠归档；取消之后保留该seed，再从缺口继续。
-        store.stage_report(key, cached, stored)
+        store.stage_report(key, cached, stored, report_path=folder / str(seed) / 'native.json')
         store.flush_reports()
         (folder / str(seed) / 'native.json').unlink(missing_ok=True)
         scores.append(summary['dps'])

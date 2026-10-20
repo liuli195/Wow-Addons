@@ -54,6 +54,10 @@ def test_selector_reserves_once_and_settles_shared_latest_model():
     assert trained['settled'] == {'one': 1}
     assert trained['reservations'] == [other]
     assert selector.settle(first, 0, 1)['status'] == 'already_settled'
+    recovered = selector.MemorySelection(dict(run_id='one', config=dict(random_seed=1)))
+    precision = recovered.learner._A_inv[0, 0]
+    assert recovered.settle(first, 0, 1)['status'] == 'learned'
+    assert recovered.learner._A_inv[0, 0] == precision
     with pytest.raises(selector.AlreadySettled):
         selector.reserve(_intent())
     assert selector.settle(other, None, 0, reason='no_common_batch')['status'] == 'no_learn'
