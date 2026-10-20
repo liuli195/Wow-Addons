@@ -142,8 +142,9 @@ class Timeline:
             phase = ('stopped' if status == 'completed' else 'incomplete') if second >= elapsed else (
                 'finalizing' if self.search_stop_seconds is not None and second >= self.search_stop_seconds
                 else 'searching')
-            samples.append(dict(seconds=second, dps=current['dps'] if current else None,
-                candidate_key=current['candidate_key'] if current else None, status=phase))
+            available = current if phase != 'incomplete' else None
+            samples.append(dict(seconds=second, dps=available['dps'] if available else None,
+                candidate_key=available['candidate_key'] if available else None, status=phase))
         return dict(schema_version=1, policy=self.policy, clock='outer_wall_seconds', status=status,
             events=self.events, checkpoints=self.checkpoints, samples=samples,
             actual_effective_path_count=self.actual_paths, search_stop_seconds=self.search_stop_seconds,
@@ -321,12 +322,18 @@ def main():
         runtime._create_process = real_process
         metadata['native_processes'] = native
         metadata['native_process_count'] = len(native)
-        try:
-            if timeline:
+        timeline_error = None
+        if timeline:
+            try:
                 timeline_data = timeline.finish(result.get('status', 'incomplete') if result else 'incomplete')
                 metadata['wall_seconds_including_finalization'] = timeline_data['call_seconds']
                 write(output / 'timeline.json', timeline_data)
                 metadata['timeline_file'] = 'timeline.json'
+            except Exception as error:
+                timeline_error = error
+                metadata.update(timeline_export_error=str(error),
+                    partial_timeline=dict(events=timeline.events, checkpoints=timeline.checkpoints))
+        try:
             if result:
                 searched = result.get('search') or {}
                 metadata.update(status=result.get('status'), search_result=result.get('search_result'),
@@ -363,10 +370,14 @@ def main():
         except (ValueError, OSError) as error:
             metadata.update(frozen_dependencies_unchanged=False, invalid_comparison=str(error))
         finally:
+            if timeline_error:
+                metadata.update(task_status=metadata.get('status'), status='incomplete')
             write(output / 'run-summary.json', metadata)
         if not metadata['source_unchanged'] or not metadata.get('frozen_dependencies_unchanged'):
             if 'error_type' not in metadata:
                 raise ValueError('Source or frozen dependencies changed during experiment')
+        if timeline_error and 'error_type' not in metadata:
+            raise RuntimeError('Timeline export failed; preserve this run, do not repeat the search') from timeline_error
 
 
 if __name__ == '__main__':
