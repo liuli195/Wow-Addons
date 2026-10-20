@@ -373,8 +373,9 @@ def character_seed_boundary(*, native_flags=None, native_reference=None):
             yield {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
 
 
+@pytest.mark.parametrize("old_engine", [False, True])
 def test_page_dual_scores_character_adapted_seed_without_changing_training(
-        tmp_path, memory_result_center):
+        tmp_path, memory_result_center, old_engine):
     import burst
     import result_store
     import seed_training
@@ -391,7 +392,8 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
         row = dict(candidate_id='standard-troll', condition='old-training',
             class_name='deathknight', spec='unholy', targets=5, program=original,
             family='community', score=99999., scores=[99999.] * 3,
-            template_sha256='standard-troll', engines=engines)
+            template_sha256='standard-troll', engines=({'baseline': 'previous', 'controlled': 'previous'}
+                                                     if old_engine else engines))
         result_store.write('seed_selected', 'deathknight-unholy-5-burst', [row],
                            schema=seed_training.SELECTED_SCHEMA)
         before = result_store.read_records('seed_selected', 'deathknight-unholy-5-burst')
