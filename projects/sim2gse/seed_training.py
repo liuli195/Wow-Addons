@@ -1323,7 +1323,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
             inputs['simulation_config'] != simulation_config or
             inputs['config']['input_interval_ms'] != input_interval_ms or
             (use_burst and training_burst_identity != burst_identity)):
-        snapshot['reason'] = '当前标准训练模板、引擎、场景或按法不适用'
+        snapshot['reason'] = '当前标准训练模板、场景或按法不适用'
         return snapshot
     batches, eligible = {}, []
     for row in rows:
@@ -1354,10 +1354,13 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                                 if entry['key']['specialization_id'] == definition['spec_id']
                                 and entry['key']['target_type'] == simulation_config['scene']}):
                         raise ValueError('训练爆发首次时点缺少相符的冻结起手凭据')
-                manifest = validate_training_identity(batch, inputs['template_sha'], engines,
+                # 这里只消费历史程序；原条件按来源引擎验真，不冒充当前引擎成绩。
+                manifest = validate_training_identity(batch, inputs['template_sha'],
+                    manifest['condition_input']['engines'],
                     inputs['config'], simulation_config, burst_context=context, rule_snapshot=inputs['rule_snapshot'])
                 batches[batch] = manifest
             manifest = batches[batch]
+            source_engines = manifest['condition_input']['engines']
             if row['condition'] != manifest['condition']:
                 raise ValueError('最终训练记录与完整条件凭据不符')
             checkpoint = folder / 'task.sqlite3'
@@ -1396,7 +1399,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                     saved = result_store.one('batches', 'batch_key', key, group_key=group)
                     if saved is None:
                         raise FileNotFoundError('最终复测报告缺失: ' + key)
-                    if decode(saved.get('engines')) != engines or saved.get('requested_iterations') != 128:
+                    if decode(saved.get('engines')) != source_engines or saved.get('requested_iterations') != 128:
                         raise ValueError('最终复测引擎或128次样本规则不符')
                     player = player_report(saved['report'], inputs['character'])
                     if (player.get('sim2gse_spec') != spec or player.get('race') != inputs['character'].race or
@@ -1414,7 +1417,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                 scores=scores, score=sum(scores) / 3, condition=row['condition'],
                 semantic_condition=manifest['semantic_condition'], condition_input=manifest['condition_input'],
                 semantic_versions=manifest['semantic_versions'], template_sha256=inputs['template_sha'],
-                engines=engines, class_name=class_name, spec=spec, targets=simulation_config['target_count'],
+                engines=source_engines, class_name=class_name, spec=spec, targets=simulation_config['target_count'],
                 task_path=str(folder), identity_path=str(batch / 'identity.json'), evidence=evidence))
         except (ValueError, KeyError, TypeError, FileNotFoundError, result_store.InvalidRecordError,
                 sqlite3.Error) as error:
@@ -1431,6 +1434,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
         except OSError as error:
             raise result_store.DataReadError('训练冠军原凭据暂时不可读: ' + str(error)) from error
     if eligible:
+        # 历史DPS仅用于选择起点来源；当前角色和引擎仍须适配并重新评分。
         winner = min(eligible, key=lambda item: (-item['score'], digest(item['program']), item['candidate_id']))
         snapshot.update(winner)
     return snapshot
@@ -1457,9 +1461,9 @@ def main(argv=None):
         command_parser.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
         command_parser.add_argument('--candidate-id', action='append', help='只训练指定登记材料；可重复传入，默认全部')
         command_parser.add_argument('--max-processes', type=int, choices=range(1, 17),
-                          help='覆盖每起点评分并发（缺省2，最多16）；与训练并发乘积≤16')
-        command_parser.add_argument('--max-trainings', type=int, choices=range(1, 9),
-                          help='覆盖唯一起点训练并发（缺省2，最多8）；与评分并发乘积≤16，目标场景仍顺序执行')
+                          help='覆盖每起点评分并发（缺省2，最多16）；与训练并发乘积≤20')
+        command_parser.add_argument('--max-trainings', type=int, choices=range(1, 11),
+                          help='覆盖唯一起点训练并发（缺省2，最多10）；与评分并发乘积≤20，目标场景仍顺序执行')
         command_parser.add_argument('--workspace', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.local/sim2gse/seed-training')
     checking = commands.add_parser('check', help='只读核对训练模板、引擎与审核适用性，不启动计算')
