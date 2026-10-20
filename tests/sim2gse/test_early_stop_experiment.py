@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from test_search import REPOSITORY, _fast_search_boundary, _guided_search_boundary, sample_profile
 from test_rule_diagnostics import _observed_evaluate
 
@@ -106,3 +108,39 @@ def test_experiment_timeline_records_initial_result_without_waiting_for_save(tmp
     assert output['samples'][-1]['seconds'] == 600
     assert output['samples'][-1]['status'] == 'stopped'
     assert Path(search.__file__).read_text(encoding='utf-8') == original
+
+
+def test_timeline_sampling_does_not_backfill_or_use_future_results():
+    runner = _runner()
+    timeline = runner.Timeline('on', clock=iter([0, 10.001, 20, 600.001, 605, 606]).__next__)
+    state = dict(chains=[{}] * 4, stop_reason='search_deadline')
+    for key, score, reason in [('a', 100, 'initial'), ('b', 110, 'global'), ('c', 120, 'global')]:
+        state['best'] = key
+        timeline.record('best', state,
+            dict(key=key, score=score, batches=[dict(samples=2)]), reason)
+    timeline.record('search_stopped', state)
+    output = timeline.finish('completed')
+    assert len(output['samples']) == 60
+    assert output['samples'][0]['dps'] is None
+    assert output['samples'][1]['dps'] == 110
+    assert output['samples'][-1]['dps'] == 110
+    assert output['events'][-1]['dps'] == 120
+    assert output['search_stop_seconds'] == 605
+    assert output['finalization_seconds'] == 1
+    assert output['result_saved_seconds'] == 606
+
+
+def test_timeline_rejects_changed_path_count_before_mutation_not_on_interrupt():
+    runner = _runner()
+    timeline = runner.Timeline('route-progress', expected_burst_start_ms=5000)
+    state = dict(chains=[{}] * 3, burst=dict(plan=dict(start_ms=5000)), stop_reason='cancelled')
+    with pytest.raises(ValueError, match='Expected 4 effective paths, got 3'):
+        timeline.record('paths', state)
+    state['chains'].append({})
+    state['burst']['plan']['start_ms'] = 6000
+    with pytest.raises(ValueError, match='Expected burst start 5000ms, got 6000'):
+        timeline.record('paths', state)
+    # Interrupted initialization remains an incomplete run, not a new path-count failure.
+    state['chains'] = []
+    timeline.record('search_stopped', state)
+    assert timeline.finish('cancelled')['stop_reason'] == 'cancelled'
