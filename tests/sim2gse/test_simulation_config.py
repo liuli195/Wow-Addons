@@ -58,9 +58,9 @@ class SimulationConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.toml'
             self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 2})
-            path.write_text('[training]\nmax_trainings=8\nmax_processes=2', encoding='utf-8')
-            self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 8})
-            for outer, inner in ((9, 1), (8, 3)):
+            path.write_text('[training]\nmax_trainings=10\nmax_processes=2', encoding='utf-8')
+            self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 10})
+            for outer, inner in ((11, 1), (10, 3)):
                 with self.subTest(outer=outer, inner=inner):
                     with self.assertRaises(ValueError):
                         load_training_config(path, max_trainings=outer, max_processes=inner)
