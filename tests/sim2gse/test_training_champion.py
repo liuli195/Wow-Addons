@@ -89,10 +89,20 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
                                   simulation_config=inputs['simulation_config'])
         _, capabilities, context = engine.prepare_loop(native, character, batch, TaskRuntime(600),
             definition=inputs['definition'], interval_ms=200)
+    from rule_config import load
+    from search import initial_programs
+    rule_snapshot = load()
+    if prepared_context is not None:
+        native = engine.reference(template, batch / 'scope-reference', character,
+                                  simulation_config=inputs['simulation_config'])
+    initialization = {}
+    initial_programs(capabilities, native, target_count=targets, scene=inputs['simulation_config']['scene'],
+        input_interval_ms=200, burst=context, initialization=initialization, rule_snapshot=rule_snapshot)
+    configuration_key = initialization['configuration_key']
     payload = seed_training.training_condition_input(inputs['template_sha'], inputs['engines'],
         inputs['config'], inputs['simulation_config'], burst_context=context)
     condition = seed_training.semantic_condition(payload, seed_training.semantic_versions())
-    manifest = dict(format=1, condition=condition, condition_input=payload,
+    manifest = dict(format=1, condition=condition, condition_input=payload, rule_snapshot=rule_snapshot,
         input_sha256=digest(payload), semantic_versions=seed_training.semantic_versions(),
         semantic_condition=condition, executions=[])
     (batch / 'standard.simc').write_text(raw, encoding='utf-8')
@@ -114,7 +124,7 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
                 store.db.backup(database, name='main')
         store.state.update(run_id=candidate_id, training_condition=condition,
             training_candidate_id=candidate_id, config=inputs['config'], capabilities=capabilities,
-            burst=context, phase='done')
+            burst=context, phase='done', rule_initialization=initialization)
         form = canonicalize_search_program(program, capabilities)['form']
         group = folder.name + '-retest-final'
         reports = []
@@ -126,6 +136,7 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
             receipt = dict(status='success', request=request, dps=score, samples=127,
                            variance=0., requested_iterations=128, data_key=key, storage_group_key=group)
             report = _fast_report(character, score, 127)
+            report['sim']['players'][0]['sim2gse_static_snapshot'] = native['static_snapshot']
             report['sim']['targets'] *= targets
             reports.append(result_store.prepare_batch(dict(batch_key=key, run_id=candidate_id,
                 purpose='seed_retest', seed=seed, input_seed=seed, iterations=128,
@@ -139,12 +150,12 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
         result_store.write('batches', group, reports)
         store.save()
         store.close()
-        rows.append(dict(candidate_id=candidate_id, condition=condition, status='completed', error='',
+        rows.append(dict(configuration_key=configuration_key, candidate_id=candidate_id, condition=condition, status='completed', error='',
             initial_program=program, program=program, family='plain', core_retained=False,
             rounds=2, stop_reason='no_improvement', elapsed_seconds=1., scores=scores,
             initial_scores=[99999.] * 3, comparison={}, task_path=str(folder),
             native_batch_starts=0, batch_requests=0, cache_hits=0))
-    result_store.write('seed_processed', inputs['scope'], rows, schema=seed_training.PROCESSED_SCHEMA)
+    result_store.write('seed_processed', seed_training.shared_scope(configuration_key), rows, schema=seed_training.PROCESSED_SCHEMA)
     return template, rows
 
 
@@ -206,7 +217,7 @@ def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypa
         report_engines=({mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
                         if wrong_report_engine else None))
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-    before = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
+    before = result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')))
     scene = dual_result(tmp_path, raw)['scenes'][0]
     champion = scene['training_champion_snapshot']
     if wrong_report_engine:
@@ -215,7 +226,7 @@ def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypa
         assert '复测引擎' in champion['excluded'][0]['reason']
         assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
                        for source in group)
-        assert result_store.read_records('seed_processed', 'deathknight-unholy-1-burst') == before
+        assert result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target'))) == before
         return
     assert champion['status'] == 'selected', champion
     assert champion['candidate_id'] == rows[0]['candidate_id']
@@ -227,7 +238,7 @@ def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypa
     assert adaptation['status'] in ('accepted', 'duplicate')
     assert adaptation['current_samples'] > 0
     assert 0 < adaptation['current_score'] < 99999.
-    assert result_store.read_records('seed_processed', 'deathknight-unholy-1-burst') == before
+    assert result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target'))) == before
 
 
 @pytest.mark.parametrize('fault', ['wrong_program', 'report_missing', 'report_corrupt', 'temporary_error'])
@@ -277,7 +288,7 @@ def test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_
             champion = seed_training.training_champion('deathknight', 'unholy',
                 simulation_config_for({'target_count': 1, 'scene': 'single_target'}),
                 engines={mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')},
-                input_interval_ms=200, use_burst=True,
+                input_interval_ms=200, use_burst=True, configuration_key=rows[0]['configuration_key'],
                 burst_identity=dict(spec_id=definition['spec_id'], definition_id=definition['definition_id']))
     assert champion['candidate_id'] == rows[0]['candidate_id']
     excluded = next(row for row in champion['excluded'] if row['candidate_id'] == high['candidate_id'])
@@ -355,11 +366,11 @@ def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arriv
         _, arrivals = completed_training(tmp_path, 1, [
             ([['death_coil'], ['outbreak'], ['death_coil']], [900.] * 3)], name='later', candidate_offset=1000)
         # 新训练确有完整更高成绩，但恢复不得重新选择本场冠军。
-        result_store.write('seed_processed', 'deathknight-unholy-1-burst', rows + arrivals,
+        result_store.write('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')), rows + arrivals,
                            schema=seed_training.PROCESSED_SCHEMA)
         api = result_store._api()
         def frozen_read(root, table, key, **kwargs):
-            if table == 'seed_processed' and key == 'deathknight-unholy-1-burst':
+            if table == 'seed_processed' and key == __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')):
                 raise OSError('恢复刷新了单目标训练库')
             return api['read_key'](root, table, key, **kwargs)
         patches.enter_context(patch.object(result_store, '_api', return_value=dict(api, read_key=frozen_read)))
@@ -385,7 +396,7 @@ def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failure
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     api = result_store._api()
     def read_key(root, table, key, **kwargs):
-        if table == 'seed_processed' and key == 'deathknight-unholy-1-burst':
+        if table == 'seed_processed' and key == __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')):
             raise OSError('temporary isolated processed storage error')
         return api['read_key'](root, table, key, **kwargs)
     with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)):
@@ -418,3 +429,65 @@ def test_dual_rejects_training_champion_from_previous_rule_configuration(
     champion = state['scenes'][0]['training_champion_snapshot']
     assert champion['status'] == 'absent'
     assert any('身份' in row['reason'] for row in champion['excluded'])
+
+
+def test_dual_seed_scope_is_exact_and_target_count_is_only_source_evidence(tmp_path,
+        memory_result_center, champion_engine):
+    import burst
+    import result_store
+    import seed_training
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    key = dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')
+    rows = [dict(configuration_key=key, candidate_id=f'scope-{index}', condition='source-condition',
+        class_name='deathknight', spec='unholy', targets=99,
+        program=[['outbreak'], dict(kind='WaitClicks', clicks=index + 2), ['death_coil']],
+        family=f'family-{index}', score=99999., scores=[99999.] * 3,
+        template_sha256='source-template', engines={}) for index in range(5)]
+    # 未证实英雄的旧行不混用；读取仍以四条为上限，数字目标数不再作共享门槛。
+    unknown = dict(rows[0], configuration_key=None, candidate_id='unknown', program=[['death_coil']])
+    result_store.write('seed_selected', seed_training.shared_scope(key), [unknown, *rows],
+                       schema=seed_training.SELECTED_SCHEMA)
+    other = dict(key, hero_talent='other_hero')
+    result_store.write('seed_selected', seed_training.shared_scope(other), [dict(rows[0],
+        configuration_key=other, candidate_id='other-hero')], schema=seed_training.SELECTED_SCHEMA)
+    result = dual_result(tmp_path, raw, candidate_limit=8)
+    single, aoe = result['scenes']
+    sources = [source for group in single['start_sources'].values() for source in group
+               if source['source_kind'] == 'seed_selected']
+    assert len(sources) == 4
+    assert not any(source['source_kind'] == 'seed_selected' for group in aoe['start_sources'].values()
+                   for source in group)
+    assert single['search_result']['dps'] != 99999.
+
+
+@pytest.mark.parametrize('fault', ['source_rules', 'report_hero'])
+def test_dual_rejects_unproved_training_hero_identity(tmp_path, monkeypatch,
+        memory_result_center, champion_engine, fault):
+    from copy import deepcopy
+    import burst
+    import result_store
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    _, rows = completed_training(tmp_path, 1, [([['death_coil']], [200.] * 3)])
+    if fault == 'source_rules':
+        identity_path = Path(rows[0]['task_path']).parent / 'identity.json'
+        identity = json.loads(identity_path.read_text(encoding='utf-8'))
+        identity['rule_snapshot']['pack']['identity_mappings']['hero_talents']['sample_hero'] = 999
+        identity_path.write_text(json.dumps(identity), encoding='utf-8')
+    else:
+        read = result_store.one
+        def wrong_hero(table, *args, **kwargs):
+            saved = read(table, *args, **kwargs)
+            if table == 'batches' and saved is not None and saved.get('purpose') == 'seed_retest':
+                saved = deepcopy(saved)
+                report = saved['report']
+                if isinstance(report, str):
+                    report = json.loads(report)
+                report['sim']['players'][0]['sim2gse_static_snapshot']['hero_subtree_ids'] = [999]
+                saved['report'] = report
+            return saved
+        monkeypatch.setattr(result_store, 'one', wrong_hero)
+    champion = dual_result(tmp_path, raw, candidate_limit=1)['scenes'][0]['training_champion_snapshot']
+    assert champion['status'] == 'absent'
+    assert champion['excluded'][0]['status'] == 'invalid'
