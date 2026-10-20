@@ -86,18 +86,28 @@ def test_experiment_timeline_records_initial_result_without_waiting_for_save(tmp
 
     def observed(kind, state, row=None, reason=None):
         if kind == 'best':
-            observations.append((row['key'], state.get('completed_batches', 0)))
+            observations.append(('best', row['key']))
         original_record(kind, state, row, reason)
+
+    real_checkpoint = search.TaskStore.checkpoint
+
+    def checkpoint(store):
+        value = real_checkpoint(store)
+        observations.append(('checkpoint', store.state.get('best')))
+        return value
 
     namespace['_experiment_event'] = observed
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
-    with _fast_search_boundary(), patch.object(search, 'optimize', namespace['optimize']):
+    with _fast_search_boundary(), patch.object(search, 'optimize', namespace['optimize']), \
+            patch.object(search.TaskStore, 'checkpoint', checkpoint):
         result = run_task(source, tmp_path / 'task', search_config=dict(
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
             max_processes=1))
     output = timeline.finish(result['status'])
-    assert observations == [(result['locked_candidate_key'], 0)]
+    winner = result['locked_candidate_key']
+    assert [item for item in observations if item[0] == 'best'] == [('best', winner)]
+    assert observations.index(('best', winner)) < observations.index(('checkpoint', winner))
     assert output['events'][0]['kind'] == 'initial'
     assert output['events'][0]['dps'] == result['search_result']['dps']
     assert output['events'][0]['candidate_key'] == result['locked_candidate_key']
@@ -128,6 +138,14 @@ def test_timeline_sampling_does_not_backfill_or_use_future_results():
     assert output['search_stop_seconds'] == 605
     assert output['finalization_seconds'] == 1
     assert output['result_saved_seconds'] == 606
+    failed = runner.Timeline('on', clock=iter([0, 5, 12]).__next__)
+    state['best'] = 'a'
+    failed.record('best', state, dict(key='a', score=100, batches=[dict(samples=2)]), 'initial')
+    partial = failed.finish('failed')
+    assert partial['samples'][0]['dps'] == 100
+    assert partial['samples'][1] == dict(seconds=20, dps=None, candidate_key=None, status='incomplete')
+    assert partial['samples'][-1]['dps'] is None
+    assert partial['events'][0]['dps'] == 100
 
 
 def test_timeline_rejects_changed_path_count_before_mutation_not_on_interrupt():
