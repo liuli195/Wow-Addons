@@ -711,13 +711,13 @@ def _rule_hashes(*, relative_to=None):
             for path in sources}
 
 
-def _seed_programs(starts, snapshot, *, character, targets,
+def _seed_programs(starts, snapshot, *, character, targets, configuration_key,
                    capabilities, runtime):
     """Append selected programs after role mapping and shared export checks."""
     if not snapshot:
         return starts, []
     from program import canonicalize_search_program
-    from seed_training import filter_search_program
+    from seed_training import filter_search_program, decode
     from codec import load_targeting, prepare_block, prepare_castsequence
 
     def check_program(program, target_masks):
@@ -791,7 +791,8 @@ def _seed_programs(starts, snapshot, *, character, targets,
         if len(added) >= 4:
             break
         if (not isinstance(row, dict) or row.get('class_name') != character.class_name
-                or row.get('spec') != character.spec or row.get('targets') != targets):
+                or row.get('spec') != character.spec
+                or decode(row.get('configuration_key')) != configuration_key):
             continue
         program = row.get('program')
         if isinstance(program, str):
@@ -1340,21 +1341,6 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                          simulation_options=engine_options(simulation_config))
             state.setdefault('phase', 'initialize')
             if state['phase'] == 'initialize':
-                if 'seed_selected_snapshot' not in state:
-                    from result_store import read_records
-                    scope = f"{character.class_name}-{character.spec}-{simulation_config['target_count']}"
-                    if use_burst:
-                        scope += '-burst'
-                    state['seed_selected_snapshot'] = read_records('seed_selected', scope)
-                if 'training_champion_snapshot' not in state:
-                    from seed_training import training_champion
-                    state['training_champion_snapshot'] = training_champion(
-                        character.class_name, character.spec, simulation_config, engines=identities,
-                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst, rule_snapshot=rule_snapshot,
-                        burst_identity=(dict(spec_id=definition['spec_id'],
-                                             definition_id=definition['definition_id']) if definition else None))
-                # 冠军与代表快照随 inflight 同一事务冻结，先于任何原生评分。
-                # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
                 try:
@@ -1405,6 +1391,20 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         destination / 'aligned-burst-export', runtime)
                     condition = digest(dict(base=base_condition, burst=state['burst']))
                     state['condition'] = condition
+                configuration_key = state['rule_initialization']['configuration_key']
+                from seed_training import shared_scope, training_champion
+                from result_store import read_records
+                # 原生快照绑定英雄后才冻结共享成果；恢复不得沿用旧的宽范围快照。
+                if state.get('seed_configuration_key') != configuration_key:
+                    state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
+                    state['training_champion_snapshot'] = training_champion(
+                        character.class_name, character.spec, simulation_config, engines=identities,
+                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
+                        rule_snapshot=rule_snapshot, configuration_key=configuration_key,
+                        burst_identity=(dict(spec_id=definition['spec_id'],
+                                             definition_id=definition['definition_id']) if definition else None))
+                    state['seed_configuration_key'] = configuration_key
+                    store.save()
                 if 'formal_champion_snapshot' not in state:
                     snapshot = _freeze_formal_champion(state, character, native, capabilities)
                     if state.get('formal_history_scope'):
@@ -1415,12 +1415,12 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     store.save()
                 state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
-                    targets=simulation_config['target_count'],
+                    targets=simulation_config['target_count'], configuration_key=configuration_key,
                     capabilities=capabilities, runtime=runtime)
                 champion = state['training_champion_snapshot']
                 state['starts'], adaptations = _seed_programs(
                     state['starts'], [champion] if champion.get('status') == 'selected' else [],
-                    character=character, targets=simulation_config['target_count'],
+                    character=character, targets=simulation_config['target_count'], configuration_key=configuration_key,
                     capabilities=capabilities, runtime=runtime)
                 state['training_champion_adaptation'] = adaptations[0] if adaptations else None
                 from program import canonicalize_search_program
