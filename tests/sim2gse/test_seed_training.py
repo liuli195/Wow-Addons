@@ -552,9 +552,9 @@ def test_upgrade_postcheck_checks_current_rule_identity_and_retest_keys(tmp_path
 
 
 @pytest.mark.parametrize(('arguments', 'parse_failure'), [(['--max-processes', '0'], True),
-    (['--max-trainings', '9', '--max-processes', '1'], True),
-    (['--max-trainings', '8', '--max-processes', '3'], False),
-    (['--max-trainings', '3', '--max-processes', '6'], False)])
+    (['--max-trainings', '11', '--max-processes', '1'], True),
+    (['--max-trainings', '10', '--max-processes', '3'], False),
+    (['--max-trainings', '3', '--max-processes', '7'], False)])
 def test_training_command_rejects_invalid_parallelism_before_compute(tmp_path, monkeypatch, arguments, parse_failure):
     from seed_training import main
     def forbidden_process(*args, **kwargs):
@@ -1166,12 +1166,14 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     import threading
     import time
 
-    outer, inner = 8, 2
+    outer, inner = 10, 2
     programs = [[['outbreak'], ['death_coil'], ['scourge_strike']],
                 [['death_coil'], ['scourge_strike'], ['outbreak']],
                 [['scourge_strike'], ['outbreak'], ['death_coil']]]
     programs += [program + [[action]] for program in programs[:2]
                  for action in ('outbreak', 'death_coil', 'scourge_strike')]
+    programs += [programs[2] + [[action]] for action in ('outbreak', 'death_coil')]
+    assert len(programs) == 11
     for index, program in enumerate(programs):
         path = tmp_path / f'source-{index}.json'
         path.write_text(json.dumps(dict(label=str(index), source_id=f'parallel-{index}',
@@ -1230,7 +1232,7 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
                 running[path] = running.get(path, 0) + 1
                 assert running[path] <= inner
             return observed(*args, **kwargs)
-        # 排除每条路径初始带轨迹批次，等到8条路径各有2路真实同层评分在途。
+        # 排除每条路径初始带轨迹批次，等到10条路径各有2路真实同层评分在途。
         with patch.object(sequence, 'evaluate', side_effect=counted):
             assert command(tmp_path, args) == 0
     output = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
