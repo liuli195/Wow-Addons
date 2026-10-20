@@ -1444,6 +1444,9 @@ def freeze_selection_feedback(store, work, rows, *, reason=None):
         'rule_steps', 'pending', 'search_observability', 'errors'))
 
 
+TRAINING_STOP_POLICY = 'two-unimproved-rounds-v1'
+
+
 def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cancel_event=None):
     """补共享反馈后再补任务状态；已评分恢复不重新模拟/重新学习。"""
     intents = store.state.get('selection_feedback_intents', {})
@@ -1469,6 +1472,8 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
         if not hasattr(store, 'diagnostic_runtimes'):
             store.diagnostic_runtimes = []
         store.diagnostic_runtimes.append(recovery)
+    feedback_budget = (math.inf if store.state.get('training_stop_policy') == TRAINING_STOP_POLICY else
+                       store.state.get('config', {}).get('total_budget_seconds', math.inf))
     pending_frozen = finalizing
     stopped = False
     def freeze_pending():
@@ -1484,7 +1489,7 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
             intents = store.state.get('selection_feedback_intents', {})
             if deferred:
                 intents = dict(intents)
-        if sparse and not deferred and not pending_frozen and elapsed_before >= store.state.get('config', {}).get('total_budget_seconds', math.inf):
+        if sparse and not deferred and not pending_frozen and elapsed_before >= feedback_budget:
             freeze_pending()
             intents = store.state.get('selection_feedback_intents', {})
             pending_frozen = True
@@ -1494,7 +1499,7 @@ def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cance
             # 补发本身也可能耗尽任务；仍沿同一收尾截止补齐剩余意图。
             if (not sparse and runtime is None and not pending_frozen and
                     elapsed_before + time.monotonic()-started >=
-                    store.state.get('config', {}).get('total_budget_seconds', math.inf)):
+                    feedback_budget):
                 freeze_pending()
                 intents = store.state.get('selection_feedback_intents', {})
                 pending_frozen = True
@@ -2438,7 +2443,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return _score(left) > _score(right)
 
     def search():
-        runtime.phase_limit = min(config['search_budget_seconds'], config['total_budget_seconds'])
+        runtime.phase_limit = (runtime.budget_seconds if training else
+                               min(config['search_budget_seconds'], config['total_budget_seconds']))
         if state.get('stop_reason') == 'cancelled':
             state.pop('stop_reason')
         initialization = state.get('rule_initialization')
@@ -2459,16 +2465,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         if not state['archive'] and not state['pending']:
             with store.lock:
                 state['pending'] = []
-                for program in starts[:config['candidate_limit']]:
+                for program in (starts if training else starts[:config['candidate_limit']]):
                     work = dict(program=program, start=True)
                     if observability:
                         work.update(observation_id=reserve_initial_observation(),
                                     observation_actual_mutation='initial')
                     state['pending'].append(work)
                 store.save()
-        while len(state['evaluated_keys']) < config['candidate_limit'] or state['pending']:
+        while training or len(state['evaluated_keys']) < config['candidate_limit'] or state['pending']:
             runtime.check()
-            if (state['pending'] and len(state['evaluated_keys']) >= config['candidate_limit']
+            if (not training and state['pending'] and len(state['evaluated_keys']) >= config['candidate_limit']
                     and candidate_key(state['pending'][0]['program']) not in state['evaluated_keys']):
                 state['stop_reason'] = 'candidate_limit'
                 store.save()
@@ -2490,7 +2496,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     while state['chains'][lane_index].get('stalled'):
                         lane_index = (lane_index + 1) % len(state['chains'])
                     generation = dict(lane=lane_index, parent=state['chains'][lane_index]['best'], selected=0,
-                        limit=min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys'])))
+                        limit=(config['round_candidate_limit'] if training else
+                               min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys']))))
                     state['selection_generation'] = generation
                     flushed_reports = bool(store.report_buffer)
                     store.flush_reports()
