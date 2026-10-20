@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -162,3 +163,32 @@ def test_timeline_rejects_changed_path_count_before_mutation_not_on_interrupt():
     state['chains'] = []
     timeline.record('search_stopped', state)
     assert timeline.finish('cancelled')['stop_reason'] == 'cancelled'
+
+
+def test_original_product_supports_route_progress_timeline_without_invented_checkpoints():
+    runner = _runner()
+    source = subprocess.check_output([
+        'git', '-C', str(REPOSITORY), 'show',
+        '80cb3a8b67ca5b86a23b95cec7f6256e79d70b18:projects/sim2gse/search.py',
+    ], encoding='utf-8')
+    effective = runner.experiment_source(source, 'route-progress', observe=True)
+    compile(effective, '<original-experiment-search>', 'exec')
+    assert "_experiment_event('paths', state)" in effective
+    assert "_experiment_event('best', state, current," in effective
+    assert effective.count("_experiment_event('search_stopped', state)") == 2
+    assert "_experiment_event('checkpoint', state)" not in effective
+    assert 'store.checkpoint()' not in effective
+    with pytest.raises(ValueError, match='timeline observation site'):
+        runner.experiment_source(source.replace('if all(chain.get', 'if any(chain.get'),
+                                 'route-progress', observe=True)
+    timeline = runner.Timeline('route-progress', expected_burst_start_ms=3000)
+    state = dict(chains=[{}] * 4, burst=dict(plan=dict(start_ms=3000)),
+                 stop_reason='no_improvement')
+    timeline.record('paths', state)
+    state['burst']['plan']['start_ms'] = 5000
+    with pytest.raises(ValueError, match='Expected burst start 3000ms, got 5000'):
+        timeline.record('paths', state)
+    timeline.record('search_stopped', state)
+    output = timeline.finish('completed')
+    assert output['checkpoints'] == []
+    assert len(output['samples']) == 60
