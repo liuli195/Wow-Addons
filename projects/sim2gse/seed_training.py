@@ -1458,8 +1458,8 @@ def main(argv=None):
         command_parser.add_argument('--candidate-id', action='append', help='只训练指定登记材料；可重复传入，默认全部')
         command_parser.add_argument('--max-processes', type=int, choices=range(1, 17),
                           help='覆盖每起点评分并发（缺省2，最多16）；与训练并发乘积≤16')
-        command_parser.add_argument('--max-trainings', type=int, choices=range(1, 4),
-                          help='覆盖唯一起点训练并发（缺省2，最多3）；目标场景仍顺序执行')
+        command_parser.add_argument('--max-trainings', type=int, choices=range(1, 9),
+                          help='覆盖唯一起点训练并发（缺省2，最多8）；与评分并发乘积≤16，目标场景仍顺序执行')
         command_parser.add_argument('--workspace', type=Path, default=Path(__file__).resolve().parents[2] /
                           '.local/sim2gse/seed-training')
     checking = commands.add_parser('check', help='只读核对训练模板、引擎与审核适用性，不启动计算')
