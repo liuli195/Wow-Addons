@@ -75,12 +75,12 @@ def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_pro
         challenger = [['death_coil']] * 7 + [dict(kind='WaitClicks', clicks=3), ['outbreak']]
         _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')
         engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
-        selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
+        selected = [dict(configuration_key=rows[0]['configuration_key'], candidate_id='selected-' + str(index), condition=rows[0]['condition'],
             class_name='deathknight', spec='unholy', targets=1,
             program=[['outbreak'], dict(kind='WaitClicks', clicks=2 + index), ['death_coil']],
             family='family-' + str(index), score=100., scores=[100.] * 3,
             template_sha256='selected-template', engines=engines) for index in range(4)]
-        result_store.write('seed_selected', 'deathknight-unholy-1-burst', selected,
+        result_store.write('seed_selected', seed_training.shared_scope(rows[0]['configuration_key']), selected,
                            schema=seed_training.SELECTED_SCHEMA)
         second = dual_result(tmp_path / 'second', raw, candidate_limit=10, validation_batches=2)
         scene = second['scenes'][0]
@@ -322,6 +322,7 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
         result['summary']['dps'] = score
         sim = result['report']['sim']
         sim['statistics']['raid_dps']['mean'] = sim['players'][0]['collected_data']['dps']['mean'] = score
+        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
         return result
 
     def no_initial_champion(root, table, key, rows, **kwargs):
