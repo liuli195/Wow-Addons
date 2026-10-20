@@ -317,14 +317,14 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
     source.write_text(json.dumps({key: value for key, value in candidate.items()
                                   if key != 'candidate_id'}), encoding='utf-8')
     seed_training.register(source)
-    legacy = dict(candidate_id='old-selected', condition='old', class_name='deathknight',
+    legacy = dict(configuration_key=None, candidate_id='old-selected', condition='old', class_name='deathknight',
                   spec='unholy', targets=1, program=[['army_of_the_dead']], family='old',
                   score=1., scores=[1.], template_sha256='old', engines={})
     result_store.write('seed_selected', 'deathknight-unholy-1', [legacy], schema=seed_training.SELECTED_SCHEMA)
     before = result_store.read_records('seed_selected', 'deathknight-unholy-1')
     outcome = seed_training.run_training(profile, 1, tmp_path / 'training', use_burst=True)
     assert outcome['status'] == 'completed'
-    processed = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
+    processed = result_store.read_records('seed_processed', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')))
     assert len(processed) == 1 and processed[0]['status'] == 'rejected'
     assert '仅剩一个成员' in processed[0]['error']
     assert json.loads(processed[0]['initial_program']) == [dict(kind='Loop', count=2, blocks=[['outbreak']]),
@@ -389,14 +389,14 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
                 ['death_coil'], ['outbreak']]
     expected = [['auto_attack'], ['outbreak'], ['death_coil'], ['outbreak']]
     with character_seed_boundary() as engines:
-        row = dict(candidate_id='standard-troll', condition='old-training',
+        row = dict(configuration_key=dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe'), candidate_id='standard-troll', condition='old-training',
             class_name='deathknight', spec='unholy', targets=5, program=original,
             family='community', score=99999., scores=[99999.] * 3,
             template_sha256='standard-troll', engines=({'baseline': 'previous', 'controlled': 'previous'}
                                                      if old_engine else engines))
-        result_store.write('seed_selected', 'deathknight-unholy-5-burst', [row],
+        result_store.write('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe')), [row],
                            schema=seed_training.SELECTED_SCHEMA)
-        before = result_store.read_records('seed_selected', 'deathknight-unholy-5-burst')
+        before = result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe')))
         server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
             candidate_limit=8, batch_targets=(2,), iterations=2, validation_batches=1,
             final_batches=1, final_iterations=2, scenarios=('nominal',))))
@@ -444,7 +444,7 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
             assert [(item['path'], item['action']) for item in adaptation['removed']] == [
                 ('segments[0][0]', 'berserking'), ('segments[2][0]', 'soul_reaper')]
             assert all(item['reason'] for item in adaptation['removed'])
-            assert result_store.read_records('seed_selected', 'deathknight-unholy-5-burst') == before
+            assert result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe'))) == before
         finally:
             for _, handle in server.tasks.values():
                 if not handle.done:
