@@ -11,6 +11,111 @@ from test_rule_initialization import _configure_opener, _opener_pack
 from test_search import _apl_task_boundary, _fast_evaluate, _initialized_starts
 
 
+def test_public_search_keeps_intermediate_results_in_memory_until_user_pause(
+        tmp_path, monkeypatch, installed_data_store_api):
+    """界面的启动/取消/读取/继续接口共用真实选择器与隔离结果中心。"""
+    from collections import Counter
+    import threading
+    import sequence
+    import result_store
+    import selector
+    from task import cancel_task, start_task
+
+    _configure_opener(tmp_path, monkeypatch, _condition_pack())
+    native = apl_pool_reference()
+    for row in native['static_snapshot']['actions']:
+        row['gcd_ms'] = 200
+    source = tmp_path / 'role.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    destination = tmp_path / 'task'
+    ready_to_pause = threading.Event()
+    completed_scores = []
+    premature_publications = []
+    active_runtime = None
+    ordinary_requests = 0
+    interrupted_once = False
+    real_write = installed_data_store_api['write']
+
+    def write(root, table, key, rows, **kwargs):
+        # 外部存储边界；小进度摘要和引擎必要交换文件不属报告/模型发布。
+        if active_runtime is not None and not active_runtime.cancel_event.is_set():
+            if table in ('search_learners', 'search_learner_controls') or (
+                    table == 'batches' and any(row.get('purpose') in
+                        ('search', 'diagnostic', 'validation') for row in rows)):
+                premature_publications.append((table, key))
+        return real_write(root, table, key, rows, **kwargs)
+
+    def evaluate(*args, **kwargs):
+        nonlocal active_runtime, ordinary_requests, interrupted_once
+        active_runtime = kwargs['runtime']
+        observed = kwargs.get('rule_observation_request') is not None
+        if not observed:
+            ordinary_requests += 1
+            # 四个起点和第一个已选择子候选完成后，由公开取消接口暂停。
+            if ordinary_requests == 6 and not interrupted_once:
+                interrupted_once = True
+                ready_to_pause.set()
+                assert active_runtime.cancel_event.wait(20), '公开取消信号未送达外部评分边界'
+                active_runtime.check()
+        result = (_observed_evaluate if observed else _fast_evaluate)(*args, **kwargs, score=100.0)
+        # 与真实引擎相同，完整报告只写入本次既有native.json交换文件。
+        (args[2] / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+        if not observed:
+            completed_scores.append((
+                tuple(tuple(command['simc_action'] for command in block) for block in args[1]['blocks']),
+                kwargs['seed'], kwargs['iterations']))
+        return result
+
+    monkeypatch.setitem(installed_data_store_api, 'write', write)
+    with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=evaluate):
+        handle = start_task(source, destination, simulation_config=dict(scene='single_target'),
+            search_config=dict(total_budget_seconds=60, input_interval_ms=200,
+                candidate_limit=6, round_candidate_limit=1, max_processes=1,
+                batch_targets=(2,), iterations=2, validation_batches=1))
+        try:
+            assert ready_to_pause.wait(20), f'搜索未到主动暂停接缝: {handle.error!r}'
+            live = read_task(destination)
+            assert live['status'] == 'running' and live['elapsed_seconds'] > 0
+            # 在用户暂停前固定观测，恢复后的正常结束不计入计算期发布。
+            computing_publications = list(premature_publications)
+            cancel_task(handle)
+            handle.join(10)
+            assert handle.done and handle.error is None, repr(handle.error)
+            paused = read_task(destination, include_search_records=True)
+            assert paused['status'] == 'cancelled'
+            assert len(paused['search']['records']) == 5
+            learned, = [step['selection'] for step in paused['search']['rule_steps'].values()
+                        if step.get('selection', {}).get('feedback', {}).get('status') == 'learned']
+            assert len(learned['context']) == 50 and len(learned['action_features']) == 21
+            assert 0 < learned['probability'] <= 1 and learned['feedback']['reward'] == 0
+            shared = result_store.read_search_learner(selector.MODEL_KEY)
+            assert shared['settled'][paused['run_id']] >= learned['decision_id']
+            completed_before_resume = Counter(completed_scores)
+            before_records = {row['key']: row['score'] for row in paused['search']['records']}
+            for record in paused['search']['records']:
+                for receipt in record['batches'] + record.get('diagnostic_batches', []):
+                    report = result_store.one('batches', 'batch_key', receipt['data_key'])
+                    assert report is not None and report['dps'] == receipt['dps']
+
+            resume_task(destination)
+            resumed = read_task(destination, include_search_records=True)
+            assert resumed['status'] == 'completed' and len(resumed['search']['records']) == 6
+            assert before_records.items() <= {
+                row['key']: row['score'] for row in resumed['search']['records']}.items()
+            completed_after_resume = Counter(completed_scores)
+            assert all(completed_after_resume[key] == count
+                       for key, count in completed_before_resume.items())
+            same_decision, = [step['selection'] for step in resumed['search']['rule_steps'].values()
+                             if step.get('selection', {}).get('decision_id') == learned['decision_id']]
+            assert same_decision['feedback'] == learned['feedback']
+            assert computing_publications == [], (
+                '无全局晋升的计算期不应发布报告或共享模型', computing_publications)
+        finally:
+            if not handle.done:
+                cancel_task(handle)
+                handle.join(10)
+
+
 def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_path, monkeypatch):
     import sequence, search
     scoped = []
