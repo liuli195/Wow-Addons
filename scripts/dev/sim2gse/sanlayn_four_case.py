@@ -8,6 +8,7 @@ External training evidence stays at its original path (path is part of its ident
 Each invocation copies the same snapshot to a fresh isolated writable center.
 Default is preflight only. Never use an existing case output for a second invocation.
 For the current two-case MVP use --timeline with both on and route-progress.
+The original-product supplementary run also requires --expected-burst-start-ms 3000.
 It records data only; comparison charts are rendered offline, not by the product.
 """
 from pathlib import Path
@@ -71,19 +72,25 @@ def experiment_source(source, early_stop, *, observe=False):
     elif early_stop == 'off':
         source = source.replace(STOP, 'if False and ' + STOP[3:], 1)
     if observe:
+        modern_paths = "                if generation is None:\n                    if all("
+        original_paths = "            if not state['pending']:\n                if all("
+        modern = modern_paths in source
+        if not modern and 'store.checkpoint()' in source:
+            raise ValueError('Unknown timeline observation site layout')
         replacements = [
-            ("                if generation is None:\n                    if all(",
+            (modern_paths,
              "                if generation is None:\n"
-             "                    _experiment_event('paths', state)\n                    if all("),
+             "                    _experiment_event('paths', state)\n                    if all(")
+            if modern else
+            (original_paths,
+             "            if not state['pending']:\n"
+             "                _experiment_event('paths', state)\n                if all("),
             ("            state['seen'].append(key)\n",
              "            if current and (global_promoted or (len(state['archive']) == 1\n"
              "                    and state['best'] == current['key'])):\n"
              "                _experiment_event('best', state, current,\n"
              "                    'global' if global_promoted else 'initial')\n"
              "            state['seen'].append(key)\n"),
-            ("            if current and global_promoted:\n                store.checkpoint()\n",
-             "            if current and global_promoted:\n                store.checkpoint()\n"
-             "                _experiment_event('checkpoint', state)\n"),
             ("            search()\n        except (BudgetExceeded, TaskCancelled) as error:\n",
              "            search()\n            _experiment_event('search_stopped', state)\n"
              "        except (BudgetExceeded, TaskCancelled) as error:\n"),
@@ -91,6 +98,11 @@ def experiment_source(source, early_stop, *, observe=False):
              "                                    else 'search_deadline')\n"
              "            _experiment_event('search_stopped', state)\n            pending_outcome"),
         ]
+        if modern:
+            replacements.append(
+                ("            if current and global_promoted:\n                store.checkpoint()\n",
+                 "            if current and global_promoted:\n                store.checkpoint()\n"
+                 "                _experiment_event('checkpoint', state)\n"))
         for original, replacement in replacements:
             if source.count(original) != 1:
                 raise ValueError('Expected exactly one timeline observation site: ' + original.strip())
@@ -173,6 +185,8 @@ def main():
     parser.add_argument('--source-manifest', type=Path)
     parser.add_argument('--early-stop', choices=('on', 'off', 'route-progress'), required=True)
     parser.add_argument('--timeline', action='store_true', help='Record MVP wall-clock DPS events and 60 samples')
+    parser.add_argument('--expected-burst-start-ms', type=int, choices=(3000, 5000), default=5000,
+                        help='Frozen first burst: original product 3000, current product 5000')
     parser.add_argument('--run', action='store_true')
     args = parser.parse_args()
     if args.early_stop == 'route-progress' and not args.timeline:
@@ -280,7 +294,9 @@ def main():
     finally:
         runtime._create_process = real_process
     metadata = dict(commit=args.expected_commit, actual_head=actual_head, product_tree=product_tree, repo=str(root), input_sha256=INPUT_SHA,
-        early_stop=args.early_stop, timeline_enabled=args.timeline, loaded_modules=loaded_modules, config=config, simulation_config=simulation, engines=engines,
+        early_stop=args.early_stop, timeline_enabled=args.timeline,
+        expected_burst_start_ms=args.expected_burst_start_ms,
+        loaded_modules=loaded_modules, config=config, simulation_config=simulation, engines=engines,
         original_source_sha256=sha(project / 'search.py'),
         effective_search_sha256=hashlib.sha256(effective.encode()).hexdigest(),
         snapshot_manifest_sha256=sha(args.snapshot_manifest), source_sha256=source_hashes,
@@ -307,7 +323,8 @@ def main():
         return process
     runtime._create_process = observed_process
     write(output / 'run-started.json', dict(started_unix=time.time()))
-    timeline = Timeline(args.early_stop, expected_burst_start_ms=5000) if args.timeline else None
+    timeline = Timeline(args.early_stop,
+        expected_burst_start_ms=args.expected_burst_start_ms) if args.timeline else None
     started, result = timeline.started if timeline else time.perf_counter(), None
     if timeline:
         search._experiment_event = timeline.record
