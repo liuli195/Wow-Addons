@@ -52,8 +52,8 @@ prepare使用与run相同的整理、合法性、归一化和编译管道，不�
 .venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" register "清洗件.json"
 .venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" check
 .venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" run
-.venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" list --state selected --targets 1
-.venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" list --state processed --targets 5
+.venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" list --state selected --specialization-id 252 --hero-talent sanlayn --target-type single_target
+.venv/Scripts/python.exe projects/sim2gse/seed_training.py --project "D:\My Project\Wow Addons" list --state processed --specialization-id 252 --hero-talent sanlayn --target-type aoe
 ```
 
 专项验收可在`run`命令重复传入`--candidate-id <已登记材料编号>`，只处理这些明确材料，避免全量训练。默认仍读取全部待处理材料及历史起点。错误、不可表达或角色不匹配的编号在真实计算前拒绝；每件600秒预算、连续两轮无改善及三种子128轮独立复测不变。新复测批次保存引擎、条件及程序身份摘要，升级核验只读摘要即可核对来源。
@@ -113,3 +113,12 @@ max_processes = 2
 预训练规则已升级为seed-training-v2（第二版训练规则）。旧五轮处理记录保留原条件，不作为新规则完成证据；下次人工启动训练会按新条件重新处理。正常搜索不会自动重训。此前82份材料的全量成绩仍属于旧五轮规则。
 
 不足16候选的一轮不会增加无改善次数；若该轮确认改善全局最佳，仍清零。正常搜索与预训练共用此判断。
+
+
+### 起点共享范围
+
+训练保存、入选代表读取及训练冠军选择统一使用规则配置的三元身份：specialization_id（专精）、hero_talent（英雄天赋）、target_type（目标类型）。身份来自真实原生快照与既有规则绑定，不从角色名或模板文件名猜测。具体目标数、角色模板和引擎仍保留在原训练条件及来源证据中，不作为共享主键。
+
+每个共享范围最多4个入选代表，保留原单条件家族选优和行为去重；另从同范围通过原最终三种子复测验真的完成记录中挑选均值最高的1个训练冠军。历史冠军仍严格绑定当前角色和条件，普通搜索保持4+4+2。历史均值仅用于挑选来源，所有复用程序仍须当前适配、编译与重评分。选择模型范围不变。
+
+查询新范围时同时提供上述三个参数；未提供时保留旧键查询语义。旧记录不删除、不猜英雄；使用原工作目录再次运行公开训练入口时，只有完整身份可验证的当前条件记录才可恢复到已验证的新共享范围。缺原凭据的旧记录继续保留但不混入新范围。本变更不增加归档或清理机制，原任务目录和已归档复测证据仍是现有训练冠军验真所需。
