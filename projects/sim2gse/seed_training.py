@@ -19,7 +19,7 @@ import sys
 import uuid
 
 import result_store
-from search import digest, config_for, TaskStore, optimize, summarize_pairs
+from search import digest, config_for, TaskStore, optimize, summarize_pairs, TRAINING_STOP_POLICY
 from runtime import TaskRuntime, BudgetExceeded, TaskCancelled, diagnostic_summary
 
 CANDIDATE_SCHEMA = dict(candidate_id='VARCHAR', label='VARCHAR', class_name='VARCHAR',
@@ -669,7 +669,8 @@ def _execution_state(state):
 def _write_execution(batch, manifest, candidate_id, config, state, *, max_trainings=None):
     from engine import ROOT
     from task import _rule_hashes, _write_json
-    segment = dict(candidate_id=candidate_id, started_at=datetime.now(timezone.utc).isoformat(),
+    # 原 config 留作条件身份；本执行段明确训练不再采用其中的总时间/候选上限。
+    segment = dict(candidate_id=candidate_id, training_stop_policy=TRAINING_STOP_POLICY, started_at=datetime.now(timezone.utc).isoformat(),
                    config=dict(config), rules=_rule_hashes(relative_to=ROOT),
                    before=_execution_state(state),
                    **(dict(max_trainings=max_trainings) if max_trainings is not None else {}))
@@ -1130,6 +1131,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                       initial_scores=[], comparison={}, task_path=str(folder), native_batch_starts=0,
                       batch_requests=0, cache_hits=0)
         store = None
+        fatal_error = None
         try:
             if row.get('adaptation'):
                 record['comparison']['adaptation'] = row['adaptation']
@@ -1152,6 +1154,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 if store.state.get('starts') not in (None, [row['program']]):
                     raise ValueError('训练初始表示与恢复检查点不一致')
                 store.state.update(training_condition=condition, config=config, capabilities=capabilities,
+                                   training_stop_policy=TRAINING_STOP_POLICY,
                                    rule_snapshot=inputs['rule_snapshot'],
                                    rule_initialization=store.state.get('rule_initialization') or
                                        copy.deepcopy(context['rule_initialization']),
@@ -1182,11 +1185,17 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     if (prepared_best['identity'] != best['key'] or
                             prepared_best['form'] != compiled_identity(best['candidate'])):
                         raise ValueError('已完成搜索赢家的程序或编译凭据不一致')
+                    if store.state['stop_reason'] in ('search_deadline', 'candidate_limit'):
+                        # 原凭据和已结算选择反馈已核验；只续未收敛搜索，不重置历史。
+                        store.state['phase'] = 'search'
+                        store.state.pop('stop_reason')
+                        store.save()
+                if store.state.get('phase') == 'done':
                     search_result = dict(rounds=store.state['rounds'], stop_reason=store.state['stop_reason'])
                     elapsed = store.state.get('elapsed_seconds', 0)
                 else:
                     used = store.state.get('elapsed_seconds', 0)
-                    runtime = TaskRuntime(600, used_seconds=min(600, used), cancel_event=cancel_event,
+                    runtime = TaskRuntime(math.inf, used_seconds=used, cancel_event=cancel_event,
                                           diagnostic_logging=config['diagnostic_logging'])
                     with store.active(runtime):
                         result = optimize(profile=profile, character=character, capabilities=capabilities,
@@ -1201,7 +1210,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                               stop_reason=search_result['stop_reason'], elapsed_seconds=elapsed,
                               core_retained=retains_core(program, row['core']))
                 if record['stop_reason'] not in ('no_improvement', 'space_stalled'):
-                    raise ValueError('预算或其他上限使训练未收敛，保留进度待检查')
+                    raise BudgetExceeded('预算或其他上限使训练未收敛，保留进度待检查')
                 record['initial_scores'] = retest(profile, row['program'], character, capabilities,
                                                  native, folder / 'retest-initial', simulation_config,
                                                  engines=engines, condition=condition, store=store,
@@ -1223,6 +1232,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 store.state['training_result'] = dict(record=record, checksum=digest(record))
                 store.save()
         except (ValueError, BudgetExceeded, TaskCancelled) as error:
+            if isinstance(error, ValueError) and store is not None:
+                fatal_error = error  # 保存失败证据后走批次 fatal 通道，禁止发布。
             record['error'] = str(error)
             if isinstance(error, ValueError) and store is None:
                 record['status'] = 'rejected'
@@ -1230,7 +1241,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
             after = _execution_state(store.state) if store else {}
             if store:
                 store.close()
-        return record, after
+        return record, after, fatal_error
 
     records = {}
     executions = {}
@@ -1272,8 +1283,10 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 for future in sorted(done, key=lambda item: candidates.index(running[item])):
                     row = running.pop(future)
                     try:
-                        record, after = future.result()
+                        record, after, fatal_error = future.result()
                         save_outcome(row, record, after)
+                        if fatal_error is not None:
+                            raise fatal_error
                     except BaseException as error:
                         failure = failure or error
                         cancel_event.set()
@@ -1285,8 +1298,10 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
             # 池退出等待全部所属worker/进程；已完成成果仍交回并可靠保存。
             for future, row in list(running.items()):
                 try:
-                    record, after = future.result()
+                    record, after, fatal_error = future.result()
                     save_outcome(row, record, after)
+                    if fatal_error is not None:
+                        raise fatal_error
                 except BaseException as later:
                     failure = failure or later
     if failure is not None:
@@ -1294,8 +1309,6 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     processed.extend(records[row['candidate_id']] for row in candidates if row['candidate_id'] in records)
     if cancel_event is not None and cancel_event.is_set():
         raise TaskCancelled('任务已取消；进度已保存，旧入选库保持不变')
-    if not required_paths <= set(seen_initial):
-        raise ValueError('存在未完成候选，旧入选库保持不变；使用list --state processed检查')
     selected = publish_records(processed, selected, condition=condition, character=character,
                                targets=targets, template_sha=template_sha, engines=engines, capabilities=capabilities,
                                source_groups=source_groups, configuration_key=configuration_key)
@@ -1303,6 +1316,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     if selected:
         _check_cancelled(cancel_event)
         result_store.write('seed_selected', scope, selected, schema=SELECTED_SCHEMA)
+    if not required_paths <= set(seen_initial):
+        raise ValueError('存在未完成候选；合格已完成成果已入选，无合格成果时保留旧库；使用list --state processed检查')
     completed_paths = sum(digest(row['program']) in seen_initial for row in ready['queue'])
     ready['preparation'].update(completed_paths=completed_paths,
         pending_paths=len(ready['queue']) - completed_paths, queued_paths=0, resume_paths=0, failed_paths=0,
