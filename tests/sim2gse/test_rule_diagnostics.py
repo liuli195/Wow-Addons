@@ -17,6 +17,7 @@ def test_public_search_keeps_intermediate_results_in_memory_until_user_pause(
     from collections import Counter
     import threading
     import sequence
+    import search
     import result_store
     import selector
     from task import cancel_task, start_task
@@ -31,10 +32,25 @@ def test_public_search_keeps_intermediate_results_in_memory_until_user_pause(
     ready_to_pause = threading.Event()
     completed_scores = []
     premature_publications = []
+    premature_checkpoints = []
     active_runtime = None
     ordinary_requests = 0
     interrupted_once = False
     real_write = installed_data_store_api['write']
+    real_persist_changes = search.TaskStore._persist_changes
+    real_save_progress = search.TaskStore._save_progress
+
+    def persist_changes(self, *args, **kwargs):
+        if (self.destination == destination and active_runtime is not None
+                and not active_runtime.cancel_event.is_set()):
+            premature_checkpoints.append('state')
+        return real_persist_changes(self, *args, **kwargs)
+
+    def save_progress(self):
+        if (self.destination == destination and active_runtime is not None
+                and not active_runtime.cancel_event.is_set()):
+            premature_checkpoints.append('runtime_progress')
+        return real_save_progress(self)
 
     def write(root, table, key, rows, **kwargs):
         # 外部存储边界；小进度摘要和引擎必要交换文件不属报告/模型发布。
@@ -67,6 +83,8 @@ def test_public_search_keeps_intermediate_results_in_memory_until_user_pause(
         return result
 
     monkeypatch.setitem(installed_data_store_api, 'write', write)
+    monkeypatch.setattr(search.TaskStore, '_persist_changes', persist_changes)
+    monkeypatch.setattr(search.TaskStore, '_save_progress', save_progress)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=evaluate):
         handle = start_task(source, destination, simulation_config=dict(scene='single_target'),
             search_config=dict(total_budget_seconds=60, input_interval_ms=200,
@@ -78,6 +96,7 @@ def test_public_search_keeps_intermediate_results_in_memory_until_user_pause(
             assert live['status'] == 'running' and live['elapsed_seconds'] > 0
             # 在用户暂停前固定观测，恢复后的正常结束不计入计算期发布。
             computing_publications = list(premature_publications)
+            computing_checkpoints = list(premature_checkpoints)
             cancel_task(handle)
             handle.join(10)
             assert handle.done and handle.error is None, repr(handle.error)
@@ -108,6 +127,8 @@ def test_public_search_keeps_intermediate_results_in_memory_until_user_pause(
             same_decision, = [step['selection'] for step in resumed['search']['rule_steps'].values()
                              if step.get('selection', {}).get('decision_id') == learned['decision_id']]
             assert same_decision['feedback'] == learned['feedback']
+            assert computing_checkpoints == [], (
+                '无全局晋升的计算期不应写入任务检查点或运行进度', computing_checkpoints)
             assert computing_publications == [], (
                 '无全局晋升的计算期不应发布报告或共享模型', computing_publications)
         finally:
