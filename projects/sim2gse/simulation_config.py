@@ -71,8 +71,8 @@ def load_training_config(path: str | Path | None = None, *, max_processes=None, 
         max_trainings=max_trainings).items() if value is not None})
     from search import config_for as search_config_for
     search_config_for({'max_processes': values['max_processes']}, training=True)
-    if type(values['max_trainings']) is not int or not 1 <= values['max_trainings'] <= 3:
-        raise ValueError('训练并发必须为1至3的整数')
+    if type(values['max_trainings']) is not int or not 1 <= values['max_trainings'] <= 8:
+        raise ValueError('训练并发必须为1至8的整数')
     if values['max_processes'] * values['max_trainings'] > 16:
         raise ValueError('训练并发与评分并发乘积不得超过16')
     return values
