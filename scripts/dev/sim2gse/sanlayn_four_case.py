@@ -64,6 +64,13 @@ def decoded(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def simulation_for(module):
+    values = dict(target_count=1, enable_omnium_talents=True)
+    if 'scene' in module.DEFAULT_CONFIG:
+        values['scene'] = 'single_target'
+    return module.config_for(values)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('repo', 'input', 'center-snapshot', 'snapshot-manifest', 'out'):
@@ -142,7 +149,7 @@ def main():
         raise ValueError('Engine ROOT was redirected away from the selected version')
     engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
     config = search.config_for(CONFIG)
-    simulation = simulation_config.config_for(dict(target_count=1, enable_omnium_talents=True))
+    simulation = simulation_for(simulation_config)
     character = task.parse_character(args.input.read_text(encoding='utf-8'))
     definition = burst.select_definition(character)
     if definition['definition_id'] != BURST_ID:
