@@ -151,3 +151,30 @@ def test_freezing_failed_candidate_keeps_an_additional_error_before_recovery(tmp
                                   dict(error='next candidate failed')]
     assert restored['selection_feedback_incomplete'] is True
     assert restored['selection_feedback_intents']['1']['reason'] == 'candidate_failed'
+
+
+@pytest.mark.parametrize('sparse', [False, True])
+@pytest.mark.parametrize('training', [False, True])
+def test_feedback_recovery_does_not_apply_old_total_budget_to_dynamic_training(tmp_path, sparse, training):
+    from search import freeze_selection_feedback, reconcile_selection_feedback, TRAINING_STOP_POLICY
+    from selector import reserve
+    store, work = _new_feedback_checkpoint(tmp_path)
+    freeze_selection_feedback(store, work, work['score_batches'])
+    pending = dict(rule_step=dict(parent_candidate_key='first', selection=reserve(dict(
+        task_run_id='checkpoint', decision_id=2, parent_identity='first', pool_digest='pool',
+        context=[0.0] * 50, actions=[dict(operation_id='later', features=[0.0] * 21)]))),
+        score_batches=[])
+    store.state['pending'].append(pending)
+    store.state.update(elapsed_seconds=601, sparse_selection=sparse)
+    store.state['config']['total_budget_seconds'] = 600
+    if training:
+        store.state['training_stop_policy'] = TRAINING_STOP_POLICY
+    store.save()
+    reconcile_selection_feedback(store)
+    assert work['rule_step']['selection']['feedback']['status'] == 'learned'
+    if training:
+        assert 'feedback' not in pending['rule_step']['selection']
+    else:
+        assert pending['rule_step']['selection']['feedback']['status'] == 'no_learn'
+    saved = _reopen_checkpoint(store)
+    assert bool(saved['pending'][1]['rule_step']['selection'].get('feedback')) is not training
