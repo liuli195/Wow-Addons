@@ -49,12 +49,20 @@ def champion_engine(page_task_engine, monkeypatch):
 
     # 与用例的局部替换同栈撤销，避免其清理时重新装回已结束夹具。
     monkeypatch.setattr(task, '_rule_hashes', verified_rules)
+    import sequence
+    evaluate = sequence.evaluate
+    def persisted_scene_report(profile, candidate, folder, **kwargs):
+        result = evaluate(profile, candidate, folder, **kwargs)
+        # 模拟外部生产者的落盘报告必须与返回的目标场景一致，供按需诊断验真。
+        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+        return result
     with patch.object(engine, 'identity', verified_identity), \
+            patch.object(sequence, 'evaluate', side_effect=persisted_scene_report), \
             patch.object(engine, 'check_report', REAL_CHECK_REPORT):
         yield
 
 
-def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0, prepared_context=None):
+def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0, prepared_context=None, source_engines=None, report_engines=None):
     """构造完整最终成绩凭据，不启动训练或原生计算。"""
     from contextlib import closing
     import shutil
@@ -70,7 +78,7 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
     _, raw = reviewed_fixture()
     template = tmp_path / (name + '-standard.simc')
     template.write_text(raw, encoding='utf-8')
-    inputs = seed_training._training_inputs(template, targets, use_burst=True)
+    inputs = seed_training._training_inputs(template, targets, use_burst=True, verified_engines=source_engines)
     character = inputs['character']
     batch = tmp_path / 'custom-training' / str(targets) / name
     batch.mkdir(parents=True)
@@ -122,7 +130,8 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
             reports.append(result_store.prepare_batch(dict(batch_key=key, run_id=candidate_id,
                 purpose='seed_retest', seed=seed, input_seed=seed, iterations=128,
                 requested_iterations=128, samples=127, dps=score, variance=0.,
-                engines=inputs['engines'], condition_key=condition, candidate_key=digest(form),
+                engines=report_engines if report_engines is not None else inputs['engines'],
+                condition_key=condition, candidate_key=digest(form),
                 program_identity=json.dumps(form, ensure_ascii=False, sort_keys=True, separators=(',', ':')),
                 batch_index=index, scenario='nominal', stats_version=STATS_VERSION,
                 times=times, trace=False, report=report)))
@@ -177,6 +186,48 @@ def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', inter
         server.shutdown()
         server.server_close()
         thread.join(3)
+
+
+@pytest.mark.parametrize("wrong_report_engine", [False, True])
+def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypatch,
+        memory_result_center, champion_engine, wrong_report_engine):
+    from copy import deepcopy
+    import burst
+    import engine
+    import result_store
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    source_engines = {mode: deepcopy(engine.identity(mode)[1]) for mode in ('baseline', 'controlled')}
+    for manifest in source_engines.values():
+        manifest['source_revision'] = 'previous-training-engine'
+    template, rows = completed_training(tmp_path, 1, [
+        ([['outbreak'], ['death_coil'], ['outbreak']], [99999.] * 3)], source_engines=source_engines,
+        report_engines=({mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
+                        if wrong_report_engine else None))
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
+    before = result_store.read_records('seed_processed', 'deathknight-unholy-1-burst')
+    scene = dual_result(tmp_path, raw)['scenes'][0]
+    champion = scene['training_champion_snapshot']
+    if wrong_report_engine:
+        assert champion['status'] == 'absent'
+        assert champion['excluded'][0]['status'] == 'invalid'
+        assert '复测引擎' in champion['excluded'][0]['reason']
+        assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
+                       for source in group)
+        assert result_store.read_records('seed_processed', 'deathknight-unholy-1-burst') == before
+        return
+    assert champion['status'] == 'selected', champion
+    assert champion['candidate_id'] == rows[0]['candidate_id']
+    assert champion['engines'] == source_engines
+    assert champion['scores'] == [99999.] * 3
+    assert any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
+               for source in group)
+    adaptation = scene['training_champion_adaptation']
+    assert adaptation['status'] in ('accepted', 'duplicate')
+    assert adaptation['current_samples'] > 0
+    assert 0 < adaptation['current_score'] < 99999.
+    assert result_store.read_records('seed_processed', 'deathknight-unholy-1-burst') == before
 
 
 @pytest.mark.parametrize('fault', ['wrong_program', 'report_missing', 'report_corrupt', 'temporary_error'])
