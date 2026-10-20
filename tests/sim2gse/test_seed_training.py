@@ -5,7 +5,7 @@ import subprocess
 import shutil
 import sys
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 
 
 @contextmanager
@@ -608,7 +608,7 @@ def test_training_budget_stop_keeps_progress_and_previous_selected_snapshot(
     assert failed['stop_reason'] == 'search_deadline'
     assert '未收敛' in failed['error']
     assert Path(failed['task_path'], 'task.sqlite3').exists()
-    with sqlite3.connect(Path(failed['task_path'], 'task.sqlite3')) as database:
+    with closing(sqlite3.connect(Path(failed['task_path'], 'task.sqlite3'))) as database:
         saved = __import__('search').TaskStore.load_state(database)
         assert saved['archive'] and saved['stop_reason'] == 'search_deadline'
         assert saved['completed_batches'] > 0

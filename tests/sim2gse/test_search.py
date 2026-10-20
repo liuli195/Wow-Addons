@@ -6,7 +6,7 @@ import tempfile
 import time
 import shutil
 import os
-from contextlib import contextmanager, nullcontext, ExitStack
+from contextlib import closing, contextmanager, nullcontext, ExitStack
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1156,7 +1156,7 @@ class SearchAndValidationTests(TestCase):
                 shard.write_bytes(b'corrupt parquet')
                 second = run_task(source, Path(directory) / 'second', search_config=config)
 
-            with __import__('sqlite3').connect(Path(directory) / 'second' / 'task.sqlite3') as database:
+            with closing(__import__('sqlite3').connect(Path(directory) / 'second' / 'task.sqlite3')) as database:
                 persisted = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (batch_key,)).fetchone()[0])
                 self.assertEqual(persisted['status'], 'success')
                 self.assertEqual(TaskStore.load_state(database)['completed_batches'], 1)
