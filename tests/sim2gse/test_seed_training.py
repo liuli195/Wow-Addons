@@ -1666,3 +1666,250 @@ def test_scoped_training_refuses_missing_original_identity(tmp_path, capsys,
         assert not identity.exists()
         assert command(tmp_path, ['list', '--state', 'processed']) == 0
         assert json.loads(capsys.readouterr().out) == before
+
+
+@pytest.mark.parametrize("failure_kind,failed_count", [("budget", 1), ("budget", 2), ("checkpoint", 1)])
+def test_training_publishes_completed_paths_without_hiding_budget_failure(tmp_path, capsys,
+        memory_training_center, single_candidate_training_rounds, failure_kind, failed_count):
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    from runtime import BudgetExceeded
+    import result_store
+    import seed_training
+    import sequence
+    programs = [[['outbreak'], ['death_coil'], ['scourge_strike']],
+                [['scourge_strike'], ['death_coil'], ['outbreak']],
+                [['death_coil'], ['outbreak'], ['scourge_strike']]][:failed_count + 1]
+    ids = []
+    for index, program in enumerate(programs):
+        source = tmp_path / f'partial-{index}.json'
+        source.write_text(json.dumps(dict(label=f'partial-{index}', source_id=str(index),
+            class_name='deathknight', spec='unholy', source='constructed-test', original='three actions',
+            instructions='repeat', semantic='preserved', changes=[], family='plain', core=[],
+            program=program)), encoding='utf-8')
+        assert command(tmp_path, ['register', str(source)]) == 0
+        ids.append(result_store.read_records('seed_candidates', 'registry')[-1]['candidate_id'])
+    template = tmp_path / 'partial.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+            '--max-trainings', '1', '--max-processes', '1']
+    from test_rule_diagnostics import _condition_pack
+    configuration_key = _condition_pack()['configurations'][0]['key']
+    scope = seed_training.shared_scope(configuration_key)
+    old = dict(configuration_key=configuration_key, candidate_id='old', condition='previous',
+        class_name='deathknight', spec='unholy', targets=1, program=[['death_coil']],
+        family='old', score=100., scores=[100.] * 3, template_sha256='previous', engines={})
+    result_store.write('seed_selected', scope, [old], schema=seed_training.SELECTED_SCHEMA)
+    previous = result_store.read_records('seed_selected', scope)
+    other_key = dict(configuration_key, hero_talent='other_hero')
+    other_scope = seed_training.shared_scope(other_key)
+    result_store.write('seed_selected', other_scope, [dict(old, configuration_key=other_key)],
+                       schema=seed_training.SELECTED_SCHEMA)
+    other_selected = result_store.read_records('seed_selected', other_scope)
+    with training_round_boundary(tmp_path):
+        native = sequence.evaluate
+        def one_unfinished(profile, candidate, folder, **kwargs):
+            program = [[action['simc_action'] for action in block] for block in candidate['blocks']]
+            if any(candidate_id[:12] in Path(folder).parts and program != initial
+                   for candidate_id, initial in zip(ids[1:], programs[1:])):
+                raise BudgetExceeded('单条路径预算耗尽')
+            return native(profile, candidate, folder, **kwargs)
+        original_store = seed_training.TaskStore
+        def damaged_checkpoint(folder, **kwargs):
+            store = original_store(folder, **kwargs)
+            if failure_kind == 'checkpoint' and Path(folder).name == ids[1][:12]:
+                store.state['training_result'] = dict(checksum='damaged', record={})
+                store.save()
+                store.close()
+                store = original_store(folder, **kwargs)
+            return store
+        with patch.object(sequence, 'evaluate', side_effect=one_unfinished if failure_kind == 'budget' else native), \
+                patch.object(seed_training, 'TaskStore', side_effect=damaged_checkpoint):
+            assert command(tmp_path, args) == 2
+    error = capsys.readouterr().err
+    assert result_store.read_records('seed_selected', other_scope) == other_selected
+    if failure_kind == 'checkpoint':
+        assert '完整训练结果检查点身份不一致' in error
+        assert command(tmp_path, ['list', '--state', 'processed']) == 0
+        assert any(row['candidate_id'] == ids[0] and row['status'] == 'completed'
+                   for row in json.loads(capsys.readouterr().out))
+        assert command(tmp_path, ['list', '--state', 'selected']) == 0
+        assert json.loads(capsys.readouterr().out) == previous
+        return
+    assert '未完成候选' in error
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    processed = json.loads(capsys.readouterr().out)
+    assert {row['candidate_id']: row['status'] for row in processed} == {ids[0]: 'completed', **{candidate_id: 'failed' for candidate_id in ids[1:]}}
+    failed = [row for row in processed if row['status'] == 'failed']
+    assert len(failed) == failed_count
+    assert all(row['stop_reason'] == 'search_deadline' and '未收敛' in row['error'] for row in failed)
+    assert command(tmp_path, ['list', '--state', 'selected']) == 0
+    selected = json.loads(capsys.readouterr().out)
+    assert 0 < len(selected) <= 4 and {row['candidate_id'] for row in selected} == {ids[0]}
+
+    # 模拟发布结果缺失：补发必须实际重建，不能只证明已存在结果不重算。
+    result_store.write('seed_selected', scope, [], schema=seed_training.SELECTED_SCHEMA)
+    assert result_store.read_records('seed_selected', scope) == []
+    # 已完成材料限定重放使用既有公开入口，不重跑成功或失败路径。
+    with training_round_boundary(tmp_path), patch.object(sequence, 'evaluate',
+            side_effect=AssertionError('补发不得重算已完成任务')):
+        assert command(tmp_path, [*args, '--candidate-id', ids[0]]) == 0
+    capsys.readouterr()
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    assert [row for row in json.loads(capsys.readouterr().out) if row['status'] == 'failed'] == failed
+    assert command(tmp_path, ['list', '--state', 'selected']) == 0
+    assert json.loads(capsys.readouterr().out) == selected
+    assert result_store.read_records('seed_selected', other_scope) == other_selected
+
+
+@pytest.mark.parametrize('old_limit', ['time', 'candidates'])
+def test_training_uses_two_unimproved_rounds_instead_of_total_limits(tmp_path, capsys,
+        memory_training_center, single_candidate_training_rounds, old_limit):
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    import sequence
+    import search
+    source = tmp_path / 'dynamic.json'
+    source.write_text(json.dumps(dict(label='dynamic', class_name='deathknight', spec='unholy',
+        source='constructed-test', original='three actions', instructions='repeat',
+        semantic='preserved', changes=[], family='plain', core=[],
+        program=[['outbreak'], ['death_coil'], ['scourge_strike']])), encoding='utf-8')
+    assert command(tmp_path, ['register', str(source)]) == 0
+    template = tmp_path / 'dynamic.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    with training_round_boundary(tmp_path):
+        native = sequence.evaluate
+        def elapsed_search(profile, candidate, folder, **kwargs):
+            result = native(profile, candidate, folder, **kwargs)
+            if old_limit == 'time' and 'batches' in Path(folder).parts:
+                kwargs['runtime'].used_seconds = 601
+            return result
+        with patch.object(sequence, 'evaluate', side_effect=elapsed_search), \
+                patch.dict(search.DEFAULT_CONFIG, candidate_limit=1 if old_limit == 'candidates' else 1000):
+            assert command(tmp_path, args) == 0
+    capsys.readouterr()
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1 and rows[0]['status'] == 'completed'
+    assert rows[0]['stop_reason'] == 'no_improvement' and rows[0]['rounds'] == 2
+    if old_limit == 'time':
+        assert rows[0]['elapsed_seconds'] > 600
+
+
+@pytest.mark.parametrize('interruption', ['search_deadline', 'candidate_limit', 'cancelled', 'retest'])
+def test_dynamic_training_resumes_only_unfinished_path(tmp_path, capsys,
+        memory_training_center, single_candidate_training_rounds, interruption):
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    from runtime import BudgetExceeded, TaskCancelled
+    import result_store
+    import sequence
+    import search
+    import selector
+    programs = [[['outbreak'], ['death_coil'], ['scourge_strike']],
+                [['scourge_strike'], ['death_coil'], ['outbreak']]]
+    ids = []
+    for index, program in enumerate(programs):
+        source = tmp_path / f'resume-{index}.json'
+        source.write_text(json.dumps(dict(label=f'resume-{index}', source_id=str(index),
+            class_name='deathknight', spec='unholy', source='constructed-test', original='three actions',
+            instructions='repeat', semantic='preserved', changes=[], family='plain', core=[],
+            program=program)), encoding='utf-8')
+        assert command(tmp_path, ['register', str(source)]) == 0
+        ids.append(result_store.read_records('seed_candidates', 'registry')[-1]['candidate_id'])
+    template = tmp_path / 'resume.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+            '--max-trainings', '1', '--max-processes', '1']
+    with training_round_boundary(tmp_path):
+        native = sequence.evaluate
+        def interrupt_second(profile, candidate, folder, **kwargs):
+            if ids[1][:12] in Path(folder).parts:
+                program = [[action['simc_action'] for action in block] for block in candidate['blocks']]
+                if interruption == 'retest' and 'retest-initial' in Path(folder).parts:
+                    raise TaskCancelled('复测前取消')
+                if interruption != 'retest' and program != programs[1]:
+                    if interruption == 'cancelled':
+                        kwargs['runtime'].cancel_event.set()
+                        raise TaskCancelled('搜索暂停')
+                    kwargs['runtime'].used_seconds = 601
+                    raise BudgetExceeded('旧搜索总预算中断')
+            return native(profile, candidate, folder, **kwargs)
+        with patch.object(sequence, 'evaluate', side_effect=interrupt_second):
+            assert command(tmp_path, args) == 2
+    capsys.readouterr()
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    before = json.loads(capsys.readouterr().out)
+    completed = next(row for row in before if row['candidate_id'] == ids[0])
+    unfinished = next(row for row in before if row['candidate_id'] == ids[1])
+    assert completed['status'] == 'completed' and unfinished['status'] == 'failed'
+    store = search.TaskStore(Path(unfinished['task_path']))
+    if interruption == 'candidate_limit':
+        store.state['stop_reason'] = 'candidate_limit'
+    store.state.pop('training_stop_policy', None)  # 旧检查点没有新执行策略标记。
+    store.save()
+    old_rounds = store.state['rounds']
+    settled = {step['selection']['decision_id'] for step in store.state.get('rule_steps', {}).values()
+               if step.get('selection', {}).get('feedback')}
+    store.close()
+    if interruption in ('search_deadline', 'candidate_limit'):
+        assert settled, '必须覆盖真实已结算选择回执的恢复'
+    identity_path = Path(unfinished['task_path']).parent / 'identity.json'
+    identity_before = json.loads(identity_path.read_text(encoding='utf-8'))
+    with training_round_boundary(tmp_path):
+        native = sequence.evaluate
+        settle = selector.MemorySelection.settle
+        calls = []
+        def resumed_score(profile, candidate, folder, **kwargs):
+            assert ids[0][:12] not in Path(folder).parts, '已完成路径不得重训或重测'
+            if interruption == 'retest':
+                assert any(part.startswith('retest-') for part in Path(folder).parts), '已收敛只续复测'
+            calls.append(str(folder))
+            return native(profile, candidate, folder, **kwargs)
+        def new_feedback(session, receipt, *values, **kwargs):
+            assert receipt['decision_id'] not in settled, '已结算选择不得重复学习'
+            return settle(session, receipt, *values, **kwargs)
+        from contextlib import nullcontext
+        search_guard = (patch('seed_training.optimize', side_effect=AssertionError('已收敛不得重复搜索'))
+                        if interruption == 'retest' else nullcontext())
+        with search_guard, patch.object(sequence, 'evaluate', side_effect=resumed_score), \
+                patch.object(selector.MemorySelection, 'settle', new_feedback):
+            assert command(tmp_path, args) == 0
+    assert calls
+    capsys.readouterr()
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    after = json.loads(capsys.readouterr().out)
+    assert next(row for row in after if row['candidate_id'] == ids[0]) == completed
+    recovered = next(row for row in after if row['candidate_id'] == ids[1])
+    assert recovered['status'] == 'completed' and recovered['stop_reason'] == 'no_improvement'
+    assert recovered['rounds'] >= old_rounds
+    if interruption == 'retest':
+        assert recovered['rounds'] == old_rounds == 2
+    identity_after = json.loads(identity_path.read_text(encoding='utf-8'))
+    for key in ('condition_input', 'condition', 'input_sha256', 'semantic_versions', 'semantic_condition'):
+        assert identity_after[key] == identity_before[key]
+    assert identity_after['executions'][:-1] == identity_before['executions']
+    assert identity_after['executions'][-1]['training_stop_policy'] == search.TRAINING_STOP_POLICY
+
+
+@pytest.mark.parametrize('limit_kind', ['time', 'candidates'])
+def test_normal_search_keeps_total_limits_when_training_is_dynamic(tmp_path, limit_kind,
+        memory_training_center):
+    from test_character_export import sample_profile
+    from test_search import _guided_search_boundary
+    from test_rule_diagnostics import _observed_evaluate
+    from task import run_task
+    starts = [[['outbreak'], ['death_coil'], ['scourge_strike']]]
+    source = tmp_path / 'normal.simc'
+    source.write_text(sample_profile(), encoding='utf-8')
+    def score(profile, candidate, folder, **kwargs):
+        result = _observed_evaluate(profile, candidate, folder, **kwargs)
+        if limit_kind == 'time':
+            kwargs['runtime'].used_seconds = 601
+        return result
+    with _guided_search_boundary(tmp_path, starts, evaluate=score):
+        result = run_task(source, tmp_path / 'normal', search_config=dict(
+            input_interval_ms=200, candidate_limit=1 if limit_kind == 'candidates' else 1000,
+            round_candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
+    assert result['search']['stop_reason'] == ('search_deadline' if limit_kind == 'time' else 'candidate_limit')
