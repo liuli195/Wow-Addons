@@ -179,15 +179,15 @@ def memory_training_center(training_center, memory_result_center):
 
 
 @pytest.fixture
-def single_candidate_training_rounds(monkeypatch):
-    """每轮只选一个真实子候选；两轮停止与初/终三种子复测保持原义。"""
+def single_candidate_training_rounds(monkeypatch, request):
+    """缺省每轮一个真实子候选，并发边界可选两个；停止与三种子复测保持原义。"""
     import seed_training
     config_for = seed_training.config_for
     assert config_for(training=True)['round_candidate_limit'] == 16
     assert config_for({'max_processes': 16}, training=True)['max_processes'] == 16
 
     def small_rounds(values=None, *, training=False):
-        return config_for(dict(values or {}, round_candidate_limit=1), training=training)
+        return config_for(dict(values or {}, round_candidate_limit=getattr(request, 'param', 1)), training=training)
 
     with monkeypatch.context() as scoped:
         scoped.setattr(seed_training, 'config_for', small_rounds)
@@ -551,7 +551,10 @@ def test_upgrade_postcheck_checks_current_rule_identity_and_retest_keys(tmp_path
         postcheck['check_scene'](scene, ready)
 
 
-@pytest.mark.parametrize(('arguments', 'parse_failure'), [(['--max-processes', '0'], True), (['--max-trainings', '3', '--max-processes', '6'], False)])
+@pytest.mark.parametrize(('arguments', 'parse_failure'), [(['--max-processes', '0'], True),
+    (['--max-trainings', '9', '--max-processes', '1'], True),
+    (['--max-trainings', '8', '--max-processes', '3'], False),
+    (['--max-trainings', '3', '--max-processes', '6'], False)])
 def test_training_command_rejects_invalid_parallelism_before_compute(tmp_path, monkeypatch, arguments, parse_failure):
     from seed_training import main
     def forbidden_process(*args, **kwargs):
@@ -1152,6 +1155,7 @@ def test_training_freezes_unique_queue_with_all_cores_and_stable_representation(
     assert json.loads(capsys.readouterr().out) == selected
 
 
+@pytest.mark.parametrize('single_candidate_training_rounds', [2], indirect=True)
 def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, capsys,
                                                                   memory_training_center,
                                                                   single_candidate_training_rounds):
@@ -1162,10 +1166,12 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
     import threading
     import time
 
-    outer, inner = 2, 1
+    outer, inner = 8, 2
     programs = [[['outbreak'], ['death_coil'], ['scourge_strike']],
                 [['death_coil'], ['scourge_strike'], ['outbreak']],
                 [['scourge_strike'], ['outbreak'], ['death_coil']]]
+    programs += [program + [[action]] for program in programs[:2]
+                 for action in ('outbreak', 'death_coil', 'scourge_strike')]
     for index, program in enumerate(programs):
         path = tmp_path / f'source-{index}.json'
         path.write_text(json.dumps(dict(label=str(index), source_id=f'parallel-{index}',
@@ -1194,8 +1200,8 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
             with lock:
                 if path not in dispatched:
                     if len(dispatched) >= outer:
-                        assert any(row['status'] == 'completed' for row in
-                                   result_store.read_records('seed_processed', 'deathknight-unholy-1'))
+                        assert sum(row['status'] == 'completed' for row in
+                                   result_store.read_records('seed_processed', 'deathknight-unholy-1')) >= len(dispatched) - outer + 1
                     dispatched.append(path)
                 active += 1
                 active_paths.add(path)
@@ -1222,8 +1228,9 @@ def test_training_runs_bounded_paths_and_persists_before_refilling(tmp_path, cap
             path = next(part for part in Path(args[2]).parts if part in ids)
             with lock:
                 running[path] = running.get(path, 0) + 1
+                assert running[path] <= inner
             return observed(*args, **kwargs)
-        # The two-path gate excludes each path's initial traced batch, so request traces explicitly.
+        # 排除每条路径初始带轨迹批次，等到8条路径各有2路真实同层评分在途。
         with patch.object(sequence, 'evaluate', side_effect=counted):
             assert command(tmp_path, args) == 0
     output = json.loads(capsys.readouterr().out.splitlines()[-1])[0]
