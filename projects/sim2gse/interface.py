@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from result_store import DataReadError
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 import uuid
 
 from simulation_config import config_for as simulation_config_for
@@ -78,12 +78,15 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_page(self) -> None:
+        enabled = (self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False)
+        page = PAGE.replace(b'diagnosticLogging.checked=false',
+                            b'diagnosticLogging.checked=' + (b'true' if enabled else b'false'))
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(PAGE)))
+        self.send_header("Content-Length", str(len(page)))
         self.end_headers()
-        self.wfile.write(PAGE)
+        self.wfile.write(page)
 
     def _body(self) -> dict:
         try:
@@ -119,10 +122,19 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 _, destination = self.server.task_paths(task_id)
                 with self.server.tasks_lock:
                     entry = self.server.tasks.get(task_id)
-                state = self._read_public_state(destination, entry)
+                details = parse_qs(urlsplit(self.path).query).get('details') == ['rule_initialization']
+                state = self._read_public_state(destination, entry, include_rule_initialization=details)
             except (TaskError, OSError, ValueError) as error:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
                 return
+            for view in [state, *state.get('scenes', [])]:
+                initialization = view.get('rule_initialization')
+                if initialization:
+                    view['has_rule_initialization'] = True
+                    view['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
+                        initialization.get('compilation', 'pending'))
+                    if not details:
+                        del view['rule_initialization']
             self._send_json(HTTPStatus.OK, state)
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "页面不存在"})
@@ -177,17 +189,23 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if type(target_count) is not int or target_count not in (1, 5):
             raise TaskError("目标数量必须为 1 或 5")
         observation_mode = value.get("search_observability", "off")
-        diagnostic_logging = value.get("diagnostic_logging", False)
-        if type(diagnostic_logging) is not bool:
+        if type(value.get("diagnostic_logging", False)) is not bool:
             raise TaskError("诊断日志总开关必须为布尔值")
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
+        diagnostic_logging = (options.get('search_config') or {}).get('diagnostic_logging', False)
+        simulation = options.get("simulation_config") or {}
         options["simulation_config"] = simulation_config_for(dict(
-            options.get("simulation_config") or {}, target_count=target_count))
+            simulation, target_count=target_count, scene=value.get("scene", simulation.get("scene"))))
         options['search_config'] = dict(
             options.get('search_config') or {}, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
+        for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+            if key in value:
+                if type(value[key]) is not bool:
+                    raise TaskError(key + ' 必须为布尔值')
+                options['search_config'][key] = value[key]
         if mode == "import":
             from gse_import import decode_import, inspect_import
             gse = value.get("gse")
@@ -239,18 +257,20 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, {"task_id": task_id, "status": "starting"})
 
-    def _read_public_state(self, destination: Path, entry) -> dict:
+    def _read_public_state(self, destination: Path, entry, *, include_rule_initialization=False) -> dict:
         handle = entry[1] if entry else None
         try:
             if handle is not None and handle.done and handle.error is not None:
                 raise TaskError(str(handle.error)) from handle.error
             if (destination / 'dual.json').exists():
                 from dual_task import read
-                state = read(destination, active=not handle.done if handle else None)
+                state = read(destination, active=not handle.done if handle else None,
+                             include_rule_initialization=include_rule_initialization)
                 if state.get('error'):
                     state['error'] = _friendly_error(TaskError(state['error']))
                 return state
-            return _public_state(read_task(destination, include_reports=False), destination)
+            return _public_state(read_task(destination, include_reports=False,
+                include_rule_initialization=include_rule_initialization), destination)
         except (TaskError, DataReadError) as error:
             if _is_storage_error(error) or '共享存储' in str(error):
                 active = handle is not None and not handle.done
@@ -292,7 +312,9 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             if not (destination / 'dual.json').exists():
                 raise TaskError('此入口只恢复双场任务')
             from dual_task import resume
-            handle = resume(destination)
+            handle = resume(destination, diagnostic_logging=(
+                self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False),
+                search_timeline=(self.server.task_options.get('search_config') or {}).get('search_timeline'))
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, dict(task_id=task_id, status='starting'))
 
@@ -363,6 +385,9 @@ def _public_state(state: dict, destination: Path) -> dict:
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
+    for name in ('rule_initialization', 'has_rule_initialization', 'rule_initialization_identity'):
+        if name in state:
+            response[name] = state[name]
     search = state.get("search") or state
     metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
                     "canonicalized_duplicates")

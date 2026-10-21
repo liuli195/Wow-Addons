@@ -9,7 +9,7 @@
         "baseline",
         "controlled"
       ],
-      "sha256": "4b3af0e375a15446a5fd4e9ce0c688c3e3f1a6586483c2614858c01b4b16d449"
+      "sha256": "37c4898c25c47f60943441eae7d22bdc204b0cc2a2e56e9c3f6357c1ef301ad1"
     },
     {
       "path": "projects/sim2gse/native/src/catalogue.cpp",
@@ -18,7 +18,7 @@
         "baseline",
         "controlled"
       ],
-      "sha256": "0e586487c28125e2dace51496f38adbfb7a485e7ca2c32033eeb85c3b435a395"
+      "sha256": "6b99833b1602f978f4b8d65bb53414385b9ba98c575804e42208ecdfe63ac05f"
     },
     {
       "path": "projects/sim2gse/native/src/controller.hpp",
@@ -26,7 +26,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "781ce0c52177bae04e1488d75690f8b0b378a9508e605924b30824e3ec0712b5"
+      "sha256": "661584f9ed82b916ec54c707730911257f4bd1203b80119c314ffb3ac55cc285"
     },
     {
       "path": "projects/sim2gse/native/src/controller.cpp",
@@ -34,7 +34,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "c1e0058d3e79853adcd2c72fea0b5fc8add700c180b633286cf3d6fa26a8792c"
+      "sha256": "35166e57f17ee9914ff5a6876140bf7d60082884bc0fbd24cbb661fe8d00c6e1"
     }
   ],
   "upstream_commit": "eed909156d8eccbfca0f284cc271c080949d6a20",
@@ -54,7 +54,7 @@
     },
     {
       "path": "projects/sim2gse/native/hooks/040-control-connections.patch",
-      "sha256": "b30a2330b43de026fe0301728b137c626ed1f5b90e031335a8deb01a83c2081d"
+      "sha256": "e597b538abe034b1a9315bbdc2a5d4adb703bf69f2a84a1ac872c38a4dd39f0e"
     },
     {
       "path": "projects/sim2gse/native/hooks/050-death-knight-guards.patch",
@@ -62,7 +62,19 @@
     },
     {
       "path": "projects/sim2gse/native/hooks/060-native-replacement-transfer.patch",
-      "sha256": "0c0801cd723f56bcf506a750a52ec0c482e66c06701f59a0334dc26c8550f72d"
+      "sha256": "759305b5ba95e0908ca838899c70b8ee97d600f0432966912f97806dfc9e082a"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/070-static-initialization-snapshot.patch",
+      "sha256": "7a2c5f186ace32feb07dd5a4753ca13f1fcb91a01a1cfe731017bd696eb80015"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/080-requested-buff-observations.patch",
+      "sha256": "bd05d669d4cf2aac3654a584d4fe9f5f975924087637401cba6383309aaa921b"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/090-requested-dot-observations.patch",
+      "sha256": "f2706a9e82147bbb626ed93e7a0610bcaa25f438eda496e14d2fd366f1f40153"
     }
   ],
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
@@ -96,13 +108,20 @@
     "GSE/API/translator.lua": "14480c4647cf269fd3852998f6ed09311af75455209188bac2971cb23b8e429c"
   },
   "patched_files": {
-    "engine/player/player.cpp": "16c7361bd8c1a0c66f4cf03c2706efd68a9a09a0fa8c453b6533bcc96e9c9349",
-    "engine/player/player.hpp": "b95c18dd0cf9f90cec0dbeedafb53022f92cca8a2cd48c0287125d3ca2a72092",
-    "engine/action/action.cpp": "00327162529c56aee58ebc2e898a670c0adf0f9ad950f8f34bb3b09cdccbd540",
+    "engine/Makefile": "d36e92017d3c4877c6a716a3fba18e0336a269a8ea6ee10979ad78573448fed9",
+    "engine/action/action.cpp": "915e4afab3c7632abce650791919d9c5e2baebbc742db50cf29fb1657623ab51",
     "engine/action/action.hpp": "ac201ff2dfaf3aa57206568b86cc4a4c25f9bf80c1547ce2a8879760dff0bb76",
-    "engine/class_modules/sc_death_knight.cpp": "25a33fc4e08867355e7557022a783e7530159b216947b1ad80bd91bf6de73788",
+    "engine/class_modules/priest/sc_priest.cpp": "cc8af9e84c568b42ea40b2d1f7adec1966076d6e15903553e936d5485a301907",
+    "engine/class_modules/priest/sc_priest.hpp": "7be0b1d6c2d3a27a553dc487986def1a9f7886f012ec1959825b4e777ec3671e",
+    "engine/class_modules/priest/sc_priest_discipline.cpp": "be897208230fb0e4dcc4e7f2ad77d0cc94a09fb079c1befd4fc79c52f713af53",
+    "engine/class_modules/sc_death_knight.cpp": "2f0e5aebdee970c411d97bf8cda2d9218bca509c074c85da94c5760cfbad6e9f",
+    "engine/player/player.cpp": "121be8d150c015b3015fbd68903ca007e1c6e213076a97fff4ece5269bfdc504",
+    "engine/player/player.hpp": "f5f886e099e745986d7e25c9a3f314add39e20c789d589ab33b9f7cd850691eb",
     "engine/report/json/report_json.cpp": "641a4f7aefc98766ccfb98b5688fccbff5d6ba9169223fb68f74ec875fe8d5c9",
-    "engine/Makefile": "d36e92017d3c4877c6a716a3fba18e0336a269a8ea6ee10979ad78573448fed9"
+    "engine/sim/sim.cpp": "098f50a1b20168d0f0d2df3e34b423951e137dc0849ca6cdc093ec27d167979c",
+    "engine/buff/buff.cpp": "fde6fb92600e08a1b09e5b337e222b8b61801ba90bf13728e42fff5c844b7a10",
+    "engine/buff/buff.hpp": "9ca8e5a8d6097ee0f82eccc6e42e78ef93c9ab925fa97b35e99fd395cd7e45ad",
+    "engine/action/dot.cpp": "226c6351fa9bce3c808741a8f91a6eae0e2bbb1addc1de4c91e40c9a749bb3db"
   },
   "baseline_patches": [
     {
@@ -116,14 +135,22 @@
     {
       "path": "projects/sim2gse/native/hooks/030-own-module-build.patch",
       "sha256": "1c2c05d441431cb460b6ff585d4870dd45fae17e38431f182687146dbc329a66"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/070-static-initialization-snapshot.patch",
+      "sha256": "7a2c5f186ace32feb07dd5a4753ca13f1fcb91a01a1cfe731017bd696eb80015"
     }
   ],
   "baseline_patched_files": {
+    "engine/Makefile": "6f32b407cc13337f9b426cc5e6ac932946b469755083451821337d386a283792",
+    "engine/class_modules/priest/sc_priest.cpp": "cc8af9e84c568b42ea40b2d1f7adec1966076d6e15903553e936d5485a301907",
+    "engine/class_modules/priest/sc_priest.hpp": "7be0b1d6c2d3a27a553dc487986def1a9f7886f012ec1959825b4e777ec3671e",
+    "engine/class_modules/priest/sc_priest_discipline.cpp": "be897208230fb0e4dcc4e7f2ad77d0cc94a09fb079c1befd4fc79c52f713af53",
+    "engine/class_modules/sc_death_knight.cpp": "d822b35dca9971e91f379529ff5cf2b92720ac4761f33dc899edeee52f1d03cc",
+    "engine/player/player.cpp": "c2ec46dbc689af24bb8b004ed7c17abf640762608b6261f27367bec4bee2c1fb",
+    "engine/player/player.hpp": "675b7f9a1c4a22a1918657a8f42f5c659bf508e37b78505a07dc2a62bd4e9852",
     "engine/report/json/report_json.cpp": "039f6a70cb5ff9f3004ba976eeaae30f4b21ea400c62f2c7efe29ef217117a20",
-    "engine/player/player.cpp": "eb44f6bf8b51fe2ce1a4d92759ad90d0c6de4186a4a5b7350b885b2fff379918",
-    "engine/player/player.hpp": "0fd00f54fbbaf98150230b61af0c7831d6076b5b73bd25ac2c347d870ff10e5f",
-    "engine/sim/sim.cpp": "fe7c7d15c404782414801cc59d0bf9711061a2b9848785eec709320b5c0cf120",
-    "engine/Makefile": "6f32b407cc13337f9b426cc5e6ac932946b469755083451821337d386a283792"
+    "engine/sim/sim.cpp": "fe7c7d15c404782414801cc59d0bf9711061a2b9848785eec709320b5c0cf120"
   },
   "client_targeting": {
     "path": "projects/sim2gse/compatibility/spell-target-masks.json",

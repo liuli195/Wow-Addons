@@ -1,7 +1,6 @@
 """Real consumer entry in an isolated connected project, without a user link."""
 import json
 import os
-import runpy
 import pytest
 from pathlib import Path
 import shutil
@@ -30,6 +29,18 @@ m=runpy.run_path(sys.argv[1]);m['ensure_available']()
 assert m['write']('measurements','one',[{'score':7,'parts':[{'value':4}]}])==1
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':7})==[{'score':7}]
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':8})==[]
+assert m['write']('binary_measurements','one',[{'score':8,'payload':bytes([0,255])}],schema={'score':'INTEGER','payload':'BLOB'},binary=True)==1
+assert m['read_records']('binary_measurements','one',columns=['payload'],filters={'score':8})==[{'payload':bytes([0,255])}]
+from unittest.mock import Mock,patch
+blocked_write=Mock()
+with patch.dict(m['_api'](),{'DATA_STORE_CAPABILITIES':(), 'write':blocked_write}):
+    try:
+        m['write']('binary_measurements','blocked',[{'payload':bytes([0,255])}],schema={'payload':'BLOB'},binary=True)
+    except m['DataReadError'] as error:
+        assert 'binary-write-v1' in str(error) and '更新技能' in str(error) and '重启' in str(error)
+    else:
+        raise AssertionError('missing capability must fail before writing')
+blocked_write.assert_not_called()
 print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM measurements',tables=['measurements']))))
 """
     result = subprocess.run([sys.executable, "-c", program, str(adapter)], env=env,
@@ -53,25 +64,6 @@ def test_unconnected_consumer_fails_before_writing_data(tmp_path):
 
 
 
-def test_connected_consumer_rejects_unsupported_storage_api_before_writing(tmp_path, installed_data_store):
-    installed = tmp_path / "legacy-installed"
-    shutil.copytree(installed_data_store, installed, ignore=shutil.ignore_patterns("__pycache__"))
-    script = installed / "scripts/data_store.py"
-    with script.open("a", encoding="utf-8") as output:
-        output.write("\nDATA_STORE_API_VERSION = 1\n")
-    project = tmp_path / "project"
-    adapter = project / "projects/sim2gse/result_store.py"
-    adapter.parent.mkdir(parents=True)
-    shutil.copy2(REPOSITORY / "projects/sim2gse/result_store.py", adapter)
-    connected = subprocess.run(
-        [sys.executable, str(installed / "scripts/project_binding.py"), "connect", "--project", str(project)],
-        text=True, capture_output=True,
-    )
-    assert connected.returncode == 0, connected.stderr
-    consumer = runpy.run_path(str(adapter))
-    with pytest.raises(RuntimeError, match="版本.*2"):
-        consumer["ensure_available"]()
-    assert not (project / "data").exists()
 
 
 def test_page_classifies_wrapped_storage_failure_from_the_real_target(tmp_path):
@@ -135,8 +127,11 @@ def test_page_classifies_report_locator_permission_error_as_storage_failure(tmp_
         locations.reserve('controlled_g0', ['controlled'])
         result_store.write('batches', 'controlled_g0',
                            [{'batch_key': 'controlled', 'dps': 7., 'samples': 2}])
-    server = interface.create_server(tmp_path / 'page', port=0)
-    _, destination = server.task_paths(task_id)
+    if blocked_file == '.report-publish.lock':
+        destination = tmp_path / 'task'
+    else:
+        server = interface.create_server(tmp_path / 'page', port=0)
+        _, destination = server.task_paths(task_id)
     destination.mkdir()
     (destination / 'result.json').write_text(json.dumps({'run_id': run_id}), encoding='utf-8')
     assert task.read_task(destination)['controlled_simulation']['summary'] == {'dps': 7., 'samples': 2}
@@ -148,6 +143,12 @@ def test_page_classifies_report_locator_permission_error_as_storage_failure(tmp_
         return open_file(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, 'open', denied)
+    if blocked_file == '.report-publish.lock':
+        with pytest.raises(task.TaskError) as error:
+            task.read_task(destination)
+        assert isinstance(error.value.__cause__, result_store.DataReadError)
+        assert isinstance(error.value.__cause__.__cause__, PermissionError)
+        return
     thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     thread.start()
     try:
@@ -190,6 +191,8 @@ def test_page_reports_storage_startup_failure_before_native_compute(tmp_path, in
     monkeypatch.setattr(result_store, '_BOUND_PROJECT', project)
     monkeypatch.setattr(result_store, '_SKILL_API', None)
     monkeypatch.setattr(result_store, 'DATA_ROOT', project / 'data')
+    if fault == 'api-version':
+        assert not result_store.DATA_ROOT.exists()
     if fault == 'definition-file':
         result_store.write('burst_definitions', 'broken', [{'spec_id': 252}])
         (result_store.DATA_ROOT / 'burst_definitions/broken.parquet').write_bytes(b'broken definition file')
@@ -225,6 +228,7 @@ def test_page_reports_storage_startup_failure_before_native_compute(tmp_path, in
             assert status == 500
         if fault == 'api-version':
             assert '同步' in state['error'] and '版本 2' in state['error']
+            assert not result_store.DATA_ROOT.exists()
         else:
             assert '共享存储' in state['error']
         assert native_starts == []

@@ -1,7 +1,12 @@
 // 本模块不创建动作、不推进战斗、不更改执行计数。
 #include "sim2gse/catalogue.hpp"
 #include "simulationcraft.hpp"
+#include "action/parse_effects.hpp"
 #include <set>
+#include <typeinfo>
+#include <cmath>
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace sim2gse
 {
@@ -68,8 +73,253 @@ unsigned base_spell_id( const player_t& p, unsigned id )
   return 0;
 }
 
+bool action_available( const action_t& action )
+{
+  const auto& p = *action.player;
+  const unsigned spell_id = action.data().id();
+  if ( !spell_id || !action.data().ok() || !action.data().is_level( p.true_level ) ) return false;
+  bool available = false, unselected = false;
+  for ( const unsigned id : { spell_id, base_spell_id( p, spell_id ) } )
+  {
+    if ( !id ) continue;
+    const auto* name = p.find_spell( id )->name_cstr();
+    available = available || p.find_class_spell( name, p.specialization() )->id() == id ||
+      p.find_specialization_spell( id, p.specialization() )->id() == id ||
+      p.find_racial_spell( name )->id() == id;
+    for ( const auto tree : { talent_tree::CLASS, talent_tree::SPECIALIZATION, talent_tree::HERO } )
+    {
+      const auto talent = p.find_talent_spell( tree, id, p.specialization() );
+      if ( talent.invalid() ) continue;
+      available = available || talent.enabled();
+      unselected = unselected || !talent.enabled();
+    }
+  }
+  return available && !unselected;
+}
+
+// eed909156 parse_effects.cpp: callbacks run before the inactive-buff shortcut.
+// Full evaluation can mutate callback_idx; benefit=true also records buff usage.
+bool static_effects_safe( const std::vector<player_effect_t>& effects, bool benefit )
+{
+  for ( const auto& effect : effects )
+  {
+    if ( effect.func || effect.value_func || ( benefit && effect.buff ) ) return false;
+    if ( effect.simple ) continue;
+    if ( effect.buff && !effect.buff->check() ) continue;
+    if ( effect.idx || effect.mastery || ( effect.buff && ( effect.type & USE_CURRENT ) ) ) return false;
+  }
+  return true;
+}
+
+bool static_buff_value_safe( const buff_t* buff )
+{
+  return !buff || typeid( *buff ) == typeid( buff_t ) || typeid( *buff ) == typeid( stat_buff_t );
+}
+
+// Only audited exact native types call this bridge. In particular it does not
+// infer the absence of overrides from a parse_action_base_t dynamic cast.
+void read_static_spell_timing( static_action_t& entry, const spell_base_t& spell,
+                               const parse_action_base_t& parsed, bool haste_safe )
+{
+  if ( haste_safe && static_effects_safe( parsed.gcd_effects ) )
+  {
+    entry.timing[ "gcd_ms" ] = spell.gcd().total_millis();
+    entry.unknown.erase( "gcd_ms" );
+  }
+  if ( haste_safe && static_buff_value_safe( spell.player->buffs.chilled_clarity ) &&
+       static_effects_safe( parsed.execute_time_effects ) &&
+       static_effects_safe( parsed.flat_execute_time_effects ) )
+  {
+    // action_t::execute_time arithmetic, with the same standard spell base but
+    // read-only parse effects. The normal parse getter uses benefit=true.
+    auto base = spell.base_execute_time.base + spell.base_execute_time.flat_add;
+    auto mul = spell.base_execute_time.pct_mul * spell.spell_base_t::execute_time_pct_multiplier();
+    for ( const auto& effect : parsed.execute_time_effects )
+      mul *= 1.0 + parsed.get_effect_value( effect, false );
+    double flat = 0;
+    for ( const auto& effect : parsed.flat_execute_time_effects )
+      flat += parsed.get_effect_value( effect, false );
+    base += timespan_t::from_millis( flat );
+    entry.timing[ "cast_ms" ] = base <= 0_ms || mul <= 0 ? 0 :
+      std::round( static_cast<double>( base.total_millis() ) * mul );
+    entry.unknown.erase( "cast_ms" );
+  }
+  if ( !spell.channeled )
+  {
+    entry.timing[ "channel_ms" ] = 0;
+    entry.unknown.erase( "channel_ms" );
+  }
+}
+
+// The pinned class adapter supplies certified values; unknown getters are never
+// called by this serializer merely because an unknown-map key was absent.
+// This runs once after native precombat initialization, before pre-pull actions.
+void capture_static_snapshot( player_t& p, const std::vector<static_action_t>& entries,
+                              const std::map<std::string, double>& parameters,
+                              const std::map<std::string, bool>& talents,
+                              const std::map<std::string, std::string>& parameter_unknown )
+{
+  if ( !p.sim2gse_static_snapshot_json.empty() || p.is_pet() ) return;
+  rapidjson::Document document;
+  document.SetObject();
+  js::JsonOutput root( document, document );
+  root[ "protocol" ] = 2;
+  root[ "stage" ] = "precombat_initialized_before_actions";
+  root[ "collected_at_ms" ] = p.sim->current_time().total_millis();
+  root[ "source" ] = "native initialized actor; audited read-only action arithmetic";
+  auto hero_subtrees = root[ "hero_subtree_ids" ];
+  hero_subtrees.make_array();
+  for ( const auto id : p.player_sub_trees ) hero_subtrees.add( id );
+  auto resources = root[ "resources" ];
+  for ( resource_e resource = RESOURCE_NONE; resource < RESOURCE_MAX; resource++ )
+  {
+    if ( p.resources.max[ resource ] <= 0 ) continue;
+    auto row = resources[ util::resource_type_string( resource ) ];
+    row[ "current" ] = p.resources.current[ resource ];
+    row[ "maximum" ] = p.resources.max[ resource ];
+  }
+  auto values = root[ "parameters" ];
+  for ( const auto& entry : parameters ) values[ entry.first ] = entry.second;
+  for ( const auto& entry : talents ) values[ entry.first ] = entry.second;
+  for ( const auto& entry : parameter_unknown ) root[ "parameter_unknown" ][ entry.first ] = entry.second;
+  auto actions = root[ "actions" ];
+  actions.make_array();
+  std::map<const action_t*, const static_action_t*> adapted;
+  for ( const auto& entry : entries )
+  {
+    adapted[ entry.action ] = &entry;
+    if ( !entry.action->is_precombat ) continue;
+    const auto& timing = entry.timing;
+    if ( timing.count( "gcd_ms" ) && timing.count( "cast_ms" ) && timing.count( "channel_ms" ) )
+      p.sim2gse_static_precombat_timing[ entry.action ] =
+        { timing.at( "gcd_ms" ), std::max( timing.at( "gcd_ms" ),
+            timing.at( "cast_ms" ) + timing.at( "channel_ms" ) ) };
+  }
+  for ( auto* action : p.action_list )
+  {
+    if ( !action->initialized || action->is_precombat || action->background || action->quiet ||
+         !action->data().ok() ) continue;
+    static_action_t unsupported{ action, nullptr, {
+      { "costs", "unadapted_native_action" }, { "gains", "unadapted_native_action" }
+    }, {} };
+    const auto& entry = adapted.count( action ) ? *adapted.at( action ) : unsupported;
+    const auto known = [ &entry ]( const char* field ) { return !entry.unknown.count( field ); };
+    auto row = actions.add();
+    row[ "name" ] = action->name_str;
+    row[ "signature" ] = action->signature_str;
+    row[ "action_list" ] = action->action_list ? action->action_list->name_str : "";
+    row[ "spell_id" ] = action->data().id();
+    row[ "base_spell_id" ] = base_spell_id( p, action->data().id() );
+    row[ "background" ] = action->background;
+    for ( const auto& unknown : entry.unknown )
+      if ( unknown.first != "channel_ms" || action->channeled )
+        row[ "unknown" ][ unknown.first ] = unknown.second;
+    row[ "precision" ] = "native_static_estimate";
+    for ( const auto* field : { "gcd_ms", "cooldown_ms", "cast_ms", "channel_ms" } )
+      if ( std::string( field ) == "channel_ms" && !action->channeled ) row[ field ] = 0;
+      else if ( entry.timing.count( field ) ) row[ field ] = entry.timing.at( field );
+      else if ( !entry.unknown.count( field ) ) row[ "unknown" ][ field ] = "unadapted_native_field";
+    row[ "channeled" ] = action->channeled;
+    if ( action->cooldown )
+    {
+      row[ "charges" ] = action->cooldown->current_charge;
+      row[ "max_charges" ] = action->cooldown->charges;
+    }
+    else
+    {
+      row[ "unknown" ][ "charges" ] = "missing_cooldown";
+      row[ "unknown" ][ "max_charges" ] = "missing_cooldown";
+    }
+    if ( known( "costs" ) )
+    {
+      auto costs = row[ "costs" ];
+      if ( entry.cost_action->current_resource() != RESOURCE_NONE )
+        costs[ util::resource_type_string( entry.cost_action->current_resource() ) ] = action->cost();
+    }
+    const auto timing = action->energize_type_();
+    row[ "gain_timing" ] = timing == action_energize::ON_CAST ? "on_cast" :
+                            timing == action_energize::ON_HIT ? "on_hit" :
+                            timing == action_energize::NONE ? "none" : "unknown";
+    row[ "gain_status" ] = "unknown";
+    // This is only the action's direct energize, never passive/pet/random resource income.
+    row[ "gain_scope" ] = "direct_action";
+    // Acquire the child only after adding parent members: AddMember can relocate them.
+    auto gains = row[ "gains" ];
+    if ( known( "gains" ) && timing == action_energize::NONE )
+      row[ "gain_status" ] = "known_zero";
+    else if ( known( "gains" ) && ( timing == action_energize::ON_CAST || timing == action_energize::ON_HIT ) &&
+              action->energize_resource_() != RESOURCE_NONE )
+    {
+      auto* state = action->get_state();
+      state->target = action->target;
+      state->n_targets = 1;
+      state->chain_target = 0;
+      gains[ util::resource_type_string( action->energize_resource_() ) ] =
+        action->composite_energize_amount( state );
+      action_state_t::release( state );
+      row[ "gain_status" ] = "known";
+    }
+  }
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer( buffer );
+  document.Accept( writer );
+  p.sim2gse_static_snapshot_json.assign( buffer.GetString(), buffer.GetSize() );
+}
+
+void finish_static_precombat_snapshot( player_t& p, const std::vector<const action_t*>& executed )
+{
+  if ( p.sim2gse_static_snapshot_json.empty() ) return;
+  double gcd_ms = 0, occupancy_ms = 0;
+  unsigned occupied = 0;
+  std::string unknown;
+  for ( const auto* action : executed )
+  {
+    // Match the existing public precombat button catalogue. Native bookkeeping
+    // facilities are not GSE commands and do not add an input-prefix position.
+    if ( action->background || action->quiet || ( !action->data().id() && !action->harmful ) ) continue;
+    const auto found = p.sim2gse_static_precombat_timing.find( action );
+    if ( found == p.sim2gse_static_precombat_timing.end() )
+    {
+      unknown = "executed_precombat_action_timing_unknown";
+      break;
+    }
+    gcd_ms = std::max( gcd_ms, found->second.first );
+    if ( found->second.second > 0 )
+    {
+      occupancy_ms = found->second.second;
+      if ( ++occupied > 1 ) unknown = "multiple_precombat_actions_without_serial_timeline";
+    }
+  }
+  rapidjson::Document document;
+  document.Parse( p.sim2gse_static_snapshot_json.c_str() );
+  js::JsonOutput root( document, document );
+  root[ "precombat_precision" ] = "native_static_estimate";
+  root[ "precombat_source" ] = "executed_precombat_buttons_plus_initialized_timing";
+  if ( unknown.empty() )
+  {
+    root[ "parameters" ][ "precombat_gcd_ms" ] = gcd_ms;
+    root[ "parameters" ][ "precombat_occupancy_ms" ] = occupancy_ms;
+  }
+  else
+  {
+    root[ "parameter_unknown" ][ "precombat_gcd_ms" ] = unknown;
+    root[ "parameter_unknown" ][ "precombat_occupancy_ms" ] = unknown;
+  }
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer( buffer );
+  document.Accept( writer );
+  p.sim2gse_static_snapshot_json.assign( buffer.GetString(), buffer.GetSize() );
+  p.sim2gse_static_precombat_timing.clear();
+}
+
 void write_player_report( js::JsonOutput root, const player_t& p, bool include_apl )
 {
+  if ( !p.sim2gse_static_snapshot_json.empty() )
+  {
+    rapidjson::Document snapshot;
+    snapshot.Parse( p.sim2gse_static_snapshot_json.c_str() );
+    root[ "sim2gse_static_snapshot" ].val().CopyFrom( snapshot, root.doc().GetAllocator() );
+  }
   root[ "sim2gse_class" ] = util::player_type_string( p.type );
   root[ "sim2gse_class_id" ] = util::class_id( p.type );
   root[ "sim2gse_spec_id" ] = static_cast<unsigned>( p.specialization() );

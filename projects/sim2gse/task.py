@@ -23,7 +23,7 @@ import uuid
 from contextlib import contextmanager, nullcontext
 import msvcrt
 
-from runtime import replace_file
+from runtime import replace_file, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 from simulation_config import config_for as simulation_config_for, engine_options, load_config
 
@@ -340,10 +340,6 @@ def _discard_native_exchange(folder: Path, *, keep_valid=False) -> None:
             path.unlink(missing_ok=True)
 
 
-def _json_result(result: dict) -> dict:
-    return {key: value for key, value in result.items() if key not in ("character", "output_root")}
-
-
 def _store_candidate(run_id: str, candidate: dict, *, search_order=None) -> tuple[str, str]:
     from result_store import CANDIDATE_SCHEMA, write as write_records
     from search import digest
@@ -424,12 +420,27 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         if isinstance(data_key, str):
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                           'canonicalized_duplicates', 'no_improvement_round_limit')
+                           'canonicalized_duplicates', 'no_improvement_round_limit', 'rule_diagnostics',
+                           'rule_diagnostics_version', 'rule_diagnostic_status', 'diagnostic_operations')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    if state and state.get('rule_context'):
+        search_metrics['rule_config_digest'] = state['rule_context']['rule_config_digest']
+    if state and state.get('rule_steps'):
+        search_metrics['rule_steps'] = state['rule_steps']
+    replays = {row['key']: dict(batch_key=(row.get('diagnostic_batches') or row['batches'])[0]['data_key'],
+                              diagnostic=row['rule_diagnostics'])
+               for row in (state or {}).get('archive', []) if row.get('diagnostics_replayed')}
+    if replays:
+        search_metrics['rule_diagnostic_replays'] = replays
+    initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
+    if initialization:
+        search_metrics['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
+            initialization.get('compilation', 'pending'))
     if state is not None:
         for name in ('seed_adaptations', 'training_champion_snapshot',
                      'training_champion_adaptation', 'start_sources', 'formal_champion_snapshot',
-                     'formal_champion_adaptation', 'formal_champion_publication'):
+                     'formal_champion_adaptation', 'formal_champion_publication',
+                     'selection_feedback_incomplete'):
             if name in state:
                 search_metrics[name] = state[name]
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
@@ -440,6 +451,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     record = dict(
         run_id=run_id, status=result.get('status', 'failed'), phase=result.get('phase', 'done'),
         burst=burst_record or None,
+        rule_initialization=initialization,
         profile=profile, identity=profile.get('identity', {}),
         input_original=original, input_effective=effective,
         config=result.get('config') or (state or {}).get('config', {}),
@@ -455,7 +467,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         reference_identity=native.get('identity', {}), reference_summary=native,
         search_dps=summary.get('dps'), search_samples=summary.get('samples'),
         search_reference_ratio=summary.get('reference_ratio'),
-        search_candidate_count=search.get('candidate_count'),
+        search_candidate_count=search.get('candidate_count', len((state or {}).get('evaluated_keys', []))),
         search_unique_candidates=search.get('unique_candidates'),
         search_rounds=search.get('rounds'), search_partial_round=search.get('partial_round'),
         search_stop_reason=search.get('stop_reason'), search_chains=search.get('chains', []),
@@ -594,7 +606,7 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
             batch_key=reference_key, run_id=run_id, purpose='reference',
             seed=20260912, requested_iterations=100, samples=native['samples'],
             dps=native['dps'], variance=reference_damage.get('variance'), report=reference_report),
-                    diagnostic_logging=diagnostic_logging)
+                    diagnostic_logging=diagnostic_logging, runtime=runtime)
         reference_stored = True
     finally:
         _discard_native_exchange(destination / 'reference', keep_valid=reference_valid and not reference_stored)
@@ -652,7 +664,7 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
             samples=controlled['summary']['samples'], dps=controlled['summary']['dps'],
             variance=controlled_damage.get('variance'), report=controlled['report'],
             times=controlled['input_times'], phase_ms=phase_ms,
-            reset_events=controlled.get('reset_events', [])), diagnostic_logging=diagnostic_logging)
+            reset_events=controlled.get('reset_events', [])), diagnostic_logging=diagnostic_logging, runtime=runtime)
         controlled_stored = True
     finally:
         _discard_native_exchange(destination / 'controlled',
@@ -701,13 +713,13 @@ def _rule_hashes(*, relative_to=None):
             for path in sources}
 
 
-def _seed_programs(starts, snapshot, *, character, targets, engines,
+def _seed_programs(starts, snapshot, *, character, targets, configuration_key,
                    capabilities, runtime):
     """Append selected programs after role mapping and shared export checks."""
     if not snapshot:
         return starts, []
     from program import canonicalize_search_program
-    from seed_training import filter_search_program
+    from seed_training import filter_search_program, decode
     from codec import load_targeting, prepare_block, prepare_castsequence
 
     def check_program(program, target_masks):
@@ -781,15 +793,8 @@ def _seed_programs(starts, snapshot, *, character, targets, engines,
         if len(added) >= 4:
             break
         if (not isinstance(row, dict) or row.get('class_name') != character.class_name
-                or row.get('spec') != character.spec or row.get('targets') != targets):
-            continue
-        row_engines = row.get('engines')
-        if isinstance(row_engines, str):
-            try:
-                row_engines = json.loads(row_engines)
-            except ValueError:
-                continue
-        if row_engines != engines:
+                or row.get('spec') != character.spec
+                or decode(row.get('configuration_key')) != configuration_key):
             continue
         program = row.get('program')
         if isinstance(program, str):
@@ -910,6 +915,14 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
         request = dict(condition=binding['condition'], program=form, behavior_identity=canonical_behavior_key(form),
             purpose=purpose, seed=seed, input_seed=seed + 500000, iterations=iterations,
             times=times, stats=STATS_VERSION, trace=row['trace'], reset_events=[list(item) for item in config['reset_events']])
+        if row.get('rule_observations') is not None:
+            from rule_diagnostics import observation_request, VERSION as RULE_DIAGNOSTICS_VERSION
+            initialization = (dict(state['rule_context'], rule_snapshot=state['rule_snapshot'])
+                              if state.get('rule_context') else state['rule_initialization'])
+            expected = dict(version=RULE_DIAGNOSTICS_VERSION, request=observation_request(initialization))
+            if decode(row['rule_observations']) != expected:
+                raise InvalidRecordError('正式冠军原报告规则观察请求不符')
+            request['rule_observations'] = expected
         if state.get('burst'):
             from burst import combined_inputs
             context = state['burst']
@@ -979,7 +992,7 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
         candidate = by_key.get(run['candidate_data_key'])
         identity = (profile or {}).get('identity', {})
         config_without_logging = lambda value: {key: item for key, item in value.items()
-            if key not in ('search_observability', 'diagnostics', 'diagnostic_logging')}
+            if key not in ('search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
                           if key not in ('candidate_key', 'candidate_data_key')}
@@ -991,7 +1004,7 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
                 or decode(run['engines']) != state['engines']
                 or decode(run['simulation_config']) != state['simulation_config']
                 or set(config_without_logging(config)) != set(config_without_logging(state['config']))
-                or config_without_logging(config_for(config)) != config_without_logging(state['config'])
+                or config_without_logging(config_for(config, legacy=True)) != config_without_logging(state['config'])
                 or source_context != current_context or not run['condition_key']
                 or run['selected_candidate_key'] != run['locked_candidate_key']
                 or not run['selected_candidate_key'] or candidate is None
@@ -1234,8 +1247,10 @@ def _publish_formal_champion(store, destination):
 
 
 def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False,
-                  burst_identity=None, formal_source_run_ids=None):
+                  burst_identity=None, formal_source_run_ids=None, rule_snapshot=None, rule_step=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
+    from rule_config import load
+    rule_snapshot = rule_snapshot or load()
     from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
     store = TaskStore(destination)
     state = store.state
@@ -1251,6 +1266,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         store.close()
         raise TaskError('任务结果中心身份与检查点不符，请创建新任务')
     state['run_id'] = run_id
+    if getattr(runtime, 'search_timeline', None) is not None:
+        runtime.search_timeline.destination = destination
+        runtime.search_timeline.context['run_id'] = run_id
     if formal_source_run_ids is not None:
         state['formal_history_scope'] = formal_source_run_ids
     runtime.diagnostic_logging = config['diagnostic_logging']
@@ -1301,13 +1319,13 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             import cbor2
             from importlib.metadata import version
             condition_config = {key: value for key, value in config.items()
-                                if key not in ('search_observability', 'diagnostics', 'diagnostic_logging')}
+                                if key not in ('search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
             condition = digest(dict(fields=character.fields, class_name=character.class_name,
                                     engine=identities,
                                     options=[*COMMON, *engine_options(simulation_config)],
                                     config=condition_config, simulation_config=simulation_config,
                                     cbor2=version('cbor2'),
-                                    rules=rules, **(dict(task_category='burst_free_loop',
+                                    rules=rules, rule_config_digest=rule_snapshot['rule_config_digest'], **(dict(task_category='burst_free_loop',
                                                         burst_definition_id=definition['definition_id'])
                                                    if use_burst else {})))
             base_condition = condition
@@ -1324,26 +1342,12 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             if state.get('condition') and state['condition'] != condition:
                 raise TaskError('恢复任务的版本、配置或角色身份已变化，请创建新任务')
             state.update(condition=condition, config=config, rules=rules, engines=identities,
+                         rule_snapshot=rule_snapshot,
                          use_burst=use_burst,
                          simulation_config=simulation_config,
                          simulation_options=engine_options(simulation_config))
             state.setdefault('phase', 'initialize')
             if state['phase'] == 'initialize':
-                if 'seed_selected_snapshot' not in state:
-                    from result_store import read_records
-                    scope = f"{character.class_name}-{character.spec}-{simulation_config['target_count']}"
-                    if use_burst:
-                        scope += '-burst'
-                    state['seed_selected_snapshot'] = read_records('seed_selected', scope)
-                if 'training_champion_snapshot' not in state:
-                    from seed_training import training_champion
-                    state['training_champion_snapshot'] = training_champion(
-                        character.class_name, character.spec, simulation_config, engines=identities,
-                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
-                        burst_identity=(dict(spec_id=definition['spec_id'],
-                                             definition_id=definition['definition_id']) if definition else None))
-                # 冠军与代表快照随 inflight 同一事务冻结，先于任何原生评分。
-                # 初始化辅助进程也登记崩溃时最多单批的保守额度。
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
                 try:
@@ -1369,7 +1373,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         purpose='reference', seed=config['random_seed'],
                         requested_iterations=config['iterations'], samples=native['samples'],
                         dps=native['dps'], variance=reference_damage.get('variance'),
-                        report=reference_report), diagnostic_logging=config['diagnostic_logging'])
+                        report=reference_report), diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
                     reference_stored = True
                 finally:
                     _discard_native_exchange(destination / 'reference',
@@ -1384,6 +1388,29 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     state['burst'] = context
                     condition = digest(dict(base=base_condition, burst=context))
                     state['condition'] = condition
+                from rule_initialization import context as initialization_context
+                state['rule_context'], _ = initialization_context(capabilities, native,
+                    target_count=simulation_config['target_count'], scene=simulation_config.get('scene'),
+                    rule_snapshot=rule_snapshot)
+                starts = initial_programs(capabilities, native, config['random_seed'],
+                    input_interval_ms=config['input_interval_ms'],
+                    target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'),
+                    initialization=state.setdefault('rule_initialization', {}) if config['rule_initialization_enabled'] else None,
+                    rule_snapshot=rule_snapshot, rule_initialization_enabled=config['rule_initialization_enabled'])
+                configuration_key = state['rule_context']['configuration_key']
+                from seed_training import shared_scope, training_champion
+                from result_store import read_records
+                # 原生快照绑定英雄后才冻结共享成果；恢复不得沿用旧的宽范围快照。
+                if state.get('seed_configuration_key') != configuration_key:
+                    state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
+                    state['training_champion_snapshot'] = training_champion(
+                        character.class_name, character.spec, simulation_config, engines=identities,
+                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
+                        rule_snapshot=rule_snapshot, configuration_key=configuration_key,
+                        burst_identity=(dict(spec_id=definition['spec_id'],
+                                             definition_id=definition['definition_id']) if definition else None))
+                    state['seed_configuration_key'] = configuration_key
+                    store.save()
                 if 'formal_champion_snapshot' not in state:
                     snapshot = _freeze_formal_champion(state, character, native, capabilities)
                     if state.get('formal_history_scope'):
@@ -1392,15 +1419,14 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         snapshot = _historical_formal_champion(state, checked_character, native, capabilities, snapshot)
                     state['formal_champion_snapshot'] = snapshot
                     store.save()
-                starts = initial_programs(capabilities, native, config['random_seed'])
                 state['starts'], state['seed_adaptations'] = _seed_programs(
                     starts, state['seed_selected_snapshot'], character=character,
-                    targets=simulation_config['target_count'], engines=identities,
+                    targets=simulation_config['target_count'], configuration_key=configuration_key,
                     capabilities=capabilities, runtime=runtime)
                 champion = state['training_champion_snapshot']
                 state['starts'], adaptations = _seed_programs(
                     state['starts'], [champion] if champion.get('status') == 'selected' else [],
-                    character=character, targets=simulation_config['target_count'], engines=identities,
+                    character=character, targets=simulation_config['target_count'], configuration_key=configuration_key,
                     capabilities=capabilities, runtime=runtime)
                 state['training_champion_adaptation'] = adaptations[0] if adaptations else None
                 from program import canonicalize_search_program
@@ -1460,15 +1486,20 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                          original_bytes=original_bytes, effective_bytes=effective_bytes,
                          run_id=run_id),
             )
+            if getattr(runtime, 'search_timeline', None) is not None:
+                runtime.search_timeline.configure(profile_sha=input_effective_sha256, engines=identities,
+                    simulation_config=simulation_config, config=config, burst=state.get('burst'))
             result = optimize(profile=destination/'input.simc', character=character,
                               capabilities=state['capabilities'], reference=state['native'],
                               destination=destination, runtime=runtime, config=config,
                               condition_key=condition, store=store,
-                              simulation_config=simulation_config)
+                              simulation_config=simulation_config, rule_step=rule_step)
+            result['search']['rule_config_digest'] = state['rule_context']['rule_config_digest']
             result.update(config=config, simulation_config=simulation_config,
                               character=character, output_root=destination,capabilities=state['capabilities'],
                               profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
-                              reference_data_key=state.get('reference_data_key'))
+                              reference_data_key=state.get('reference_data_key'),
+                              rule_initialization=state.get('rule_initialization'))
             if state.get('burst'):
                 result['burst'] = dict(state['burst'], candidate=dict(
                     state['burst']['candidate'], simulation='passed_native_model'))
@@ -1482,10 +1513,14 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         adaptation.update(current_score=scored.get('score'),
                                           current_samples=sum(batch.get('samples', 0)
                                                               for batch in scored.get('batches', [])))
+            store.checkpoint()
+            store.defer_persistence = False
             _prepare_formal_publication(store, result)
             store.save()  # Intent freezes the completed archive while heartbeats remain nonterminal.
             pointer = _store_run(destination, result, state=state)
             _write_json(destination/'result.json', pointer, atomic=True)
+            if getattr(runtime, 'search_timeline', None) is not None:
+                runtime.search_timeline.saved(result['status'])
             state.update(status=result['status'], phase=result['phase'])
             if not state.get('formal_champion_publication_intent'):
                 store.save()
@@ -1518,6 +1553,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 result['search_observability'] = _export_search_observability(
                     observation, include_details=observation.get('mode') == 'full')
         _save_failure(destination, result, state=state)
+        if getattr(runtime, 'search_timeline', None) is not None:
+            runtime.search_timeline.saved(result['status'])
         return result
     except Exception as error:
         store.discard_unsaved_reports()
@@ -1536,8 +1573,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
 
 
 @contextmanager
-def _task_lease(destination):
-    with (destination/'.runner.lock').open('a+b') as lock:
+def _task_lease(destination, *, lock_name='.runner.lock', conflict_message='任务正在运行，不能同时恢复'):
+    with (destination/lock_name).open('a+b') as lock:
         if lock.tell()==0:
             lock.write(b'0')
             lock.flush()
@@ -1545,7 +1582,7 @@ def _task_lease(destination):
         try:
             msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
         except OSError as error:
-            raise TaskError('任务正在运行，不能同时恢复') from error
+            raise TaskError(conflict_message) from error
         try:
             yield
         finally:
@@ -1557,10 +1594,12 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
              version=None, gse_context=None, use_burst=False, burst_identity=None,
-             _formal_source_run_ids=None) -> dict:
+             _formal_source_run_ids=None, _rule_snapshot=None, rule_step=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
+    if rule_step is not None and (mode != 'optimize' or not resume):
+        raise TaskError('规则单步需要恢复已有已评分父任务')
     if burst_identity is not None:
         if not use_burst or mode != 'optimize' or resume:
             raise TaskError('冻结爆发身份仅用于新的爆发优化任务')
@@ -1583,7 +1622,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
             if current_original != saved_original:
                 raise TaskError('恢复任务的原始输入已变化，请创建新任务')
         return resume_task(destination, search_config=search_config, simulation_config=simulation_config,
-                           _runtime=_runtime, cancel_event=cancel_event)
+                           _runtime=_runtime, cancel_event=cancel_event, rule_step=rule_step)
     if mode=='optimize' and (program is not None or phase_ms!=0):
         raise TaskError('优化入口自动选择动作，手工程序仅用于单次评估')
     if mode not in ("optimize", "single", "import"):
@@ -1606,7 +1645,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
     else:
         gse_program = None
     from search import config_for
-    config = config_for(search_config)
+    config = config_for(search_config, legacy=resume)
     from result_store import ensure_available
     ensure_available()
     simulation_config = simulation_config_for(simulation_config)
@@ -1650,7 +1689,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
         try:
             return _run_optimize(destination, character, config=config, runtime=runtime,
                                  simulation_config=simulation_config, use_burst=use_burst, burst_identity=burst_identity,
-                                 formal_source_run_ids=_formal_source_run_ids)
+                                 formal_source_run_ids=_formal_source_run_ids, rule_snapshot=_rule_snapshot,
+                                 rule_step=rule_step)
         except TaskCancelled as error:
             state = {"status": "cancelled", "error": str(error), "elapsed_seconds": runtime.elapsed_seconds}
             _save_failure(destination, state)
@@ -1664,20 +1704,52 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False, burst_identity=None) -> dict:
-    if mode != 'optimize' or _lease:
-        return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
-                         search_config=search_config, simulation_config=simulation_config,
-                         cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
-                         gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity)
-    from seed_activity import foreground_search
-    with foreground_search():
-        return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
-                         search_config=search_config, simulation_config=simulation_config,
-                         cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
-                         gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity)
+             version=None, gse_context=None, use_burst=False, burst_identity=None, _rule_snapshot=None,
+             rule_step=None) -> dict:
+    timeline = None
+    if mode == 'optimize':
+        from simulation_config import load_search_config
+        if not resume:
+            search_config = load_search_config(**(search_config or {}))
+        from search import config_for
+        config = config_for(search_config)
+        if config['search_timeline'] and not hasattr(_runtime, 'search_timeline'):
+            origin = getattr(_runtime, 'timeline_origin', None)
+            if origin is None:
+                origin = time.monotonic()
+            from search_timeline import Timeline
+            timeline = Timeline(origin=origin,
+                context=dict(simulation_config=simulation_config_for(simulation_config)), resumed=resume)
+        _runtime = _runtime or TaskRuntime(config['total_budget_seconds'], cancel_event=cancel_event)
+        if timeline is not None:
+            _runtime.search_timeline = timeline
+    try:
+        if mode == 'optimize':
+            from rule_config import load
+            try:
+                _rule_snapshot = _rule_snapshot or load()
+            except ValueError as error:
+                raise TaskError(str(error)) from error
+        if mode != 'optimize' or _lease:
+            return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
+                             search_config=search_config, simulation_config=simulation_config,
+                             cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
+                             gse_text=gse_text, sequence_name=sequence_name, version=version,
+                             gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             _rule_snapshot=_rule_snapshot, rule_step=rule_step)
+        from seed_activity import foreground_search
+        with foreground_search():
+            return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
+                             search_config=search_config, simulation_config=simulation_config,
+                             cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
+                             gse_text=gse_text, sequence_name=sequence_name, version=version,
+                             gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             _rule_snapshot=_rule_snapshot, rule_step=rule_step)
+    finally:
+        if timeline is not None:
+            timeline.finish(getattr(timeline, 'destination', output_root),
+                            status='failed' if sys.exc_info()[0] else None)
+            del _runtime.search_timeline
 
 
 class TaskHandle:
@@ -1704,8 +1776,20 @@ _ACTIVE_LOCK = threading.RLock()
 def start_task(input_path, output_root, **kwargs):
     """异步启动同一公开任务入口，返回可取消的任务句柄。"""
     config = kwargs.get("search_config")
+    timeline_origin = None
+    if kwargs.get('mode', 'optimize') == 'optimize':
+        from simulation_config import load_search_config
+        config = load_search_config(**(config or {}))
+        kwargs['search_config'] = config
+        if config['search_timeline']:
+            timeline_origin = time.monotonic()
     from search import config_for
     runtime = TaskRuntime(config_for(config)["total_budget_seconds"] if kwargs.get("mode", "optimize") == "optimize" else 600)
+    if timeline_origin is not None:
+        runtime.timeline_origin = timeline_origin
+    if kwargs.get('mode', 'optimize') == 'optimize':
+        from rule_config import load
+        kwargs['_rule_snapshot'] = load()
     handle = TaskHandle(None, runtime, output_root)
 
     def worker():
@@ -1737,7 +1821,102 @@ def cancel_task(task):
     return read_task(handle.output_root) if (handle.output_root / "result.json").exists() else {"status": "stopping"}
 
 
+
+def _diagnose_saved_candidate(destination, store, candidate_key, budget_seconds, *, cancel_event=None,
+                              diagnostic_logging=False):
+    """显式独立操作复用评分/报告存储，不进入搜索或改变原任务计时。"""
+    from search import optimize, rule_diagnostic_status, config_for
+    from result_store import one, write, RUN_SCHEMA
+    state = store.state
+    record = next((row for row in state.get('archive', []) if row['key'] == candidate_key), None)
+    if record is None or not record.get('batches'):
+        raise TaskError('明确诊断的候选没有原评分记录')
+    character = parse_character((destination / 'input.simc').read_text(encoding='utf-8-sig'))
+    character = replace(character, spec_id=state['native']['identity']['spec_id'], race=state['native']['identity']['race'])
+    operation_config = config_for(dict(state['config'], diagnostic_logging=diagnostic_logging,
+        diagnostics='summary' if diagnostic_logging else 'off'), legacy=True)
+    runtime = TaskRuntime(budget_seconds, cancel_event=cancel_event, diagnostic_logging=diagnostic_logging)
+    store.diagnostic_logging_override = diagnostic_logging
+    store.diagnostic_only = True
+    # 不使用 active：它的心跳属于原搜索额度。独立运行仍受现有任务锁及 Runtime 约束。
+    store.runtime = runtime
+    previous = state.get('diagnostic_operations', {}).get(candidate_key, {})
+    previous_elapsed = previous.get('elapsed_seconds', 0)
+    operation = dict(previous, budget_seconds=budget_seconds, status='running',
+                     elapsed_seconds=previous_elapsed, diagnostic_logging=diagnostic_logging,
+                     publication_status='pending')
+    state.setdefault('diagnostic_operations', {})[candidate_key] = operation
+    store.counter_target = operation
+    operation.pop('error', None)
+    store.save()
+    failure = None
+    try:
+        store.recover_reports(character, state['simulation_config'])
+        optimize(profile=destination / 'input.simc', character=character,
+            capabilities=state['capabilities'], reference=state['native'], destination=destination,
+            runtime=runtime, config=operation_config, condition_key=state['condition'], store=store,
+            simulation_config=state['simulation_config'], diagnostic_candidate_key=candidate_key)
+        operation['status'] = rule_diagnostic_status(record)
+    except (TaskCancelled, BudgetExceeded) as error:
+        operation.update(status='cancelled' if isinstance(error, TaskCancelled) else 'incomplete', error=str(error))
+    except Exception as error:
+        operation.update(status='failed', error=str(error))
+        failure = error
+    finally:
+        saved, result = None, None
+        published = False
+        try:
+            # 主体发布与结果回读均计独立操作耗时；原任务计时及成绩保持不变。
+            store.flush_reports()
+            store.save()
+            saved = one('runs', 'run_id', state['run_id'])
+            if saved is not None:
+                saved = {name: json.loads(value) if RUN_SCHEMA.get(name) == 'JSON' and isinstance(value, str)
+                         else value for name, value in saved.items()}
+                metrics = saved.get('search_metrics') or {}
+                metrics['diagnostic_operations'] = state['diagnostic_operations']
+                metrics.setdefault('rule_diagnostic_replays', {})[candidate_key] = dict(
+                    batch_key=(record.get('diagnostic_batches') or record['batches'])[0]['data_key'],
+                    diagnostic=record.get('rule_diagnostics'))
+                if candidate_key == saved['selected_candidate_key']:
+                    metrics.update(rule_diagnostics=record.get('rule_diagnostics'),
+                                   rule_diagnostic_status=rule_diagnostic_status(record))
+                saved.update(search_metrics=metrics, batch_keys=sorted(set(saved['batch_keys'] or []) | {
+                    row['data_key'] for row in record.get('diagnostic_batches', [])}))
+                write('runs', state['run_id'], [saved], schema=RUN_SCHEMA)
+            store.publish()
+            result = read_task(destination, include_search_records=True)
+            operation['publication_status'] = 'complete'
+            published = True
+        finally:
+            operation['invocation_elapsed_seconds'] = runtime.elapsed_seconds
+            operation['elapsed_seconds'] = previous_elapsed + operation['invocation_elapsed_seconds']
+            # 仅最后两次账本写入有不可自包含的小尾差；失败重发的实耗继续累加。
+            store.save()
+            if published and saved is not None:
+                write('runs', state['run_id'], [saved], schema=RUN_SCHEMA)
+                result['search']['diagnostic_operations'][candidate_key] = dict(operation)
+    if failure is not None:
+        raise TaskError(str(failure)) from failure
+    return result
+
+
+
 def _resume_task(output_root, **kwargs):
+    timeline = kwargs.pop('_timeline', None)
+    search_timeline = kwargs.pop('search_timeline', None)
+    diagnostic_candidate_key = kwargs.pop('diagnostic_candidate_key', None)
+    diagnostic_budget_seconds = kwargs.pop('diagnostic_budget_seconds', None)
+    if diagnostic_candidate_key is not None:
+        import math
+        if (not isinstance(diagnostic_candidate_key, str) or not diagnostic_candidate_key
+                or type(diagnostic_budget_seconds) not in (int, float)
+                or not math.isfinite(diagnostic_budget_seconds) or diagnostic_budget_seconds <= 0):
+            raise TaskError('明确诊断必须提供正数 diagnostic_budget_seconds')
+        if kwargs.get('rule_step') is not None:
+            raise TaskError('明确诊断不能同时提交规则单步')
+    elif diagnostic_budget_seconds is not None:
+        raise TaskError('diagnostic_budget_seconds 必须同时指定 diagnostic_candidate_key')
     destination = Path(output_root).resolve()
     simulation_config = simulation_config_for(kwargs.pop("simulation_config", None))
     from result_store import ensure_available
@@ -1755,6 +1934,15 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination)
         try:
             state = store.state
+            from rule_config import load
+            try:
+                current_rules = kwargs.pop('_rule_snapshot', None) or load()
+            except ValueError as error:
+                raise TaskError(str(error)) from error
+            if ((state.get('rule_snapshot') or {}).get('rule_config_digest') !=
+                    current_rules['rule_config_digest']):
+                raise TaskError('恢复任务的规则配置已变化，请创建新任务')
+            kwargs['_rule_snapshot'] = current_rules
             if 'formal_champion_publication' in state:
                 try:
                     _formal_publication_metadata(state['formal_champion_publication'])
@@ -1785,9 +1973,34 @@ def _resume_task(output_root, **kwargs):
                 raise TaskError('任务缺少恢复模拟配置')
             if simulation_config != simulation_config_for(state['simulation_config']):
                 raise TaskError('恢复模拟配置发生变化，请创建新任务')
-            config = config_for(kwargs.pop('search_config',None) or state['config'])
-            if config != config_for(state['config']):
+            if diagnostic_candidate_key is None and any(key not in state['config'] for key in
+                    ('rule_initialization_enabled', 'adaptive_selector_enabled')):
+                raise TaskError('旧任务未冻结搜索开关，不能静默更换算法；请创建新任务，原成果仍可读取')
+            requested_config = kwargs.pop('search_config', None) or state['config']
+            if set(requested_config) <= {'search_timeline'}:
+                requested_config = dict(state['config'], **requested_config)
+            if search_timeline is not None:
+                requested_config = dict(requested_config, search_timeline=search_timeline)
+            if ('rule_diagnostics_policy' not in requested_config
+                    and 'rule_diagnostics_policy' in state['config']):
+                requested_config = dict(requested_config,
+                    rule_diagnostics_policy=state['config']['rule_diagnostics_policy'])
+            config = config_for(requested_config, legacy=True)
+            if config.get('rule_diagnostics_policy', 'eager') == state['config'].get('rule_diagnostics_policy', 'eager'):
+                if 'rule_diagnostics_policy' in state['config']:
+                    config['rule_diagnostics_policy'] = state['config']['rule_diagnostics_policy']
+                else:
+                    config.pop('rule_diagnostics_policy', None)
+            logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
+            if ({key: value for key, value in config.items() if key not in logging_keys} !=
+                    {key: value for key, value in config_for(state['config'], legacy=True).items()
+                     if key not in logging_keys}):
                 raise TaskError('恢复配置发生变化，请创建新任务')
+            logging = kwargs.pop('diagnostic_logging', False)
+            if diagnostic_candidate_key is None:
+                config = config_for(dict(config, diagnostic_logging=logging,
+                    diagnostics=(config['diagnostics'] if config['diagnostics'] != 'off' else 'summary')), legacy=True)
+                state['config'] = config
             from engine import identity
             # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
             verified = getattr(kwargs.get('_runtime'), 'identities', {})
@@ -1799,23 +2012,93 @@ def _resume_task(output_root, **kwargs):
                     raise TaskError('恢复任务的版本或编译规则已变化，请创建新任务')
             except (ValueError, OSError) as error:
                 raise TaskError(str(error)) from error
+            if diagnostic_candidate_key is not None:
+                return _diagnose_saved_candidate(destination, store, diagnostic_candidate_key,
+                    diagnostic_budget_seconds, cancel_event=kwargs.get('cancel_event'), diagnostic_logging=logging)
+            if timeline is not None:
+                timeline.configure(profile_sha=state.get('input_effective_sha256'), engines=state.get('engines'),
+                    simulation_config=simulation_config, config=config, burst=state.get('burst'))
             used = float(state.get('elapsed_seconds',0))
+            terminal_rule_step = False
+            if kwargs.get('rule_step') is not None:
+                from rule_diagnostics import enqueue
+                try:
+                    step_status = enqueue(state, kwargs['rule_step'], config, used)
+                except ValueError as error:
+                    raise TaskError(str(error)) from error
+                store.save()
+                terminal_rule_step = (step_status in ('scored', 'failed', 'duplicate') and not any(
+                    work.get('rule_step', {}).get('request') == kwargs['rule_step']
+                    for work in state.get('pending', [])))
+            feedback_accounted_seconds = 0
             if state.get('native'):
                 character = parse_character((destination / 'input.simc').read_text(encoding='utf-8-sig'))
                 character = replace(character, spec_id=state['native']['identity']['spec_id'],
                                     race=state['native']['identity']['race'])
                 store.recover_reports(character, simulation_config)
+                from search import reconcile_selection_feedback
+                reconcile_selection_feedback(store,
+                    finalizing=used >= config['total_budget_seconds'] or state.get('stop_reason') == 'search_deadline',
+                    cancel_event=kwargs.get('cancel_event') or getattr(kwargs.get('_runtime'), 'cancel_event', None))
+                feedback_accounted_seconds = max(0, state.get('elapsed_seconds', used) - used)
+            used = float(state.get('elapsed_seconds', used))
             if state.get('status') == 'running':
                 penalty = max((max(0, r['allowance'] - max(0,used-r['start']))
                                for r in state.get('inflight',{}).values()),default=0)
-                used = min(config['total_budget_seconds'],used+min(30,penalty))
+                used += min(30, penalty, max(0, config['total_budget_seconds']-used))
                 state.update(elapsed_seconds=used,status='interrupted',inflight={})
                 store.save()  # 扣除与恢复标记同一事务，重复恢复不会再次扣除。
             if state.get('formal_champion_publication_intent'):
                 _restore_formal_result(store, destination, character)
                 _publish_formal_champion(store, destination)
+            if terminal_rule_step:
+                # 操作终态幂等仍须补发可靠结果；不能绕过上次中断后的中心/指针/进度同步。
+                chosen = next((row for row in state.get('archive', [])
+                               if row['key'] == state.get('locked_candidate_key', state.get('best'))), {})
+                search = dict(state, records=state.get('archive', []),
+                    candidate_count=len(state.get('evaluated_keys', [])),
+                    unique_candidates=len(state.get('seen', [])),
+                    partial_round=bool(state.get('pending')) or not state.get('full_round', True),
+                    rule_diagnostics=chosen.get('rule_diagnostics'))
+                if search['rule_diagnostics']:
+                    search['rule_diagnostics_version'] = search['rule_diagnostics']['version']
+                fields = (state.get('formal_champion_publication_intent') or {}).get('result_fields', {})
+                search.update({key: value for key, value in fields.get('search', {}).items() if key == 'no_improvement_round_limit'})
+                result = dict(fields, status=state['status'], phase=state['phase'], search=search,
+                    validation=dict(dataset='validation', records=[row[name] for row in state.get('archive', [])
+                        for name in ('validation', 'global_validation') if name in row]),
+                    independent_validation_complete=False, improvement='search_result',
+                    final=fields.get('final', dict(dataset='final', status='not_requested', scenarios={})))
+                observation = state.get('search_observability')
+                if observation and observation.get('mode') != 'off':
+                    result['search_observability'] = _export_search_observability(
+                        observation, include_details=observation.get('mode') == 'full')
+                pointer = _store_run(destination, result, state=state)
+                _write_json(destination/'result.json', pointer, atomic=True)
+                store.publish()
+                return read_task(destination)
             if (destination / 'result.json').is_file():
                 if state.get('status') == 'completed':
+                    from result_store import RUN_SCHEMA, one, write
+                    started = time.monotonic()
+                    try:
+                        published = one('runs', 'run_id', state['run_id'])
+                        if published is None:
+                            raise TaskError('已完成任务的中心结果缺失')
+                        published = {name: json.loads(value) if RUN_SCHEMA.get(name) == 'JSON'
+                                     and isinstance(value, str) else value
+                                     for name, value in published.items()}
+                        metrics = dict(published.get('search_metrics') or {})
+                        metrics.update(rule_steps=state.get('rule_steps', {}),
+                            selection_feedback_incomplete=state.get('selection_feedback_incomplete', False))
+                        if (metrics != published.get('search_metrics') or used != published['elapsed_seconds']
+                                or published.get('config') != config):
+                            published.update(search_metrics=metrics, config=config,
+                                elapsed_seconds=used + time.monotonic()-started)
+                            write('runs', state['run_id'], [published], schema=RUN_SCHEMA)
+                    finally:
+                        state['elapsed_seconds'] = used + time.monotonic()-started
+                        store.save()
                     store.publish()
                     return read_task(destination)
             if used >= config['total_budget_seconds']:
@@ -1834,32 +2117,80 @@ def _resume_task(output_root, **kwargs):
                 return read_task(destination)
         finally:
             store.close()
-        runtime = kwargs.pop('_runtime',None) or TaskRuntime(config['total_budget_seconds'],cancel_event=kwargs.pop('cancel_event',None))
+        runtime = kwargs.pop('_runtime', None)
+        if runtime is not None:
+            # used已含补发实耗；外传时钟亦在运行，仅消除这一段重复计时。
+            runtime.started += feedback_accounted_seconds
+        else:
+            runtime = TaskRuntime(config['total_budget_seconds'], cancel_event=kwargs.pop('cancel_event', None))
+        if config['diagnostic_logging']:
+            # 同一次恢复先补反馈再重开任务；只转交内存中的本次统计，不读取旧日志。
+            try:
+                owners = (runtime, store, *getattr(store, 'diagnostic_runtimes', ()))
+                stages = diagnostic_summary(*owners)['stages']
+                intervals = {}
+                for owner in owners:
+                    for name, spans in getattr(owner, 'performance_intervals', {}).items():
+                        intervals.setdefault(name, []).extend(spans)
+                runtime.performance_stages = stages
+                runtime.performance_intervals = intervals
+            except Exception:
+                pass
         kwargs.pop('cancel_event',None)
         runtime.identities.update(verified)
         runtime.used_seconds=used
         runtime.budget_seconds=config['total_budget_seconds']
         runtime.phase_limit=runtime.budget_seconds
+        if timeline is not None:
+            runtime.search_timeline = timeline
         return run_task(destination/'input.simc', destination, resume=True, _runtime=runtime, _lease=True,
                         search_config=config, simulation_config=simulation_config, **kwargs)
 
 
 def resume_task(output_root, **kwargs):
     from seed_activity import foreground_search
-    with foreground_search():
-        return _resume_task(output_root, **kwargs)
+    from simulation_config import load_search_config
+    overrides = kwargs.get('search_config') or {}
+    requested_timeline = kwargs.get('search_timeline')
+    if requested_timeline is None:
+        requested_timeline = overrides.get('search_timeline')
+    enabled = load_search_config(search_timeline=requested_timeline)['search_timeline']
+    kwargs['search_timeline'] = enabled
+    timeline = getattr(kwargs.get('_runtime'), 'search_timeline', None)
+    owns_timeline = enabled and timeline is None and not kwargs.get('diagnostic_candidate_key')
+    if owns_timeline:
+        origin = getattr(kwargs.get('_runtime'), 'timeline_origin', None)
+        if origin is None:
+            origin = time.monotonic()
+        from search_timeline import Timeline
+        timeline = Timeline(origin=origin,
+            context=dict(simulation_config=simulation_config_for(kwargs.get('simulation_config'))), resumed=True)
+    if timeline is not None:
+        kwargs['_timeline'] = timeline
+    try:
+        with foreground_search():
+            result = _resume_task(output_root, **kwargs)
+        if owns_timeline:
+            timeline.stop(result.get('search', {}).get('stop_reason') or result['status'])
+            timeline.saved(result['status'])
+        return result
+    finally:
+        if owns_timeline:
+            timeline.finish(output_root, status='failed' if sys.exc_info()[0] else None)
 
 
-def read_task(output_root, *, include_search_records=False, include_reports=False):
+def read_task(output_root, *, include_search_records=False, include_reports=False,
+              include_rule_initialization=True):
     from result_store import DataReadError
     try:
         return _read_task(output_root, include_search_records=include_search_records,
-                          include_reports=include_reports)
+                          include_reports=include_reports,
+                          include_rule_initialization=include_rule_initialization)
     except DataReadError as error:
         raise TaskError(str(error)) from error
 
 
-def _batch_locations(destination, keys):
+def _batch_locations(destination, keys, *, receipts=None):
     """Read only requested batch locators from the existing read-only checkpoint."""
     from result_store import DataReadError, DATA_ROOT, report_locations
     keys = list(dict.fromkeys(key for key in keys if key))
@@ -1877,6 +2208,8 @@ def _batch_locations(destination, keys):
                     if not isinstance(row, dict):
                         raise ValueError('批次位置记录必须是对象')
                     locations[key] = row.get('storage_group_key') or row.get('data_key') or key
+                    if receipts is not None:
+                        receipts[key] = row
         except (sqlite3.Error, ValueError, TypeError) as error:
             raise DataReadError('任务批次位置不可读取') from error
         finally:
@@ -1888,7 +2221,8 @@ def _batch_locations(destination, keys):
     return locations
 
 
-def _read_task(output_root, *, include_search_records=False, include_reports=False):
+def _read_task(output_root, *, include_search_records=False, include_reports=False,
+               include_rule_initialization=True):
     destination = Path(output_root).resolve()
     progress_path = destination / 'progress.json'
     progress = None
@@ -1913,9 +2247,11 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
     if not run_id:
         return pointer
 
-    from result_store import read_many, one as read_record
+    from result_store import RUN_SCHEMA, read_many, one as read_record
 
-    saved = read_record('runs', 'run_id', run_id)
+    columns = None if include_rule_initialization else [
+        name for name in RUN_SCHEMA if name != 'rule_initialization']
+    saved = read_record('runs', 'run_id', run_id, columns=columns)
     if saved is None:
         return pointer
 
@@ -1965,6 +2301,15 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         final=dict(dataset='final', status=saved['final_status'],
                    scenarios=decode(saved['final_scenarios']) or {}),
         error=saved['error'], output_root=destination)
+    if include_rule_initialization:
+        task_result['rule_initialization'] = decode(saved.get('rule_initialization'))
+    initialization_identity = search.get('rule_initialization_identity')
+    if not initialization_identity and task_result.get('rule_initialization'):
+        initialization = task_result['rule_initialization']
+        initialization_identity = (initialization['behavior_identity'] + ':' +
+                                   initialization.get('compilation', 'pending'))
+    task_result.update(has_rule_initialization=bool(initialization_identity),
+                       rule_initialization_identity=initialization_identity)
     if saved['search_observability']:
         task_result['search_observability'] = decode(saved['search_observability'])
     if saved.get('burst'):
@@ -1994,8 +2339,9 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             selected_version=candidate['selected_version'], import_sha256=candidate['import_sha256'],
             game_validation=candidate['game_validation'])
 
+    batch_receipts = {}
     locations = _batch_locations(destination, [saved['controlled_data_key'],
-                         *(search['batch_keys'] if include_search_records else [])])
+                         *(search['batch_keys'] if include_search_records else [])], receipts=batch_receipts)
     if saved['controlled_data_key']:
         controlled = read_record('batches', 'batch_key', saved['controlled_data_key'],
                                  group_key=locations.get(saved['controlled_data_key']),
@@ -2015,6 +2361,10 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         columns = ['batch_key', 'candidate_key', 'purpose', 'condition_key', 'program_identity',
                    'batch_index', 'scenario', 'stats_version', 'seed', 'input_seed', 'iterations',
                    'times', 'trace', 'dps', 'samples', 'variance', 'requested_iterations']
+        if search.get('rule_diagnostics_version') or task_result['config'].get('rule_diagnostics_policy') == 'on_demand':
+            columns += ['rule_diagnostics', 'rule_observations']
+        if task_result['config'].get('rule_diagnostics_policy') == 'on_demand':
+            columns += ['source_scoring_batch_key', 'rule_diagnostic_status']
         batches = {row['batch_key']: row for row in read_many('batches', groups, columns=columns)
                    if row['batch_key'] in wanted}
         candidate_keys = list(dict.fromkeys(row['candidate_key'] for row in batches.values()
@@ -2040,7 +2390,28 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
                          dps=row['dps'], samples=row['samples'], variance=row['variance'],
                          requested_iterations=row['requested_iterations'], batch_index=row['batch_index'],
                          scenario=row['scenario'])
-            record = grouped.setdefault(key, dict(key=key, batches=[]))
+            if row.get('rule_observations') is not None:
+                request['rule_observations'] = decode(row['rule_observations'])
+            if task_result['config'].get('rule_diagnostics_policy') == 'on_demand':
+                frozen = batch_receipts.get(row['batch_key'], {}).get('request')
+                if frozen is not None:
+                    if {name: value for name, value in frozen.items() if name != 'burst'} != request:
+                        raise TaskError('原评分冻结请求与已发布报告不符')
+                    request = batch['request'] = frozen
+                if digest(request) != row['batch_key']:
+                    raise TaskError('原评分冻结请求摘要不符')
+            record = grouped.setdefault(key, dict(key=key, batches=[], rule_diagnostic_status='not_diagnosed'))
+            if row.get('rule_diagnostics') is not None:
+                from rule_diagnostics import rebind
+                record['rule_diagnostics'] = rebind(decode(row['rule_diagnostics']), run_id,
+                    diagnostic_logging=task_result['config'].get('diagnostic_logging', False))
+            if key in search.get('rule_diagnostic_replays', {}):
+                replay = search['rule_diagnostic_replays'][key]
+                if replay['batch_key'] == row['batch_key']:
+                    record['rule_diagnostics'] = replay['diagnostic']
+            for step in search.get('rule_steps', {}).values():
+                if step.get('candidate_key') == key:
+                    record['rule_step'] = step
             record['batches'].append(batch)
             if candidate is not None:
                 record['program'] = decode(candidate['program'])
@@ -2048,8 +2419,41 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
                                            program=decode(candidate['program']),
                                            text=candidate['export_text'],
                                            simulation=candidate['simulation'])
+        for row in batches.values():
+            if row['purpose'] != 'diagnostic':
+                continue
+            record = grouped.get(row['candidate_key'])
+            if record is None:
+                continue
+            source = next((batch for batch in record['batches']
+                           if batch['data_key'] == row['source_scoring_batch_key']), None)
+            if source is None:
+                raise TaskError('诊断补采缺少原评分来源')
+            request = dict(source['request'], purpose='diagnostic', source_scoring_batch_key=row['source_scoring_batch_key'],
+                           rule_observations=decode(row['rule_observations']))
+            if digest(request) != row['batch_key']:
+                raise TaskError('诊断补采冻结请求摘要不符')
+            receipt = dict(status='success', data_key=row['batch_key'], request=request,
+                dps=row['dps'], samples=row['samples'], variance=row['variance'],
+                requested_iterations=row['requested_iterations'], batch_index=row['batch_index'], scenario=row['scenario'])
+            record.update(diagnostic_batches=[receipt], rule_diagnostic_status=row['rule_diagnostic_status'],
+                rule_diagnostic_source=dict(kind='on_demand_replay', scoring_batch_key=row['source_scoring_batch_key'],
+                                            diagnostic_batch_key=row['batch_key']))
+            if row.get('rule_diagnostics') is not None:
+                from rule_diagnostics import rebind
+                diagnostic = rebind(decode(row['rule_diagnostics']), run_id,
+                    diagnostic_logging=task_result['config'].get('diagnostic_logging', False))
+                receipt['rule_diagnostics'] = record['rule_diagnostics'] = diagnostic
         records = []
         for record in grouped.values():
+            replay = search.get('rule_diagnostic_replays', {}).get(record['key'])
+            if replay:
+                receipt = next((batch for batch in record['batches'] + record.get('diagnostic_batches', [])
+                                if batch['data_key'] == replay['batch_key']), None)
+                if receipt is not None:
+                    receipt['rule_diagnostics'] = record['rule_diagnostics'] = replay['diagnostic']
+            from search import rule_diagnostic_status
+            record['rule_diagnostic_status'] = rule_diagnostic_status(record)
             rows = record['batches']
             samples = sum(row['samples'] for row in rows)
             record['score'] = (sum(row['dps'] * row['samples'] for row in rows) / samples
@@ -2063,20 +2467,69 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
     return task_result
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == 'curves':
+        parser = argparse.ArgumentParser(description='读取已有诊断文件或目录，离线绘制，不启动模拟')
+        parser.add_argument('command', choices=('curves',))
+        parser.add_argument('sources', nargs='+', help='诊断文件/目录；--damage也接受batch:批次键')
+        parser.add_argument('--damage', action='store_true', help='单独绘制已有原生伤害时间桶')
+        parser.add_argument('--project', type=Path, help='已有数据中心所属项目，仅用于读取报告')
+        parser.add_argument('--output', type=Path, required=True)
+        args = parser.parse_args(argv)
+        try:
+            from search_timeline import compare, compare_damage
+            if args.project is not None:
+                from result_store import bind_project
+                bind_project(args.project)
+            export = compare_damage if args.damage else compare
+            print(json.dumps(export(args.sources, args.output), ensure_ascii=False))
+            return 0
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            print(str(error), file=sys.stderr)
+            return 2
+    if argv and argv[0] in ('rules-check', 'rules-save'):
+        parser = argparse.ArgumentParser(description='校验或保存两库规则；不启动模拟')
+        parser.add_argument('command', choices=('rules-check', 'rules-save'))
+        parser.add_argument('file', type=Path)
+        parser.add_argument('--expected-digest', required=argv[0] == 'rules-save')
+        args = parser.parse_args(argv)
+        try:
+            from rule_config import load, save
+            if args.command == 'rules-save':
+                result = save(args.file, args.expected_digest)
+            else:
+                snapshot = load(args.file)
+                result = dict(status='valid', rule_config_digest=snapshot['rule_config_digest'], source=snapshot['source'])
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        except (TaskError, ValueError, OSError) as error:
+            print(str(error), file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(description='从单个角色文件生成本机离线序列')
     parser.add_argument('input',type=Path,nargs='?',help='角色导出文件')
     parser.add_argument('--resume',action='store_true',help='按原有清单和预算恢复任务')
+    parser.add_argument('--diagnostic-logging', action='store_true',
+                        help='本次开启全部性能诊断日志；新建和恢复默认均关闭')
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')
-    args = parser.parse_args()
+    from simulation_config import add_search_arguments
+    add_search_arguments(parser)
+    args = parser.parse_args(argv)
     try:
         simulation_config = load_config()
         if args.resume:
-            result = resume_task(args.output, simulation_config=simulation_config)
+            requested = {key: getattr(args, key) for key in
+                ('rule_initialization_enabled', 'adaptive_selector_enabled') if getattr(args, key) is not None}
+            options = dict(search_config=dict(read_task(args.output)['config'], **requested)) if requested else {}
+            result = resume_task(args.output, simulation_config=simulation_config,
+                                 diagnostic_logging=args.diagnostic_logging, search_timeline=args.search_timeline, **options)
         else:
             if args.input is None:
                 parser.error('新任务需要角色文件')
-            result = run_task(args.input, args.output, simulation_config=simulation_config)
+            result = run_task(args.input, args.output, simulation_config=simulation_config,
+                              search_config=dict(diagnostic_logging=args.diagnostic_logging,
+                                  rule_initialization_enabled=args.rule_initialization_enabled,
+                                  adaptive_selector_enabled=args.adaptive_selector_enabled, search_timeline=args.search_timeline, diagnostics='summary'))
         print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:

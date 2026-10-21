@@ -91,3 +91,32 @@ class RuntimeTests(TestCase):
                     self.assertIs(raised.exception, violation)
                     self.assertEqual(stdout.read_bytes(), b"owned stdout")
                     self.assertEqual(stderr.read_bytes(), b"owned stderr")
+
+    def test_unbounded_training_runtime_keeps_process_timeout_and_cancellation(self):
+        import math
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as directory:
+                clock, events = [0.0], []
+                stdout, stderr = Path(directory) / 'stdout.tmp', Path(directory) / 'stderr.tmp'
+                stdout.write_bytes(b'')
+                stderr.write_bytes(b'')
+                with patch.object(runtime.time, 'monotonic', side_effect=lambda: clock[0]):
+                    task = runtime.TaskRuntime(math.inf, used_seconds=601)
+                    def wait(timeout):
+                        if 'terminate' in events:
+                            return 0
+                        clock[0] += timeout
+                        if cancel:
+                            task.cancel()
+                        raise runtime.ProcessTimeout('仍在运行')
+                    process = SimpleNamespace(stdout_path=stdout, stderr_path=stderr,
+                        poll=lambda: 0 if 'terminate' in events else None, wait=wait, terminate=lambda: events.append('terminate'),
+                        close=lambda: events.append('close'))
+                    with patch.object(runtime, '_create_process', return_value=process):
+                        with self.assertRaises(runtime.TaskCancelled if cancel else runtime.ProcessTimeout):
+                            runtime.run_command(['simc'], directory, timeout_seconds=30, runtime=task)
+                    self.assertIn('terminate', events)
+                    self.assertEqual(events[-1], 'close')
+                    self.assertGreater(task.elapsed_seconds, 600)
+                    if not cancel:
+                        self.assertAlmostEqual(clock[0], 30)

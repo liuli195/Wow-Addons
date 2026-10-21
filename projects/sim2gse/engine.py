@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import os
-from runtime import replace_file
+from runtime import replace_file, diagnostic_start, diagnostic_finish
 from runtime import BudgetExceeded, ProcessTimeout, TaskCancelled, TaskRuntime, run_command
 from simulation_config import config_for, engine_options
 from native_build import own_sources, build_identity, identity_digest
@@ -107,7 +107,7 @@ def prepare_loop(native, character, folder, runtime, *, definition=None, interva
     # 在编译与过滤前核对同一角色、版本及按法，不由各入口自行拼装。
     input_times(definition, interval_ms)
     context = compile_context(definition, character, all_capabilities, native['identity'],
-                              folder / 'burst-export', runtime)
+                              folder / 'burst-export', runtime, interval_ms=interval_ms)
     context['interval_ms'] = interval_ms
     return all_capabilities, search_capabilities(all_capabilities, context['candidate']['blocks']), context
 
@@ -123,19 +123,24 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     command = [str(executable), os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
                'iterations=100', 'max_time=180',
                *reports,
-               'output=' + ('native.txt' if getattr(runtime, 'diagnostic_logging', True) else os.devnull),
+               'output=' + ('native.txt' if runtime.diagnostic_logging else os.devnull),
                *options]
     try:
-        proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
-                           on_start=on_start)
+        started = diagnostic_start() if runtime.diagnostic_logging else None
+        try:
+            proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
+                               on_start=on_start)
+        finally:
+            if runtime.diagnostic_logging:
+                diagnostic_finish(runtime, 'native.execute', started)
     except ProcessTimeout as error:
-        if getattr(runtime, 'diagnostic_logging', True):
+        if runtime.diagnostic_logging:
             (folder / 'process.log').write_text(str(error), encoding='utf-8')
         raise CandidateError('原生引擎运行超时，已停止本次进程') from error
     except (TaskCancelled, BudgetExceeded):
         raise
     log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
-    if getattr(runtime, 'diagnostic_logging', True):
+    if runtime.diagnostic_logging:
         (folder / 'process.log').write_text(log, encoding='utf-8')
         (folder / 'invocation.json').write_text(json.dumps(dict(command=command, identity=manifest,
                                                                exit_code=proc.returncode,
@@ -143,6 +148,15 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     if proc.returncode:
         raise ValueError('原生引擎失败: ' + log[-2000:])
     return log
+
+
+def native_button_definition(row):
+    """共享目录分类：原生准备设施不成为GSE按钮，未知伤害代理仍须拒绝。"""
+    name = row['signature'].split(',', 1)[0]
+    return bool(row['signature'] and row['player_owned']
+        and (not row['background'] or name == 'use_item') and not row['quiet'] and not row['passive']
+        and row['type'] not in ('call_action_list', 'action_variable', 'sequence') and name != 'use_items'
+        and (row['data_id'] > 0 or row['harmful'] or name in ('auto_attack', 'use_item')))
 
 
 def inspect(reference, folder):
@@ -174,8 +188,7 @@ def inspect(reference, folder):
         row['catalogue'] = origin
         sources.append(row)
         name = row['signature'].split(',', 1)[0]
-        if (not row['signature'] or not row['player_owned'] or (row['background'] and name != 'use_item') or row['quiet'] or row['passive'] or
-                row['type'] in ('call_action_list', 'action_variable', 'sequence') or name == 'use_items'):
+        if not native_button_definition(row):
             row['status'] = 'native_non_button'
             continue
         if origin == 'apl' and (row['precombat'] or row.get('action_initialized') is not True
@@ -403,6 +416,7 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     player = player_report(report, character)
     result['action_sequence'] = player['collected_data'].get('action_sequence', [])
     result['precombat_sequence'] = player['collected_data'].get('action_sequence_precombat', [])
+    result['static_snapshot'] = player.get('sim2gse_static_snapshot')
     result['actions_protocol'] = player.get('sim2gse_actions_protocol')
     result['executed_actions'] = player.get('sim2gse_actions', [])
     result['apl_actions_protocol'] = player.get('sim2gse_apl_actions_protocol')

@@ -1,0 +1,180 @@
+"""公开任务与恢复接缝保护局部检查点的完整状态。"""
+import copy
+import json
+
+import pytest
+
+
+
+
+def _new_checkpoint(tmp_path):
+    from search import TaskStore
+
+    destination = tmp_path / 'task'
+    destination.mkdir()
+    store = TaskStore(destination)
+    store.state.update(run_id='checkpoint', config={'diagnostic_logging': False}, status='running',
+        elapsed_seconds=0, inflight={}, pending=[dict(receipt={'feedback': {'reward': None}})],
+        archive=[dict(key='first', evidence={'samples': [1]}),
+                 dict(key='second', evidence={'samples': [2]})])
+    store.save()
+    return store
+
+
+def _reopen_checkpoint(store):
+    from search import TaskStore
+
+    destination = store.destination
+    store.close()
+    reopened = TaskStore(destination)
+    try:
+        return copy.deepcopy(reopened.state)
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize('change', ['reorder', 'delete', 'append', 'new_field', 'whole_archive'])
+def test_checkpoint_structural_changes_fall_back_without_losing_unmarked_nested_state(tmp_path, change):
+    store = _new_checkpoint(tmp_path)
+    store.state['pending'][0]['receipt']['feedback']['reward'] = .5
+    if change == 'reorder':
+        store.state['archive'].reverse()
+    elif change == 'delete':
+        store.state['archive'].pop(0)
+    elif change == 'append':
+        store.state['archive'].append(dict(key='third', evidence={'samples': [3]}))
+    elif change == 'new_field':
+        store.state['new_field'] = {'nested': ['retained']}
+    else:
+        store.state['archive'][0]['evidence']['samples'].append(4)
+    # Known structure changes must retain the original complete-save fallback,
+    # including changes outside the caller's limited field list.
+    store.save(fields=('archive',) if change == 'whole_archive' else ())
+    expected = copy.deepcopy(store.state)
+    assert _reopen_checkpoint(store) == expected
+
+
+def test_scoped_checkpoint_deletes_an_explicit_field(tmp_path):
+    store = _new_checkpoint(tmp_path)
+    del store.state['pending']
+    store.save(fields=('pending',))
+    expected = copy.deepcopy(store.state)
+    assert _reopen_checkpoint(store) == expected
+    assert 'pending' not in expected
+
+
+def test_scoped_checkpoint_failure_rolls_back_and_retry_persists_all_changes(tmp_path):
+    import sqlite3
+    from search import TaskStore
+
+    store = _new_checkpoint(tmp_path)
+    before = copy.deepcopy(store.state)
+    store.state['pending'][0]['receipt']['feedback']['reward'] = .75
+    store.state['archive'][1]['evidence']['samples'].append(4)
+    expected = copy.deepcopy(store.state)
+    # Fail the final progress insert, after both state updates have executed.
+    store.db.execute("""CREATE TEMP TRIGGER fail_checkpoint BEFORE INSERT ON runtime_progress
+        BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match='injected checkpoint failure'):
+        store.save(fields=('pending',), archive_keys=('second',))
+    assert TaskStore.load_state(store.db) == before
+    store.db.execute('DROP TRIGGER fail_checkpoint')
+    # Retry on the same object: stale successful-value caches would skip the SQL.
+    store.save(fields=('pending',), archive_keys=('second',))
+    assert _reopen_checkpoint(store) == expected
+    assert expected['pending'][0]['receipt']['feedback']['reward'] == .75
+    assert expected['archive'][1]['evidence']['samples'] == [2, 4]
+
+
+def _new_feedback_checkpoint(tmp_path):
+    from selector import reserve
+
+    store = _new_checkpoint(tmp_path)
+    receipt = reserve(dict(task_run_id='checkpoint', decision_id=1, parent_identity='first',
+        pool_digest='pool', context=[0.0] * 50,
+        actions=[dict(operation_id=name, features=[0.0] * 21) for name in ('first', 'second')]))
+    step = dict(selection=receipt, parent_candidate_key='first')
+    before = dict(data_key='before', request=dict(seed=1, program='parent'), dps=100., samples=2)
+    after = dict(data_key='after', request=dict(seed=1, program='child'), dps=125., samples=2)
+    store.state['archive'][0]['batches'] = [before]
+    store.state['archive'][1]['rule_step'] = copy.deepcopy(step)
+    store.state.update(pending=[dict(rule_step=copy.deepcopy(step), score_batches=[after])],
+        rule_steps={'operation': copy.deepcopy(step)}, selection_feedback_intents={},
+        selection_feedback_incomplete=False, errors=[dict(error='previous candidate failed')])
+    store.save()
+    return store, store.state['pending'][0]
+
+
+def test_feedback_finalization_retries_complete_checkpoint_after_database_failure(tmp_path):
+    import sqlite3
+    from search import freeze_selection_feedback, reconcile_selection_feedback
+    from selector import settle
+
+    store, work = _new_feedback_checkpoint(tmp_path)
+    freeze_selection_feedback(store, work, work['score_batches'])
+    receipt = copy.deepcopy(work['rule_step']['selection'])
+    failures = [True]
+    store.db.create_function('fail_feedback_checkpoint_once', 0,
+        lambda: failures.pop() if failures else False)
+    # Both receipt updates and intent deletion execute before the final SQL fails.
+    # The next transaction, in finalization, is allowed to commit normally.
+    store.db.execute("""CREATE TEMP TRIGGER fail_feedback_checkpoint BEFORE INSERT ON runtime_progress
+        WHEN fail_feedback_checkpoint_once()
+        BEGIN SELECT RAISE(ABORT, 'injected feedback checkpoint failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match='injected feedback checkpoint failure'):
+        reconcile_selection_feedback(store)
+    expected = copy.deepcopy(store.state)
+    restored = _reopen_checkpoint(store)
+
+    assert not failures
+    assert restored == expected
+    assert restored['selection_feedback_intents'] == {}
+    assert restored['selection_feedback_incomplete'] is False
+    feedback = restored['pending'][0]['rule_step']['selection']['feedback']
+    assert feedback['status'] == 'learned'
+    assert feedback['reward'] == .25
+    assert feedback == restored['rule_steps']['operation']['selection']['feedback']
+    assert feedback == restored['archive'][1]['rule_step']['selection']['feedback']
+    # Replaying the durable receipt must not learn the same observation twice.
+    assert settle(receipt, .25, 1)['status'] == 'already_settled'
+
+
+def test_freezing_failed_candidate_keeps_an_additional_error_before_recovery(tmp_path):
+    from search import freeze_selection_feedback
+
+    store, work = _new_feedback_checkpoint(tmp_path)
+    store.state['errors'].append(dict(error='next candidate failed'))
+    freeze_selection_feedback(store, work, [], reason='candidate_failed')
+    restored = _reopen_checkpoint(store)
+
+    assert restored['errors'] == [dict(error='previous candidate failed'),
+                                  dict(error='next candidate failed')]
+    assert restored['selection_feedback_incomplete'] is True
+    assert restored['selection_feedback_intents']['1']['reason'] == 'candidate_failed'
+
+
+@pytest.mark.parametrize('sparse', [False, True])
+@pytest.mark.parametrize('training', [False, True])
+def test_feedback_recovery_does_not_apply_old_total_budget_to_dynamic_training(tmp_path, sparse, training):
+    from search import freeze_selection_feedback, reconcile_selection_feedback, TRAINING_STOP_POLICY
+    from selector import reserve
+    store, work = _new_feedback_checkpoint(tmp_path)
+    freeze_selection_feedback(store, work, work['score_batches'])
+    pending = dict(rule_step=dict(parent_candidate_key='first', selection=reserve(dict(
+        task_run_id='checkpoint', decision_id=2, parent_identity='first', pool_digest='pool',
+        context=[0.0] * 50, actions=[dict(operation_id='later', features=[0.0] * 21)]))),
+        score_batches=[])
+    store.state['pending'].append(pending)
+    store.state.update(elapsed_seconds=601, sparse_selection=sparse)
+    store.state['config']['total_budget_seconds'] = 600
+    if training:
+        store.state['training_stop_policy'] = TRAINING_STOP_POLICY
+    store.save()
+    reconcile_selection_feedback(store)
+    assert work['rule_step']['selection']['feedback']['status'] == 'learned'
+    if training:
+        assert 'feedback' not in pending['rule_step']['selection']
+    else:
+        assert pending['rule_step']['selection']['feedback']['status'] == 'no_learn'
+    saved = _reopen_checkpoint(store)
+    assert bool(saved['pending'][1]['rule_step']['selection'].get('feedback')) is not training

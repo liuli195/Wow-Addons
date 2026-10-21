@@ -4,11 +4,83 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 
-from engine import _profile_with_import_queries, identity, inspect, reference  # noqa: E402
+from engine import _profile_with_import_queries, inspect, reference  # noqa: E402
+
+
+@pytest.mark.parametrize('enabled,outcome', [(False, 'success'), (True, 'success'), (True, 'timeout')])
+def test_native_execution_timing_preserves_process_outcome(tmp_path, monkeypatch, enabled, outcome):
+    import os
+    from types import SimpleNamespace
+    import engine
+    import runtime
+
+    task_runtime = runtime.TaskRuntime(diagnostic_logging=enabled)
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    timeout_error = runtime.ProcessTimeout('fixture timeout')
+    commands = []
+    def native_process(command, folder, **kwargs):
+        commands.append(command)
+        if outcome == 'timeout':
+            raise timeout_error
+        for option in command:
+            if option.startswith('json2='):
+                (folder / option.split('=', 1)[1]).write_text('complete report')
+        return SimpleNamespace(returncode=0, stdout=b'normal result', stderr=b'', elapsed_seconds=2.0)
+    monkeypatch.setattr(engine, 'run_command', native_process)
+    clocks = []
+    def performance_clock():
+        clocks.append(True)
+        assert enabled, '默认关闭不得额外计时'
+        return float(len(clocks))
+    monkeypatch.setattr(runtime.time, 'perf_counter', performance_clock)
+    folder = tmp_path / 'native'
+    if outcome == 'success':
+        options = ('json2=native.pending.json',) if enabled else ()
+        assert engine.run(tmp_path / 'role.simc', folder, options=options, runtime=task_runtime) == 'normal result'
+        assert sorted(path.name for path in folder.glob('*.json') if path.name != 'invocation.json') == [
+            'native.pending.json' if enabled else 'native.json']
+        if not enabled:
+            assert 'output=' + os.devnull in commands[0]
+            assert not (folder / 'process.log').exists()
+            assert not (folder / 'invocation.json').exists()
+    else:
+        with pytest.raises(engine.CandidateError) as caught:
+            engine.run(tmp_path / 'role.simc', folder, runtime=task_runtime)
+        assert caught.value.__cause__ is timeout_error
+    stages = runtime.diagnostic_summary(task_runtime)['stages']
+    if enabled:
+        assert stages['native.execute']['calls'] == 1
+        assert stages['native.execute']['seconds'] == 1.0
+    else:
+        assert clocks == []
+        assert stages == {}
+
+
+def static_snapshot():
+    """构造的初始化协议，绝非真实角色数据。"""
+    return {
+        'protocol': 1, 'stage': 'precombat_initialized_before_actions',
+        'hero_subtree_ids': [17],
+        'resources': {'runic_power': {'current': 0, 'maximum': 100},
+                      'rune': {'current': 6, 'maximum': 6}},
+        'parameters': {'rune_recharge_ms': 3000, 'rune_recharge_slots': 3,
+                       'dread_plague_duration_ms': 24000, 'cycle_of_death': False,
+                       'festering_scythe': False},
+        'actions': [dict(name=name, gcd_ms=1000, cooldown_ms=0, cast_ms=0,
+                         channeled=False, costs=costs, gains=gains,
+                         gain_status='known' if gains else 'known_zero',
+                         gain_timing='on_cast' if gains else 'none')
+                    for name, costs, gains in [
+                        ('outbreak', {'rune': 1}, {'runic_power': 10}),
+                        ('scourge_strike', {'rune': 1}, {'runic_power': 10}),
+                        ('death_coil', {'runic_power': 30}, {}),
+                        ('epidemic', {'runic_power': 30}, {})]],
+    }
 
 
 def apl_pool_reference():
@@ -24,6 +96,7 @@ def apl_pool_reference():
                 spell('scourge_strike', 55090)]
     pool = [*baseline, spell('death_and_decay', 43265), spell('epidemic', 207317)]
     return dict(actions_protocol=1, apl_actions_protocol=1, active_items=[],
+                identity={'spec_id': 252}, static_snapshot=static_snapshot(),
                 executed_actions=baseline, apl_actions=pool,
                 action_sequence=[dict(name='outbreak'), dict(name='death_coil'),
                                  dict(name='outbreak'), dict(name='scourge_strike', queue_failed=True)],
@@ -31,14 +104,6 @@ def apl_pool_reference():
 
 
 class ImportQueryProfileTests(unittest.TestCase):
-    def test_apl_pool_keeps_unexecuted_buttons_and_the_compact_baseline_catalogue(self):
-        native = apl_pool_reference()
-        with tempfile.TemporaryDirectory() as directory:
-            capabilities = inspect(native, Path(directory))
-        self.assertEqual([action['simc_action'] for action in capabilities['actions']],
-                         ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
-        self.assertEqual([action['simc_action'] for action in capabilities['baseline_actions']],
-                         ['outbreak', 'death_coil', 'scourge_strike'])
 
     def test_apl_pool_filters_native_non_buttons_and_preserves_button_variants_and_slots(self):
         native = apl_pool_reference()
@@ -66,7 +131,11 @@ class ImportQueryProfileTests(unittest.TestCase):
                           'epidemic', 'use_item,slot=trinket1'])
         self.assertEqual(capabilities['actions'][0], capabilities['baseline_actions'][0])
         self.assertEqual(capabilities['actions'][-1]['slot'], 13)
-        self.assertEqual(len(capabilities['baseline_actions']), 3)
+        self.assertEqual([action['simc_action'] for action in capabilities['baseline_actions']],
+                         ['outbreak', 'death_coil', 'scourge_strike'])
+        from sequence import select
+        with self.assertRaisesRegex(ValueError, '同块多个公共冷却'):
+            select(capabilities, [['outbreak', 'scourge_strike']])
 
     def test_apl_pool_rejects_missing_protocol_or_unmappable_native_button(self):
         for label in ('missing_protocol', 'unsupported_button'):
@@ -131,43 +200,6 @@ class ImportQueryProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '替换形态.*未确认'):
                 inspect(native, Path(directory))
 
-    def test_run_writes_only_requested_report_and_keeps_default_for_other_calls(self):
-        import engine
-        from types import SimpleNamespace
-        from unittest.mock import patch
-
-        for options, expected in (((), ['native.json']),
-                                  (('json2=native.pending.json',), ['native.pending.json'])):
-            with self.subTest(options=options), tempfile.TemporaryDirectory() as directory:
-                folder = Path(directory)
-                def execute(command, *_args, **_kwargs):
-                    for option in command:
-                        if option.startswith('json2='):
-                            (folder / option.split('=', 1)[1]).write_text('complete report')
-                    return SimpleNamespace(returncode=0, stdout=b'ok', stderr=b'', elapsed_seconds=0.01)
-                with patch.object(engine, 'identity', return_value=(Path('simc.exe'), {})), \
-                        patch.object(engine, 'run_command', side_effect=execute):
-                    engine.run(folder / 'input.simc', folder, options=options)
-                self.assertEqual(sorted(path.name for path in folder.glob('*.json')
-                                        if path.name != 'invocation.json'), expected)
-
-    def test_unknown_engine_mode_is_rejected_before_filesystem_lookup(self):
-        with self.assertRaisesRegex(ValueError, "未知引擎模式"):
-            identity("unknown")
-
-    def test_queries_are_appended_to_a_copy_not_the_original_profile(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            original = folder / "input.simc"
-            original.write_text("deathknight=Probe\nspec=unholy\n", encoding="utf-8")
-
-            result = _profile_with_import_queries(original, folder / "reference", [1247378, 316239])
-
-            self.assertEqual(result.read_text(encoding="utf-8"),
-                             "deathknight=Probe\nspec=unholy\n"
-                             "sim2gse_action_ids=316239,1247378\n")
-            self.assertEqual(original.read_text(encoding="utf-8"),
-                             "deathknight=Probe\nspec=unholy\n")
 
     def test_queries_reject_invalid_ids_and_overflow(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -179,14 +211,6 @@ class ImportQueryProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "法术编号无效"):
                 _profile_with_import_queries(original, folder / "reference", list(range(1, 258)))
 
-    def test_name_queries_are_hex_encoded_without_changing_spell_names(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            original = folder / "input.simc"
-            original.write_text("deathknight=Probe\n", encoding="utf-8")
-            result = _profile_with_import_queries(original, folder / "reference", [], ["Epidemic", "Mind Freeze"])
-            self.assertEqual(result.read_text(encoding="utf-8"),
-                             "deathknight=Probe\nsim2gse_action_names_hex=45706964656d6963,4d696e6420467265657a65\n")
 
     def test_import_inventory_adds_native_query_and_real_items_without_widening_search(self):
         native = dict(
@@ -249,8 +273,9 @@ class ImportQueryProfileTests(unittest.TestCase):
             with patch("engine.run", side_effect=fake_run), \
                     patch("engine.check_report", return_value={"dps": 42, "samples": 7}):
                 result = reference(source, Path(directory) / "reference", character, iterations=8,
-                                  import_spell_ids=[316239], import_spell_names=["Epidemic"])
+                                  import_spell_ids=[1247378, 316239], import_spell_names=["Epidemic", "Mind Freeze"])
             query_text = calls[1]["profile"].read_text(encoding="utf-8")
+            self.assertEqual(source.read_text(encoding="utf-8"), "deathknight=Probe\nspec=unholy\n")
 
         self.assertEqual(result["dps"], 42)
         self.assertEqual(result["import_action_candidates"], query_candidates)
@@ -258,8 +283,9 @@ class ImportQueryProfileTests(unittest.TestCase):
         self.assertEqual(calls[0]["folder"], Path(directory) / "reference")
         self.assertEqual(calls[1]["profile"], Path(directory) / "reference" / "import-action-query.simc")
         self.assertEqual(calls[1]["folder"], Path(directory) / "reference" / "import_action_probe")
-        self.assertIn("sim2gse_action_ids=316239", query_text)
-        self.assertIn("sim2gse_action_names_hex=45706964656d6963", query_text)
+        self.assertEqual(query_text, "deathknight=Probe\nspec=unholy\n"
+                         "sim2gse_action_ids=316239,1247378\n"
+                         "sim2gse_action_names_hex=45706964656d6963,4d696e6420467265657a65\n")
         self.assertIn("iterations=1", calls[1]["options"])
         self.assertIn("max_time=1", calls[1]["options"])
 

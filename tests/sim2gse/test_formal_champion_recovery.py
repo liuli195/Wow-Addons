@@ -64,16 +64,26 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    program = [['death_coil']] * 20 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
+    program = [['death_coil']] * 2 + [dict(kind='WaitClicks', clicks=2), ['outbreak']]
     template, _ = completed_training(tmp_path, 1, [(program, [200.] * 3)])
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-    evaluate, store_run, api = sequence.evaluate, task._store_run, result_store._api()
+    from test_search import _fast_capabilities
+    stronger = [['death_coil']] * 3 + [dict(kind='WaitClicks', clicks=3), ['outbreak']]
+    grades = {canonicalize_search_program(value, _fast_capabilities())['identity']: score
+              for value, score in ((program, 200.), (stronger, 300.))}
+    original_evaluate, store_run, api = sequence.evaluate, task._store_run, result_store._api()
+
+    def evaluate(profile, candidate, folder, **kwargs):
+        # Grade explicit behaviors, independent of the rule start's length or spell IDs.
+        return original_evaluate(profile, candidate, folder,
+            score=grades.get(sequence.behavior_key(candidate), 100.), **kwargs)
+
     cancel_once = [True]
     save_checkpoint = TaskStore.save
     baseline_probe = dict(root=None, expected=None, score=None, samples=None, folder=None)
 
-    def save_probe_baseline(store):
-        saved = save_checkpoint(store)
+    def save_probe_baseline(store, **changes):
+        saved = save_checkpoint(store, **changes)
         root = baseline_probe['root']
         archive = store.state.get('archive', [])
         if root is not None and root in store.destination.parents and archive:
@@ -125,9 +135,10 @@ def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_it
         champion_a = result_store.read_search_champion(key)
         assert champion_a['source_run_id'] == saved_a['run_id']
         assert champion_a['version'] == 1
+        assert champion_a['behavior_identity'] not in grades
+        assert champion_a['score'] == 100.
         expected_incumbent = champion_a
         if fault == 'competition':
-            stronger = [['death_coil']] * 30 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
             completed_training(tmp_path, 1, [(stronger, [300.] * 3)], name='newer')
             competing = dual_result(tmp_path / 'competing', raw, candidate_limit=5, validation_batches=2)
             expected_incumbent = result_store.read_search_champion(key)

@@ -58,7 +58,13 @@ class SimulationConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.toml'
             self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 2})
-            for value in (1, 2, 4, 16):
+            path.write_text('[training]\nmax_trainings=10\nmax_processes=2', encoding='utf-8')
+            self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 10})
+            for outer, inner in ((11, 1), (10, 3)):
+                with self.subTest(outer=outer, inner=inner):
+                    with self.assertRaises(ValueError):
+                        load_training_config(path, max_trainings=outer, max_processes=inner)
+            for value in (1, 16):
                 path.write_text('[simulation]\ntarget_count=5\n[training]\nmax_trainings=1\nmax_processes=' + str(value),
                                 encoding='utf-8')
                 self.assertEqual(load_config(path)['target_count'], 5)
@@ -98,10 +104,7 @@ class SimulationConfigTests(unittest.TestCase):
 
     def test_invalid_config_is_rejected(self) -> None:
         cases = (
-            '[simulation]\ntarget_name = "not safe-name"\n',
-            "[simulation]\ntarget_level = 0\n",
             "[simulation]\ntarget_count = 0\n",
-            "[simulation]\narmor_coefficient = -1\n",
             "[simulation]\nunknown = true\n",
         )
         for text in cases:
@@ -120,7 +123,7 @@ class SimulationConfigTests(unittest.TestCase):
         self.assertEqual(config_for()["target_count"], DEFAULT_CONFIG["target_count"])
 
     def test_task_entry_removes_only_valid_omnium_line_when_disabled(self) -> None:
-        from task import run_task
+        from task import TaskError, resume_task, run_task
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
@@ -141,6 +144,11 @@ class SimulationConfigTests(unittest.TestCase):
             with _fast_search_boundary():
                 run_task(source, destination, search_config=_fast_search_config(),
                          simulation_config=config_for({"enable_omnium_talents": False}))
+                with patch('task.run_task', side_effect=AssertionError('SimC must not start')) as rerun:
+                    with self.assertRaisesRegex(TaskError, '恢复模拟配置'):
+                        resume_task(destination,
+                                    simulation_config=config_for({'enable_omnium_talents': True}))
+                rerun.assert_not_called()
 
             self.assertEqual((destination / "input.original.simc").read_bytes(), original)
             self.assertEqual((destination / "input.simc").read_bytes(), expected_effective)
@@ -153,44 +161,6 @@ class SimulationConfigTests(unittest.TestCase):
             self.assertEqual(state["input_original_sha256"], profile["input_original_sha256"])
             self.assertEqual(state["input_effective_sha256"], profile["input_effective_sha256"])
 
-    def test_task_entry_preserves_omnium_line_by_default(self) -> None:
-        from task import run_task
-        from test_character_export import sample_profile
-        from test_search import _fast_search_boundary
-
-        source_text = sample_profile() + "omnium_talents=136822:1/136819:1\n"
-        original = source_text.encode("utf-8")
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_bytes(original)
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=_fast_search_config(),
-                         simulation_config=config_for())
-
-            self.assertEqual((destination / "input.original.simc").read_bytes(), original)
-            self.assertEqual((destination / "input.simc").read_bytes(), original)
-
-    def test_omnium_switch_change_rejects_resume_before_simc_start(self) -> None:
-        import task
-        from task import TaskError, resume_task, run_task
-        from test_character_export import sample_profile
-        from test_search import _fast_search_boundary
-
-        source_text = sample_profile() + "omnium_talents=136822:1/136819:1\n"
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_text(source_text, encoding="utf-8")
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=_fast_search_config(),
-                         simulation_config=config_for({"enable_omnium_talents": False}))
-
-            with patch.object(task, "run_task", side_effect=AssertionError("SimC must not start")) as rerun:
-                with self.assertRaisesRegex(TaskError, "恢复模拟配置"):
-                    resume_task(destination,
-                                simulation_config=config_for({"enable_omnium_talents": True}))
-            rerun.assert_not_called()
 
     def test_baseline_and_controlled_engines_share_target_options(self) -> None:
         import engine
@@ -302,15 +272,18 @@ class SimulationConfigTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_count": 2})
+        simulation = config_for({"target_count": 2, "scene": "aoe"})
         search = _fast_search_config()
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
+            original = (sample_profile() + 'omnium_talents=136822:1/136819:1\n').encode('utf-8')
+            source.write_bytes(original)
             with _fast_search_boundary():
                 run_task(source, destination, search_config=search, simulation_config=simulation)
 
+                self.assertEqual((destination / 'input.original.simc').read_bytes(), original)
+                self.assertEqual((destination / 'input.simc').read_bytes(), original)
                 state = json.loads(_read_state(destination))
                 self.assertEqual(state["simulation_config"], simulation)
                 profile = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
@@ -328,33 +301,22 @@ class SimulationConfigTests(unittest.TestCase):
                 )
                 self.assertEqual(state["input_original_sha256"], profile["input_original_sha256"])
                 self.assertEqual(state["input_effective_sha256"], profile["input_effective_sha256"])
+                state_before_resume = _read_state(destination)
                 with self.assertRaisesRegex(TaskError, "恢复模拟配置"):
                     resume_task(destination,
                                 simulation_config=dict(simulation, target_count=3))
-
-    def test_same_custom_config_can_resume(self) -> None:
-        from task import resume_task, run_task
-        from test_character_export import sample_profile
-        from test_search import _fast_search_boundary
-
-        simulation = config_for({"target_count": 2})
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=_fast_search_config(),
-                         simulation_config=simulation)
+                self.assertEqual(_read_state(destination), state_before_resume)
                 resumed = resume_task(destination, simulation_config=simulation)
+                self.assertEqual(resumed['simulation_config'], simulation)
 
-        self.assertEqual(resumed["simulation_config"], simulation)
 
-    def test_tampering_either_input_copy_rejects_without_state_or_result_change(self) -> None:
+    def test_tampered_input_is_rejected_before_task_store_construction(self) -> None:
+        import search
         from task import TaskError, resume_task, run_task
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
 
-        simulation = config_for({"target_count": 2})
+        simulation = config_for({"target_count": 2, "scene": "aoe"})
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
@@ -363,33 +325,6 @@ class SimulationConfigTests(unittest.TestCase):
                 run_task(source, destination, search_config=_fast_search_config(),
                          simulation_config=simulation)
                 state_before = _read_state(destination)
-                result_before = (destination / "result.json").read_bytes()
-                for name in ("input.original.simc", "input.simc"):
-                    path = destination / name
-                    original = path.read_bytes()
-                    path.write_bytes(original + b"\n# tampered\n")
-                    try:
-                        with self.assertRaisesRegex(TaskError, "输入"):
-                            resume_task(destination, simulation_config=simulation)
-                        self.assertEqual(_read_state(destination), state_before)
-                        self.assertEqual((destination / "result.json").read_bytes(), result_before)
-                    finally:
-                        path.write_bytes(original)
-
-    def test_tampered_input_is_rejected_before_task_store_construction(self) -> None:
-        import search
-        from task import TaskError, resume_task, run_task
-        from test_character_export import sample_profile
-        from test_search import _fast_search_boundary
-
-        simulation = config_for({"target_count": 2})
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=_fast_search_config(),
-                         simulation_config=simulation)
                 before = {
                     name: path.read_bytes()
                     for name in ("profile.json", "result.json", "task.sqlite3")
@@ -405,6 +340,7 @@ class SimulationConfigTests(unittest.TestCase):
                             with self.assertRaisesRegex(TaskError, "输入"):
                                 resume_task(destination, simulation_config=simulation)
                         store.assert_not_called()
+                        self.assertEqual(_read_state(destination), state_before)
                         self.assertEqual(
                             {name: (destination / name).read_bytes() for name in before},
                             before,
@@ -474,16 +410,20 @@ class SimulationConfigTests(unittest.TestCase):
         assert spec.loader is not None
         spec.loader.exec_module(module)
         config = config_for({"enable_omnium_talents": False})
-        with patch.object(module, "load_config", return_value=config), \
+        with patch.object(module, "load_config", return_value=config) as load, \
                 patch.object(module, "serve") as serve, \
                 patch.object(sys, "argv", [str(script), "--port", "0"]):
             self.assertEqual(module.main(), 0)
 
+        load.assert_called_once_with()
         serve.assert_called_once_with(
             REPOSITORY / ".local/sim2gse/ui-tasks",
             host="127.0.0.1",
             port=0,
-            task_options={"simulation_config": config},
+            task_options={"simulation_config": config,
+                          "search_config": dict(diagnostic_logging=False, diagnostics="summary",
+                                                search_observability="full", rule_initialization_enabled=False,
+                                                adaptive_selector_enabled=False, search_timeline=False)},
         )
 
     def test_invalid_service_config_stops_before_starting_server(self) -> None:

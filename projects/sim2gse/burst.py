@@ -238,12 +238,36 @@ def check_loop(program, capabilities):
     visit(program['nodes'])
 
 
-def compile_context(definition, character, capabilities, native_identity, folder, runtime):
+def plan_instructions(plan, interval_ms=None):
+    interval = plan['interval_ms'] if interval_ms is None else interval_ms
+    starts = '、'.join(f'{at / 1000:g}' for at in range(plan['start_ms'], 180000, plan['repeat_ms']))
+    return (f"第{starts}秒切到爆发键按{plan['window_ms'] / 1000:g}秒，间隔{interval}毫秒；"
+            '窗口期间暂停普通循环，结束后继续原位置。爆发按键位置跨窗口保留。')
+
+
+def refresh_context_instructions(context, native_identity, folder, runtime):
+    """只更新冻结计划的展示/导出帮助；同一宏动作与行为身份保持。"""
+    from program import compile_program
+    from sequence import compiled_identity
+    instructions = plan_instructions(context['plan'], context.get('interval_ms'))
+    if context['instructions'] == instructions:
+        return
+    program = copy.deepcopy(context['candidate']['program'])
+    program['metadata']['instructions'] = instructions
+    candidate = compile_program(program, folder, identity=native_identity, runtime=runtime)
+    if compiled_identity(candidate) != compiled_identity(context['candidate']):
+        raise ValueError('爆发计划说明改变了固定宏行为')
+    candidate['source'] = 'burst'
+    context.update(candidate=candidate, instructions=instructions)
+
+
+def compile_context(definition, character, capabilities, native_identity, folder, runtime, *, interval_ms=None):
     from program import from_action_blocks, compile_program
     blocks = prepare(definition, character, capabilities, native_identity)
     program = from_action_blocks(blocks)
-    program['metadata'].update(purpose='burst', instructions=definition['instructions'])
+    instructions = plan_instructions(definition['plan'], interval_ms)
+    program['metadata'].update(purpose='burst', instructions=instructions)
     candidate = compile_program(program, folder, identity=native_identity, runtime=runtime)
     candidate['source'] = 'burst'
     return dict(definition_id=definition['definition_id'], plan=definition['plan'],
-                candidate=candidate, instructions=definition['instructions'])
+                candidate=candidate, instructions=instructions)

@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / ".local" / "sim2gse" / "config.toml"
 DEFAULT_CONFIG = {
     "target_count": 1,
+    "scene": None,
     "enable_omnium_talents": True,
 }
 _CONFIG_KEYS = frozenset(DEFAULT_CONFIG)
@@ -28,6 +29,8 @@ def config_for(values: dict | None = None) -> dict:
     config.update(values)
     if type(config["target_count"]) is not int or config["target_count"] <= 0:
         raise ValueError("模拟目标数必须是正整数")
+    if config["scene"] not in (None, "single_target", "aoe"):
+        raise ValueError("模拟场景必须为single_target或aoe；未指定时不猜测目标数阈值")
     if type(config["enable_omnium_talents"]) is not bool:
         raise ValueError("万奥宝典开关必须是布尔值")
     return config
@@ -43,7 +46,7 @@ def _load_document(path=None):
         raise ValueError(f"本地模拟配置无效: {path}: {error}") from error
     if not isinstance(document, dict):
         raise ValueError("本地模拟配置必须是 TOML 对象")
-    unknown = set(document) - {"simulation", "training"}
+    unknown = set(document) - {"simulation", "training", "search"}
     if unknown:
         raise ValueError("未知模拟配置区域: " + ", ".join(sorted(unknown)))
     return document
@@ -68,11 +71,34 @@ def load_training_config(path: str | Path | None = None, *, max_processes=None, 
         max_trainings=max_trainings).items() if value is not None})
     from search import config_for as search_config_for
     search_config_for({'max_processes': values['max_processes']}, training=True)
-    if type(values['max_trainings']) is not int or not 1 <= values['max_trainings'] <= 3:
-        raise ValueError('训练并发必须为1至3的整数')
-    if values['max_processes'] * values['max_trainings'] > 16:
-        raise ValueError('训练并发与评分并发乘积不得超过16')
+    if type(values['max_trainings']) is not int or not 1 <= values['max_trainings'] <= 10:
+        raise ValueError('训练并发必须为1至10的整数')
+    if values['max_processes'] * values['max_trainings'] > 20:
+        raise ValueError('训练并发与评分并发乘积不得超过20')
     return values
+
+
+def load_search_config(path=None, **overrides):
+    """搜索能力配置与物理模拟分离；显式非空参数优先。"""
+    keys = ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline')
+    section = _load_document(path).get('search', {})
+    if not isinstance(section, dict) or set(section) - set(keys):
+        raise ValueError('[search] 只接受 ' + ', '.join(keys))
+    values = dict.fromkeys(keys, False)
+    values.update(section)
+    values.update({key: value for key, value in overrides.items() if value is not None})
+    for key in keys:
+        if type(values[key]) is not bool:
+            raise ValueError(key + ' 必须为布尔值')
+    return values
+
+
+def add_search_arguments(parser):
+    """CLI 未传参保留 None，使配置文件仍可启用探索。"""
+    import argparse
+    for name in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+        parser.add_argument('--' + name.replace('_', '-'), action=argparse.BooleanOptionalAction,
+                            default=None)
 
 
 def engine_options(config: dict | None = None) -> list[str]:

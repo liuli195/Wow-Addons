@@ -16,7 +16,7 @@ from simulation_config import config_for as simulation_config_for
 SCENES = (('single_target', 1), ('aoe', 5))
 PARENT_SCHEMA = dict(parent_id='VARCHAR', status='VARCHAR', phase='VARCHAR', error='VARCHAR',
     input_sha256='VARCHAR', definition_id='VARCHAR', spec_id='UBIGINT', config='JSON',
-    simulation_config='JSON', rules='JSON', engines='JSON', preparation_seconds='DOUBLE',
+    simulation_config='JSON', rules='JSON', rule_snapshot='JSON', engines='JSON', preparation_seconds='DOUBLE',
     packaging_seconds='DOUBLE', single_target_status='VARCHAR', aoe_status='VARCHAR',
     single_target_export='VARCHAR', aoe_export='VARCHAR', burst_export='VARCHAR',
     collection_text='VARCHAR', burst_instructions='VARCHAR',
@@ -49,11 +49,18 @@ def _load(destination):
     row = rows[0]
     for key in ('config', 'simulation_config', 'rules', 'engines'):
         row[key] = _decode(row[key])
+    row['rule_snapshot'] = _decode(row.get('rule_snapshot'))
     return row
 
 
-def _verify(row, destination, identities):
+def _verify(row, destination, identities, *, current_rules=False):
     from burst import load
+    if not row.get('rule_snapshot'):
+        raise task.TaskError('双场任务缺少规则配置快照，请创建新任务')
+    if current_rules:
+        from rule_config import load as load_rules
+        if load_rules()['rule_config_digest'] != row['rule_snapshot']['rule_config_digest']:
+            raise task.TaskError('双场任务的规则配置已变化，请创建新任务')
     if hashlib.sha256((destination / 'input.original.simc').read_bytes()).hexdigest() != row['input_sha256']:
         raise task.TaskError('双场任务的冻结输入已变化，请创建新任务')
     if load(row['spec_id'])['definition_id'] != row['definition_id']:
@@ -88,10 +95,17 @@ def _publish_export(row, purpose, compiled):
     _save(row)
 
 
-def _child_matches(row, child, targets):
+def _child_matches(row, child, targets, scene):
+    logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
+    def business_config(value):
+        frozen = config_for(value, legacy=True)
+        frozen.setdefault('rule_diagnostics_policy', 'eager')
+        return {key: item for key, item in frozen.items() if key not in logging_keys}
     if (child['profile']['input_original_sha256'] != row['input_sha256']
-            or child['simulation_config'] != dict(row['simulation_config'], target_count=targets)
-            or config_for(child['config']) != config_for(row['config'])
+            or child['simulation_config'] != dict(row['simulation_config'], target_count=targets, scene=scene)
+            or business_config(child['config']) != business_config(row['config'])
+            or ((child.get('rule_initialization') or {}).get('rule_config_digest') or
+                child.get('search', {}).get('rule_config_digest')) != row['rule_snapshot']['rule_config_digest']
             or (child.get('burst') or {}).get('definition_id') != row['definition_id']):
         raise task.TaskError('父任务与子任务的冻结条件不一致')
 
@@ -141,17 +155,24 @@ def _worker(handle):
                 row['phase'] = purpose
                 row[purpose + '_status'] = 'running'
                 _save(row)
-                runtime = TaskRuntime(row['config']['total_budget_seconds'], cancel_event=handle.cancel_event)
+                runtime = TaskRuntime(row['config']['total_budget_seconds'], cancel_event=handle.cancel_event,
+                                      diagnostic_logging=row['config']['diagnostic_logging'])
                 runtime.identities = copy.deepcopy(handle.identities)
+                if row['config']['search_timeline']:
+                    runtime.timeline_origin = handle.timeline_origin
                 if (child_path / 'result.json').exists():
                     child = task.read_task(child_path)
                     if (child.get('status') != 'completed' or
                             child.get('search', {}).get('formal_champion_publication', {}).get('status') == 'pending'):
                         child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
-                            simulation_config=dict(row['simulation_config'], target_count=targets))
+                            search_config=row['config'], diagnostic_logging=row['config']['diagnostic_logging'],
+                            simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
+                            _rule_snapshot=row['rule_snapshot'])
                 elif (child_path / 'task.sqlite3').exists():
                     child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
-                        simulation_config=dict(row['simulation_config'], target_count=targets))
+                        search_config=row['config'], diagnostic_logging=row['config']['diagnostic_logging'],
+                        simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
+                            _rule_snapshot=row['rule_snapshot'])
                 else:
                     if child_path.exists():
                         # Preparation stopped before the durable search state existed. Preserve its files.
@@ -163,24 +184,32 @@ def _worker(handle):
                         child_path = destination / row[purpose + '_path']
                     child = task.run_task(destination / 'input.original.simc', child_path,
                         use_burst=True, burst_identity={key: row[key] for key in ('spec_id', 'definition_id')},
-                        cancel_event=handle.cancel_event, search_config=row['config'], _runtime=runtime,
-                        simulation_config=dict(row['simulation_config'], target_count=targets))
+                        cancel_event=handle.cancel_event, search_config=dict(row['config'],
+                            rule_diagnostics_policy=row['config'].get('rule_diagnostics_policy', 'eager')), _runtime=runtime,
+                        simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
+                            _rule_snapshot=row['rule_snapshot'])
                 if child.get('status') == 'cancelled':
                     raise TaskCancelled('已取消；已完成的场景保留')
                 if child.get('status') != 'completed' or not child.get('candidate'):
                     raise task.TaskError('当前场景尚未完成有效搜索')
-                _child_matches(row, child, targets)
+                _child_matches(row, child, targets, purpose)
                 row[purpose + '_status'] = 'completed'
                 _save(row)
-                runtime = TaskRuntime(600, cancel_event=handle.cancel_event)
+                runtime = TaskRuntime(600, cancel_event=handle.cancel_event,
+                                      diagnostic_logging=row['config']['diagnostic_logging'])
                 native_identity = child['native_reference']['identity']
                 started = time.monotonic()
                 compiled = _export(child['candidate'], purpose, native_identity,
                                    destination / 'exports' / purpose, runtime)
                 _publish_export(row, purpose, compiled)
                 compiled_exports[purpose] = compiled
-                if 'burst' not in compiled_exports:
-                    compiled = _export(child['burst']['candidate'], 'burst', native_identity,
+                instructions = ('单体' if purpose == 'single_target' else '群体') + '：' + child['burst']['instructions']
+                row['burst_instructions'] = (instructions if purpose == 'single_target'
+                                              else row['burst_instructions'] + '\n' + instructions)
+                if 'burst' not in compiled_exports or purpose == SCENES[-1][0]:
+                    candidate = copy.deepcopy(child['burst']['candidate'])
+                    candidate['program']['metadata']['instructions'] = row['burst_instructions']
+                    compiled = _export(candidate, 'burst', native_identity,
                                        destination / 'exports' / 'burst', runtime)
                     _publish_export(row, 'burst', compiled)
                     compiled_exports['burst'] = compiled
@@ -218,19 +247,22 @@ def _worker(handle):
 
 def start(input_path, destination, *, search_config=None, simulation_config=None):
     started = time.monotonic()
+    from rule_config import load as load_rules
+    rule_snapshot = load_rules()
     from burst import select_definition
     from engine import identity
     destination = Path(destination).resolve()
     original, text = task._read_utf8(Path(input_path), description='角色输入')
     simulation_config = simulation_config_for(simulation_config)
-    config = config_for(dict(search_config or {}, input_interval_ms=(search_config or {}).get('input_interval_ms', 200)))
+    from simulation_config import load_search_config
+    config = config_for(load_search_config(**dict(search_config or {}, input_interval_ms=(search_config or {}).get('input_interval_ms', 200))))
     effective = task._effective_input_bytes(original, text, simulation_config)
     definition = select_definition(task.parse_character(effective.decode('utf-8')))
     identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
     row = dict(parent_id=uuid.uuid4().hex, status='starting', phase='prepare', error=None,
                input_sha256=hashlib.sha256(original).hexdigest(), definition_id=definition['definition_id'],
                spec_id=definition['spec_id'], config=config, simulation_config=simulation_config,
-               rules=task._rule_hashes(), engines={mode: entry[1] for mode, entry in identities.items()},
+               rules=task._rule_hashes(), rule_snapshot=rule_snapshot, engines={mode: entry[1] for mode, entry in identities.items()},
                preparation_seconds=time.monotonic() - started, packaging_seconds=0., collection_text=None,
                burst_instructions=definition['instructions'], single_target_path='single_target', aoe_path='aoe',
                single_target_status='pending', aoe_status='pending', single_target_export=None,
@@ -239,24 +271,32 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     (destination / 'input.original.simc').write_bytes(original)
     task._write_json(destination / 'dual.json', dict(parent_id=row['parent_id']), atomic=True)
     _save(row)
-    return _launch(destination, identities)
+    return _launch(destination, identities, timeline_origin=started if config['search_timeline'] else None)
 
 
-def _launch(destination, identities):
+def _launch(destination, identities, *, timeline_origin=None):
     handle = DualHandle(destination, identities)
+    handle.timeline_origin = timeline_origin
     handle.thread = threading.Thread(target=_worker, args=(handle,), daemon=True, name='sim2gse-dual')
     handle.thread.start()
     return handle
 
 
-def resume(destination):
+def resume(destination, *, diagnostic_logging=False, search_timeline=None):
+    from simulation_config import load_search_config
+    search_timeline = load_search_config(search_timeline=search_timeline)['search_timeline']
+    timeline_origin = time.monotonic() if search_timeline else None
     from engine import identity
     destination = Path(destination).resolve()
     with task._task_lease(destination):
         row = _load(destination)
         identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
-        _verify(row, destination, identities)
-    return _launch(destination, identities)
+        _verify(row, destination, identities, current_rules=True)
+        row['config'] = config_for(dict(row['config'], diagnostic_logging=diagnostic_logging, search_timeline=search_timeline,
+            diagnostics=(row['config'].get('diagnostics') if row['config'].get('diagnostics') != 'off'
+                         else 'summary')), legacy=True)
+        _save(row)
+    return _launch(destination, identities, timeline_origin=timeline_origin)
 
 
 def _is_running(destination):
@@ -277,7 +317,7 @@ def cancel_saved(destination):
     return read(destination)
 
 
-def read(destination, *, active=None):
+def read(destination, *, active=None, include_rule_initialization=True):
     destination = Path(destination).resolve()
     row = _load(destination)
     recoverable = row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
@@ -295,11 +335,14 @@ def read(destination, *, active=None):
                      input_sha256=row['input_sha256'], total_budget_seconds=row['config']['total_budget_seconds'],
                      elapsed_seconds=0., progress=0.)
         if (child_path / 'profile.json').exists():
-            child = task.read_task(child_path)
+            child = task.read_task(child_path, include_rule_initialization=include_rule_initialization)
             scene['elapsed_seconds'] = float(child.get('elapsed_seconds', 0))
             scene['progress'] = min(1., scene['elapsed_seconds'] / scene['total_budget_seconds'])
             if child.get('search_result'):
                 scene['search_result'] = child['search_result']
+            for name in ('rule_initialization', 'has_rule_initialization', 'rule_initialization_identity'):
+                if name in child:
+                    scene[name] = child[name]
             search = child.get('search') or child
             for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
                          'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',

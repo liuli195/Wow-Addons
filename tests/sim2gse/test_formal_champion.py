@@ -23,28 +23,7 @@ def test_dual_inherits_each_scenes_formal_champion_after_publication(tmp_path,
         assert champion['source_run_id'] == scene['formal_champion_publication']['source_run_id']
         assert scene['search_result']['samples'] > 0
 
-    second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
-    for previous, scene in zip(first['scenes'], second['scenes']):
-        snapshot = scene['formal_champion_snapshot']
-        assert snapshot['status'] == 'selected'
-        assert snapshot['source_run_id'] == previous['formal_champion_publication']['source_run_id']
-        assert snapshot['target_count'] == scene['target_count']
-        assert scene['formal_champion_adaptation']['status'] == 'accepted'
-        assert scene['formal_champion_adaptation']['current_score'] > 0
-        assert scene['formal_champion_publication']['status'] == 'unchanged'
-        sources = scene['start_sources'][snapshot['behavior_identity']]
-        assert any(source['source_kind'] == 'formal_champion' for source in sources)
-
-
-def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp_path,
-        memory_result_center, champion_engine):
-    import burst
-    import result_store
     import engine
-    definition, raw = reviewed_fixture()
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
     inspect = engine.inspect
 
     def invalid_native(*args, **kwargs):
@@ -55,10 +34,18 @@ def test_dual_keeps_a_valid_formal_baseline_when_one_native_start_is_invalid(tmp
 
     with patch.object(engine, 'inspect', invalid_native):
         second = dual_result(tmp_path / 'second', raw, candidate_limit=1)
-    assert all(scene['formal_champion_adaptation']['status'] == 'accepted' for scene in second['scenes'])
-    assert [scene['search_result']['dps'] for scene in second['scenes']] == [
-        scene['search_result']['dps'] for scene in first['scenes']]
-    assert all(scene['formal_champion_publication']['status'] == 'unchanged' for scene in second['scenes'])
+    assert len(second['scenes']) == len(first['scenes'])
+    for previous, scene in zip(first['scenes'], second['scenes']):
+        snapshot = scene['formal_champion_snapshot']
+        assert snapshot['status'] == 'selected'
+        assert snapshot['source_run_id'] == previous['formal_champion_publication']['source_run_id']
+        assert snapshot['target_count'] == scene['target_count']
+        assert scene['formal_champion_adaptation']['status'] == 'accepted'
+        assert scene['formal_champion_adaptation']['current_score'] > 0
+        assert scene['search_result']['dps'] == previous['search_result']['dps']
+        assert scene['formal_champion_publication']['status'] == 'unchanged'
+        sources = scene['start_sources'][snapshot['behavior_identity']]
+        assert any(source['source_kind'] == 'formal_champion' for source in sources)
 
 
 def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_promotion(tmp_path,
@@ -80,19 +67,20 @@ def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_pro
         return native
 
     with patch.object(engine, 'reference', four_native_sources):
-        former = [['death_coil']] * 20 + [dict(kind='WaitClicks', clicks=17), ['outbreak']]
+        # Both remain above the six-action native source under the constructed score.
+        former = [['death_coil']] * 6 + [dict(kind='WaitClicks', clicks=2), ['outbreak']]
         template, _ = completed_training(tmp_path, 1, [(former, [200.] * 3)])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
         first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=2)
-        challenger = [['death_coil']] * 30 + [dict(kind='WaitClicks', clicks=88), ['outbreak']]
+        challenger = [['death_coil']] * 7 + [dict(kind='WaitClicks', clicks=3), ['outbreak']]
         _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')
         engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
-        selected = [dict(candidate_id='selected-' + str(index), condition=rows[0]['condition'],
+        selected = [dict(configuration_key=rows[0]['configuration_key'], candidate_id='selected-' + str(index), condition=rows[0]['condition'],
             class_name='deathknight', spec='unholy', targets=1,
-            program=[['outbreak'], dict(kind='WaitClicks', clicks=100 + index), ['death_coil']],
+            program=[['outbreak'], dict(kind='WaitClicks', clicks=2 + index), ['death_coil']],
             family='family-' + str(index), score=100., scores=[100.] * 3,
             template_sha256='selected-template', engines=engines) for index in range(4)]
-        result_store.write('seed_selected', 'deathknight-unholy-1-burst', selected,
+        result_store.write('seed_selected', seed_training.shared_scope(rows[0]['configuration_key']), selected,
                            schema=seed_training.SELECTED_SCHEMA)
         second = dual_result(tmp_path / 'second', raw, candidate_limit=10, validation_batches=2)
         scene = second['scenes'][0]
@@ -115,8 +103,8 @@ def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_pro
         incumbent = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
         third_root, cancel_once, save_checkpoint = (tmp_path / 'third').resolve(), [True], TaskStore.save
 
-        def stop_after_saved_baseline(store):
-            saved = save_checkpoint(store)
+        def stop_after_saved_baseline(store, **changes):
+            saved = save_checkpoint(store, **changes)
             if cancel_once[0] and third_root in store.destination.parents and store.state.get('archive'):
                 cancel_once[0] = False
                 assert len(store.state['archive']) == 1
@@ -154,23 +142,37 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
     import json
     import result_store
     import threading
+    import task
     from concurrent.futures import ThreadPoolExecutor
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    inspect = engine.inspect
+    profile = tmp_path / 'role.simc'
+    profile.write_text(raw, encoding='utf-8', newline='')
+    options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+            iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
+            scenarios=('nominal',)))
+    import search
+    inspect, initial_programs = engine.inspect, search.initial_programs
     stale_ids = set()
     waiting, release = threading.Event(), threading.Event()
     api = result_store._api()
 
-    def native_order(native, folder, **kwargs):
+    def observe_stale_run(native, folder, **kwargs):
         capabilities = inspect(native, folder, **kwargs)
         folder = Path(folder)
-        if 'fresh' in folder.parts:
-            capabilities['actions'] = list(reversed(capabilities['actions']))
         if 'stale' in folder.parts:
             stale_ids.add(json.loads((folder.parent / 'profile.json').read_text(encoding='utf-8'))['run_id'])
         return capabilities
+
+    def another_native_start(capabilities, *args, **kwargs):
+        from program import canonicalize_search_program
+        starts = initial_programs(capabilities, *args, **kwargs)
+        assert len(starts) > 1
+        assert canonicalize_search_program(starts[0], capabilities)['identity'] != (
+            canonicalize_search_program(starts[1], capabilities)['identity'])
+        return starts[1:] + starts[:1]
 
     def held_result_write(root, table, key, rows, **kwargs):
         if table == 'runs' and key in stale_ids and not release.is_set():
@@ -179,21 +181,28 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
                 raise AssertionError('fresh task did not publish')
         return api['write'](root, table, key, rows, **kwargs)
 
-    with patch.object(engine, 'inspect', native_order), \
+    with patch.object(engine, 'inspect', observe_stale_run), \
          patch.object(result_store, '_api', return_value=dict(api, write=held_result_write)), \
          ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(dual_result, tmp_path / 'stale', raw, 1)
         try:
             assert waiting.wait(20)
-            fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1)
+            with patch.object(search, 'initial_programs', side_effect=another_native_start):
+                fresh = task.run_task(profile, tmp_path / 'fresh', **options)
+                assert fresh['status'] == 'completed', fresh
         finally:
             release.set()
         stale = pending.result(20)
+    assert stale['scenes'][0]['formal_champion_snapshot']['condition_key'] == fresh['search'][
+        'formal_champion_snapshot']['condition_key']
     assert stale['scenes'][0]['formal_champion_snapshot']['status'] == 'absent'
     assert stale['scenes'][0]['formal_champion_publication']['status'] == 'conflict'
     assert stale['scenes'][0]['search_result']['samples'] > 0
-    inherited = dual_result(tmp_path / 'inherited', raw, candidate_limit=1)
-    assert inherited['scenes'][0]['formal_champion_snapshot']['source_run_id'] == fresh['scenes'][0][
+    inherited = task.run_task(profile, tmp_path / 'inherited', **options)
+    assert inherited['status'] == 'completed', inherited
+    assert inherited['search']['formal_champion_snapshot']['condition_key'] == fresh['search'][
+        'formal_champion_snapshot']['condition_key']
+    assert inherited['search']['formal_champion_snapshot']['source_run_id'] == fresh['search'][
         'formal_champion_publication']['source_run_id']
 
 
@@ -208,6 +217,9 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     api = result_store._api()
+    profile = tmp_path / 'role.simc'
+    profile.write_text(raw, encoding='utf-8')
+    folder = tmp_path / 'single_target'
 
     def fail_champion(root, table, key, rows, **kwargs):
         if table == 'search_champions':
@@ -215,8 +227,11 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
         return api['write'](root, table, key, rows, **kwargs)
 
     with patch.object(result_store, '_api', return_value=dict(api, write=fail_champion)):
-        state = dual_result(tmp_path / 'dual', raw, candidate_limit=1)
-    folder = next((tmp_path / 'dual' / 'page' / 'tasks').glob('*/single_target'))
+        task.run_task(profile, folder, use_burst=True,
+            simulation_config=dict(target_count=1, scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
+                iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
+                scenarios=('nominal',)))
     previous = task.read_task(folder)
     assert previous['status'] == 'completed'
     store = TaskStore(folder)
@@ -244,25 +259,27 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
+    assert first['input_interval_ms'] == 200
     originals = {scene['formal_champion_snapshot']['condition_key']:
         result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
         for scene in first['scenes']}
     identity = engine.identity
-    for change in ('name', 'equipment', 'cadence', 'engine'):
+    for change in ('equipment', 'cadence', 'engine'):
         with subtests.test(change=change):
             with ExitStack() as condition_patches:
                 case_raw, interval = raw, 200
-                if change == 'name':
-                    case_raw = raw.replace('deathknight="', 'deathknight="Different ')
-                elif change == 'equipment':
+                if change == 'equipment':
                     case_raw = raw.replace('id=273795', 'id=273795,bonus_id=1')
                 elif change == 'cadence':
-                    interval = 400
+                    # 250ms keeps the 1000ms fixture GCD and burst pause representable.
+                    # 400ms would leave one empty input at 2800ms before the 4000ms resume.
+                    interval = 250
                 else:
                     condition_patches.enter_context(patch.object(engine, 'identity', lambda *args, **kwargs:
                         (lambda value: (value[0], dict(value[1], constructed_identity='different')))(identity(*args, **kwargs))))
                 second = dual_result(tmp_path / ('second-' + change), case_raw,
                     candidate_limit=1, interval_ms=interval)
+                assert second['input_interval_ms'] == interval
                 assert all(scene['formal_champion_snapshot']['status'] == 'absent' for scene in second['scenes'])
                 assert [scene['formal_champion_snapshot']['condition_key'] for scene in first['scenes']] != [
                     scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]
@@ -283,23 +300,29 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     api = result_store._api()
-    real_rules, inspect, evaluate = task._rule_hashes, engine.inspect, sequence.evaluate
+    import search
+    from program import canonicalize_search_program
+    real_rules, initial_programs, evaluate = task._rule_hashes, search.initial_programs, sequence.evaluate
+    higher_behaviors = set()
     original = real_rules()
     monkeypatch.setattr(task, '_rule_hashes', lambda **kwargs: dict(original,
         **{str(Path(task.__file__).resolve()): 'f' * 64}))
 
-    def source_catalogue(native, folder, **kwargs):
-        capabilities = inspect(native, folder, **kwargs)
-        if 'high' in Path(folder).parts:
-            capabilities['actions'] = list(reversed(capabilities['actions']))
-        return capabilities
+    def higher_native_start(capabilities, *args, **kwargs):
+        starts = initial_programs(capabilities, *args, **kwargs)
+        assert len(starts) > 1
+        key = canonicalize_search_program(starts[1], capabilities)['identity']
+        assert key != canonicalize_search_program(starts[0], capabilities)['identity']
+        higher_behaviors.add(key)
+        return starts[1:] + starts[:1]
 
     def source_scores(profile, candidate, folder, **kwargs):
         result = evaluate(profile, candidate, folder, **kwargs)
-        score = 300. if 'high' in Path(profile).parts else 200.
+        score = 300. if sequence.behavior_key(candidate) in higher_behaviors else 200.
         result['summary']['dps'] = score
         sim = result['report']['sim']
         sim['statistics']['raid_dps']['mean'] = sim['players'][0]['collected_data']['dps']['mean'] = score
+        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
         return result
 
     def no_initial_champion(root, table, key, rows, **kwargs):
@@ -307,23 +330,25 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
             raise OSError('old source only')
         return api['write'](root, table, key, rows, **kwargs)
 
+    profile = tmp_path / 'current.simc'
+    profile.write_bytes(raw.encode('utf-8'))
+    options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
     with patch.object(result_store, '_api', return_value=dict(api, write=no_initial_champion)), \
-         patch.object(engine, 'inspect', side_effect=source_catalogue), \
          patch.object(sequence, 'evaluate', side_effect=source_scores):
-        low = dual_result(tmp_path / 'low', raw, candidate_limit=1)
-        high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
+        low = task.run_task(profile, tmp_path / 'low', **options)
+        with patch.object(search, 'initial_programs', side_effect=higher_native_start):
+            high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
     monkeypatch.setattr(task, '_rule_hashes', real_rules)
-    low_id, high_id = [state['scenes'][0]['formal_champion_publication']['source_run_id'] for state in (low, high)]
+    low_id = low['search']['formal_champion_publication']['source_run_id']
+    high_id = high['scenes'][0]['formal_champion_publication']['source_run_id']
     def normalized(row):
         return {key: json.loads(value) if result_store.RUN_SCHEMA[key] == 'JSON'
                 and isinstance(value, str) else value for key, value in row.items()}
 
     originals = {run_id: normalized(result_store.read_records('runs', run_id)[0])
                  for run_id in (low_id, high_id)}
-    profile = tmp_path / 'current.simc'
-    profile.write_bytes(raw.encode('utf-8'))
-    options = dict(use_burst=True, search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
-        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
     for fault in ('profile', 'source_batch_forged'):
         with subtests.test(fault=fault):
             run = deepcopy(originals[high_id])

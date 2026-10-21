@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "projects" / "sim2gse"))
 
 from interface import serve  # noqa: E402
-from simulation_config import load_config  # noqa: E402
+from simulation_config import load_config, add_search_arguments, load_search_config  # noqa: E402
 
 
 def main() -> int:
@@ -20,14 +20,21 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "localhost"),
                         help="只允许本机地址")
     parser.add_argument("--port", type=int, default=8780, help="本地端口，0 表示自动选择")
+    parser.add_argument('--diagnostic-logging', action='store_true',
+                        help='本次服务开启全部性能诊断日志；重启后默认关闭')
+    add_search_arguments(parser)
     args = parser.parse_args()
     try:
         simulation_config = load_config()
+        search_config = load_search_config(rule_initialization_enabled=args.rule_initialization_enabled,
+            adaptive_selector_enabled=args.adaptive_selector_enabled, search_timeline=args.search_timeline)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
     serve(args.output_root, host=args.host, port=args.port,
-          task_options={"simulation_config": simulation_config})
+          task_options={"simulation_config": simulation_config,
+                        "search_config": dict(search_config, diagnostic_logging=args.diagnostic_logging,
+                                              diagnostics='summary', search_observability='full')})
     return 0
 
 

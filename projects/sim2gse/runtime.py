@@ -13,6 +13,103 @@ import time
 import uuid
 
 
+_DIAGNOSTIC_LOCK = threading.Lock()
+_DIAGNOSTIC_WALL_STAGES = (
+    'diagnostic.total', 'native.execute', 'evaluation.report_read_validate', 'evaluation.trace',
+    'candidate.compile', 'candidate.write', 'report.prepare', 'report.write', 'report.publish',
+    'model.full_write', 'model.control_write', 'state.persist.full', 'state.persist.partial',
+    'main.wait',
+)
+
+
+def diagnostic_start():
+    """性能采集不能阻断业务；调用者只在总开关打开时进入。"""
+    try:
+        return time.perf_counter()
+    except Exception:
+        return None
+
+
+def diagnostic_finish(owner, stage, started, **units):
+    """只累加本次调用的含子阶段墙钟时间，不进入业务检查点。"""
+    if started is None:
+        return
+    try:
+        finished = time.perf_counter()
+        seconds = max(0.0, finished - started)
+        with _DIAGNOSTIC_LOCK:
+            if not hasattr(owner, 'performance_stages'):
+                owner.performance_stages = {}
+            stats = owner.performance_stages.setdefault(stage, dict(calls=0, seconds=0.0, units={}))
+            stats['calls'] += 1
+            stats['seconds'] += seconds
+            for name, count in units.items():
+                stats['units'][name] = stats['units'].get(name, 0) + count
+            # Only coarse stages retain intervals. Fine-grained rule entries stay aggregated.
+            if stage in _DIAGNOSTIC_WALL_STAGES:
+                if not hasattr(owner, 'performance_intervals'):
+                    owner.performance_intervals = {}
+                owner.performance_intervals.setdefault(stage, []).append((started, max(started, finished)))
+    except Exception:
+        # 计时或采集失败不能覆盖原业务返回值或原异常。
+        pass
+
+
+def diagnostic_candidate(owner, kind, identity, runtime):
+    """本次新执行候选的观测里程碑；不写入或恢复业务检查点。"""
+    try:
+        elapsed = runtime.elapsed_seconds
+        invocation = max(0.0, elapsed - runtime.used_seconds)
+        with _DIAGNOSTIC_LOCK:
+            if not hasattr(owner, 'performance_candidates'):
+                owner.performance_candidates = {}
+            owner.performance_candidates.setdefault(kind, {}).setdefault(identity, dict(
+                behavior_identity=identity, invocation_seconds=invocation, budget_elapsed_seconds=elapsed))
+    except Exception:
+        pass
+
+
+def diagnostic_summary(*owners):
+    """独立于业务状态的本次调用汇总；嵌套和并发区间不能相加。"""
+    stages, intervals = {}, {}
+    candidates = {'first_score_published': {}, 'screening_archived': {}}
+    with _DIAGNOSTIC_LOCK:
+        for owner in owners:
+            for name, value in getattr(owner, 'performance_stages', {}).items():
+                stats = stages.setdefault(name, dict(calls=0, seconds=0.0, units={}))
+                stats['calls'] += value['calls']
+                stats['seconds'] += value['seconds']
+                for unit, count in value['units'].items():
+                    stats['units'][unit] = stats['units'].get(unit, 0) + count
+            for name, spans in getattr(owner, 'performance_intervals', {}).items():
+                intervals.setdefault(name, []).extend(spans)
+            for kind, records in getattr(owner, 'performance_candidates', {}).items():
+                for identity, record in records.items():
+                    candidates[kind].setdefault(identity, record)
+    def wall_union(spans):
+        total, end = 0.0, None
+        for start, stop in sorted(spans):
+            total += stop - start if end is None or start > end else max(0.0, stop - end)
+            end = stop if end is None else max(end, stop)
+        return total
+    for name, spans in intervals.items():
+        stages[name]['wall_union_seconds'] = wall_union(spans)
+    covered_stages = sorted(name for name in intervals if name != 'main.wait')
+    return dict(scope='current_invocation', timing='inclusive_wall_seconds', stages=stages,
+        covered_stages=covered_stages,
+        covered_wall_seconds=wall_union(span for name in covered_stages for span in intervals[name]),
+        covered_wall_timing=(
+            'Union of selected coarse covered_stages, including I/O, lock and process waits; '
+            'main.wait measures screen_round future.result only and is an overlapping wait indicator; it is excluded. '
+            'This is not CPU time and not the complete public-call wall time.'),
+        candidate_progress={kind: list(records.values()) for kind, records in candidates.items()},
+        candidate_progress_timing=dict(
+            invocation_seconds='Since this TaskRuntime.started; not the outer public-call start.',
+            budget_elapsed_seconds='TaskRuntime elapsed including previously used budget.',
+            first_score_published='New native search batch zero, validated and report-group transaction committed.',
+            screening_archived='Newly executed candidate completed in-memory screening/archive flow; checkpoint may still be buffered.'))
+
+
 def replace_file(source, destination):
     """Windows 读者可能短暂占用旧报告；有界重试，始终保留原子替换。"""
     for attempt in range(11):
@@ -48,9 +145,13 @@ class ProcessResult:
 class TaskRuntime:
     """一次任务共享的截止时间和取消状态。"""
 
-    def __init__(self, budget_seconds: float = 600.0, *, cancel_event=None, used_seconds: float = 0.0):
+    def __init__(self, budget_seconds: float = 600.0, *, cancel_event=None, used_seconds: float = 0.0,
+                 diagnostic_logging=False):
         if budget_seconds < 0 or used_seconds < 0 or used_seconds > budget_seconds:
             raise ValueError("任务预算必须满足 0 <= used <= total")
+        if type(diagnostic_logging) is not bool:
+            raise ValueError('诊断日志总开关必须为布尔值')
+        self.diagnostic_logging = diagnostic_logging
         self.budget_seconds = float(budget_seconds)
         self.used_seconds = float(used_seconds)
         self.started = time.monotonic()
