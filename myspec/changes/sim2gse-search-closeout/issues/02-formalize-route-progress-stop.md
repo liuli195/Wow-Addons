@@ -1,6 +1,6 @@
 # 02：正式化共用分支进展早停
 
-Status: in-progress（实现完成，待统一审查与正式验证）
+Status: in-progress（实现、独立审查及定向验证完成；待交付门禁与 CI）
 Blocked by: none（01 已提交 2e016bd）
 
 ## What to build
@@ -9,11 +9,11 @@ Blocked by: none（01 已提交 2e016bd）
 
 ## Acceptance criteria
 
-- [ ] 全局晋升或非起点分支晋升均重置，初始建立和未通过验证的提升不重置。
-- [ ] 仅完整无改善轮累加，未完成轮不误计。
-- [ ] 正式阈值沿用实际有效分支数，训练沿用两轮，取消训练600秒总硬截断的修复不回退。
-- [ ] 两种搜索模式采用同一判定，无额外早停开关、各分支计数或新参数。
-- [ ] 通过真实搜索公共链的最小行为测试，不通过source.replace完成产品实现。
+- [x] 全局晋升或非起点分支晋升均重置，初始建立和未通过验证的提升不重置。
+- [x] 仅完整无改善轮累加，未完成轮不误计。
+- [x] 正式阈值沿用实际有效分支数，训练沿用两轮，取消训练600秒总硬截断的修复不回退。
+- [x] 两种搜索模式采用同一判定，无额外早停开关、各分支计数或新参数。
+- [x] 通过真实搜索公共链的最小行为测试，不通过source.replace完成产品实现。
 
 ## Comments
 
@@ -27,3 +27,5 @@ Blocked by: none（01 已提交 2e016bd）
 - 云端测试仍为测试进程 POSIX 实锁适配、原 conftest 临时数据中心隔离，不代表 Windows 锁/JobObject 验证。
 - 最终联合命令：`DATA_STORE_TEST_SKILL="$PWD/../cloud-skills/managed/skills/data-store" .venv/bin/python .local/spec-work/pytest-posix.py tests/sim2gse/test_search_closeout.py tests/sim2gse/test_search.py::SearchAndValidationTests::test_normal_search_no_improvement_limit_matches_valid_start_count tests/sim2gse/test_seed_training.py::test_training_uses_two_unimproved_rounds_instead_of_total_limits -q`。初次 29 passed / 1 failed（29.14 秒）：唯一失败是原有效分支数用例旧语义预期 4 轮，新有效分支晋升令其变 5 轮、分支轮数 [3,2]。仅更新该行为断言后单例 1 passed（3.73 秒）。共 30 项分别通过，未宣称重跑整组或全仓。
 - `git diff --check` 与 compileall 通过。正式规格未改，未提交，等待主代理统一提交并作为曲线性能基线。
+
+2026-10-21 最终证据：云端联合 58 项与 13 子测试通过（41.03 秒）；Windows 必要验证及其失败项的限定复测已通过。原 HTTP 失败为执行权限限制，正常审批后 2 项与 3 子测试通过；前台抢占测试显式固定自身 2 worker 后单例通过（2.876 秒），未修改产品、原断言、本机 10×2 或正式数据。详见 report.md。尚未完成远端 CI 与合并，历史阶段“未提交”等描述不代表当前状态。
