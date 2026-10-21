@@ -758,7 +758,8 @@ def test_foreground_search_does_not_wait_for_training_and_stops_it(
         ids.append(result_store.read_records('seed_candidates', 'registry')[-1]['candidate_id'][:12])
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+            '--max-trainings', '2']
     dispatched = set()
     active = 0
     lock = threading.Lock()
