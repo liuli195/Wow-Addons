@@ -149,7 +149,7 @@ def test_public_task_rejects_unknown_or_ambiguous_three_key_identity(tmp_path, m
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), pytest.raises(TaskError, match='英雄|三键|目标'):
         run_task(source, tmp_path / 'task', simulation_config=config,
-                 search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+                 search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
 
 def test_task_rejects_missing_static_character_snapshot(tmp_path):
@@ -159,7 +159,7 @@ def test_task_rejects_missing_static_character_snapshot(tmp_path):
     native = apl_pool_reference()
     native.pop('static_snapshot')
     with _apl_task_boundary(native), pytest.raises(TaskError, match='静态'):
-        run_task(source, tmp_path / 'task', search_config=dict(
+        run_task(source, tmp_path / 'task', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
 
@@ -169,7 +169,7 @@ def test_task_exports_ordered_opener_using_effective_gcd(tmp_path, monkeypatch):
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary():
-        result = run_task(source, tmp_path / 'task', search_config=dict(
+        result = run_task(source, tmp_path / 'task', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
             input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
         saved = read_task(tmp_path / 'task')
     report = result['rule_initialization']
@@ -242,7 +242,7 @@ def test_task_initialization_timestamps_include_compiled_precombat_click(tmp_pat
     source.write_text(raw, encoding='utf-8')
     boundary = character_seed_boundary(native_reference=native)
     with boundary:
-        result = run_task(source, tmp_path / 'task', use_burst=True, search_config=dict(
+        result = run_task(source, tmp_path / 'task', use_burst=True, search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
             input_interval_ms=300, candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
     report = result['rule_initialization']
     compiled_actions = [(index, row) for index, row in enumerate(report['click_mapping']) if row['kind'] == 'Action']
@@ -292,7 +292,7 @@ def test_task_rejects_invalid_rule_references_before_running(tmp_path, monkeypat
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(), pytest.raises(TaskError, match='规则配置'):
-        run_task(source, tmp_path / 'task', search_config=dict(
+        run_task(source, tmp_path / 'task', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
 
@@ -363,7 +363,7 @@ def test_public_task_budget_includes_configuration_read_and_validation(tmp_path,
     assert result['elapsed_seconds'] >= 2.0
 
 
-@pytest.mark.parametrize('precombat_occupancy,cast_ms,starts,first_burst', [(3000, 2000, [3000, 5000, 7000], 9000), (None, 0, None, None)])
+@pytest.mark.parametrize('precombat_occupancy,cast_ms,starts,first_burst', [(3000, 2000, [4000, 6000, 8000], 9000), (None, 0, None, None)])
 def test_task_accounts_native_effective_precombat_occupancy_before_freezing_t0(
         tmp_path, monkeypatch, precombat_occupancy, cast_ms, starts, first_burst):
     import json,burst,result_store
@@ -387,18 +387,19 @@ def test_task_accounts_native_effective_precombat_occupancy_before_freezing_t0(
     with character_seed_boundary(native_reference=native):
         if starts is None:
             with pytest.raises(TaskError,match='战前.*GCD.*未知'):
-                run_task(source,tmp_path/'task',use_burst=True,search_config=dict(input_interval_ms=200,
+                run_task(source,tmp_path/'task',use_burst=True,search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
                     candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
             return
-        result=run_task(source,tmp_path/'task',use_burst=True,search_config=dict(input_interval_ms=200,
+        result=run_task(source,tmp_path/'task',use_burst=True,search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
             candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     report=result['rule_initialization']
     assert [row['estimated_ms'] for row in report['positions'] if row['kind']=='action']==starts
     assert report['precombat_occupancy']['gcd_ms']==1253
-    assert report['precombat_occupancy']['first_loop_ms']==starts[0]
+    assert report['precombat_occupancy']['first_loop_ms']==precombat_occupancy
     if precombat_occupancy is not None:
         assert report['precombat_occupancy']['occupancy_ms']==precombat_occupancy
-    assert result['burst']['plan']['start_ms']==first_burst
+    assert result['burst']['plan']==definition['plan']
+    assert report['first_burst_ms']==first_burst
 
 
 
@@ -419,7 +420,7 @@ def test_task_selects_opener_by_explicit_scene_and_native_hero_facts(tmp_path, m
     with _apl_task_boundary(native):
 
         result=run_task(source,tmp_path/'task',simulation_config={'target_count':5,'scene':'aoe'},
-            search_config=dict(input_interval_ms=200,candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     assert [row['source_step'] for row in result['rule_initialization']['source_steps']] == list(range(1,5))
     assert result['simulation_config']['scene'] == 'aoe'
 
@@ -450,7 +451,7 @@ def test_task_uses_default_putrefy_opener_after_legacy_single_precombat(tmp_path
     source=tmp_path/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
     with _apl_task_boundary(native):
         result=run_task(source,tmp_path/'task',simulation_config=dict(scene=scene,target_count=1 if scene=='single_target' else 5),
-            search_config=dict(input_interval_ms=200,candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     report=result['rule_initialization']
     assert len(report['source_steps'])==steps
     assert '开场两命令实际GCD/开战边界和原生逐命令guard待核验' not in report['unknown']
@@ -487,10 +488,10 @@ def test_task_uses_configured_replacement_form_cost_and_same_button_mapping(
     with _apl_task_boundary(native):
         if known_cost is False:
             with pytest.raises(TaskError, match='静态字段.*graveyard'):
-                run_task(source,tmp_path/'task',search_config=dict(input_interval_ms=200,
+                run_task(source,tmp_path/'task',search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
                     candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
             return
-        result=run_task(source,tmp_path/'task',search_config=dict(input_interval_ms=200,
+        result=run_task(source,tmp_path/'task',search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
             candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     report=result['rule_initialization']
     attempts=[row for row in report['positions'] if row['kind']=='action']
@@ -516,7 +517,7 @@ def test_task_rejects_burst_source_missing_from_original_macro(tmp_path, monkeyp
     source = tmp_path / 'role.simc'
     source.write_text(raw, encoding='utf-8')
     with character_seed_boundary(), pytest.raises(TaskError, match='独立爆发宏未包含.*blightfall'):
-        run_task(source, tmp_path / 'task', use_burst=True, search_config=dict(input_interval_ms=200,
+        run_task(source, tmp_path / 'task', use_burst=True, search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
     assert burst.load(252) == published
 
@@ -535,7 +536,7 @@ def test_rule_cli_saves_new_opener_but_old_task_keeps_its_snapshot_and_refuses_r
     source=tmp_path/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
     native=apl_pool_reference()
     with _apl_task_boundary(native):
-        old=run_task(source,tmp_path/'old',search_config=dict(input_interval_ms=200,
+        old=run_task(source,tmp_path/'old',search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
             candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     initialization = old['rule_initialization']
     assert initialization['configuration_key'] == dict(
@@ -556,7 +557,7 @@ def test_rule_cli_saves_new_opener_but_old_task_keeps_its_snapshot_and_refuses_r
     assert main(['rules-save',str(draft),'--expected-digest',identity])==0
     new_digest=json.loads(capsys.readouterr().out)['rule_config_digest']
     with _apl_task_boundary(native):
-        new=run_task(source,tmp_path/'new',search_config=dict(input_interval_ms=200,
+        new=run_task(source,tmp_path/'new',search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
             candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
         with pytest.raises(TaskError,match='规则.*变化.*新任务'):
             resume_task(tmp_path/'old')
@@ -597,7 +598,7 @@ def test_task_runs_independent_spec_and_renamed_aliases_without_class_strategy(t
     source=tmp_path/'role.simc';source.write_text(sample_profile().replace('deathknight=','warrior=').
         replace('spec=unholy','spec=arms'),encoding='utf-8')
     with _apl_task_boundary(native):
-        result=run_task(source,tmp_path/'task',search_config=dict(input_interval_ms=200,
+        result=run_task(source,tmp_path/'task',search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
             candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1))
     report=result['rule_initialization']
     assert report['resource']=='energy'
@@ -628,7 +629,7 @@ def test_initializes_non_dk_cast_or_complete_channel_before_next_attempt(
         source = tmp_path / 'role.simc'
         source.write_text((Path(__file__).with_name('fixtures') / 'discipline.simc').read_text(), encoding='utf-8')
         with _apl_task_boundary(native):
-            result = run_task(source, tmp_path / 'task', search_config=dict(input_interval_ms=200,
+            result = run_task(source, tmp_path / 'task', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
                 candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
             saved = read_task(tmp_path / 'task')
         report = result['rule_initialization']
@@ -663,7 +664,7 @@ def test_task_rejects_unknown_or_inconsistent_action_timing(
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     with _apl_task_boundary(native), pytest.raises(TaskError, match='outbreak.' + field):
-        run_task(source, tmp_path / 'task', search_config=dict(input_interval_ms=200,
+        run_task(source, tmp_path / 'task', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
 
 
@@ -691,7 +692,7 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
     pack['configurations'].extend(aoe['configurations'])
     path=tmp_path/'rules.json';path.write_text(json.dumps(pack),encoding='utf-8')
     monkeypatch.setenv('SIM2GSE_RULE_CONFIG',str(path))
-    server=create_server(tmp_path/'page',task_options=dict(search_config=dict(input_interval_ms=200,
+    server=create_server(tmp_path/'page',task_options=dict(search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
         candidate_limit=1,batch_targets=(2,),iterations=2,validation_batches=1)))
     thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01},daemon=True)
     thread.start()
@@ -731,21 +732,21 @@ def test_http_dual_task_freezes_one_config_and_preserves_scene_labels(tmp_path, 
         _, destination = server.task_paths(task_id)
         single = read_task(destination / 'single_target')
         assert single['rule_initialization'] == reports[0]
-        assert single['burst']['plan'] == dict(published['plan'], start_ms=1000)
+        assert single['burst']['plan'] == published['plan']
         assert single['burst']['interval_ms'] == 200
         assert reports[0]['protected_burst']['plan'] == single['burst']['plan']
         assert single['burst']['candidate']['text'] == single_burst_text[0]
         actions = [row for row in reports[0]['positions'] if row['kind'] == 'action']
-        assert [row['estimated_ms'] for row in actions] == [0, 2000]
-        assert all(not 1000 <= row['estimated_ms'] < 2000 for row in actions)
+        assert [row['estimated_ms'] for row in actions] == [0, 1000]
+        assert all(not 3000 <= row['estimated_ms'] < 4000 for row in actions)
         mapped = [row for row in reports[0]['source_steps'] if row.get('mapping') == 'burst']
-        assert [row['estimated_ms'] for row in mapped] == [1000, 1200]
+        assert [row['estimated_ms'] for row in mapped] == [3000, 3200]
         assert [row['burst_mapping'] for row in mapped] == [
-            [dict(native_action='army_of_the_dead', block=0, command=0, input_ms=1000)],
-            [dict(native_action='dark_transformation', block=1, command=3, input_ms=1200)]]
+            [dict(native_action='army_of_the_dead', block=0, command=0, input_ms=3000)],
+            [dict(native_action='dark_transformation', block=1, command=3, input_ms=3200)]]
         assert burst.load(252) == published
         assert definition_path.read_bytes() == definition_bytes
-        starts = {200: ('单体：第1、46、91、136秒','群体：第2、47、92、137秒')}[200]
+        starts = {200: ('单体：第3、48、93、138秒','群体：第3、48、93、138秒')}[200]
         assert all(value in detail['burst_instructions'] for value in starts)
         assert detail['input_interval_ms']==200
         assert detail['burst_instructions'].count(f'间隔{200}毫秒')==2
@@ -792,7 +793,7 @@ def test_task_validates_precombat_definition_without_replacing_native_preparatio
     with _apl_task_boundary(native),patch.object(sequence,'evaluate',side_effect=real_evaluate),\
             patch.object(sequence,'run',side_effect=native_boundary):
         result=run_task(source,tmp_path/'task',mode='single',program=[['scourge_strike']],
-             search_config=dict(input_interval_ms=200,diagnostic_logging=False))
+             search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,diagnostic_logging=False))
         assert result['status']=='offline_ready'
 
 

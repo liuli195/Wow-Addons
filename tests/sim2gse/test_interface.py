@@ -1363,7 +1363,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         path = Path(self.directory.name) / 'rules.json'
         path.write_text(json.dumps(pack), encoding='utf-8')
         self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1, input_interval_ms=200)}
+            iterations=2, validation_batches=1, input_interval_ms=200, search_timeline=True, rule_initialization_enabled=True)}
         edited = []
         with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(path)}), _fast_initialization(), page_task_boundary():
             evaluate = sequence.evaluate
@@ -1383,6 +1383,10 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                 detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
         self.assertEqual(detail['status'], 'completed', detail)
         self.assertTrue(edited)
+        curves = [json.loads(next((handle.output_root / scene).glob('search-timeline-*.json')).read_text(encoding='utf-8'))
+                  for scene in ('single_target', 'aoe')]
+        self.assertGreater(curves[1]['search_start_seconds'], curves[0]['call_seconds'])
+        self.assertEqual([curve['context']['simulation_config']['target_count'] for curve in curves], [1, 5])
         reports = [scene['rule_initialization'] for scene in detail['scenes']]
         self.assertEqual(reports[0]['rule_config_digest'], reports[1]['rule_config_digest'])
         for report in reports:

@@ -62,7 +62,7 @@ def champion_engine(page_task_engine, monkeypatch):
         yield
 
 
-def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0, prepared_context=None, source_engines=None, report_engines=None):
+def completed_training(tmp_path, targets, programs, *, name='current', candidate_offset=0, prepared_context=None, source_engines=None, report_engines=None, legacy_search=False):
     """构造完整最终成绩凭据，不启动训练或原生计算。"""
     from contextlib import closing
     import shutil
@@ -79,6 +79,11 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
     template = tmp_path / (name + '-standard.simc')
     template.write_text(raw, encoding='utf-8')
     inputs = seed_training._training_inputs(template, targets, use_burst=True, verified_engines=source_engines)
+    versions = seed_training.semantic_versions()
+    if legacy_search:
+        versions['search'] = 'rule-single-step-coba-linucb-v1'
+        for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+            inputs['config'].pop(key)
     character = inputs['character']
     batch = tmp_path / 'custom-training' / str(targets) / name
     batch.mkdir(parents=True)
@@ -97,13 +102,13 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
                                   simulation_config=inputs['simulation_config'])
     initialization = {}
     initial_programs(capabilities, native, target_count=targets, scene=inputs['simulation_config']['scene'],
-        input_interval_ms=200, burst=context, initialization=initialization, rule_snapshot=rule_snapshot)
+        input_interval_ms=200, burst=context, initialization=initialization, rule_snapshot=rule_snapshot, rule_initialization_enabled=True)
     configuration_key = initialization['configuration_key']
     payload = seed_training.training_condition_input(inputs['template_sha'], inputs['engines'],
         inputs['config'], inputs['simulation_config'], burst_context=context)
-    condition = seed_training.semantic_condition(payload, seed_training.semantic_versions())
+    condition = seed_training.semantic_condition(payload, versions)
     manifest = dict(format=1, condition=condition, condition_input=payload, rule_snapshot=rule_snapshot,
-        input_sha256=digest(payload), semantic_versions=seed_training.semantic_versions(),
+        input_sha256=digest(payload), semantic_versions=versions,
         semantic_condition=condition, executions=[])
     (batch / 'standard.simc').write_text(raw, encoding='utf-8')
     (batch / 'condition.txt').write_text(condition, encoding='ascii')
@@ -199,9 +204,10 @@ def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', inter
         thread.join(3)
 
 
+@pytest.mark.parametrize("legacy_search", [False, True])
 @pytest.mark.parametrize("wrong_report_engine", [False, True])
 def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypatch,
-        memory_result_center, champion_engine, wrong_report_engine):
+        memory_result_center, champion_engine, wrong_report_engine, legacy_search):
     from copy import deepcopy
     import burst
     import engine
@@ -215,7 +221,7 @@ def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypa
     template, rows = completed_training(tmp_path, 1, [
         ([['outbreak'], ['death_coil'], ['outbreak']], [99999.] * 3)], source_engines=source_engines,
         report_engines=({mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
-                        if wrong_report_engine else None))
+                        if wrong_report_engine else None), legacy_search=legacy_search)
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     before = result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')))
     scene = dual_result(tmp_path, raw)['scenes'][0]

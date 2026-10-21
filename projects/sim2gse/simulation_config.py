@@ -46,7 +46,7 @@ def _load_document(path=None):
         raise ValueError(f"本地模拟配置无效: {path}: {error}") from error
     if not isinstance(document, dict):
         raise ValueError("本地模拟配置必须是 TOML 对象")
-    unknown = set(document) - {"simulation", "training"}
+    unknown = set(document) - {"simulation", "training", "search"}
     if unknown:
         raise ValueError("未知模拟配置区域: " + ", ".join(sorted(unknown)))
     return document
@@ -76,6 +76,29 @@ def load_training_config(path: str | Path | None = None, *, max_processes=None, 
     if values['max_processes'] * values['max_trainings'] > 20:
         raise ValueError('训练并发与评分并发乘积不得超过20')
     return values
+
+
+def load_search_config(path=None, **overrides):
+    """搜索能力配置与物理模拟分离；显式非空参数优先。"""
+    keys = ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline')
+    section = _load_document(path).get('search', {})
+    if not isinstance(section, dict) or set(section) - set(keys):
+        raise ValueError('[search] 只接受 ' + ', '.join(keys))
+    values = dict.fromkeys(keys, False)
+    values.update(section)
+    values.update({key: value for key, value in overrides.items() if value is not None})
+    for key in keys:
+        if type(values[key]) is not bool:
+            raise ValueError(key + ' 必须为布尔值')
+    return values
+
+
+def add_search_arguments(parser):
+    """CLI 未传参保留 None，使配置文件仍可启用探索。"""
+    import argparse
+    for name in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+        parser.add_argument('--' + name.replace('_', '-'), action=argparse.BooleanOptionalAction,
+                            default=None)
 
 
 def engine_options(config: dict | None = None) -> list[str]:

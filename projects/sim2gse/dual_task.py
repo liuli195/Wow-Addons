@@ -96,7 +96,7 @@ def _publish_export(row, purpose, compiled):
 
 
 def _child_matches(row, child, targets, scene):
-    logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability')
+    logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
     def business_config(value):
         frozen = config_for(value, legacy=True)
         frozen.setdefault('rule_diagnostics_policy', 'eager')
@@ -104,7 +104,8 @@ def _child_matches(row, child, targets, scene):
     if (child['profile']['input_original_sha256'] != row['input_sha256']
             or child['simulation_config'] != dict(row['simulation_config'], target_count=targets, scene=scene)
             or business_config(child['config']) != business_config(row['config'])
-            or (child.get('rule_initialization') or {}).get('rule_config_digest') != row['rule_snapshot']['rule_config_digest']
+            or ((child.get('rule_initialization') or {}).get('rule_config_digest') or
+                child.get('search', {}).get('rule_config_digest')) != row['rule_snapshot']['rule_config_digest']
             or (child.get('burst') or {}).get('definition_id') != row['definition_id']):
         raise task.TaskError('父任务与子任务的冻结条件不一致')
 
@@ -157,6 +158,8 @@ def _worker(handle):
                 runtime = TaskRuntime(row['config']['total_budget_seconds'], cancel_event=handle.cancel_event,
                                       diagnostic_logging=row['config']['diagnostic_logging'])
                 runtime.identities = copy.deepcopy(handle.identities)
+                if row['config']['search_timeline']:
+                    runtime.timeline_origin = handle.timeline_origin
                 if (child_path / 'result.json').exists():
                     child = task.read_task(child_path)
                     if (child.get('status') != 'completed' or
@@ -251,7 +254,8 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     destination = Path(destination).resolve()
     original, text = task._read_utf8(Path(input_path), description='角色输入')
     simulation_config = simulation_config_for(simulation_config)
-    config = config_for(dict(search_config or {}, input_interval_ms=(search_config or {}).get('input_interval_ms', 200)))
+    from simulation_config import load_search_config
+    config = config_for(load_search_config(**dict(search_config or {}, input_interval_ms=(search_config or {}).get('input_interval_ms', 200))))
     effective = task._effective_input_bytes(original, text, simulation_config)
     definition = select_definition(task.parse_character(effective.decode('utf-8')))
     identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
@@ -267,28 +271,32 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     (destination / 'input.original.simc').write_bytes(original)
     task._write_json(destination / 'dual.json', dict(parent_id=row['parent_id']), atomic=True)
     _save(row)
-    return _launch(destination, identities)
+    return _launch(destination, identities, timeline_origin=started if config['search_timeline'] else None)
 
 
-def _launch(destination, identities):
+def _launch(destination, identities, *, timeline_origin=None):
     handle = DualHandle(destination, identities)
+    handle.timeline_origin = timeline_origin
     handle.thread = threading.Thread(target=_worker, args=(handle,), daemon=True, name='sim2gse-dual')
     handle.thread.start()
     return handle
 
 
-def resume(destination, *, diagnostic_logging=False):
+def resume(destination, *, diagnostic_logging=False, search_timeline=None):
+    from simulation_config import load_search_config
+    search_timeline = load_search_config(search_timeline=search_timeline)['search_timeline']
+    timeline_origin = time.monotonic() if search_timeline else None
     from engine import identity
     destination = Path(destination).resolve()
     with task._task_lease(destination):
         row = _load(destination)
         identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
         _verify(row, destination, identities, current_rules=True)
-        row['config'] = config_for(dict(row['config'], diagnostic_logging=diagnostic_logging,
+        row['config'] = config_for(dict(row['config'], diagnostic_logging=diagnostic_logging, search_timeline=search_timeline,
             diagnostics=(row['config'].get('diagnostics') if row['config'].get('diagnostics') != 'off'
                          else 'summary')), legacy=True)
         _save(row)
-    return _launch(destination, identities)
+    return _launch(destination, identities, timeline_origin=timeline_origin)
 
 
 def _is_running(destination):

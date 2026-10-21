@@ -240,12 +240,19 @@ def _digest(value):
                                     separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
-def _learner():
-    import coba
-    import numpy
-    from coba.learners import LinUCBLearner
+def require_dependencies():
+    try:
+        import coba
+        import numpy
+    except ImportError as error:
+        raise ValueError('自适应选择器缺少可选依赖，请安装 requirements-selector.txt；未修改模型') from error
     if coba.__version__ != COBA_VERSION or numpy.__version__ != NUMPY_VERSION:
         raise ValueError('共享选择器依赖版本不兼容，保留原状态')
+
+
+def _learner():
+    require_dependencies()
+    from coba.learners import LinUCBLearner
     return LinUCBLearner(alpha=1, features=list(FEATURES), seed=1)
 
 

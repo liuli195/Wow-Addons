@@ -21,7 +21,8 @@ from runtime import replace_file, diagnostic_start, diagnostic_finish, diagnosti
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 
 
-SEARCH_ALGORITHM = "rule-single-step-coba-linucb-v1"
+SEARCH_ALGORITHM = "independent-search-modes-v2"
+PREVIOUS_SEARCH_ALGORITHM = "rule-single-step-coba-linucb-v1"
 STATS_VERSION = "paired-bootstrap-v1"
 _TASK_COUNTERS = ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates')
 SCREENING_ERROR_MULTIPLIER = 1.96
@@ -41,6 +42,9 @@ DEFAULT_CONFIG = {
     "scenarios": DEFAULT_SCENARIOS,
     "random_seed": 20260912,
     "trace_search": False,
+    "rule_initialization_enabled": False,
+    "adaptive_selector_enabled": False,
+    "search_timeline": False,
     "rule_diagnostics_policy": "on_demand",
     "diagnostic_logging": False,
     "diagnostics": "off",
@@ -93,6 +97,9 @@ def config_for(values=None, *, training=False, legacy=False):
     if (not isinstance(config['search_observability'], str) or
             config['search_observability'] not in ('off', 'summary', 'full')):
         raise ValueError('搜索记录模式必须是 off、summary 或 full')
+    for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+        if type(config[key]) is not bool:
+            raise ValueError(key + ' 必须为布尔值')
     if type(config['diagnostic_logging']) is not bool:
         raise ValueError('诊断日志总开关必须为布尔值')
     if not config['diagnostic_logging']:
@@ -151,18 +158,20 @@ def _unique_names(names, available):
 
 
 def initial_programs(capabilities, reference, seed=20260912, *, input_interval_ms=300,
-                     target_count=1, burst=None, initialization=None, rule_snapshot=None, scene=None):
+                     target_count=1, burst=None, initialization=None, rule_snapshot=None, scene=None,
+                     rule_initialization_enabled=False):
     """从四个来源产生稳定合法的起点，而不读派生或宠物动作。"""
-    from rule_initialization import generate
-    from rule_config import load
-    rule_snapshot = rule_snapshot or load()
-    from rule_config import bind
-    binding = bind(capabilities, reference.get('static_snapshot'), target_count,
-                   spec_id=reference.get('identity', {}).get('spec_id'), rule_snapshot=rule_snapshot, scene=scene)
-    rule_start = generate(capabilities, reference, binding=binding, input_interval_ms=input_interval_ms,
-                          target_count=target_count, burst=burst, rule_snapshot=rule_snapshot)
-    if initialization is not None:
-        initialization.update(rule_start)
+    rule_start = None
+    if rule_initialization_enabled:
+        from rule_initialization import context, generate
+        _, binding = context(capabilities, reference, target_count=target_count,
+                             scene=scene, rule_snapshot=rule_snapshot)
+        from rule_config import load
+        rule_snapshot = rule_snapshot or load()
+        rule_start = generate(capabilities, reference, binding=binding, input_interval_ms=input_interval_ms,
+                              target_count=target_count, burst=burst, rule_snapshot=rule_snapshot)
+        if initialization is not None:
+            initialization.update(rule_start)
     baseline_actions = capabilities.get('baseline_actions', capabilities['actions'])
     actions = [a["simc_action"] for a in baseline_actions]
     available = set(actions)
@@ -177,7 +186,10 @@ def initial_programs(capabilities, reference, seed=20260912, *, input_interval_m
         if names:
             starts.append([[name] for name in names])
 
-    starts.append(rule_start['program'])  # 只替换均匀来源；其余三项保持。
+    if rule_start is not None:
+        starts.append(rule_start['program'])  # 仅替换均匀来源。
+    else:
+        add(actions)
     frequency = []
     for row in reference.get("action_sequence", []):
         if row.get("queue_failed"):
@@ -1449,6 +1461,8 @@ TRAINING_STOP_POLICY = 'two-unimproved-rounds-v1'
 
 def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cancel_event=None):
     """补共享反馈后再补任务状态；已评分恢复不重新模拟/重新学习。"""
+    if not store.state.get('config', {}).get('adaptive_selector_enabled', False) or getattr(store, 'diagnostic_only', False):
+        return
     intents = store.state.get('selection_feedback_intents', {})
     if not intents and (not finalizing or not store.state.get('pending')):
         if store.state.get('selection_feedback_incomplete'):
@@ -1573,9 +1587,15 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
+    timeline = getattr(runtime, 'search_timeline', None) if diagnostic_candidate_key is None else None
     batch_counters = getattr(store, 'counter_target', state)
     verify_behavior_identity_state(state)
-    if diagnostic_candidate_key is None and state.get('sparse_selection'):
+    selector_enabled = (config['adaptive_selector_enabled'] and diagnostic_candidate_key is None
+                        and not getattr(store, 'diagnostic_only', False))
+    if selector_enabled:
+        from selector import require_dependencies
+        require_dependencies()
+    if selector_enabled and diagnostic_candidate_key is None and state.get('sparse_selection'):
         from selector import MemorySelection
         store.selection_session = MemorySelection(state, runtime)
     if diagnostic_candidate_key is None:
@@ -1900,6 +1920,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 observation_events[event['event_id']] = event
         observability['next_event_id'] += len(events)
 
+    rng = random.Random(config['random_seed'])
+    if 'rng' in state:
+        rng.setstate(_tuple(state['rng']))
     if 'behavior_identity_version' not in state:
         state['behavior_identity_version'] = BEHAVIOR_IDENTITY_VERSION
     state.setdefault('run_nonce', uuid.uuid4().hex)
@@ -1921,13 +1944,21 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         starts = initial_programs(capabilities, reference, config['random_seed'],
             input_interval_ms=config['input_interval_ms'],
             target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'),
-            initialization=state.setdefault('rule_initialization', {}))
+            initialization=state.setdefault('rule_initialization', {}) if config['rule_initialization_enabled'] else None,
+            rule_initialization_enabled=config['rule_initialization_enabled'])
     observable_flags = tuple(name for name in ('target', 'combat', 'shift', 'ctrl', 'alt')
                              if any(kind == name for _, kind in config['reset_events']))
     state.setdefault('starts', starts)
     from rule_diagnostics import observation_request, VERSION as RULE_DIAGNOSTICS_VERSION
-    rule_observation_request = observation_request(state['rule_initialization']) if state.get('rule_initialization') else None
-    eager_diagnostics = config.get('rule_diagnostics_policy', 'eager') == 'eager'
+    rule_context = state.get('rule_context') or state.get('rule_initialization')
+    if state.get('rule_context'):
+        # 运行时引用已冻结规则，不在共享上下文中重复持久化整份规则包。
+        rule_context = dict(rule_context, rule_snapshot=state['rule_snapshot'])
+    if (selector_enabled or diagnostic_candidate_key) and state.get('rule_context'):
+        rule_context['rule_observation_request'] = observation_request(rule_context, protocol=2)
+        state['rule_context']['rule_observation_request'] = rule_context['rule_observation_request']
+    rule_observation_request = observation_request(rule_context) if (selector_enabled or diagnostic_candidate_key) and rule_context else None
+    eager_diagnostics = selector_enabled and config.get('rule_diagnostics_policy', 'eager') == 'eager'
     if rule_step is not None:
         from rule_diagnostics import enqueue
         enqueue(state, rule_step, config, max(runtime.elapsed_seconds, state.get('elapsed_seconds', 0)))
@@ -2028,8 +2059,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return _score_variance(report, character)
 
     def encode_selection_context(diagnostic, report):
+        if not selector_enabled:
+            return
         from selector import context_features, FEATURE_VERSION
-        initialization = state['rule_initialization']
+        initialization = rule_context
         resolved = next(item for item in initialization['rule_snapshot']['resolved']
                         if item['key'] == initialization['configuration_key'])
         diagnostic['selection_context'] = dict(version=FEATURE_VERSION,
@@ -2047,7 +2080,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 group_key=receipt.get('storage_group_key'))
             _validate_saved_batch(saved, receipt['data_key'], receipt, character, 0, 'nominal', simulation_config)
         from rule_diagnostics import diagnose
-        diagnostic = diagnose(program, capabilities, state['rule_initialization'],
+        diagnostic = diagnose(program, capabilities, rule_context,
             saved['report'], task_run_id=state['run_id'], batch_key=receipt['data_key'],
             behavior_identity=candidate_key(program), runtime=runtime,
             requested_iterations=receipt['request']['iterations'], batch_request=receipt['request'])
@@ -2199,7 +2232,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 row['rule_diagnostic_status'] = 'mismatch'
             elif purpose == 'diagnostic' or eager_diagnostics and purpose == 'search' and index == 0:
                 from rule_diagnostics import diagnose, feedback_observations
-                row['rule_diagnostics'] = diagnose(program, capabilities, state['rule_initialization'],
+                row['rule_diagnostics'] = diagnose(program, capabilities, rule_context,
                     result['report'], task_run_id=state['run_id'], batch_key=key,
                     behavior_identity=behavior_id, runtime=runtime, requested_iterations=iterations,
                     batch_request=request)
@@ -2431,6 +2464,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if len(item['batches']) <= index:
                     append_score(item['program'], item['batches'], index)
                     item['score'] = _score(item['batches'])
+                    if timeline is not None:
+                        timeline.revise(item)
                     store.save()
             left = current['batches'][:index + 1]
             right = opponent['batches'][:index + 1]
@@ -2479,7 +2514,111 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 state['stop_reason'] = 'candidate_limit'
                 store.save()
                 break
-            if not state['pending'] or state.get('selection_generation'):
+            if not selector_enabled and not state['pending']:
+                if all(chain.get('stalled') for chain in state['chains']):
+                    state['stop_reason'] = 'space_stalled'
+                    break
+                no_improvement_limit = (config['no_improvement_rounds'] if training
+                                        else len(state['chains']))
+                if state['no_improvement'] >= no_improvement_limit:
+                    state['stop_reason']='no_improvement'
+                    break
+                lane_index = state.get('next_chain_index', 0)
+                while state['chains'][lane_index].get('stalled'):
+                    lane_index = (lane_index + 1) % len(state['chains'])
+                lane=state['chains'][lane_index]
+                base = next(r for r in state['archive'] if r['key'] == lane['best'])
+                diagnostic=batch(base['program'],'search',99,2,trace=True)
+                feedback = dict(diagnostic['feedback'])
+                feedback['positions'] = _parent_positions(
+                    base['program'], capabilities, diagnostic.get('position_summary', []))
+                lane.update(feedback=feedback,feedback_source=base['key'])
+                generated = []
+                generation_observations = []
+                existing = set(state['seen'])
+                existing_sources = {program_key(record['program']) for record in state['archive']}
+                for attempt in range(160):
+                    if len(generated) >= (config['round_candidate_limit'] if training else min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys']))):
+                        break
+                    kwargs = {'reset_flags': observable_flags} if observable_flags else {}
+                    mutation_observation = {} if observability else None
+                    mutation_started = time.perf_counter() if observability else None
+                    mutation_kwargs = dict(feedback=lane['feedback'], excluded_programs=existing_sources, **kwargs)
+                    if mutation_observation is not None:
+                        mutation_kwargs['observation'] = mutation_observation
+                    program = mutate(base['program'], capabilities, rng, **mutation_kwargs)
+                    if rng.randrange(16)==0:
+                        program = [[a['simc_action']] for a in capabilities['actions']]
+                        rng.shuffle(program)
+                        if mutation_observation is not None:
+                            mutation_observation.update(
+                                actual_mutation='shuffle', modification_position={'segments': 'all'})
+                    if mutation_observation is not None and program == base['program']:
+                        mutation_observation.update(actual_mutation='no_change', modification_position=None)
+                    mutation_seconds = time.perf_counter() - mutation_started if observability else 0.0
+                    event_id = (observability['next_event_id'] + len(generation_observations)
+                                if observability else None)
+                    event = (make_observation_event(
+                        event_id, parent_identity=base['key'],
+                        sampled_mutation=mutation_observation['sampled_mutation'],
+                        actual_mutation=mutation_observation['actual_mutation'],
+                        modification_position=mutation_observation['modification_position'])
+                             if mutation_observation is not None else None)
+                    if event is not None:
+                        event['parent_score'] = base['score']
+                        event['stage_seconds']['mutation'] = mutation_seconds
+                    candidate_check_started = time.perf_counter() if observability else None
+                    try:
+                        key = candidate_key(program)
+                    except CandidateError as error:
+                        if event is not None:
+                            event.update(legal=False, illegal_reason=str(error))
+                            event['stage_seconds']['candidate_check'] = (
+                                time.perf_counter() - candidate_check_started)
+                            generation_observations.append(event)
+                        continue
+                    if event is not None:
+                        event.update(candidate_identity=key, legal=True)
+                        event['stage_seconds']['candidate_check'] = (
+                            time.perf_counter() - candidate_check_started)
+                    if key == base['key']:
+                        duplicate_reason = 'parent_unchanged'
+                    elif key in state['seen']:
+                        duplicate_reason = 'already_seen'
+                    elif key in existing:
+                        duplicate_reason = 'same_round'
+                    else:
+                        duplicate_reason = None
+                    if event is not None:
+                        event['duplicate_reason'] = duplicate_reason
+                        generation_observations.append(event)
+                    if duplicate_reason is not None:
+                        if config['diagnostic_logging']:
+                            state['canonicalized_duplicates'] += 1
+                        continue
+                    existing.add(key)
+                    existing_sources.add(program_key(program))
+                    work = dict(program=program, start=False, lane=lane_index)
+                    if event is not None:
+                        work.update(observation_id=event_id,
+                                    observation_actual_mutation=event['actual_mutation'],
+                                    observation_parent_score=base['score'],
+                                    observation_candidate_recorded=True)
+                    generated.append(work)
+                commit_mutation_observations(generation_observations)
+                if not generated:
+                    lane['stalled'] = True
+                    state.update(next_chain_index=(lane_index + 1) % len(state['chains']),
+                                 rng=rng.getstate())
+                    store.save()
+                    continue
+                state['pending'] = generated
+                state['next_chain_index'] = (lane_index + 1) % len(state['chains'])
+                state['round_improved'] = False
+                state['full_round'] = len(generated)==config['round_candidate_limit']
+                state['rng'] = rng.getstate()
+                store.save()
+            if selector_enabled and (not state['pending'] or state.get('selection_generation')):
                 from rule_diagnostics import apply
                 from selector import action_features, reserve, FEATURE_VERSION
                 generation = state.get('selection_generation')
@@ -2639,6 +2778,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 else:
                     opponent_key=state['best'] if work['start'] else state['chains'][work['lane']]['best']
                     opponent=next(r for r in state['archive'] if r['key']==opponent_key)
+                    if timeline is not None:
+                        if opponent_key == state['best'] and 'global' not in timeline.current:
+                            timeline.score(opponent, 'global', 'restored_known')
+                        lane = 'lane:' + str(work.get('lane', 0))
+                        if not work['start'] and lane not in timeline.current:
+                            timeline.score(opponent, lane, 'restored_known')
                     if not work.get('screened_out') and challenges(current, opponent):
                         if observability:
                             if work['start']:
@@ -2668,6 +2813,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                     mark_promotion(work, 'global', promoted=route_promoted)
                         if route_promoted:
                             global_best=next(r for r in state['archive'] if r['key']==state['best'])
+                            if timeline is not None and 'global' not in timeline.current:
+                                timeline.score(global_best, 'global', 'restored_known')
                             if opponent_key==state['best']:
                                 global_promoted = True
                             elif challenges(current, global_best):
@@ -2695,7 +2842,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     if not training and 'formal_champion_snapshot' in state:
                         current['global_predecessor_key'] = state['best']
                     state['best'] = key
+                if global_promoted or (route_promoted and not work['start']):
                     state['round_improved'] = True
+                if timeline is not None:
+                    if state['best'] == key:
+                        timeline.score(current, 'global', 'initial' if len(state['archive']) == 1 else 'promotion')
+                    if work['start'] or route_promoted:
+                        timeline.score(current, 'lane:' + str(len(state['chains']) if work['start'] else work['lane']), 'initial' if work['start'] else 'promotion')
                 if work['start']:
                     state['chains'].append(dict(best=key,visited=[key],rounds=0))
                 else:
@@ -2720,6 +2873,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
 
     search_interrupted = None
     if state['phase'] == 'search':
+        if timeline is not None:
+            timeline.start()
+            if timeline.resumed:
+                pointers = [('global', state.get('best'))]
+                pointers.extend(('lane:' + str(index), chain['best'])
+                                for index, chain in enumerate(state['chains']))
+                for series, key in pointers:
+                    saved = store.saved_archive.get(key)
+                    if saved is not None:
+                        timeline.score(saved[1], series, 'restored_known')
         try:
             scored = [(row, row['batches'][0]) for row in state['archive'] if row.get('batches')]
             scored += [(work, work['score_batches'][0]) for work in state['pending'] if work.get('score_batches')]
@@ -2741,6 +2904,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 reconcile_selection_feedback(store, runtime, finalizing=True)
             store.save()
         finally:
+            if timeline is not None:
+                timeline.stop(state.get('stop_reason', 'failed'))
             search_recording_active = False
             runtime.started -= observation_pause_seconds
             runtime.phase_limit = runtime.budget_seconds
@@ -2753,6 +2918,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         store.save()
         store.publish()
     best = next(r for r in state['archive'] if r['key'] == state['locked_candidate_key'])
+    if timeline is not None and 'global' not in timeline.current:
+        timeline.score(best, 'global', 'restored_known')
     final = dict(dataset='final', status='not_requested', scenarios={})
     interrupted = search_interrupted
 

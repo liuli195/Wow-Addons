@@ -422,7 +422,8 @@ class SimulationConfigTests(unittest.TestCase):
             port=0,
             task_options={"simulation_config": config,
                           "search_config": dict(diagnostic_logging=False, diagnostics="summary",
-                                                search_observability="full")},
+                                                search_observability="full", rule_initialization_enabled=False,
+                                                adaptive_selector_enabled=False, search_timeline=False)},
         )
 
     def test_invalid_service_config_stops_before_starting_server(self) -> None:

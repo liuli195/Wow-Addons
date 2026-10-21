@@ -201,6 +201,11 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         options['search_config'] = dict(
             options.get('search_config') or {}, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
+        for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+            if key in value:
+                if type(value[key]) is not bool:
+                    raise TaskError(key + ' 必须为布尔值')
+                options['search_config'][key] = value[key]
         if mode == "import":
             from gse_import import decode_import, inspect_import
             gse = value.get("gse")
@@ -308,7 +313,8 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 raise TaskError('此入口只恢复双场任务')
             from dual_task import resume
             handle = resume(destination, diagnostic_logging=(
-                self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False))
+                self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False),
+                search_timeline=(self.server.task_options.get('search_config') or {}).get('search_timeline'))
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, dict(task_id=task_id, status='starting'))
 

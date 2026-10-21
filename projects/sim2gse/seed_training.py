@@ -505,7 +505,7 @@ def training_condition_input(template_sha, engines, config, simulation_config, *
 def _identity_config(config):
     # 保留历史训练编号的固定日志字段；本次采集只读实际执行配置。
     legacy = dict(config, diagnostic_logging=True, diagnostics='summary', search_observability='off')
-    return {key: value for key, value in legacy.items() if key != 'max_processes'}
+    return {key: value for key, value in legacy.items() if key not in ('max_processes', 'search_timeline')}
 
 
 def semantic_condition(payload, versions):
@@ -532,11 +532,18 @@ def _validate_identity(batch, manifest, current_input, *, processed=(), selected
     try:
         payload, versions, condition = (manifest['condition_input'], manifest['semantic_versions'],
                                        manifest['condition'])
-        if (manifest['format'] != 1 or versions != semantic_versions() or
+        from search import PREVIOUS_SEARCH_ALGORITHM
+        expected_versions = semantic_versions()
+        previous_versions = dict(expected_versions, search=PREVIOUS_SEARCH_ALGORITHM)
+        # 仅核验原始完整成果时允许已支持的旧来源；新训练输入含冻结开关，不能借此续跑旧路径。
+        compatible = versions == expected_versions or (versions == previous_versions and
+            all(key not in current_input['config'] for key in
+                ('rule_initialization_enabled', 'adaptive_selector_enabled')))
+        if (manifest['format'] != 1 or not compatible or
                 payload['version'] != versions['training'] or
                 manifest['input_sha256'] != digest(payload) or
                 manifest['semantic_condition'] != semantic_condition(payload, versions) or
-                manifest['semantic_condition'] != semantic_condition(current_input, semantic_versions()) or
+                manifest['semantic_condition'] != semantic_condition(current_input, versions) or
                 (Path(batch) / 'condition.txt').read_text(encoding='ascii') != condition or
                 hashlib.sha256((Path(batch) / 'standard.simc').read_text(encoding='utf-8').encode()).hexdigest()
                 != payload['template']):
@@ -696,7 +703,7 @@ def selected_materials(candidate_ids, *, sources=None):
 
 
 def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None,
-                     burst_identity=None, verified_engines=None, rule_snapshot=None, diagnostic_logging=False):
+                     burst_identity=None, verified_engines=None, rule_snapshot=None, diagnostic_logging=False, search_config=None):
     from engine import identity
     from rule_config import load
     rule_snapshot = rule_snapshot if rule_snapshot is not None else load()
@@ -707,8 +714,9 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     text = Path(template).read_text(encoding='utf-8')
     character = template_character(text)
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
-    config = config_for({'diagnostic_logging': diagnostic_logging, 'diagnostics': 'summary',
-                         'no_improvement_rounds': 2, 'max_processes': max_processes}, training=True)
+    from simulation_config import load_search_config
+    config = config_for(load_search_config(**dict(search_config or {}, diagnostic_logging=diagnostic_logging,
+        diagnostics='summary', no_improvement_rounds=2, max_processes=max_processes)), training=True)
     from dual_task import SCENES
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True,
                          'scene': next((scene for scene, count in SCENES if count == targets), None)}
@@ -739,12 +747,12 @@ def source_relationships(sources, initial, final):
 
 
 def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burst=False,
-                    materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=False):
+                    materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=False, search_config=None):
     """run/prepare共用入口：完整快照原子保存成功后才返回可派发队列。"""
     from engine import reference, prepare_loop
     from program import canonicalize_search_program, from_search_program, compile_program
     inputs = inputs or _training_inputs(template, targets, cancel_event=cancel_event, use_burst=use_burst,
-                                       max_processes=max_processes, diagnostic_logging=diagnostic_logging)
+                                       max_processes=max_processes, diagnostic_logging=diagnostic_logging, search_config=search_config)
     text, character, scope, config, simulation_config, engines, template_sha, definition = (
         inputs[name] for name in ('text', 'character', 'scope', 'config', 'simulation_config',
                                  'engines', 'template_sha', 'definition'))
@@ -790,17 +798,9 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         actual_character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
         all_capabilities, capabilities, burst_context = prepare_loop(native, actual_character, setup, runtime,
                                                      definition=definition, interval_ms=config['input_interval_ms'])
-        from rule_config import bind
-        from rule_initialization import generate
-        binding = bind(capabilities, native.get('static_snapshot'), targets,
-            spec_id=native['identity']['spec_id'], rule_snapshot=inputs['rule_snapshot'],
-            scene=simulation_config.get('scene'))
-        rule_initialization = generate(capabilities, native, binding=binding,
-            input_interval_ms=config['input_interval_ms'], target_count=targets,
-            burst=burst_context, rule_snapshot=inputs['rule_snapshot'])
-        if burst_context:
-            from burst import refresh_context_instructions
-            refresh_context_instructions(burst_context, native['identity'], setup / 'aligned-burst-export', runtime)
+        from rule_initialization import context as initialization_context
+        rule_context, _ = initialization_context(capabilities, native, target_count=targets,
+            scene=simulation_config.get('scene'), rule_snapshot=inputs['rule_snapshot'])
         current_input = training_condition_input(template_sha, engines, config, simulation_config,
                                                  burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
         reference_key = digest(dict(condition=semantic_condition(current_input, semantic_versions()),
@@ -811,7 +811,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
             diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
         (setup / 'reference/native.json').unlink()
         context = dict(native=native, all_capabilities=all_capabilities, capabilities=capabilities,
-                       burst=burst_context, rule_initialization=rule_initialization, representations={})
+                       burst=burst_context, rule_context=rule_context, representations={})
     if context:
         from engine import ROOT
         from task import _rule_hashes
@@ -939,13 +939,13 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
 
 def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None,
                   max_processes=None, max_trainings=None, prepare_only=False, sources=None, burst_identity=None,
-                  diagnostic_logging=False):
+                  diagnostic_logging=False, search_config=None, _timeline_origin=None):
     from simulation_config import load_training_config
     parallelism = load_training_config(max_processes=max_processes, max_trainings=max_trainings)
     max_processes, max_trainings = parallelism['max_processes'], parallelism['max_trainings']
     inputs = _training_inputs(template, targets, cancel_event=cancel_event, use_burst=use_burst,
                               max_processes=max_processes, burst_identity=burst_identity,
-                              diagnostic_logging=diagnostic_logging)
+                              diagnostic_logging=diagnostic_logging, search_config=search_config)
     text, character, scope, config, simulation_config, engines, template_sha, definition = (
         inputs[name] for name in ('text', 'character', 'scope', 'config', 'simulation_config',
                                  'engines', 'template_sha', 'definition'))
@@ -1002,7 +1002,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     if not context:
         return dict(status='prepared' if prepare_only else 'unchanged', processed=0, targets=targets,
                     preparation=ready['preparation'], config_key=ready['config_key'])
-    configuration_key = context['rule_initialization']['configuration_key']
+    configuration_key = (context.get('rule_context') or context['rule_initialization'])['configuration_key']
     scope = shared_scope(configuration_key)
     processed = result_store.read_records('seed_processed', scope)
     all_selected = result_store.read_records('seed_selected', scope)
@@ -1121,6 +1121,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     shared_lock = threading.RLock()
     cancel_event = cancel_event or threading.Event()
 
+    timelines = {} if config['search_timeline'] else None
+
     def train_candidate(row):
         row['program'], row['core'] = decode(row['program']), decode(row['core'])
         folder = batch / row['candidate_id'][:12]
@@ -1130,6 +1132,16 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                       core_retained=False, rounds=0, stop_reason='', elapsed_seconds=0., scores=[],
                       initial_scores=[], comparison={}, task_path=str(folder), native_batch_starts=0,
                       batch_requests=0, cache_hits=0)
+        timeline = None
+        if timelines is not None:
+            from search_timeline import Timeline
+            timeline = Timeline(origin=_timeline_origin,
+                context=dict(simulation_config=simulation_config, training_candidate_id=row['candidate_id']),
+                resumed=row['candidate_id'][:12] in states)
+            timeline.configure(profile_sha=template_sha, engines=engines,
+                simulation_config=simulation_config, config=config, burst=burst_context)
+            timeline.destination = folder
+            timelines[row['candidate_id']] = timeline
         store = None
         fatal_error = None
         try:
@@ -1156,8 +1168,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 store.state.update(training_condition=condition, config=config, capabilities=capabilities,
                                    training_stop_policy=TRAINING_STOP_POLICY,
                                    rule_snapshot=inputs['rule_snapshot'],
-                                   rule_initialization=store.state.get('rule_initialization') or
-                                       copy.deepcopy(context['rule_initialization']),
+                                   rule_context=copy.deepcopy(context.get('rule_context') or context['rule_initialization']),
                                    training_candidate_id=row['candidate_id'],
                                    run_id=store.state.get('run_id', uuid.uuid4().hex),
                                    starts=store.state.get('starts', [row['program']]),
@@ -1197,6 +1208,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                     used = store.state.get('elapsed_seconds', 0)
                     runtime = TaskRuntime(math.inf, used_seconds=used, cancel_event=cancel_event,
                                           diagnostic_logging=config['diagnostic_logging'])
+                    if timeline is not None:
+                        runtime.search_timeline = timeline
                     with store.active(runtime):
                         result = optimize(profile=profile, character=character, capabilities=capabilities,
                                           reference=native, destination=folder, runtime=runtime, config=config,
@@ -1232,6 +1245,9 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                 store.state['training_result'] = dict(record=record, checksum=digest(record))
                 store.save()
         except (ValueError, BudgetExceeded, TaskCancelled) as error:
+            if timeline is not None and isinstance(error, TaskCancelled):
+                timeline.status = 'cancelled'
+                timeline.stop('cancelled')
             if isinstance(error, ValueError) and store is not None:
                 fatal_error = error  # 保存失败证据后走批次 fatal 通道，禁止发布。
             record['error'] = str(error)
@@ -1260,50 +1276,59 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
             for name in ('initial_program', 'program', 'comparison', 'configuration_key'):
                 item[name] = decode(item[name])
         result_store.write('seed_processed', scope, snapshot, schema=PROCESSED_SCHEMA)
+        if timelines is not None and candidate_id in timelines:
+            timeline = timelines[candidate_id]
+            timeline.stop(record['stop_reason'] or record['status'])
+            timeline.saved('cancelled' if timeline.status == 'cancelled' else record['status'])
 
     # ponytail: 有限池仅派发空槽；完整结果可靠保存后才补一条，不建调度框架。
     pending = iter(candidates)
     running = {}
     failure = None
-    with ThreadPoolExecutor(max_workers=max_trainings) as pool:
-        def dispatch():
-            if cancel_event.is_set():
-                return
-            row = next(pending, None)
-            if row is not None:
-                executions[row['candidate_id']] = _write_execution(batch, manifest, row['candidate_id'], config,
-                    states.get(row['candidate_id'][:12], {}), max_trainings=max_trainings)
-                running[pool.submit(train_candidate, row)] = row
-        try:
-            for _ in range(max_trainings):
-                dispatch()
-            while running:
-                done, _ = wait(running, return_when=FIRST_COMPLETED)
-                # 即便同一轮多个完成，也按冻结顺序处理；最终比较不依赖完成顺序。
-                for future in sorted(done, key=lambda item: candidates.index(running[item])):
-                    row = running.pop(future)
+    try:
+        with ThreadPoolExecutor(max_workers=max_trainings) as pool:
+            def dispatch():
+                if cancel_event.is_set():
+                    return
+                row = next(pending, None)
+                if row is not None:
+                    executions[row['candidate_id']] = _write_execution(batch, manifest, row['candidate_id'], config,
+                        states.get(row['candidate_id'][:12], {}), max_trainings=max_trainings)
+                    running[pool.submit(train_candidate, row)] = row
+            try:
+                for _ in range(max_trainings):
+                    dispatch()
+                while running:
+                    done, _ = wait(running, return_when=FIRST_COMPLETED)
+                    # 即便同一轮多个完成，也按冻结顺序处理；最终比较不依赖完成顺序。
+                    for future in sorted(done, key=lambda item: candidates.index(running[item])):
+                        row = running.pop(future)
+                        try:
+                            record, after, fatal_error = future.result()
+                            save_outcome(row, record, after)
+                            if fatal_error is not None:
+                                raise fatal_error
+                        except BaseException as error:
+                            failure = failure or error
+                            cancel_event.set()
+                        if failure is None:
+                            dispatch()
+            except BaseException as error:
+                failure = failure or error
+                cancel_event.set()
+                # 池退出等待全部所属worker/进程；已完成成果仍交回并可靠保存。
+                for future, row in list(running.items()):
                     try:
                         record, after, fatal_error = future.result()
                         save_outcome(row, record, after)
                         if fatal_error is not None:
                             raise fatal_error
-                    except BaseException as error:
-                        failure = failure or error
-                        cancel_event.set()
-                    if failure is None:
-                        dispatch()
-        except BaseException as error:
-            failure = failure or error
-            cancel_event.set()
-            # 池退出等待全部所属worker/进程；已完成成果仍交回并可靠保存。
-            for future, row in list(running.items()):
-                try:
-                    record, after, fatal_error = future.result()
-                    save_outcome(row, record, after)
-                    if fatal_error is not None:
-                        raise fatal_error
-                except BaseException as later:
-                    failure = failure or later
+                    except BaseException as later:
+                        failure = failure or later
+    finally:
+        if timelines is not None:
+            for timeline in timelines.values():
+                timeline.finish(timeline.destination)
     if failure is not None:
         raise failure
     processed.extend(records[row['candidate_id']] for row in candidates if row['candidate_id'] in records)
@@ -1327,13 +1352,19 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
 
 
 def run_training(template, targets, workspace, *, use_burst=False, max_processes=None, max_trainings=None,
-                 diagnostic_logging=False):
+                 diagnostic_logging=False, search_config=None):
     from seed_activity import training_activity
+    from simulation_config import load_search_config
+    search_config = load_search_config(**(search_config or {}))
+    timeline_origin = None
+    if search_config['search_timeline']:
+        from time import monotonic
+        timeline_origin = monotonic()
     with writer_lock(), training_activity() as cancel_event:
         sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
                              max_processes=max_processes, max_trainings=max_trainings, sources=sources,
-                             diagnostic_logging=diagnostic_logging)
+                             diagnostic_logging=diagnostic_logging, search_config=search_config, _timeline_origin=timeline_origin)
 
 
 def check_training(template=None, *, use_burst=True):
@@ -1435,7 +1466,7 @@ def training_champion(class_name, spec, simulation_config, *, engines, input_int
                         state.get('training_condition') != row['condition']):
                     raise ValueError('最终训练记录缺少相符的原检查点')
                 from rule_config import bind
-                initialization = state.get('rule_initialization') or {}
+                initialization = state.get('rule_context') or state.get('rule_initialization') or {}
                 source_key = bind(state['capabilities'], initialization.get('static_snapshot'),
                     source_simulation['target_count'], spec_id=configuration_key['specialization_id'],
                     rule_snapshot=manifest['rule_snapshot'], scene=source_simulation.get('scene'))['configuration_key']
@@ -1534,6 +1565,8 @@ def main(argv=None):
     training = commands.add_parser('run', help='独立训练至连续两轮无改善、复测与更新')
     preparing = commands.add_parser('prepare', help='统一增量整理并冻结唯一输入，不启动优化或复测')
     for command_parser in (training, preparing):
+        from simulation_config import add_search_arguments
+        add_search_arguments(command_parser)
         command_parser.add_argument('--diagnostic-logging', action='store_true',
                                     help='本次开启全部性能诊断日志；继续旧训练也须显式传入')
         command_parser.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
@@ -1561,6 +1594,13 @@ def main(argv=None):
         elif args.command == 'check':
             output = check_training(args.template, use_burst=args.use_burst)
         elif args.command in ('run', 'prepare'):
+            from simulation_config import load_search_config
+            search_config = load_search_config(rule_initialization_enabled=args.rule_initialization_enabled,
+                adaptive_selector_enabled=args.adaptive_selector_enabled, search_timeline=args.search_timeline)
+            timeline_origin = None
+            if args.command == 'run' and search_config['search_timeline']:
+                from time import monotonic
+                timeline_origin = monotonic()
             from simulation_config import load_training_config
             parallelism = load_training_config(max_processes=args.max_processes, max_trainings=args.max_trainings)
             max_processes = parallelism['max_processes']
@@ -1582,6 +1622,7 @@ def main(argv=None):
                                             prepare_only=args.command == 'prepare', sources=sources,
                                             burst_identity=frozen['burst_identity'],
                                             diagnostic_logging=args.diagnostic_logging,
+                                            search_config=search_config, _timeline_origin=timeline_origin,
                                             **material_options)
                               for targets in dict.fromkeys(args.targets)]
         elif args.state == 'prepared':

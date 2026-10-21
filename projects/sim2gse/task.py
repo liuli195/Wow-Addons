@@ -423,6 +423,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
                            'canonicalized_duplicates', 'no_improvement_round_limit', 'rule_diagnostics',
                            'rule_diagnostics_version', 'rule_diagnostic_status', 'diagnostic_operations')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    if state and state.get('rule_context'):
+        search_metrics['rule_config_digest'] = state['rule_context']['rule_config_digest']
     if state and state.get('rule_steps'):
         search_metrics['rule_steps'] = state['rule_steps']
     replays = {row['key']: dict(batch_key=(row.get('diagnostic_batches') or row['batches'])[0]['data_key'],
@@ -915,7 +917,9 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
             times=times, stats=STATS_VERSION, trace=row['trace'], reset_events=[list(item) for item in config['reset_events']])
         if row.get('rule_observations') is not None:
             from rule_diagnostics import observation_request, VERSION as RULE_DIAGNOSTICS_VERSION
-            expected = dict(version=RULE_DIAGNOSTICS_VERSION, request=observation_request(state['rule_initialization']))
+            initialization = (dict(state['rule_context'], rule_snapshot=state['rule_snapshot'])
+                              if state.get('rule_context') else state['rule_initialization'])
+            expected = dict(version=RULE_DIAGNOSTICS_VERSION, request=observation_request(initialization))
             if decode(row['rule_observations']) != expected:
                 raise InvalidRecordError('正式冠军原报告规则观察请求不符')
             request['rule_observations'] = expected
@@ -988,7 +992,7 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
         candidate = by_key.get(run['candidate_data_key'])
         identity = (profile or {}).get('identity', {})
         config_without_logging = lambda value: {key: item for key, item in value.items()
-            if key not in ('search_observability', 'diagnostics', 'diagnostic_logging')}
+            if key not in ('search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
                           if key not in ('candidate_key', 'candidate_data_key')}
@@ -1262,6 +1266,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         store.close()
         raise TaskError('任务结果中心身份与检查点不符，请创建新任务')
     state['run_id'] = run_id
+    if getattr(runtime, 'search_timeline', None) is not None:
+        runtime.search_timeline.destination = destination
+        runtime.search_timeline.context['run_id'] = run_id
     if formal_source_run_ids is not None:
         state['formal_history_scope'] = formal_source_run_ids
     runtime.diagnostic_logging = config['diagnostic_logging']
@@ -1312,7 +1319,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             import cbor2
             from importlib.metadata import version
             condition_config = {key: value for key, value in config.items()
-                                if key not in ('search_observability', 'diagnostics', 'diagnostic_logging')}
+                                if key not in ('search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
             condition = digest(dict(fields=character.fields, class_name=character.class_name,
                                     engine=identities,
                                     options=[*COMMON, *engine_options(simulation_config)],
@@ -1381,17 +1388,16 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     state['burst'] = context
                     condition = digest(dict(base=base_condition, burst=context))
                     state['condition'] = condition
+                from rule_initialization import context as initialization_context
+                state['rule_context'], _ = initialization_context(capabilities, native,
+                    target_count=simulation_config['target_count'], scene=simulation_config.get('scene'),
+                    rule_snapshot=rule_snapshot)
                 starts = initial_programs(capabilities, native, config['random_seed'],
                     input_interval_ms=config['input_interval_ms'],
                     target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'),
-                    initialization=state.setdefault('rule_initialization', {}), rule_snapshot=rule_snapshot)
-                if use_burst:
-                    from burst import refresh_context_instructions
-                    refresh_context_instructions(state['burst'], native['identity'],
-                        destination / 'aligned-burst-export', runtime)
-                    condition = digest(dict(base=base_condition, burst=state['burst']))
-                    state['condition'] = condition
-                configuration_key = state['rule_initialization']['configuration_key']
+                    initialization=state.setdefault('rule_initialization', {}) if config['rule_initialization_enabled'] else None,
+                    rule_snapshot=rule_snapshot, rule_initialization_enabled=config['rule_initialization_enabled'])
+                configuration_key = state['rule_context']['configuration_key']
                 from seed_training import shared_scope, training_champion
                 from result_store import read_records
                 # 原生快照绑定英雄后才冻结共享成果；恢复不得沿用旧的宽范围快照。
@@ -1480,11 +1486,15 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                          original_bytes=original_bytes, effective_bytes=effective_bytes,
                          run_id=run_id),
             )
+            if getattr(runtime, 'search_timeline', None) is not None:
+                runtime.search_timeline.configure(profile_sha=input_effective_sha256, engines=identities,
+                    simulation_config=simulation_config, config=config, burst=state.get('burst'))
             result = optimize(profile=destination/'input.simc', character=character,
                               capabilities=state['capabilities'], reference=state['native'],
                               destination=destination, runtime=runtime, config=config,
                               condition_key=condition, store=store,
                               simulation_config=simulation_config, rule_step=rule_step)
+            result['search']['rule_config_digest'] = state['rule_context']['rule_config_digest']
             result.update(config=config, simulation_config=simulation_config,
                               character=character, output_root=destination,capabilities=state['capabilities'],
                               profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
@@ -1509,6 +1519,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             store.save()  # Intent freezes the completed archive while heartbeats remain nonterminal.
             pointer = _store_run(destination, result, state=state)
             _write_json(destination/'result.json', pointer, atomic=True)
+            if getattr(runtime, 'search_timeline', None) is not None:
+                runtime.search_timeline.saved(result['status'])
             state.update(status=result['status'], phase=result['phase'])
             if not state.get('formal_champion_publication_intent'):
                 store.save()
@@ -1541,6 +1553,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 result['search_observability'] = _export_search_observability(
                     observation, include_details=observation.get('mode') == 'full')
         _save_failure(destination, result, state=state)
+        if getattr(runtime, 'search_timeline', None) is not None:
+            runtime.search_timeline.saved(result['status'])
         return result
     except Exception as error:
         store.discard_unsaved_reports()
@@ -1692,30 +1706,50 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
              version=None, gse_context=None, use_burst=False, burst_identity=None, _rule_snapshot=None,
              rule_step=None) -> dict:
+    timeline = None
     if mode == 'optimize':
+        from simulation_config import load_search_config
+        if not resume:
+            search_config = load_search_config(**(search_config or {}))
         from search import config_for
-        _runtime = _runtime or TaskRuntime(config_for(search_config)['total_budget_seconds'],
-                                           cancel_event=cancel_event)
-        from rule_config import load
-        try:
-            _rule_snapshot = _rule_snapshot or load()
-        except ValueError as error:
-            raise TaskError(str(error)) from error
-    if mode != 'optimize' or _lease:
-        return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
-                         search_config=search_config, simulation_config=simulation_config,
-                         cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
-                         gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
-                         _rule_snapshot=_rule_snapshot, rule_step=rule_step)
-    from seed_activity import foreground_search
-    with foreground_search():
-        return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
-                         search_config=search_config, simulation_config=simulation_config,
-                         cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
-                         gse_text=gse_text, sequence_name=sequence_name, version=version,
-                         gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
-                         _rule_snapshot=_rule_snapshot, rule_step=rule_step)
+        config = config_for(search_config)
+        if config['search_timeline'] and not hasattr(_runtime, 'search_timeline'):
+            origin = getattr(_runtime, 'timeline_origin', None)
+            if origin is None:
+                origin = time.monotonic()
+            from search_timeline import Timeline
+            timeline = Timeline(origin=origin,
+                context=dict(simulation_config=simulation_config_for(simulation_config)), resumed=resume)
+        _runtime = _runtime or TaskRuntime(config['total_budget_seconds'], cancel_event=cancel_event)
+        if timeline is not None:
+            _runtime.search_timeline = timeline
+    try:
+        if mode == 'optimize':
+            from rule_config import load
+            try:
+                _rule_snapshot = _rule_snapshot or load()
+            except ValueError as error:
+                raise TaskError(str(error)) from error
+        if mode != 'optimize' or _lease:
+            return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
+                             search_config=search_config, simulation_config=simulation_config,
+                             cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
+                             gse_text=gse_text, sequence_name=sequence_name, version=version,
+                             gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             _rule_snapshot=_rule_snapshot, rule_step=rule_step)
+        from seed_activity import foreground_search
+        with foreground_search():
+            return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
+                             search_config=search_config, simulation_config=simulation_config,
+                             cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
+                             gse_text=gse_text, sequence_name=sequence_name, version=version,
+                             gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             _rule_snapshot=_rule_snapshot, rule_step=rule_step)
+    finally:
+        if timeline is not None:
+            timeline.finish(getattr(timeline, 'destination', output_root),
+                            status='failed' if sys.exc_info()[0] else None)
+            del _runtime.search_timeline
 
 
 class TaskHandle:
@@ -1742,8 +1776,17 @@ _ACTIVE_LOCK = threading.RLock()
 def start_task(input_path, output_root, **kwargs):
     """异步启动同一公开任务入口，返回可取消的任务句柄。"""
     config = kwargs.get("search_config")
+    timeline_origin = None
+    if kwargs.get('mode', 'optimize') == 'optimize':
+        from simulation_config import load_search_config
+        config = load_search_config(**(config or {}))
+        kwargs['search_config'] = config
+        if config['search_timeline']:
+            timeline_origin = time.monotonic()
     from search import config_for
     runtime = TaskRuntime(config_for(config)["total_budget_seconds"] if kwargs.get("mode", "optimize") == "optimize" else 600)
+    if timeline_origin is not None:
+        runtime.timeline_origin = timeline_origin
     if kwargs.get('mode', 'optimize') == 'optimize':
         from rule_config import load
         kwargs['_rule_snapshot'] = load()
@@ -1794,6 +1837,7 @@ def _diagnose_saved_candidate(destination, store, candidate_key, budget_seconds,
         diagnostics='summary' if diagnostic_logging else 'off'), legacy=True)
     runtime = TaskRuntime(budget_seconds, cancel_event=cancel_event, diagnostic_logging=diagnostic_logging)
     store.diagnostic_logging_override = diagnostic_logging
+    store.diagnostic_only = True
     # 不使用 active：它的心跳属于原搜索额度。独立运行仍受现有任务锁及 Runtime 约束。
     store.runtime = runtime
     previous = state.get('diagnostic_operations', {}).get(candidate_key, {})
@@ -1859,6 +1903,8 @@ def _diagnose_saved_candidate(destination, store, candidate_key, budget_seconds,
 
 
 def _resume_task(output_root, **kwargs):
+    timeline = kwargs.pop('_timeline', None)
+    search_timeline = kwargs.pop('search_timeline', None)
     diagnostic_candidate_key = kwargs.pop('diagnostic_candidate_key', None)
     diagnostic_budget_seconds = kwargs.pop('diagnostic_budget_seconds', None)
     if diagnostic_candidate_key is not None:
@@ -1927,7 +1973,14 @@ def _resume_task(output_root, **kwargs):
                 raise TaskError('任务缺少恢复模拟配置')
             if simulation_config != simulation_config_for(state['simulation_config']):
                 raise TaskError('恢复模拟配置发生变化，请创建新任务')
+            if diagnostic_candidate_key is None and any(key not in state['config'] for key in
+                    ('rule_initialization_enabled', 'adaptive_selector_enabled')):
+                raise TaskError('旧任务未冻结搜索开关，不能静默更换算法；请创建新任务，原成果仍可读取')
             requested_config = kwargs.pop('search_config', None) or state['config']
+            if set(requested_config) <= {'search_timeline'}:
+                requested_config = dict(state['config'], **requested_config)
+            if search_timeline is not None:
+                requested_config = dict(requested_config, search_timeline=search_timeline)
             if ('rule_diagnostics_policy' not in requested_config
                     and 'rule_diagnostics_policy' in state['config']):
                 requested_config = dict(requested_config,
@@ -1938,7 +1991,7 @@ def _resume_task(output_root, **kwargs):
                     config['rule_diagnostics_policy'] = state['config']['rule_diagnostics_policy']
                 else:
                     config.pop('rule_diagnostics_policy', None)
-            logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability')
+            logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
             if ({key: value for key, value in config.items() if key not in logging_keys} !=
                     {key: value for key, value in config_for(state['config'], legacy=True).items()
                      if key not in logging_keys}):
@@ -1962,6 +2015,9 @@ def _resume_task(output_root, **kwargs):
             if diagnostic_candidate_key is not None:
                 return _diagnose_saved_candidate(destination, store, diagnostic_candidate_key,
                     diagnostic_budget_seconds, cancel_event=kwargs.get('cancel_event'), diagnostic_logging=logging)
+            if timeline is not None:
+                timeline.configure(profile_sha=state.get('input_effective_sha256'), engines=state.get('engines'),
+                    simulation_config=simulation_config, config=config, burst=state.get('burst'))
             used = float(state.get('elapsed_seconds',0))
             terminal_rule_step = False
             if kwargs.get('rule_step') is not None:
@@ -2085,14 +2141,42 @@ def _resume_task(output_root, **kwargs):
         runtime.used_seconds=used
         runtime.budget_seconds=config['total_budget_seconds']
         runtime.phase_limit=runtime.budget_seconds
+        if timeline is not None:
+            runtime.search_timeline = timeline
         return run_task(destination/'input.simc', destination, resume=True, _runtime=runtime, _lease=True,
                         search_config=config, simulation_config=simulation_config, **kwargs)
 
 
 def resume_task(output_root, **kwargs):
     from seed_activity import foreground_search
-    with foreground_search():
-        return _resume_task(output_root, **kwargs)
+    from simulation_config import load_search_config
+    overrides = kwargs.get('search_config') or {}
+    requested_timeline = kwargs.get('search_timeline')
+    if requested_timeline is None:
+        requested_timeline = overrides.get('search_timeline')
+    enabled = load_search_config(search_timeline=requested_timeline)['search_timeline']
+    kwargs['search_timeline'] = enabled
+    timeline = getattr(kwargs.get('_runtime'), 'search_timeline', None)
+    owns_timeline = enabled and timeline is None and not kwargs.get('diagnostic_candidate_key')
+    if owns_timeline:
+        origin = getattr(kwargs.get('_runtime'), 'timeline_origin', None)
+        if origin is None:
+            origin = time.monotonic()
+        from search_timeline import Timeline
+        timeline = Timeline(origin=origin,
+            context=dict(simulation_config=simulation_config_for(kwargs.get('simulation_config'))), resumed=True)
+    if timeline is not None:
+        kwargs['_timeline'] = timeline
+    try:
+        with foreground_search():
+            result = _resume_task(output_root, **kwargs)
+        if owns_timeline:
+            timeline.stop(result.get('search', {}).get('stop_reason') or result['status'])
+            timeline.saved(result['status'])
+        return result
+    finally:
+        if owns_timeline:
+            timeline.finish(output_root, status='failed' if sys.exc_info()[0] else None)
 
 
 def read_task(output_root, *, include_search_records=False, include_reports=False,
@@ -2385,6 +2469,25 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == 'curves':
+        parser = argparse.ArgumentParser(description='读取已有诊断文件或目录，离线绘制，不启动模拟')
+        parser.add_argument('command', choices=('curves',))
+        parser.add_argument('sources', nargs='+', help='诊断文件/目录；--damage也接受batch:批次键')
+        parser.add_argument('--damage', action='store_true', help='单独绘制已有原生伤害时间桶')
+        parser.add_argument('--project', type=Path, help='已有数据中心所属项目，仅用于读取报告')
+        parser.add_argument('--output', type=Path, required=True)
+        args = parser.parse_args(argv)
+        try:
+            from search_timeline import compare, compare_damage
+            if args.project is not None:
+                from result_store import bind_project
+                bind_project(args.project)
+            export = compare_damage if args.damage else compare
+            print(json.dumps(export(args.sources, args.output), ensure_ascii=False))
+            return 0
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            print(str(error), file=sys.stderr)
+            return 2
     if argv and argv[0] in ('rules-check', 'rules-save'):
         parser = argparse.ArgumentParser(description='校验或保存两库规则；不启动模拟')
         parser.add_argument('command', choices=('rules-check', 'rules-save'))
@@ -2409,18 +2512,24 @@ def main(argv=None):
     parser.add_argument('--diagnostic-logging', action='store_true',
                         help='本次开启全部性能诊断日志；新建和恢复默认均关闭')
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')
+    from simulation_config import add_search_arguments
+    add_search_arguments(parser)
     args = parser.parse_args(argv)
     try:
         simulation_config = load_config()
         if args.resume:
+            requested = {key: getattr(args, key) for key in
+                ('rule_initialization_enabled', 'adaptive_selector_enabled') if getattr(args, key) is not None}
+            options = dict(search_config=dict(read_task(args.output)['config'], **requested)) if requested else {}
             result = resume_task(args.output, simulation_config=simulation_config,
-                                 diagnostic_logging=args.diagnostic_logging)
+                                 diagnostic_logging=args.diagnostic_logging, search_timeline=args.search_timeline, **options)
         else:
             if args.input is None:
                 parser.error('新任务需要角色文件')
             result = run_task(args.input, args.output, simulation_config=simulation_config,
                               search_config=dict(diagnostic_logging=args.diagnostic_logging,
-                                                 diagnostics='summary'))
+                                  rule_initialization_enabled=args.rule_initialization_enabled,
+                                  adaptive_selector_enabled=args.adaptive_selector_enabled, search_timeline=args.search_timeline, diagnostics='summary'))
         print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:

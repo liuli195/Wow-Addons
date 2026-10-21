@@ -87,7 +87,7 @@ def test_public_search_keeps_intermediate_results_in_memory_until_user_pause(
     monkeypatch.setattr(search.TaskStore, '_save_progress', save_progress)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=evaluate):
         handle = start_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(total_budget_seconds=60, input_interval_ms=200,
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=60, input_interval_ms=200,
                 candidate_limit=6, round_candidate_limit=1, max_processes=1,
                 batch_targets=(2,), iterations=2, validation_batches=1))
         try:
@@ -165,7 +165,7 @@ def test_public_on_demand_parent_replays_separately_before_real_selection(tmp_pa
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
         result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
                                batch_targets=(2,), iterations=2, validation_batches=1))
         saved = read_task(tmp_path / 'task', include_search_records=True)
         before = calls.call_count
@@ -268,7 +268,7 @@ def test_public_on_demand_mismatch_preserves_scores_and_never_selects(tmp_path, 
             patch.object(sequence, 'evaluate', side_effect=scoring):
         with pytest.raises(TaskError, match='原评分成绩不一致'):
             run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=dict(input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
+                search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
                                    batch_targets=(2,), iterations=2, validation_batches=1))
         saved = read_task(tmp_path / 'task', include_search_records=True)
     assert len(observations) == 1
@@ -305,7 +305,7 @@ def test_public_on_demand_cancelled_capture_reuses_published_report_without_swee
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
         run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=5, round_candidate_limit=1,
                                batch_targets=(2,), iterations=2, validation_batches=1))
         stopped = read_task(tmp_path / 'task', include_search_records=True)
         assert stopped['status'] == 'cancelled'
@@ -347,7 +347,7 @@ def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished
 
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
         original = run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2,
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2,
                                diagnostic_logging=False))
         count = calls.call_count
         before = read_task(destination, include_search_records=True, include_reports=True)
@@ -393,7 +393,7 @@ def test_public_manual_diagnosis_requires_explicit_budget_and_preserves_finished
         assert after['search'][name] == before['search'][name]
     assert after['completed_batches'] == before['completed_batches']
     assert after['search']['rule_diagnostic_status'] == 'complete'
-    assert len(after['search']['rule_diagnostics']['selection_context']['values']) == 50
+    assert 'selection_context' not in after['search']['rule_diagnostics']
     diagnosed = next(row for row in after['search']['records'] if row['key'] == key)
     assert diagnosed['rule_diagnostic_status'] == 'complete'
     assert len(diagnosed['diagnostic_batches']) == 1
@@ -432,7 +432,7 @@ def test_public_old_missing_policy_preserves_eager_identity_and_refuses_policy_c
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=observed) as calls:
         with patch.object(search, 'config_for', side_effect=legacy_configuration):
             result = run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                search_config=dict(input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2))
+                search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=2, batch_targets=(2,), iterations=2))
         assert 'rule_diagnostics_policy' not in result['config']
         assert result['search']['rule_diagnostic_status'] == ('incomplete')
         count = calls.call_count
@@ -476,7 +476,7 @@ def test_public_on_demand_capture_publication_recovery_never_recaptures_or_relea
         with patch.object(result_store, 'write', side_effect=after_durable_capture):
             with pytest.raises(TaskError, match='capture published before checkpoint'):
                 run_task(source, tmp_path / 'task', simulation_config=dict(scene='single_target'),
-                    search_config=dict(input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
+                    search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
                                        batch_targets=(2,), iterations=2))
         resume_task(tmp_path / 'task')
         saved = read_task(tmp_path / 'task', include_search_records=True)
@@ -522,7 +522,7 @@ def test_public_manual_capture_preserves_burst_and_full_frozen_request_on_read(t
         return result
     with character_seed_boundary(native_reference=native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
         original = run_task(source, tmp_path / 'task', use_burst=True,
-            simulation_config=dict(scene='single_target'), search_config=dict(input_interval_ms=200,
+            simulation_config=dict(scene='single_target'), search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200,
                 candidate_limit=1, batch_targets=(2,), iterations=2))
         key = original['selected_candidate_key']
         resume_task(tmp_path / 'task', diagnostic_candidate_key=key, diagnostic_budget_seconds=10)
@@ -559,7 +559,7 @@ def test_public_manual_diagnosis_uses_invocation_logging_and_preserves_original_
         return result
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring):
         original = run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2,
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2,
                                diagnostic_logging=True, trace_search=True))
         original = read_task(destination)
         old_log = (destination / 'diagnostics.json').read_bytes()
@@ -607,7 +607,7 @@ def test_public_manual_diagnosis_accounts_publication_and_retry_time_separately(
                 else _fast_evaluate)(*args, **kwargs)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring) as calls:
         run_task(source, destination, simulation_config=dict(scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
+            search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2))
         original = read_task(destination)
         key = original['selected_candidate_key']
         real_write = result_store.write
@@ -654,7 +654,7 @@ def test_public_on_demand_restores_declared_state_order_for_full_pool_and_featur
     def scoring(*args, **kwargs):
         return (_observed_evaluate if kwargs.get('rule_observation_request') is not None
                 else _fast_evaluate)(*args, **kwargs)
-    config = dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2)
+    config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, input_interval_ms=200, candidate_limit=1, batch_targets=(2,), iterations=2)
     with _apl_task_boundary(native), patch.object(sequence, 'evaluate', side_effect=scoring):
         original = run_task(source, tmp_path / 'B', simulation_config=dict(scene='single_target'), search_config=config)
         resumed = resume_task(tmp_path / 'B', diagnostic_candidate_key=original['selected_candidate_key'],
@@ -668,14 +668,15 @@ def test_public_on_demand_restores_declared_state_order_for_full_pool_and_featur
     assert left['pool']['complete'] is right['pool']['complete'] is True
     assert [[item['state'] for item in operation['contributors']] for operation in left['pool']['operations']] == [
         [item['state'] for item in operation['contributors']] for operation in right['pool']['operations']]
-    assert left['selection_context'] == right['selection_context']
+    assert 'selection_context' not in left
+    assert len(right['selection_context']['values']) == 50
     program = original['search']['records'][0]['program']
     assert selector.action_features(left, program, left['pool']['operations']) == selector.action_features(
         right, program, right['pool']['operations'])
 
 
 def _eager_search_config(**values):
-    return dict(rule_diagnostics_policy='eager', **values)
+    return dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, rule_diagnostics_policy='eager', **values)
 
 
 def _assert_pending_selector_receipts(receipts):

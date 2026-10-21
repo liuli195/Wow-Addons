@@ -364,7 +364,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             with _apl_task_boundary(native):
-                result = run_task(source, Path(directory) / 'search', search_config=dict(
+                result = run_task(source, Path(directory) / 'search', search_config=dict(rule_initialization_enabled=True,
                     candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
                 single = run_task(source, Path(directory) / 'single', mode='single')
         self.assertEqual(result['status'], 'completed')
@@ -403,7 +403,7 @@ class SearchAndValidationTests(TestCase):
             source.write_text(sample_profile(), encoding='utf-8')
             with _guided_search_boundary(directory, [[['outbreak'], ['death_coil']]],
                                          evaluate=evaluate, pack=pack):
-                result = run_task(source, Path(directory) / 'search', search_config=dict(
+                result = run_task(source, Path(directory) / 'search', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
                     input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
                     batch_targets=(2,), iterations=2, validation_batches=2))
                 ground = run_task(source, Path(directory) / 'ground', mode='single',
@@ -446,7 +446,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            config = dict(total_budget_seconds=60, candidate_limit=2, batch_targets=(2,),
+            config = dict(rule_initialization_enabled=True, total_budget_seconds=60, candidate_limit=2, batch_targets=(2,),
                           iterations=2, validation_batches=2, max_processes=2)
             with _fast_search_boundary(), \
                     _initialized_starts([[["outbreak"]], [["death_coil"]]]), \
@@ -503,7 +503,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
                           input_interval_ms=200, batch_targets=(32,), iterations=2,
                           validation_batches=2, max_processes=2)
             with _guided_search_boundary(directory, [[[name] for name in initial]],
@@ -561,7 +561,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
-            config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=3,
+            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=60, candidate_limit=4, round_candidate_limit=3,
                           input_interval_ms=200, batch_targets=(32,), iterations=2,
                           validation_batches=2, max_processes=2)
             with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate), \
@@ -609,7 +609,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
-            config = dict(rule_diagnostics_policy='eager', total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, rule_diagnostics_policy='eager', total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
                           input_interval_ms=200, batch_targets=(32, 128, 512),
                           iterations=2, validation_batches=2)
             with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate):
@@ -672,7 +672,7 @@ class SearchAndValidationTests(TestCase):
             root = Path(directory)
             source = root / "role.simc"
             source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
+            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=60, search_budget_seconds=30,
                           input_interval_ms=200,
                           candidate_limit=4, round_candidate_limit=1,
                           no_improvement_rounds=5, batch_targets=(2,), iterations=2,
@@ -1523,16 +1523,16 @@ class SearchAndValidationTests(TestCase):
             # 构造评分仅写入本次隔离报告库。
             with _guided_search_boundary(directory, inputs, evaluate=equal_damage), \
                     patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'):
-                result = run_task(source, Path(directory) / 'task', search_config=dict(
+                result = run_task(source, Path(directory) / 'task', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
                     input_interval_ms=200, candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
                     iterations=2, validation_batches=2))
                 saved = read_task(Path(directory) / 'task')
             self.assertEqual(result['status'], 'completed')
             self.assertEqual(result['search']['stop_reason'], 'no_improvement')
-            self.assertEqual(result['search']['rounds'], 4)
+            self.assertEqual(result['search']['rounds'], 5)
             self.assertEqual(len(result['search']['chains']), count)
             self.assertEqual([chain['rounds'] for chain in result['search']['chains']],
-                             [2, 2])
+                             [3, 2])
             self.assertEqual(result['search_result']['dps'], 200.0)
             self.assertEqual(result['search']['no_improvement_round_limit'], count)
             self.assertEqual(saved['search']['no_improvement_round_limit'], count)
@@ -1565,7 +1565,7 @@ class SearchAndValidationTests(TestCase):
             source.write_text(sample_profile(), encoding='utf-8')
             with _guided_search_boundary(directory, starts, evaluate=cancel_after_first_path_is_skipped):
                 cancelled = run_task(source, Path(directory) / 'task', cancel_event=cancellation,
-                    search_config=dict(rule_diagnostics_policy='eager',
+                    search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, rule_diagnostics_policy='eager',
                     input_interval_ms=200, candidate_limit=32, round_candidate_limit=1, batch_targets=(2,),
                     iterations=2, validation_batches=2))
                 self.assertEqual(cancelled['status'], 'cancelled')
@@ -1595,7 +1595,7 @@ class SearchAndValidationTests(TestCase):
             starts = [[[name] for name in (*names[index:], *names[:index], 'death_coil')]
                       for index in range(2)]
             with _guided_search_boundary(directory, starts):
-                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=120,
+                result=run_task(source,Path(directory)/'task',search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=120,
                     input_interval_ms=200,search_budget_seconds=90,candidate_limit=5,round_candidate_limit=2,batch_targets=(2,),
                     validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
                 saved = read_task(Path(directory) / 'task', include_search_records=True)

@@ -12,6 +12,17 @@ def _number(value, label):
     return value
 
 
+def context(capabilities, reference, *, target_count=1, scene=None, rule_snapshot=None):
+    """共享范围与诊断绑定不依赖是否生成规则起点。"""
+    from rule_config import load, bind
+    rule_snapshot = rule_snapshot or load()
+    binding = bind(capabilities, reference.get('static_snapshot'), target_count,
+        spec_id=reference.get('identity', {}).get('spec_id'), rule_snapshot=rule_snapshot, scene=scene)
+    return dict(rule_config_digest=rule_snapshot['rule_config_digest'],
+        configuration_key=binding['configuration_key'], bindings=binding['bindings'],
+        static_snapshot=reference.get('static_snapshot')), binding
+
+
 def generate(capabilities, reference, *, binding, input_interval_ms=300, target_count=1,
              burst=None, rule_snapshot=None):
     from program import canonicalize_search_program
@@ -126,13 +137,6 @@ def generate(capabilities, reference, *, binding, input_interval_ms=300, target_
                                          input_interval_ms)) * input_interval_ms
         if first_burst_ms is None or not 0 < first_burst_ms < 180000:
             raise ValueError('首次爆发时点超出已有输入计划范围')
-        from search import digest
-        plan = dict(burst['plan'], start_ms=int(first_burst_ms))
-        aligned = dict(opener_id=opener['id'], rule_config_digest=rule_snapshot['rule_config_digest'],
-                       first_burst_ms=first_burst_ms, plan_digest=digest(plan))
-        if burst.get('initialization_alignment') not in (None, aligned):
-            raise ValueError('本任务已冻结的爆发输入计划不一致，请创建新任务')
-        burst.update(plan=plan, initialization_alignment=aligned)
     times = list(range(0, 180000, input_interval_ms))
     burst_locations = {}
     if burst:

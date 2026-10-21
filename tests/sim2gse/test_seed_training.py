@@ -300,7 +300,7 @@ def test_training_command_diagnoses_only_parents_and_reuses_on_demand_reports(
         assert command(tmp_path, ['register', str(source)]) == 0
     template = tmp_path / 'standard.simc'
     template.write_text(sample_profile(), encoding='utf-8')
-    args = ['run', '--template', str(template), '--targets', '1',
+    args = ['run', '--adaptive-selector-enabled', '--template', str(template), '--targets', '1',
             '--workspace', str(tmp_path / 'work')]
     requests = []
 
@@ -1304,7 +1304,7 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
                 gate.wait(15)
             return native(*args, **kwargs)
         with patch.object(sequence, 'evaluate', side_effect=observed):
-            assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+            assert command(tmp_path, ['run', '--adaptive-selector-enabled', '--template', str(template), '--targets', '1',
                                       '--workspace', str(tmp_path / 'work'), '--diagnostic-logging']) == 0
     assert len(gated) == 2
     assert command(tmp_path, ['list', '--state', 'processed']) == 0
@@ -1356,7 +1356,7 @@ def test_training_shares_real_store_transactions_and_keeps_each_request_trace(tm
                 raise AssertionError('共同目标的已验证成功缓存不得重新评分')
             return native(*args, **kwargs)
         with patch.object(sequence, 'evaluate', side_effect=reject_repeated_target):
-            assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+            assert command(tmp_path, ['run', '--adaptive-selector-enabled', '--template', str(template), '--targets', '1',
                                       '--workspace', str(tmp_path / 'work'), '--diagnostic-logging']) == 0
     records = result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')))
     recovered = next(row for row in records if json.loads(row['initial_program']) == third_start)
@@ -1507,7 +1507,7 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(tmp_p
         assert set(fallback_keys) == {'valid_candidate', 'affected_candidate'}
 
 
-def test_training_prepare_freezes_opener_aligned_burst_through_public_cli(tmp_path, monkeypatch, capsys):
+def test_training_prepare_keeps_formal_burst_through_public_cli(tmp_path, monkeypatch, capsys):
     import burst
     from test_burst import reviewed_fixture,character_seed_boundary
     definition,raw=reviewed_fixture()
@@ -1552,8 +1552,8 @@ def test_training_prepare_freezes_opener_aligned_burst_through_public_cli(tmp_pa
     rows=json.loads(capsys.readouterr().out)
     context=next(row['context'] for row in rows if row['kind']=='context')
     context=json.loads(context) if isinstance(context,str) else context
-    assert context['burst']['plan']==dict(published['plan'],start_ms=2000)
-    assert context['rule_initialization']['first_burst_ms']==2000
+    assert context['burst']['plan']==published['plan']
+    assert 'rule_initialization' not in context
     assert context['preparation_input']['simulation']['scene']=='single_target'
     assert context['rule_snapshot']['pack']==pack
     assert burst.load(252)==published
@@ -1567,10 +1567,10 @@ def test_training_prepare_freezes_opener_aligned_burst_through_public_cli(tmp_pa
         champion=training_champion('deathknight','unholy',context['preparation_input']['simulation'],
             engines=engines,input_interval_ms=200,use_burst=True,
             burst_identity=dict(spec_id=252,definition_id=published['definition_id']),rule_snapshot=context['rule_snapshot'],
-            configuration_key=context['rule_initialization']['configuration_key'])
+            configuration_key=context['rule_context']['configuration_key'])
     assert champion['status']=='selected',champion
     assert champion['candidate_id']==completed[0]['candidate_id']
-    assert champion['condition_input']['burst']['plan']['start_ms']==2000
+    assert champion['condition_input']['burst']['plan']==published['plan']
 
 
 @pytest.mark.parametrize('fail_publish', [False, True])
@@ -1820,7 +1820,7 @@ def test_dynamic_training_resumes_only_unfinished_path(tmp_path, capsys,
         ids.append(result_store.read_records('seed_candidates', 'registry')[-1]['candidate_id'])
     template = tmp_path / 'resume.simc'
     template.write_text(sample_profile(), encoding='utf-8')
-    args = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
+    args = ['run', '--adaptive-selector-enabled', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work'),
             '--max-trainings', '1', '--max-processes', '1']
     with training_round_boundary(tmp_path):
         native = sequence.evaluate
@@ -1913,3 +1913,70 @@ def test_normal_search_keeps_total_limits_when_training_is_dynamic(tmp_path, lim
             input_interval_ms=200, candidate_limit=1 if limit_kind == 'candidates' else 1000,
             round_candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
     assert result['search']['stop_reason'] == ('search_deadline' if limit_kind == 'time' else 'candidate_limit')
+
+
+@pytest.mark.parametrize('rule_start', [False, True])
+@pytest.mark.parametrize('selector_setting', ['default', 'config-off', 'cli-off'])
+def test_closeout_default_training_preserves_material_without_selector(
+        tmp_path, capsys, monkeypatch, rule_start, selector_setting):
+    import builtins
+    from test_character_export import sample_profile
+    import rule_initialization
+    original = builtins.__import__
+    def no_selector(name, *args, **kwargs):
+        if name == 'selector':
+            raise AssertionError('默认训练不能加载选择器')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', no_selector)
+    def no_generate(*args, **kwargs):
+        raise AssertionError('训练材料不能被规则起点替换')
+    monkeypatch.setattr(rule_initialization, 'generate', no_generate)
+    import rule_diagnostics
+    def no_diagnose(*args, **kwargs):
+        raise AssertionError('选择器关闭的训练不能进行模型规则诊断')
+    monkeypatch.setattr(rule_diagnostics, 'diagnose', no_diagnose)
+    selector_arguments = []
+    if selector_setting != 'default':
+        import simulation_config
+        settings = tmp_path / 'search-settings.toml'
+        settings.write_text('[search]\nadaptive_selector_enabled = ' +
+                            ('true' if selector_setting == 'cli-off' else 'false') + '\n')
+        monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', settings)
+        if selector_setting == 'cli-off':
+            selector_arguments = ['--no-adaptive-selector-enabled']
+    program = [['outbreak'], ['death_coil']]
+    material = tmp_path / 'material.json'
+    material.write_text(json.dumps(dict(label='original', source_id='original',
+        class_name='deathknight', spec='unholy', source='fixture', original='preserved',
+        instructions='repeat', semantic='preserved', changes=[], family='plain', core=[],
+        program=program)), encoding='utf-8')
+    assert command(tmp_path, ['register', str(material)]) == 0
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    with training_boundary():
+        assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+            '--workspace', str(tmp_path / 'work'),
+            '--rule-initialization-enabled' if rule_start else '--no-rule-initialization-enabled',
+            '--search-timeline' if rule_start else '--no-search-timeline'] + selector_arguments) == 0
+    assert command(tmp_path, ['list', '--state', 'processed']) == 0
+    rows = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert len(rows) == 1 and rows[0]['status'] == 'completed'
+    assert json.loads(rows[0]['initial_program']) == program
+    files = list((tmp_path / 'work').rglob('search-timeline-*.json'))
+    assert len(files) == (1 if rule_start else 0)
+    if rule_start:
+        curve = json.loads(files[0].read_text(encoding='utf-8'))
+        assert curve['status'] == 'completed'
+        assert curve['context']['training_candidate_id'] == rows[0]['candidate_id']
+        assert curve['events'][0]['kind'] == 'preparation'
+        assert curve['search_start_seconds'] > 0
+        assert curve['result_saved_seconds'] >= curve['search_stop_seconds']
+        import sequence
+        from unittest.mock import patch
+        def forbidden(*args, **kwargs):
+            raise AssertionError('仅切换曲线不能使已完成材料重训')
+        with training_boundary(), patch.object(sequence, 'evaluate', side_effect=forbidden):
+            assert command(tmp_path, ['run', '--template', str(template), '--targets', '1',
+                '--workspace', str(tmp_path / 'work'), '--rule-initialization-enabled',
+                '--no-search-timeline'] + selector_arguments) == 0
+        assert len(list((tmp_path / 'work').rglob('search-timeline-*.json'))) == 1
