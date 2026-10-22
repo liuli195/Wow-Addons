@@ -1578,7 +1578,46 @@ def _tuple(value):
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
              config, condition_key, store, simulation_config=None, training=False, rule_step=None,
-             diagnostic_candidate_key=None):
+             diagnostic_candidate_key=None, training_candidate_supplier=None,
+             training_runner=None, training_stage_plan=None):
+    if training_runner is not None or training_stage_plan is not None:
+        if (not training or training_runner is None or training_stage_plan is None
+                or training_candidate_supplier is not None or config['adaptive_selector_enabled']):
+            raise ValueError('独立评价接缝仅可用于隔离训练实验，不能与旧搜索供应器混用')
+        expected = dict(search=(32, 1), feedback=(2, 1), selection=(128, 2), endpoint=(128, 4))
+        if set(training_stage_plan) != set(expected):
+            raise ValueError('训练实验必须冻结全部评分阶段')
+        seeds = []
+        for stage, (iterations, count) in expected.items():
+            plan = training_stage_plan[stage]
+            if (plan.get('iterations') != iterations or len(plan.get('seeds', [])) != count
+                    or any(type(seed) is not int or seed <= 0 for seed in plan['seeds'])):
+                raise ValueError('训练实验冻结种子或样本数不符')
+            seeds.extend(plan['seeds'])
+        if len(set(seeds)) != len(seeds) or set(seeds) & {seed + 500000 for seed in seeds}:
+            raise ValueError('训练实验阶段种子冲突')
+        saved_plan = store.state.get('training_evaluation_plan')
+        if saved_plan is not None and saved_plan != training_stage_plan:
+            raise ValueError('训练实验恢复评分计划变化')
+        store.state['training_evaluation_plan'] = copy.deepcopy(training_stage_plan)
+    elif store.state.get('training_evaluation_plan') is not None:
+        raise ValueError('独立训练实验不能切换回旧搜索')
+    if training_candidate_supplier is not None and not training:
+        raise ValueError('候选供应器仅可用于隔离训练实验')
+    saved_supplier = store.state.get('training_candidate_supplier')
+    if training_candidate_supplier is None and saved_supplier is not None:
+        raise ValueError('实验检查点必须使用原训练供应器')
+    if training_candidate_supplier is not None:
+        from program import canonicalize_search_program
+        if config['adaptive_selector_enabled']:
+            raise ValueError('训练供应器不能与自适应选择器混用')
+        identity = copy.deepcopy(training_candidate_supplier.identity)
+        if saved_supplier is not None and saved_supplier['identity'] != identity:
+            raise ValueError('训练供应器恢复身份不符')
+        if saved_supplier is None:
+            if store.state.get('archive') or store.state.get('pending') or store.state.get('chains'):
+                raise ValueError('普通训练检查点不能转换为实验')
+            store.state['training_candidate_supplier'] = dict(identity=identity, state={})
     store.character = character
     store.simulation_config = simulation_config
     from engine import check_report, player_report, damage_statistics, CandidateError
@@ -2091,10 +2130,16 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False, *, prepared_candidate=None,
               source_batch=None):
         runtime.check()
-        seed_offset = {'search': 0, 'validation': 100000, 'final': 200000, 'diagnostic': 0}[purpose]
-        # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
-        nonce = int(state['run_nonce'][:8], 16) % 100000000 if purpose == 'final' else 0
-        seed = config['random_seed'] + seed_offset + index + DEFAULT_SCENARIOS.index(scenario) * 1000 + nonce
+        if training_runner is not None:
+            plan = training_stage_plan[purpose]
+            if iterations != plan['iterations'] or scenario != 'nominal':
+                raise ValueError('训练实验评分必须使用冻结阶段与样本数')
+            seed = plan['seeds'][index]  # 实验终点不沿用旧 final 的 run_nonce 偏移。
+        else:
+            seed_offset = {'search': 0, 'validation': 100000, 'final': 200000, 'diagnostic': 0}[purpose]
+            # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
+            nonce = int(state['run_nonce'][:8], 16) % 100000000 if purpose == 'final' else 0
+            seed = config['random_seed'] + seed_offset + index + DEFAULT_SCENARIOS.index(scenario) * 1000 + nonce
         input_seed = seed + 500000
         times = input_times(scenario, input_seed, config["input_interval_ms"])
         times, burst_options = planned_inputs(times)
@@ -2514,7 +2559,44 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 state['stop_reason'] = 'candidate_limit'
                 store.save()
                 break
-            if not selector_enabled and not state['pending']:
+            if training_candidate_supplier is not None and not state['pending']:
+                if state['no_improvement'] >= config['no_improvement_rounds']:
+                    state['stop_reason'] = 'no_improvement'
+                    break
+                supplier_rng = random.Random()
+                supplier_rng.setstate(rng.getstate())
+                supplier_state = copy.deepcopy(state['training_candidate_supplier']['state'])
+                def parent_feedback(parent):
+                    diagnostic = batch(parent['program'], 'search', 99, 2, trace=True)
+                    feedback = dict(diagnostic['feedback'])
+                    feedback['positions'] = _parent_positions(parent['program'], capabilities,
+                                                             diagnostic.get('position_summary', []))
+                    return feedback
+                proposals = training_candidate_supplier(archive=copy.deepcopy(state['archive']),
+                    seen=set(state['seen']), rng=supplier_rng, state=supplier_state,
+                    feedback_for=parent_feedback)
+                if not isinstance(proposals, list) or len(proposals) > config['round_candidate_limit']:
+                    raise ValueError('训练供应候选数量不符')
+                lane_index = next(i for i, chain in enumerate(state['chains']) if chain['best'] == state['best'])
+                generated, unique = [], set(state['seen'])
+                for proposal in proposals:
+                    program = copy.deepcopy(proposal['program'])
+                    canonicalize_search_program(program, capabilities)
+                    key = candidate_key(program)
+                    if key in unique:
+                        continue
+                    unique.add(key)
+                    generated.append(dict(program=program, start=False, lane=lane_index,
+                                          training_lineage=copy.deepcopy(proposal['lineage'])))
+                if not generated:
+                    state['stop_reason'] = 'supplier_exhausted'
+                    break
+                state['training_candidate_supplier']['state'] = supplier_state
+                rng.setstate(supplier_rng.getstate())
+                state.update(pending=generated, rng=rng.getstate(), round_improved=False,
+                             full_round=len(generated) == config['round_candidate_limit'])
+                store.save()
+            if training_candidate_supplier is None and not selector_enabled and not state['pending']:
                 if all(chain.get('stalled') for chain in state['chains']):
                     state['stop_reason'] = 'space_stalled'
                     break
@@ -2834,6 +2916,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                 global_promoted = bool(ci and ci[0] > 0)
                                 if observability:
                                     mark_promotion(work, 'global', promoted=global_promoted)
+                if 'training_lineage' in work:
+                    current['training_lineage'] = copy.deepcopy(work['training_lineage'])
                 state['archive'].append(current)
                 # 后续加测可能取消；只有候选完整入档后才发布赢家指针。
                 if route_promoted and not work['start']:
@@ -2870,6 +2954,35 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 diagnostic_candidate(store, 'screening_archived', key, runtime)
         runtime.check()  # 已完成评分先可靠归档，再传播诊断期间发生的取消/预算耗尽。
         state.setdefault('stop_reason', 'candidate_limit')
+
+    if training_runner is not None:
+        def evaluate_training(program, stage, index=0):
+            if stage not in ('search', 'selection', 'endpoint'):
+                raise ValueError('独立训练评价阶段不符')
+            with store.lock:
+                canonical = prepare(program)
+                compiled = candidate(program)
+            row = batch(program, stage, index, training_stage_plan[stage]['iterations'],
+                        prepared_candidate=compiled)
+            if row['samples'] < 2 or not math.isfinite(row['dps']) or row['dps'] <= 0:
+                raise CandidateError('独立训练评分不可靠')
+            with store.lock:
+                if stage == 'search' and not any(r['key'] == canonical['identity'] for r in state['archive']):
+                    state['archive'].append(record(copy.deepcopy(program), [row]))
+                    state['seen'].append(canonical['identity'])
+                store.checkpoint()  # 半代失败仍保留可核验的成功评分，换代由独立循环提交。
+            return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
+                        input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
+                        dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
+                        cached=bool(row.get('cached')))
+
+        def feedback_training(program):
+            diagnostic = batch(program, 'feedback', 0, training_stage_plan['feedback']['iterations'], trace=True)
+            feedback = dict(diagnostic['feedback'])
+            feedback['positions'] = _parent_positions(program, capabilities, diagnostic.get('position_summary', []))
+            return feedback
+
+        return training_runner(evaluate=evaluate_training, feedback=feedback_training)
 
     search_interrupted = None
     if state['phase'] == 'search':
