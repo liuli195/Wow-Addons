@@ -111,7 +111,6 @@ def test_public_default_prepare_and_run_verify_four_real_template_groups_and_sha
     from copy import deepcopy
     from unittest.mock import patch
     import threading
-    import time
     import burst
     import engine
     import sequence
@@ -128,6 +127,7 @@ def test_public_default_prepare_and_run_verify_four_real_template_groups_and_sha
     from test_search import _fast_identity
     real_identity = _fast_identity
     lock = threading.Lock()
+    overlapping_scores = threading.Event()
     active, peak, per_group, group_peak, coarse = 0, 0, {}, {}, []
     trajectories = {}
     failure_target = None
@@ -156,6 +156,8 @@ def test_public_default_prepare_and_run_verify_four_real_template_groups_and_sha
             per_group[group] = per_group.get(group, 0) + 1
             peak = max(peak, active)
             group_peak[group] = max(group_peak.get(group, 0), per_group[group])
+            if active > 5:
+                overlapping_scores.set()
             if (fail_one and failure_target is None and kwargs['iterations'] == 32
                     and "San'layn" in group[0] and group[1] == 'single_target'):
                 failure_target = str(folder)
@@ -167,7 +169,7 @@ def test_public_default_prepare_and_run_verify_four_real_template_groups_and_sha
         try:
             if str(folder) == failure_target:
                 raise engine.CandidateError('constructed one-group failure')
-            time.sleep(.01)
+            assert overlapping_scores.wait(10), '未观察到至少6路真实评分重叠'
             return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
         finally:
             with lock:
