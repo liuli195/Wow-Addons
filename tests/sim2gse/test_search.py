@@ -1222,7 +1222,7 @@ class SearchAndValidationTests(TestCase):
                 "        super().stage_report(key,row,stored,**kwargs)",
                 "        with self.lock:",
                 "            if row.get('status')=='success' and self.persisted_batches==0:",
-                "                self.flush_reports()",
+                "                self.checkpoint()",
                 "                self.publish()",
                 "search.TaskStore=CheckpointStore",
                 "from task import run_task",
