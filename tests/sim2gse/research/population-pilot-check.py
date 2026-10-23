@@ -399,35 +399,7 @@ m['run_three'](source,Path({tmp!r}),manifest)
         self.assertTrue(all(row['holm_p'] is None for row in report['statistics']['comparisons']))
         self.assertEqual(len(report['slots']),36)
 
-    def test_public_cli_manifest_without_native(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / '.local/population-mvp') as tmp:
-            result = subprocess.run([sys.executable, str(CLI), '--materials',
-                '.local/population-mvp/materials.json', '--output', tmp, '--check-only'],
-                cwd=ROOT, text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            data = json.loads(result.stdout)
-            self.assertEqual(data['native_starts'], 0)
-            self.assertEqual(len(data['manifest']['trials']), 8)
-            self.assertEqual(data['manifest']['total_seconds'], 4800)
-            self.assertTrue(all(data['checks'].values()), data['checks'])
 
-    def test_manifest_collision_change_balance_and_failure_slots(self):
-        m = module()
-        source = m['load_materials'](ROOT / '.local/population-mvp/materials.json')
-        manifest = m['manifest_for'](source)
-        for i in range(4):
-            self.assertNotEqual(manifest['trials'][i]['order'], manifest['trials'][i+4]['order'])
-            self.assertEqual(manifest['trials'][i]['material_ids'], manifest['trials'][i+4]['material_ids'])
-        for key, value in [('search_seed', 200000001), ('endpoint_seeds', [200000000]*4), ('order','BA')]:
-            changed = deepcopy(manifest)
-            changed['trials'][0][key] = value
-            with self.assertRaises(ValueError): m['validate_manifest'](changed, source)
-        slots = [dict(index=i,status='not_started') for i in range(8)]
-        slots[0] = dict(index=0,status='failed',result={'status':'failed'})
-        slots[1] = dict(index=1,status='finished',result={'status':'complete_pair','log_ratio':.01})
-        result = m['summarize'](slots)
-        self.assertEqual((result['attempted'],result['complete_pairs'],len(result['slots'])),(2,1,8))
-        self.assertIsNone(result['conditional_log_ratio_sd'])
 
     def test_common_pool_original_structures_and_private_rng_restore(self):
         m = module()
@@ -486,14 +458,13 @@ m['run_three'](source,Path({tmp!r}),manifest)
         self.assertEqual(len(right[0]['blocks'][-1]['members']),2) # Detached complete block.
         self.assertFalse(m['crossover_blocks']([['outbreak']],[['death_coil']],random.Random(1)))
 
-    def test_hard_runtime_deadlines_and_no_made_up_winner(self):
+    def test_hard_runtime_deadlines(self):
         m=module();v=m['ExperimentRuntime'].__init__.__globals__;clock=[0.]
         with patch.object(v['time'],'monotonic',side_effect=lambda:clock[0]):
             run=m['ExperimentRuntime'](180,100)
             clock[0]=99;run.check()
             clock[0]=100
             with self.assertRaises(m['runtime'].BudgetExceeded):run.check()
-        self.assertIsNone(m['usable_winner']({'best':'missing','archive':[]}))
 
     def test_arm_centers_and_adjacent_caches_are_actually_distinct(self):
         m=module();shared=[];roots=[]
@@ -508,220 +479,11 @@ m['run_three'](source,Path({tmp!r}),manifest)
                 finally:store.close()
         self.assertNotEqual(shared[0],shared[1]);self.assertNotEqual(roots[0],roots[1])
 
-    def test_training_supplier_original_scoring_and_atomic_abort(self):
-        m=module();sys.path.insert(0,str(ROOT/'tests/sim2gse'))
-        from test_search import _fast_capabilities,_fast_reference,_fast_evaluate,_fast_search_boundary,sample_profile
-        from task import parse_character
-        import sequence
-        caps=_fast_capabilities()
-        rows=[dict(id=x,program=[[x]]) for x in ('outbreak','death_coil','scourge_strike','dark_transformation')]
-        supplier=m['JointPopulation'](rows,caps,{'unit':'native-boundary'})
-        class Once:
-            identity=supplier.identity
-            calls=0
-            def __call__(self,**kw):
-                self.calls+=1
-                return supplier(**kw) if self.calls==1 else []
-        with tempfile.TemporaryDirectory(dir=ROOT/'.local/population-mvp') as tmp:
-            route=m['isolate_center'](Path(tmp));profile=route/'unit.simc';profile.write_text(sample_profile())
-            character=parse_character(profile.read_text());folder=route/'tasks/one';folder.mkdir(parents=True)
-            store=m['TaskStore'](folder);store.state.update(run_id='unit-only',starts=[r['program'] for r in rows])
-            config=m['config_for'](dict(batch_targets=(32,),round_candidate_limit=16,max_processes=2,
-                rule_initialization_enabled=False,adaptive_selector_enabled=False),training=True)
-            calls=[]
-            def boundary(*a,**kw):
-                calls.append((kw['seed'],kw['iterations']))
-                score=100.0
-                if len(a[1]['blocks'])>1:score=1000 if kw['seed']<config['random_seed']+100000 else 1
-                return _fast_evaluate(*a,**kw,score=score)
-            args=dict(profile=profile,character=character,capabilities=caps,destination=folder,config=config,
-                condition_key='unit',store=store,training=True,simulation_config={'target_count':1,'scene':'single_target'})
-            try:
-                with _fast_search_boundary(),patch.object(sequence,'evaluate',side_effect=boundary):
-                    args['reference']=_fast_reference(profile,route/'reference',character)
-                    result=m['optimize'](**args,runtime=m['runtime'].TaskRuntime(15),training_candidate_supplier=Once())
-                self.assertEqual(len(store.state['training_candidate_supplier']['state']['pool']),4)
-                self.assertTrue(any(it==100 for seed,it in calls))
-                self.assertTrue(any(r['batches'][0]['dps']==1000 for r in result['search']['records']))
-                best=m['usable_winner'](store.state)
-                self.assertIsNotNone(best)
-                self.assertLess(best['score'],1000)
-                store.state.update(phase='search',pending=[],no_improvement=config['no_improvement_rounds'])
-                exhausted=Mock(return_value=[]);exhausted.identity=supplier.identity
-                with _fast_search_boundary(),patch.object(sequence,'evaluate',side_effect=boundary):
-                    m['optimize'](**args,runtime=m['runtime'].TaskRuntime(15),training_candidate_supplier=exhausted)
-                exhausted.assert_not_called()
-                self.assertEqual(store.state['stop_reason'],'no_improvement')
-                saved=deepcopy(store.state['training_candidate_supplier']);saved_rng=deepcopy(store.state['rng'])
-                class Interrupted:
-                    identity=supplier.identity
-                    def __call__(self,**kw):
-                        kw['rng'].random();kw['state']['uncommitted']=True
-                        raise m['runtime'].BudgetExceeded('constructed interruption')
-                store.state.update(phase='search',pending=[],no_improvement=0)
-                with _fast_search_boundary(),patch.object(sequence,'evaluate',side_effect=boundary):
-                    m['optimize'](**args,runtime=m['runtime'].TaskRuntime(15),training_candidate_supplier=Interrupted())
-                self.assertEqual(store.state['training_candidate_supplier'],saved)
-                self.assertEqual(store.state['rng'],saved_rng)
-                with self.assertRaises(ValueError):m['optimize'](**args,runtime=None)
-                with self.assertRaises(ValueError):
-                    m['optimize'](**dict(args,training=False),runtime=None,training_candidate_supplier=Once())
-            finally:store.close()
-            # Default non-training path remains the original optimizer, with no supplier state.
-            folder=route/'tasks/default';folder.mkdir()
-            store=m['TaskStore'](folder)
-            store.state.update(run_id='unit-formal',starts=[rows[0]['program']])
-            config=m['config_for'](dict(candidate_limit=2,batch_targets=(32,),round_candidate_limit=2,
-                rule_initialization_enabled=False,adaptive_selector_enabled=False,diagnostic_logging=False))
-            try:
-                with _fast_search_boundary():
-                    m['optimize'](**dict(args,store=store,destination=folder,config=config,training=False),
-                                  runtime=m['runtime'].TaskRuntime(10))
-                self.assertNotIn('training_candidate_supplier',store.state)
-            finally:store.close()
 
-    def test_route_coverage_is_not_output_failure_and_setup_counts_in_deadline(self):
-        m=module();v=m['run_route'].__globals__;clock=[0.]
-        from contextlib import contextmanager
-        class Store:
-            def __init__(self,path):self.state={};clock[0]+=.1
-            @contextmanager
-            def active(self,run):yield;clock[0]+=.1
-            def close(self):clock[0]+=.1
-        row=dict(key='actual',score=100.,program=[['outbreak']],
-                 batches=[dict(dps=100.,samples=31,requested_iterations=32)])
-        def optimizer(**kw):
-            clock[0]=kw['runtime'].deadline
-            kw['store'].state.update(archive=[deepcopy(row)],best='actual',rounds=0)
-        def isolate(path):clock[0]+=2;return path
-        context=dict(config={},capabilities={},native={},character=None,burst={},simulation_config={})
-        rows=[dict(id=str(i),program=[['outbreak']]) for i in range(4)]
-        with tempfile.TemporaryDirectory(dir=ROOT/'.local/population-mvp') as tmp, \
-             patch.object(v['time'],'monotonic',side_effect=lambda:clock[0]), \
-             patch.dict(v,ExperimentStore=Store,optimize=optimizer,isolate_center=isolate,
-                        JointPopulation=lambda *a:None,write=lambda *a:None):
-            for name in 'AB':
-                clock[0]=0
-                result=m['run_route'](name,rows,None,context,Path(tmp),600,{})
-                self.assertFalse(result['coverage'])
-                self.assertEqual(result['winner']['key'],'actual')
-                self.assertTrue(result['budget_met'])
-                self.assertLessEqual(clock[0],180)
-            def overrun(path):clock[0]+=181;return path
-            clock[0]=0
-            with patch.dict(v,isolate_center=overrun):
-                result=m['run_route']('B',rows,None,context,Path(tmp),600,{})
-                self.assertFalse(result['budget_met']);self.assertIsNone(result['winner'])
 
-    def test_trial_freezes_winners_four_endpoints_even_without_coverage(self):
-        m=module();v=m['run_trial'].__globals__
-        import engine,seed_training
-        from task import parse_character
-        sys.path.insert(0,str(ROOT/'tests/sim2gse'))
-        from test_search import sample_profile
-        source=m['load_materials'](ROOT/'.local/population-mvp/materials.json')
-        manifest=m['manifest_for'](source);trial=manifest['trials'][0]
-        character=parse_character(sample_profile())
-        definition={'definition_id':source['material_snapshot']['condition']['burst_definition_id']}
-        inputs=dict(character=character,definition=definition,config={},simulation_config={})
-        rows=source['material_snapshot']['materials'];seen=[];arms=[];omit_a=[False];fail_seed=[None]
-        def route(name,*a):
-            arms.append(name)
-            if name=='A' and omit_a[0]:return dict(winner=None,coverage=False,budget_met=True,status='no_usable_output')
-            return dict(winner=dict(program=deepcopy(rows[0]['program']),key=name),coverage=False,budget_met=True)
-        def score(profile,program,folder,context,run,seed,iterations):
-            seen.append((str(folder),seed,iterations))
-            if seed==fail_seed[0]:raise m['runtime'].BudgetExceeded('constructed endpoint timeout')
-            return {'summary':{'dps':100 if '/B/' not in str(folder) else 101,'samples':iterations-1}}
-        def canonical(program,caps):return {'identity':next(r['behavior_id'] for r in rows if r['program']==program)}
-        with tempfile.TemporaryDirectory(dir=ROOT/'.local/population-mvp') as tmp, \
-             patch.object(engine,'reference',return_value={'identity':{'spec_id':252,'race':character.race}}), \
-             patch.object(engine,'prepare_loop',return_value=(None,{},{})), \
-             patch.object(seed_training,'_training_inputs',return_value=inputs), \
-             patch.dict(v,prepare_burst_source=lambda *a:None,run_route=route,native_score=score,
-                        canonicalize_search_program=canonical,CloudProcess=Mock(side_effect=AssertionError('native forbidden'))):
-            result=m['run_trial'](source,Path(tmp),trial,manifest,v['time'].monotonic()+600)
-            omit_a[0]=True;fail_seed[0]=trial['endpoint_seeds'][-1]
-            partial=m['run_trial'](source,Path(tmp)/'partial',trial,manifest,v['time'].monotonic()+600)
-        self.assertEqual(arms,['A','B','A','B'])
-        self.assertEqual(result['status'],'complete_pair',result)
-        self.assertFalse(result['arms']['A']['coverage'])
-        self.assertEqual(result['fixed_winners']['A']['key'],'A')
-        for name in ('A','B','initial'):
-            self.assertEqual([s['seed'] for s in result['endpoint'][name]['scores']],trial['endpoint_seeds'])
-            self.assertEqual(len(result['endpoint'][name]['scores']),4)
-        self.assertEqual(partial['status'],'incomplete_pair')
-        self.assertNotIn('A',partial['fixed_winners'])
-        self.assertNotIn('A',partial['endpoint'])
-        self.assertEqual(len(partial['endpoint']['B']['scores']),3)
-        self.assertEqual(partial['endpoint']['B']['status'],'incomplete')
 
-    def test_parent_preserves_all_slots_launch_failure_and_global_deadline(self):
-        m=module();v=m['run_pilot'].__globals__;clock=[0.];calls=[]
-        source=m['load_materials'](ROOT/'.local/population-mvp/materials.json')
-        manifest=m['manifest_for'](source)
-        def failed_launch(*a,**kw):
-            calls.append(a[0]);clock[0]+=601
-            raise OSError('constructed worker launch failure')
-        with tempfile.TemporaryDirectory(dir=ROOT/'.local/population-mvp') as tmp, \
-             patch.object(v['time'],'monotonic',side_effect=lambda:clock[0]), \
-             patch.dict(v,ENTRY=0),patch.object(v['subprocess'],'Popen',side_effect=failed_launch):
-            result=m['run_pilot'](source,Path(tmp),manifest)
-        self.assertEqual(len(calls),8)
-        self.assertEqual([t['index'] for t in result['slots']],list(range(8)))
-        self.assertEqual(result['complete_pairs'],0)
-        self.assertFalse(result['budget_met']) # Deliberately broken external launch fixture.
-        self.assertTrue(all(t['status']=='failed' for t in result['slots']))
-        clock[0]=4799;calls.clear()
-        with tempfile.TemporaryDirectory(dir=ROOT/'.local/population-mvp') as tmp, \
-             patch.object(v['time'],'monotonic',side_effect=lambda:clock[0]), \
-             patch.dict(v,ENTRY=0),patch.object(v['subprocess'],'Popen',side_effect=failed_launch):
-            result=m['run_pilot'](source,Path(tmp),manifest)
-        self.assertFalse(calls)
-        self.assertEqual(result['attempted'],0)
-        self.assertEqual(len(result['slots']),8)
 
-    def test_parent_timeout_owns_entire_worker_group(self):
-        m=module();v=m['run_pilot'].__globals__;clock=[0.]
-        source=m['load_materials'](ROOT/'.local/population-mvp/materials.json')
-        manifest=m['manifest_for'](source);process=Mock(pid=123)
-        def wait(timeout=None):
-            if timeout is not None:
-                clock[0]=4799
-                raise subprocess.TimeoutExpired('constructed worker',timeout)
-            return -9
-        process.wait.side_effect=wait;process.poll.return_value=-9
-        with tempfile.TemporaryDirectory(dir=ROOT/'.local/population-mvp') as tmp, \
-             patch.object(v['time'],'monotonic',side_effect=lambda:clock[0]),patch.dict(v,ENTRY=0), \
-             patch.object(v['subprocess'],'Popen',return_value=process) as launch, \
-             patch.object(v['os'],'killpg') as kill:
-            result=m['run_pilot'](source,Path(tmp),manifest)
-        self.assertTrue(launch.call_args.kwargs['start_new_session'])
-        kill.assert_any_call(123,v['signal'].SIGKILL)
-        self.assertEqual(result['attempted'],1)
-        self.assertEqual(result['slots'][0]['exit_code'],-9)
-        self.assertEqual(len(result['slots']),8)
 
-    def test_exited_worker_group_cleanup_and_pair_budget_include_launch(self):
-        m=module();v=m['run_pilot'].__globals__;clock=[0.];remaining=[];child_alive=[True]
-        source=m['load_materials'](ROOT/'.local/population-mvp/materials.json')
-        manifest=m['manifest_for'](source);process=Mock(pid=321)
-        process.poll.return_value=-9
-        def launch(*a,**kw):clock[0]+=10;return process
-        def wait(timeout=None):
-            if timeout is not None:remaining.append(timeout);clock[0]=4799
-            return -9
-        process.wait.side_effect=wait
-        def kill(*a):child_alive[0]=False
-        with tempfile.TemporaryDirectory(dir=ROOT/'.local/population-mvp') as tmp, \
-             patch.object(v['time'],'monotonic',side_effect=lambda:clock[0]),patch.dict(v,ENTRY=0), \
-             patch.object(v['subprocess'],'Popen',side_effect=launch),patch.object(v['os'],'killpg',side_effect=kill):
-            result=m['run_pilot'](source,Path(tmp),manifest)
-        with self.subTest('pair deadline includes launch'):
-            self.assertEqual(remaining,[589])
-        with self.subTest('exited worker leaves no owned children'):
-            self.assertFalse(child_alive[0])
-        self.assertEqual(result['slots'][0]['exit_code'],-9)
 
     def test_equal_suffix_is_not_crossover_and_mutation_keeps_parent_feedback(self):
         import random

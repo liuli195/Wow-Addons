@@ -437,7 +437,7 @@ class InterfaceTests(unittest.TestCase):
         with _apl_task_boundary(), self.assertRaises(HTTPError) as raised:
             self._json_request('POST', '/api/tasks/' + task_id + '/resume', {})
         failure = json.loads(raised.exception.read().decode('utf-8'))
-        self.assertIn('缺少规则配置快照', failure['error'])
+        self.assertIn('身份不兼容', failure['error'])
         self.assertEqual((destination / 'dual.json').read_text(encoding='utf-8'), pointer)
         self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
 
@@ -480,6 +480,19 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("粘贴", json.loads(raised.exception.read())['error'])
         self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
+
+
+    def test_http_rejects_removed_settings_before_start_or_resume(self) -> None:
+        for path in ('/api/tasks', '/api/tasks/' + 'a' * 32 + '/resume'):
+            for key in ('adaptive_selector_enabled', 'rule_initialization_enabled', 'rule_diagnostics_policy', 'rule_step', 'diagnostic_candidate_key'):
+                for value in (False, True):
+                    with self.subTest(path=path, key=key, value=value):
+                        with self.assertRaises(HTTPError) as raised:
+                            self._json_request('POST', path, {'profile': sample_profile(), key: value})
+                        self.assertEqual(raised.exception.code, 400)
+                        self.assertIn('已移除', json.loads(raised.exception.read())['error'])
+        self.assertEqual(self.server.tasks, {})
+        self.assertEqual(list(self.server.task_root.iterdir()), [])
 
 
     def test_task_api_rejects_unknown_combat_macro_condition_before_creating_task(self) -> None:
@@ -557,35 +570,57 @@ class InterfaceTests(unittest.TestCase):
         self.assertNotIn("dps", state)
 
     def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
+        self._check_published_report_group_recovery(use_burst=False)
+
+    def test_published_burst_report_group_is_reused_after_registration_interruption(self) -> None:
+        self._check_published_report_group_recovery(use_burst=True)
+
+    def _check_published_report_group_recovery(self, *, use_burst):
         import result_store
         import sequence
         from task import resume_task
 
-        self.server.task_options = {'search_config': dict(
+        self.server.task_options = {'use_burst': use_burst, 'search_config': dict(
             total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
             round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
             validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
             scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
         original_write = result_store.write
         interrupted = False
-        evaluated = []
+        evaluated, published, uncommitted_at_interrupt = [], [], set()
+        burst_calls = []
+        profile = sample_profile()
+        boundary = _fast_search_boundary
+        if use_burst:
+            import burst
+            from test_burst import page_task_boundary, reviewed_fixture
+            definition, profile = reviewed_fixture()
+            result_store.DATA_ROOT.mkdir(exist_ok=True)
+            burst.publish(definition)
+            boundary = page_task_boundary
 
         def publish_then_interrupt(table, key, rows, **kwargs):
             nonlocal interrupted
             result = original_write(table, key, rows, **kwargs)
             if table == 'batches' and len(rows) == 12 and not interrupted:
                 interrupted = True
+                published.extend(row['batch_key'] for row in rows)
+                uncommitted_at_interrupt.update(set(evaluated) - set(published))
                 raise OSError('published group before registration')
             return result
 
         def evaluate(*args, **kwargs):
             evaluated.append(Path(args[2]).name)
-            return _fast_evaluate(*args, **kwargs)
+            burst_calls.append(kwargs.get('burst_candidate') is not None)
+            return boundary_evaluate(*args, **kwargs)
 
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-            with patch.object(result_store, 'write', side_effect=publish_then_interrupt):
+        with boundary():
+            boundary_evaluate = sequence.evaluate
+            with patch.object(sequence, 'evaluate', side_effect=evaluate), patch.object(
+                    result_store, 'write', side_effect=publish_then_interrupt):
                 created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
+                    'profile': profile, 'target_count': 1, 'scene': 'single_target',
+                    'diagnostic_logging': True})
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     state = self._task_state_request(created['task_id'], deadline)
@@ -596,12 +631,20 @@ class InterfaceTests(unittest.TestCase):
                 self.assertIn('published group before registration', state['error'])
             _, handle = self.server.tasks[created['task_id']]
             handle.join(5)
-            resumed = resume_task(handle.output_root, diagnostic_logging=True)
+            with patch.object(sequence, 'evaluate', side_effect=evaluate):
+                resumed = resume_task(handle.output_root, diagnostic_logging=True)
         self.assertEqual(resumed['status'], 'completed')
         self.assertTrue(_public_state(resumed, handle.output_root)['result_ready'])
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
-        self.assertEqual(len(evaluated), len(set(evaluated)))
+        self.assertTrue(burst_calls)
+        self.assertTrue(all(enabled == use_burst for enabled in burst_calls))
+        self.assertEqual(len(published), 12)
+        self.assertEqual(len(set(published)), 12)
+        self.assertTrue(all(evaluated.count(key) == 1 for key in published))
+        # 故障时尚未提交的内存尾部可重算，可靠发布的12条绝不重算。
+        repeated = {key for key in evaluated if evaluated.count(key) > 1}
+        self.assertLessEqual(repeated, uncommitted_at_interrupt)
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
         self.assertEqual(len(keys), 14)
@@ -779,73 +822,15 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
 
-    def test_rule_start_and_sources_are_visible_through_page_and_task_api(self):
-        from test_search import _apl_task_boundary, _minimal_rule_pack
-        pack = _minimal_rule_pack()
-        configuration = pack['configurations'][0]
-        configuration['opener']['source_basis'] = 'fixture: explicit page opener source'
-        rules = Path(self.directory.name) / 'rules.json'
-        rules.write_text(json.dumps(pack), encoding='utf-8')
-        self.server.task_options = {'search_config': dict(
-            candidate_limit=1, batch_targets=(2,), iterations=2,
-            validation_batches=1, input_interval_ms=200, diagnostics='full')}
-        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), _apl_task_boundary():
-            page = urlopen(self.url).read().decode('utf-8')
-            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile(),
-                                       'input_interval_ms': 200, 'target_count': 1, 'scene': 'single_target',
-                                       'diagnostic_logging': True, 'search_observability': 'full'})
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created['task_id'], deadline)
-                if state['status'] in ('completed', 'failed', 'cancelled'):
-                    break
-                time.sleep(.01)
-        self.assertEqual(state['status'], 'completed', state)
-        self.server.tasks[created['task_id']][1].join(5)
-        import result_store
-        # Observe the installed external storage API, while retaining actual disk reads.
-        reads = []
-        read_key = result_store._SKILL_API['read_key']
-        def audited_read(root, table, key, **options):
-            if table == 'runs':
-                reads.append(options.get('columns'))
-            return read_key(root, table, key, **options)
-        with patch.dict(result_store._SKILL_API, {'read_key': audited_read}):
-            state = self._json_request('GET', '/api/tasks/' + created['task_id'])
-        self.assertTrue(reads)
-        self.assertTrue(all(columns is not None and 'rule_initialization' not in columns
-                            for columns in reads), '默认摘要不得向存储读取完整初始化列')
-        self.assertNotIn('rule_initialization', state, '500ms进度轮询不应携带完整初始化详情')
-        self.assertTrue(state['has_rule_initialization'])
-        detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
-        initialization = detail['rule_initialization']
-        self.assertEqual(state['rule_initialization_identity'],
-                         initialization['behavior_identity'] + ':' + initialization['compilation'])
-        self.assertTrue(initialization['export_text'].startswith('!GSE3!'))
-        self.assertEqual(initialization['compilation'], 'passed_with_client_boundary_stubs')
-        self.assertTrue(initialization['click_mapping'])
-        self.assertEqual(initialization['configuration_key'], configuration['key'])
-        self.assertEqual(initialization['source_opener']['source_basis'],
-                         configuration['opener']['source_basis'])
-        self.assertIn('ruleInitialization', page)
-        self.assertIn('state.rule_initialization', page)
-        self.assertIn('diagnosticLogging.disabled=true;diagnosticLogging.checked=false', page)
-        self.assertNotIn('search_observability', state)
-        from task import read_task
-        _, destination = self.server.task_paths(created['task_id'])
-        result = read_task(destination)
-        self.assertNotIn('diagnostics', result['search'])
-        self.assertFalse((destination / 'diagnostics.json').exists())
-        self.assertFalse((destination / 'observability').exists())
 
 
     def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
-        self._check_adaptive_round(invalid_variance=True)
+        self._check_native_round(invalid_variance=True)
 
-    def _check_adaptive_round(self, *, invalid_variance=False):
+    def _check_native_round(self, *, invalid_variance=False):
         from task import read_task
-        from test_rule_diagnostics import _observed_evaluate
-        from test_search import _guided_search_boundary
+        from test_search import _fast_evaluate
+        from test_search import _prepared_search_boundary
 
         calls = []
         initial = ("outbreak", "death_coil")
@@ -855,7 +840,7 @@ class InterfaceTests(unittest.TestCase):
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(action["simc_action"] for block in candidate["blocks"] for action in block)
             wanted = {initial: 90, better: 120, worse: 80}[actions]
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
             damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
             damage.update(mean=wanted, variance=1)
             result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
@@ -870,7 +855,8 @@ class InterfaceTests(unittest.TestCase):
             total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
             no_improvement_rounds=1, batch_targets=(32, 128, 512),
             input_interval_ms=200, iterations=2, validation_batches=2, max_processes=2)}
-        with _guided_search_boundary(self.directory.name, [[[name] for name in initial]], evaluate=evaluate):
+        with _prepared_search_boundary(self.directory.name,
+                [[[name] for name in actions] for actions in (initial, better, worse)], evaluate=evaluate):
             created = self._json_request("POST", "/api/tasks", {
                 "profile": sample_profile(), "target_count": 1, "scene": "single_target",
                 "input_interval_ms": 200})
@@ -890,16 +876,8 @@ class InterfaceTests(unittest.TestCase):
         _, handle = self.server.tasks[created["task_id"]]
         handle.join(5)
         result = read_task(handle.output_root, include_search_records=True)
-        steps = list(result['search']['rule_steps'].values())
-        self.assertEqual(len(steps), 2)
-        parent_keys = {step['parent_candidate_key'] for step in steps}
-        self.assertEqual(len(parent_keys), 1)
-        parent = next(row for row in result['search']['records'] if row['key'] in parent_keys)
-        pool = parent['rule_diagnostics']['pool']
-        self.assertTrue(pool['complete'])
-        self.assertEqual({step['operation']['operation'] for step in steps}, {'move', 'insert'})
-        self.assertEqual({step['selection']['operation_id'] for step in steps},
-                         {operation['operation_id'] for operation in pool['operations']})
+        self.assertTrue(all('rule_diagnostics' not in row for row in result['search']['records']))
+
 
 
 
@@ -910,9 +888,7 @@ class InterfaceTests(unittest.TestCase):
         import engine
         import search
         import sequence
-        from rule_config import DEFAULT_PATH
         from task import read_task
-        from test_rule_diagnostics import _condition_pack, _observed_evaluate
         from test_search import _fast_initialization
 
         real_evaluate = sequence.evaluate
@@ -938,17 +914,6 @@ class InterfaceTests(unittest.TestCase):
             (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
             return capabilities
 
-        pack = _condition_pack()
-        pack['general']['templates'] = {'idle-renamed':
-            json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['可避免空闲']}
-        pack['object_sets']['sample'].update(
-            occupancy=dict(kind='state', native_identity='controlled_input.occupancy'),
-            reservations=dict(kind='policy', value='effective_execution_constraints'))
-        pack['configurations'][0]['states']['only']['priority'] = [dict(name='idle input',
-            template='idle-renamed', arguments=dict(priority_refs=[], edit_range='editable',
-                allowed_actions=['consumer'], occupancy='occupancy', reservations='reservations', wait_delta=1))]
-        rules = Path(self.directory.name) / 'wait-rules.json'
-        rules.write_text(json.dumps(pack), encoding='utf-8')
         initial = [["outbreak"], dict(kind="WaitClicks", clicks=3), ["death_coil"]]
 
         wait_candidates = {300: {}}
@@ -976,18 +941,9 @@ class InterfaceTests(unittest.TestCase):
                     for native_interval, native_candidate, _ in native_evaluations
                 ) else 0
                 # 与原用例相同：实际原生核回放，搜索分差由构造评分边界控制。
-                result = _observed_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
+                result = _fast_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
             else:
-                result = _observed_evaluate(profile, candidate, folder, **kwargs)
-            payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
-            for collection in ('inputs', 'action_observations'):
-                for row in payload[collection]:
-                    row['source_step'] = row['input_index'] % len(blocks)
-            for row in payload['inputs']:
-                row['occupancy'] = dict(empty=row['input_index'] == 1, gcd=False,
-                    casting=False, channeling=False, queue_committed=False)
-            payload['state_observations'] = [dict(row, object='occupancy', value=row['occupancy'])
-                                             for row in payload['inputs']]
+                result = _fast_evaluate(profile, candidate, folder, **kwargs)
             return result
 
         self.server.task_options = {
@@ -1007,12 +963,11 @@ class InterfaceTests(unittest.TestCase):
             }
         }
         real_gse_runner = codec.run_command
-        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), \
-             _fast_initialization(real_engine=True), \
+        with _fast_initialization(real_engine=True), \
              patch.object(codec, "run_command", side_effect=real_gse_runner), \
              patch.object(engine, "inspect", side_effect=inspect), \
              patch.object(sequence, "check_report", new=engine.check_report), \
-             _initialized_starts([initial]), \
+             _initialized_starts([initial, [["outbreak"], dict(kind="WaitClicks", clicks=2), ["death_coil"]]]), \
              patch.object(sequence, "evaluate", side_effect=evaluate):
             interval = 300
             active_interval = interval
@@ -1034,19 +989,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(state["status"], "completed", state)
         self.assertEqual(state["evidence_status"], "search_result")
         self.assertEqual(state["input_interval_ms"], interval)
-        reduced = [step for step in saved['search']['rule_steps'].values()
-                   if step['operation']['operation'] == 'reduce_wait']
-        self.assertEqual(len(reduced), 1)
-        parent = next(row for row in saved['search']['records']
-                      if row['key'] == reduced[0]['parent_candidate_key'])
-        pool = parent['rule_diagnostics']['pool']
-        self.assertTrue(pool['complete'])
-        self.assertIn('insert', {row['operation'] for row in pool['operations']})
-        self.assertEqual(reduced[0]['operation']['source_path'], [1])
-        self.assertEqual(reduced[0]['operation']['count'], 1)
-        self.assertEqual(reduced[0]['selection']['operation_id'], reduced[0]['request']['operation_id'])
-        self.assertEqual(reduced[0]['candidate_key'], saved['selected_candidate_key'])
-        self.assertEqual(reduced[0]['candidate_key'], saved['locked_candidate_key'])
         self.assertEqual(saved['candidate']['text'], state['candidate_text'])
         self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
         self.assertGreaterEqual(len(wait_candidates[interval]), 2,
@@ -1202,36 +1144,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     console.log(JSON.stringify({candidate:text,state}));
    }finally{await context.close();}
   }
-  {
-   const context=await browser.newContext();
-   try{
-    const page=await context.newPage();
-    let detailReads=0;
-    const summary={status:'running',phase:'aoe',result_ready:true,result_note:'已有单场结果',
-     exports:{},collection_ready:false,scenes:[
-      {purpose:'single_target',status:'completed',total_budget_seconds:600,
-       has_rule_initialization:true,rule_initialization_identity:'rule-a:compiled'},
-      {purpose:'aoe',status:'running',total_budget_seconds:600}]};
-    const unavailableState={status:'running',phase:'storage_unavailable',
-     storage_unavailable:true,recoverable:true,error:'存储暂时不可读取'};
-    await page.route('**/api/tasks/saved-rule-task*',async route=>{
-     const details=new URL(route.request().url()).searchParams.has('details');
-     let body=summary;
-     if(details){
-      detailReads++;
-      body=detailReads===1?unavailableState:{...summary,scenes:[
-       {...summary.scenes[0],rule_initialization:{behavior_identity:'rule-a',
-        compilation:'compiled',evidence:'restored_rule_details'}},summary.scenes[1]]};
-     }
-     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
-    });
-    await page.addInitScript(()=>localStorage.setItem('sim2gse-task','saved-rule-task'));
-    await page.goto(input.url);
-    await page.locator('#ruleInitialization summary').click();
-    await page.waitForFunction(()=>document.getElementById('ruleInitializationText').textContent.includes('restored_rule_details'),null,{timeout:5000});
-    assert.equal(detailReads,2,'详情恢复后应重新取详情');
-   }finally{await context.close();}
-  }
+
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
@@ -1348,30 +1261,27 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
 
 
-    def test_dual_freezes_one_rule_pack_even_when_file_changes_between_scenes(self):
+    def test_dual_freezes_timeline_setting_and_preserves_storage_failure_recovery(self):
         import os
         import result_store
         result_store.DATA_ROOT.mkdir(exist_ok=True)
         import sequence
         import burst
         from test_burst import page_task_boundary, reviewed_fixture
-        from test_search import _fast_initialization, _minimal_rule_pack
+        from test_search import _fast_initialization
         definition, profile = reviewed_fixture()
         burst.publish(definition)
-        pack = _minimal_rule_pack()
-        original_source = pack['configurations'][0]['opener']['source_basis']
-        path = Path(self.directory.name) / 'rules.json'
-        path.write_text(json.dumps(pack), encoding='utf-8')
+        import simulation_config
+        path = Path(self.directory.name) / 'settings.toml'
+        path.write_text('[search]\nsearch_timeline=true\n', encoding='utf-8')
         self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1, input_interval_ms=200, search_timeline=True, rule_initialization_enabled=True)}
+            iterations=2, validation_batches=1, input_interval_ms=200)}
         edited = []
-        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(path)}), _fast_initialization(), page_task_boundary():
+        with patch.object(simulation_config, 'DEFAULT_PATH', path), _fast_initialization(), page_task_boundary():
             evaluate = sequence.evaluate
             def edit_after_start(*args, **kwargs):
                 if not edited:
-                    for configuration in pack['configurations']:
-                        configuration['opener']['source_basis'] = 'next task only'
-                    path.write_text(json.dumps(pack), encoding='utf-8')
+                    path.write_text('[search]\nsearch_timeline=false\n', encoding='utf-8')
                     edited.append(True)
                 return evaluate(*args, **kwargs)
             with patch.object(sequence, 'evaluate', side_effect=edit_after_start):
@@ -1380,18 +1290,16 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                 handle = self.server.tasks[created['task_id']][1]
                 handle.join(20)
                 self.assertTrue(handle.done)
-                detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
+                detail = self._json_request('GET', '/api/tasks/' + created['task_id'])
         self.assertEqual(detail['status'], 'completed', detail)
         self.assertTrue(edited)
         curves = [json.loads(next((handle.output_root / scene).glob('search-timeline-*.json')).read_text(encoding='utf-8'))
                   for scene in ('single_target', 'aoe')]
         self.assertGreater(curves[1]['search_start_seconds'], curves[0]['call_seconds'])
         self.assertEqual([curve['context']['simulation_config']['target_count'] for curve in curves], [1, 5])
-        reports = [scene['rule_initialization'] for scene in detail['scenes']]
-        self.assertEqual(reports[0]['rule_config_digest'], reports[1]['rule_config_digest'])
-        for report in reports:
-            self.assertTrue(all(configuration['opener']['source_basis'] == original_source
-                                for configuration in report['rule_snapshot']['pack']['configurations']))
+        from task import read_task
+        self.assertTrue(all(read_task(handle.output_root / scene)['config']['search_timeline']
+                            for scene in ('single_target', 'aoe')))
         moved = result_store.DATA_ROOT.with_name('temporarily-unavailable')
         result_store.DATA_ROOT.rename(moved)
         try:

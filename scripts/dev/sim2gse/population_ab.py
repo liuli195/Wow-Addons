@@ -1,4 +1,4 @@
-"""Rebuilt isolated pretraining pilot. No production optimizer/score is duplicated."""
+"""Isolated three-strategy experiment using the shared evaluation boundary."""
 from __future__ import annotations
 import argparse
 import ctypes
@@ -56,8 +56,6 @@ import result_store
 from search import TaskStore, config_for, digest, mutate, optimize
 from program import canonicalize_search_program
 
-POLICY = 'rebuilt-joint-pilot-v1-2elites-2rotating-originals'
-ORDERS = ('AB', 'BA', 'AB', 'BA', 'BA', 'AB', 'BA', 'AB')
 SOURCES = tuple(sorted(p.relative_to(ROOT).as_posix() for p in
     (ROOT / 'projects/sim2gse').rglob('*') if p.is_file() and p.suffix in ('.py', '.json', '.patch', '.cpp', '.hpp'))) + (
     'scripts/dev/sim2gse/population_ab.py',)
@@ -84,66 +82,7 @@ def load_materials(path):
             raise ValueError('Material digest/revision mismatch')
     return data
 
-def manifest_for(source):
-    trials = []
-    ids = [r['id'] for r in source['material_snapshot']['materials']]
-    for i in range(8):
-        base = 200000000 + i * 1000000
-        rotation = i % 4
-        trials.append(dict(index=i, order=ORDERS[i], material_ids=ids[rotation:] + ids[:rotation],
-            search_seed=base, endpoint_seeds=[base + 300000 + j for j in range(4)]))
-    settings = ROOT / '.local/sim2gse/config.toml'
-    manifest = dict(policy=POLICY, deap_version=version('deap'),
-        local_config_sha256=hashlib.sha256(settings.read_bytes()).hexdigest() if settings.exists() else None,
-        reference_seed=20260912, total_seconds=4800, pair_seconds=600, arm_seconds=180,
-        search_seconds=175, closeout_seconds=5, endpoint_iterations=128,
-        nominal_search_indices=[0, 1, 2, 99], validation_indices=[0, 1, 2, 3],
-        batch_targets=[32, 128, 256], validation_batches=4, max_processes=2,
-        input_seed_offset=500000, training_final='not_requested',
-        material_digest=digest(source), sources={p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
-                                               for p in SOURCES}, trials=trials)
-    validate_manifest(manifest, source)
-    return manifest
 
-def validate_manifest(manifest, source):
-    if manifest['policy'] != POLICY or len(manifest['trials']) != 8:
-        raise ValueError('Pilot identity/slot count mismatch')
-    ids = [r['id'] for r in source['material_snapshot']['materials']]
-    all_seeds = set()
-    for i, trial in enumerate(manifest['trials']):
-        base = 200000000 + i * 1000000
-        expected_ids = ids[i % 4:] + ids[:i % 4]
-        if (trial['index'] != i or trial['order'] != ORDERS[i]
-                or trial['search_seed'] != base or trial['material_ids'] != expected_ids
-                or trial['endpoint_seeds'] != [base + 300000 + j for j in range(4)]):
-            raise ValueError('Pre-registered seed/order/material plan changed')
-        search = {base + j for j in (0, 1, 2, 99)} | {base + 100000 + j for j in range(4)}
-        inputs = {x + 500000 for x in search}
-        endpoints = set(trial['endpoint_seeds'])
-        if search & inputs or (search | inputs) & endpoints:
-            raise ValueError('Search/input/endpoint seed collision')
-        current = search | inputs | endpoints
-        if current & all_seeds:
-            raise ValueError('Cross-trial seed collision')
-        all_seeds |= current
-    if manifest['material_digest'] != digest(source):
-        raise ValueError('Frozen materials changed')
-    settings = ROOT / '.local/sim2gse/config.toml'
-    settings_sha = hashlib.sha256(settings.read_bytes()).hexdigest() if settings.exists() else None
-    if (manifest.get('deap_version') != '1.4.4' or version('deap') != '1.4.4'
-            or manifest.get('local_config_sha256') != settings_sha):
-        raise ValueError('Frozen dependencies/local configuration changed')
-    if set(manifest['sources']) != set(SOURCES):
-        raise ValueError('Missing frozen source identities')
-    for name, sha in manifest['sources'].items():
-        if hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != sha:
-            raise ValueError('Frozen source changed')
-    fixed = dict(reference_seed=20260912, total_seconds=4800, pair_seconds=600, arm_seconds=180, search_seconds=175,
-        closeout_seconds=5, endpoint_iterations=128, nominal_search_indices=[0, 1, 2, 99],
-        validation_indices=[0, 1, 2, 3], batch_targets=[32, 128, 256], validation_batches=4,
-        max_processes=2, input_seed_offset=500000, training_final='not_requested')
-    if any(manifest.get(k) != v for k, v in fixed.items()):
-        raise ValueError('Frozen configuration changed')
 
 class JointPopulation:
     def __init__(self, materials, capabilities, identity):
@@ -309,241 +248,11 @@ def native_score(profile, program, folder, context, run, seed, iterations):
         burst_candidate=context['burst']['candidate'], reset_events=list(context['config']['reset_events']),
         simulation_config=context['simulation_config'], runtime=run)
 
-def usable_winner(state):
-    row = next((r for r in state.get('archive', []) if r['key'] == state.get('best')), None)
-    if (row is None or not math.isfinite(row.get('score', float('nan'))) or not row.get('batches')
-            or any(b.get('samples', 0) < 2 or not math.isfinite(b.get('dps', float('nan')))
-                   for b in row['batches'])):
-        return None
-    return deepcopy(row)
 
-def run_route(name, rows, profile, context, output, global_deadline, identity):
-    start = time.monotonic()  # Include center setup, task opening and final reliable save.
-    deadline = min(start + 180, global_deadline)
-    search_deadline = deadline - 5
-    route = isolate_center(output / name)
-    paths, winners = [], []
-    for i, selected in enumerate([[r] for r in rows] if name == 'A' else [rows]):
-        detail = dict(material_ids=[r['id'] for r in selected], coverage=False, winner=None)
-        paths.append(detail)
-        if time.monotonic() >= search_deadline:
-            detail['error'] = 'search deadline before path start'
-            continue
-        store = None
-        try:
-            folder = route / 'tasks' / str(i)
-            folder.mkdir(parents=True, exist_ok=True)
-            store = ExperimentStore(folder)
-            store.experiment_origin = start
-            store.state.update(run_id=uuid.uuid4().hex, starts=[deepcopy(r['program']) for r in selected],
-                config=context['config'], capabilities=context['capabilities'], burst=context['burst'])
-            run = ExperimentRuntime(175 / 4 if name == 'A' else 175, search_deadline)
-            supplier = JointPopulation(rows, context['capabilities'], identity) if name == 'B' else None
-            with store.active(run):
-                optimize(profile=profile, character=context['character'], capabilities=context['capabilities'],
-                    reference=context['native'], destination=folder, runtime=run, config=context['config'],
-                    condition_key=digest(dict(experiment=identity, route=name)), store=store,
-                    simulation_config=context['simulation_config'], training=True,
-                    training_candidate_supplier=supplier)
-        except Exception as e:
-            detail['error'] = f'{type(e).__name__}: {e}'
-        finally:
-            if store is not None:
-                state = deepcopy(store.state)
-                detail['state'] = state
-                detail['winner'] = usable_winner(state)
-                if name == 'A': detail['coverage'] = len(state.get('archive', [])) >= 2
-                else:
-                    scored = {r['key'] for r in state.get('archive', [])}
-                    proposals = state.get('training_candidate_supplier', {}).get('state', {}).get('proposals', [])
-                    detail['coverage'] = state.get('rounds', 0) >= 2 and any(
-                        p['key'] in scored and p['crossed'] and len(p['lineage']) > 1 for p in proposals)
-                write(folder / 'experiment-state.json', detail)
-                store.close()
-        if detail['winner'] is not None: winners.append(detail['winner'])
-    winner = max(winners, key=lambda r: r['batches'][0]['dps']) if winners else None
-    result = dict(winner=winner, coverage=all(p['coverage'] for p in paths), paths=paths,
-                  status='usable_output' if winner else 'no_usable_output')
-    write(route / 'route.json', result)
-    result.update(seconds=time.monotonic() - start, budget_met=time.monotonic() <= deadline)
-    write(route / 'route.json', result)
-    if time.monotonic() > deadline:
-        result.update(budget_met=False, status='arm_deadline_exceeded')
-        write(route / 'route.json', result)
-    return result
 
-def run_trial(source, output, trial, manifest, deadline):
-    from concurrent.futures import ThreadPoolExecutor
-    from engine import identity as engine_identity, training_template, reference, prepare_loop
-    from seed_training import _training_inputs
-    start = time.monotonic()
-    deadline = min(deadline, start + 600)
-    summary = dict(index=trial['index'], status='running', arms={}, endpoint={}, plan=trial,
-                   deadline_monotonic=deadline, identity=digest(manifest))
-    write(output / 'experiment.json', summary)
-    if sys.platform == 'linux':
-        runtime._create_process = CloudProcess
-    try:
-        prep = ExperimentRuntime(90, deadline)
-        prepare_burst_source(source, output)
-        engines = {m: engine_identity(m)[1] for m in ('baseline', 'controlled')}
-        profile = training_template()
-        if hashlib.sha256(profile.read_bytes()).hexdigest() != source['profile_metadata']['sha256']:
-            raise ValueError('Training template differs from frozen source')
-        inputs = _training_inputs(profile, 5, use_burst=True, max_processes=2, verified_engines=engines,
-            search_config=dict(rule_initialization_enabled=False, adaptive_selector_enabled=False))
-        condition = source['material_snapshot']['condition']
-        if inputs['definition']['definition_id'] != condition['burst_definition_id']:
-            raise ValueError('Selected burst identity mismatch')
-        native = reference(profile, output / 'prepare/reference', inputs['character'], iterations=100,
-                           seed=manifest['reference_seed'], runtime=prep, simulation_config=inputs['simulation_config'])
-        character = replace(inputs['character'], spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-        _, caps, burst = prepare_loop(native, character, output / 'prepare', prep,
-                                     definition=inputs['definition'], interval_ms=200)
-        config = config_for(dict(inputs['config'], random_seed=trial['search_seed'], batch_targets=(32,128,256),
-            validation_batches=4, max_processes=2, round_candidate_limit=16, reset_events=(),
-            diagnostics='off', diagnostic_logging=True, search_observability='off',
-            rule_initialization_enabled=False, adaptive_selector_enabled=False), training=True)
-        context = dict(native=native, character=character, capabilities=caps, burst=burst,
-                       config=config, simulation_config=inputs['simulation_config'])
-        summary['effective_config'] = config
-        by_id = {r['id']: r for r in source['material_snapshot']['materials']}
-        rows = [by_id[k] for k in trial['material_ids']]
-        for row in rows:
-            if canonicalize_search_program(row['program'], caps)['identity'] != row['behavior_id']:
-                raise ValueError('Material behavior identity changed')
-        def calibrate(item):
-            i, row = item
-            scored = native_score(profile, row['program'], output / 'prepare' / str(i), context,
-                                  prep, trial['search_seed'], 32)
-            return dict(program=row['program'], dps=scored['summary']['dps'], id=row['id'])
-        with ThreadPoolExecutor(max_workers=2) as pool: calibration = list(pool.map(calibrate, enumerate(rows)))
-        prep.check()
-        summary['prepare'] = dict(seconds=prep.elapsed_seconds, calibration=calibration,
-                                  engines={m: x['identity_sha256'] for m,x in engines.items()})
-        for name in trial['order']:
-            if time.monotonic() >= deadline: break
-            try: summary['arms'][name] = run_route(name, rows, profile, context, output, deadline, summary['identity'])
-            except Exception as e: summary['arms'][name] = dict(status='failed', error=f'{type(e).__name__}: {e}', winner=None)
-            write(output / 'experiment.json', summary)
-        # Freeze outputs before ANY independent evaluation; these scores never select winners.
-        winners = {name: deepcopy(arm['winner']) for name, arm in summary['arms'].items() if arm.get('winner')}
-        winners['initial'] = max(calibration, key=lambda r:r['dps'])
-        summary['fixed_winners'] = deepcopy(winners)
-        write(output / 'experiment.json', summary)
-        endpoint = ExperimentRuntime(150, deadline)
-        for name, winner in winners.items():
-            scores = []
-            summary['endpoint'][name] = dict(status='incomplete', scores=scores)
-            for offset in (0, 2):
-                try:
-                    endpoint.check()
-                    with ThreadPoolExecutor(max_workers=2) as pool:
-                        futures = [pool.submit(native_score, profile, winner['program'],
-                            output / 'endpoint' / name / str(seed), context, endpoint, seed, 128)
-                            for seed in trial['endpoint_seeds'][offset:offset+2]]
-                        for seed, future in zip(trial['endpoint_seeds'][offset:offset+2], futures):
-                            result = future.result()['summary']
-                            if result['samples'] < 2 or not math.isfinite(result['dps']) or result['dps'] <= 0:
-                                raise ValueError('Unreliable independent endpoint')
-                            scores.append(dict(seed=seed, dps=result['dps'], samples=result['samples']))
-                except Exception as e:
-                    summary['endpoint'][name]['error'] = f'{type(e).__name__}: {e}'
-                    break
-            if len(scores) == 4: summary['endpoint'][name]['status'] = 'complete'
-            write(output / 'experiment.json', summary)
-        complete = all(summary['endpoint'].get(name, {}).get('status') == 'complete'
-                       and summary['arms'].get(name, {}).get('budget_met') for name in 'AB')
-        summary['status'] = 'complete_pair' if complete else 'incomplete_pair'
-        if complete:
-            means = {name: statistics.mean(x['dps'] for x in summary['endpoint'][name]['scores']) for name in 'AB'}
-            summary.update(mean_dps=means, log_ratio=math.log(means['B']/means['A']))
-    except Exception as e:
-        summary.update(status='failed', error=f'{type(e).__name__}: {e}')
-    finally:
-        summary['elapsed_seconds'] = time.monotonic() - start
-        if time.monotonic() > deadline: summary['status'] = 'pair_deadline_exceeded'
-        write(output / 'experiment.json', summary)
-    return summary
 
-def summarize(slots):
-    logs = [s['result']['log_ratio'] for s in slots if s.get('exit_code', 0) == 0
-            and s.get('result', {}).get('status') == 'complete_pair']
-    return dict(planned=8, attempted=sum(s['status'] != 'not_started' for s in slots), complete_pairs=len(logs),
-        conditional_log_ratio_mean=statistics.mean(logs) if logs else None,
-        conditional_log_ratio_sd=statistics.stdev(logs) if len(logs)>1 else None,
-        trial_statuses={str(s['index']): s.get('result', {}).get('status', s['status']) for s in slots},
-        coverage_insufficient=[s['index'] for s in slots if any(
-            arm.get('coverage') is False for arm in s.get('result', {}).get('arms', {}).values())],
-        output_failure=[s['index'] for s in slots if s['status'] != 'not_started' and any(
-            not s.get('result', {}).get('arms', {}).get(name, {}).get('winner') for name in 'AB')],
-        endpoint_incomplete=[s['index'] for s in slots if s['status'] != 'not_started' and any(
-            s.get('result', {}).get('endpoint', {}).get(name, {}).get('status') != 'complete' for name in 'AB')],
-        scope='pilot variance/reliability only; conditional on complete outputs, not all-attempt causal benefit',
-        slots=slots)
 
-def run_pilot(source, output, manifest):
-    deadline = ENTRY + 4800
-    slots = [dict(index=i, status='not_started', reason='not reached before global deadline') for i in range(8)]
-    write(output / 'manifest.json', manifest)
-    write(output / 'summary.json', summarize(slots))
-    for i in range(8):
-        if time.monotonic() >= deadline - 2: break
-        pair_deadline = min(deadline - 1, time.monotonic() + 599)
-        folder = output / str(i)
-        command = [sys.executable, str(Path(__file__).resolve()), '--materials', str(output / 'materials.json'),
-                   '--output', str(folder), '--manifest', str(output / 'manifest.json'),
-                   '--trial', str(i), '--deadline', str(pair_deadline)]
-        slots[i] = dict(index=i, status='attempted')
-        write(output / 'summary.json', summarize(slots))
-        try:
-            with (output / f'{i}-console.log').open('wb') as log:
-                process = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True)
-                try: code = process.wait(timeout=max(0, pair_deadline - time.monotonic()))
-                except subprocess.TimeoutExpired:
-                    try: os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError: pass
-                    code = process.wait()
-                    slots[i]['error'] = 'parent hard deadline killed worker/native process group'
-                finally:
-                    # Ownership survives worker exit: its native children may still share this group.
-                    try: os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError: pass
-                    if process.poll() is None:
-                        process.wait()
-        except OSError as e:
-            code = -1
-            slots[i]['error'] = f'Worker launch failed: {e}'
-        slots[i]['exit_code'] = code
-        try: slots[i]['result'] = json.loads((folder / 'experiment.json').read_text())
-        except (OSError, ValueError) as e: slots[i]['error'] = f'No reliable result: {e}'
-        slots[i]['status'] = 'finished' if code == 0 else 'failed'
-        write(output / 'summary.json', summarize(slots))
-    result = summarize(slots)
-    result.update(elapsed_seconds=time.monotonic()-ENTRY, budget_met=time.monotonic()<=deadline)
-    write(output / 'summary.json', result)
-    return result
 
-def self_check(source, output):
-    from engine import identity, training_template
-    from seed_training import _training_inputs
-    manifest = manifest_for(source)
-    checks = dict(manifest_valid=True, source_four_materials=len(source['material_snapshot']['materials'])==4,
-                  balanced_orders=sum(t['order']=='AB' for t in manifest['trials'])==4)
-    isolated = isolate_center(output / 'check')
-    checks['isolated_root'] = result_store.DATA_ROOT == isolated / 'data'
-    prepare_burst_source(source, output)
-    engines = {name: identity(name)[1] for name in ('baseline', 'controlled')}
-    inputs = _training_inputs(training_template(), 5, use_burst=True, max_processes=2,
-        verified_engines=engines, search_config=dict(rule_initialization_enabled=False,
-                                                    adaptive_selector_enabled=False))
-    checks['real_preparation_before_native'] = (inputs['definition']['definition_id'] ==
-        source['material_snapshot']['condition']['burst_definition_id'])
-    checks['template_identity'] = hashlib.sha256(training_template().read_bytes()).hexdigest() == source['profile_metadata']['sha256']
-    checks['eight_failure_slots'] = len(summarize([dict(index=i,status='not_started') for i in range(8)])['slots'])==8
-    if not all(checks.values()):
-        raise ValueError('Preflight identity/isolation checks failed')
-    return dict(native_starts=0, manifest=manifest, checks=checks)
 
 THREE_POLICY = 'three-strategy-confirmatory-v2'
 THREE_ORDERS = ('ABC', 'BCA', 'CAB') * 4
@@ -634,8 +343,7 @@ def prepare_three(source, output, manifest, deadline):
     prepare_burst_source(source, output)
     profile = training_template()
     inputs = _training_inputs(profile, 5, use_burst=True, max_processes=2,
-        verified_engines=manifest['engines'], search_config=dict(rule_initialization_enabled=False,
-                                                               adaptive_selector_enabled=False))
+        verified_engines=manifest['engines'])
     native = reference(profile, output / 'prepare/reference', inputs['character'], iterations=100,
         seed=manifest['reference_seed'], runtime=run, simulation_config=inputs['simulation_config'])
     character = replace(inputs['character'], spec_id=native['identity']['spec_id'], race=native['identity']['race'])
@@ -848,8 +556,7 @@ def run_three_arm(source, output, manifest, slot, deadline):
                             race=context['native']['identity']['race'])
         config = config_for(dict(random_seed=block['search_seed'], batch_targets=(32,), max_processes=2,
             round_candidate_limit=16, reset_events=(), input_interval_ms=200,
-            diagnostics='off', diagnostic_logging=False, search_observability='off',
-            rule_initialization_enabled=False, adaptive_selector_enabled=False), training=True)
+            diagnostics='off', diagnostic_logging=False, search_observability='off'), training=True)
         store.state.update(run_id=uuid.uuid4().hex, starts=[row['program'] for row in frozen['rows']],
             config=config, capabilities=context['capabilities'], burst=context['burst'],
             evidence_kind=manifest['evidence_kind'])
@@ -1036,12 +743,12 @@ def main():
     parser.add_argument('--three-strategy', action='store_true')
     parser.add_argument('--arm', type=int, choices=range(36))
     parser.add_argument('--constructed-native-adapter', type=Path, help=argparse.SUPPRESS)
-    parser.add_argument('--trial', type=int, choices=range(8))
+    parser.add_argument('--trial', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--deadline', type=float)
     args = parser.parse_args()
-    if sys.platform == 'win32' and not args.three_strategy:
-        parser.error('Windows experiment requires explicit --three-strategy mode')
+    if not args.three_strategy or args.trial is not None:
+        parser.error('旧AB逐材料训练执行已移除；研究入口仅支持 --three-strategy')
     output = args.output.resolve()
     if not output.is_relative_to(ROOT / '.local/population-mvp'):
         parser.error('Only ignored isolated experiment output is permitted')
@@ -1082,24 +789,9 @@ def execute_cli(args, source, output, parser):
         validate_three_manifest(manifest, source)
         output.mkdir(parents=True)
         return run_three(source, output, manifest, args.constructed_native_adapter)
-    if args.arm is not None:
-        parser.error('Arm requires explicit three-strategy mode')
-    if args.check_only:
-        runtime._create_process = lambda *a, **kw: (_ for _ in ()).throw(AssertionError('native forbidden'))
-        result = three_preflight(source, 'constructed_native_boundary' if args.constructed_native_adapter else 'real_native') if args.three_strategy else self_check(source, output)
-    elif args.trial is not None:
-        if args.manifest is None or args.deadline is None or not math.isfinite(args.deadline):
-            parser.error('Worker requires frozen manifest and absolute deadline')
-        manifest = json.loads(args.manifest.read_text())
-        validate_manifest(manifest, source)
-        output.mkdir(parents=True)
-        result = run_trial(source, output, manifest['trials'][args.trial], manifest, min(args.deadline, ENTRY+600))
-    else:
-        if args.manifest is not None or args.deadline is not None: parser.error('Only worker accepts deadline/manifest')
-        manifest = manifest_for(source)
-        output.mkdir(parents=True)
-        write(output / 'materials.json', source)
-        result = run_pilot(source, output, manifest)
-    return result
+    if args.arm is not None or args.manifest is not None or args.deadline is not None:
+        parser.error('Preflight does not accept worker arguments')
+    runtime._create_process = lambda *a, **kw: (_ for _ in ()).throw(AssertionError('native forbidden'))
+    return three_preflight(source, 'constructed_native_boundary' if args.constructed_native_adapter else 'real_native')
 
 if __name__ == '__main__': main()

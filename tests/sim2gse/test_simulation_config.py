@@ -57,9 +57,12 @@ class SimulationConfigTests(unittest.TestCase):
     def test_training_section_is_independent_validated_and_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.toml'
-            self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 2})
+            expected = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
+                retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
+                tournament_size=3, crossover_probability=.8, mutation_probability=.8)
+            self.assertEqual(load_training_config(path), expected)
             path.write_text('[training]\nmax_trainings=10\nmax_processes=2', encoding='utf-8')
-            self.assertEqual(load_training_config(path), {'max_processes': 2, 'max_trainings': 10})
+            self.assertEqual(load_training_config(path), dict(expected, max_processes=2, max_trainings=10))
             for outer, inner in ((11, 1), (10, 3)):
                 with self.subTest(outer=outer, inner=inner):
                     with self.assertRaises(ValueError):
@@ -68,9 +71,13 @@ class SimulationConfigTests(unittest.TestCase):
                 path.write_text('[simulation]\ntarget_count=5\n[training]\nmax_trainings=1\nmax_processes=' + str(value),
                                 encoding='utf-8')
                 self.assertEqual(load_config(path)['target_count'], 5)
-                self.assertEqual(load_training_config(path), {'max_processes': value, 'max_trainings': 1})
+                self.assertEqual(load_training_config(path), dict(expected, max_processes=value, max_trainings=1))
             for option in ('max_processes=0', 'max_processes=17', 'max_processes=true',
-                           'max_processes=2.5', 'max_processes="4"', 'unknown=2'):
+                           'max_processes=2.5', 'max_processes="4"', 'unknown=2',
+                           'top_k=3', 'top_k=true', 'tournament_size=0', 'coarse_iterations=0',
+                           'retest_batches=0', 'retest_iterations=true', 'stagnation_generations=0',
+                           'crossover_probability=nan', 'mutation_probability=inf',
+                           'mutation_probability=-0.1', 'crossover_probability=1.1'):
                 path.write_text('[training]\n' + option, encoding='utf-8')
                 with self.subTest(option=option):
                     self.assertEqual(load_config(path), DEFAULT_CONFIG)
@@ -422,8 +429,7 @@ class SimulationConfigTests(unittest.TestCase):
             port=0,
             task_options={"simulation_config": config,
                           "search_config": dict(diagnostic_logging=False, diagnostics="summary",
-                                                search_observability="full", rule_initialization_enabled=False,
-                                                adaptive_selector_enabled=False, search_timeline=False)},
+                                                search_observability="full", search_timeline=False)},
         )
 
     def test_invalid_service_config_stops_before_starting_server(self) -> None:

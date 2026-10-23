@@ -1,5 +1,6 @@
 """网页双场通过真实任务和隔离中心消费最终训练冠军。"""
 import json
+from copy import deepcopy
 import threading
 import sqlite3
 import pytest
@@ -14,33 +15,11 @@ from engine import check_report as REAL_CHECK_REPORT
 
 @pytest.fixture
 def champion_engine(page_task_engine, monkeypatch):
-    """每测复用受检引擎身份和不变规则清单，最终报告仍使用生产角色核验。"""
-    from copy import deepcopy
+    """构造原生交换与不变源码身份，最终报告仍使用生产角色核验。"""
     import engine
     import task
     rule_hashes, rules = task._rule_hashes, {}
     rules_lock = threading.Lock()
-    identity, verified = engine.identity, {}
-    identity_lock = threading.Lock()
-
-    def verified_identity(mode, runtime=None):
-        if mode not in ('baseline', 'controlled'):
-            return identity(mode, runtime)
-        if runtime:
-            runtime.check()
-            if mode in runtime.identities:
-                return deepcopy(runtime.identities[mode])
-        executable = (engine.ROOT / '.local/sim2gse/build' / mode / 'simc.exe').resolve()
-        key = mode, executable
-        with identity_lock:
-            if key not in verified:
-                verified[key] = identity(mode)
-        entry = deepcopy(verified[key])
-        if runtime:
-            runtime.check()
-            runtime.identities[mode] = deepcopy(entry)
-        return entry
-
     def verified_rules(*, relative_to=None):
         with rules_lock:
             if relative_to not in rules:
@@ -53,11 +32,10 @@ def champion_engine(page_task_engine, monkeypatch):
     evaluate = sequence.evaluate
     def persisted_scene_report(profile, candidate, folder, **kwargs):
         result = evaluate(profile, candidate, folder, **kwargs)
-        # 模拟外部生产者的落盘报告必须与返回的目标场景一致，供按需诊断验真。
+        # 模拟外部生产者的落盘报告必须与返回的目标场景一致，供保存报告与旧成果验真。
         (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
         return result
-    with patch.object(engine, 'identity', verified_identity), \
-            patch.object(sequence, 'evaluate', side_effect=persisted_scene_report), \
+    with patch.object(sequence, 'evaluate', side_effect=persisted_scene_report), \
             patch.object(engine, 'check_report', REAL_CHECK_REPORT):
         yield
 
@@ -78,12 +56,17 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
     _, raw = reviewed_fixture()
     template = tmp_path / (name + '-standard.simc')
     template.write_text(raw, encoding='utf-8')
-    inputs = seed_training._training_inputs(template, targets, use_burst=True, verified_engines=source_engines)
+    from legacy_training_fixture import _minimal_rule_pack
+    from legacy_training_rules import validate, bind
+    pack = _minimal_rule_pack()
+    rule_snapshot = dict(pack=pack, resolved=validate(pack), rule_config_digest=digest(pack))
+    inputs = seed_training._training_inputs(template, targets, use_burst=True,
+        verified_engines=source_engines, rule_snapshot=rule_snapshot)
     versions = seed_training.semantic_versions()
     if legacy_search:
         versions['search'] = 'rule-single-step-coba-linucb-v1'
         for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
-            inputs['config'].pop(key)
+            inputs['config'].pop(key, None)
     character = inputs['character']
     batch = tmp_path / 'custom-training' / str(targets) / name
     batch.mkdir(parents=True)
@@ -94,18 +77,18 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
                                   simulation_config=inputs['simulation_config'])
         _, capabilities, context = engine.prepare_loop(native, character, batch, TaskRuntime(600),
             definition=inputs['definition'], interval_ms=200)
-    from rule_config import load
     from search import initial_programs
-    rule_snapshot = load()
     if prepared_context is not None:
         native = engine.reference(template, batch / 'scope-reference', character,
                                   simulation_config=inputs['simulation_config'])
-    initialization = {}
-    initial_programs(capabilities, native, target_count=targets, scene=inputs['simulation_config']['scene'],
-        input_interval_ms=200, burst=context, initialization=initialization, rule_snapshot=rule_snapshot, rule_initialization_enabled=True)
+    binding = bind(capabilities, native['static_snapshot'], targets, spec_id=252,
+        scene=inputs['simulation_config']['scene'], rule_snapshot=rule_snapshot)
+    initialization = dict(configuration_key=binding['configuration_key'],
+        rule_config_digest=rule_snapshot['rule_config_digest'], bindings=[],
+        static_snapshot=native['static_snapshot'])
     configuration_key = initialization['configuration_key']
     payload = seed_training.training_condition_input(inputs['template_sha'], inputs['engines'],
-        inputs['config'], inputs['simulation_config'], burst_context=context)
+        inputs['config'], inputs['simulation_config'], burst_context=context, rule_snapshot=rule_snapshot)
     condition = seed_training.semantic_condition(payload, versions)
     manifest = dict(format=1, condition=condition, condition_input=payload, rule_snapshot=rule_snapshot,
         input_sha256=digest(payload), semantic_versions=versions,
@@ -208,7 +191,6 @@ def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', inter
 @pytest.mark.parametrize("wrong_report_engine", [False, True])
 def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypatch,
         memory_result_center, champion_engine, wrong_report_engine, legacy_search):
-    from copy import deepcopy
     import burst
     import engine
     import result_store
@@ -223,7 +205,7 @@ def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypa
         report_engines=({mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
                         if wrong_report_engine else None), legacy_search=legacy_search)
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-    before = result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')))
+    before = result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')))
     scene = dual_result(tmp_path, raw)['scenes'][0]
     champion = scene['training_champion_snapshot']
     if wrong_report_engine:
@@ -232,7 +214,7 @@ def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypa
         assert '复测引擎' in champion['excluded'][0]['reason']
         assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
                        for source in group)
-        assert result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target'))) == before
+        assert result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target'))) == before
         return
     assert champion['status'] == 'selected', champion
     assert champion['candidate_id'] == rows[0]['candidate_id']
@@ -244,7 +226,7 @@ def test_dual_rescores_training_champion_from_an_older_engine(tmp_path, monkeypa
     assert adaptation['status'] in ('accepted', 'duplicate')
     assert adaptation['current_samples'] > 0
     assert 0 < adaptation['current_score'] < 99999.
-    assert result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target'))) == before
+    assert result_store.read_records('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target'))) == before
 
 
 @pytest.mark.parametrize('fault', ['wrong_program', 'report_missing', 'report_corrupt', 'temporary_error'])
@@ -310,36 +292,25 @@ def test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_plac
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    from test_search import _minimal_rule_pack
-    pack = _minimal_rule_pack()
-    for configuration in pack['configurations']:
-        opener = configuration['opener']
-        opener['source_steps'] = ['scourge_strike']
-        opener['ordinary_steps'] = [dict(opener['ordinary_steps'][1], source_step=1)]
-    rules = tmp_path / 'available-opener.json'
-    rules.write_text(json.dumps(pack), encoding='utf-8')
-    with monkeypatch.context() as configuration:
-        configuration.setenv('SIM2GSE_RULE_CONFIG', str(rules))
-        # 冠军按钮被移除时，当前配置仍保留合法的独立起手。
-        template, rows = completed_training(tmp_path, 1, [([['death_coil']], [100.] * 3),
-                                                            ([['outbreak']], [200.] * 3)])
-        monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-        inspect = engine.inspect
-        def current_catalogue(*args, **kwargs):
-            capabilities = inspect(*args, **kwargs)
-            capabilities['actions'] = [action for action in capabilities['actions']
-                                       if action['simc_action'] != 'outbreak']
-            capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
-                action_initialized=True, available=False, data_valid=True, data_id=1001,
-                signature='outbreak', name='outbreak', gcd_ms=1500))
-            return capabilities
-        with patch.object(engine, 'inspect', current_catalogue):
-            scene = dual_result(tmp_path, raw)['scenes'][0]
-        assert scene['training_champion_snapshot']['candidate_id'] == rows[1]['candidate_id']
-        assert scene['training_champion_adaptation']['status'] == 'rejected'
-        assert scene['training_champion_adaptation']['reason']
-        assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
-                       for source in group)
+    template, rows = completed_training(tmp_path, 1, [([['death_coil']], [100.] * 3),
+                                                        ([['outbreak']], [200.] * 3)])
+    monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
+    inspect = engine.inspect
+    def current_catalogue(*args, **kwargs):
+        capabilities = inspect(*args, **kwargs)
+        capabilities['actions'] = [action for action in capabilities['actions']
+                                   if action['simc_action'] != 'outbreak']
+        capabilities['sources'].append(dict(catalogue='apl', status='native_unavailable',
+            action_initialized=True, available=False, data_valid=True, data_id=1001,
+            signature='outbreak', name='outbreak', gcd_ms=1500))
+        return capabilities
+    with patch.object(engine, 'inspect', current_catalogue):
+        scene = dual_result(tmp_path, raw)['scenes'][0]
+    assert scene['training_champion_snapshot']['candidate_id'] == rows[1]['candidate_id']
+    assert scene['training_champion_adaptation']['status'] == 'rejected'
+    assert scene['training_champion_adaptation']['reason']
+    assert not any(source['source_kind'] == 'training_champion' for group in scene['start_sources'].values()
+                   for source in group)
 
 
 def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arrives(tmp_path, monkeypatch,
@@ -372,11 +343,11 @@ def test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arriv
         _, arrivals = completed_training(tmp_path, 1, [
             ([['death_coil'], ['outbreak'], ['death_coil']], [900.] * 3)], name='later', candidate_offset=1000)
         # 新训练确有完整更高成绩，但恢复不得重新选择本场冠军。
-        result_store.write('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')), rows + arrivals,
+        result_store.write('seed_processed', __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')), rows + arrivals,
                            schema=seed_training.PROCESSED_SCHEMA)
         api = result_store._api()
         def frozen_read(root, table, key, **kwargs):
-            if table == 'seed_processed' and key == __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')):
+            if table == 'seed_processed' and key == __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')):
                 raise OSError('恢复刷新了单目标训练库')
             return api['read_key'](root, table, key, **kwargs)
         patches.enter_context(patch.object(result_store, '_api', return_value=dict(api, read_key=frozen_read)))
@@ -402,7 +373,7 @@ def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failure
     monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
     api = result_store._api()
     def read_key(root, table, key, **kwargs):
-        if table == 'seed_processed' and key == __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')):
+        if table == 'seed_processed' and key == __import__('seed_training').shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')):
             raise OSError('temporary isolated processed storage error')
         return api['read_key'](root, table, key, **kwargs)
     with patch.object(result_store, '_api', return_value=dict(api, read_key=read_key)):
@@ -410,7 +381,7 @@ def test_dual_distinguishes_corrupt_training_records_from_temporary_read_failure
     assert '不可读' in state['error']
 
 
-def test_dual_rejects_training_champion_from_previous_rule_configuration(
+def test_dual_reads_completed_v1_without_current_profession_rule_library(
         tmp_path, monkeypatch, memory_result_center):
     import burst
     import engine
@@ -418,23 +389,16 @@ def test_dual_rejects_training_champion_from_previous_rule_configuration(
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    from test_search import _minimal_rule_pack
-    pack = _minimal_rule_pack()
-    rules = tmp_path / 'rules.json'
-    rules.write_text(json.dumps(pack), encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
     from test_search import _fast_initialization
     from test_burst import page_task_boundary
     with _fast_initialization(), page_task_boundary(), patch.object(engine, 'check_report', REAL_CHECK_REPORT):
         template, rows = completed_training(tmp_path, 1, [([['death_coil']], [190., 200., 210.])])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-        for configuration in pack['configurations']:
-            configuration['opener']['source_basis'] += '，已编辑'
-        rules.write_text(json.dumps(pack), encoding='utf-8')
+        monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(tmp_path / 'removed-rules.json'))
         state = dual_result(tmp_path, raw, candidate_limit=1)
     champion = state['scenes'][0]['training_champion_snapshot']
-    assert champion['status'] == 'absent'
-    assert any('身份' in row['reason'] for row in champion['excluded'])
+    assert champion['status'] == 'selected'
+    assert champion['candidate_id'] == rows[0]['candidate_id']
 
 
 def test_dual_seed_scope_is_exact_and_target_count_is_only_source_evidence(tmp_path,
@@ -444,7 +408,7 @@ def test_dual_seed_scope_is_exact_and_target_count_is_only_source_evidence(tmp_p
     import seed_training
     definition, raw = reviewed_fixture()
     burst.publish(definition)
-    key = dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')
+    key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')
     rows = [dict(configuration_key=key, candidate_id=f'scope-{index}', condition='source-condition',
         class_name='deathknight', spec='unholy', targets=99,
         program=[['outbreak'], dict(kind='WaitClicks', clicks=index + 2), ['death_coil']],
@@ -470,7 +434,6 @@ def test_dual_seed_scope_is_exact_and_target_count_is_only_source_evidence(tmp_p
 @pytest.mark.parametrize('fault', ['source_rules', 'report_hero'])
 def test_dual_rejects_unproved_training_hero_identity(tmp_path, monkeypatch,
         memory_result_center, champion_engine, fault):
-    from copy import deepcopy
     import burst
     import result_store
     definition, raw = reviewed_fixture()
@@ -479,7 +442,7 @@ def test_dual_rejects_unproved_training_hero_identity(tmp_path, monkeypatch,
     if fault == 'source_rules':
         identity_path = Path(rows[0]['task_path']).parent / 'identity.json'
         identity = json.loads(identity_path.read_text(encoding='utf-8'))
-        identity['rule_snapshot']['pack']['identity_mappings']['hero_talents']['sample_hero'] = 999
+        identity['rule_snapshot']['pack']['identity_mappings']['hero_talents']['rider_of_the_apocalypse'] = 999
         identity_path.write_text(json.dumps(identity), encoding='utf-8')
     else:
         read = result_store.one

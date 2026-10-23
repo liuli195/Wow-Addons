@@ -14,7 +14,6 @@ def boundary(root, output):
     import engine, sequence, runtime
     import test_search as fast
     from deap import algorithms
-    profile = engine.training_template()
     calls, seen = [], [0]
     original_simple, original_plus = algorithms.eaSimple, algorithms.eaMuPlusLambda
     def observed(function, name):
@@ -59,6 +58,7 @@ def boundary(root, output):
         return replace_file(source, destination)
     with ExitStack() as stack:
         stack.enter_context(fast._fast_initialization())
+        profile = engine.training_template()
         stack.enter_context(patch.object(os, 'replace', side_effect=replace))
         if os.environ.get('THREE_TEST_GLOBAL_DEADLINE'):
             stack.enter_context(patch.object(time, 'monotonic', side_effect=lambda: monotonic() + 7801))

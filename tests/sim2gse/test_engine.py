@@ -65,7 +65,7 @@ def static_snapshot():
     """构造的初始化协议，绝非真实角色数据。"""
     return {
         'protocol': 1, 'stage': 'precombat_initialized_before_actions',
-        'hero_subtree_ids': [17],
+        'hero_subtree_ids': [32],
         'resources': {'runic_power': {'current': 0, 'maximum': 100},
                       'rune': {'current': 6, 'maximum': 6}},
         'parameters': {'rune_recharge_ms': 3000, 'rune_recharge_slots': 3,
