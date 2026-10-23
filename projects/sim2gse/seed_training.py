@@ -586,7 +586,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                     burst_identity=None):
     """run/prepare共用入口：完整快照原子保存成功后才返回可派发队列。"""
     from engine import reference, prepare_loop, configuration_key
-    from program import canonicalize_search_program, from_search_program, compile_program
+    from program import canonicalize_search_program, _search_expanded_nodes, compile_program
+    from codec import load_targeting, prepare_block, prepare_castsequence
     inputs = inputs or _training_inputs(template, targets, cancel_event=cancel_event, use_burst=use_burst,
                                        max_processes=max_processes, diagnostic_logging=diagnostic_logging, search_config=search_config,
                                        burst_identity=burst_identity)
@@ -652,6 +653,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         from task import _rule_hashes
         context = dict(context, preparation_input=preparation_input, rules=_rule_hashes(relative_to=ROOT),
                        configuration_key=configuration_key(context['native'], simulation_config.get('scene')))
+    # 受检工具/目标资料加载失败是环境错误，不缓存为某条材料非法。
+    target_masks = load_targeting(runtime=runtime)['target_masks'] if context else {}
     previous = {row['source_id']: row for row in cached if row.get('kind') == 'source'}
     entries, rebuilt = [], 0
     for source in sources:
@@ -695,12 +698,19 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                             for segment in program):
                         raise ValueError('去除爆发动作后没有可训练的普通循环')
                 prepared = canonicalize_search_program(program, context['capabilities'])
+                for node in _search_expanded_nodes(prepared['program']):
+                    if node['kind'] == 'Action':
+                        commands = node['commands']
+                        if len(commands) == 1 and commands[0].get('kind') == 'castsequence':
+                            prepare_castsequence(commands[0])
+                        else:
+                            prepare_block(commands, target_masks)
             except ValueError as error:
                 entry.update(status='rejected', reason=str(error))
             else:
                 # 原编译工具及存储/环境错误直接终止准备，不将其缓存为非法材料。
                 folder = Path(workspace).resolve() / 'preparation' / config_key[:12] / 'inputs' / source['candidate_id']
-                compile_program(from_search_program(program, context['capabilities']), folder,
+                compile_program(prepared['program'], folder,
                                 identity=context['native']['identity'], runtime=runtime,
                                 capabilities=context['capabilities'])
                 entry.update(status='ready', behavior_id=prepared['identity'], reason='')
@@ -805,7 +815,7 @@ def run_training(template, targets, workspace, *, use_burst=False, max_processes
                              diagnostic_logging=diagnostic_logging, search_config=search_config, _timeline_origin=timeline_origin)
 
 
-def check_training(template=None, *, use_burst=True):
+def check_training(template=None, *, use_burst=True, training_config=None):
     """只读冻结受检双英雄模板与四组三元范围，不启动原生计算。"""
     from engine import identity, training_templates
     from burst import select_definition, talent_hash
@@ -830,7 +840,7 @@ def check_training(template=None, *, use_burst=True):
             for target in ('single_target', 'aoe'):
                 groups.append(dict(template=str(path), configuration_key=dict(
                     specialization_id=252, hero_talent=hero, target_type=target)))
-    config = load_training_config()
+    config = load_training_config() if training_config is None else training_config
     return dict(status='ready', **templates[0], templates=templates, groups=groups,
         engines=engines, use_burst=use_burst, training_config=config,
         final_requested_iterations_per_group=config['top_k'] * 5 * config['retest_batches'] * config['retest_iterations'])
@@ -1070,7 +1080,7 @@ def main(argv=None):
                 sources = registry_rows()
                 if args.candidate_id:
                     selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
-                ready = check_training(args.template, use_burst=args.use_burst)
+                ready = check_training(args.template, use_burst=args.use_burst, training_config=parallelism)
                 with training_activity() as cancel_event:
                     sources = sync_history(template_character(Path(ready['template']).read_text(encoding='utf-8')),
                                            sources=sources)
@@ -1078,8 +1088,18 @@ def main(argv=None):
                                         if args.candidate_id else {})
                     jobs = [(row, targets) for row in ready['templates'] for targets in dict.fromkeys(args.targets)]
                     output, errors = [], []
-                    from population_training import group_workers
-                    workers = group_workers(args.workspace, ready['templates'], parallelism)
+                    from population_training import group_configs, group_workers
+                    configs = group_configs(args.workspace, ready['templates'], parallelism, args.targets)
+                    workers = group_workers(args.workspace, ready['templates'], parallelism, args.targets,
+                                            effective_configs=configs)
+                    if args.command == 'run':
+                        for row, targets in jobs:
+                            config = configs[(str(Path(row['template']).resolve()), targets)]
+                            batches = config['top_k'] * 5 * config['retest_batches']
+                            print(f"{Path(row['template']).name}/{targets}：五场景复测最多"
+                                  f"{config['top_k']}候选、{batches}请求批、"
+                                  f"{batches * config['retest_iterations']}请求迭代（非实际有效样本）；"
+                                  f"本次分组并发上限{workers}", file=sys.stderr, flush=True)
                     with ThreadPoolExecutor(max_workers=workers) as pool:
                         futures = []
                         for row, targets in jobs:

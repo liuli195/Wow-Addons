@@ -111,7 +111,7 @@ def _evolution(store, capabilities, runtime, config):
                     else:
                         prepare_block(commands, target_masks)
             return canonical['identity']
-        def scores(programs, stage='search', index=0):
+        def scores(programs, stage='search', index=0, *, record_timeline=True):
             unique = {}
             for program in programs:
                 unique.setdefault(key(program), program)
@@ -131,7 +131,7 @@ def _evolution(store, capabilities, runtime, config):
                     for identity, future in futures:
                         try:
                             results[identity] = future.result()
-                            if timeline is not None:
+                            if timeline is not None and record_timeline:
                                 row = results[identity]
                                 timeline.score(dict(key=identity, score=row['dps'], batches=[row]),
                                                stage, 'training')
@@ -146,6 +146,21 @@ def _evolution(store, capabilities, runtime, config):
             return sorted(store.state['archive'], key=lambda row: (-row['batches'][0]['dps'], row['key']))[:config['top_k']]
         def baseline():
             return [row['batches'][0]['dps'] for row in ranking()]
+        # Once per invocation, before any old fitness is used. The existing evaluator
+        # reconstructs the full frozen request, verifies its receipt, and repairs only
+        # missing/corrupt evidence. Temporary storage failures still pause the group.
+        historical = list(store.state['archive'])
+        verified = scores([row['program'] for row in historical], record_timeline=False)
+        for old, row in zip(historical, verified):
+            batches = old.get('batches', [])
+            if (old['key'] != row['candidate_key'] or len(batches) != 1
+                    or batches[0].get('data_key') != row['batch_key']
+                    or digest(batches[0].get('request')) != row['batch_key']
+                    or any(batches[0].get(field) != row[field] for field in ('dps', 'samples'))):
+                raise ValueError('恢复粗评档案与冻结条件的成功凭据不符；已暂停，旧四条保持不变')
+        fitness = {row['candidate_key']: row['dps'] for row in verified}
+        if any(fitness.get(row['key']) != row['score'] for row in ga['population']):
+            raise ValueError('恢复种群粗分与成功凭据不符；已暂停，旧四条保持不变')
         if ga['phase'] == 'initial':
             rows = scores(store.state['starts'])
             ga['population'] = [dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps'])
@@ -229,13 +244,33 @@ def _unfinished(workspace, *, template=None, targets=None, scope=None):
             yield path.parent, manifest
 
 
-def group_workers(workspace, templates, config):
-    """A resumed group's frozen limits also bound the outer pool after TOML changes."""
-    paths = {str(Path(row['template']).resolve()) for row in templates}
-    limits = [config['max_trainings']]
-    limits.extend(manifest['training_config']['max_trainings'] for _, manifest in _unfinished(workspace)
-                  if manifest.get('template_path') in paths)
-    return min(limits)
+def group_configs(workspace, templates, config, targets=(1, 5)):
+    """Resolve only this invocation's groups; new TOML values cannot alter resumed groups."""
+    paths = {str(Path(row['template']).resolve()): row.get('template_sha256') for row in templates}
+    effective = {(path, count): config for path in paths for count in dict.fromkeys(targets)}
+    frozen = set()
+    for _, manifest in _unfinished(workspace):
+        key = (manifest.get('template_path'), manifest['environment']['simulation']['target_count'])
+        if any(path != key[0] and sha == manifest['environment']['template'] and (path, key[1]) in effective
+               for path, sha in paths.items()):
+            raise ValueError('跨模板路径不能恢复未完成GA任务；请使用原模板路径恢复，或使用新工作目录开始新任务')
+        if key not in effective:
+            continue
+        if key in frozen:
+            raise ValueError('同模板/目标存在多个未完成GA任务')
+        frozen.add(key)
+        effective[key] = manifest['training_config']
+    return effective
+
+
+def group_workers(workspace, templates, config, targets=(1, 5), *, effective_configs=None):
+    """A conservative joint limit also keeps mixed frozen/new groups within 20 processes."""
+    configs = (group_configs(workspace, templates, config, targets)
+               if effective_configs is None else effective_configs)
+    if not configs:
+        return 1
+    return min(*(row['max_trainings'] for row in configs.values()),
+               20 // max(row['max_processes'] for row in configs.values()))
 
 
 def run_group(template, targets, workspace, *, cancel_event, use_burst, sources, config,
@@ -280,6 +315,8 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         raise ValueError('本组三元范围存在多个未完成GA任务')
     if active:
         folder, manifest = active[0]
+        if not frozen or folder != frozen[0][0]:
+            raise ValueError('跨模板路径不能恢复未完成GA任务；请使用原模板路径恢复，或使用新工作目录开始新任务')
         if manifest['environment'] != environment:
             raise ValueError('GA恢复的角色/引擎/规则身份变化，拒绝混接')
         config = manifest['training_config']

@@ -706,8 +706,9 @@ def test_public_configured_sample_plan_and_stagnation_are_used_without_old_stage
     assert len(requests) == 46
 
 
+@pytest.mark.parametrize('missing_stage', ['retest', 'coarse'])
 def test_public_publication_failure_preserves_old_four_and_resume_repairs_only_missing_report_group(
-        tmp_path, capsys, monkeypatch, registered_six):
+        tmp_path, capsys, monkeypatch, registered_six, missing_stage):
     from unittest.mock import patch
     import sequence
     import simulation_config
@@ -746,12 +747,15 @@ def test_public_publication_failure_preserves_old_four_and_resume_repairs_only_m
         state = TaskStore.load_state(db)
         assert state['ga']['phase'] == 'qualified'
         first = state['ga']['finals'][state['ga']['finalists'][0]]['nominal']['0']
-        cached = json.loads(db.execute('SELECT value FROM batches WHERE key=?', [first['batch_key']]).fetchone()[0])
+        batch_key = (first['batch_key'] if missing_stage == 'retest'
+                     else state['archive'][0]['batches'][0]['data_key'])
+        cached = json.loads(db.execute('SELECT value FROM batches WHERE key=?', [batch_key]).fetchone()[0])
         group = cached['storage_group_key']
         first['dps'] = 99999.  # Checkpoint summaries are not independent scoring evidence.
         db.execute("UPDATE state_fields SET value=? WHERE key='ga'", [json.dumps(state['ga'])])
     missing = result_store.read_records('batches', group)
-    assert len(missing) == 12
+    expected_missing = 12 if missing_stage == 'retest' else 6
+    assert len(missing) == expected_missing
     (result_store.DATA_ROOT / 'batches' / (group + '.parquet')).unlink()  # Isolated test data only.
     fresh = []
     def evaluate(profile, candidate, folder, **kwargs):
@@ -762,11 +766,198 @@ def test_public_publication_failure_preserves_old_four_and_resume_repairs_only_m
     outcome = json.loads(capsys.readouterr().out)[0]
     assert outcome['status'] == 'completed'
     assert set(fresh) == {row['batch_key'] for row in missing}
-    assert len(fresh) == len(set(fresh)) == 12
+    assert len(fresh) == len(set(fresh)) == expected_missing
     current = result_store.read_records('seed_selected', scope)
     assert len(current) == 4
     assert {row['score'] for row in current} == {100.}
     assert {row['contract_version'] for row in current} == {2}
+
+
+@pytest.mark.parametrize('mixed_new_groups', [False, True], ids=['all_frozen', 'mixed_new'])
+def test_public_four_group_resume_uses_frozen_outer_pool_after_next_batch_toml_changes(
+        tmp_path, capsys, monkeypatch, registered_six, mixed_new_groups):
+    from unittest.mock import patch
+    import threading
+    import engine
+    import sequence
+    import simulation_config
+    from runtime import TaskCancelled
+    from seed_training import main
+    from test_seed_training import training_boundary
+    from test_search import _fast_evaluate, _fast_reference
+    config = tmp_path / 'config.toml'
+    config.write_text('[training]\ntop_k=4\ncoarse_iterations=2\nretest_iterations=4\n'
+                      'retest_batches=1\ncrossover_probability=0.0\nmutation_probability=0.0\n')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
+    args = ['--project', str(tmp_path), 'run', '--workspace', str(tmp_path / 'work'), '--legacy']
+
+    def reference(profile, folder, character, **kwargs):
+        row = _fast_reference(profile, folder, character, **kwargs)
+        row['static_snapshot']['hero_subtree_ids'] = [31 if "San'layn" in character.name else 32]
+        return row
+
+    def pause(profile, candidate, folder, **kwargs):
+        if kwargs['iterations'] == 4:
+            raise TaskCancelled('constructed pause before retest')
+        return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
+
+    with training_boundary(), patch.object(engine, 'reference', side_effect=reference), \
+            patch.object(sequence, 'evaluate', side_effect=pause):
+        assert main([*args, '--targets', '1'] if mixed_new_groups else args) == 2
+    paused = json.loads(capsys.readouterr().out)
+    initial_groups = 2 if mixed_new_groups else 4
+    assert len(paused) == initial_groups and all(row['status'] == 'paused' for row in paused)
+    manifests = list((tmp_path / 'work' / 'ga').glob('*/*/identity.json'))
+    assert len(manifests) == initial_groups
+    frozen = {path: path.read_bytes() for path in manifests}
+    config.write_text('[training]\nmax_trainings=10\nmax_processes=2\n'
+                      'top_k=4\nretest_batches=1\nretest_iterations=4\n'
+                      'crossover_probability=0.0\nmutation_probability=0.0\n'
+                      if mixed_new_groups else '[training]\nmax_trainings=1\nmax_processes=1\n')
+    barrier, lock, groups = threading.Barrier(4, timeout=3), threading.Lock(), set()
+
+    def resumed(profile, candidate, folder, **kwargs):
+        group = (kwargs['character'].name, kwargs['simulation_config']['scene'])
+        with lock:
+            first = group not in groups
+            groups.add(group)
+        if first:
+            barrier.wait()  # Four actual groups must enter the executor together, not one group with five workers.
+        return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
+
+    with training_boundary(), patch.object(engine, 'reference', side_effect=reference), \
+            patch.object(sequence, 'evaluate', side_effect=resumed):
+        assert main(args) == 0
+    completed = json.loads(capsys.readouterr().out)
+    assert len(groups) == len(completed) == 4
+    for row in completed:
+        new = mixed_new_groups and row['configuration_key']['target_type'] == 'aoe'
+        assert row['training_config']['max_trainings'] == (10 if new else 4)
+        assert row['training_config']['max_processes'] == (2 if new else 5)
+    assert 4 * max(row['training_config']['max_processes'] for row in completed) == 20
+    assert all(path.read_bytes() == contents for path, contents in frozen.items())
+
+
+def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_errors(
+        tmp_path, monkeypatch, registered_six):
+    from unittest.mock import patch
+    import sqlite3
+    import result_store
+    import sequence
+    import simulation_config
+    from runtime import TaskCancelled
+    from search import TaskStore
+    from seed_training import run_training
+    from test_character_export import sample_profile
+    from test_seed_training import training_boundary
+    from test_search import _fast_evaluate
+    config = tmp_path / 'config.toml'
+    config.write_text('[training]\ntop_k=4\ncrossover_probability=0.0\nmutation_probability=1.0\n')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile())
+    workspace = tmp_path / 'work'
+    fresh = []
+
+    def pause_before_mutation(profile, candidate, folder, **kwargs):
+        fresh.append((Path(folder).name, kwargs['iterations']))
+        if kwargs.get('trace'):
+            raise TaskCancelled('constructed pause before breeding')
+        return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
+
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=pause_before_mutation):
+        with pytest.raises(TaskCancelled, match='before breeding'):
+            run_training(template, 1, workspace)
+    database = next((workspace / 'ga').glob('*/*/task.sqlite3'))
+    with sqlite3.connect(database) as db:
+        state = TaskStore.load_state(db)
+        assert state['ga']['phase'] == 'breed'
+        keys = {row['batches'][0]['data_key'] for row in state['archive']}
+        group = json.loads(db.execute('SELECT value FROM batches WHERE key=?', [next(iter(keys))]).fetchone()[0])[
+            'storage_group_key']
+    assert len(keys) == 6
+    reader, attempts = result_store.one, []
+
+    def unavailable(table, field, value, **kwargs):
+        if table == 'batches' and value in keys:
+            attempts.append(value)
+            raise result_store.DataReadError('constructed temporary coarse read failure')
+        return reader(table, field, value, **kwargs)
+
+    fresh.clear()
+    with training_boundary(), patch.object(result_store, 'one', side_effect=unavailable), \
+            patch.object(sequence, 'evaluate', side_effect=pause_before_mutation):
+        with pytest.raises(result_store.DataReadError, match='temporary coarse read failure'):
+            run_training(template, 1, workspace)
+    assert attempts and len(attempts) == len(set(attempts))
+    assert not fresh  # A transient read failure is not permission to recompute or breed.
+    (result_store.DATA_ROOT / 'batches' / (group + '.parquet')).unlink()
+    verified = []
+
+    def counted(table, field, value, **kwargs):
+        if table == 'batches' and value in keys:
+            verified.append(value)
+        return reader(table, field, value, **kwargs)
+
+    with training_boundary(), patch.object(result_store, 'one', side_effect=counted), \
+            patch.object(sequence, 'evaluate', side_effect=pause_before_mutation):
+        with pytest.raises(TaskCancelled, match='before breeding'):
+            run_training(template, 1, workspace)
+    assert set(verified) == keys and len(verified) == len(keys)
+    assert {key for key, iterations in fresh if iterations == 32} == keys
+    assert len([key for key, iterations in fresh if iterations == 32]) == 6
+    assert fresh[-1][1] == 2  # Only after repaired coarse evidence may the original feedback resume.
+
+
+def test_public_alias_template_cannot_bypass_frozen_group_scheduling(
+        tmp_path, capsys, monkeypatch, registered_six):
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    import seed_training
+    import sequence
+    import simulation_config
+    from runtime import TaskCancelled
+    from test_character_export import sample_profile
+    from test_seed_training import training_boundary
+    config = tmp_path / 'config.toml'
+    config.write_text('[training]\nmax_trainings=1\nmax_processes=16\ntop_k=4\n'
+                      'crossover_probability=0.0\nmutation_probability=0.0\n')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile())
+    alias = tmp_path / 'copied-standard.simc'
+    alias.write_bytes(template.read_bytes())
+    workspace = tmp_path / 'work'
+    args = ['--project', str(tmp_path), 'run', '--workspace', str(workspace), '--legacy']
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=TaskCancelled('pause initial')):
+        assert seed_training.main([*args, '--template', str(template)]) == 2
+    assert len(json.loads(capsys.readouterr().out)) == 2
+    frozen = {path: path.read_bytes() for path in (workspace / 'ga').glob('*/*/identity.json')}
+    assert len(frozen) == 2
+    config.write_text('[training]\nmax_trainings=10\nmax_processes=2\n')
+    pools, scores = [], []
+
+    def executor(*args, **kwargs):
+        pools.append(kwargs['max_workers'])
+        return ThreadPoolExecutor(*args, **kwargs)
+
+    def forbidden_score(*args, **kwargs):
+        scores.append(kwargs['iterations'])
+        raise TaskCancelled('unexpected alias scoring')
+
+    with training_boundary(), patch.object(seed_training, 'ThreadPoolExecutor', side_effect=executor), \
+            patch.object(sequence, 'evaluate', side_effect=forbidden_score):
+        assert seed_training.main([*args, '--template', str(alias)]) == 2
+    output = capsys.readouterr()
+    assert not pools and not scores  # Reject before the actual outer pool can pair 10 groups with frozen 16.
+    assert '跨模板路径' in output.err and '原模板路径' in output.err
+    assert '五场景复测' not in output.err and not output.out
+    # The public API must not bypass the same guard through run_group's scope lookup.
+    with training_boundary(), patch.object(sequence, 'evaluate', side_effect=forbidden_score):
+        with pytest.raises(ValueError, match='跨模板路径'):
+            seed_training.run_training(alias, 1, workspace)
+    assert not scores
+    assert all(path.read_bytes() == contents for path, contents in frozen.items())
 
 
 def test_public_run_training_defaults_really_cross_and_mutate_without_global_rng_patch(

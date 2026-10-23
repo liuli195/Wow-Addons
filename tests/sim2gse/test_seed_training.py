@@ -171,6 +171,104 @@ def test_training_entry_refuses_missing_definition_before_starting_compute(tmp_p
     assert '已审核' in capsys.readouterr().err
 
 
+@pytest.mark.parametrize('entry', ['run', 'prepare'])
+def test_training_cli_override_repairs_partial_config_without_precheck_losing_it(
+        tmp_path, capsys, monkeypatch, memory_training_center, entry):
+    from itertools import permutations
+    from seed_training import main
+    from test_character_export import sample_profile
+    import simulation_config
+
+    config = tmp_path / 'training.toml'
+    config.write_text('[training]\nmax_trainings=10\ntop_k=4\n'
+                      'crossover_probability=0.0\nmutation_probability=0.0\n', encoding='utf-8')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    material = tmp_path / 'material.json'
+    for index, actions in enumerate(list(permutations(('outbreak', 'death_coil', 'scourge_strike')))[:4]):
+        material.write_text(json.dumps(dict(label=str(index), class_name='deathknight', spec='unholy',
+            source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
+            family='fixture', core=[], program=[[action] for action in actions])), encoding='utf-8')
+        assert command(tmp_path, ['register', str(material)]) == 0
+    capsys.readouterr()
+    with training_boundary():
+        assert command(tmp_path, [entry, '--template', str(template), '--targets', '1', '--max-processes', '2',
+                                 '--workspace', str(tmp_path / 'work')]) == 0
+    outcome = json.loads(capsys.readouterr().out)[0]
+    assert outcome['status'] == ('completed' if entry == 'run' else 'prepared')
+    if entry == 'run':
+        assert outcome['training_config']['max_trainings'] == 10
+        assert outcome['training_config']['max_processes'] == 2
+    # 独立check仍校验文件本身，不继承上一条CLI调用的覆盖值。
+    with training_boundary():
+        assert main(['--project', str(tmp_path), 'check', '--template', str(template), '--legacy']) == 2
+    assert '乘积不得超过20' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(('settings', 'expected'), [
+    ('', ('8候选', '120请求批', '15360请求迭代')),
+    ('top_k=4\nretest_batches=2\nretest_iterations=7\n', ('4候选', '40请求批', '280请求迭代')),
+])
+def test_training_run_shows_requested_retest_maximum_before_compute_and_keeps_it_on_resume(
+        tmp_path, capsys, monkeypatch, memory_training_center, settings, expected):
+    from itertools import permutations
+    from unittest.mock import patch
+    from test_character_export import sample_profile
+    from test_search import _fast_evaluate
+    from runtime import TaskCancelled
+    import engine
+    import sequence
+    import simulation_config
+
+    config = tmp_path / 'training.toml'
+    config.write_text('[training]\nmax_trainings=1\nmax_processes=1\n'
+                      'crossover_probability=0.0\nmutation_probability=0.0\n' + settings, encoding='utf-8')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    material = tmp_path / 'material.json'
+    for index, actions in enumerate(list(permutations(('outbreak', 'death_coil', 'scourge_strike')))[:4]):
+        material.write_text(json.dumps(dict(label=str(index), class_name='deathknight', spec='unholy',
+            source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
+            family='fixture', core=[], program=[[action] for action in actions])), encoding='utf-8')
+        assert command(tmp_path, ['register', str(material)]) == 0
+    capsys.readouterr()
+    options = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
+    for resume in (False, True):
+        checked = []
+
+        def check_startup():
+            if not checked:
+                message = capsys.readouterr()
+                assert all(value in message.err for value in expected)
+                assert '五场景复测' in message.err and '非实际有效样本' in message.err
+                assert message.out == ''
+                checked.append(True)
+
+        def evaluate(profile, candidate, folder, **kwargs):
+            check_startup()
+            if not resume:
+                raise TaskCancelled('fixture pause after startup')
+            return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
+
+        with training_boundary():
+            reference = engine.reference
+
+            def checked_reference(*args, **kwargs):
+                check_startup()
+                return reference(*args, **kwargs)
+
+            with patch.object(engine, 'reference', side_effect=checked_reference), \
+                    patch.object(sequence, 'evaluate', side_effect=evaluate):
+                assert command(tmp_path, options) == (0 if resume else 2)
+        assert checked
+        outcome = json.loads(capsys.readouterr().out)[0]
+        assert outcome['status'] == ('completed' if resume else 'paused')
+        # 下一新任务参数不可改写恢复摘要，恢复仍沿初次冻结请求量。
+        config.write_text('[training]\ntop_k=12\nretest_batches=1\nretest_iterations=2\n', encoding='utf-8')
+
+
 def test_training_list_defaults_to_burst_and_preserves_legacy_results(tmp_path, capsys):
     from seed_training import main, SELECTED_SCHEMA
     import result_store
@@ -311,6 +409,59 @@ def test_unconnected_public_search_does_not_create_data_root(tmp_path, monkeypat
     assert not data_root.exists()
 
 
+
+
+@pytest.mark.parametrize('illegal_program', [
+    [['death_coil'] * 16],
+    [dict(kind='CastSequence', members=['death_coil'] * 32)],
+])
+def test_prepare_rejects_oversize_macro_without_losing_legal_materials(
+        tmp_path, capsys, memory_training_center, illegal_program):
+    from test_character_export import sample_profile
+
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    material = tmp_path / 'material.json'
+    for label, program in [('oversize', illegal_program), ('legal', [['outbreak']])]:
+        material.write_text(json.dumps(dict(label=label, class_name='deathknight', spec='unholy',
+            source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
+            family='fixture', core=[], program=program)), encoding='utf-8')
+        assert command(tmp_path, ['register', str(material)]) == 0
+    capsys.readouterr()
+    with training_boundary():
+        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
+                                 '--workspace', str(tmp_path / 'work')]) == 0
+    prepared = json.loads(capsys.readouterr().out)[0]
+    assert prepared['preparation']['unique_inputs'] == 1
+    assert prepared['preparation']['rejected'] == 1
+    assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', prepared['config_key']]) == 0
+    sources = {row['label']: row for row in json.loads(capsys.readouterr().out) if row['kind'] == 'source'}
+    assert sources['oversize']['status'] == 'rejected'
+    assert '255 字节' in sources['oversize']['reason']
+    assert sources['legal']['status'] == 'ready'
+
+
+@pytest.mark.parametrize('boundary', ['load_targeting', 'run_command'])
+def test_prepare_keeps_tool_failure_explicit_instead_of_rejecting_material(
+        tmp_path, capsys, memory_training_center, boundary):
+    from test_character_export import sample_profile
+    from unittest.mock import patch
+    import codec
+
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile(), encoding='utf-8')
+    material = tmp_path / 'material.json'
+    material.write_text(json.dumps(dict(label='legal', class_name='deathknight', spec='unholy',
+        source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
+        family='fixture', core=[], program=[['outbreak']])), encoding='utf-8')
+    assert command(tmp_path, ['register', str(material)]) == 0
+    capsys.readouterr()
+    with training_boundary(), patch.object(codec, boundary, side_effect=ValueError('受检编译工具或目标资料故障')):
+        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
+                                 '--workspace', str(tmp_path / 'work')]) == 2
+    output = capsys.readouterr()
+    assert '受检编译工具或目标资料故障' in output.err
+    assert json.loads(output.out)[0]['status'] == 'paused'
 
 
 def test_prepare_reuses_context_and_only_rebuilds_changed_sources(tmp_path, capsys, memory_training_center):
