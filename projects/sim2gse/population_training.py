@@ -405,10 +405,12 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
 
 
 def _selected(ga, store, manifest, character, ready, configuration_key):
-    from result_store import one
+    from result_store import DATA_ROOT, read_many, report_locations
     from seed_training import SELECTED_V2_SCHEMA
     from program import canonicalize_search_program
     archive = {row['key']: row for row in store.state['archive']}
+    condition = digest(manifest)
+    receipts = {}
     qualified = []
     for identity in ga['finalists']:
         scenarios = {}
@@ -421,16 +423,16 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
                     raise ValueError('发布缺少可靠复测批次')
                 request = cached['request']
                 expected_seed = manifest['stage_plan'][scenario]['seeds'][index]
-                if (digest(request) != row['batch_key'] or request['condition'] != digest(manifest)
+                if (digest(request) != row['batch_key'] or request['condition'] != condition
                         or request['behavior_identity'] != identity or request['purpose'] != scenario
                         or request['seed'] != expected_seed
                         or request['iterations'] != manifest['training_config']['retest_iterations']
                         or any(row[field] != cached[field] for field in ('dps', 'samples'))
                         or row['candidate_key'] != identity):
                     raise ValueError('发布复测凭据与冻结候选/条件/成绩不符')
-                saved = one('batches', 'batch_key', row['batch_key'], group_key=cached.get('storage_group_key'))
-                _validate_saved_batch(saved, row['batch_key'], cached, character, index, scenario,
-                                      ready['simulation_config'])
+                if row['batch_key'] in receipts:
+                    raise ValueError('发布复测凭据重复；旧四条保持不变')
+                receipts[row['batch_key']] = (cached, index, scenario)
             samples = sum(row['samples'] for row in batches)
             scenarios[scenario] = dict(dps=sum(row['dps'] * row['samples'] for row in batches) / samples,
                                        samples=samples, batches=batches)
@@ -440,6 +442,33 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             continue
         loss = max((nominal - scenarios[name]['dps']) / nominal for name in SCENARIOS[1:])
         qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=scenarios))
+    missing_locations = [key for key, (cached, _, _) in receipts.items()
+                         if not cached.get('storage_group_key')]
+    locations = (report_locations(missing_locations)
+                 if missing_locations and (DATA_ROOT / '.report-locations.jsonl').exists() else {})
+    groups = {}
+    for key, receipt in receipts.items():
+        group = receipt[0].get('storage_group_key') or locations.get(key) or key
+        groups.setdefault(group, {})[key] = receipt
+    for group, targets in groups.items():
+        saved_rows = read_many('batches', [group])
+        if len(saved_rows) > 12:
+            raise ValueError('发布报告组超过十二份；旧四条保持不变')
+        found = set()
+        for saved in saved_rows:
+            key = saved.get('batch_key')
+            if key not in targets:
+                continue
+            if key in found:
+                raise ValueError('发布复测报告重复；旧四条保持不变')
+            found.add(key)
+            cached, index, scenario = targets[key]
+            _validate_saved_batch(saved, key, cached, character, index, scenario,
+                                  ready['simulation_config'])
+        if found != targets.keys():
+            raise ValueError('发布缺少完整复测报告；旧四条保持不变')
+        # Only small receipts survive the group; do not retain the last full report.
+        del saved_rows, saved
     if len(qualified) < 4:
         reasons = '; '.join(identity[:12] + ': ' + reason for identity, reason in ga.get('ineligible', {}).items())
         raise ValueError('五场景完整复测后合格不同行为不足四条；旧四条保持不变' + ('; ' + reasons if reasons else ''))
@@ -457,7 +486,7 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
         if canonicalize_search_program(program, ready['context']['capabilities'])['identity'] != row['identity']:
             raise ValueError('发布程序行为身份不符')
         record = dict.fromkeys(SELECTED_V2_SCHEMA)
-        record.update(configuration_key=configuration_key, candidate_id=row['identity'], condition=digest(manifest),
+        record.update(configuration_key=configuration_key, candidate_id=row['identity'], condition=condition,
             class_name=character.class_name, spec=character.spec, targets=ready['simulation_config']['target_count'],
             program=program, family='ga', score=row['nominal'],
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],

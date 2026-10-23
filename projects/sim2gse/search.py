@@ -1007,18 +1007,21 @@ class TaskStore:
             deferred = getattr(self, 'defer_persistence', False)
             self.defer_persistence = False
             try:
-                self.flush_reports()
+                state_committed = self.flush_reports()
                 if self.unsaved_batches:
                     with self._transaction():
                         for key, value in self.unsaved_batches.items():
-                            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
+                            payload = _json(value)
+                            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, payload))
                             if value.get('status') == 'success' and value['request']['purpose'] != 'final':
-                                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, _json(value)))
+                                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, payload))
                         self.persisted_batches = self.db.execute(
                             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
                         self.state['completed_batches'] = self.persisted_batches
                     self.unsaved_batches.clear()
-                self.save()
+                    state_committed = False  # The summaries changed completed_batches after the report commit.
+                if not state_committed:
+                    self.save()
             finally:
                 self.defer_persistence = deferred
 
@@ -1046,14 +1049,15 @@ class TaskStore:
         return None
 
     def flush_reports(self, *, replace_group=None):
+        """Return whether this invocation committed the complete buffered state."""
         if getattr(self, 'defer_persistence', False):
-            return
+            return False
         from result_store import write, _api, DATA_ROOT, prepare_batch
         publish_started = diagnostic_start() if self.diagnostic_logging else None
         try:
             with self.lock:
                 if not self.report_buffer:
-                    return
+                    return False
             with self.lock, self.report_locations.locked() as locations:
                 api = _api()
                 number = self.state.get('next_report_group', 0)
@@ -1138,12 +1142,17 @@ class TaskStore:
                                 diagnostic_finish(self, 'report.write', started, rows=len(retained), groups=1,
                                                   replacements=len(plan['replacements']))
                     last = position == len(plans) - 1
+                    if last:
+                        # Persist the caller's archive/GA references in the same final transaction.
+                        # Every group is published before assigning these reserved locations.
+                        for key, row, _ in self.report_buffer:
+                            row['storage_group_key'] = locations.entries[key]
                     self._commit_report_group(group, group_number, metadata, checkpoint=last,
                                               clear_intents=tuple(plans) if last else ())
                 for key, row, metadata_row in self.report_buffer:
-                    row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
                     metadata_row['_report_path'].unlink(missing_ok=True)
                 self.report_buffer.clear()
+                return True
         finally:
             if self.diagnostic_logging:
                 diagnostic_finish(self, 'report.publish', publish_started)
@@ -1151,9 +1160,10 @@ class TaskStore:
     def _commit_report_group(self, group, number, metadata, *, checkpoint=True, clear_intents=()):
         with self.lock, self._transaction():
             for key, row in metadata:
-                self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(row)))
+                payload = _json(row)
+                self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, payload))
                 if row['request']['purpose'] != 'final':
-                    self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, _json(row)))
+                    self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, payload))
                 self.verified_batches[key] = row
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
@@ -1295,9 +1305,10 @@ class TaskStore:
             return
         with self.lock, self._transaction():
             self.verified_batches.pop(key, None)
-            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
+            payload = _json(value)
+            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, payload))
             if value.get('status')=='success' and value['request']['purpose']!='final':
-                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
+                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,payload))
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
             self.persisted_batches = self.state['completed_batches']

@@ -84,3 +84,158 @@ def test_scoped_checkpoint_failure_rolls_back_and_retry_persists_all_changes(tmp
     assert _reopen_checkpoint(store) == expected
     assert expected['pending'][0]['receipt']['feedback']['reward'] == .75
     assert expected['archive'][1]['evidence']['samples'] == [2, 4]
+
+
+def _stage_checkpoint_reports(store, count=1):
+    import result_store
+    from task import parse_character
+    from test_character_export import sample_profile
+    from test_search import _fast_report
+
+    result_store.DATA_ROOT.mkdir(exist_ok=True)
+    store.character = parse_character(sample_profile())
+    store.simulation_config = None
+    store.state.setdefault('completed_batches', 0)
+    store.defer_persistence = True
+    rows = []
+    for index in range(count):
+        key = f'batch-{index}'
+        request = dict(condition='condition', program=[['outbreak']], purpose='search',
+            behavior_identity='candidate', seed=100 + index, input_seed=200 + index,
+            iterations=3, times=[0, 300], stats='paired-bootstrap-v1', trace=False,
+            reset_events=[])
+        row = dict(status='success', request=request, dps=100.0 + index, samples=2,
+                   variance=0, requested_iterations=3, data_key=key, feedback=None)
+        stored = dict(batch_key=key, run_id='checkpoint', condition_key='condition',
+            candidate_key='candidate', program_identity='[["outbreak"]]', purpose='search',
+            batch_index=index, scenario='nominal', stats_version='paired-bootstrap-v1',
+            seed=100 + index, input_seed=200 + index, iterations=3, times=[0, 300],
+            trace=False, dps=100.0 + index, samples=2, variance=0, requested_iterations=3,
+            report=_fast_report(store.character, 100.0 + index, 2))
+        path = store.destination / 'batches' / key / 'native.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(stored['report']), encoding='utf-8')
+        store.stage_report(key, row, stored, report_path=path)
+        rows.append(row)
+    # The caller owns these original summaries, not the copies used in SQLite.
+    store.state['archive'][0]['batches'] = rows
+    store.state['ga'] = dict(receipts=rows)
+    return rows
+
+
+def test_report_checkpoint_persists_original_locations_with_one_complete_comparison(tmp_path):
+    store = _new_checkpoint(tmp_path)
+    store.state['config']['diagnostic_logging'] = True
+    rows = _stage_checkpoint_reports(store, count=12)
+    before = store.state_write_count
+    store.checkpoint()
+    comparisons = store.state_write_count - before
+    assert len({row['storage_group_key'] for row in rows}) == 1
+    assert rows[0]['storage_group_key'] == 'checkpoint_g0'
+    assert store.state['completed_batches'] == store.persisted_batches == 12
+    assert not store.report_buffer
+    expected = copy.deepcopy(store.state)
+    assert _reopen_checkpoint(store) == expected
+    assert comparisons == 1
+
+
+def test_mixed_checkpoint_and_immediate_batch_encode_each_summary_once(tmp_path, monkeypatch):
+    from search import TaskStore
+
+    store = _new_checkpoint(tmp_path)
+    store.state['config']['diagnostic_logging'] = True
+    _stage_checkpoint_reports(store)
+    summaries = {
+        'cached': dict(status='success', request=dict(purpose='search'), data_key='cached',
+                       dps=101, samples=2, variance=0),
+        'final': dict(status='success', request=dict(purpose='final'), data_key='final',
+                      dps=102, samples=2, variance=0),
+        'failed': dict(status='failed', data_key='failed', error='constructed failure'),
+    }
+    for key, row in summaries.items():
+        store.put_batch(key, row)
+    encodings = {}
+    dumps = json.dumps
+
+    def counted_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and value.get('data_key') and value.get('status'):
+            key = value['data_key']
+            encodings[key] = encodings.get(key, 0) + 1
+        return dumps(value, *args, **kwargs)
+
+    # Observe the real JSON boundary without replacing storage or publication.
+    monkeypatch.setattr(json, 'dumps', counted_dumps)
+    store.checkpoint()
+    assert store.state_write_count == 2  # Mixed summaries still require the final save.
+    store.defer_persistence = False
+    immediate = dict(summaries['cached'], data_key='immediate')
+    store.put_batch('immediate', immediate)
+    assert store.state['completed_batches'] == store.persisted_batches == 4
+    assert all(store.batch(key) == row for key, row in summaries.items())
+    assert store.batch('immediate') == immediate
+    other = store.destination.parent / 'other-task'
+    other.mkdir()
+    shared = TaskStore(other)
+    try:
+        assert shared.batch('batch-0')['storage_group_key'] == 'checkpoint_g0'
+        assert shared.batch('cached') == summaries['cached']
+        assert shared.batch('immediate') == immediate
+        assert shared.batch('final') is None
+        assert shared.batch('failed') is None
+    finally:
+        shared.close()
+    expected = copy.deepcopy(store.state)
+    assert _reopen_checkpoint(store) == expected
+    assert encodings == {'batch-0': 1, 'cached': 1, 'final': 1, 'failed': 1, 'immediate': 1}
+
+
+@pytest.mark.parametrize('with_summary', [False, True])
+def test_empty_report_checkpoint_still_saves_nested_state_and_summary_count(tmp_path, with_summary):
+    store = _new_checkpoint(tmp_path)
+    store.state['config']['diagnostic_logging'] = True
+    store.defer_persistence = True
+    store.state['pending'][0]['receipt']['feedback']['reward'] = .25
+    if with_summary:
+        store.put_batch('cached', dict(status='success', request=dict(purpose='search'),
+            data_key='cached', dps=100, samples=2, variance=0))
+    store.checkpoint()
+    assert store.state_write_count == 1
+    assert store.state.get('completed_batches', 0) == store.persisted_batches == int(with_summary)
+    expected = copy.deepcopy(store.state)
+    assert _reopen_checkpoint(store) == expected
+
+
+@pytest.mark.parametrize('resume', ['same_object', 'reopen'])
+def test_last_report_group_failure_keeps_reliable_reports_for_retry_or_recovery(tmp_path, resume):
+    import sqlite3
+    from search import TaskStore
+
+    store = _new_checkpoint(tmp_path)
+    before = copy.deepcopy(store.state)
+    rows = _stage_checkpoint_reports(store, count=13)
+    store.db.execute("""CREATE TEMP TRIGGER fail_last_group BEFORE INSERT ON runtime_progress
+        WHEN (SELECT count(*) FROM batches)=13
+        BEGIN SELECT RAISE(ABORT, 'injected last group failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match='injected last group failure'):
+        store.checkpoint()
+    assert TaskStore.load_state(store.db) == before
+    assert store.persisted_batches == 12
+    assert len(store.report_buffer) == 13
+    assert store.db.execute('SELECT count(*) FROM report_intents').fetchone()[0] == 2
+    store.db.execute('DROP TRIGGER fail_last_group')
+    if resume == 'same_object':
+        store.checkpoint()
+    else:
+        destination, character = store.destination, store.character
+        store.close()
+        store = TaskStore(destination)
+        store.recover_reports(character, None)
+        # Recovery retains the last complete search state, not uncommitted GA changes.
+        assert store.state['archive'] == before['archive']
+    assert store.state['completed_batches'] == store.persisted_batches == 13
+    assert store.state['next_report_group'] == 2
+    assert not store.db.execute('SELECT key FROM report_intents').fetchall()
+    assert all(store.batch(row['data_key'])['status'] == 'success' for row in rows)
+    assert not list((store.destination / 'batches').glob('*/native.json'))
+    expected = copy.deepcopy(store.state)
+    assert _reopen_checkpoint(store) == expected

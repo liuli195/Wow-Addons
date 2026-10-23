@@ -104,6 +104,91 @@ def registered_six(tmp_path):
     return programs
 
 
+def test_public_selection_reads_each_report_group_once_without_skipping_receipts(
+        tmp_path, capsys, monkeypatch, registered_six):
+    from unittest.mock import patch
+    from weakref import WeakValueDictionary
+    import sqlite3
+    import population_training
+    import result_store
+    import simulation_config
+    from seed_training import main, shared_scope
+    from test_character_export import sample_profile
+    from test_seed_training import training_boundary
+    config = tmp_path / 'config.toml'
+    config.write_text('[training]\ntop_k=6\nretest_batches=4\ncrossover_probability=0.0\nmutation_probability=0.0\n')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
+    template = tmp_path / 'standard.simc'
+    template.write_text(sample_profile())
+    select = population_training._selected
+    counts = dict(reports=0, summaries=0, validations=0, manifests=0)
+    group_sizes = []
+    live_reports = WeakValueDictionary()
+    duplicate_target = False
+    class Report(dict):
+        pass
+    def selected(ga, store, manifest, *args):
+        one, many = result_store.one, result_store.read_many
+        batch, validate, digest = store.batch, population_training._validate_saved_batch, population_training.digest
+        def read_one(table, *args, **kwargs):
+            counts['reports'] += table == 'batches'
+            return one(table, *args, **kwargs)
+        def read_many(table, keys, **kwargs):
+            counts['reports'] += table == 'batches'
+            if table == 'batches':
+                assert not live_reports, '前一组完整报告必须在读取下一组前释放'
+            rows = many(table, keys, **kwargs)
+            if table == 'batches':
+                assert len(keys) == 1
+                group_sizes.append(len(rows))
+                if duplicate_target:
+                    rows[1] = rows[0]  # Same group size: a key dictionary must not swallow this duplicate.
+                rows = [Report(row) for row in rows]
+                live_reports.update((id(row), row) for row in rows)
+                assert len(live_reports) <= 12
+            return rows
+        def summary(key):
+            counts['summaries'] += 1
+            cached = batch(key)
+            # Older receipts may lack their group pointer; the existing location journal still resolves it.
+            return dict(cached, storage_group_key=None) if counts['summaries'] == 1 else cached
+        def verified(*args):
+            counts['validations'] += 1
+            return validate(*args)
+        def hashed(value):
+            counts['manifests'] += value is manifest
+            return digest(value)
+        with patch.object(result_store, 'one', new=read_one), \
+                patch.object(result_store, 'read_many', new=read_many), \
+                patch.object(store, 'batch', new=summary), \
+                patch.object(population_training, '_validate_saved_batch', new=verified), \
+                patch.object(population_training, 'digest', new=hashed):
+            return select(ga, store, manifest, *args)
+    args = ['--project', str(tmp_path), 'run', '--template', str(template), '--targets', '1',
+            '--workspace', str(tmp_path / 'work'), '--legacy']
+    with training_boundary(), patch.object(population_training, '_selected', new=selected):
+        assert main(args) == 0
+    outcome = json.loads(capsys.readouterr().out)[0]
+    rows = result_store.read_records('seed_selected', shared_scope(outcome['configuration_key']))
+    assert len(rows) == 4
+    assert [row['candidate_id'] for row in rows] == sorted(row['candidate_id'] for row in rows)
+    assert {row['score'] for row in rows} == {100.}
+    assert counts == dict(reports=10, summaries=120, validations=120, manifests=1)
+    assert group_sizes == [12] * 10
+    assert not live_reports
+    from search import TaskStore
+    database = next((tmp_path / 'work' / 'ga').glob('*/*/task.sqlite3'))
+    with sqlite3.connect(database) as db:
+        ga = TaskStore.load_state(db)['ga']
+        ga['phase'] = 'qualified'
+        db.execute("UPDATE state_fields SET value=? WHERE key='ga'", [json.dumps(ga)])
+    duplicate_target = True
+    with training_boundary(), patch.object(population_training, '_selected', new=selected):
+        assert main(args) == 2
+    assert '发布复测报告重复' in capsys.readouterr().err
+    assert result_store.read_records('seed_selected', shared_scope(outcome['configuration_key'])) == rows
+
+
 @pytest.mark.parametrize('fail_one', [False, True])
 def test_public_default_prepare_and_run_verify_four_real_template_groups_and_shared_limit(
         tmp_path, capsys, monkeypatch, registered_six, fail_one):
