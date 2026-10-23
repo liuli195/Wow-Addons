@@ -175,13 +175,13 @@ def test_cancelled_timeline_resumes_as_new_segment_and_export_failure_keeps_resu
 def test_task_records_score_revision_with_independent_clock_and_bounded_events(tmp_path, monkeypatch):
     import search_timeline
     from task import run_task
-    from test_search import _guided_search_boundary
-    from test_rule_diagnostics import _observed_evaluate
+    from test_search import _prepared_search_boundary
+    from test_search import _fast_evaluate
     starts = [[['outbreak'], ['scourge_strike']], [['outbreak'], ['death_coil']], [['outbreak'], ['epidemic']]]
     clock = [100.]
     monkeypatch.setattr(search_timeline, 'monotonic', lambda: clock[0])
     def evaluate(profile, candidate, folder, **kwargs):
-        result = _observed_evaluate(profile, candidate, folder, **kwargs)
+        result = _fast_evaluate(profile, candidate, folder, **kwargs)
         blocks = result['blocks']
         seed = kwargs['seed']
         if blocks == starts[0]:
@@ -203,7 +203,7 @@ def test_task_records_score_revision_with_independent_clock_and_bounded_events(t
         from runtime import TaskRuntime
         runtime = TaskRuntime(600)
         runtime.timeline_origin = clock[0]
-        with _guided_search_boundary(tmp_path, starts, evaluate=evaluate):
+        with _prepared_search_boundary(tmp_path, starts, evaluate=evaluate):
             result = run_task(source, tmp_path / str(cap), _runtime=runtime, search_config=dict(search_timeline=True,
                 candidate_limit=3, batch_targets=(2, 4), iterations=2, validation_batches=2))
         path, = (tmp_path / str(cap)).glob('search-timeline-*.json')
@@ -262,15 +262,14 @@ def test_resume_timeline_only_override_does_not_reset_frozen_algorithm(tmp_path)
     source = tmp_path / 'role.simc'
     source.write_text(sample_profile(), encoding='utf-8')
     with _fast_search_boundary():
-        run_task(source, tmp_path / 'task', search_config=dict(rule_initialization_enabled=True,
-            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+        run_task(source, tmp_path / 'task', search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
         resume_task(tmp_path / 'task', search_config={'search_timeline': True})
         saved = read_task(tmp_path / 'task')
-    assert saved['config']['rule_initialization_enabled'] is True
+    assert saved['config']['candidate_limit'] == 1
     assert len(list((tmp_path / 'task').glob('search-timeline-*.json'))) == 1
 
 
-def test_async_task_includes_pre_worker_preparation_from_current_configuration(tmp_path, monkeypatch):
+def test_async_task_timeline_includes_pre_worker_configuration_preparation(tmp_path, monkeypatch):
     import os
     import task
     import search_timeline
@@ -283,17 +282,16 @@ def test_async_task_includes_pre_worker_preparation_from_current_configuration(t
     clock = [100.]
     monkeypatch.setattr(task.time, 'monotonic', lambda: clock[0])
     monkeypatch.setattr(search_timeline, 'monotonic', lambda: clock[0])
-    original_open = Path.open
+    load_configuration = simulation_config.load_search_config
     delayed = False
+    def slow_configuration(*args, **kwargs):
+        nonlocal delayed
+        if not delayed:
+            delayed = True
+            clock[0] += 10.001
+        return load_configuration(*args, **kwargs)
+    monkeypatch.setattr(simulation_config, 'load_search_config', slow_configuration)
     with _fast_search_boundary():
-        rules = Path(os.environ['SIM2GSE_RULE_CONFIG'])
-        def slow_rule_file(path, *args, **kwargs):
-            nonlocal delayed
-            if path == rules and not delayed:
-                delayed = True
-                clock[0] += 10.001
-            return original_open(path, *args, **kwargs)
-        monkeypatch.setattr(Path, 'open', slow_rule_file)
         handle = task.start_task(source, tmp_path / 'async', search_config=dict(
             candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
         handle.join(10)
@@ -309,14 +307,14 @@ def test_curves_group_physical_conditions_not_algorithm_switches(tmp_path, monke
     import task
     import result_store
     sources = []
-    for name, rules, race in [('old', False, 'highmountain_tauren'),
-                               ('rules', True, 'highmountain_tauren'), ('other', False, 'orc')]:
+    for name, seed, race in [('first-seed', 20260912, 'highmountain_tauren'),
+                               ('other-seed', 20260913, 'highmountain_tauren'), ('other', 20260912, 'orc')]:
         source = tmp_path / (name + '.simc')
         source.write_text(sample_profile().replace('race=highmountain_tauren', 'race=' + race), encoding='utf-8')
         with _fast_search_boundary(), monkeypatch.context() as local:
             local.setattr(result_store, 'DATA_ROOT', tmp_path / ('center-' + name))
             task.run_task(source, tmp_path / name, search_config=dict(search_timeline=True,
-                rule_initialization_enabled=rules, candidate_limit=1, batch_targets=(2,),
+                random_seed=seed, candidate_limit=1, batch_targets=(2,),
                 iterations=2, validation_batches=1))
         sources.append(str(tmp_path / name))
     output = tmp_path / 'physical-groups.html'
@@ -325,7 +323,7 @@ def test_curves_group_physical_conditions_not_algorithm_switches(tmp_path, monke
     assert sorted(len(group['runs']) for group in groups) == [1, 2]
     together = next(group['runs'] for group in groups if len(group['runs']) == 2)
     assert together[0]['context']['comparison'] == together[1]['context']['comparison']
-    assert {run['context']['algorithm']['rule_initialization_enabled'] for run in together} == {False, True}
+    assert {run['context']['algorithm']['random_seed'] for run in together} == {20260912, 20260913}
     # Older or preparation-failed files have no proven conditions: never merge unknowns.
     unknowns = []
     for index in range(2):

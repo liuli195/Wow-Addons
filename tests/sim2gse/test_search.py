@@ -24,29 +24,52 @@ from task import cancel_task, read_task, resume_task, run_task, start_task, Task
 from search import initial_programs, TaskStore
 
 
-def _minimal_rule_pack():
-    """构造报告只覆盖这份有序起手，不冒充完整指南角色。"""
-    from copy import deepcopy
+def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
+    import random
+    from search import mutate
+    program = [['outbreak'], ['death_coil'], ['scourge_strike']]
+    feedback = dict(positions=[dict(source_position=dict(segment=0), unresolved_inputs=1)])
+    calls = []
+    def get_feedback():
+        calls.append('feedback')
+        return feedback
 
-    names = ('outbreak', 'scourge_strike', 'death_coil', 'epidemic')
-    pack = dict(schema_version=2,
-        identity_mappings=dict(hero_talents={'sample_hero': 17}),
-        general=dict(templates={}), execution_evidence={},
-        object_sets={'sample': {name: dict(kind='action', native_action=name,
-            base_button=name, native_forms=[name]) for name in names}},
-        configurations=[dict(key=dict(specialization_id=252, hero_talent='sample_hero',
-            target_type='single_target'), objects_ref='sample', execution_ref=None,
-            states={'only': dict(effect=None, expected=True, priority=[])},
-            opener=dict(source_basis='fixture: ordered task boundary', source_steps=list(names[:3]),
-                precombat=[], burst_anchor=None, independent_burst_source_steps=[],
-                ordinary_steps=[dict(action=name, source_step=index, source_form=name,
-                    attribute_query=dict(native_form=name, base_button=name,
-                                         missing='unknown_no_base_cost_fallback'))
-                    for index, name in enumerate(names[:3], 1)]))])
-    aoe = deepcopy(pack['configurations'][0])
-    aoe['key']['target_type'] = 'aoe'
-    pack['configurations'].append(aoe)
-    return pack
+    observation = {}
+    mutate(program, _fast_capabilities(), random.Random(0),
+           feedback_getter=get_feedback, observation=observation)
+    assert observation['sampled_mutation'] == 'loop'
+    assert calls == []
+
+    mutate(program, _fast_capabilities(), random.Random(1),
+           feedback_getter=get_feedback, observation=observation)
+    assert observation['sampled_mutation'] == 'insert'  # Its feedback gate is above .5.
+    assert calls == []
+
+    rng = random.Random(2)
+    child = mutate(program, _fast_capabilities(), rng,
+                   feedback_getter=get_feedback, observation=observation)
+    assert calls == ['feedback']
+    assert child == [['death_coil'], ['scourge_strike'], ['outbreak']]
+    assert observation == dict(sampled_mutation='swap', actual_mutation='move',
+                               modification_position=dict(segment=0, repair=True, target=2))
+    assert rng.random() == 0.25158329759496567
+
+
+def test_mutate_keeps_legacy_feedback_truthiness_and_random_consumption():
+    import random
+    from search import mutate
+    program = [['outbreak'], ['death_coil'], ['scourge_strike']]
+    for feedback in (None, {}):
+        rng = random.Random(2)
+        assert mutate(program, _fast_capabilities(), rng, feedback=feedback) == [
+            ['scourge_strike'], ['death_coil'], ['outbreak']]
+        assert rng.random() == 0.3610574739836072
+    rng = random.Random(2)
+    feedback = dict(positions=[dict(source_position=dict(segment=0), unresolved_inputs=1)])
+    assert mutate(program, _fast_capabilities(), rng, feedback=feedback) == [
+        ['death_coil'], ['scourge_strike'], ['outbreak']]
+    assert rng.random() == 0.25158329759496567
+
 
 
 def _fast_capabilities():
@@ -110,7 +133,7 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None, score=None, rule_observation_request=None):
+                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -147,6 +170,21 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                 trace=trace_rows, game_validation="not_run", model="constructed-test-boundary")
 
 
+def _fast_training_template(_manifest):
+    """只取固定上游模板作构造输入，不认证或执行旧构建。真实构建门禁另测。"""
+    import engine
+    from native_build import source_directory
+    manifest = json.loads((engine.ROOT / '.local/sim2gse/build/baseline/build.json').read_text())
+    fields = ('protocol', 'source_line_endings', 'mode', 'upstream_commit', 'upstream_tree',
+              'patches', 'sources', 'build_options', 'compiler_sha256')
+    source = source_directory(engine.ROOT, {name: manifest[name] for name in fields})
+    return source / 'profiles/MID2/MID2_Death_Knight_Unholy.simc'
+
+
+def _fast_identity(mode, runtime=None):
+    return Path('simc-test.exe'), dict(mode=mode, upstream_commit='test', build_options=[])
+
+
 @contextmanager
 def _fast_initialization(*, real_engine=False):
     """提供明确单目标测试配置，跳过与状态、缓存和进程故障断言无关的原生初始化。"""
@@ -168,19 +206,12 @@ def _fast_initialization(*, real_engine=False):
                     identity={"spec_id": character.spec_id or 252, "race": character.race,
                               "resource": "runic_power"})
 
-    identity = lambda mode, runtime=None: (Path("simc-test.exe"),
-        {"mode": mode, "upstream_commit": "test", "build_options": []})
+    identity = _fast_identity
     identity_boundary = nullcontext() if real_engine else patch.object(engine, "identity", side_effect=identity)
     with ExitStack() as boundary:
         boundary.enter_context(patch.dict(simulation_config.DEFAULT_CONFIG, scene='single_target'))
-        if 'SIM2GSE_RULE_CONFIG' not in os.environ:
-            root = REPOSITORY / '.local/tests'
-            root.mkdir(parents=True, exist_ok=True)
-            folder = boundary.enter_context(tempfile.TemporaryDirectory(prefix='sim2gse-ordered-rules-', dir=root))
-            path = Path(folder) / 'rules.json'
-            path.write_text(json.dumps(_minimal_rule_pack()), encoding='utf-8')
-            boundary.enter_context(patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(path)}))
         with identity_boundary, \
+             patch.object(engine, "_training_template", side_effect=_fast_training_template), \
              patch.object(engine, "reference", side_effect=_fast_reference), \
              patch.object(engine, "inspect", side_effect=lambda reference, folder:
                           _fast_inspect(reference, folder, include_item=not real_engine)), \
@@ -274,22 +305,11 @@ def _initialized_starts(starts):
 
 
 @contextmanager
-def _guided_search_boundary(directory, starts, *, evaluate=None, pack=None):
-    """保留真实初始化、规则池和选择器，只构造既有引擎报告边界。"""
-    import search
+def _prepared_search_boundary(directory, starts, *, evaluate=None):
+    """构造原生报告，保留真实四起点接口、随机变异、评分和存储。"""
     import sequence
-    from test_rule_diagnostics import _condition_pack, _observed_evaluate
-
-    pack = _condition_pack() if pack is None else pack
-    path = Path(directory) / 'rules.json'
-    path.write_text(json.dumps(pack), encoding='utf-8')
-    native = apl_pool_reference()
-    for action in native['static_snapshot']['actions']:
-        action['gcd_ms'] = 200
-    with patch.dict(os.environ, SIM2GSE_RULE_CONFIG=str(path)), \
-            _apl_task_boundary(native), \
-            _initialized_starts(starts), \
-            patch.object(sequence, 'evaluate', side_effect=evaluate or _observed_evaluate):
+    with _apl_task_boundary(), _initialized_starts(starts), \
+            patch.object(sequence, 'evaluate', side_effect=evaluate or _fast_evaluate):
         yield
 
 
@@ -364,14 +384,13 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             with _apl_task_boundary(native):
-                result = run_task(source, Path(directory) / 'search', search_config=dict(rule_initialization_enabled=True,
-                    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
+                result = run_task(source, Path(directory) / 'search', search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
                 single = run_task(source, Path(directory) / 'single', mode='single')
         self.assertEqual(result['status'], 'completed')
         self.assertEqual([row['simc_action'] for row in result['capabilities']['actions']],
                          ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
         self.assertEqual(initial_programs(result['capabilities'], native,
-                         rule_snapshot=result['rule_initialization']['rule_snapshot'], scene='single_target')[1:], [
+                         scene='single_target')[1:], [
             [['outbreak'], ['outbreak'], ['death_coil']],
             [['outbreak'], ['death_coil'], ['outbreak'], ['death_coil']],
             [['scourge_strike'], ['death_coil'], ['outbreak']],
@@ -382,29 +401,12 @@ class SearchAndValidationTests(TestCase):
     def test_task_mutates_unexecuted_apl_button_and_scores_exports_it(self):
         import result_store
         from sequence import compiled_program
-        from test_rule_diagnostics import _condition_pack, _observed_evaluate
-
-        pack = _condition_pack()
-        consumer = pack['object_sets']['sample']['consumer']
-        consumer.update(native_action='epidemic', base_button='epidemic', native_forms=['epidemic'])
-        ordinary = pack['configurations'][0]['opener']['ordinary_steps'][1]
-        ordinary['source_form'] = 'epidemic'
-        ordinary['attribute_query'].update(native_form='epidemic', base_button='epidemic')
-
-        def evaluate(*args, **kwargs):
-            result = _observed_evaluate(*args, **kwargs)
-            observations = result['report']['sim']['players'][0]['sim2gse_rule_observations']
-            for row in observations['action_observations']:
-                row.update(actual_form='epidemic', base_button='epidemic')
-            return result
-
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            with _guided_search_boundary(directory, [[['outbreak'], ['death_coil']]],
-                                         evaluate=evaluate, pack=pack):
-                result = run_task(source, Path(directory) / 'search', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
-                    input_interval_ms=200, candidate_limit=2, round_candidate_limit=1,
+            with _prepared_search_boundary(directory, [[['outbreak'], ['death_coil']]],
+                                         evaluate=_fast_evaluate):
+                result = run_task(source, Path(directory) / 'search', search_config=dict(input_interval_ms=200, candidate_limit=9, round_candidate_limit=8,
                     batch_targets=(2,), iterations=2, validation_batches=2))
                 ground = run_task(source, Path(directory) / 'ground', mode='single',
                                   program=[['death_and_decay'], ['epidemic']])
@@ -429,8 +431,6 @@ class SearchAndValidationTests(TestCase):
                 self.assertEqual(full['controlled_simulation']['report']['sim']['players'][0]['collected_data']['dps']['mean'],
                                  ground['controlled_simulation']['summary']['dps'])
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(len(saved['search']['rule_steps']), 1)
-        self.assertTrue(next(iter(saved['search']['rule_steps'].values()))['selection'])
         self.assertNotIn(['epidemic'], result['search']['records'][0]['program'])
         self.assertIn(['epidemic'], compiled_program(result['candidate']))
         self.assertGreater(result['search_result']['dps'], 0)
@@ -446,7 +446,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            config = dict(rule_initialization_enabled=True, total_budget_seconds=60, candidate_limit=2, batch_targets=(2,),
+            config = dict(total_budget_seconds=60, candidate_limit=2, batch_targets=(2,),
                           iterations=2, validation_batches=2, max_processes=2)
             with _fast_search_boundary(), \
                     _initialized_starts([[["outbreak"]], [["death_coil"]]]), \
@@ -456,7 +456,7 @@ class SearchAndValidationTests(TestCase):
                            for key in ('validation', 'global_validation') if key in row]
             record_keys = {record["key"] for record in result["search"]["records"]}
             export_keys = {path.name for path in (Path(directory) / "task" / "exports").iterdir()}
-            self.assertEqual(export_keys, record_keys | {result["rule_initialization"]["behavior_identity"]})
+            self.assertEqual(export_keys, record_keys)
             self.assertIn(result["locked_candidate_key"], record_keys)
             for record in result["search"]["records"]:
                 for row in record["batches"]:
@@ -472,7 +472,6 @@ class SearchAndValidationTests(TestCase):
         import search
         import sequence
         import program
-        from test_rule_diagnostics import _observed_evaluate
 
         entered = threading.Event()
         overlap = []
@@ -493,7 +492,7 @@ class SearchAndValidationTests(TestCase):
             if actions != initial and kwargs['iterations'] == 32:
                 if actions == generated[0]:
                     overlap.append(entered.wait(2))
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
             if actions != initial and kwargs['iterations'] == 32:
                 finished.append(actions)
                 if actions == generated[1]:
@@ -503,10 +502,10 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+            config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
                           input_interval_ms=200, batch_targets=(32,), iterations=2,
                           validation_batches=2, max_processes=2)
-            with _guided_search_boundary(directory, [[[name] for name in initial]],
+            with _prepared_search_boundary(directory, [[[name] for name in initial]],
                                          evaluate=evaluate), \
                     patch.object(program, 'compile_program', side_effect=compile_program):
                 result = run_task(source, Path(directory) / 'task', search_config=config)
@@ -525,7 +524,6 @@ class SearchAndValidationTests(TestCase):
         import sequence
         import program
         from runtime import TaskCancelled
-        from test_rule_diagnostics import _observed_evaluate
 
         cancellation = threading.Event()
         second_complete = threading.Event()
@@ -552,7 +550,7 @@ class SearchAndValidationTests(TestCase):
                 interrupted[0] = True
                 cancellation.set()
                 raise TaskCancelled('test interruption')
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
             if len(generated) >= 2 and actions == generated[1] and kwargs['iterations'] == 32:
                 second_complete.set()
             return result
@@ -561,10 +559,10 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
-            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=60, candidate_limit=4, round_candidate_limit=3,
+            config = dict(total_budget_seconds=60, candidate_limit=4, round_candidate_limit=3,
                           input_interval_ms=200, batch_targets=(32,), iterations=2,
                           validation_batches=2, max_processes=2)
-            with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate), \
+            with _prepared_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate), \
                     patch.object(program, 'compile_program', side_effect=compile_program):
                 stopped = run_task(source, destination, search_config=config, cancel_event=cancellation)
                 self.assertEqual(stopped['status'], 'cancelled')
@@ -586,7 +584,6 @@ class SearchAndValidationTests(TestCase):
         import collections
         import search
         import sequence
-        from test_rule_diagnostics import _observed_evaluate
 
         cancellation = threading.Event()
         calls = []
@@ -595,7 +592,7 @@ class SearchAndValidationTests(TestCase):
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
             wanted = 90 if actions == initial else 100
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
             result['summary']['dps'] = wanted
             result['report']['sim']['statistics']['raid_dps']['mean'] = wanted
             result['report']['sim']['players'][0]['collected_data']['dps'].update(mean=wanted, variance=10000)
@@ -609,10 +606,10 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             destination = Path(directory) / 'task'
-            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, rule_diagnostics_policy='eager', total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
+            config = dict(total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
                           input_interval_ms=200, batch_targets=(32, 128, 512),
                           iterations=2, validation_batches=2)
-            with _guided_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate):
+            with _prepared_search_boundary(directory, [[[name] for name in initial]], evaluate=evaluate):
                 interrupted = run_task(source, destination, search_config=config, cancel_event=cancellation)
                 self.assertEqual(interrupted['status'], 'cancelled')
                 cancellation.clear()
@@ -632,28 +629,10 @@ class SearchAndValidationTests(TestCase):
                 self.assertEqual([row['requested_iterations'] for row in batches], [32, 96, 384])
                 self.assertEqual([row['samples'] for row in batches], [31, 95, 383])
 
-    def test_resume_original_config_preserves_frozen_diagnostic_policy(self):
-        import sequence
-        for policy in ('on_demand', 'eager'):
-            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as directory:
-                source = Path(directory) / 'role.simc'
-                destination = Path(directory) / 'task'
-                source.write_text(sample_profile(), encoding='utf-8')
-                config = dict(candidate_limit=1, batch_targets=(2,), iterations=2,
-                              validation_batches=1)
-                with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=_fast_evaluate):
-                    run_task(source, destination, search_config=dict(config, rule_diagnostics_policy=policy))
-                    resumed = resume_task(destination, search_config=config)
-                    self.assertEqual(resumed['status'], 'completed')
-                    self.assertEqual(read_task(destination)['config']['rule_diagnostics_policy'], policy)
-                    changed = 'eager' if policy == 'on_demand' else 'on_demand'
-                    with self.assertRaisesRegex(TaskError, '恢复配置发生变化'):
-                        resume_task(destination, search_config=dict(config, rule_diagnostics_policy=changed))
 
     def test_local_and_second_global_comparisons_both_record_positions(self):
         import result_store
         import search
-        from test_rule_diagnostics import _observed_evaluate
 
         starts = [[['outbreak'], ['death_coil']], [['scourge_strike'], ['death_coil']]]
         initial_scores = {('outbreak', 'death_coil'): 100, ('scourge_strike', 'death_coil'): 50}
@@ -661,7 +640,7 @@ class SearchAndValidationTests(TestCase):
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(a['simc_action'] for block in candidate['blocks'] for a in block)
             damage = initial_scores.get(actions, 110 if 'scourge_strike' in actions else 20)
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
             result['summary']['dps'] = damage
             result['report']['sim']['statistics']['raid_dps']['mean'] = damage
             result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = damage
@@ -672,14 +651,14 @@ class SearchAndValidationTests(TestCase):
             root = Path(directory)
             source = root / "role.simc"
             source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=60, search_budget_seconds=30,
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
                           input_interval_ms=200,
                           candidate_limit=4, round_candidate_limit=1,
                           no_improvement_rounds=5, batch_targets=(2,), iterations=2,
                           validation_batches=2, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=11,
                           diagnostic_logging=True, search_observability="full")
-            with _guided_search_boundary(directory, starts, evaluate=evaluate):
+            with _prepared_search_boundary(directory, starts, evaluate=evaluate):
                 result = run_task(source, root / "task", search_config=config)
 
             run_id = json.loads((root / "task" / "profile.json").read_text())["run_id"]
@@ -739,7 +718,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-task-") as directory:
             source = Path(directory) / "角色.simc"
             source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(rule_diagnostics_policy='eager', total_budget_seconds=60, search_budget_seconds=30,
+            config = dict(total_budget_seconds=60, search_budget_seconds=30,
                           candidate_limit=2, batch_targets=(2,), iterations=2,
                           validation_batches=1, final_batches=1, final_iterations=2,
                           scenarios=("nominal",), max_processes=1, random_seed=37)
@@ -1023,7 +1002,7 @@ class SearchAndValidationTests(TestCase):
                     source,
                     destination,
                     mode="optimize",
-                    search_config={'rule_diagnostics_policy': 'eager',
+                    search_config={
                     "total_budget_seconds": 120,
                     "search_budget_seconds": 90,
                     "candidate_limit": 4,
@@ -1289,7 +1268,7 @@ class SearchAndValidationTests(TestCase):
                 "        super().stage_report(key,row,stored,**kwargs)",
                 "        with self.lock:",
                 "            if row.get('status')=='success' and self.persisted_batches==0:",
-                "                self.flush_reports()",
+                "                self.checkpoint()",
                 "                self.publish()",
                 "search.TaskStore=CheckpointStore",
                 "from task import run_task",
@@ -1493,10 +1472,9 @@ class SearchAndValidationTests(TestCase):
         import search
         import sequence
         import result_store
-        from test_rule_diagnostics import _observed_evaluate
 
         def equal_damage(profile, candidate, folder, **kwargs):
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
+            result = _fast_evaluate(profile, candidate, folder, **kwargs)
             # 同一程序的构造成绩固定，后续诊断不能把已发布请求从100改成200。
             key = json.dumps(sequence.compiled_identity(candidate), sort_keys=True)
             if key not in scores:
@@ -1521,10 +1499,9 @@ class SearchAndValidationTests(TestCase):
                       for order in itertools.islice(itertools.permutations(names), count)]
             inputs = starts + [starts[0], [['missing_action']]]
             # 构造评分仅写入本次隔离报告库。
-            with _guided_search_boundary(directory, inputs, evaluate=equal_damage), \
+            with _prepared_search_boundary(directory, inputs, evaluate=equal_damage), \
                     patch.object(result_store, 'DATA_ROOT', Path(directory) / 'data'):
-                result = run_task(source, Path(directory) / 'task', search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True,
-                    input_interval_ms=200, candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
+                result = run_task(source, Path(directory) / 'task', search_config=dict(input_interval_ms=200, candidate_limit=64, round_candidate_limit=1, batch_targets=(2,),
                     iterations=2, validation_batches=2))
                 saved = read_task(Path(directory) / 'task')
             self.assertEqual(result['status'], 'completed')
@@ -1537,56 +1514,6 @@ class SearchAndValidationTests(TestCase):
             self.assertEqual(result['search']['no_improvement_round_limit'], count)
             self.assertEqual(saved['search']['no_improvement_round_limit'], count)
 
-    def test_search_skips_exhausted_path_and_stops_only_after_all_paths_exhausted(self):
-        import threading
-        from test_rule_diagnostics import _observed_evaluate
-
-        starts = [[['death_coil']], [['outbreak']]]
-        cancellation = threading.Event()
-        diagnostic_calls = []
-
-        def cancel_after_first_path_is_skipped(profile, candidate, folder, **kwargs):
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
-            actions = [action['simc_action'] for block in candidate['blocks'] for action in block]
-            observations = result['report']['sim']['players'][0]['sim2gse_rule_observations']
-            for collection in ('inputs', 'action_observations', 'state_observations'):
-                for row in observations[collection]:
-                    row['source_step'] = row['input_index'] % len(candidate['blocks'])
-            if actions[0] == 'death_coil':
-                observations['action_observations'][0].update(attempt=True, success=True)
-            # 真正的首路径已消费机会而池空；第二路径的真实插入已启动后才取消。
-            if actions == ['death_coil', 'outbreak'] and kwargs.get('rule_observation_request'):
-                diagnostic_calls.append(actions)
-                cancellation.set()
-            return result
-
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _guided_search_boundary(directory, starts, evaluate=cancel_after_first_path_is_skipped):
-                cancelled = run_task(source, Path(directory) / 'task', cancel_event=cancellation,
-                    search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, rule_diagnostics_policy='eager',
-                    input_interval_ms=200, candidate_limit=32, round_candidate_limit=1, batch_targets=(2,),
-                    iterations=2, validation_batches=2))
-                self.assertEqual(cancelled['status'], 'cancelled')
-                self.assertTrue(cancelled['search']['chains'][0]['stalled'])
-                self.assertEqual(cancelled['search']['rounds'], 0)
-                result = resume_task(Path(directory) / 'task')
-                saved = read_task(Path(directory) / 'task', include_search_records=True)
-            self.assertEqual(result['status'], 'completed')
-            self.assertEqual(result['search']['stop_reason'], 'space_stalled')
-            self.assertEqual(result['search']['rounds'], 1)
-            self.assertEqual([chain['rounds'] for chain in result['search']['chains']], [0, 1])
-            self.assertTrue(all(chain['stalled'] for chain in result['search']['chains']))
-            self.assertEqual(saved['search']['chains'], result['search']['chains'])
-            self.assertEqual(result['search']['no_improvement_round_limit'], 2)
-            self.assertEqual(len(diagnostic_calls), 1)
-            replayed_key = next(row['key'] for row in result['search']['records']
-                                if row['program'] == [['death_coil'], ['outbreak']])
-            replayed = next(row for row in saved['search']['records'] if row['key'] == replayed_key)
-            self.assertTrue(replayed['rule_diagnostics']['pool']['complete'])
-            self.assertIn(replayed['key'], saved['search']['rule_diagnostic_replays'])
-            self.assertGreaterEqual(result['elapsed_seconds'], cancelled['elapsed_seconds'])
 
     def test_multiple_local_chains_use_their_own_observed_feedback(self):
         with tempfile.TemporaryDirectory(prefix='sim2gse-local-search-') as directory:
@@ -1594,8 +1521,8 @@ class SearchAndValidationTests(TestCase):
             names = ('outbreak', 'scourge_strike', 'epidemic', 'death_and_decay')
             starts = [[[name] for name in (*names[index:], *names[:index], 'death_coil')]
                       for index in range(2)]
-            with _guided_search_boundary(directory, starts):
-                result=run_task(source,Path(directory)/'task',search_config=dict(rule_initialization_enabled=True, adaptive_selector_enabled=True, total_budget_seconds=120,
+            with _prepared_search_boundary(directory, starts):
+                result=run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=120,
                     input_interval_ms=200,search_budget_seconds=90,candidate_limit=5,round_candidate_limit=2,batch_targets=(2,),
                     validation_batches=2,iterations=2,final_batches=2,final_iterations=2,scenarios=('nominal',)))
                 saved = read_task(Path(directory) / 'task', include_search_records=True)
@@ -1603,30 +1530,15 @@ class SearchAndValidationTests(TestCase):
             self.assertTrue(result['search']['partial_round'])
             chains=result['search']['chains']
             records = {row['key']: row for row in saved['search']['records']}
-            steps = list(saved['search']['rule_steps'].values())
-            self.assertGreaterEqual(sum(chain['rounds']>0 for chain in chains),2)
+            self.assertGreaterEqual(sum(chain['rounds'] > 0 for chain in chains), 2)
             for chain in chains:
                 if chain['rounds']:
-                    selections = [step for step in steps
-                                  if step['parent_candidate_key'] in chain['visited']]
-                    self.assertTrue(selections)
-                    for step in selections:
-                        self.assertIn(step['candidate_key'], chain['visited'])
-                        parent = records[step['parent_candidate_key']]
-                        child = records[step['candidate_key']]
-                        self.assertEqual(step['request']['parent_identity'],
-                                         parent['rule_diagnostics']['parent_identity'])
-                        feedback = step['selection']['feedback']
-                        self.assertEqual(feedback['status'], 'learned')
-                        self.assertTrue(feedback['evidence'])
-                        parent_batches = {row['data_key']: row for row in parent['batches']}
-                        child_batches = {row['data_key']: row for row in child['batches']}
-                        for evidence in feedback['evidence']:
-                            self.assertIn(evidence['parent_batch'], parent_batches)
-                            self.assertIn(evidence['candidate_batch'], child_batches)
-                            before = parent_batches[evidence['parent_batch']]
-                            self.assertEqual(evidence['parent_dps'], before['dps'])
-                            self.assertEqual(evidence['parent_samples'], before['samples'])
+                    self.assertIn(chain['feedback_source'], chain['visited'])
+                    self.assertIn(chain['feedback_source'], records)
+                    self.assertTrue(chain['feedback']['positions'])
+                    parent = records[chain['feedback_source']]['program']
+                    for position in chain['feedback']['positions']:
+                        self.assertIn(position['source_position']['segment'], range(len(parent['nodes'])))
             self.assertIn(result['search']['stop_reason'],{'candidate_limit','no_improvement','search_deadline','space_stalled'})
 
     def test_process_creation_failure_releases_thread_and_temporary_files(self):

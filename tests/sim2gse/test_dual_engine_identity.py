@@ -8,13 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
+from engine import identity as REAL_IDENTITY
 from test_burst import page_task_engine, reviewed_fixture
 from test_seed_training import memory_result_center
-from test_training_champion import REAL_CHECK_REPORT, completed_training, dual_result
+from test_training_champion import REAL_CHECK_REPORT, champion_engine, completed_training, dual_result
 
 
 @pytest.fixture
-def small_verified_engines(tmp_path, monkeypatch):
+def small_verified_engines(tmp_path, monkeypatch, page_task_engine):
     """微型产物仍通过真实构建清单、路径、源码标记和二进制 SHA 核验。"""
     import engine
     import task
@@ -56,12 +57,13 @@ def small_verified_engines(tmp_path, monkeypatch):
             return dict(rules[relative_to])
 
     # 仅引擎产物在微型根，规则每测按映射后的根真实首扫并复用副本。
-    with patch.object(task, '_rule_hashes', side_effect=verified_rules):
+    with patch.object(engine, 'identity', REAL_IDENTITY), \
+            patch.object(task, '_rule_hashes', side_effect=verified_rules):
         yield executables
 
 
 def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_budgets(
-        tmp_path, memory_result_center, page_task_engine, small_verified_engines):
+        tmp_path, memory_result_center, champion_engine, small_verified_engines):
     import burst
     import engine
     import result_store

@@ -26,7 +26,7 @@ build-and-verify verify --project .
 
 Sim2GSE 引擎构建和 pytest（Python 测试工具）验证仅在本机运行。
 
-Sim2GSE 默认旧搜索仅需 `projects/sim2gse/requirements.txt`。开发或执行包含选择器的完整 Sim2GSE 测试前，另需显式安装 `projects/sim2gse/requirements-selector.txt` 中的固定版本依赖；普通 `scripts/dev/setup.ps1` 不自动安装该可选组。两个探索开关默认关闭，显式开启选择器但缺依赖会明确失败，不会自动安装或退回旧搜索。PR 的 `verify.sim2gse` 仍为 `pr: false`，远端 PR 通过不代表选择器测试通过。
+Sim2GSE 正式局部搜索及GA预训练使用 `projects/sim2gse/requirements.txt` 中的锁定依赖；已移除自适应选择器专属依赖组和测试。`sim2gse/test_*.py` 仍由统一入口发现，包含新GA公开CLI、正式run/resume、v1/v2消费、曲线和存储故障回归。PR的 `verify.sim2gse` 仍为 `pr: false`，远端PR通过不替代必要本机验证或真实模拟验收。
 
 PR（拉取请求）中的代码、配置和工作流变更运行素材构建及全部 PR 可执行验证；仅配置中登记的文档或 MySpec（自有规格）路径变更按目标分支固定提交运行匹配检查。PR 不准备或缓存 SimulationCraft（战斗模拟器）引擎。缺文件、缺工具、断言失败和超时均返失败，不将跳过记为通过。依赖私人角色、本机研究引擎或历史报告的检查作为本机验收，在对应项目改动后按下方入口单独执行并记录结果。
 

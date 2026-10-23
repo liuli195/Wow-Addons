@@ -245,20 +245,6 @@ def plan_instructions(plan, interval_ms=None):
             '窗口期间暂停普通循环，结束后继续原位置。爆发按键位置跨窗口保留。')
 
 
-def refresh_context_instructions(context, native_identity, folder, runtime):
-    """只更新冻结计划的展示/导出帮助；同一宏动作与行为身份保持。"""
-    from program import compile_program
-    from sequence import compiled_identity
-    instructions = plan_instructions(context['plan'], context.get('interval_ms'))
-    if context['instructions'] == instructions:
-        return
-    program = copy.deepcopy(context['candidate']['program'])
-    program['metadata']['instructions'] = instructions
-    candidate = compile_program(program, folder, identity=native_identity, runtime=runtime)
-    if compiled_identity(candidate) != compiled_identity(context['candidate']):
-        raise ValueError('爆发计划说明改变了固定宏行为')
-    candidate['source'] = 'burst'
-    context.update(candidate=candidate, instructions=instructions)
 
 
 def compile_context(definition, character, capabilities, native_identity, folder, runtime, *, interval_ms=None):

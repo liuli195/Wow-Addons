@@ -125,16 +125,15 @@
 
  namespace
  {  // UNNAMED NAMESPACE
-@@ -2014,6 +2017,8 @@
+@@ -2014,6 +2017,7 @@
    bool validate_actor() override;
    double composite_attribute( attribute_e ) const override;
    double composite_bonus_armor() const override;
-+  void sim2gse_read_rule_action( action_t&, js::JsonOutput ) const override;
 +  void sim2gse_capture_static_snapshot() override;
    void combat_begin() override;
    void activate() override;
    void moving() override;
-@@ -16778,6 +16782,238 @@
+@@ -16778,6 +16782,191 @@
    return a;
  }
 
@@ -238,53 +237,6 @@
 +      sim2gse::static_effects_safe( action->runic_power_flat_effects ) ) );
 +}
 +
-+void death_knight_t::sim2gse_read_rule_action( action_t& button, js::JsonOutput row ) const
-+{
-+  // Preserve the existing finite Unholy getter audit; other actors stay unknown.
-+  if ( specialization() != DEATH_KNIGHT_UNHOLY ) return;
-+  const action_t* leaf = &button;
-+  std::set<const action_t*> seen;
-+  bool resolved = false;
-+  while ( leaf && seen.insert(leaf).second )
-+  {
-+    const action_t* next = nullptr;
-+    if ( const auto* spell = dynamic_cast<const death_knight_spell_t*>(leaf) )
-+      next = sim2gse_active_replacement(spell);
-+    else if ( const auto* attack = dynamic_cast<const death_knight_melee_attack_t*>(leaf) )
-+      next = sim2gse_active_replacement(attack);
-+    if ( !next ) return;
-+    if ( next == leaf ) { resolved = true; break; }
-+    leaf = next;
-+  }
-+  if ( !resolved ) return;
-+  row["actual_form"] = leaf->name_str;
-+  if ( leaf->target ) row["target_id"] = leaf->target->actor_index;
-+  // Resolve the real form before screening it: a zero-GCD base can have a
-+  // supported GCD replacement. The base does not certify the replacement.
-+  const auto* parsed = sim2gse_static_dk_action(leaf);
-+  if ( !parsed ) return;
-+  row["cooldown_remaining"] = leaf->cooldown->remains().total_millis();
-+  row["charges_current"] = leaf->cooldown->charges > 1 ? leaf->cooldown->current_charge :
-+                            (leaf->cooldown->up() ? 1 : 0);
-+  row["charges_maximum"] = leaf->cooldown->charges;
-+  row["has_cooldown"] = leaf->cooldown->duration > 0_ms || leaf->cooldown->remains() > 0_ms || leaf->cooldown->charges > 1;
-+  if ( sim2gse_static_cost_action(leaf) == leaf )
-+  {
-+    auto costs = row["resource_costs"];
-+    costs.val().SetObject();
-+    if ( leaf->current_resource() != RESOURCE_NONE )
-+      costs[util::resource_type_string(leaf->current_resource())] = leaf->cost();
-+  }
-+  const bool haste_safe = sim2gse_static_haste(*this);
-+  if ( haste_safe && sim2gse::static_effects_safe(parsed->gcd_effects) )
-+    row["gcd_ms"] = leaf->gcd().total_millis();
-+  if ( haste_safe && sim2gse::static_effects_safe(parsed->execute_time_effects, true) &&
-+       sim2gse::static_effects_safe(parsed->flat_execute_time_effects, true) &&
-+       (!dynamic_cast<const death_knight_spell_t*>(leaf) ||
-+        sim2gse_static_buff_value(player_t::buffs.chilled_clarity)) )
-+    row["cast_ms"] = leaf->execute_time().total_millis();
-+  row["channel_ms"] = 0;
-+}
 +
 +void death_knight_t::sim2gse_capture_static_snapshot()
 +{
@@ -375,11 +327,8 @@
  void death_knight_t::combat_begin()
 --- a/engine/player/player.cpp
 +++ b/engine/player/player.cpp
-@@ -6138,2 +6138,11 @@
+@@ -6138,2 +6138,8 @@
 
-+void player_t::sim2gse_read_rule_action( action_t&, js::JsonOutput ) const
-+{
-+}
 +
 +void player_t::sim2gse_capture_static_snapshot()
 +{
@@ -418,12 +367,11 @@
    bool        potion_used;
    double      leech_pool;  // for leech batching
 
-@@ -1162,6 +1164,8 @@
+@@ -1162,6 +1164,7 @@
    virtual void combat_begin();
    virtual void combat_end();
    virtual void precombat_init();
 +  virtual void sim2gse_capture_static_snapshot();
-+  virtual void sim2gse_read_rule_action( action_t&, js::JsonOutput ) const;
    virtual void merge( player_t& other );
    virtual void datacollection_begin();
    virtual void datacollection_end();

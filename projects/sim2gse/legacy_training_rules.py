@@ -1,54 +1,7 @@
-"""两个逻辑规则库的单包读取；所有任务使用已校验快照。"""
+"""仅核验旧v1完整训练成果内嵌规则快照；不加载或编辑current规则。"""
 import copy
-import json
 import math
-import os
-import threading
-from pathlib import Path
-
 from search import digest
-
-DEFAULT_PATH = Path(__file__).with_name('rules.json')
-
-
-def _unique_object(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError('JSON对象键重复: ' + key)
-        result[key] = value
-    return result
-
-
-def load(path=None):
-    path = Path(path) if path is not None else Path(os.environ.get('SIM2GSE_RULE_CONFIG', DEFAULT_PATH))
-    try:
-        with path.open('rb') as handle:
-            raw = handle.read(1024 * 1024 + 1)
-        if len(raw) > 1024 * 1024:
-            raise ValueError('超过1MiB配置上限')
-        pack = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object)
-        resolved = validate(pack)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
-        raise ValueError(f'规则配置 {path}: {error}') from error
-    return dict(pack=pack, resolved=resolved, rule_config_digest=digest(pack), source=str(path.resolve()),
-                schema_version=2, executor_version='three-key-opener-v3')
-
-
-_SAVE_LOCK = threading.Lock()
-
-
-def save(draft, expected_digest):
-    from task import _task_lease, _write_json
-    snapshot = load(draft)
-    target = Path(os.environ.get('SIM2GSE_RULE_CONFIG', DEFAULT_PATH))
-    with _SAVE_LOCK, _task_lease(target.parent, lock_name=target.name + '.lock',
-                               conflict_message='规则配置正由其他写者保存，请重试'):
-        current = load(target)
-        if current['rule_config_digest'] != expected_digest:
-            raise ValueError('规则配置摘要冲突：当前版本已变化，请重新读取后保存')
-        _write_json(target, snapshot['pack'], atomic=True)
-    return dict(status='saved', rule_config_digest=snapshot['rule_config_digest'], source=str(target.resolve()))
 
 
 def _nonempty(value, label):
@@ -366,7 +319,7 @@ def validate(pack):
 
 
 def bind(capabilities, snapshot, target_count, *, spec_id, rule_snapshot, scene=None):
-    """三键唯一选择；完整状态及模板声明留给02，不在初始化求值。"""
+    """仅核验旧成果冻结的英雄/场景与战前声明，不求值或生成规则。"""
     if not isinstance(snapshot, dict):
         raise ValueError('规则起点缺少真实角色静态快照，请重新构建引擎')
     trees = snapshot.get('hero_subtree_ids')
@@ -387,19 +340,4 @@ def bind(capabilities, snapshot, target_count, *, spec_id, rule_snapshot, scene=
     expected_precombat = [actions[row['action']]['native_action'] for row in opener['precombat']]
     if expected_precombat != [row['simc_action'] for row in capabilities.get('precombat_actions', [])]:
         raise ValueError('配置战前声明与现有实际执行/导出路径不一致')
-    steps = [dict(row, native_form=row['source_form']) for row in opener['ordinary_steps']]
-    steps.extend(copy.deepcopy(opener['independent_burst_source_steps']))
-    steps.sort(key=lambda row: row['source_step'])
-    for row in steps:
-        row['source_label'] = opener['source_steps'][row['source_step'] - 1]
-    normalized = dict(id=digest(configuration['key']), source=opener['source_basis'],
-                      steps=steps)
-    if opener.get('burst_anchor') is not None:
-        normalized['first_burst_step'] = opener['burst_anchor']['source_step']
-    bindings = [dict(copy.deepcopy(rule), state=state_name)
-                for state_name, state in configuration['states'].items() for rule in state['priority']]
-    return dict(configuration_key=configuration['key'], states=configuration['states'],
-        opener=normalized, bindings=bindings, parameter_sources={}, approximate=[], unknown=[],
-        native_buttons={name: row['button'] for row in actions.values()
-                        for name in [row['native_action'], *row['variants']]},
-        spec=dict(actions=actions), configuration=configuration)
+    return dict(configuration_key=configuration['key'])

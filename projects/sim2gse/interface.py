@@ -102,6 +102,13 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             raise TaskError("请求内容不是有效的 JSON（结构化数据）") from error
         if not isinstance(value, dict):
             raise TaskError("请求内容格式无效")
+        from simulation_config import reject_removed_search_settings
+        try:
+            reject_removed_search_settings(value)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        if any(name in value for name in ('rule_step', 'diagnostic_candidate_key', 'diagnostic_budget_seconds')):
+            raise TaskError('规则编辑和规则诊断执行入口已移除')
         return value
 
     def do_GET(self):  # noqa: N802
@@ -122,19 +129,12 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 _, destination = self.server.task_paths(task_id)
                 with self.server.tasks_lock:
                     entry = self.server.tasks.get(task_id)
-                details = parse_qs(urlsplit(self.path).query).get('details') == ['rule_initialization']
-                state = self._read_public_state(destination, entry, include_rule_initialization=details)
+                if parse_qs(urlsplit(self.path).query).get('details') == ['rule_initialization']:
+                    raise TaskError('规则起点详情入口已移除')
+                state = self._read_public_state(destination, entry)
             except (TaskError, OSError, ValueError) as error:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
                 return
-            for view in [state, *state.get('scenes', [])]:
-                initialization = view.get('rule_initialization')
-                if initialization:
-                    view['has_rule_initialization'] = True
-                    view['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
-                        initialization.get('compilation', 'pending'))
-                    if not details:
-                        del view['rule_initialization']
             self._send_json(HTTPStatus.OK, state)
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "页面不存在"})
@@ -201,7 +201,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         options['search_config'] = dict(
             options.get('search_config') or {}, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
-        for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+        for key in ('search_timeline',):
             if key in value:
                 if type(value[key]) is not bool:
                     raise TaskError(key + ' 必须为布尔值')
@@ -304,6 +304,8 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, _public_state(state, destination))
 
     def _resume_task(self, task_id):
+        if self.headers.get('Content-Length', '0') != '0':
+            self._body()
         _, destination = self.server.task_paths(task_id)
         with self.server.tasks_lock:
             entry = self.server.tasks.get(task_id)
@@ -385,9 +387,6 @@ def _public_state(state: dict, destination: Path) -> dict:
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
-    for name in ('rule_initialization', 'has_rule_initialization', 'rule_initialization_identity'):
-        if name in state:
-            response[name] = state[name]
     search = state.get("search") or state
     metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
                     "canonicalized_duplicates")

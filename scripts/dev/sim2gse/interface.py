@@ -26,8 +26,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         simulation_config = load_config()
-        search_config = load_search_config(rule_initialization_enabled=args.rule_initialization_enabled,
-            adaptive_selector_enabled=args.adaptive_selector_enabled, search_timeline=args.search_timeline)
+        search_config = load_search_config(search_timeline=args.search_timeline)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2

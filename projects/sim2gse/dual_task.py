@@ -55,12 +55,8 @@ def _load(destination):
 
 def _verify(row, destination, identities, *, current_rules=False):
     from burst import load
-    if not row.get('rule_snapshot'):
-        raise task.TaskError('双场任务缺少规则配置快照，请创建新任务')
-    if current_rules:
-        from rule_config import load as load_rules
-        if load_rules()['rule_config_digest'] != row['rule_snapshot']['rule_config_digest']:
-            raise task.TaskError('双场任务的规则配置已变化，请创建新任务')
+    if row.get('rule_snapshot') or not row.get('rules') or not row.get('engines'):
+        raise task.TaskError('旧规则双场任务身份不兼容，不能继续；原完整成果仍可读取')
     if hashlib.sha256((destination / 'input.original.simc').read_bytes()).hexdigest() != row['input_sha256']:
         raise task.TaskError('双场任务的冻结输入已变化，请创建新任务')
     if load(row['spec_id'])['definition_id'] != row['definition_id']:
@@ -99,13 +95,10 @@ def _child_matches(row, child, targets, scene):
     logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
     def business_config(value):
         frozen = config_for(value, legacy=True)
-        frozen.setdefault('rule_diagnostics_policy', 'eager')
         return {key: item for key, item in frozen.items() if key not in logging_keys}
     if (child['profile']['input_original_sha256'] != row['input_sha256']
             or child['simulation_config'] != dict(row['simulation_config'], target_count=targets, scene=scene)
             or business_config(child['config']) != business_config(row['config'])
-            or ((child.get('rule_initialization') or {}).get('rule_config_digest') or
-                child.get('search', {}).get('rule_config_digest')) != row['rule_snapshot']['rule_config_digest']
             or (child.get('burst') or {}).get('definition_id') != row['definition_id']):
         raise task.TaskError('父任务与子任务的冻结条件不一致')
 
@@ -167,12 +160,12 @@ def _worker(handle):
                         child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
                             search_config=row['config'], diagnostic_logging=row['config']['diagnostic_logging'],
                             simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
-                            _rule_snapshot=row['rule_snapshot'])
+                            )
                 elif (child_path / 'task.sqlite3').exists():
                     child = task.resume_task(child_path, cancel_event=handle.cancel_event, _runtime=runtime,
                         search_config=row['config'], diagnostic_logging=row['config']['diagnostic_logging'],
                         simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
-                            _rule_snapshot=row['rule_snapshot'])
+                            )
                 else:
                     if child_path.exists():
                         # Preparation stopped before the durable search state existed. Preserve its files.
@@ -184,10 +177,9 @@ def _worker(handle):
                         child_path = destination / row[purpose + '_path']
                     child = task.run_task(destination / 'input.original.simc', child_path,
                         use_burst=True, burst_identity={key: row[key] for key in ('spec_id', 'definition_id')},
-                        cancel_event=handle.cancel_event, search_config=dict(row['config'],
-                            rule_diagnostics_policy=row['config'].get('rule_diagnostics_policy', 'eager')), _runtime=runtime,
+                        cancel_event=handle.cancel_event, search_config=row['config'], _runtime=runtime,
                         simulation_config=dict(row['simulation_config'], target_count=targets, scene=purpose),
-                            _rule_snapshot=row['rule_snapshot'])
+                            )
                 if child.get('status') == 'cancelled':
                     raise TaskCancelled('已取消；已完成的场景保留')
                 if child.get('status') != 'completed' or not child.get('candidate'):
@@ -247,8 +239,6 @@ def _worker(handle):
 
 def start(input_path, destination, *, search_config=None, simulation_config=None):
     started = time.monotonic()
-    from rule_config import load as load_rules
-    rule_snapshot = load_rules()
     from burst import select_definition
     from engine import identity
     destination = Path(destination).resolve()
@@ -262,7 +252,7 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     row = dict(parent_id=uuid.uuid4().hex, status='starting', phase='prepare', error=None,
                input_sha256=hashlib.sha256(original).hexdigest(), definition_id=definition['definition_id'],
                spec_id=definition['spec_id'], config=config, simulation_config=simulation_config,
-               rules=task._rule_hashes(), rule_snapshot=rule_snapshot, engines={mode: entry[1] for mode, entry in identities.items()},
+               rules=task._rule_hashes(), rule_snapshot=None, engines={mode: entry[1] for mode, entry in identities.items()},
                preparation_seconds=time.monotonic() - started, packaging_seconds=0., collection_text=None,
                burst_instructions=definition['instructions'], single_target_path='single_target', aoe_path='aoe',
                single_target_status='pending', aoe_status='pending', single_target_export=None,

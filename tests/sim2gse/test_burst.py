@@ -35,9 +35,7 @@ def page_task_boundary():
     from test_interface import InterfaceTests
 
     definition, _ = reviewed_fixture()
-    identity = engine.identity
-    with _fast_search_boundary(), \
-         patch.object(engine, 'identity', identity):
+    with _fast_search_boundary():
         reference = engine.reference
         inspect = engine.inspect
 
@@ -246,21 +244,6 @@ def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
 
 def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path, monkeypatch, memory_result_center):
     import burst
-    from test_search import _minimal_rule_pack
-    pack = _minimal_rule_pack()
-    # 固定sample_profile的真实原生子树；其余快速报告使用构造身份17。
-    pack['identity_mappings']['hero_talents']['sample_hero'] = 32
-    pack['object_sets']['sample']['raise_dead'] = dict(kind='action', native_action='raise_dead',
-        base_button='raise_dead', native_forms=['raise_dead'])
-    for configuration in pack['configurations']:
-        opener = configuration['opener']
-        opener['precombat'] = [dict(action='raise_dead', command_count=1,
-            condition='out_of_combat', path='existing_supported_path')]
-        opener['source_steps'] = ['scourge_strike']
-        opener['ordinary_steps'] = [dict(opener['ordinary_steps'][1], source_step=1)]
-    rules = tmp_path / 'rules.json'
-    rules.write_text(json.dumps(pack), encoding='utf-8')
-    monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(rules))
     simulation = dict(target_count=1, scene='single_target')
     definition, raw = reviewed_fixture()
     burst.publish(definition)
@@ -298,7 +281,7 @@ def test_public_search_excludes_current_burst_content_and_changes_with_definitio
         task.resume_task(tmp_path / 'search', simulation_config=simulation)
 
 
-def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training(tmp_path):
+def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training(tmp_path, page_task_engine):
     import burst
     import result_store
     import seed_training
@@ -322,14 +305,26 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
                   score=1., scores=[1.], template_sha256='old', engines={})
     result_store.write('seed_selected', 'deathknight-unholy-1', [legacy], schema=seed_training.SELECTED_SCHEMA)
     before = result_store.read_records('seed_selected', 'deathknight-unholy-1')
-    outcome = seed_training.run_training(profile, 1, tmp_path / 'training', use_burst=True)
-    assert outcome['status'] == 'completed'
-    processed = result_store.read_records('seed_processed', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='single_target')))
-    assert len(processed) == 1 and processed[0]['status'] == 'rejected'
-    assert '仅剩一个成员' in processed[0]['error']
-    assert json.loads(processed[0]['initial_program']) == [dict(kind='Loop', count=2, blocks=[['outbreak']]),
+    configuration_key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse',
+                             target_type='single_target')
+    scope = seed_training.shared_scope(configuration_key)
+    result_store.write('seed_selected', scope, [dict(legacy, configuration_key=configuration_key)],
+                       schema=seed_training.SELECTED_SCHEMA)
+    current_before = result_store.read_records('seed_selected', scope)
+    with patch('sequence.evaluate', side_effect=AssertionError('非法材料不能启动训练评分')), \
+            pytest.raises(ValueError, match='本组没有有效训练材料'):
+        seed_training.run_training(profile, 1, tmp_path / 'training', use_burst=True)
+    with result_store.query('SELECT DISTINCT config_key FROM seed_prepared', tables=['seed_prepared']) as cursor:
+        keys = cursor.fetchall()
+    assert len(keys) == 1
+    prepared = result_store.read_records('seed_prepared', keys[0][0], filters={'kind': 'source'})
+    assert len(prepared) == 1 and prepared[0]['status'] == 'rejected'
+    assert '仅剩一个成员' in prepared[0]['reason']
+    assert json.loads(prepared[0]['initial_program']) == [dict(kind='Loop', count=2, blocks=[['outbreak']]),
         dict(kind='CastSequence', members=['death_coil'], reset=dict(timeout_seconds=None, flags=[]))]
-    assert json.loads(processed[0]['comparison'])['adaptation']['original_program'] == candidate['program']
+    assert json.loads(prepared[0]['adaptation'])['original_program'] == candidate['program']
+    assert not (tmp_path / 'training/ga').exists()
+    assert result_store.read_records('seed_selected', scope) == current_before
     assert not result_store.read_records('seed_selected', 'deathknight-unholy-1-burst')
     assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
 
@@ -389,14 +384,14 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
                 ['death_coil'], ['outbreak']]
     expected = [['auto_attack'], ['outbreak'], ['death_coil'], ['outbreak']]
     with character_seed_boundary() as engines:
-        row = dict(configuration_key=dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe'), candidate_id='standard-troll', condition='old-training',
+        row = dict(configuration_key=dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe'), candidate_id='standard-troll', condition='old-training',
             class_name='deathknight', spec='unholy', targets=5, program=original,
             family='community', score=99999., scores=[99999.] * 3,
             template_sha256='standard-troll', engines=({'baseline': 'previous', 'controlled': 'previous'}
                                                      if old_engine else engines))
-        result_store.write('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe')), [row],
+        result_store.write('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe')), [row],
                            schema=seed_training.SELECTED_SCHEMA)
-        before = result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe')))
+        before = result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe')))
         server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
             candidate_limit=8, batch_targets=(2,), iterations=2, validation_batches=1,
             final_batches=1, final_iterations=2, scenarios=('nominal',))))
@@ -424,12 +419,6 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
             assert [scene['target_count'] for scene in state['scenes']] == [1, 5]
             assert reads and all(columns is not None and 'rule_initialization' not in columns
                                  for columns in reads), '双场摘要不得向存储读取完整初始化列'
-            assert all(scene['has_rule_initialization'] and 'rule_initialization' not in scene
-                       for scene in state['scenes'])
-            with urlopen(base + '/api/tasks/' + created['task_id'] +
-                         '?details=rule_initialization', timeout=3) as response:
-                detail = json.load(response)
-            assert all(scene['rule_initialization'] for scene in detail['scenes'])
             _, destination = server.task_paths(created['task_id'])
             saved = task.read_task(destination / 'aoe', include_search_records=True)
             assert any([[command['simc_action'] for command in node['commands']]
@@ -444,7 +433,7 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
             assert [(item['path'], item['action']) for item in adaptation['removed']] == [
                 ('segments[0][0]', 'berserking'), ('segments[2][0]', 'soul_reaper')]
             assert all(item['reason'] for item in adaptation['removed'])
-            assert result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='sample_hero', target_type='aoe'))) == before
+            assert result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe'))) == before
         finally:
             for _, handle in server.tasks.values():
                 if not handle.done:
@@ -567,53 +556,3 @@ def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path,
     with pytest.raises(task.TaskError, match='爆发定义已变化'):
         task.run_task(profile, tmp_path / 'changed', use_burst=True,
                       burst_identity={'spec_id': reviewed['spec_id'], 'definition_id': reviewed['definition_id']})
-
-
-
-def test_dual_resume_preserves_missing_eager_policy_for_old_and_new_children(tmp_path, monkeypatch,
-                                                                          page_task_engine, memory_result_center):
-    import burst, dual_task, result_store, search
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    source = tmp_path / 'legacy-role.simc'
-    source.write_text(raw, encoding='utf-8')
-    destination = tmp_path / 'legacy-dual'
-    original_config_for = search.config_for
-    def legacy_configuration(values=None, **kwargs):
-        config = original_config_for(values, **kwargs)
-        config.pop('rule_diagnostics_policy', None)
-        return config
-    interrupted = []
-    original_write = result_store.write
-    def pause_before_second_scene(table, key, rows, **kwargs):
-        if (table == 'dual_tasks' and rows[0].get('single_target_export')
-                and rows[0].get('burst_export') and rows[0]['aoe_status'] == 'pending' and not interrupted):
-            interrupted.append(True)
-            raise OSError('constructed old parent interruption before second child')
-        return original_write(table, key, rows, **kwargs)
-    with (patch.object(search, 'config_for', side_effect=legacy_configuration),
-          patch.object(dual_task, 'config_for', side_effect=legacy_configuration),
-          patch.object(result_store, 'write', side_effect=pause_before_second_scene)):
-        handle = dual_task.start(source, destination, search_config=dict(candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1))
-        handle.join(20)
-        assert handle.done
-    before = dual_task.read(destination)
-    assert interrupted and before['status'] == 'partial'
-    assert not (destination / 'aoe').exists()
-    first = task.read_task(destination / 'single_target', include_search_records=True)
-    assert 'rule_diagnostics_policy' not in first['config']
-    resumed = dual_task.resume(destination)
-    resumed.join(20)
-    assert resumed.done
-    saved = dual_task.read(destination)
-    assert saved['status'] == 'completed', saved
-    assert saved['collection_ready']
-    children = [task.read_task(destination / scene, include_search_records=True)
-                for scene in ('single_target', 'aoe')]
-    assert 'rule_diagnostics_policy' not in children[0]['config']
-    assert children[1]['config']['rule_diagnostics_policy'] == 'eager'
-    assert children[0]['search_result'] == first['search_result']
-    assert all('rule_observations' in row['batches'][0]['request']
-               for child in children for row in child['search']['records'])
-    assert all('diagnostic_batches' not in row for child in children for row in child['search']['records'])
