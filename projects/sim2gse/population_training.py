@@ -82,8 +82,8 @@ def _evolution(store, capabilities, runtime, config):
         return left, right
     feedback_for = None
     def mutation(member):
-        feedback = None if member.crossed else feedback_for(member.parent_program)
-        member[:] = mutate(member, capabilities, rng, feedback=feedback)
+        feedback_getter = None if member.crossed else lambda: feedback_for(member.parent_program)
+        member[:] = mutate(member, capabilities, rng, feedback_getter=feedback_getter)
         return member,
     toolbox.register('clone', clone)
     toolbox.register('mate', mate)

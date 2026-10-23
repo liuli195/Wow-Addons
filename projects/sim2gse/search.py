@@ -217,8 +217,8 @@ def _copy_program(program):
 
 
 def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observation=None,
-           excluded_programs=()):
-    """执行动作块、顺序 Loop 或 WaitClicks 变异。"""
+           excluded_programs=(), feedback_getter=None):
+    """执行动作块、顺序 Loop 或 WaitClicks 变异；按需取值须返回非空反馈字典。"""
     source = _copy_program(program)
     available = [a["simc_action"] for a in capabilities["actions"]]
     if not source or not available:
@@ -273,7 +273,9 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         except ValueError:
             return False
 
-    if operation != "loop" and feedback and rng.random() < 0.5:
+    if operation != "loop" and (feedback or feedback_getter is not None) and rng.random() < 0.5:
+        if feedback_getter is not None:
+            feedback = feedback_getter()
         targets = [row['source_position'] for row in feedback.get('positions', [])
                    if row.get('unresolved_inputs', 0) > 0 and not row.get('ambiguous')
                    and row.get('source_position') is not None]

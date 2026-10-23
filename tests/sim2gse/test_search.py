@@ -24,6 +24,52 @@ from task import cancel_task, read_task, resume_task, run_task, start_task, Task
 from search import initial_programs, TaskStore
 
 
+def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
+    import random
+    from search import mutate
+    program = [['outbreak'], ['death_coil'], ['scourge_strike']]
+    feedback = dict(positions=[dict(source_position=dict(segment=0), unresolved_inputs=1)])
+    calls = []
+    def get_feedback():
+        calls.append('feedback')
+        return feedback
+
+    observation = {}
+    mutate(program, _fast_capabilities(), random.Random(0),
+           feedback_getter=get_feedback, observation=observation)
+    assert observation['sampled_mutation'] == 'loop'
+    assert calls == []
+
+    mutate(program, _fast_capabilities(), random.Random(1),
+           feedback_getter=get_feedback, observation=observation)
+    assert observation['sampled_mutation'] == 'insert'  # Its feedback gate is above .5.
+    assert calls == []
+
+    rng = random.Random(2)
+    child = mutate(program, _fast_capabilities(), rng,
+                   feedback_getter=get_feedback, observation=observation)
+    assert calls == ['feedback']
+    assert child == [['death_coil'], ['scourge_strike'], ['outbreak']]
+    assert observation == dict(sampled_mutation='swap', actual_mutation='move',
+                               modification_position=dict(segment=0, repair=True, target=2))
+    assert rng.random() == 0.25158329759496567
+
+
+def test_mutate_keeps_legacy_feedback_truthiness_and_random_consumption():
+    import random
+    from search import mutate
+    program = [['outbreak'], ['death_coil'], ['scourge_strike']]
+    for feedback in (None, {}):
+        rng = random.Random(2)
+        assert mutate(program, _fast_capabilities(), rng, feedback=feedback) == [
+            ['scourge_strike'], ['death_coil'], ['outbreak']]
+        assert rng.random() == 0.3610574739836072
+    rng = random.Random(2)
+    feedback = dict(positions=[dict(source_position=dict(segment=0), unresolved_inputs=1)])
+    assert mutate(program, _fast_capabilities(), rng, feedback=feedback) == [
+        ['death_coil'], ['scourge_strike'], ['outbreak']]
+    assert rng.random() == 0.25158329759496567
+
 
 
 def _fast_capabilities():

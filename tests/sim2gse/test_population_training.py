@@ -1070,6 +1070,7 @@ def test_public_run_training_defaults_really_cross_and_mutate_without_global_rng
     coarse = []
     def evaluate(profile, candidate, folder, **kwargs):
         assert algorithms.random is original_random
+        assert kwargs['iterations'] != 2  # The .5 feedback gate never passes, crossed or not.
         if kwargs['iterations'] == 32:
             coarse.append(Path(folder).name)
         return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
