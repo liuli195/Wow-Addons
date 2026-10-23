@@ -16,6 +16,8 @@ def connected_center(tmp_path, installed_data_store, monkeypatch):
 
 def test_public_check_freezes_both_verified_heroes_and_four_groups(tmp_path, capsys, monkeypatch):
     import engine
+    import simulation_config
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', tmp_path / 'training.toml')
     from test_search import _fast_identity, _fast_training_template
     monkeypatch.setattr(engine, "identity", _fast_identity)
     monkeypatch.setattr(engine, "_training_template", _fast_training_template)

@@ -281,7 +281,7 @@ def test_public_search_excludes_current_burst_content_and_changes_with_definitio
         task.resume_task(tmp_path / 'search', simulation_config=simulation)
 
 
-def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training(tmp_path):
+def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training(tmp_path, page_task_engine):
     import burst
     import result_store
     import seed_training
@@ -305,14 +305,26 @@ def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_tra
                   score=1., scores=[1.], template_sha256='old', engines={})
     result_store.write('seed_selected', 'deathknight-unholy-1', [legacy], schema=seed_training.SELECTED_SCHEMA)
     before = result_store.read_records('seed_selected', 'deathknight-unholy-1')
-    outcome = seed_training.run_training(profile, 1, tmp_path / 'training', use_burst=True)
-    assert outcome['status'] == 'completed'
-    processed = result_store.read_records('seed_processed', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')))
-    assert len(processed) == 1 and processed[0]['status'] == 'rejected'
-    assert '仅剩一个成员' in processed[0]['error']
-    assert json.loads(processed[0]['initial_program']) == [dict(kind='Loop', count=2, blocks=[['outbreak']]),
+    configuration_key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse',
+                             target_type='single_target')
+    scope = seed_training.shared_scope(configuration_key)
+    result_store.write('seed_selected', scope, [dict(legacy, configuration_key=configuration_key)],
+                       schema=seed_training.SELECTED_SCHEMA)
+    current_before = result_store.read_records('seed_selected', scope)
+    with patch('sequence.evaluate', side_effect=AssertionError('非法材料不能启动训练评分')), \
+            pytest.raises(ValueError, match='本组没有有效训练材料'):
+        seed_training.run_training(profile, 1, tmp_path / 'training', use_burst=True)
+    with result_store.query('SELECT DISTINCT config_key FROM seed_prepared', tables=['seed_prepared']) as cursor:
+        keys = cursor.fetchall()
+    assert len(keys) == 1
+    prepared = result_store.read_records('seed_prepared', keys[0][0], filters={'kind': 'source'})
+    assert len(prepared) == 1 and prepared[0]['status'] == 'rejected'
+    assert '仅剩一个成员' in prepared[0]['reason']
+    assert json.loads(prepared[0]['initial_program']) == [dict(kind='Loop', count=2, blocks=[['outbreak']]),
         dict(kind='CastSequence', members=['death_coil'], reset=dict(timeout_seconds=None, flags=[]))]
-    assert json.loads(processed[0]['comparison'])['adaptation']['original_program'] == candidate['program']
+    assert json.loads(prepared[0]['adaptation'])['original_program'] == candidate['program']
+    assert not (tmp_path / 'training/ga').exists()
+    assert result_store.read_records('seed_selected', scope) == current_before
     assert not result_store.read_records('seed_selected', 'deathknight-unholy-1-burst')
     assert result_store.read_records('seed_selected', 'deathknight-unholy-1') == before
 
