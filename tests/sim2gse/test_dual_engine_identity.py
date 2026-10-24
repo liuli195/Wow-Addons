@@ -1,4 +1,4 @@
-"""网页双场每次启动/恢复完整验一次引擎，不共享两场计算预算。"""
+"""网页双场每次启动/恢复完整验一次引擎，不共享两场运行时。"""
 import hashlib
 import json
 import threading
@@ -62,7 +62,7 @@ def small_verified_engines(tmp_path, monkeypatch, page_task_engine):
         yield executables
 
 
-def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_budgets(
+def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_runtimes(
         tmp_path, memory_result_center, champion_engine, small_verified_engines):
     import burst
     import engine
@@ -98,10 +98,10 @@ def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_bud
         def before_resume(state):
             assert reads == {'baseline': 1, 'controlled': 1}
             assert [scene['training_champion_snapshot']['candidate_id'] for scene in state['scenes']] == winners
-            assert [scene['total_budget_seconds'] for scene in state['scenes']] == [600., 600.]
+            assert [scene['total_budget_seconds'] for scene in state['scenes']] == [None, None]
             assert set(runtimes) == {1, 5}
             assert runtimes[1] is not runtimes[5]
-            assert [runtimes[targets].budget_seconds for targets in (1, 5)] == [600., 600.]
+            assert [runtimes[targets].budget_seconds for targets in (1, 5)] == [float('inf'), float('inf')]
 
         with patch.object(Path, 'read_bytes', observed_read), \
                 patch.object(engine, 'reference', observed_reference):

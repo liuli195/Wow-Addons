@@ -960,7 +960,7 @@ class SearchAndValidationTests(TestCase):
 
         calls = []
         def evaluate(*args, **kwargs):
-            calls.append(1)
+            calls.append(Path(args[2]).name)
             return _fast_evaluate(*args, **kwargs)
 
         with tempfile.TemporaryDirectory(prefix='sim2gse-corrupt-center-') as directory:
@@ -970,30 +970,37 @@ class SearchAndValidationTests(TestCase):
                           batch_targets=(2,), iterations=2, validation_batches=1,
                           final_batches=1, final_iterations=2, scenarios=('nominal',),
                           max_processes=1, diagnostic_logging=True, diagnostics='summary')
-            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+            # Freeze the same starts for all invocations; this case tests cache repair, not champion inheritance.
+            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+                    patch.object(result_store, 'read_search_champion', return_value=None):
                 first_destination = Path(directory) / 'first'
                 first = run_task(source, first_destination, search_config=config)
                 saved_task = read_task(first_destination, include_search_records=True)
                 performance = json.loads((first_destination / 'diagnostics.json').read_text())['performance']
                 progress = performance['candidate_progress']
-                self.assertEqual(performance['stages']['candidate.compile']['calls'], 1)
-                self.assertEqual(performance['stages']['candidate.write']['calls'], 1)
                 keys = {row['key'] for row in saved_task['search']['records']}
-                self.assertEqual(len(keys), 1)
+                self.assertTrue(keys)
+                self.assertGreaterEqual(performance['stages']['candidate.compile']['calls'], len(keys))
+                self.assertEqual(performance['stages']['candidate.write']['calls'],
+                                 performance['stages']['candidate.compile']['calls'])
+                initial_calls = list(calls)
                 for kind in ('first_score_published', 'screening_archived'):
                     self.assertEqual({row['behavior_identity'] for row in progress[kind]}, keys)
-                    self.assertEqual(len(progress[kind]), 1)
-                    self.assertGreaterEqual(progress[kind][0]['invocation_seconds'], 0)
-                    self.assertGreaterEqual(progress[kind][0]['budget_elapsed_seconds'],
-                                            progress[kind][0]['invocation_seconds'])
+                    self.assertEqual(len(progress[kind]), len(keys))
+                    for event in progress[kind]:
+                        self.assertGreaterEqual(event['invocation_seconds'], 0)
+                        self.assertGreaterEqual(event['budget_elapsed_seconds'], event['invocation_seconds'])
                 cached_destination = Path(directory) / 'cached'
                 with patch.object(sequence, 'evaluate', side_effect=AssertionError('复用不得重新评分')):
                     run_task(source, cached_destination, search_config=config)
                 cached_performance = json.loads((cached_destination / 'diagnostics.json').read_text())['performance']
-                self.assertEqual(cached_performance['candidate_progress']['first_score_published'], [])
+                for kind in ('first_score_published', 'screening_archived'):
+                    self.assertEqual(cached_performance['candidate_progress'][kind], [])
+                self.assertEqual(calls, initial_calls)
                 batch_key = first['search']['records'][0]['batches'][0]['data_key']
                 # Fault injection only: mimic a damaged Parquet shard behind the read-only API.
                 saved = result_store.one('batches', 'batch_key', batch_key)
+                lost_keys = {row['batch_key'] for row in result_store.read_records('batches', saved['storage_group_key'])}
                 shard = result_store.DATA_ROOT / 'batches' / f"{saved['storage_group_key']}.parquet"
                 shard.write_bytes(b'corrupt parquet')
                 second = run_task(source, Path(directory) / 'second', search_config=config)
@@ -1001,8 +1008,9 @@ class SearchAndValidationTests(TestCase):
             with closing(__import__('sqlite3').connect(Path(directory) / 'second' / 'task.sqlite3')) as database:
                 persisted = json.loads(database.execute('SELECT value FROM batches WHERE key=?', (batch_key,)).fetchone()[0])
                 self.assertEqual(persisted['status'], 'success')
-                self.assertEqual(TaskStore.load_state(database)['completed_batches'], 1)
-            self.assertEqual(len(calls), 2)
+                self.assertEqual(TaskStore.load_state(database)['completed_batches'], first['completed_batches'])
+            self.assertEqual(set(calls[len(initial_calls):]), lost_keys)
+            self.assertEqual(len(calls) - len(initial_calls), len(lost_keys))
             self.assertFalse(second['search']['records'][0]['batches'][0].get('cached', False))
             self.assertIsNotNone(result_store.one('batches', 'batch_key', batch_key)['report'])
 
@@ -1069,9 +1077,10 @@ class SearchAndValidationTests(TestCase):
                         total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
                         batch_targets=(2,), iterations=2, validation_batches=1,
                         final_batches=1, final_iterations=2, scenarios=('nominal',), max_processes=1))
-            self.assertEqual(len(exchange_paths), 1)
-            self.assertTrue(exchange_paths[0].is_file())
-            self.assertIsInstance(json.loads(exchange_paths[0].read_text(encoding='utf-8')), dict)
+            self.assertTrue(exchange_paths)
+            for path in exchange_paths:
+                self.assertTrue(path.is_file(), '保存失败不能删除已成功原生报告: ' + str(path))
+                self.assertIsInstance(json.loads(path.read_text(encoding='utf-8')), dict)
 
     def test_task_hard_exit_preserves_checkpoint_and_cleans_owned_engine(self):
         import os
@@ -1153,7 +1162,7 @@ class SearchAndValidationTests(TestCase):
                     try: state=read_task(destination, include_rule_initialization=False)
                     except TaskError: pass
                     completed = state.get('completed_batches')
-                    if state.get('phase') == 'search' and type(completed) is int and completed > 0:
+                    if state.get('phase') in ('initial', 'breed') and type(completed) is int and completed > 0:
                         for pid,owner_pid in children(process.pid):
                             held=kernel.OpenProcess(0x100000,False,pid)
                             if held:

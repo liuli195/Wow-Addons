@@ -76,7 +76,7 @@ def test_task_cli_timeline_override_and_default_off_have_identical_results(tmp_p
     assert results[0]['search_result'] == results[1]['search_result']
     assert results[0]['completed_batches'] == results[1]['completed_batches']
     assert native_requests[False] == native_requests[True]
-    assert all(not request[2] for request in native_requests[True])
+    assert {request[1] for request in native_requests[True]} >= {32, 128}
     assert [row['key'] for row in results[0]['search']['records']] == [row['key'] for row in results[1]['search']['records']]
     assert not list((tmp_path / 'False').glob('search-timeline-*'))
 
@@ -172,24 +172,18 @@ def test_cancelled_timeline_resumes_as_new_segment_and_export_failure_keeps_resu
         assert not [event for event in failed['events'] if event['kind'] == 'score']
 
 
-def test_task_records_score_revision_with_independent_clock_and_bounded_events(tmp_path, monkeypatch):
+def test_task_records_distinct_ga_stages_with_independent_clock_and_bounded_events(tmp_path, monkeypatch):
     import search_timeline
     from task import run_task
     from test_search import _prepared_search_boundary
     from test_search import _fast_evaluate
-    starts = [[['outbreak'], ['scourge_strike']], [['outbreak'], ['death_coil']], [['outbreak'], ['epidemic']]]
+    starts = [[['outbreak'], ['scourge_strike']], [['outbreak'], ['death_coil']]]
     clock = [100.]
     monkeypatch.setattr(search_timeline, 'monotonic', lambda: clock[0])
     def evaluate(profile, candidate, folder, **kwargs):
         result = _fast_evaluate(profile, candidate, folder, **kwargs)
-        blocks = result['blocks']
-        seed = kwargs['seed']
-        if blocks == starts[0]:
-            score = 100.
-        elif blocks == starts[1]:
-            score = 80. if seed == 20260913 else 120. if seed == 20260912 else 140.
-        else:
-            score = 130. if seed == 20260913 else 120. if seed == 20260912 else 150.
+        first = result['blocks'] == starts[0]
+        score = (100. if first else 90.) if kwargs['iterations'] != 128 else (80. if first else 120.)
         result['summary']['dps'] = score
         result['report']['sim']['statistics']['raid_dps']['mean'] = score
         result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = score
@@ -210,10 +204,19 @@ def test_task_records_score_revision_with_independent_clock_and_bounded_events(t
         curve = json.loads(path.read_text(encoding='utf-8'))
         assert result['status'] == curve['status'] == 'completed'
         if cap == 10000:
-            global_events = [event for event in curve['events'] if event.get('series') == 'global']
-            assert [event['dps'] for event in global_events] == [100., 120., 100., 125.]
-            assert global_events[2]['reason'] == 'revision'
-            assert global_events[0]['seconds'] >= 20.002
+            scores = [event for event in curve['events'] if event['kind'] == 'score']
+            coarse = [event for event in scores if event['series'] == 'search']
+            retests = [event for event in scores if event['series'] == 'nominal']
+            global_events = [event for event in scores if event['series'] == 'global']
+            assert coarse and {event['dps'] for event in coarse} == {90., 100.}
+            assert retests and {event['dps'] for event in retests} == {80., 120.}
+            assert len(global_events) == 1
+            assert global_events[0]['dps'] == result['search_result']['dps'] == 120.
+            assert global_events[0]['reason'] == 'nominal_retest'
+            assert global_events[0]['seconds'] >= max(event['seconds'] for event in retests)
+            assert max(event['seconds'] for event in coarse) <= curve['search_stop_seconds']
+            assert min(event['seconds'] for event in retests) > curve['search_stop_seconds']
+            assert coarse[0]['seconds'] >= 10.001
             assert curve['samples'][0]['dps'] is None
         else:
             assert len(curve['events']) == 4

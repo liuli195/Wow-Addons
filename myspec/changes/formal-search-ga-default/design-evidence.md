@@ -1,6 +1,6 @@
 # 正式遗传搜索候选设计证据
 
-## 当前状态和边界
+## 门禁一前状态和边界
 
 - 核对时间：2026-10-24 UTC。唯一目标工作树为`/workspace/scratch/0af43d0efb8f/wow-addons-performance`。起始状态干净，登记在`codex/formal-search-ga-ab-mvp`，HEAD `0aa7a06aa6285c161733a5dacca24a8d35990df4`。
 - GitHub分支API在本次准备重新核实main为`d08f1d6f540f3ced2496a59bdce6bd3badc7151a`，与此前`git ls-remote`一致；本次实施基线必须使用该主干，不把实验HEAD当生产基线。
@@ -54,3 +54,18 @@
 - 同输入新旧各自默认完整自然结果对照，无共同120秒/共同端点或新统计计划，不合并发布。
 - 三组明确推荐：新建`codex/formal-search-ga-default`；单票串行子代理实施；单票完成后独立Reviewer审查。父线程须完整展示并取得当前确认，之后才创建分支和实施。
 - 最新裸工具的可用性/身份后续核验；当前未运行旧CLI。正式规格冲突保留到受控增量与门禁二，不因候选文档ready-for-agent就改formal specs。
+
+## 实施进度与旧机制测试替换（2026-10-24）
+
+用户已确认完整开发门禁；当前 `codex/formal-search-ga-default` 从固定主干 d08f1d6 开始实施，旧实验分支和成果保留。此前“未获准实施”的叙述是门禁一前快照，不再表示当前状态。正式规格仍待后续受控门禁，未修改。
+
+旧机制测试按行为替代，不用 skip（跳过）掩盖，也不为过旧断言恢复旧算法：
+
+- `test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_promotion` 改为 `test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_complete_retests`，继续核验 v1 的 4＋4＋1＋1 来源；删除旧逐链无改善/CI 和辅助粗评即发布探针，改验完整三批正常复测、contract_version=2、无伪造晋级链。
+- 旧 `test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source` 两参数流程假设“首次粗评取消即发布冠军”，予以退役。竞争写入由既有 `test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion` 覆盖；完成意图后保存失败由新的 `test_public_formal_completed_save_failure_resumes_verified_winner_without_rescoring` 覆盖，含零额外评分和 passed_native_model 产物断言。双取消阶段节点继续核验不得发布及恢复不刷新冻结快照。
+- `test_search_closeout` 中旧 route/global/CI 晋级四参数和 candidate_limit 半轮截止三参数不适用于新主体，予以退役。完整代自然早停由 `test_formal_deduplicates_legal_starts_and_stops_on_complete_generation_stagnation` 覆盖；半代恢复和成功批次复用由既有公开取消恢复节点覆盖；粗评与正常复测选优不同由 `test_formal_nominal_retest_selects_from_all_finalists_without_paired_ci` 覆盖。默认起点和无 selector 依赖的两个检查保留。
+- 引擎身份节点保留每次启动/恢复各验一次、两场 runtime（运行时）不共享和已耗时间，有限预算断言换为自然策略的 JSON null／运行时无限。曲线节点改验粗评、正常复测、最终冠军分层及截断边界，不再假定旧阶梯分数修订。
+- Parquet（列式存储）缓存故障代表保留真实持久中心；显式冻结相同起点以免上一轮冠军改变输入，按真实唯一请求和受损报告组核对修复次数，不再假定 candidate_limit=1 使新主体只评一条。
+- 旧来源管理代表使用独立构造的完整 v1 请求、编译产物和原报告，自洽固定 low/high 成绩；不把新 GA 任务重标签为旧来源，不执行或复制旧算法。它证明旧成果读取/重新使用，不证明旧算法运行性能。
+
+上述新旧测试映射须在最终审查中一起检查。定向通过不替代完整统一验证，真实浏览器代表仍保留实际引擎，默认流程自然对照尚未运行。

@@ -48,12 +48,13 @@ def test_dual_inherits_each_scenes_formal_champion_after_publication(tmp_path,
         assert any(source['source_kind'] == 'formal_champion' for source in sources)
 
 
-def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_promotion(tmp_path,
+def test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_complete_retests(tmp_path,
         monkeypatch, memory_result_center, champion_engine):
     import burst
     import engine
     import result_store
     import seed_training
+    import sequence
     import task
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
@@ -67,12 +68,20 @@ def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_pro
         return native
 
     with patch.object(engine, 'reference', four_native_sources):
-        # Both remain above the six-action native source under the constructed score.
         former = [['death_coil']] * 6 + [dict(kind='WaitClicks', clicks=2), ['outbreak']]
+        challenger = [['death_coil']] * 7 + [dict(kind='WaitClicks', clicks=3), ['outbreak']]
+        from program import canonicalize_search_program
+        from test_search import _fast_capabilities
+        grades = {canonicalize_search_program(program, _fast_capabilities())['identity']: score
+                  for program, score in ((former, 200.), (challenger, 300.))}
+        evaluate = sequence.evaluate
+        def source_scores(profile, candidate, folder, **kwargs):
+            return evaluate(profile, candidate, folder,
+                score=grades.get(sequence.behavior_key(candidate), 100.), **kwargs)
+        monkeypatch.setattr(sequence, 'evaluate', source_scores)
         template, _ = completed_training(tmp_path, 1, [(former, [200.] * 3)])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
         first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=2)
-        challenger = [['death_coil']] * 7 + [dict(kind='WaitClicks', clicks=3), ['outbreak']]
         _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')
         engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
         selected = [dict(configuration_key=rows[0]['configuration_key'], candidate_id='selected-' + str(index), condition=rows[0]['condition'],
@@ -88,51 +97,22 @@ def test_dual_preserves_ten_source_paths_and_replaces_champion_after_trusted_pro
         groups = [source for values in scene['start_sources'].values() for source in values]
         assert [sum(source['source_kind'] == kind for source in groups) for kind in
                 ('native', 'seed_selected', 'training_champion', 'formal_champion')] == [4, 4, 1, 1]
-        # All ten distinct starts retain their sources and count toward stagnation.
-        folders = list((tmp_path / 'second' / 'page' / 'tasks').glob('*/single_target'))
-        saved = task.read_task(folders[0], include_search_records=True)
-        assert len(saved['search']['chains']) == saved['search']['no_improvement_round_limit'] == 10
-        assert saved['config']['total_budget_seconds'] == 600
+        # Legacy v1 has ten source paths; the shared GA uses the legal deduplicated pool.
+        folder, = (tmp_path / 'second' / 'page' / 'tasks').glob('*/single_target')
+        saved = task.read_task(folder, include_search_records=True)
+        assert saved['search']['chains'] == []
+        assert saved['search']['stop_reason'] == 'stagnation'
+        assert saved['stop_policy'] == dict(version=1, kind='natural_stagnation')
+        assert saved['search_result']['dps'] == 300.
         assert scene['formal_champion_publication']['status'] == 'published'
         assert scene['formal_champion_publication']['source_run_id'] != first['scenes'][0][
             'formal_champion_publication']['source_run_id']
-        import math
-        from search import TaskStore
-        from runtime import TaskCancelled
-        from program import canonicalize_search_program
-        incumbent = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
-        third_root, cancel_once, save_checkpoint = (tmp_path / 'third').resolve(), [True], TaskStore.save
-
-        def stop_after_saved_baseline(store, **changes):
-            saved = save_checkpoint(store, **changes)
-            if cancel_once[0] and third_root in store.destination.parents and store.state.get('archive'):
-                cancel_once[0] = False
-                assert len(store.state['archive']) == 1
-                row = store.state['archive'][0]
-                assert row['key'] == canonicalize_search_program(
-                    row['program'], store.state['capabilities'])['identity'] == incumbent['behavior_identity']
-                assert store.state['formal_champion_snapshot']['condition_key'] == incumbent['condition_key']
-                assert store.state['formal_champion_adaptation']['status'] == 'accepted'
-                assert math.isfinite(row['score']) and row['batches']
-                assert all(batch['status'] == 'success' and batch['samples'] > 0
-                           and batch['request']['condition'] == store.state['condition']
-                           and batch['request']['behavior_identity'] == row['key'] for batch in row['batches'])
-                raise TaskCancelled('third-task probe saved its complete current champion baseline')
-            return saved
-
-        try:
-            with patch.object(TaskStore, 'save', stop_after_saved_baseline):
-                third = dual_result(third_root, raw, candidate_limit=10,
-                    validation_batches=2, expected='cancelled')
-        finally:
-            cancel_once[0] = False
-        assert third['scenes'][0]['formal_champion_adaptation']['current_score'] == third['scenes'][0]['search_result']['dps']
-        assert third['scenes'][0]['formal_champion_adaptation']['current_samples'] == third['scenes'][0]['search_result']['samples'] > 0
-        assert third['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
-        assert result_store.read_search_champion(incumbent['condition_key']) == incumbent
-        assert third['scenes'][0]['formal_champion_snapshot']['source_run_id'] == scene[
-            'formal_champion_publication']['source_run_id']
-        assert third['scenes'][0]['formal_champion_snapshot']['promotion_evidence'][0]['comparison']['ci95'][0] > 0
+        champion = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
+        assert champion['contract_version'] == 2
+        assert champion['promotion_evidence'] == []
+        assert champion['evaluation']['complete_generations'] >= 2
+        assert all(len(row['batches']) == 3 and row['samples'] == 381
+                   for row in champion['evaluation']['finalists'])
 
 
 def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_path,
@@ -287,6 +267,66 @@ def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(t
             assert {key: result_store.read_search_champion(key) for key in originals} == originals
 
 
+def _legacy_formal_source(folder, raw, program, score, *, targets=1):
+    """只构造已完成旧 v1 来源及原请求报告，不执行或伪装新 GA。"""
+    import json
+    import uuid
+    from dataclasses import replace
+    import burst
+    import engine
+    import result_store
+    import simulation_config
+    import task
+    from program import canonicalize_search_program, compile_program
+    from runtime import TaskRuntime
+    from sequence import compiled_identity
+    from search import config_for, digest, input_times, STATS_VERSION
+    from test_search import _fast_report
+    folder.mkdir(parents=True)
+    for name in ('input.original.simc', 'input.simc'):
+        (folder / name).write_text(raw, encoding='utf-8')
+    character = replace(task.parse_character(raw), spec_id=252)
+    run_id = uuid.uuid4().hex
+    config = config_for(dict(candidate_limit=1, batch_targets=(2,), iterations=2,
+        validation_batches=1, final_batches=1, final_iterations=2,
+        scenarios=('nominal',), input_interval_ms=200), legacy=True)
+    simulation = simulation_config.config_for(dict(target_count=targets,
+        scene='single_target' if targets == 1 else 'aoe'))
+    runtime = TaskRuntime(600)
+    native = engine.reference(folder / 'input.simc', folder / 'reference', character,
+        runtime=runtime, simulation_config=simulation)
+    _, capabilities, context = engine.prepare_loop(native, character, folder, runtime,
+        definition=burst.load(252), interval_ms=200)
+    candidate = compile_program(program, folder / 'export', identity=native['identity'],
+        runtime=runtime, capabilities=capabilities)
+    candidate['simulation'] = 'passed_native_model'
+    canonical = canonicalize_search_program(program, capabilities)
+    condition = digest(dict(legacy='local-search-v1', source=run_id))
+    seed = config['random_seed']
+    times, sources = burst.combined_inputs(input_times('nominal', seed + 500000, 200), context, 200)
+    request = dict(condition=condition, program=canonical['form'], behavior_identity=canonical['identity'],
+        purpose='search', seed=seed, input_seed=seed + 500000, iterations=2,
+        times=times, stats=STATS_VERSION, trace=False, reset_events=[])
+    request['burst'] = dict(definition_id=context['definition_id'],
+        program=compiled_identity(context['candidate']), plan=context['plan'], interval_ms=200, sources=sources)
+    key = digest(request)
+    report = _fast_report(character, score, 1)
+    report['sim']['targets'] *= targets
+    result_store.write('batches', key, [result_store.prepare_batch(dict(batch_key=key,
+        run_id=run_id, condition_key=condition, candidate_key=canonical['identity'],
+        program_identity=json.dumps(canonical['form'], ensure_ascii=False, sort_keys=True, separators=(',', ':')),
+        purpose='search', seed=seed, input_seed=seed + 500000, batch_index=0,
+        scenario='nominal', stats_version=STATS_VERSION, times=times, trace=False,
+        iterations=2, requested_iterations=2, dps=score, samples=1, variance=0., report=report))])
+    (folder / 'profile.json').write_text(json.dumps(task._profile(character, raw, run_id=run_id)), encoding='utf-8')
+    state = dict(condition=condition, config=config, simulation_config=simulation,
+        engines={mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}, burst=context)
+    task._store_run(folder, dict(status='completed', phase='done', candidate=candidate,
+        selected_candidate_key=canonical['identity'], locked_candidate_key=canonical['identity'],
+        search_result=dict(dps=score, samples=1), search=dict(records=[dict(batches=[dict(data_key=key)])])), state=state)
+    return run_id
+
+
 def test_management_selects_the_highest_within_two_known_old_rule_sources_and_rejects_missing_proof(
         tmp_path, monkeypatch, memory_result_center, champion_engine, subtests):
     from copy import deepcopy
@@ -300,49 +340,15 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     api = result_store._api()
-    import search
-    from program import canonicalize_search_program
-    real_rules, initial_programs, evaluate = task._rule_hashes, search.initial_programs, sequence.evaluate
-    higher_behaviors = set()
-    original = real_rules()
-    monkeypatch.setattr(task, '_rule_hashes', lambda **kwargs: dict(original,
-        **{str(Path(task.__file__).resolve()): 'f' * 64}))
-
-    def higher_native_start(capabilities, *args, **kwargs):
-        starts = initial_programs(capabilities, *args, **kwargs)
-        assert len(starts) > 1
-        key = canonicalize_search_program(starts[1], capabilities)['identity']
-        assert key != canonicalize_search_program(starts[0], capabilities)['identity']
-        higher_behaviors.add(key)
-        return starts[1:] + starts[:1]
-
-    def source_scores(profile, candidate, folder, **kwargs):
-        result = evaluate(profile, candidate, folder, **kwargs)
-        score = 300. if sequence.behavior_key(candidate) in higher_behaviors else 200.
-        result['summary']['dps'] = score
-        sim = result['report']['sim']
-        sim['statistics']['raid_dps']['mean'] = sim['players'][0]['collected_data']['dps']['mean'] = score
-        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
-        return result
-
-    def no_initial_champion(root, table, key, rows, **kwargs):
-        if table == 'search_champions':
-            raise OSError('old source only')
-        return api['write'](root, table, key, rows, **kwargs)
-
     profile = tmp_path / 'current.simc'
     profile.write_bytes(raw.encode('utf-8'))
     options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
         search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
         validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
-    with patch.object(result_store, '_api', return_value=dict(api, write=no_initial_champion)), \
-         patch.object(sequence, 'evaluate', side_effect=source_scores):
-        low = task.run_task(profile, tmp_path / 'low', **options)
-        with patch.object(search, 'initial_programs', side_effect=higher_native_start):
-            high = dual_result(tmp_path / 'high', raw, candidate_limit=1)
-    monkeypatch.setattr(task, '_rule_hashes', real_rules)
-    low_id = low['search']['formal_champion_publication']['source_run_id']
-    high_id = high['scenes'][0]['formal_champion_publication']['source_run_id']
+    low_id = _legacy_formal_source(tmp_path / 'low', raw, [['outbreak'], ['death_coil']], 200.)
+    high_id = _legacy_formal_source(tmp_path / 'high', raw, [['outbreak'], ['scourge_strike']], 300.)
+    foreign_id = _legacy_formal_source(tmp_path / 'foreign', raw,
+        [['outbreak'], ['scourge_strike']], 300., targets=5)
     def normalized(row):
         return {key: json.loads(value) if result_store.RUN_SCHEMA[key] == 'JSON'
                 and isinstance(value, str) else value for key, value in row.items()}
@@ -372,7 +378,6 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
                             if row['batch_key'] in run['batch_keys']]
                         assert len(source_batches) == 1
                         run['batch_keys'].remove(source_batches[0]['batch_key'])
-                        foreign_id = high['scenes'][1]['formal_champion_publication']['source_run_id']
                         foreign = result_store.read_records('runs', foreign_id)[0]
                         locations = result_store.report_locations(foreign['batch_keys'])
                         groups = list(dict.fromkeys(locations.get(key) or key for key in foreign['batch_keys']))
@@ -434,6 +439,8 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
+    key = first['scenes'][0]['formal_champion_snapshot']['condition_key']
+    incumbent = result_store.read_search_champion(key)
     evaluate = sequence.evaluate
     cancelled = [False]
 
@@ -452,9 +459,9 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
         record = result_store.read_search_champion(snapshot['condition_key'])
         assert record['source_run_id'] == first['scenes'][0]['formal_champion_publication']['source_run_id']
         assert record['version'] == snapshot['version']
-        if stage != 'partial_first_batch':
-            assert previous['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
-        else:
+        assert 'formal_champion_publication' not in previous['scenes'][0]
+        assert record == incumbent
+        if stage == 'partial_first_batch':
             assert 'search_result' not in previous['scenes'][0]
         record['version'] += 1
         result_store.write('search_champions', snapshot['condition_key'], [record],

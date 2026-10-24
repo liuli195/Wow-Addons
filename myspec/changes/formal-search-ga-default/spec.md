@@ -2,7 +2,7 @@
 
 **Status:** ready-for-agent
 **Flow Level:** Full（完整）
-**Development authorization:** 门禁一候选，尚未获准实施；本状态只表示需求可供代理处理。
+**Development authorization:** 用户已确认完整门禁一，实施中；本状态不表示验收、合并或发布。
 
 ## Problem Statement
 
