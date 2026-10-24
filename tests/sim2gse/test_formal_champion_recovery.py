@@ -78,6 +78,44 @@ def test_public_formal_search_naturally_retests_and_exports_one_champion_per_sce
         assert scene['formal_champion_publication']['status'] == 'published'
 
 
+def test_public_formal_publication_failure_is_recoverable_without_rescoring_saved_scene(
+        tmp_path, monkeypatch, memory_result_center, champion_engine):
+    import burst
+    import result_store
+    import sequence
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    evaluate, publish = sequence.evaluate, result_store.publish_search_champion
+    scored = []
+    fail_once = [True]
+
+    def equal_native_scores(profile, candidate, folder, **kwargs):
+        scored.append(str(folder))
+        return evaluate(profile, candidate, folder, score=100., **kwargs)
+
+    def unavailable_publication(*args, **kwargs):
+        if fail_once[0]:
+            fail_once[0] = False
+            raise OSError('constructed temporary champion publication failure')
+        return publish(*args, **kwargs)
+
+    monkeypatch.setattr(sequence, 'evaluate', equal_native_scores)
+    monkeypatch.setattr(result_store, 'publish_search_champion', unavailable_publication)
+    with dual_page(tmp_path, raw) as (read, resume):
+        paused = read()
+        assert paused['status'] == 'failed', paused
+        assert paused['recoverable'] and not paused['collection_ready']
+        assert paused['scenes'][0]['formal_champion_publication']['status'] == 'pending'
+        completed_scene_calls = [path for path in scored if 'single_target' in path]
+        assert completed_scene_calls
+        continued = resume()
+    assert continued['status'] == 'completed', continued
+    assert continued['collection_ready']
+    assert [path for path in scored if 'single_target' in path] == completed_scene_calls
+    assert continued['scenes'][0]['formal_champion_publication']['status'] == 'published'
+    assert continued['scenes'][0]['search_result']['samples'] == 381
+
+
 @pytest.mark.parametrize('fault', ['competition', 'crash_before_result'])
 def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
