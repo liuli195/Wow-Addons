@@ -116,6 +116,30 @@ def test_public_formal_publication_failure_is_recoverable_without_rescoring_save
     assert continued['scenes'][0]['search_result']['samples'] == 381
 
 
+def test_public_failed_first_score_keeps_reference_readable_without_search_columns(
+        tmp_path, monkeypatch, memory_result_center, champion_engine):
+    import burst
+    import sequence
+    import task
+    from engine import NativeEvaluationError
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+
+    def unavailable_native_score(*args, **kwargs):
+        raise NativeEvaluationError('constructed original first coarse failure')
+
+    monkeypatch.setattr(sequence, 'evaluate', unavailable_native_score)
+    with dual_page(tmp_path, raw) as (read, _):
+        failed = read()
+        assert failed['status'] == 'failed', failed
+        folder = next((tmp_path / 'page' / 'tasks').glob('*/single_target'))
+        saved = task.read_task(folder, include_search_records=True)
+    assert saved['status'] == 'failed'
+    assert 'constructed original first coarse failure' in saved['error']
+    assert saved['search']['batch_keys'] == [saved['reference_data_key']]
+    assert not saved['search'].get('records')
+
+
 @pytest.mark.parametrize('fault', ['competition', 'crash_before_result'])
 def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
