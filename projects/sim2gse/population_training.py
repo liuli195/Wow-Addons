@@ -54,6 +54,13 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     from deap import algorithms, base
     from program import canonicalize_search_program, _search_expanded_nodes
     from codec import load_targeting, prepare_block, prepare_castsequence
+    from engine import CandidateScoreError
+    from search import _coarse_score_failure
+    policy = (store.state.get('formal_search') or {}).get('coarse_failure_policy')
+    if policy is not None:
+        from formal_search import COARSE_FAILURE_POLICY
+        if not isinstance(policy, dict) or type(policy.get('version')) is not int or policy != COARSE_FAILURE_POLICY:
+            raise ValueError('正式粗评候选容错政策不符，不能混接恢复')
     target_masks = load_targeting(runtime=runtime)['target_masks']
     class Fitness(base.Fitness):
         weights = (1.0,)
@@ -130,7 +137,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     else:
                         prepare_block(commands, target_masks)
             return canonical['identity']
-        def scores(programs, stage='search', index=0, *, record_timeline=True):
+        def scores(programs, stage='search', index=0, *, record_timeline=True, allow_rejections=False):
             unique = {}
             for program in programs:
                 unique.setdefault(key(program), program)
@@ -150,6 +157,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     futures = [(identity, pool.submit(evaluate, program, stage, index))
                                for identity, program in window]
                     error = None
+                    rejected = False
                     for identity, future in futures:
                         try:
                             results[identity] = future.result()
@@ -157,9 +165,22 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                                 row = results[identity]
                                 timeline.score(dict(key=identity, score=row['dps'], batches=[row]),
                                                stage, 'training')
+                        except CandidateScoreError as failure:
+                            proof = (_coarse_score_failure(store.state, identity)
+                                     if policy and allow_rejections and stage == 'search' else None)
+                            if proof is None:
+                                error = error or failure
+                            else:
+                                results[identity] = None
+                                rejected = True
+                                rejections = ga.setdefault('coarse_rejections', {})
+                                if identity not in rejections:
+                                    rejections[identity] = dict(proof, generation=ga['generation'], phase=ga['phase'])
+                                    store.state.setdefault('errors', []).append(dict(kind='coarse_invalid_score',
+                                        candidate_key=identity, **rejections[identity]))
                         except BaseException as failure:
                             error = error or failure
-                    if len(store.report_buffer) >= 12:
+                    if rejected or len(store.report_buffer) >= 12:
                         store.checkpoint()
                     if error is not None:
                         raise error
@@ -184,13 +205,20 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
         if any(fitness.get(row['key']) != row['score'] for row in ga['population']):
             raise ValueError('恢复种群粗分与成功凭据不符；已暂停，旧四条保持不变')
         if ga['phase'] == 'initial':
-            rows = scores(store.state['starts'])
+            rows = scores(store.state['starts'], allow_rejections=bool(policy))
             ga['population'] = [dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps'])
-                                for program, row in zip(store.state['starts'], rows)]
+                                for program, row in zip(store.state['starts'], rows) if row is not None]
+            if not ga['population']:
+                raise ValueError('没有可靠的正式粗评候选；全部候选评分无效')
+            if policy:
+                ga['effective_population_size'] = len(ga['population'])
             ga.update(phase='breed', baseline=baseline())
             store.checkpoint()
         while ga['phase'] == 'breed':
             runtime.check()
+            if policy and (type(ga.get('effective_population_size')) is not int
+                    or ga['effective_population_size'] != len(ga['population']) or not ga['population']):
+                raise ValueError('正式有效种群大小与已冻结检查点不符')
             population = [individual(row) for row in ga['population']]
             pending = ga.get('pending')
             if pending is None:
@@ -217,14 +245,25 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     pending['regenerations'][slot] += 1
                     pending['rng'] = rng.getstate()
                     store.checkpoint()
-            rows = scores(pending['programs'])
+            if policy and len(pending['programs']) != ga['effective_population_size']:
+                raise ValueError('正式子代槽数量与已冻结种群不符')
+            rows = scores(pending['programs'], allow_rejections=bool(policy))
+            members, fallbacks = [], {}
+            for slot, (program, row) in enumerate(zip(pending['programs'], rows)):
+                if row is None:
+                    previous = deepcopy(ga['population'][slot])
+                    members.append(previous)
+                    fallbacks[str(slot)] = dict(rejected_key=key(program), retained_key=previous['key'])
+                else:
+                    members.append(dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps']))
             current = baseline()
             improved = len(current) > len(ga['baseline']) or any(
                 value > old for value, old in zip(current, ga['baseline']))
-            ga.update(population=[dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps'])
-                                  for program, row in zip(pending['programs'], rows)],
+            ga.update(population=members,
                 generation=ga['generation'] + 1, rng=pending['rng'], pending=None,
                 baseline=current, stagnant=0 if improved else ga['stagnant'] + 1)
+            if policy:
+                ga['last_fallbacks'] = fallbacks
             if ga['stagnant'] >= config['stagnation_generations']:
                 ga.update(phase='retest', finalists=[row['key'] for row in ranking()])
                 if timeline is not None and store.state.get('formal_search'):

@@ -17,6 +17,10 @@ class CandidateError(ValueError):
     """单个合法候选没有有效伤害或单批超时；不代表原生兼容性正常。"""
 
 
+class CandidateScoreError(CandidateError):
+    """已明确核对的候选评分数据无效；不包含进程、身份或存储故障。"""
+
+
 ROOT = Path(__file__).resolve().parents[2]
 # 可接受的原生报告构建号。历史报告在其对应版本上依然有效，客户端升级时追加新编号，
 # 不删除旧编号；清单之外的版本仍照旧拒绝。

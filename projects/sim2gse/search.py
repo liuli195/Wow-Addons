@@ -790,11 +790,23 @@ def _parent_positions(program, capabilities, positions):
 
 
 def _score_variance(report, character):
-    from engine import damage_statistics, CandidateError
+    from engine import damage_statistics, CandidateScoreError
     variance = damage_statistics(report, character).get('variance')
     if type(variance) not in (int, float) or not math.isfinite(variance) or variance < 0:
-        raise CandidateError('伤害方差无效')
+        raise CandidateScoreError('伤害方差无效')
     return variance
+
+
+def _coarse_score_failure(state, identity):
+    """Only two explicitly classified score-data failures can reject a new candidate."""
+    attempt = digest(dict(candidate=identity, stage='search', index=0))
+    count = state.get('training_failures', {}).get(attempt, 0)
+    causes = state.get('training_failure_causes', {}).get(attempt, [])
+    if (type(count) is not int or count != 2 or len(causes) != count
+            or any(cause.get('kind') != 'candidate_score' or not cause.get('reason') for cause in causes)):
+        return None  # Unknown old or mixed process failures must remain fail-closed.
+    return dict(attempt_key=attempt, attempts=count, failures=copy.deepcopy(causes),
+                reason=causes[-1]['reason'], condition=state.get('condition'))
 
 
 def _checkpoint_copy(value):
@@ -1473,7 +1485,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     store.state['training_evaluation_plan'] = copy.deepcopy(training_stage_plan)
     store.character = character
     store.simulation_config = simulation_config
-    from engine import player_report, CandidateError, NativeEvaluationError
+    from engine import player_report, CandidateError, CandidateScoreError, NativeEvaluationError
     from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity
     from simulation_config import config_for
@@ -1706,6 +1718,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                               simulation_config=simulation_config, on_native_start=native_started,
                               **burst_options, **kwargs)
             variance = score_variance(result['report'])
+            if (type(result['summary']['dps']) not in (int, float)
+                    or not math.isfinite(result['summary']['dps']) or result['summary']['dps'] < 0
+                    or type(result['summary']['samples']) is not int or result['summary']['samples'] < 1):
+                raise CandidateScoreError('候选评分均值或有效样本无效')
             report_valid = True
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], variance=variance, requested_iterations=iterations,
@@ -1774,16 +1790,24 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         failures = state.setdefault('training_failures', {})
         while True:
             if failures.get(attempt_key, 0) >= 2:
+                known = _coarse_score_failure(state, canonical['identity']) if stage == 'search' else None
+                if known is not None:
+                    raise CandidateScoreError(known['reason'])
                 raise CandidateError('该原条件批次已用尽一次重试: ' + attempt_key)
             try:
                 row = batch(program, stage, index, training_stage_plan[stage]['iterations'],
                             scenario=scenario, prepared_candidate=compiled, trace=trace)
                 if row['samples'] < 1 or not math.isfinite(row['dps']) or row['dps'] < 0:
-                    raise CandidateError('独立训练评分不可靠')
+                    raise CandidateScoreError('独立训练评分不可靠')
                 return canonical, row
-            except (CandidateError, NativeEvaluationError):
+            except (CandidateError, NativeEvaluationError) as error:
                 with store.lock:
                     failures[attempt_key] = failures.get(attempt_key, 0) + 1
+                    if state.get('formal_search') and stage == 'search':
+                        kind = ('candidate_score' if isinstance(error, CandidateScoreError) else
+                                'native' if isinstance(error, NativeEvaluationError) else 'candidate')
+                        state.setdefault('training_failure_causes', {}).setdefault(attempt_key, []).append(
+                            dict(kind=kind, reason=str(error)))
                     store.checkpoint()
                 if failures[attempt_key] >= 2:
                     raise

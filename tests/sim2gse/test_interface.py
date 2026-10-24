@@ -851,6 +851,9 @@ class InterfaceTests(unittest.TestCase):
         self._check_native_round(invalid_variance=True)
 
     def _check_native_round(self, *, invalid_variance=False):
+        import random
+        import population_training
+        from types import SimpleNamespace
         from task import read_task
         from test_search import _fast_evaluate
         from test_search import _prepared_search_boundary
@@ -859,6 +862,10 @@ class InterfaceTests(unittest.TestCase):
         initial = ("outbreak", "death_coil")
         better = ("death_coil", "outbreak")
         worse = ("death_coil", "outbreak", "death_coil")
+        class NoVariationRandom(random.Random):
+            _randbelow = random.Random._randbelow
+            def random(self):
+                return .999999  # This case isolates score quarantine, not the variation sampler.
 
         def evaluate(profile, candidate, folder, **kwargs):
             actions = tuple(action["simc_action"] for block in candidate["blocks"] for action in block)
@@ -879,7 +886,8 @@ class InterfaceTests(unittest.TestCase):
             no_improvement_rounds=1, batch_targets=(32, 128, 512),
             input_interval_ms=200, iterations=2, validation_batches=2, max_processes=2)}
         with _prepared_search_boundary(self.directory.name,
-                [[[name] for name in actions] for actions in (initial, better, worse)], evaluate=evaluate):
+                [[[name] for name in actions] for actions in (initial, better, worse)], evaluate=evaluate), \
+                patch.object(population_training, 'random', SimpleNamespace(Random=NoVariationRandom)):
             created = self._json_request("POST", "/api/tasks", {
                 "profile": sample_profile(), "target_count": 1, "scene": "single_target",
                 "input_interval_ms": 200})
@@ -891,14 +899,18 @@ class InterfaceTests(unittest.TestCase):
                 time.sleep(.02)
         self.assertEqual(state["status"], "completed", state)
         self.assertTrue(state["result_ready"])
-        search_calls = [(actions, count) for actions, count, seed in calls if seed < 20260912 + 100000]
-        expected = [32]
-        self.assertEqual([n for a, n in search_calls if a == worse], expected)
-        self.assertEqual([n for a, n in search_calls if a == better], expected)
+        search_calls = [(actions, count) for actions, count, _ in calls if count == 32]
+        self.assertEqual([n for a, n in search_calls if a == worse], [32, 32])
+        self.assertEqual([n for a, n in search_calls if a == better], [32])
         self.assertEqual(state["search_result"]["dps"], 120)
         _, handle = self.server.tasks[created["task_id"]]
         handle.join(5)
         result = read_task(handle.output_root, include_search_records=True)
+        self.assertEqual(result['search']['effective_population_size'], 2)
+        rejected, = result['search']['coarse_rejections'].values()
+        self.assertEqual(rejected['attempts'], 2)
+        self.assertTrue(all(row['kind'] == 'candidate_score' for row in rejected['failures']))
+        self.assertEqual(len(result['final']['scenarios']['nominal']['finalists']), 2)
         self.assertTrue(all('rule_diagnostics' not in row for row in result['search']['records']))
 
 

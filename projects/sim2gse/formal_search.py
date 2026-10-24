@@ -9,6 +9,7 @@ from search import digest
 ALGORITHM = 'formal-ga-easimple-v1'
 STOP_POLICY = dict(version=1, kind='natural_stagnation')
 VERSION = 1
+COARSE_FAILURE_POLICY = dict(version=1, initial='exclude_invalid_score', offspring='retain_verified_slot')
 
 
 def runtime_for(config, *, cancel_event=None):
@@ -55,6 +56,7 @@ def contract_for(config):
     ga_config = {key: value for key, value in TRAINING_DEFAULTS.items() if key != 'max_trainings'}
     ga_config['max_processes'] = config['max_processes']
     return dict(version=VERSION, algorithm=ALGORITHM, stop_policy=STOP_POLICY, config=ga_config,
+                coarse_failure_policy=COARSE_FAILURE_POLICY,
                 stage_plan=_stage_plan(ga_config, config['random_seed'], scenarios=('nominal',)))
 
 
@@ -115,6 +117,8 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
         native_reference=reference, search_result=summary, independent_validation_complete=True,
         improvement='search_result', stop_policy=STOP_POLICY,
         search=dict(dataset='search', algorithm=ALGORITHM, starts=state['starts'], records=state['archive'],
+            effective_population_size=ga['effective_population_size'],
+            coarse_rejections=ga.get('coarse_rejections', {}), last_fallbacks=ga.get('last_fallbacks', {}),
             chains=[], rounds=ga['generation'], complete_generations=ga['generation'],
             candidate_count=len(state['evaluated_keys']), unique_candidates=len(state['seen']),
             partial_round=False, stop_reason='stagnation', errors=state.get('errors', []),
@@ -141,7 +145,9 @@ def validate_evidence(record, state, character, *, verify_reports):
     from result_store import InvalidRecordError, read_many, report_locations
     evaluation = record.get('evaluation') or {}
     if (not isinstance(evaluation, dict) or not isinstance(evaluation.get('search'), dict)
-            or type(evaluation['search'].get('version')) is not int):
+            or type(evaluation['search'].get('version')) is not int
+            or not isinstance(evaluation['search'].get('coarse_failure_policy'), dict)
+            or type((evaluation['search'].get('coarse_failure_policy') or {}).get('version')) is not int):
         raise InvalidRecordError('正式遗传冠军评价契约版本格式不符')
     expected = contract_for(state['config'])
     config = expected['config']

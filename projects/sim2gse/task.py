@@ -421,7 +421,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         if isinstance(data_key, str):
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                           'canonicalized_duplicates', 'no_improvement_round_limit', 'configuration_key')
+                           'canonicalized_duplicates', 'no_improvement_round_limit', 'configuration_key',
+                           'effective_population_size', 'coarse_rejections', 'last_fallbacks')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
     initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
     if initialization:
@@ -1163,7 +1164,8 @@ def _prepare_formal_publication(store, result=None):
     if result is not None:
         fields['search'] = {name: value for name, value in result['search'].items()
                             if name in ('candidate_count', 'unique_candidates', 'rounds', 'partial_round',
-                                        'stop_reason', 'no_improvement_round_limit')}
+                                        'stop_reason', 'no_improvement_round_limit', 'effective_population_size',
+                                        'coarse_rejections', 'last_fallbacks')}
     state['formal_champion_publication_intent'] = dict(record=record,
         expected_version=incumbent['version'] if incumbent else 0, expected_incumbent=incumbent, result_fields=fields)
     state['formal_champion_publication'] = dict(status='pending', source_run_id=state['run_id'],
