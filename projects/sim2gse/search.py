@@ -1258,7 +1258,11 @@ class TaskStore:
             brief = {key: self.state.get(key) for key in
                      ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
                       'batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                      'canonicalized_duplicates', 'error')}
+                      'canonicalized_duplicates', 'error', 'formal_search')}
+            if self.state.get('formal_search'):
+                brief['stop_policy'] = self.state['formal_search']['stop_policy']
+                brief['generation'] = self.state.get('ga', {}).get('generation', 0)
+                brief['phase'] = self.state.get('ga', {}).get('phase', brief['phase'])
             brief['completed_batches'] = self.persisted_batches
             if not self.diagnostic_logging:
                 for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):
@@ -1420,7 +1424,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         if not training or training_runner is None or training_stage_plan is None:
             raise ValueError('独立评价接缝必须提供完整训练执行器及评分计划')
         expected = (dict(search=(None, 1), feedback=(2, 1), **{
-            name: (None, None) for name in ('nominal', 'jitter', 'pause', 'slow', 'phase')})
+            name: (None, None) for name in (('nominal',) if store.state.get('formal_search') else ('nominal', 'jitter', 'pause', 'slow', 'phase'))})
             if formal_ga else dict(search=(32, 1), feedback=(2, 1), selection=(128, 2), endpoint=(128, 4)))
         if set(training_stage_plan) != set(expected):
             raise ValueError('训练实验必须冻结全部评分阶段')
@@ -2478,7 +2482,15 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             feedback['positions'] = _parent_positions(program, capabilities, diagnostic.get('position_summary', []))
             return feedback
 
-        return training_runner(evaluate=evaluate_training, feedback=feedback_training)
+        result = training_runner(evaluate=evaluate_training, feedback=feedback_training)
+        if config['diagnostics'] != 'off':
+            store.diagnostics_mode = config['diagnostics']
+            store.diagnostic_summary = dict(mode=config['diagnostics'],
+                task_state_writes=store.state_write_count, candidate_compilations=candidate_compilations,
+                lua_compiler_starts=store.lua_compiler_starts)
+            if config['diagnostics'] == 'full':
+                store.diagnostic_summary['events'] = diagnostic_events
+        return result
 
     search_interrupted = None
     if state['phase'] == 'search':

@@ -30,11 +30,11 @@ def _cross(left, right, rng):
     return True
 
 
-def _stage_plan(config, seed):
+def _stage_plan(config, seed, *, scenarios=SCENARIOS):
     # Independent deterministic streams, frozen before the first request.
     rng = random.Random(seed)
     seeds, used = [], set()
-    while len(seeds) < 2 + 5 * config['retest_batches']:
+    while len(seeds) < 2 + len(scenarios) * config['retest_batches']:
         value = rng.randrange(1, 1000000000)
         if not {value, value - 500000, value + 500000} & used:
             seeds.append(value)
@@ -42,14 +42,14 @@ def _stage_plan(config, seed):
     plan = dict(search=dict(iterations=config['coarse_iterations'], seeds=seeds[:1]),
                 feedback=dict(iterations=2, seeds=seeds[1:2]))
     offset = 2
-    for name in SCENARIOS:
+    for name in scenarios:
         plan[name] = dict(iterations=config['retest_iterations'],
                           seeds=seeds[offset:offset + config['retest_batches']])
         offset += config['retest_batches']
     return plan
 
 
-def _evolution(store, capabilities, runtime, config):
+def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     """The eaSimple replacement step and varAnd are group-local, including RNG."""
     from deap import algorithms, base
     from program import canonicalize_search_program, _search_expanded_nodes
@@ -210,7 +210,7 @@ def _evolution(store, capabilities, runtime, config):
         if ga['phase'] == 'retest':
             finalists = ga['finalists']
             programs = [archive[identity]['program'] for identity in finalists]
-            for scenario in SCENARIOS:
+            for scenario in scenarios:
                 for index in range(config['retest_batches']):
                     runtime.check()
                     rows = scores(programs, scenario, index)
@@ -404,29 +404,26 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
                 timeline.finish(folder)
 
 
-def _selected(ga, store, manifest, character, ready, configuration_key):
+def _retest_scores(ga, store, *, condition, stage_plan, config, character, simulation_config,
+                   scenarios=SCENARIOS):
     from result_store import DATA_ROOT, read_many, report_locations
-    from seed_training import SELECTED_V2_SCHEMA
-    from program import canonicalize_search_program
-    archive = {row['key']: row for row in store.state['archive']}
-    condition = digest(manifest)
     receipts = {}
     qualified = []
     for identity in ga['finalists']:
-        scenarios = {}
-        for scenario in SCENARIOS:
+        results = {}
+        for scenario in scenarios:
             batches = [ga['finals'][identity][scenario][str(index)]
-                       for index in range(manifest['training_config']['retest_batches'])]
+                       for index in range(config['retest_batches'])]
             for index, row in enumerate(batches):
                 cached = store.batch(row['batch_key'])
                 if not cached or cached.get('status') != 'success':
                     raise ValueError('发布缺少可靠复测批次')
                 request = cached['request']
-                expected_seed = manifest['stage_plan'][scenario]['seeds'][index]
+                expected_seed = stage_plan[scenario]['seeds'][index]
                 if (digest(request) != row['batch_key'] or request['condition'] != condition
                         or request['behavior_identity'] != identity or request['purpose'] != scenario
                         or request['seed'] != expected_seed
-                        or request['iterations'] != manifest['training_config']['retest_iterations']
+                        or request['iterations'] != config['retest_iterations']
                         or any(row[field] != cached[field] for field in ('dps', 'samples'))
                         or row['candidate_key'] != identity):
                     raise ValueError('发布复测凭据与冻结候选/条件/成绩不符')
@@ -434,14 +431,14 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
                     raise ValueError('发布复测凭据重复；旧四条保持不变')
                 receipts[row['batch_key']] = (cached, index, scenario)
             samples = sum(row['samples'] for row in batches)
-            scenarios[scenario] = dict(dps=sum(row['dps'] * row['samples'] for row in batches) / samples,
+            results[scenario] = dict(dps=sum(row['dps'] * row['samples'] for row in batches) / samples,
                                        samples=samples, batches=batches)
-        nominal = scenarios['nominal']['dps']
-        if nominal <= 0:
+        nominal = results['nominal']['dps']
+        if len(scenarios) > 1 and nominal <= 0:
             ga.setdefault('ineligible', {})[identity] = '正常复测均分≤0，无法定义相对损失'
             continue
-        loss = max((nominal - scenarios[name]['dps']) / nominal for name in SCENARIOS[1:])
-        qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=scenarios))
+        loss = max(((nominal - results[name]['dps']) / nominal for name in scenarios[1:]), default=0.)
+        qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=results))
     missing_locations = [key for key, (cached, _, _) in receipts.items()
                          if not cached.get('storage_group_key')]
     locations = (report_locations(missing_locations)
@@ -464,11 +461,22 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             found.add(key)
             cached, index, scenario = targets[key]
             _validate_saved_batch(saved, key, cached, character, index, scenario,
-                                  ready['simulation_config'])
+                                  simulation_config)
         if found != targets.keys():
             raise ValueError('发布缺少完整复测报告；旧四条保持不变')
         # Only small receipts survive the group; do not retain the last full report.
         del saved_rows, saved
+    return qualified
+
+
+def _selected(ga, store, manifest, character, ready, configuration_key):
+    from seed_training import SELECTED_V2_SCHEMA
+    from program import canonicalize_search_program
+    archive = {row['key']: row for row in store.state['archive']}
+    condition = digest(manifest)
+    qualified = _retest_scores(ga, store, condition=digest(manifest),
+        stage_plan=manifest['stage_plan'], config=manifest['training_config'], character=character,
+        simulation_config=ready['simulation_config'])
     if len(qualified) < 4:
         reasons = '; '.join(identity[:12] + ': ' + reason for identity, reason in ga.get('ineligible', {}).items())
         raise ValueError('五场景完整复测后合格不同行为不足四条；旧四条保持不变' + ('; ' + reasons if reasons else ''))

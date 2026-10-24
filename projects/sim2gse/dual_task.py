@@ -10,6 +10,7 @@ import uuid
 import result_store
 import task
 from runtime import TaskRuntime, TaskCancelled
+from formal_search import runtime_for as formal_runtime, STOP_POLICY
 from search import config_for, digest
 from simulation_config import config_for as simulation_config_for
 
@@ -148,8 +149,7 @@ def _worker(handle):
                 row['phase'] = purpose
                 row[purpose + '_status'] = 'running'
                 _save(row)
-                runtime = TaskRuntime(row['config']['total_budget_seconds'], cancel_event=handle.cancel_event,
-                                      diagnostic_logging=row['config']['diagnostic_logging'])
+                runtime = formal_runtime(row['config'], cancel_event=handle.cancel_event)
                 runtime.identities = copy.deepcopy(handle.identities)
                 if row['config']['search_timeline']:
                     runtime.timeline_origin = handle.timeline_origin
@@ -322,12 +322,14 @@ def read(destination, *, active=None, include_rule_initialization=True):
         if status == 'running' and row['status'] in ('failed', 'interrupted', 'cancelled', 'partial'):
             status = 'failed' if row['status'] == 'failed' else 'incomplete'
         scene = dict(purpose=purpose, target_count=targets, status=status,
-                     input_sha256=row['input_sha256'], total_budget_seconds=row['config']['total_budget_seconds'],
+                     input_sha256=row['input_sha256'], total_budget_seconds=None, stop_policy=STOP_POLICY,
                      elapsed_seconds=0., progress=0.)
         if (child_path / 'profile.json').exists():
             child = task.read_task(child_path, include_rule_initialization=include_rule_initialization)
             scene['elapsed_seconds'] = float(child.get('elapsed_seconds', 0))
-            scene['progress'] = min(1., scene['elapsed_seconds'] / scene['total_budget_seconds'])
+            scene['progress'] = None
+            scene['phase'] = (child.get('search', {}).get('formal_search') or {}).get('phase', child.get('phase'))
+            scene['generation'] = child.get('generation', child.get('search', {}).get('rounds', 0))
             if child.get('search_result'):
                 scene['search_result'] = child['search_result']
             for name in ('rule_initialization', 'has_rule_initialization', 'rule_initialization_identity'):
@@ -336,14 +338,14 @@ def read(destination, *, active=None, include_rule_initialization=True):
             search = child.get('search') or child
             for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
                          'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',
-                         'formal_champion_publication_verification'):
+                         'formal_champion_publication_verification', 'formal_search', 'start_adaptations'):
                 if name in search:
                     scene[name] = search[name]
         if status == 'completed':
             completed += 1
             scene['progress'] = 1.
         elif status == 'running':
-            active_progress = scene['progress']
+            active_progress = scene['progress'] or 0.
         elapsed += scene['elapsed_seconds']
         scenes.append(scene)
     for purpose in ('single_target', 'aoe', 'burst'):
@@ -356,12 +358,12 @@ def read(destination, *, active=None, include_rule_initialization=True):
     return dict(status=row['status'], phase=row['phase'], error=row['error'], scenes=scenes,
                 exports=exports, recoverable=recoverable, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),
                 result_ready=bool(exports), input_interval_ms=row['config']['input_interval_ms'],
-                progress=1. if row['status'] == 'completed' else (completed + active_progress) / 2,
+                progress=1. if row['status'] == 'completed' else None, stop_policy=STOP_POLICY,
                 elapsed_seconds=elapsed + row['preparation_seconds'] + row['packaging_seconds'],
                 preparation_seconds=row['preparation_seconds'], packaging_seconds=row['packaging_seconds'],
-                definition_id=row['definition_id'], total_budget_seconds=2 * row['config']['total_budget_seconds'],
+                definition_id=row['definition_id'], total_budget_seconds=None,
                 burst_instructions=row['burst_instructions'], evidence_status='search_result',
-                result_note='未进行最终独立复测；两个循环分别搜索，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。')
+                result_note='两个循环均已完成正常场景独立复测，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。')
 
 
 def cancel(handle):

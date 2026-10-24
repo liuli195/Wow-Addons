@@ -25,6 +25,7 @@ import msvcrt
 
 from runtime import replace_file, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
+from formal_search import runtime_for as formal_runtime, STOP_POLICY as FORMAL_STOP_POLICY
 from simulation_config import config_for as simulation_config_for, engine_options, load_config
 
 
@@ -429,7 +430,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     if state is not None:
         for name in ('seed_adaptations', 'training_champion_snapshot',
                      'training_champion_adaptation', 'start_sources', 'formal_champion_snapshot',
-                     'formal_champion_adaptation', 'formal_champion_publication'):
+                     'formal_champion_adaptation', 'formal_champion_publication', 'formal_search', 'stop_policy',
+                     'start_adaptations'):
             if name in state:
                 search_metrics[name] = state[name]
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
@@ -868,6 +870,13 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
                != record['behavior_identity']
             or canonicalize_search_program(record['program'], state['capabilities'])['identity'] != record['behavior_identity']):
         raise InvalidRecordError('正式冠军程序、导出或正式来源行为不符')
+    contract = record.get('contract_version') or 1
+    if contract == 2:
+        from formal_search import validate_evidence
+        validate_evidence(record, state, character, verify_reports=verify_reports)
+        return evidence
+    if contract != 1:
+        raise InvalidRecordError('未知正式冠军成果契约版本')
     if not verify_reports:
         import math
         if (type(record.get('score')) not in (int, float) or not math.isfinite(record['score'])
@@ -1068,7 +1077,8 @@ def _prepare_formal_publication(store, result=None):
     if snapshot is None:
         return
     key = state.get('locked_candidate_key')
-    winner = next((row for row in state.get('archive', []) if row['key'] == key), None)
+    winner = (state.get('formal_winner') if state.get('formal_search') else
+              next((row for row in state.get('archive', []) if row['key'] == key), None))
     if winner is None:
         state['formal_champion_publication'] = dict(status='not_eligible', reason='没有完整正式赢家')
         return
@@ -1085,7 +1095,7 @@ def _prepare_formal_publication(store, result=None):
     previous = state.get('formal_champion_last_published')
     baseline = (previous['behavior_identity'] if previous else
                 snapshot.get('behavior_identity') if snapshot['status'] == 'selected' else None)
-    if baseline and key != baseline:
+    if baseline and key != baseline and not state.get('formal_search'):
         current = winner
         visited = set()
         while current['key'] != baseline:
@@ -1116,6 +1126,14 @@ def _prepare_formal_publication(store, result=None):
                   samples=sum(row['samples'] for row in winner['batches']),
                   batch_keys=list(dict.fromkeys([row['data_key'] for row in winner['batches']] +
                       [batch for item in evidence for batch in item['batch_keys']])), promotion_evidence=evidence)
+    if state.get('formal_search'):
+        record.update(contract_version=2, batch_keys=[batch['data_key']
+            for row in state['formal_finalists'] for batch in row['batches']],
+            evaluation=dict(search=state['formal_search'], engines=state['engines'],
+                complete_generations=state['ga']['generation'], stagnant=state['ga']['stagnant'],
+                finalist_keys=state['ga']['finalists'], finalists=state['formal_finalists']))
+    else:
+        record.update(contract_version=1, evaluation=None)
     incumbent = previous or (dict(version=snapshot['version'], source_run_id=snapshot['source_run_id'],
         behavior_identity=snapshot['behavior_identity'])
         if snapshot['status'] == 'selected' and snapshot['version'] > 0 else None)
@@ -1154,7 +1172,8 @@ def _restore_formal_result(store, destination, character):
             raise InvalidRecordError('完整正式结果缺失')
         _validate_formal_source(record, state, character, run=run)
     except (InvalidRecordError, ValueError, KeyError, TypeError):
-        winner = next((row for row in state.get('archive', []) if row['key'] == record['behavior_identity']), None)
+        winner = (state.get('formal_winner') if record.get('contract_version') == 2 else
+                  next((row for row in state.get('archive', []) if row['key'] == record['behavior_identity']), None))
         fields = intent.get('result_fields') or {}
         if (winner is None or fields.get('status') not in ('completed', 'cancelled')
                 or winner['score'] != record['score']
@@ -1177,6 +1196,8 @@ def _restore_formal_result(store, destination, character):
                 simulation=compiled.get('simulation'), export_text=compiled.get('text')))
         result = dict(fields, locked_candidate_key=record['behavior_identity'], selected_candidate_key=record['behavior_identity'])
         result['search'] = dict(fields.get('search') or {}, records=state['archive'], chains=state['chains'], errors=state.get('errors', []))
+        if record.get('contract_version') == 2:
+            result['search_result'] = state['search_result']
         result['validation'] = dict(dataset='validation', records=[row[name] for row in state['archive']
             for name in ('validation', 'global_validation') if name in row])
         result['elapsed_seconds'] = max(fields.get('elapsed_seconds', 0), state.get('elapsed_seconds', 0))
@@ -1252,6 +1273,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         store.close()
         raise TaskError('任务结果中心身份与检查点不符，请创建新任务')
     state['run_id'] = run_id
+    state.setdefault('formal_search_version', 1)
+    state['stop_policy'] = FORMAL_STOP_POLICY
     if getattr(runtime, 'search_timeline', None) is not None:
         runtime.search_timeline.destination = destination
         runtime.search_timeline.context['run_id'] = run_id
@@ -1451,6 +1474,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                             behavior_identity=key, derived_program=formal['program'])
                     except (TypeError, ValueError, KeyError) as error:
                         state['formal_champion_adaptation'] = dict(status='rejected', reason=str(error))
+                from formal_search import freeze_starts
+                state['starts'], state['start_adaptations'] = freeze_starts(state['starts'], capabilities, runtime)
                 state['start_sources'] = sources
                 if not state['starts']:
                     raise TaskError('当前爆发排除条件下没有有效搜索起点')
@@ -1471,7 +1496,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             if getattr(runtime, 'search_timeline', None) is not None:
                 runtime.search_timeline.configure(profile_sha=input_effective_sha256, engines=identities,
                     simulation_config=simulation_config, config=config, burst=state.get('burst'))
-            result = optimize(profile=destination/'input.simc', character=character,
+            from formal_search import run as formal_optimize
+            result = formal_optimize(profile=destination/'input.simc', character=character,
                               capabilities=state['capabilities'], reference=state['native'],
                               destination=destination, runtime=runtime, config=config,
                               condition_key=condition, store=store,
@@ -1628,7 +1654,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
     from result_store import ensure_available
     ensure_available()
     simulation_config = simulation_config_for(simulation_config)
-    runtime = _runtime or TaskRuntime(config['total_budget_seconds'] if mode == 'optimize' else 600, cancel_event=cancel_event)
+    runtime = _runtime or (formal_runtime(config, cancel_event=cancel_event) if mode == 'optimize'
+                           else TaskRuntime(600, cancel_event=cancel_event))
     path, raw_text, character, destination = _prepare_task(
         input_path, output_root, resume=resume, simulation_config=simulation_config
     )
@@ -1698,7 +1725,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
             from search_timeline import Timeline
             timeline = Timeline(origin=origin,
                 context=dict(simulation_config=simulation_config_for(simulation_config)), resumed=resume)
-        _runtime = _runtime or TaskRuntime(config['total_budget_seconds'], cancel_event=cancel_event)
+        _runtime = _runtime or formal_runtime(config, cancel_event=cancel_event)
         if timeline is not None:
             _runtime.search_timeline = timeline
     try:
@@ -1757,7 +1784,7 @@ def start_task(input_path, output_root, **kwargs):
         if config['search_timeline']:
             timeline_origin = call_started
     from search import config_for
-    runtime = TaskRuntime(config_for(config)["total_budget_seconds"] if kwargs.get("mode", "optimize") == "optimize" else 600)
+    runtime = formal_runtime(config_for(config)) if kwargs.get("mode", "optimize") == "optimize" else TaskRuntime(600)
     if timeline_origin is not None:
         runtime.timeline_origin = timeline_origin
     handle = TaskHandle(None, runtime, output_root)
@@ -1815,6 +1842,8 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination)
         try:
             state = store.state
+            if state.get('formal_search_version') != 1:
+                raise TaskError('旧正式任务恢复契约不兼容；原完整成果仍可读取，请创建新任务')
             if state.get('rule_snapshot') or state.get('rule_context'):
                 raise TaskError('旧规则任务身份不兼容，不能续跑；原完整成果仍可读取')
             if 'formal_champion_publication' in state:
@@ -1889,7 +1918,7 @@ def _resume_task(output_root, **kwargs):
             if state.get('status') == 'running':
                 penalty = max((max(0, r['allowance'] - max(0,used-r['start']))
                                for r in state.get('inflight',{}).values()),default=0)
-                used += min(30, penalty, max(0, config['total_budget_seconds']-used))
+                used += min(30, penalty)
                 state.update(elapsed_seconds=used,status='interrupted',inflight={})
                 store.save()  # 扣除与恢复标记同一事务，重复恢复不会再次扣除。
             if state.get('formal_champion_publication_intent'):
@@ -1917,25 +1946,11 @@ def _resume_task(output_root, **kwargs):
                         store.save()
                     store.publish()
                     return read_task(destination)
-            if used >= config['total_budget_seconds']:
-                if state.get('status')!='completed':
-                    state.update(status='validation_incomplete',elapsed_seconds=used,error='计算预算已耗尽')
-                    store.save()
-                    result = dict(state)
-                    result['independent_validation_complete']=False
-                    observation = state.get('search_observability')
-                    if observation and observation.get('mode') != 'off':
-                        result['search_observability'] = _export_search_observability(
-                            observation, include_details=observation.get('mode') == 'full')
-                    pointer = _store_run(destination, result, state=state)
-                    _write_json(destination/'result.json',pointer,atomic=True)
-                store.publish()
-                return read_task(destination)
         finally:
             store.close()
         runtime = kwargs.pop('_runtime', None)
         if runtime is None:
-            runtime = TaskRuntime(config['total_budget_seconds'], cancel_event=kwargs.pop('cancel_event', None))
+            runtime = formal_runtime(config, cancel_event=kwargs.pop('cancel_event', None))
         if config['diagnostic_logging']:
             # 同一次恢复先补反馈再重开任务；只转交内存中的本次统计，不读取旧日志。
             try:
@@ -1952,7 +1967,7 @@ def _resume_task(output_root, **kwargs):
         kwargs.pop('cancel_event',None)
         runtime.identities.update(verified)
         runtime.used_seconds=used
-        runtime.budget_seconds=config['total_budget_seconds']
+        runtime.budget_seconds=float('inf')
         runtime.phase_limit=runtime.budget_seconds
         if timeline is not None:
             runtime.search_timeline = timeline
@@ -2137,10 +2152,16 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
                                           text=row['export_text'], simulation=row['simulation'],
                                           game_validation=row['game_validation'])
         task_result['burst'] = burst_record
+    if search.get('stop_policy'):
+        task_result['stop_policy'] = search['stop_policy']
     if saved['search_dps'] is not None:
         task_result['search_result'] = dict(
             dps=saved['search_dps'], samples=saved['search_samples'],
             reference_dps=saved['reference_dps'], reference_ratio=saved['search_reference_ratio'])
+        if search.get('formal_search'):
+            cfg = search['formal_search']['config']
+            task_result['search_result']['retest'] = dict(scenario='nominal', batches=cfg['retest_batches'],
+                                                        requested_iterations=cfg['retest_iterations'])
     if saved['validation_summary']:
         task_result['validation'] = decode(saved['validation_summary'])
 
