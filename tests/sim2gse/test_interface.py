@@ -1196,7 +1196,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         state = output['state']
         self.assertEqual(state['status'], 'completed', state)
         self.assertEqual([scene['target_count'] for scene in state['scenes']], [1, 5])
-        self.assertTrue(all(scene['total_budget_seconds'] == 120 for scene in state['scenes']))
+        self.assertTrue(all(scene['total_budget_seconds'] is None for scene in state['scenes']))
+        self.assertTrue(all(scene['generation'] == 2 for scene in state['scenes']))
+        self.assertTrue(all(scene['search_result']['samples'] == 381 for scene in state['scenes']))
         self.assertEqual(len({scene['input_sha256'] for scene in state['scenes']}), 1)
         self.assertEqual(set(state['exports']), {'single_target', 'aoe', 'burst'})
         names = [decode_import(value)['sequences'] for value in state['exports'].values()]

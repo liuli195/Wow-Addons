@@ -10,7 +10,7 @@ import types
 import uuid
 
 from runtime import TaskRuntime, TaskCancelled
-from search import TaskStore, digest, optimize, mutate, _tuple, _validate_saved_batch
+from search import TaskStore, digest, optimize, mutate, _tuple, _validate_saved_batch, _observe_ga
 
 SCENARIOS = ('nominal', 'jitter', 'pause', 'slow', 'phase')
 ALGORITHM = 'ga-easimple-v1'
@@ -79,11 +79,30 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     def mate(left, right):
         if _cross(left, right, rng):
             left.crossed = right.crossed = True
+            observe_child(left.parent_program, left, dict(sampled_mutation='crossover', actual_mutation='crossover'))
+            observe_child(right.parent_program, right, dict(sampled_mutation='crossover', actual_mutation='crossover'))
         return left, right
     feedback_for = None
+    def observe_child(parent, child, details):
+        if not store.state.get('search_observability'):
+            return
+        try:
+            identity = canonicalize_search_program(child, capabilities)['identity']
+            reason = None
+        except (TypeError, ValueError, KeyError) as error:
+            identity, reason = None, str(error)
+        _observe_ga(store, 'mutation', parent_identity=canonicalize_search_program(parent, capabilities)['identity'],
+                    candidate_identity=identity, illegal_reason=reason, **details)
     def mutation(member):
         feedback_getter = None if member.crossed else lambda: feedback_for(member.parent_program)
-        member[:] = mutate(member, capabilities, rng, feedback_getter=feedback_getter)
+        details = {} if store.state.get('search_observability') else None
+        options = {'observation': details} if details is not None else {}
+        if store.state.get('formal_search'):
+            options['reset_flags'] = tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']
+                                                        if kind in ('target', 'combat', 'shift', 'ctrl', 'alt')))
+        member[:] = mutate(member, capabilities, rng, feedback_getter=feedback_getter, **options)
+        if details is not None:
+            observe_child(member.parent_program, member, details)
         return member,
     toolbox.register('clone', clone)
     toolbox.register('mate', mate)
@@ -115,6 +134,9 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             unique = {}
             for program in programs:
                 unique.setdefault(key(program), program)
+            if store.diagnostic_logging:
+                counters = getattr(store, 'counter_target', store.state)
+                counters['canonicalized_duplicates'] = counters.get('canonicalized_duplicates', 0) + len(programs) - len(unique)
             results = {}
             items = list(unique.items())
             # Bounded scheduling windows also bound nondurable report memory to 12.
@@ -205,6 +227,9 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                 baseline=current, stagnant=0 if improved else ga['stagnant'] + 1)
             if ga['stagnant'] >= config['stagnation_generations']:
                 ga.update(phase='retest', finalists=[row['key'] for row in ranking()])
+                if timeline is not None and store.state.get('formal_search'):
+                    timeline.stop('stagnation')
+                    timeline.mark('normal_retest_started')
             store.checkpoint()
         archive = {row['key']: row for row in store.state['archive']}
         if ga['phase'] == 'retest':
@@ -219,6 +244,8 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     # Receipts live in the bounded finalist state; reports flush at 12 or phase/cancel.
             ga['phase'] = 'qualified'
             store.checkpoint()
+            if timeline is not None and store.state.get('formal_search'):
+                timeline.mark('normal_retest_completed')
         return ga
     return execute
 

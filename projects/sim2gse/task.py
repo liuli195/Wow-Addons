@@ -870,7 +870,9 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
                != record['behavior_identity']
             or canonicalize_search_program(record['program'], state['capabilities'])['identity'] != record['behavior_identity']):
         raise InvalidRecordError('正式冠军程序、导出或正式来源行为不符')
-    contract = record.get('contract_version') or 1
+    contract = 1 if record.get('contract_version') is None else record['contract_version']
+    if type(contract) is not int:
+        raise InvalidRecordError('正式冠军成果契约版本格式无效')
     if contract == 2:
         from formal_search import validate_evidence
         validate_evidence(record, state, character, verify_reports=verify_reports)
@@ -1258,7 +1260,7 @@ def _publish_formal_champion(store, destination):
 def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False,
                   burst_identity=None, formal_source_run_ids=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
-    from search import TaskStore, _export_search_observability, digest, initial_programs, optimize
+    from search import TaskStore, _export_search_observability, digest, initial_programs
     store = TaskStore(destination)
     state = store.state
     try:
@@ -1842,7 +1844,7 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination)
         try:
             state = store.state
-            if state.get('formal_search_version') != 1:
+            if type(state.get('formal_search_version')) is not int or state['formal_search_version'] != 1:
                 raise TaskError('旧正式任务恢复契约不兼容；原完整成果仍可读取，请创建新任务')
             if state.get('rule_snapshot') or state.get('rule_context'):
                 raise TaskError('旧规则任务身份不兼容，不能续跑；原完整成果仍可读取')
@@ -2098,6 +2100,12 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         batch_keys=saved['batch_keys'] or [])
     if saved['search_metrics']:
         search.update(decode(saved['search_metrics']))
+    if search.get('formal_search') is not None:
+        from formal_search import contract_for
+        frozen = search['formal_search']
+        if (not isinstance(frozen, dict) or type(frozen.get('version')) is not int
+                or frozen != contract_for(decode(saved['config']))):
+            raise TaskError('正式遗传搜索成果版本或冻结评分契约不符，不能按新语义读取')
     if pointer.get('formal_champion_publication'):
         search['formal_champion_publication'] = pointer['formal_champion_publication']
     checkpoint = destination / 'task.sqlite3'

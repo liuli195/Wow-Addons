@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import os
 import copy
@@ -616,9 +615,42 @@ def _export_search_observability(value, *, include_details=True):
                          row["action_position"] or 0, row["action"]),
     )
     exported = {"mode": value["mode"], "summary": summary}
+    if value.get('algorithm'):
+        exported['algorithm'] = value['algorithm']
     if value["mode"] == "full" and include_details:
         exported["details"] = value["details"]
     return exported
+
+
+def _observe_ga(store, kind, **values):
+    """Observe actual GA work only; never draw randomness or request extra scores."""
+    with store.lock:
+        observation = store.state.get('search_observability')
+        if not observation:
+            return
+        summary = observation['summary']
+        if kind in ('initial', 'mutation'):
+            field = 'initial_candidates' if kind == 'initial' else 'mutation_attempts'
+            summary[field] += 1
+            summary['outcomes']['observed'] = summary['outcomes'].get('observed', 0) + 1
+        if kind == 'mutation':
+            for field, name in (('sampled_mutations', 'sampled_mutation'), ('actual_mutations', 'actual_mutation')):
+                method = values.get(name) or 'no_change'
+                summary[field][method] = summary[field].get(method, 0) + 1
+            method = summary['methods'].setdefault(values.get('actual_mutation') or 'no_change', dict(attempts=0))
+            method['attempts'] += 1
+        if kind == 'coarse_score':
+            summary['legal_candidates'] += 1
+            summary['score_started'] += 1
+            summary['score_completed'] += 1
+        if values.get('illegal_reason'):
+            summary['invalid_candidates'] += 1
+            reason = values['illegal_reason']
+            summary['invalid_reasons'][reason] = summary['invalid_reasons'].get(reason, 0) + 1
+        event = dict(event_id=observation['next_event_id'], kind=kind, **values)
+        observation['next_event_id'] += 1
+        if observation['mode'] == 'full':
+            observation['details'].append(event)
 
 
 def _position_observations(candidate, candidate_identity, trace):
@@ -1417,38 +1449,31 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
              training_runner=None, training_stage_plan=None):
     if store.state.get('training_candidate_supplier') is not None:
         raise ValueError('旧训练供应器检查点身份不兼容，不能恢复；原成果仍可读取')
-    if training and training_runner is None:
-        raise ValueError('旧逐材料local训练执行已移除，训练必须使用GA评价入口')
-    formal_ga = bool(training_stage_plan and 'nominal' in training_stage_plan)
-    if training_runner is not None or training_stage_plan is not None:
-        if not training or training_runner is None or training_stage_plan is None:
-            raise ValueError('独立评价接缝必须提供完整训练执行器及评分计划')
-        expected = (dict(search=(None, 1), feedback=(2, 1), **{
-            name: (None, None) for name in (('nominal',) if store.state.get('formal_search') else ('nominal', 'jitter', 'pause', 'slow', 'phase'))})
-            if formal_ga else dict(search=(32, 1), feedback=(2, 1), selection=(128, 2), endpoint=(128, 4)))
-        if set(training_stage_plan) != set(expected):
-            raise ValueError('训练实验必须冻结全部评分阶段')
-        seeds = []
-        for stage, (iterations, count) in expected.items():
-            plan = training_stage_plan[stage]
-            if ((iterations is not None and plan.get('iterations') != iterations)
-                    or type(plan.get('iterations')) is not int or plan['iterations'] < (1 if formal_ga else 2)
-                    or (count is not None and len(plan.get('seeds', [])) != count)
-                    or not plan.get('seeds')
-                    or any(type(seed) is not int or seed <= 0 for seed in plan['seeds'])):
-                raise ValueError('训练实验冻结种子或样本数不符')
-            seeds.extend(plan['seeds'])
-        if len(set(seeds)) != len(seeds) or set(seeds) & {seed + 500000 for seed in seeds}:
-            raise ValueError('训练实验阶段种子冲突')
-        saved_plan = store.state.get('training_evaluation_plan')
-        if saved_plan is not None and saved_plan != training_stage_plan:
-            raise ValueError('训练实验恢复评分计划变化')
-        store.state['training_evaluation_plan'] = copy.deepcopy(training_stage_plan)
-    elif store.state.get('training_evaluation_plan') is not None:
-        raise ValueError('独立训练实验不能切换回旧搜索')
+    if not training or training_runner is None or training_stage_plan is None:
+        raise ValueError('搜索必须提供共享GA执行器及完整冻结评分计划')
+    scenarios = ('nominal',) if store.state.get('formal_search') else ('nominal', 'jitter', 'pause', 'slow', 'phase')
+    expected = dict(search=(None, 1), feedback=(2, 1), **{name: (None, None) for name in scenarios})
+    if set(training_stage_plan) != set(expected):
+        raise ValueError('GA必须冻结全部评分阶段')
+    seeds = []
+    for stage, (iterations, count) in expected.items():
+        plan = training_stage_plan[stage]
+        if ((iterations is not None and plan.get('iterations') != iterations)
+                or type(plan.get('iterations')) is not int or plan['iterations'] < 1
+                or (count is not None and len(plan.get('seeds', [])) != count)
+                or not plan.get('seeds')
+                or any(type(seed) is not int or seed <= 0 for seed in plan['seeds'])):
+            raise ValueError('GA冻结种子或样本数不符')
+        seeds.extend(plan['seeds'])
+    if len(set(seeds)) != len(seeds) or set(seeds) & {seed + 500000 for seed in seeds}:
+        raise ValueError('GA阶段种子冲突')
+    saved_plan = store.state.get('training_evaluation_plan')
+    if saved_plan is not None and saved_plan != training_stage_plan:
+        raise ValueError('GA恢复评分计划变化')
+    store.state['training_evaluation_plan'] = copy.deepcopy(training_stage_plan)
     store.character = character
     store.simulation_config = simulation_config
-    from engine import check_report, player_report, damage_statistics, CandidateError, NativeEvaluationError
+    from engine import player_report, CandidateError, NativeEvaluationError
     from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity
     from simulation_config import config_for
@@ -1459,319 +1484,20 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     verify_behavior_identity_state(state)
     observation_mode = config['search_observability']
     observability = None
-    observation_events = {}
-    position_jobs = []
-    observation_pause_seconds = 0.0
-    observation_call_depth = 0
-    search_recording_active = state.get('phase', 'search') == 'search'
     if observation_mode != 'off':
         with store.lock:
             observability = state.setdefault(
                 'search_observability', _new_search_observability(observation_mode))
             if observability.get('mode') != observation_mode:
                 raise ValueError('任务恢复时搜索记录模式不能改变')
-            observation_events = {row['event_id']: row for row in observability['details']}
-            position_jobs = observability.setdefault('position_jobs', [])
+            observability['algorithm'] = 'ga-easimple-v1'
 
-    def serialize_observability(function):
-        def call(*args, **kwargs):
-            nonlocal observation_pause_seconds, observation_call_depth
-            if observability is None:
-                return function(*args, **kwargs)
-            outermost = observation_call_depth == 0
-            started = time.perf_counter() if outermost and search_recording_active else None
-            observation_call_depth += 1
-            try:
-                with store.lock:
-                    return function(*args, **kwargs)
-            finally:
-                observation_call_depth -= 1
-                if started is not None:
-                    seconds = time.perf_counter() - started
-                    observation_pause_seconds += seconds
-                    runtime.started += seconds
-        return call
-
-    def event_for(work):
-        return observation_events.get(work.get('observation_id')) if observability else None
-
-    @serialize_observability
-    def method_summary(work):
-        if not observability:
-            return None
-        name = work.get('observation_actual_mutation', 'initial')
-        return observability['summary']['methods'].setdefault(name, {
-            'attempts': 0,
-            'legal_candidates': 0,
-            'invalid_candidates': 0,
-            'duplicates': 0,
-            'score_started': 0,
-            'score_completed': 0,
-            'route_checks': 0,
-            'route_promotions': 0,
-            'global_checks': 0,
-            'global_promotions': 0,
-            'outcomes': {},
-            'score_changes': dict(count=0, total=0.0, minimum=None, maximum=None),
-            'phase_seconds': {},
-        })
-
-    @serialize_observability
-    def mark_work(work, flag, counter):
-        if not observability:
-            return
-        internal_flag = 'observation_' + flag
-        if work.get(internal_flag):
-            return
-        work[internal_flag] = True
-        observability['summary'][counter] += 1
-        stats = method_summary(work)
-        stats[counter] += 1
-        row = event_for(work)
-        if row is not None:
-            row[flag] = True
-
-    @serialize_observability
-    def mark_candidate(work, key=None, error=None):
-        if not observability or work.get('observation_candidate_recorded'):
-            return
-        work['observation_candidate_recorded'] = True
-        summary = observability['summary']
-        row = event_for(work)
-        if row is not None:
-            row['candidate_identity'] = key
-            row['legal'] = error is None
-            row['illegal_reason'] = str(error) if error is not None else None
-        if error is None:
-            summary['legal_candidates'] += 1
-            method_summary(work)['legal_candidates'] += 1
-        else:
-            summary['invalid_candidates'] += 1
-            method_summary(work)['invalid_candidates'] += 1
-            summary['invalid_reasons'][str(error)] = summary['invalid_reasons'].get(str(error), 0) + 1
-
-    @serialize_observability
-    def mark_duplicate(work, reason):
-        if not observability or work.get('observation_duplicate_recorded'):
-            return
-        work['observation_duplicate_recorded'] = True
-        summary = observability['summary']
-        summary['duplicates'] += 1
-        summary['duplicate_reasons'][reason] = summary['duplicate_reasons'].get(reason, 0) + 1
-        method_summary(work)['duplicates'] += 1
-        row = event_for(work)
-        if row is not None:
-            row['duplicate_reason'] = reason
-
-    @serialize_observability
-    def mark_promotion(work, kind, *, checked=None, promoted=None):
-        if not observability:
-            return
-        summary = observability['summary']
-        stats = method_summary(work)
-        row = event_for(work)
-        if checked:
-            flag = 'observation_' + kind + '_checked'
-            if not work.get(flag):
-                work[flag] = True
-                counter = kind + '_checks'
-                summary[counter] += 1
-                stats[counter] += 1
-                if row is not None:
-                    row[kind + '_promotion']['checked'] = True
-        if promoted is not None:
-            flag = 'observation_' + kind + '_promoted'
-            if promoted and not work.get(flag):
-                work[flag] = True
-                counter = kind + '_promotions'
-                summary[counter] += 1
-                stats[counter] += 1
-            if row is not None:
-                row[kind + '_promotion']['promoted'] = bool(promoted)
-                row[kind + '_promotion']['complete'] = True
-
-    @serialize_observability
-    def add_stage_time(work, stage, seconds):
-        if not observability:
-            return
-        flag = 'observation_timed_' + stage
-        if work.get(flag):
-            return
-        work[flag] = True
-        seconds = max(0.0, seconds)
-        summary = observability['summary']
-        summary['phase_seconds'][stage] = summary['phase_seconds'].get(stage, 0.0) + seconds
-        stats = method_summary(work)
-        stats['phase_seconds'][stage] = stats['phase_seconds'].get(stage, 0.0) + seconds
-        row = event_for(work)
-        if row is not None:
-            row['stage_seconds'][stage] = seconds
-
-    @serialize_observability
-    def add_score_change(work, change):
-        changes = method_summary(work).setdefault(
-            'score_changes', dict(count=0, total=0.0, minimum=None, maximum=None))
-        changes['count'] += 1
-        changes['total'] += change
-        changes['minimum'] = change if changes['minimum'] is None else min(changes['minimum'], change)
-        changes['maximum'] = change if changes['maximum'] is None else max(changes['maximum'], change)
-        changes['mean'] = changes['total'] / changes['count']
-
-    @serialize_observability
-    def mark_outcome(work, outcome):
-        if not observability or work.get('observation_outcome') is not None:
-            return
-        work['observation_outcome'] = outcome
-        row = event_for(work)
-        if row is not None:
-            row['outcome'] = outcome
-        summary = observability['summary']['outcomes']
-        summary[outcome] = summary.get(outcome, 0) + 1
-        outcomes = method_summary(work).setdefault('outcomes', {})
-        outcomes[outcome] = outcomes.get(outcome, 0) + 1
-
-    @serialize_observability
-    def add_position_summary(work, rows):
-        if not observability:
-            return
-        positions = observability['summary']['positions']
-        for row in rows:
-            key = _json([row['candidate_identity'], row['click_position'],
-                         row['action_position'], row['action']])
-            current = positions.get(key)
-            if current is None:
-                positions[key] = dict(row, failures=dict(row['failures']))
-                continue
-            _merge_position_counts(current, row)
-        event = event_for(work)
-        if event is not None:
-            event_rows = event.setdefault('position_summary', [])
-            event_positions = {
-                _json([row['candidate_identity'], row['click_position'],
-                       row['action_position'], row['action']]): row
-                for row in event_rows
-            }
-            for position in rows:
-                key = _json([position['candidate_identity'], position['click_position'],
-                             position['action_position'], position['action']])
-                current = event_positions.get(key)
-                if current is None:
-                    current = dict(position, failures=dict(position['failures']))
-                    event_rows.append(current)
-                    event_positions[key] = current
-                else:
-                    _merge_position_counts(current, position)
-            event['position_comparison_count'] = event.get('position_comparison_count', 0) + 1
-
-    def queue_position_observation(work, program, comparison):
-        if observability is not None:
-            with store.lock:
-                if any(job['event_id'] == work['observation_id'] and job['comparison'] == comparison
-                       for job in position_jobs):
-                    return
-                position_jobs.append(dict(
-                    event_id=work['observation_id'], program=_copy_program(program),
-                    comparison=comparison, status='pending'))
-
-    def _merge_position_counts(current, row):
-        for field in ('turns', 'queued', 'queue_blocked', 'processing', 'successes'):
-            current[field] += row[field]
-        for failure, count in row['failures'].items():
-            current['failures'][failure] = current['failures'].get(failure, 0) + count
-
-    def make_observation_event(event_id, *, parent_identity, sampled_mutation,
-                               actual_mutation, modification_position):
-        return dict(
-            event_id=event_id,
-            parent_identity=parent_identity,
-            sampled_mutation=sampled_mutation,
-            actual_mutation=actual_mutation,
-            modification_position=modification_position,
-            candidate_identity=None,
-            legal=None,
-            illegal_reason=None,
-            duplicate_reason=None,
-            parent_score=None,
-            candidate_score=None,
-            score_change=None,
-            score_started=False,
-            score_completed=False,
-            route_promotion=dict(checked=False, promoted=False, complete=False),
-            global_promotion=dict(checked=False, promoted=False, complete=False),
-            outcome=None,
-            stage_seconds={},
-        )
-
-    @serialize_observability
-    def reserve_initial_observation():
-        event_id = observability['next_event_id']
-        observability['next_event_id'] += 1
-        event = make_observation_event(
-            event_id, parent_identity=None, sampled_mutation='initial',
-            actual_mutation='initial', modification_position=None)
-        if observation_mode == 'full':
-            observability['details'].append(event)
-            observation_events[event_id] = event
-        observability['summary']['initial_candidates'] += 1
-        return event_id
-
-
-    @serialize_observability
-    def commit_mutation_observations(events):
-        if not observability:
-            return
-        summary = observability['summary']
-        for event in events:
-            summary['mutation_attempts'] += 1
-            sampled = event['sampled_mutation'] or 'unknown'
-            actual = event['actual_mutation'] or 'unknown'
-            summary['sampled_mutations'][sampled] = summary['sampled_mutations'].get(sampled, 0) + 1
-            summary['actual_mutations'][actual] = summary['actual_mutations'].get(actual, 0) + 1
-            work = {'observation_actual_mutation': actual}
-            stats = method_summary(work)
-            stats['attempts'] += 1
-            if event['legal'] is True:
-                summary['legal_candidates'] += 1
-                stats['legal_candidates'] += 1
-            elif event['legal'] is False:
-                summary['invalid_candidates'] += 1
-                stats['invalid_candidates'] += 1
-                reason = event['illegal_reason'] or 'unknown'
-                summary['invalid_reasons'][reason] = summary['invalid_reasons'].get(reason, 0) + 1
-            if event['duplicate_reason']:
-                summary['duplicates'] += 1
-                stats['duplicates'] += 1
-                reason = event['duplicate_reason']
-                summary['duplicate_reasons'][reason] = summary['duplicate_reasons'].get(reason, 0) + 1
-            outcome = ('invalid_candidate' if event['legal'] is False else
-                       'duplicate' if event['duplicate_reason'] else None)
-            if outcome:
-                event['outcome'] = outcome
-                outcomes = summary['outcomes']
-                outcomes[outcome] = outcomes.get(outcome, 0) + 1
-                method_outcomes = stats.setdefault('outcomes', {})
-                method_outcomes[outcome] = method_outcomes.get(outcome, 0) + 1
-            for stage, seconds in event['stage_seconds'].items():
-                summary['phase_seconds'][stage] = summary['phase_seconds'].get(stage, 0.0) + seconds
-                stats['phase_seconds'][stage] = stats['phase_seconds'].get(stage, 0.0) + seconds
-            if observation_mode == 'full':
-                observability['details'].append(event)
-                observation_events[event['event_id']] = event
-        observability['next_event_id'] += len(events)
-
-    rng = random.Random(config['random_seed'])
-    if 'rng' in state:
-        rng.setstate(_tuple(state['rng']))
     initializing = ('behavior_identity_version' not in store.saved_fields
                     or store.saved_fields.get('phase', (None, 0))[0] == 'initialize')
     if initializing:
         state['behavior_identity_version'] = BEHAVIOR_IDENTITY_VERSION
-    state.setdefault('run_nonce', uuid.uuid4().hex)
     state.setdefault('phase', 'search')
     state.setdefault('archive', [])
-    state.setdefault('pending', [])
-    state.setdefault('rounds', 0)
-    state.setdefault('no_improvement', 0)
     state.setdefault('seen', [])
     state.setdefault('chains', [])
     state.setdefault('evaluated_keys', [])
@@ -1785,8 +1511,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         starts = initial_programs(capabilities, reference, config['random_seed'],
             input_interval_ms=config['input_interval_ms'],
             target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'))
-    observable_flags = tuple(name for name in ('target', 'combat', 'shift', 'ctrl', 'alt')
-                             if any(kind == name for _, kind in config['reset_events']))
     state.setdefault('starts', starts)
     if initializing:
         # burst可提前写内存version；只有已落盘且完成准备的状态才可跳过首份检查点。
@@ -1880,20 +1604,18 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def score_variance(report):
         return _score_variance(report, character)
 
+    if observability is not None and not observability.get('initial_logged'):
+        for program in starts:
+            _observe_ga(store, 'initial', candidate_identity=candidate_key(program))
+        observability['initial_logged'] = True
 
 
     def batch(program, purpose, index, iterations, scenario='nominal', trace=False, *, prepared_candidate=None):
         runtime.check()
-        if training_runner is not None:
-            plan = training_stage_plan[purpose]
-            if iterations != plan['iterations'] or (not formal_ga and scenario != 'nominal'):
-                raise ValueError('训练实验评分必须使用冻结阶段与样本数')
-            seed = plan['seeds'][index]  # 实验终点不沿用旧 final 的 run_nonce 偏移。
-        else:
-            seed_offset = {'search': 0, 'validation': 100000, 'final': 200000, 'diagnostic': 0}[purpose]
-            # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
-            nonce = int(state['run_nonce'][:8], 16) % 100000000 if purpose == 'final' else 0
-            seed = config['random_seed'] + seed_offset + index + DEFAULT_SCENARIOS.index(scenario) * 1000 + nonce
+        plan = training_stage_plan[purpose]
+        if iterations != plan['iterations']:
+            raise ValueError('GA评分必须使用冻结阶段与样本数')
+        seed = plan['seeds'][index]
         input_seed = seed + 500000
         times = input_times(scenario, input_seed, config["input_interval_ms"])
         times, burst_options = planned_inputs(times)
@@ -1904,8 +1626,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         seed=seed, input_seed=input_seed, iterations=iterations, times=times,
                         stats=STATS_VERSION, trace=trace,
                         reset_events=[list(row) for row in config['reset_events']])
-        if formal_ga:
-            request['allow_zero'] = True
+        request['allow_zero'] = True
         if burst_context is not None:
             request['burst'] = dict(definition_id=burst_context['definition_id'],
                                     program=compiled_identity(burst_context['candidate']),
@@ -1956,8 +1677,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     count_scored_candidate()
                 store.put_batch(key, cached, counter='batch_cache_hits', verified=True)
                 return dict(cached, cached=True)
-        elif cached and cached['status'] == 'failed' and not formal_ga:
-            raise CandidateError('该批次此前失败，不自动重跑: ' + cached['error'])
         runtime.check()
         if runtime.remaining_seconds < state['batch_estimate']:
             raise BudgetExceeded('剩余阶段时间不足一个预计批次')
@@ -1972,8 +1691,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         center_stored = False
         try:
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
-            if formal_ga:
-                kwargs['allow_zero'] = True
+            kwargs['allow_zero'] = True
             def native_started():
                 with store.lock:
                     batch_counters['native_batch_starts'] = batch_counters.get('native_batch_starts', 0) + 1
@@ -2040,589 +1758,70 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if state.setdefault('inflight', {}).pop(key, None) is not None:
                     store.save()
 
-    def pair(first, second, purpose, count, scenario='nominal'):
-        rows = [[], []]
-        # 外层只允许两个引擎；结果始终按预分配的对象顺序消费。
-        for index in range(count):
-            candidate(first)
-            candidate(second)
-            if candidate_key(first) == candidate_key(second):
-                row = batch(first, purpose, index,
-                            config['final_iterations'] if purpose == 'final' else config['iterations'],
-                            scenario, trace=False)
-                rows[0].append(row)
-                rows[1].append(row)
-                continue
-            with ThreadPoolExecutor(max_workers=config['max_processes']) as pool:
-                futures = [pool.submit(batch, program, purpose, index,
-                                       config['final_iterations'] if purpose == 'final' else config['iterations'],
-                                       scenario, trace=False)
-                           for side, program in enumerate((first, second))]
-                for side, future in enumerate(futures):
-                    rows[side].append(future.result())
-        return rows
-
-    def score_batch(program, index, prepared_candidate=None):
-        target = config['batch_targets'][index]
-        previous = config['batch_targets'][index - 1] if index else 0
-        row = batch(program, 'search', index, target - previous,
-                    trace=(config['diagnostic_logging'] and not state['archive'] and index == 0),
-                    prepared_candidate=prepared_candidate)
-        return dict(row, target=target)
-
-    def append_score(program, rows, index):
-        rows.append(score_batch(program, index))
-
-    def screen_round():
-        pending = state['pending']
-        if all(work.get('screen_complete') for work in pending):
-            return
-        for index in range(len(config['batch_targets'])):
-            active = [work for work in pending if not work.get('screened_out') and not work.get('score_error')]
-            missing = [work for work in active if len(work.setdefault('score_batches', [])) <= index]
-            with ThreadPoolExecutor(max_workers=config['max_processes']) as pool:
-                for start in range(0, len(missing), config['max_processes']):
-                    ready = []
-                    # 只准备即将派发的候选，编译和共享候选状态始终由主线程处理。
-                    for work in missing[start:start + config['max_processes']]:
-                        runtime.check()
-                        try:
-                            ready.append((work, candidate(work['program'])))
-                        except CandidateError as error:
-                            work['score_error'] = str(error)
-                            store.save()
-                    futures = [(work, pool.submit(score_batch, work['program'], index, compiled))
-                               for work, compiled in ready]
-                    stopped = None
-                    for work, future in futures:
-                        try:
-                            started = diagnostic_start() if config['diagnostic_logging'] else None
-                            try:
-                                row = future.result()
-                            finally:
-                                if config['diagnostic_logging']:
-                                    diagnostic_finish(runtime, 'main.wait', started)
-                            with store.lock:
-                                work['score_batches'].append(row)
-                                store.save()
-                        except CandidateError as error:
-                            with store.lock:
-                                work['score_error'] = str(error)
-                                store.save()
-                        except BaseException as error:
-                            # 即使一项停止，也消费其余完整成绩，供原顺序恢复使用。
-                            if stopped is None:
-                                stopped = error
-                    if stopped is not None:
-                        raise stopped
-            active = [work for work in active if not work.get('score_error')]
-            if not active:
-                break
-            bounds = [_score_bounds(work['score_batches'][:index + 1]) for work in active]
-            best_lower = max(lower for lower, upper in bounds)
-            for work, (lower, upper) in zip(active, bounds):
-                if upper < best_lower:
-                    work['screened_out'] = True
-            store.save()
-            if sum(not work.get('screened_out') for work in active) <= 1:
-                break
-        for work in pending:
-            work['screen_complete'] = True
-        store.save()
-
-    def record(program, rows=None):
+    def record(program, rows):
         compiled = candidate(program)  # 编译合法性必须先于任何原生计算。
         key = candidate_key(program)
-        if rows is None:
-            rows = []
-            targets = len(config['batch_targets']) if not state['archive'] else 1
-            for index in range(targets):
-                append_score(program, rows, index)
         return dict(key=key, program=program, batches=rows, score=_score(rows),
                     candidate=compiled,candidate_sha256=digest(compiled))
 
 
-    def challenges(current, opponent):
-        for index in range(len(config['batch_targets'])):
-            for item in (current, opponent):
-                if len(item['batches']) <= index:
-                    append_score(item['program'], item['batches'], index)
-                    item['score'] = _score(item['batches'])
-                    if timeline is not None:
-                        timeline.revise(item)
-                    store.save()
-            left = current['batches'][:index + 1]
-            right = opponent['batches'][:index + 1]
-            low, high = _score_bounds(left)
-            other_low, other_high = _score_bounds(right)
-            if high < other_low:
-                return False
-            if low > other_high:
-                return True
-        return _score(left) > _score(right)
-
-    def search():
-        runtime.phase_limit = min(config['search_budget_seconds'], config['total_budget_seconds'])
-        if state.get('stop_reason') == 'cancelled':
-            state.pop('stop_reason')
-        if not state['archive'] and not state['pending']:
-            with store.lock:
-                state['pending'] = []
-                for program in starts[:config['candidate_limit']]:
-                    work = dict(program=program, start=True)
-                    if observability:
-                        work.update(observation_id=reserve_initial_observation(),
-                                    observation_actual_mutation='initial')
-                    state['pending'].append(work)
-                store.save()
-        while len(state['evaluated_keys']) < config['candidate_limit'] or state['pending']:
-            runtime.check()
-            if (state['pending'] and len(state['evaluated_keys']) >= config['candidate_limit']
-                    and candidate_key(state['pending'][0]['program']) not in state['evaluated_keys']):
-                state['stop_reason'] = 'candidate_limit'
-                store.save()
-                break
-            if not state['pending']:
-                if all(chain.get('stalled') for chain in state['chains']):
-                    state['stop_reason'] = 'space_stalled'
-                    break
-                no_improvement_limit = len(state['chains'])
-                if state['no_improvement'] >= no_improvement_limit:
-                    state['stop_reason']='no_improvement'
-                    break
-                lane_index = state.get('next_chain_index', 0)
-                while state['chains'][lane_index].get('stalled'):
-                    lane_index = (lane_index + 1) % len(state['chains'])
-                lane=state['chains'][lane_index]
-                base = next(r for r in state['archive'] if r['key'] == lane['best'])
-                diagnostic=batch(base['program'],'search',99,2,trace=True)
-                feedback = dict(diagnostic['feedback'])
-                feedback['positions'] = _parent_positions(
-                    base['program'], capabilities, diagnostic.get('position_summary', []))
-                lane.update(feedback=feedback,feedback_source=base['key'])
-                generated = []
-                generation_observations = []
-                existing = set(state['seen'])
-                existing_sources = {program_key(record['program']) for record in state['archive']}
-                for attempt in range(160):
-                    if len(generated) >= min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys'])):
-                        break
-                    kwargs = {'reset_flags': observable_flags} if observable_flags else {}
-                    mutation_observation = {} if observability else None
-                    mutation_started = time.perf_counter() if observability else None
-                    mutation_kwargs = dict(feedback=lane['feedback'], excluded_programs=existing_sources, **kwargs)
-                    if mutation_observation is not None:
-                        mutation_kwargs['observation'] = mutation_observation
-                    program = mutate(base['program'], capabilities, rng, **mutation_kwargs)
-                    if rng.randrange(16)==0:
-                        program = [[a['simc_action']] for a in capabilities['actions']]
-                        rng.shuffle(program)
-                        if mutation_observation is not None:
-                            mutation_observation.update(
-                                actual_mutation='shuffle', modification_position={'segments': 'all'})
-                    if mutation_observation is not None and program == base['program']:
-                        mutation_observation.update(actual_mutation='no_change', modification_position=None)
-                    mutation_seconds = time.perf_counter() - mutation_started if observability else 0.0
-                    event_id = (observability['next_event_id'] + len(generation_observations)
-                                if observability else None)
-                    event = (make_observation_event(
-                        event_id, parent_identity=base['key'],
-                        sampled_mutation=mutation_observation['sampled_mutation'],
-                        actual_mutation=mutation_observation['actual_mutation'],
-                        modification_position=mutation_observation['modification_position'])
-                             if mutation_observation is not None else None)
-                    if event is not None:
-                        event['parent_score'] = base['score']
-                        event['stage_seconds']['mutation'] = mutation_seconds
-                    candidate_check_started = time.perf_counter() if observability else None
-                    try:
-                        key = candidate_key(program)
-                    except CandidateError as error:
-                        if event is not None:
-                            event.update(legal=False, illegal_reason=str(error))
-                            event['stage_seconds']['candidate_check'] = (
-                                time.perf_counter() - candidate_check_started)
-                            generation_observations.append(event)
-                        continue
-                    if event is not None:
-                        event.update(candidate_identity=key, legal=True)
-                        event['stage_seconds']['candidate_check'] = (
-                            time.perf_counter() - candidate_check_started)
-                    if key == base['key']:
-                        duplicate_reason = 'parent_unchanged'
-                    elif key in state['seen']:
-                        duplicate_reason = 'already_seen'
-                    elif key in existing:
-                        duplicate_reason = 'same_round'
-                    else:
-                        duplicate_reason = None
-                    if event is not None:
-                        event['duplicate_reason'] = duplicate_reason
-                        generation_observations.append(event)
-                    if duplicate_reason is not None:
-                        if config['diagnostic_logging']:
-                            state['canonicalized_duplicates'] += 1
-                        continue
-                    existing.add(key)
-                    existing_sources.add(program_key(program))
-                    work = dict(program=program, start=False, lane=lane_index)
-                    if event is not None:
-                        work.update(observation_id=event_id,
-                                    observation_actual_mutation=event['actual_mutation'],
-                                    observation_parent_score=base['score'],
-                                    observation_candidate_recorded=True)
-                    generated.append(work)
-                commit_mutation_observations(generation_observations)
-                if not generated:
-                    lane['stalled'] = True
-                    state.update(next_chain_index=(lane_index + 1) % len(state['chains']),
-                                 rng=rng.getstate())
-                    store.save()
-                    continue
-                state['pending'] = generated
-                state['next_chain_index'] = (lane_index + 1) % len(state['chains'])
-                state['round_improved'] = False
-                state['full_round'] = len(generated)==config['round_candidate_limit']
-                state['rng'] = rng.getstate()
-                store.save()
-            work = state['pending'][0]
-            key = program_key(work['program'])
-            scoring_started = None
+    def training_batch(program, stage, index=0, *, trace=False):
+        with store.lock:
+            canonical = prepare(program)
+            compiled = candidate(program)
+        scenario = stage if stage not in ('search', 'feedback') else 'nominal'
+        attempt_key = digest(dict(candidate=canonical['identity'], stage=stage, index=index))
+        failures = state.setdefault('training_failures', {})
+        while True:
+            if failures.get(attempt_key, 0) >= 2:
+                raise CandidateError('该原条件批次已用尽一次重试: ' + attempt_key)
             try:
-                key = candidate_key(work['program'])
-                mark_candidate(work, key=key)
-                if key in state['seen']:
-                    if config['diagnostic_logging']:
-                        state['canonicalized_duplicates'] += 1
-                    mark_duplicate(work, 'already_scored')
-                    mark_outcome(work, 'duplicate')
-                    state['pending'].pop(0)
-                    store.save()
-                    continue
-                if observability:
-                    mark_work(work, 'score_started', 'score_started')
-                    scoring_started = time.perf_counter()
-                if not work['start']:
-                    screen_round()
-                    if work.get('score_error'):
-                        raise CandidateError(work['score_error'])
-                current = record(work['program'], work.get('score_batches'))
-                if observability:
-                    with store.lock:
-                        row = event_for(work)
-                        if row is not None:
-                            row['candidate_score'] = current['score']
-                            parent_score = work.get('observation_parent_score')
-                            if parent_score is not None:
-                                row['parent_score'] = parent_score
-                                row['score_change'] = current['score'] - parent_score
-                                add_score_change(work, row['score_change'])
-                    add_stage_time(work, 'scoring', time.perf_counter() - scoring_started)
-                    mark_work(work, 'score_completed', 'score_completed')
-                    mark_outcome(work, 'scored')
-            except CandidateError as error:
-                if observability:
-                    mark_candidate(work, error=error)
-                    mark_outcome(work, 'score_failed' if scoring_started is not None
-                                 else 'invalid_candidate')
-                    with store.lock:
-                        row = event_for(work)
-                        if row is not None and work.get('observation_score_started'):
-                            row['score_error'] = str(error)
-                    if scoring_started is not None and not work.get('observation_timed_scoring'):
-                        add_stage_time(work, 'scoring', time.perf_counter() - scoring_started)
-                state.setdefault('errors', []).append(
-                    dict(program=program_key(work['program']), error=str(error)))
-                current = None
-            if current:
-                route_promoted = global_promoted = False
-                if not state['archive']:
-                    state['best']=key
-                else:
-                    opponent_key=state['best'] if work['start'] else state['chains'][work['lane']]['best']
-                    opponent=next(r for r in state['archive'] if r['key']==opponent_key)
-                    if timeline is not None:
-                        if opponent_key == state['best'] and 'global' not in timeline.current:
-                            timeline.score(opponent, 'global', 'restored_known')
-                        lane = 'lane:' + str(work.get('lane', 0))
-                        if not work['start'] and lane not in timeline.current:
-                            timeline.score(opponent, lane, 'restored_known')
-                    if not work.get('screened_out') and challenges(current, opponent):
-                        if observability:
-                            if work['start']:
-                                mark_promotion(work, 'global', checked=True)
-                            else:
-                                mark_promotion(work, 'route', checked=True)
-                                if opponent_key == state['best']:
-                                    mark_promotion(work, 'global', checked=True)
-                            promotion_started = time.perf_counter()
-                        try:
-                            queue_position_observation(work, current['program'], 'route')
-                            left,right=pair(current['program'],opponent['program'],'validation',config['validation_batches'])
-                        finally:
-                            if observability:
-                                add_stage_time(work, 'promotion_check',
-                                              time.perf_counter() - promotion_started)
-                        comparison = summarize_pairs(left, right)
-                        ci = comparison['ci95']
-                        current['validation']=dict(comparison=comparison,candidate=left,control=right)
-                        route_promoted = bool(ci and ci[0] > 0)
-                        if observability:
-                            if work['start']:
-                                mark_promotion(work, 'global', promoted=route_promoted)
-                            else:
-                                mark_promotion(work, 'route', promoted=route_promoted)
-                                if opponent_key == state['best']:
-                                    mark_promotion(work, 'global', promoted=route_promoted)
-                        if route_promoted:
-                            global_best=next(r for r in state['archive'] if r['key']==state['best'])
-                            if timeline is not None and 'global' not in timeline.current:
-                                timeline.score(global_best, 'global', 'restored_known')
-                            if opponent_key==state['best']:
-                                global_promoted = True
-                            elif challenges(current, global_best):
-                                if observability:
-                                    mark_promotion(work, 'global', checked=True)
-                                    global_started = time.perf_counter()
-                                try:
-                                    queue_position_observation(work, current['program'], 'global')
-                                    left,right=pair(current['program'],global_best['program'],'validation',config['validation_batches'])
-                                finally:
-                                    if observability:
-                                        add_stage_time(work, 'global_check',
-                                                      time.perf_counter() - global_started)
-                                comparison = summarize_pairs(left, right)
-                                ci = comparison['ci95']
-                                current['global_validation']=dict(comparison=comparison,candidate=left,control=right)
-                                global_promoted = bool(ci and ci[0] > 0)
-                                if observability:
-                                    mark_promotion(work, 'global', promoted=global_promoted)
-                state['archive'].append(current)
-                # 后续加测可能取消；只有候选完整入档后才发布赢家指针。
-                if route_promoted and not work['start']:
-                    state['chains'][work['lane']]['best'] = key
-                if global_promoted:
-                    if 'formal_champion_snapshot' in state:
-                        current['global_predecessor_key'] = state['best']
-                    state['best'] = key
-                if global_promoted or (route_promoted and not work['start']):
-                    state['round_improved'] = True
-                if timeline is not None:
-                    if state['best'] == key:
-                        timeline.score(current, 'global', 'initial' if len(state['archive']) == 1 else 'promotion')
-                    if work['start'] or route_promoted:
-                        timeline.score(current, 'lane:' + str(len(state['chains']) if work['start'] else work['lane']), 'initial' if work['start'] else 'promotion')
-                if work['start']:
-                    state['chains'].append(dict(best=key,visited=[key],rounds=0))
-                else:
-                    state['chains'][work['lane']]['visited'].append(key)
-            state['seen'].append(key)
-            state['pending'].pop(0)
-            if not state['pending'] and not work['start']:
-                state['rounds'] += 1
-                state['chains'][work['lane']]['rounds']+=1
-                if state.get('round_improved'):
-                    state['no_improvement'] = 0
-                elif state['full_round']:
-                    state['no_improvement'] += 1
-            store.save()
-            if current and global_promoted:
-                store.checkpoint()
-            if (config['diagnostic_logging'] and current
-                    and key in getattr(store, 'diagnostic_new_behaviors', ())):
-                diagnostic_candidate(store, 'screening_archived', key, runtime)
-        runtime.check()  # 已完成评分先可靠归档，再传播诊断期间发生的取消/预算耗尽。
-        state.setdefault('stop_reason', 'candidate_limit')
-
-    if training_runner is not None:
-        def training_batch(program, stage, index=0, *, trace=False):
-            with store.lock:
-                canonical = prepare(program)
-                compiled = candidate(program)
-            scenario = stage if formal_ga and stage not in ('search', 'feedback') else 'nominal'
-            attempt_key = digest(dict(candidate=canonical['identity'], stage=stage, index=index))
-            failures = state.setdefault('training_failures', {}) if formal_ga else {}
-            while True:
-                if failures.get(attempt_key, 0) >= 2:
-                    raise CandidateError('该原条件批次已用尽一次重试: ' + attempt_key)
-                try:
-                    row = batch(program, stage, index, training_stage_plan[stage]['iterations'],
-                                scenario=scenario, prepared_candidate=compiled, trace=trace)
-                    if (row['samples'] < (1 if formal_ga or trace else 2) or not math.isfinite(row['dps']) or row['dps'] < 0
-                            or row['dps'] == 0 and not formal_ga):
-                        raise CandidateError('独立训练评分不可靠')
-                    return canonical, row
-                except (CandidateError, NativeEvaluationError):
-                    if not formal_ga:
-                        raise
-                    with store.lock:
-                        failures[attempt_key] = failures.get(attempt_key, 0) + 1
-                        store.checkpoint()
-                    if failures[attempt_key] >= 2:
-                        raise
-
-        def evaluate_training(program, stage, index=0):
-            if stage not in training_stage_plan or stage == 'feedback':
-                raise ValueError('独立训练评价阶段不符')
-            canonical, row = training_batch(program, stage, index)
-            with store.lock:
-                if stage == 'search' and not any(r['key'] == canonical['identity'] for r in state['archive']):
-                    state['archive'].append(record(copy.deepcopy(program), [row]))
-                    state['seen'].append(canonical['identity'])
-                if not formal_ga:
+                row = batch(program, stage, index, training_stage_plan[stage]['iterations'],
+                            scenario=scenario, prepared_candidate=compiled, trace=trace)
+                if row['samples'] < 1 or not math.isfinite(row['dps']) or row['dps'] < 0:
+                    raise CandidateError('独立训练评分不可靠')
+                return canonical, row
+            except (CandidateError, NativeEvaluationError):
+                with store.lock:
+                    failures[attempt_key] = failures.get(attempt_key, 0) + 1
                     store.checkpoint()
-            return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
-                        input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
-                        dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
-                        cached=bool(row.get('cached')))
+                if failures[attempt_key] >= 2:
+                    raise
 
-        def feedback_training(program):
-            _, diagnostic = training_batch(program, 'feedback', trace=True)
-            feedback = dict(diagnostic['feedback'])
-            feedback['positions'] = _parent_positions(program, capabilities, diagnostic.get('position_summary', []))
-            return feedback
-
-        result = training_runner(evaluate=evaluate_training, feedback=feedback_training)
-        if config['diagnostics'] != 'off':
-            store.diagnostics_mode = config['diagnostics']
-            store.diagnostic_summary = dict(mode=config['diagnostics'],
-                task_state_writes=store.state_write_count, candidate_compilations=candidate_compilations,
-                lua_compiler_starts=store.lua_compiler_starts)
-            if config['diagnostics'] == 'full':
-                store.diagnostic_summary['events'] = diagnostic_events
-        return result
-
-    search_interrupted = None
-    if state['phase'] == 'search':
-        if timeline is not None:
-            timeline.start()
-            if timeline.resumed:
-                pointers = [('global', state.get('best'))]
-                pointers.extend(('lane:' + str(index), chain['best'])
-                                for index, chain in enumerate(state['chains']))
-                for series, key in pointers:
-                    saved = store.saved_archive.get(key)
-                    if saved is not None:
-                        timeline.score(saved[1], series, 'restored_known')
-        try:
-            search()
-        except (BudgetExceeded, TaskCancelled) as error:
-            state['stop_reason'] = ('cancelled' if isinstance(error, TaskCancelled)
-                                    else 'search_deadline')
-            pending_outcome = ('cancelled_not_scored' if isinstance(error, TaskCancelled)
-                               else 'budget_not_scored')
-            for work in state['pending']:
-                mark_outcome(work, pending_outcome)
-            if isinstance(error, TaskCancelled):
-                search_interrupted = error
-            store.save()
-        finally:
-            if timeline is not None:
-                timeline.stop(state.get('stop_reason', 'failed'))
-            search_recording_active = False
-            runtime.started -= observation_pause_seconds
-            runtime.phase_limit = runtime.budget_seconds
-        if not state['archive']:
-            if isinstance(search_interrupted, TaskCancelled):
-                raise search_interrupted
-            raise BudgetExceeded('搜索窗口内未完成有效初始序列')
-        state['locked_candidate_key'] = state['best']
-        state['phase'] = 'search' if search_interrupted else 'done'
-        store.save()
-        store.publish()
-    best = next(r for r in state['archive'] if r['key'] == state['locked_candidate_key'])
-    if timeline is not None and 'global' not in timeline.current:
-        timeline.score(best, 'global', 'restored_known')
-    final = dict(dataset='final', status='not_requested', scenarios={})
-    interrupted = search_interrupted
-
-    if observability is not None and not isinstance(interrupted, TaskCancelled):
-        observation_runtime = runtime
+    def evaluate_training(program, stage, index=0):
+        if stage not in training_stage_plan or stage == 'feedback':
+            raise ValueError('独立训练评价阶段不符')
+        canonical, row = training_batch(program, stage, index)
         with store.lock:
-            observability['summary'].pop('position_observation_incomplete', None)
-        for job_index, job in enumerate(position_jobs):
-            if job.get('status') == 'completed':
-                continue
-            work = {'observation_id': job['event_id']}
-            program = job['program']
-            comparison = job['comparison']
-            try:
-                compiled = candidate(program)
-                seed = config['random_seed'] + 100000
-                observation_kwargs = ({'reset_events': list(config['reset_events'])}
-                                      if config['reset_events'] else {})
-                observation_times, observation_burst = planned_inputs(
-                    input_times('nominal', seed + 500000, config['input_interval_ms']))
-                traced = evaluate(
-                    profile, compiled,
-                    destination / 'observability' / f"{work['observation_id']}-{comparison}-{job_index}",
-                    character=character, iterations=2, seed=seed,
-                    input_times=observation_times,
-                    trace=True, runtime=observation_runtime,
-                    simulation_config=simulation_config,
-                    **observation_burst,
-                    **observation_kwargs,
-                )
-                trace_key = digest(dict(run_id=state['run_id'], event_id=work['observation_id'],
-                                        comparison=comparison, job_index=job_index))
-                write_batch(trace_key, dict(
-                    batch_key=trace_key, run_id=state['run_id'], purpose='position_observation',
-                    candidate_key=candidate_key(program), seed=seed, requested_iterations=2,
-                    samples=traced['summary']['samples'], dps=traced['summary']['dps'],
-                    report=traced['report']), diagnostic_logging=config['diagnostic_logging'])
-                observation_folder = destination / 'observability' / f"{work['observation_id']}-{comparison}-{job_index}"
-                (observation_folder / 'native.json').unlink(missing_ok=True)
-                if config['diagnostic_logging']:
-                    write_traces(trace_key, state['run_id'], traced['trace'], batch_key=trace_key)
-                add_position_summary(
-                    work, _position_observations(
-                        compiled, candidate_key(program), traced['trace']))
-                with store.lock:
-                    job['status'] = 'completed'
-            except TaskCancelled as error:
-                with store.lock:
-                    observability['summary']['position_observation_incomplete'] = True
-                interrupted = error
-                break
-            except BudgetExceeded:
-                with store.lock:
-                    observability['summary']['position_observation_incomplete'] = True
-                break
-    store.flush_reports()
-    chosen = best
-    result = dict(status='completed', phase='done',
-                  search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
-                              candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
-                              errors=state.get('errors', []),
-                              partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason'),
-                              no_improvement_round_limit=len(state['chains'])),
-                  validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
-                  candidate=candidate(chosen['program']), independent_validation_complete=False,
-                  improvement='search_result',
-                  search_result=dict(dps=chosen['score'],
-                                     samples=sum(row['samples'] for row in chosen['batches']),
-                                     reference_dps=reference['dps'],
-                                     reference_ratio=chosen['score']/reference['dps'] if reference['dps'] else None),
-                  selected_candidate_key=chosen['key'], native_reference=reference,
-                  elapsed_seconds=runtime.elapsed_seconds, completed_batches=state['completed_batches'])
-    if config['diagnostic_logging']:
-        result['search'].update({name: state[name] for name in
-                                ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts')})
-    if observability:
-        with store.lock:
-            result['search']['observability'] = _export_search_observability(observability)
+            if stage == 'search' and not any(r['key'] == canonical['identity'] for r in state['archive']):
+                state['archive'].append(record(copy.deepcopy(program), [row]))
+                state['seen'].append(canonical['identity'])
+                _observe_ga(store, 'coarse_score', candidate_identity=canonical['identity'],
+                            score=row['dps'], samples=row['samples'], cached=bool(row.get('cached')))
+        return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
+                    input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
+                    dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
+                    cached=bool(row.get('cached')))
+
+    def feedback_training(program):
+        canonical, diagnostic = training_batch(program, 'feedback', trace=True)
+        feedback = dict(diagnostic['feedback'])
+        feedback['positions'] = _parent_positions(program, capabilities, diagnostic.get('position_summary', []))
+        if observability is not None:
+            with store.lock:
+                for position in feedback['positions']:
+                    key = _json([canonical['identity'], position['click_position'],
+                                 position['action_position'], position['action']])
+                    observability['summary']['positions'][key] = dict(position,
+                        candidate_identity=canonical['identity'])
+        return feedback
+
+    result = training_runner(evaluate=evaluate_training, feedback=feedback_training)
     if config['diagnostics'] != 'off':
-        result['search']['diagnostics'] = dict(
-            mode=config['diagnostics'], task_state_writes=store.state_write_count,
-            candidate_compilations=candidate_compilations,
+        store.diagnostics_mode = config['diagnostics']
+        store.diagnostic_summary = dict(mode=config['diagnostics'],
+            task_state_writes=store.state_write_count, candidate_compilations=candidate_compilations,
             lua_compiler_starts=store.lua_compiler_starts)
         if config['diagnostics'] == 'full':
-            result['search']['diagnostics']['events'] = diagnostic_events
-        store.diagnostics_mode = config['diagnostics']
-        store.diagnostic_summary = result['search']['diagnostics']
-    result['candidate']['simulation'] = 'passed_native_model'
-    if interrupted:
-        result['status'] = 'cancelled' if isinstance(interrupted, TaskCancelled) else 'completed'
-        result['phase'] = 'search' if isinstance(interrupted, TaskCancelled) else 'done'
-    store.save()
+            store.diagnostic_summary['events'] = diagnostic_events
     return result

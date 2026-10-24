@@ -49,17 +49,22 @@ def freeze_starts(starts, capabilities, runtime):
     return programs, decisions
 
 
-def run(*, profile, character, capabilities, reference, destination, runtime,
-        config, condition_key, store, simulation_config):
-    from population_training import ALGORITHM as GA_ALGORITHM, _evolution, _stage_plan, _retest_scores
+def contract_for(config):
+    from population_training import _stage_plan
     from simulation_config import TRAINING_DEFAULTS
-    from search import optimize
-    state = store.state
     ga_config = {key: value for key, value in TRAINING_DEFAULTS.items() if key != 'max_trainings'}
     ga_config['max_processes'] = config['max_processes']
-    plan = _stage_plan(ga_config, config['random_seed'], scenarios=('nominal',))
-    frozen = dict(version=VERSION, algorithm=ALGORITHM, stop_policy=STOP_POLICY,
-                  config=ga_config, stage_plan=plan)
+    return dict(version=VERSION, algorithm=ALGORITHM, stop_policy=STOP_POLICY, config=ga_config,
+                stage_plan=_stage_plan(ga_config, config['random_seed'], scenarios=('nominal',)))
+
+
+def run(*, profile, character, capabilities, reference, destination, runtime,
+        config, condition_key, store, simulation_config):
+    from population_training import ALGORITHM as GA_ALGORITHM, _evolution, _retest_scores
+    from search import optimize
+    state = store.state
+    frozen = contract_for(config)
+    ga_config, plan = frozen['config'], frozen['stage_plan']
     if state.get('formal_search') not in (None, frozen):
         raise ValueError('正式遗传搜索恢复契约或评分计划变化，不能混接')
     state['formal_search'] = frozen
@@ -94,6 +99,8 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
     selected = deepcopy(archive[winner['key']])
     selected.update(score=winner['score'], batches=winner['batches'])
     selected['candidate']['simulation'] = 'passed_native_model'
+    if timeline is not None:
+        timeline.score(selected, 'global', 'nominal_retest')
     state.update(formal_finalists=finalists, formal_winner=selected,
                  locked_candidate_key=winner['key'], selected_candidate_key=winner['key'])
     summary = dict(dps=winner['score'], samples=winner['samples'], reference_dps=reference['dps'],
@@ -128,17 +135,16 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
 
 def validate_evidence(record, state, character, *, verify_reports):
     """新冠军的正常复测契约；旧CI验证器完全不放宽。"""
-    from population_training import _stage_plan
     from program import canonicalize_search_program
     from search import _validate_saved_batch, _score, input_times, STATS_VERSION
     from sequence import compiled_identity
-    from simulation_config import TRAINING_DEFAULTS
     from result_store import InvalidRecordError, read_many, report_locations
     evaluation = record.get('evaluation') or {}
-    config = {key: value for key, value in TRAINING_DEFAULTS.items() if key != 'max_trainings'}
-    config['max_processes'] = state['config']['max_processes']
-    expected = dict(version=VERSION, algorithm=ALGORITHM, stop_policy=STOP_POLICY, config=config,
-                    stage_plan=_stage_plan(config, state['config']['random_seed'], scenarios=('nominal',)))
+    if (not isinstance(evaluation, dict) or not isinstance(evaluation.get('search'), dict)
+            or type(evaluation['search'].get('version')) is not int):
+        raise InvalidRecordError('正式遗传冠军评价契约版本格式不符')
+    expected = contract_for(state['config'])
+    config = expected['config']
     if (evaluation.get('search') != expected or evaluation.get('engines') != state['engines']
             or type(evaluation.get('complete_generations')) is not int
             or evaluation['complete_generations'] < config['stagnation_generations']

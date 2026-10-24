@@ -51,7 +51,7 @@ const gseImport=document.getElementById('gseImport'),inspectImport=document.getE
 const importInspection=document.getElementById('importInspection'),importSelection=document.getElementById('importSelection'),gcdMs=document.getElementById('gcdMs');
 interval.addEventListener('input',resetResult);
 targetCount.addEventListener('change',resetResult);
-const phases={storage_unavailable:'存储暂时不可读取',single_target:'正在搜索单目标',aoe:'正在搜索5目标',package:'正在整理三个序列',initialize:'正在读取角色和模拟引擎',search:'正在寻找合适的序列',validation:'正在复测候选序列',final:'正在进行最终复测',complete:'计算完成',done:'计算完成'};
+const phases={storage_unavailable:'存储暂时不可读取',single_target:'正在搜索单目标',aoe:'正在搜索5目标',package:'正在整理三个序列',initialize:'正在读取角色和模拟引擎',initial:'正在粗评初始种群',breed:'正在遗传搜索',retest:'正在正常场景复测',qualified:'正在保存冠军凭据',search:'正在寻找合适的序列',validation:'正在复测候选序列',final:'正在进行最终复测',complete:'计算完成',done:'计算完成'};
 let running=false,taskId=null,timer=null,inspected=null;
 function resetResult(){resultSection.hidden=true;for(const [field,button] of Object.values(outputs)){field.value='';button.disabled=true;}collectionResult.value='';copyCollection.disabled=true;document.getElementById('dualResults').hidden=true;resumeButton.hidden=true;localStorage.removeItem('sim2gse-task');resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';importResult.hidden=true;importResult.textContent='';}
 function showError(message){error.textContent=message;error.hidden=false;}
@@ -66,7 +66,7 @@ async function poll(){
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
   if(state.scenes){
    const labels={single_target:'单目标',aoe:'5目标'},statuses={pending:'等待',running:'运行中',completed:'完成',failed:'失败',incomplete:'未完成'};
-   progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)).join(' · ');
+   progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)+(scene.status==='running'?'（'+(phases[scene.phase]||'正在准备')+'）':'')).join(' · ');
    progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；'+(state.stop_policy?'自然早停后完成正常复测，无总时间硬截止。'+state.scenes.map(scene=>labels[scene.purpose]+'第 '+(scene.generation||0)+' 代').join('，'):'旧任务每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。');
    for(const [purpose,[field,button]] of Object.entries(outputs)){field.value=state.exports[purpose]||'';button.disabled=!field.value;}
    collectionResult.value=state.collection_text||'';copyCollection.disabled=!state.collection_ready;

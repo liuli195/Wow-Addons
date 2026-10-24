@@ -589,8 +589,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(len(matching_compiles), 1)
 
     def test_search_observability_is_off_by_default_and_preserves_selection(self):
-        import sqlite3
-        import search
+        import sequence
         import result_store
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-search-observability-") as directory:
@@ -611,25 +610,27 @@ class SearchAndValidationTests(TestCase):
                     options["diagnostic_logging"] = True
                 center = root / (name + '-center')
                 center.mkdir()
+                requests = []
                 with patch.object(result_store, 'DATA_ROOT', center), \
                         _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
-                    result = run_task(source, destination, search_config=options)
-                database = sqlite3.connect(destination / "task.sqlite3")
-                try:
-                    state = TaskStore.load_state(database)
-                finally:
-                    database.close()
-                return result, state.get("rng"), state.get("condition")
+                    evaluate = sequence.evaluate
+                    def record_request(profile, candidate, folder, **kwargs):
+                        requests.append((sequence.behavior_key(candidate), kwargs['seed'],
+                                         kwargs['iterations'], kwargs['trace']))
+                        return evaluate(profile, candidate, folder, **kwargs)
+                    with patch.object(sequence, 'evaluate', side_effect=record_request):
+                        result = run_task(source, destination, search_config=options)
+                return result, requests, result['search']['formal_champion_snapshot']['binding']['condition']
 
-            baseline, baseline_rng, baseline_condition = run("off")
-            observed, observed_rng, observed_condition = run("full", "full")
+            baseline, baseline_requests, baseline_condition = run("off")
+            observed, observed_requests, observed_condition = run("full", "full")
 
         self.assertEqual(baseline['search']['starts'], observed['search']['starts'])
         self.assertEqual(baseline['search']['formal_champion_snapshot']['status'], 'absent')
         self.assertEqual(observed['search']['formal_champion_snapshot']['status'], 'absent')
         self.assertNotIn("observability", baseline["search"])
         self.assertEqual(baseline["selected_candidate_key"], observed["selected_candidate_key"])
-        self.assertEqual(baseline_rng, observed_rng)
+        self.assertEqual(baseline_requests, observed_requests)
         self.assertEqual(baseline_condition, observed_condition)
 
         def score_snapshot(result):
