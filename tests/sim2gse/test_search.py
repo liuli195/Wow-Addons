@@ -591,6 +591,7 @@ class SearchAndValidationTests(TestCase):
     def test_search_observability_is_off_by_default_and_preserves_selection(self):
         import sqlite3
         import search
+        import result_store
 
         with tempfile.TemporaryDirectory(prefix="sim2gse-search-observability-") as directory:
             root = Path(directory)
@@ -608,7 +609,10 @@ class SearchAndValidationTests(TestCase):
                 if mode is not None:
                     options["search_observability"] = mode
                     options["diagnostic_logging"] = True
-                with _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
+                center = root / (name + '-center')
+                center.mkdir()
+                with patch.object(result_store, 'DATA_ROOT', center), \
+                        _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
                     result = run_task(source, destination, search_config=options)
                 database = sqlite3.connect(destination / "task.sqlite3")
                 try:
@@ -620,6 +624,9 @@ class SearchAndValidationTests(TestCase):
             baseline, baseline_rng, baseline_condition = run("off")
             observed, observed_rng, observed_condition = run("full", "full")
 
+        self.assertEqual(baseline['search']['starts'], observed['search']['starts'])
+        self.assertEqual(baseline['search']['formal_champion_snapshot']['status'], 'absent')
+        self.assertEqual(observed['search']['formal_champion_snapshot']['status'], 'absent')
         self.assertNotIn("observability", baseline["search"])
         self.assertEqual(baseline["selected_candidate_key"], observed["selected_candidate_key"])
         self.assertEqual(baseline_rng, observed_rng)

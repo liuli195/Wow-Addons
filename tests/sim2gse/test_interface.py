@@ -374,14 +374,21 @@ class InterfaceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         from task import cancel_task
-        for _,handle in list(self.server.tasks.values()):
-            if not handle.done:
-                cancel_task(handle)
-                handle.join(5)
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=2)
-        self.directory.cleanup()
+        from dual_task import DualHandle, cancel as cancel_dual
+        unfinished = []
+        try:
+            for _, handle in list(self.server.tasks.values()):
+                if not handle.done:
+                    (cancel_dual if isinstance(handle, DualHandle) else cancel_task)(handle)
+                    handle.join(5)
+                    if not handle.done:
+                        unfinished.append(handle.output_root)
+        finally:
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join(timeout=2)
+            self.directory.cleanup()
+        self.assertFalse(unfinished, '本次任务未完成取消清理: ' + repr(unfinished))
 
     def test_terminal_parent_does_not_show_stale_scene_as_running(self):
         import result_store
@@ -1092,7 +1099,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(completed["result_ready"], completed)
 
     def test_browser_computes_copies_and_clears_real_candidate(self):
-        # 一次真实180ms双场任务覆盖计算、复制和清旧；200ms保页面初始默认值。
+        # 极小合法种群保留真实180ms双场原生/复测/编译/复制链；不为UI烟测运行长探索。
         import sequence
         evaluate = sequence.evaluate
         evaluated_inputs = set()
@@ -1152,7 +1159,17 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        with patch.object(sequence, 'evaluate', observe_evaluation):
+        import random
+        import population_training
+        from types import SimpleNamespace
+        original_random = random.Random
+        class NoVariationRandom(original_random):
+            _randbelow = original_random._randbelow
+            def random(self):
+                return .999999  # Only freeze the random gate; real GA still commits its two complete generations.
+        with _initialized_starts([[['outbreak'], ['death_coil']]]), \
+                patch.object(population_training, 'random', SimpleNamespace(Random=NoVariationRandom)), \
+                patch.object(sequence, 'evaluate', observe_evaluation):
             result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
                 text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
         from task import read_task
