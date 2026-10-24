@@ -182,6 +182,9 @@ def _worker(handle):
                             )
                 if child.get('status') == 'cancelled':
                     raise TaskCancelled('已取消；已完成的场景保留')
+                publication = (child.get('search') or {}).get('formal_champion_publication') or {}
+                if publication.get('status') == 'pending':
+                    raise task.TaskError('当前场景结果已保存，正式冠军尚待发布；请恢复存储后继续，不必重算')
                 if child.get('status') != 'completed' or not child.get('candidate'):
                     raise task.TaskError('当前场景尚未完成有效搜索')
                 _child_matches(row, child, targets, purpose)
