@@ -403,12 +403,26 @@ class SearchAndValidationTests(TestCase):
 
     def test_task_mutates_unexecuted_apl_button_and_scores_exports_it(self):
         import result_store
+        import search
+        actual_mutate = search.mutate
+        class UnexecutedActionRandom:
+            def choice(self, values):
+                value = 'insert' if 'insert' in values else 'epidemic'
+                assert value in values
+                return value
+            def random(self):
+                return 1.  # Do not divert this sampler test into the separate feedback branch.
+            def randrange(self, stop):
+                return 0
+        def insert_unexecuted(program, capabilities, rng, **kwargs):
+            return actual_mutate(program, capabilities, UnexecutedActionRandom(), **kwargs)
         from sequence import compiled_program
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             with _prepared_search_boundary(directory, [[['outbreak'], ['death_coil']]],
-                                         evaluate=_fast_evaluate):
+                                         evaluate=_fast_evaluate), \
+                    patch.object(search, 'mutate', side_effect=insert_unexecuted):
                 result = run_task(source, Path(directory) / 'search', search_config=dict(input_interval_ms=200, candidate_limit=9, round_candidate_limit=8,
                     batch_targets=(2,), iterations=2, validation_batches=2))
                 ground = run_task(source, Path(directory) / 'ground', mode='single',

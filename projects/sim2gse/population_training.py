@@ -501,7 +501,7 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
     from program import canonicalize_search_program
     archive = {row['key']: row for row in store.state['archive']}
     condition = digest(manifest)
-    qualified = _retest_scores(ga, store, condition=digest(manifest),
+    qualified = _retest_scores(ga, store, condition=condition,
         stage_plan=manifest['stage_plan'], config=manifest['training_config'], character=character,
         simulation_config=ready['simulation_config'])
     if len(qualified) < 4:

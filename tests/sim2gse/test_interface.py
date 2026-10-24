@@ -27,6 +27,11 @@ from gse_import import inspect_import  # noqa: E402
 from test_seed_training import memory_result_center  # noqa: E402
 
 
+def _coarse_batch_keys(result):
+    return {batch['data_key'] for record in result['search']['records']
+            for batch in record['batches'] if batch['request']['purpose'] == 'search'}
+
+
 def gse_fixture(payload):
     import cbor2
     from codec import wire_value
@@ -658,19 +663,19 @@ class InterfaceTests(unittest.TestCase):
         self.assertLessEqual(repeated, uncommitted_at_interrupt)
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
+        self.assertEqual(set(keys), _coarse_batch_keys(resumed))
         self.assertEqual(len(keys), len(set(keys)))
         with result_store.query(
             "SELECT storage_group_key, count(*) FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
+            "WHERE purpose IN ('search', 'feedback', 'nominal') GROUP BY storage_group_key"
         , tables=['batches']) as cursor:
             groups = cursor.fetchall()
         self.assertGreater(sum(row[1] for row in groups), 12)
         self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
-        self.assertEqual(len(groups), (sum(row[1] for row in groups) + 11) // 12)
+        self.assertTrue(any(count > 1 for _, count in groups), '同一阶段仍应批量保存报告')
         with result_store.query(
             "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final')"
+            "WHERE purpose IN ('search', 'feedback', 'nominal')"
         , tables=['batches']) as cursor:
             reports = cursor.fetchall()
         self.assertEqual(len(reports), sum(row[1] for row in groups))
@@ -732,8 +737,8 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
-        self.assertEqual(len(set(keys)), 14)
+        self.assertEqual(set(keys), _coarse_batch_keys(resumed))
+        self.assertEqual(len(keys), len(set(keys)))
 
     def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
         self._assert_simultaneous_identical_tasks()
@@ -752,6 +757,9 @@ class InterfaceTests(unittest.TestCase):
             _, handle = self.server.tasks[created['task_id']]
             handle.join(30)
             self.assertIsNone(handle.error)
+            from task import read_task
+            expected = _coarse_batch_keys(read_task(handle.output_root, include_search_records=True))
+            self.assertTrue(expected)
             journal = result_store.DATA_ROOT / '.report-locations.jsonl'
             original = journal.read_bytes()
             for damage in ('missing', 'truncated'):
@@ -785,13 +793,14 @@ class InterfaceTests(unittest.TestCase):
                         server.shutdown(); server.server_close(); thread.join(2)
                     with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
                         keys = [row[0] for row in cursor.fetchall()]
-                    self.assertEqual(len(keys), 14)
-                    self.assertEqual(len(set(keys)), 14)
+                    self.assertEqual(set(keys), expected)
+                    self.assertEqual(len(keys), len(set(keys)))
             journal.write_bytes(original)
 
     def _assert_simultaneous_identical_tasks(self) -> None:
         import result_store
         import sequence
+        from task import read_task
 
         self.server.task_options = {'search_config': dict(
             total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
@@ -829,7 +838,10 @@ class InterfaceTests(unittest.TestCase):
                     task_error_context=repr(getattr(error, '__context__', None))))
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
+        expected = set().union(*(_coarse_batch_keys(read_task(
+            self.server.tasks[row['task_id']][1].output_root, include_search_records=True)) for row in created))
+        self.assertTrue(expected)
+        self.assertEqual(set(keys), expected)
         self.assertEqual(len(keys), len(set(keys)))
         self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
 
@@ -1218,6 +1230,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         for event in result['trace'] if input_sources is not None else []:
             source = input_sources[event['origin'] - 1]
             event.update(source=source, source_origin=input_sources[:event['origin']].count(source))
+        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
         return result
 
 

@@ -120,7 +120,7 @@ def test_snapshot_result_reader_binds_the_original_connected_project(tmp_path, i
  assert connected.returncode == 0, connected.stderr
  source = tmp_path / 'snapshot/projects/sim2gse'
  source.mkdir(parents=True)
- for name in ('task.py', 'runtime.py', 'simulation_config.py', 'result_store.py'):
+ for name in ('task.py', 'runtime.py', 'simulation_config.py', 'result_store.py', 'formal_search.py', 'search.py'):
   shutil.copy2(ROOT / 'projects/sim2gse' / name, source / name)
  destination = tmp_path / 'saved-task'
  destination.mkdir()
