@@ -67,7 +67,7 @@ async function poll(){
   if(state.scenes){
    const labels={single_target:'单目标',aoe:'5目标'},statuses={pending:'等待',running:'运行中',completed:'完成',failed:'失败',incomplete:'未完成'};
    progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)).join(' · ');
-   progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；自然早停后完成正常复测，无总时间硬截止。'+state.scenes.map(scene=>labels[scene.purpose]+'第 '+(scene.generation||0)+' 代').join('，');
+   progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；'+(state.stop_policy?'自然早停后完成正常复测，无总时间硬截止。'+state.scenes.map(scene=>labels[scene.purpose]+'第 '+(scene.generation||0)+' 代').join('，'):'旧任务每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。');
    for(const [purpose,[field,button]] of Object.entries(outputs)){field.value=state.exports[purpose]||'';button.disabled=!field.value;}
    collectionResult.value=state.collection_text||'';copyCollection.disabled=!state.collection_ready;
    resultSection.hidden=!state.result_ready;document.getElementById('dualResults').hidden=false;

@@ -16,6 +16,7 @@ from simulation_config import config_for as simulation_config_for
 
 SCENES = (('single_target', 1), ('aoe', 5))
 PARENT_SCHEMA = dict(parent_id='VARCHAR', status='VARCHAR', phase='VARCHAR', error='VARCHAR',
+    formal_search_version='UBIGINT',
     input_sha256='VARCHAR', definition_id='VARCHAR', spec_id='UBIGINT', config='JSON',
     simulation_config='JSON', rules='JSON', rule_snapshot='JSON', engines='JSON', preparation_seconds='DOUBLE',
     packaging_seconds='DOUBLE', single_target_status='VARCHAR', aoe_status='VARCHAR',
@@ -56,6 +57,8 @@ def _load(destination):
 
 def _verify(row, destination, identities, *, current_rules=False):
     from burst import load
+    if row.get('formal_search_version') != 1:
+        raise task.TaskError('旧正式双场任务身份不兼容，不能继续；原完整成果仍可读取')
     if row.get('rule_snapshot') or not row.get('rules') or not row.get('engines'):
         raise task.TaskError('旧规则双场任务身份不兼容，不能继续；原完整成果仍可读取')
     if hashlib.sha256((destination / 'input.original.simc').read_bytes()).hexdigest() != row['input_sha256']:
@@ -252,7 +255,7 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     effective = task._effective_input_bytes(original, text, simulation_config)
     definition = select_definition(task.parse_character(effective.decode('utf-8')))
     identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
-    row = dict(parent_id=uuid.uuid4().hex, status='starting', phase='prepare', error=None,
+    row = dict(parent_id=uuid.uuid4().hex, formal_search_version=1, status='starting', phase='prepare', error=None,
                input_sha256=hashlib.sha256(original).hexdigest(), definition_id=definition['definition_id'],
                spec_id=definition['spec_id'], config=config, simulation_config=simulation_config,
                rules=task._rule_hashes(), rule_snapshot=None, engines={mode: entry[1] for mode, entry in identities.items()},
@@ -317,6 +320,8 @@ def read(destination, *, active=None, include_rule_initialization=True):
     if row['status'] in ('starting', 'running', 'stopping') and not (active if active is not None else _is_running(destination)):
         row.update(status='interrupted', error='执行进程已退出，可以继续未完成的任务')
         recoverable = True
+    natural = row.get('formal_search_version') == 1
+    budget = None if natural else row['config']['total_budget_seconds']
     scenes, exports = [], {}
     elapsed, completed, active_progress = 0., 0, 0.
     for purpose, targets in SCENES:
@@ -325,12 +330,13 @@ def read(destination, *, active=None, include_rule_initialization=True):
         if status == 'running' and row['status'] in ('failed', 'interrupted', 'cancelled', 'partial'):
             status = 'failed' if row['status'] == 'failed' else 'incomplete'
         scene = dict(purpose=purpose, target_count=targets, status=status,
-                     input_sha256=row['input_sha256'], total_budget_seconds=None, stop_policy=STOP_POLICY,
+                     input_sha256=row['input_sha256'], total_budget_seconds=budget,
+                     stop_policy=STOP_POLICY if natural else None,
                      elapsed_seconds=0., progress=0.)
         if (child_path / 'profile.json').exists():
             child = task.read_task(child_path, include_rule_initialization=include_rule_initialization)
             scene['elapsed_seconds'] = float(child.get('elapsed_seconds', 0))
-            scene['progress'] = None
+            scene['progress'] = None if natural else min(1., scene['elapsed_seconds'] / budget)
             scene['phase'] = (child.get('search', {}).get('formal_search') or {}).get('phase', child.get('phase'))
             scene['generation'] = child.get('generation', child.get('search', {}).get('rounds', 0))
             if child.get('search_result'):
@@ -361,12 +367,14 @@ def read(destination, *, active=None, include_rule_initialization=True):
     return dict(status=row['status'], phase=row['phase'], error=row['error'], scenes=scenes,
                 exports=exports, recoverable=recoverable, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),
                 result_ready=bool(exports), input_interval_ms=row['config']['input_interval_ms'],
-                progress=1. if row['status'] == 'completed' else None, stop_policy=STOP_POLICY,
+                progress=1. if row['status'] == 'completed' else None if natural else (completed + active_progress) / 2,
+                stop_policy=STOP_POLICY if natural else None,
                 elapsed_seconds=elapsed + row['preparation_seconds'] + row['packaging_seconds'],
                 preparation_seconds=row['preparation_seconds'], packaging_seconds=row['packaging_seconds'],
-                definition_id=row['definition_id'], total_budget_seconds=None,
+                definition_id=row['definition_id'], total_budget_seconds=None if natural else 2 * budget,
                 burst_instructions=row['burst_instructions'], evidence_status='search_result',
-                result_note='两个循环均已完成正常场景独立复测，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。')
+                result_note=('两个循环均已完成正常场景独立复测，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。' if natural else
+                    '未进行最终独立复测；两个循环分别搜索，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。'))
 
 
 def cancel(handle):

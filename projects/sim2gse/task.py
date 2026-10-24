@@ -2227,6 +2227,8 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
                 iterations=row['iterations'], times=row['times'], stats=row['stats_version'],
                 trace=row['trace'],
                 reset_events=[list(event) for event in task_result['config'].get('reset_events', [])])
+            if search.get('formal_search'):
+                request['allow_zero'] = True
             batch = dict(status='success', data_key=row['batch_key'], request=request,
                          dps=row['dps'], samples=row['samples'], variance=row['variance'],
                          requested_iterations=row['requested_iterations'], batch_index=row['batch_index'],
