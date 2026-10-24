@@ -404,7 +404,9 @@ class SearchAndValidationTests(TestCase):
     def test_task_mutates_unexecuted_apl_button_and_scores_exports_it(self):
         import result_store
         import search
+        import population_training
         actual_mutate = search.mutate
+        mutations = []
         class UnexecutedActionRandom:
             def choice(self, values):
                 value = 'insert' if 'insert' in values else 'epidemic'
@@ -415,14 +417,16 @@ class SearchAndValidationTests(TestCase):
             def randrange(self, stop):
                 return 0
         def insert_unexecuted(program, capabilities, rng, **kwargs):
-            return actual_mutate(program, capabilities, UnexecutedActionRandom(), **kwargs)
+            child = actual_mutate(program, capabilities, UnexecutedActionRandom(), **kwargs)
+            mutations.append(child)
+            return child
         from sequence import compiled_program
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
             with _prepared_search_boundary(directory, [[['outbreak'], ['death_coil']]],
                                          evaluate=_fast_evaluate), \
-                    patch.object(search, 'mutate', side_effect=insert_unexecuted):
+                    patch.object(population_training, 'mutate', side_effect=insert_unexecuted):
                 result = run_task(source, Path(directory) / 'search', search_config=dict(input_interval_ms=200, candidate_limit=9, round_candidate_limit=8,
                     batch_targets=(2,), iterations=2, validation_batches=2))
                 ground = run_task(source, Path(directory) / 'ground', mode='single',
@@ -448,6 +452,8 @@ class SearchAndValidationTests(TestCase):
                 self.assertEqual(full['controlled_simulation']['report']['sim']['players'][0]['collected_data']['dps']['mean'],
                                  ground['controlled_simulation']['summary']['dps'])
         self.assertEqual(result['status'], 'completed')
+        self.assertTrue(mutations, '必须实际进入共享 GA 使用的变异依赖')
+        self.assertTrue(all(['epidemic'] in program for program in mutations))
         self.assertNotIn(['epidemic'], result['search']['records'][0]['program'])
         self.assertIn(['epidemic'], compiled_program(result['candidate']))
         self.assertGreater(result['search_result']['dps'], 0)
