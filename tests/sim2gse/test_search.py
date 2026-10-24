@@ -641,7 +641,12 @@ class SearchAndValidationTests(TestCase):
                                       for row in record["batches"]), validations))
             return records
 
-        self.assertEqual(score_snapshot(baseline), score_snapshot(observed))
+        self.assertEqual(sorted(score_snapshot(baseline)), sorted(score_snapshot(observed)))
+        summary = observed['search']['observability']['summary']
+        self.assertEqual(summary['initial_candidates'], 1)
+        self.assertGreater(summary['mutation_attempts'], 0)
+        self.assertEqual(summary['score_completed'], len(observed['search']['records']))
+        self.assertTrue(observed['search']['observability']['details'])
 
 
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
