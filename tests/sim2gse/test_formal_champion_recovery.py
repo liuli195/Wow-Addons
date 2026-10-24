@@ -49,6 +49,35 @@ def dual_page(root, raw):
         worker.join(3)
 
 
+def test_public_formal_search_naturally_retests_and_exports_one_champion_per_scene(
+        tmp_path, monkeypatch, memory_result_center, champion_engine):
+    """真实页面生命周期保留，只在原生评分边界提供等分，促成自然早停。"""
+    import burst
+    import sequence
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    evaluate = sequence.evaluate
+
+    def equal_native_scores(*args, **kwargs):
+        return evaluate(*args, score=100., **kwargs)
+
+    monkeypatch.setattr(sequence, 'evaluate', equal_native_scores)
+    with dual_page(tmp_path, raw) as (read, _):
+        result = read()
+    assert result['status'] == 'completed', result
+    assert result['stop_policy'] == dict(version=1, kind='natural_stagnation')
+    assert result['total_budget_seconds'] is None
+    assert set(result['exports']) == {'single_target', 'aoe', 'burst'}
+    assert result['collection_ready']
+    for scene in result['scenes']:
+        assert scene['stop_policy'] == result['stop_policy']
+        assert scene['total_budget_seconds'] is None
+        assert scene['search_result']['dps'] == 100.
+        assert scene['search_result']['samples'] == 381
+        assert scene['search_result']['retest'] == dict(scenario='nominal', batches=3, requested_iterations=128)
+        assert scene['formal_champion_publication']['status'] == 'published'
+
+
 @pytest.mark.parametrize('fault', ['competition', 'crash_before_result'])
 def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):
