@@ -1796,6 +1796,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if stage == 'search' and not any(r['key'] == canonical['identity'] for r in state['archive']):
                 state['archive'].append(record(copy.deepcopy(program), [row]))
                 state['seen'].append(canonical['identity'])
+                if config['diagnostic_logging'] and canonical['identity'] in getattr(store, 'diagnostic_new_behaviors', ()):
+                    diagnostic_candidate(store, 'screening_archived', canonical['identity'], runtime)
                 _observe_ga(store, 'coarse_score', candidate_identity=canonical['identity'],
                             score=row['dps'], samples=row['samples'], cached=bool(row.get('cached')))
         return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],

@@ -838,6 +838,17 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
             or binding['spec_id'] != character.spec_id
             or binding['target_count'] != state['simulation_config']['target_count']):
         raise InvalidRecordError('正式冠军条件与当前冻结角色不符')
+    contract = 1 if record.get('contract_version') is None else record['contract_version']
+    if type(contract) is not int or contract not in (1, 2):
+        raise InvalidRecordError('正式冠军成果契约版本格式无效或未知')
+    if contract == 2 and run is None and not verify_reports:
+        # A complete cohort is bound to the separately saved source, not to a
+        # self-declared subset of the champion's otherwise valid receipts.
+        run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
+            'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
+            'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys', 'final_scenarios'])
+        if run is None:
+            raise InvalidRecordError('正式遗传冠军完整来源缺失')
     if run is not None:
         profile = decode(run['profile']) or {}
         identity = profile.get('identity') or {}
@@ -870,15 +881,23 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
                != record['behavior_identity']
             or canonicalize_search_program(record['program'], state['capabilities'])['identity'] != record['behavior_identity']):
         raise InvalidRecordError('正式冠军程序、导出或正式来源行为不符')
-    contract = 1 if record.get('contract_version') is None else record['contract_version']
-    if type(contract) is not int:
-        raise InvalidRecordError('正式冠军成果契约版本格式无效')
     if contract == 2:
         from formal_search import validate_evidence
+        evaluation = record.get('evaluation') or {}
+        if run is not None:
+            final = decode(run['final_scenarios']) or {}
+            cohort = (final.get('nominal') or {}).get('finalists')
+        else:
+            final = ((state.get('formal_champion_publication_intent') or {}).get('result_fields') or {}).get('final') or {}
+            cohort = ((final.get('scenarios') or {}).get('nominal') or {}).get('finalists')
+            if (cohort != state.get('formal_finalists')
+                    or evaluation.get('finalist_keys') != (state.get('ga') or {}).get('finalists')):
+                raise InvalidRecordError('正式遗传冠军完成意图与完整归档不符')
+        if (evidence.get('status') != 'completed' or not cohort
+                or evaluation.get('finalists') != cohort):
+            raise InvalidRecordError('正式遗传冠军入围名单与完整正式来源不符')
         validate_evidence(record, state, character, verify_reports=verify_reports)
         return evidence
-    if contract != 1:
-        raise InvalidRecordError('未知正式冠军成果契约版本')
     if not verify_reports:
         import math
         if (type(record.get('score')) not in (int, float) or not math.isfinite(record['score'])
@@ -1168,7 +1187,7 @@ def _restore_formal_result(store, destination, character):
     record = intent['record']
     run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
         'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
-        'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys'])
+        'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys', 'final_scenarios'])
     try:
         if run is None:
             raise InvalidRecordError('完整正式结果缺失')
@@ -1196,7 +1215,8 @@ def _restore_formal_result(store, destination, character):
             state, character, candidate=dict(run_id=state['run_id'], candidate_key=record['source_candidate_key'],
                 program=compiled['program'], source=compiled.get('source', 'search'),
                 simulation=compiled.get('simulation'), export_text=compiled.get('text')))
-        result = dict(fields, locked_candidate_key=record['behavior_identity'], selected_candidate_key=record['behavior_identity'])
+        result = dict(fields, candidate=compiled, locked_candidate_key=record['behavior_identity'],
+                      selected_candidate_key=record['behavior_identity'])
         result['search'] = dict(fields.get('search') or {}, records=state['archive'], chains=state['chains'], errors=state.get('errors', []))
         if record.get('contract_version') == 2:
             result['search_result'] = state['search_result']
@@ -1229,7 +1249,7 @@ def _publish_formal_champion(store, destination):
         if state.get('formal_champion_publication', {}).get('status') == 'pending':
             run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
         'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
-        'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys'])
+        'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys', 'final_scenarios'])
             if run is None:
                 raise TaskError('完整正式结果尚未可靠保存，不能发布冠军')
             record['source_evidence'] = _validate_formal_source(record, state, character, run=run)
