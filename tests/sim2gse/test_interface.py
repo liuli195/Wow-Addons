@@ -862,8 +862,9 @@ class InterfaceTests(unittest.TestCase):
         initial = ("outbreak", "death_coil")
         better = ("death_coil", "outbreak")
         worse = ("death_coil", "outbreak", "death_coil")
-        class NoVariationRandom(random.Random):
-            _randbelow = random.Random._randbelow
+        original_random = random.Random
+        class NoVariationRandom(original_random):
+            _randbelow = original_random._randbelow
             def random(self):
                 return .999999  # This case isolates score quarantine, not the variation sampler.
 
