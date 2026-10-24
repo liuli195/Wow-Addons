@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import shutil
 import pytest
+from test_seed_training import memory_result_center
 
 
 @pytest.fixture(autouse=True)
@@ -1133,7 +1134,8 @@ def test_public_ga_timeline_switch_exports_existing_scores_without_extra_evaluat
         assert not list(Path(outcome['task_path']).glob('search-timeline-*.html'))
 
 
-def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(tmp_path, capsys, monkeypatch):
+def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(
+        tmp_path, capsys, monkeypatch, memory_result_center):
     from copy import deepcopy
     from itertools import islice, product
     from types import SimpleNamespace

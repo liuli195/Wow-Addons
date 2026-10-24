@@ -242,7 +242,8 @@ def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
     assert quiet['consistent'] and not quiet['trace']
 
 
-def test_public_search_excludes_current_burst_content_and_changes_with_definition(tmp_path, monkeypatch, memory_result_center):
+def test_public_search_excludes_current_burst_content_and_changes_with_definition(
+        tmp_path, monkeypatch, memory_result_center, page_task_engine):
     import burst
     simulation = dict(target_count=1, scene='single_target')
     definition, raw = reviewed_fixture()
