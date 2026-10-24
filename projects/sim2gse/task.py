@@ -2176,9 +2176,13 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             selected_version=candidate['selected_version'], import_sha256=candidate['import_sha256'],
             game_validation=candidate['game_validation'])
 
+    # The run's complete report list also includes the reference/single evaluation.
+    # Those groups need not have any search-only columns, particularly after an early failure.
+    search_batch_keys = [key for key in search['batch_keys']
+                         if key not in (saved['reference_data_key'], saved['controlled_data_key'])]
     batch_receipts = {}
     locations = _batch_locations(destination, [saved['controlled_data_key'],
-                         *(search['batch_keys'] if include_search_records else [])], receipts=batch_receipts)
+                         *(search_batch_keys if include_search_records else [])], receipts=batch_receipts)
     if saved['controlled_data_key']:
         controlled = read_record('batches', 'batch_key', saved['controlled_data_key'],
                                  group_key=locations.get(saved['controlled_data_key']),
@@ -2191,10 +2195,10 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             controlled_simulation['report'] = controlled['report']
         task_result['controlled_simulation'] = controlled_simulation
 
-    if include_search_records and search['batch_keys']:
+    if include_search_records and search_batch_keys:
         from search import digest
-        wanted = set(search['batch_keys'])
-        groups = list(dict.fromkeys(locations.get(key) or key for key in search['batch_keys']))
+        wanted = set(search_batch_keys)
+        groups = list(dict.fromkeys(locations.get(key) or key for key in search_batch_keys))
         columns = ['batch_key', 'candidate_key', 'purpose', 'condition_key', 'program_identity',
                    'batch_index', 'scenario', 'stats_version', 'seed', 'input_seed', 'iterations',
                    'times', 'trace', 'dps', 'samples', 'variance', 'requested_iterations']
