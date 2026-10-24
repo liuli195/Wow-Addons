@@ -1199,10 +1199,17 @@ class SearchAndValidationTests(TestCase):
                 process.kill();process.wait(timeout=5)
                 self.assertEqual(kernel.WaitForSingleObject(owner,2000),0,'实际任务进程尚未退出，不能恢复')
                 self.assertEqual(kernel.WaitForSingleObject(held,2000),0,'任务退出后仍有所属模拟进程')
-                before=state['elapsed_seconds']
+                # A heartbeat may be newer than the last durable business checkpoint.
+                # The crash contract retains committed time, not an uncommitted live tail.
+                with closing(__import__('sqlite3').connect(
+                        (destination / 'task.sqlite3').as_uri() + '?mode=ro', uri=True)) as database:
+                    checkpoint = TaskStore.load_state(database)
+                before = checkpoint['elapsed_seconds']
+                self.assertGreater(checkpoint['completed_batches'], 0)
                 resumed=resume_task(destination, simulation_config=dict(scene='single_target'))
-                self.assertGreaterEqual(resumed['elapsed_seconds'],before)
-                self.assertGreaterEqual(resumed['completed_batches'], state['completed_batches'])
+                self.assertGreaterEqual(resumed['elapsed_seconds'], before,
+                    f"durable={before}, live_before_crash={state['elapsed_seconds']}")
+                self.assertGreaterEqual(resumed['completed_batches'], checkpoint['completed_batches'])
             finally:
                 if owner:kernel.CloseHandle(owner)
                 if held:kernel.CloseHandle(held)
