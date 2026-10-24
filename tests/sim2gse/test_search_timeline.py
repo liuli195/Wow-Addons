@@ -29,6 +29,7 @@ def test_task_enabled_timeline_exports_existing_scores_after_completion(tmp_path
 
 def test_task_cli_timeline_override_and_default_off_have_identical_results(tmp_path, monkeypatch):
     import builtins
+    from collections import Counter
     import simulation_config
     from task import main, run_task, read_task
     settings = tmp_path / 'config.toml'
@@ -65,7 +66,8 @@ def test_task_cli_timeline_override_and_default_off_have_identical_results(tmp_p
                 local.setattr(result_store, 'DATA_ROOT', tmp_path / ('center-' + str(enabled)))
                 native_requests[enabled] = []
                 def observe_native(*args, **kwargs):
-                    native_requests[enabled].append((kwargs['seed'], kwargs['iterations'], kwargs['trace']))
+                    native_requests[enabled].append((sequence.behavior_key(args[1]),
+                        kwargs['seed'], kwargs['iterations'], kwargs['trace']))
                     return _fast_evaluate(*args, **kwargs)
                 local.setattr(sequence, 'evaluate', observe_native)
                 if not enabled:
@@ -75,9 +77,14 @@ def test_task_cli_timeline_override_and_default_off_have_identical_results(tmp_p
                     validation_batches=1)))
     assert results[0]['search_result'] == results[1]['search_result']
     assert results[0]['completed_batches'] == results[1]['completed_batches']
-    assert native_requests[False] == native_requests[True]
-    assert {request[1] for request in native_requests[True]} >= {32, 128}
-    assert [row['key'] for row in results[0]['search']['records']] == [row['key'] for row in results[1]['search']['records']]
+    assert Counter(native_requests[False]) == Counter(native_requests[True])
+    assert {request[2] for request in native_requests[True]} >= {32, 128}
+    def records(result):
+        # Parallel archive admission has no list-order contract; compare full scoring facts.
+        return {row['key']: (row['program'], row['score'],
+            [(batch['request'], batch['dps'], batch['samples']) for batch in row['batches']])
+            for row in result['search']['records']}
+    assert records(results[0]) == records(results[1])
     assert not list((tmp_path / 'False').glob('search-timeline-*'))
 
 

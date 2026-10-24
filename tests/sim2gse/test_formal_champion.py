@@ -297,10 +297,10 @@ def _legacy_formal_source(folder, raw, program, score, *, targets=1):
         runtime=runtime, simulation_config=simulation)
     _, capabilities, context = engine.prepare_loop(native, character, folder, runtime,
         definition=burst.load(252), interval_ms=200)
-    candidate = compile_program(program, folder / 'export', identity=native['identity'],
+    canonical = canonicalize_search_program(program, capabilities)
+    candidate = compile_program(canonical['program'], folder / 'export', identity=native['identity'],
         runtime=runtime, capabilities=capabilities)
     candidate['simulation'] = 'passed_native_model'
-    canonical = canonicalize_search_program(program, capabilities)
     condition = digest(dict(legacy='local-search-v1', source=run_id))
     seed = config['random_seed']
     times, sources = burst.combined_inputs(input_times('nominal', seed + 500000, 200), context, 200)

@@ -1135,6 +1135,10 @@ class SearchAndValidationTests(TestCase):
                 "import result_store,search",
                 "result_store.DATA_ROOT=Path(sys.argv[5])",
                 "result_store._SKILL_API=runpy.run_path(sys.argv[6])",
+                # This ownership/recovery smoke keeps real native scoring, not exploration cost.
+                "native_starts=search.initial_programs",
+                "search.initial_programs=lambda *a,**k: native_starts(*a,**k)[:1]",
+                "search.mutate=lambda program,*a,**k: program",
                 "class CheckpointStore(search.TaskStore):",
                 "    def stage_report(self,key,row,stored,**kwargs):",
                 "        super().stage_report(key,row,stored,**kwargs)",
@@ -1162,7 +1166,7 @@ class SearchAndValidationTests(TestCase):
                     try: state=read_task(destination, include_rule_initialization=False)
                     except TaskError: pass
                     completed = state.get('completed_batches')
-                    if state.get('phase') in ('initial', 'breed') and type(completed) is int and completed > 0:
+                    if state.get('phase') == 'retest' and type(completed) is int and completed > 0:
                         for pid,owner_pid in children(process.pid):
                             held=kernel.OpenProcess(0x100000,False,pid)
                             if held:
@@ -1188,6 +1192,8 @@ class SearchAndValidationTests(TestCase):
                             failure_context[name] = output.read().decode('utf-8', errors='replace')
                 self.assertIsNotNone(held,'没有在已完成批次检查点后观察到真实引擎进程: ' +
                                      json.dumps(failure_context, ensure_ascii=False))
+                self.assertEqual(state['phase'], 'retest')
+                self.assertGreater(state['completed_batches'], 0)
                 self.assertEqual(kernel.WaitForSingleObject(held,0),258,
                                  '硬退出前真实引擎必须仍在运行，不能用已完成进程证明清理')
                 process.kill();process.wait(timeout=5)

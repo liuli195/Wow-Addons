@@ -364,6 +364,12 @@ def read(destination, *, active=None, include_rule_initialization=True):
             if len(records) != 1 or records[0]['parent_id'] != row['parent_id'] or records[0]['purpose'] != purpose:
                 raise task.TaskError('双场导出记录缺失或身份不符')
             exports[purpose] = records[0]['text']
+    if natural:
+        result_note = ('两个循环均已完成正常场景独立复测，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。'
+            if scenes and completed == len(SCENES) and row['status'] == 'completed' else
+            f'已完成{completed}/{len(SCENES)}个循环；其余场景或导出尚未完成，不能视为完整双场成果。')
+    else:
+        result_note = '未进行最终独立复测；两个循环分别搜索，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。'
     return dict(status=row['status'], phase=row['phase'], error=row['error'], scenes=scenes,
                 exports=exports, recoverable=recoverable, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),
                 result_ready=bool(exports), input_interval_ms=row['config']['input_interval_ms'],
@@ -373,8 +379,7 @@ def read(destination, *, active=None, include_rule_initialization=True):
                 preparation_seconds=row['preparation_seconds'], packaging_seconds=row['packaging_seconds'],
                 definition_id=row['definition_id'], total_budget_seconds=None if natural else 2 * budget,
                 burst_instructions=row['burst_instructions'], evidence_status='search_result',
-                result_note=('两个循环均已完成正常场景独立复测，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。' if natural else
-                    '未进行最终独立复测；两个循环分别搜索，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。'))
+                result_note=result_note)
 
 
 def cancel(handle):
