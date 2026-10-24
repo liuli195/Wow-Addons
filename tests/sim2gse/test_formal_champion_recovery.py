@@ -140,6 +140,85 @@ def test_public_failed_first_score_keeps_reference_readable_without_search_colum
     assert not saved['search'].get('records')
 
 
+def test_public_formal_champion_rejects_a_truncated_finalist_cohort_before_scoring(
+        tmp_path, monkeypatch, memory_result_center, champion_engine):
+    from copy import deepcopy
+    import burst
+    import result_store
+    import sequence
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    evaluate, scored = sequence.evaluate, []
+
+    def equal_native_scores(profile, candidate, folder, **kwargs):
+        scored.append(str(folder))
+        return evaluate(profile, candidate, folder, score=100., **kwargs)
+
+    monkeypatch.setattr(sequence, 'evaluate', equal_native_scores)
+    with dual_page(tmp_path / 'source', raw) as (read, _):
+        source = read()
+    assert source['status'] == 'completed', source
+    key = source['scenes'][0]['formal_champion_snapshot']['condition_key']
+    original = result_store.read_search_champion(key)
+    truncated = deepcopy(original)
+    cohort = truncated['evaluation']['finalists']
+    removed = next(row for row in cohort if row['key'] != truncated['behavior_identity'])
+    truncated['evaluation']['finalists'] = [row for row in cohort if row['key'] != removed['key']]
+    truncated['evaluation']['finalist_keys'].remove(removed['key'])
+    removed_batches = {batch['data_key'] for batch in removed['batches']}
+    truncated['batch_keys'] = [value for value in truncated['batch_keys'] if value not in removed_batches]
+    result_store.write('search_champions', key, [truncated], schema=result_store.SEARCH_CHAMPION_SCHEMA)
+    scored.clear()
+    try:
+        with dual_page(tmp_path / 'probe', raw) as (read, _):
+            failed = read()
+        assert failed['status'] == 'failed', failed
+        assert failed['recoverable'] and not failed['collection_ready']
+        assert not scored
+        assert result_store.read_search_champion(key) == truncated
+    finally:
+        result_store.write('search_champions', key, [original], schema=result_store.SEARCH_CHAMPION_SCHEMA)
+
+
+def test_public_formal_completed_save_failure_resumes_verified_winner_without_rescoring(
+        tmp_path, monkeypatch, memory_result_center, champion_engine):
+    import burst
+    import sequence
+    import task
+    definition, raw = reviewed_fixture()
+    burst.publish(definition)
+    evaluate, store_run = sequence.evaluate, task._store_run
+    fail_once, scored = [True], []
+
+    def equal_native_scores(profile, candidate, folder, **kwargs):
+        scored.append(str(folder))
+        return evaluate(profile, candidate, folder, score=100., **kwargs)
+
+    def unavailable_completed_save(destination, result, *, state=None):
+        if Path(destination).name == 'single_target' and result.get('status') == 'completed' and fail_once[0]:
+            fail_once[0] = False
+            raise OSError('constructed complete intent before result save failure')
+        return store_run(destination, result, state=state)
+
+    monkeypatch.setattr(sequence, 'evaluate', equal_native_scores)
+    monkeypatch.setattr(task, '_store_run', unavailable_completed_save)
+    with dual_page(tmp_path, raw) as (read, resume):
+        paused = read()
+        assert paused['status'] == 'failed', paused
+        assert paused['recoverable'] and not paused['collection_ready']
+        previous_calls = [path for path in scored if 'single_target' in path]
+        assert previous_calls
+        continued = resume()
+        assert continued['status'] == 'completed', continued
+        folder = next((tmp_path / 'page' / 'tasks').glob('*/single_target'))
+        saved = task.read_task(folder)
+    assert [path for path in scored if 'single_target' in path] == previous_calls
+    assert saved['candidate']['simulation'] == 'passed_native_model'
+    assert saved['search']['formal_champion_publication']['status'] == 'published'
+    assert saved['search_result']['samples'] == 381
+    assert continued['collection_ready']
+
+
 @pytest.mark.parametrize('fault', ['competition', 'crash_before_result'])
 def test_public_cancelled_winner_can_advance_and_recover_without_invalidating_its_published_source(
         tmp_path, monkeypatch, memory_result_center, champion_engine, fault):

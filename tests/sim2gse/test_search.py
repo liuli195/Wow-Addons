@@ -620,10 +620,12 @@ class SearchAndValidationTests(TestCase):
                         return evaluate(profile, candidate, folder, **kwargs)
                     with patch.object(sequence, 'evaluate', side_effect=record_request):
                         result = run_task(source, destination, search_config=options)
-                return result, requests, result['search']['formal_champion_snapshot']['binding']['condition']
+                progress = (json.loads((destination / 'diagnostics.json').read_text())['performance']['candidate_progress']
+                            if mode is not None else None)
+                return result, requests, result['search']['formal_champion_snapshot']['binding']['condition'], progress
 
-            baseline, baseline_requests, baseline_condition = run("off")
-            observed, observed_requests, observed_condition = run("full", "full")
+            baseline, baseline_requests, baseline_condition, _ = run("off")
+            observed, observed_requests, observed_condition, progress = run("full", "full")
 
         self.assertEqual(baseline['search']['starts'], observed['search']['starts'])
         self.assertEqual(baseline['search']['formal_champion_snapshot']['status'], 'absent')
@@ -655,6 +657,8 @@ class SearchAndValidationTests(TestCase):
         self.assertGreater(summary['mutation_attempts'], 0)
         self.assertEqual(summary['score_completed'], len(observed['search']['records']))
         self.assertTrue(observed['search']['observability']['details'])
+        actual_coarse = {key for key, _, iterations, _ in observed_requests if iterations == 32}
+        self.assertEqual({row['behavior_identity'] for row in progress['screening_archived']}, actual_coarse)
 
 
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
