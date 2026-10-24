@@ -432,6 +432,10 @@ class InterfaceTests(unittest.TestCase):
         result_store.write('dual_tasks', task_id, [row], schema=schema)
         state = self._json_request('GET', '/api/tasks/' + task_id)
         self.assertEqual(state['status'], 'cancelled')
+        self.assertEqual(state['total_budget_seconds'], 1200)
+        self.assertEqual(state['scenes'][0]['total_budget_seconds'], 600)
+        self.assertFalse(state.get('stop_policy'))
+        self.assertIn('未进行最终独立复测', state['result_note'])
         self.assertEqual(state['scenes'][0]['status'], 'cancelled')
         self.assertEqual(state['scenes'][1]['status'], 'pending')
         with _apl_task_boundary(), self.assertRaises(HTTPError) as raised:
@@ -1134,7 +1138,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     assert.equal(state.input_interval_ms,180);
     assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
     assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
-    assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
+    assert.match(await page.locator('#resultNote').innerText(),/正常场景独立复测/);
     assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
     await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
     await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
@@ -1151,7 +1155,14 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         with patch.object(sequence, 'evaluate', observe_evaluation):
             result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
                 text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        from task import read_task
+        failures = [read_task(path) for destination, handle in self.server.tasks.values()
+                    for path in (destination, destination / 'single_target', destination / 'aoe')
+                    if handle.done and (path / 'result.json').exists()] if result.returncode else []
+        if result.returncode:
+            failures.extend(str(handle.error) for _, handle in self.server.tasks.values()
+                            if handle.error is not None)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr+repr(failures))
         self.assertEqual({targets for targets, _ in evaluated_inputs}, {1, 5})
         self.assertEqual({targets for targets, times in evaluated_inputs if times == (0, 180)}, {1, 5})
         self.assertEqual(len(self.server.tasks), 1, '一次开始只创建一个双场任务')
@@ -1161,7 +1172,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(saved['simulation_config']['target_count'], 5)
         self.assertEqual(saved['config']['input_interval_ms'], 180)
         self.assertTrue(saved['burst']['definition_id'])
-        self.assertEqual(saved['final']['scenarios'], {})
+        self.assertEqual(set(saved['final']['scenarios']), {'nominal'})
         output = json.loads(result.stdout)
         self._decode_candidate(output['candidate'], 252)
         from gse_import import decode_import
