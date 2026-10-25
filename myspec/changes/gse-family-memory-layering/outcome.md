@@ -1,4 +1,4 @@
-# 云端实施核销（Windows组合验收待完成）
+# 整族实施核销（Windows组合验收完成）
 
 基线9b1a958；票01为80b511b＋291f997，票02为e6a844f，已审适配整合为6bb0b2e＋13a6d89，票03为2513b4f。每票及整合双轴独审最终均0发现；票01首轮P2已经返工关闭。未合并主干。
 
@@ -49,9 +49,9 @@
 
 四模块中仅一条独立产品编排主路，另保身份/取消等风险链；范围外仍有HTTP/浏览器/真实引擎主路，不称全GSE唯一或全仓分层完成。规则迁移后不再执行原HTTP×两场×全部规则组合交叉，独有断言与风险按表承接。
 
-## 待Windows串行验收
+## Windows验收入口与最终结果
 
-组合代码云端普通357＋108通过，inventory478=357普通+121真实；直接pytest不是官方守卫。Linux缺msvcrt的真实失败保留；全部必要边界必须在Windows实际通过后关闭。原适配分支单独通过不替代组合通过。父层在AB终态后安排：
+组合代码云端普通357＋108通过，inventory478=357普通+121真实；直接pytest不是官方守卫。Linux缺msvcrt的真实失败保留；父层随后完成下列Windows验收，最终结果见本节末及verification.md。原适配分支单独通过没有替代本轮组合验证。实际入口：
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -q tests/sim2gse/test_dual_engine_identity.py tests/sim2gse/test_checkpoint_changes.py tests/sim2gse/test_data_store_connection.py tests/sim2gse/test_formal_champion.py --strict-markers --durations=20
@@ -59,3 +59,7 @@ build-and-verify verify --project . --full --performance-report --execution-cont
 ```
 
 预期四模块82参数实例（61普通＋21真实），原子测试计数由实际输出记录。保全部43检查、17普通守卫、原配置及60秒预算，无缓存/无残留。与同适配修复基线工具59.8889秒/墙钟60.157秒比较；只有单轮时不作统计收益结论。未实施Lua，不自行启动本机重验证。
+
+最终已验代码为远端cb4d88e/云端b393dbd（同树f3d0ced8）。四模块82通过；最后同进程HTTP→原生失败2通过，完整43通过，普通357＋108及17守卫通过、真实121＋21通过。工具55.7311596秒/墙钟55.984秒，GSE真实44.78秒；无缓存/未完成/残留。比同适配修复基线工具/墙钟各少约4.16/4.17秒，仅单次观察，不宣称稳定统计收益。
+
+Windows暴露的CAS等待环、输入CRLF身份差异及Mock退栈污染均已在本批准测试文件内修正并重新验收；未通过放宽断言、超时或改生产算法掩盖。失败轮和独立HUD既有解码警告保留在verification.md。原始逐项迁移/保真核销和静态准备减少数不变；本票交付完成，不代表全GSE唯一主路、全仓普通规则均已分层或Lua完成。
