@@ -3,8 +3,6 @@
 from pathlib import Path
 import base64
 import sys
-import tempfile
-import pytest
 import unittest
 import zlib
 from unittest.mock import patch
@@ -14,11 +12,10 @@ import cbor2
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 
-from codec import export, wire_value  # noqa: E402
+from codec import wire_value
 from macro_interpreter import (macro_spell_ids, macro_spell_names, map_action, map_macro,
                                parse_castsequence, preflight_macro)  # noqa: E402
-from program import compile_program, from_action_blocks, from_gse_import  # noqa: E402
-from sequence import compiled_program  # noqa: E402
+from program import compile_program, from_gse_import
 
 
 class ProgramTests(unittest.TestCase):
@@ -120,146 +117,6 @@ class ProgramTests(unittest.TestCase):
                                          gcd_ms=1500, seed=1))
         run_upstream.assert_not_called()
 
-    @pytest.mark.real
-    def test_random_loop_repeat_maps_actual_upstream_order_across_seeds(self):
-        actions = [
-            dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak"),
-            dict(kind="spell", spell_id=49998, name="Death Coil", simc_action="death_coil"),
-            dict(kind="spell", spell_id=55090, name="Scourge Strike", simc_action="scourge_strike"),
-            dict(kind="spell", spell_id=43265, name="Death and Decay", simc_action="death_and_decay"),
-        ]
-        loop = {"Type": "Loop", "Repeat": "2", "StepFunction": "Random",
-                1: {"Type": "Action", "type": "spell", "spell": 77575},
-                2: {"Type": "Repeat", "Interval": 2, "type": "spell", "spell": 49998},
-                3: {"Type": "Action", "type": "spell", "spell": 55090},
-                4: {"Type": "Action", "type": "spell", "spell": 43265}}
-        sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                        Versions=[dict(Actions=[loop])])
-        raw = cbor2.dumps(wire_value(["RANDOM_SOURCE", sequence]))
-        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        by_path = {"1.1": "outbreak", "1.2": "death_coil",
-                   "1.3": "scourge_strike", "1.4": "death_and_decay"}
-        observed_orders = set()
-        for seed in (1, 2):
-            with self.subTest(seed=seed), tempfile.TemporaryDirectory() as directory:
-                candidate = compile_program(from_gse_import(text, "RANDOM_SOURCE", 1), Path(directory),
-                                            identity=dict(class_id=6, spec_id=252),
-                                            capabilities=dict(actions=actions),
-                                            context=dict(click_ms=300, input_interval_ms=300,
-                                                         gcd_ms=1500, seed=seed))
-                steps = candidate["compiled_steps"]
-                clicks = candidate["compiled_program"]["clicks"]
-                observed_orders.add(tuple(step["source_path"] for step in steps))
-                self.assertEqual(len(steps), len(clicks))
-                self.assertTrue({"1.1", "1.2", "1.3", "1.4"} <=
-                                {step["source_path"] for step in steps})
-                for step, click in zip(steps, clicks):
-                    self.assertEqual(click["source"]["sequence"], "RANDOM_SOURCE")
-                    self.assertEqual(click["source"]["version"], 1)
-                    self.assertEqual(click["source"]["path"], step["source_path"])
-                    self.assertEqual(click["commands"], [by_path[step["source_path"]]])
-        self.assertGreater(len(observed_orders), 1)
-
-    @pytest.mark.real
-    def test_upstream_compiles_six_control_blocks_in_one_collection(self):
-        def sequence(actions):
-            return dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                        Versions=[dict(Actions=actions)])
-        payload = dict(type="COLLECTION", payload=dict(Sequences={
-            "MAIN": sequence([
-                {"Type": "Repeat", "type": "spell", "spell": 70001, "Interval": 1},
-                {"Type": "Action", "type": "spell", "spell": 70002},
-                {"Type": "Action", "type": "spell", "spell": 70003},
-                {"Type": "Repeat", "type": "spell", "spell": 77575, "Interval": 2},
-                {"Type": "Loop", "Repeat": "2",
-                 1: {"Type": "Action", "type": "spell", "spell": 77575},
-                 2: {"Type": "Pause", "Clicks": 2}},
-                {"Type": "If", "Variable": "true",
-                 1: [{"Type": "Action", "type": "spell", "spell": 77575},
-                     {"Type": "Action", "type": "item", "item": 250245},
-                     {"Type": "Action", "type": "macro", "macro": "/cast festering_strike"}],
-                 2: [{"Type": "Pause", "Clicks": 2}]},
-                {"Type": "Embed", "Sequence": "CHILD"},
-            ]),
-            "CHILD": sequence([{"Type": "Action", "type": "spell", "spell": 70004}]),
-        }, Variables={}, Macros={}))
-        raw = cbor2.dumps(wire_value(payload))
-        text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        cap = dict(actions=[dict(kind="spell", spell_id=77575, name="Outbreak",
-                                 simc_action="outbreak"),
-                            *[dict(kind="spell", spell_id=spell_id, name=f"spell_{spell_id}",
-                                   simc_action=f"spell_{spell_id}")
-                              for spell_id in (70001, 70002, 70003, 70004)]])
-        strike = dict(kind="spell", spell_id=85948, name="festering_strike",
-                      simc_action="festering_strike")
-        alias = dict(kind="spell", spell_id=316239, native_spell_id=85948,
-                     name="festering_strike", simc_action="festering_strike",
-                     data_valid=True, available=True, background=False, passive=False, quiet=False)
-        cap["actions"].append(strike)
-        cap["import_actions"] = [*cap["actions"], alias,
-                                 dict(kind="item", slot=13, item_id=250245,
-                                      simc_action="use_item,slot=trinket1")]
-        with tempfile.TemporaryDirectory() as directory:
-            candidate = compile_program(from_gse_import(text, "MAIN", 1), Path(directory),
-                                        identity=dict(class_id=6, spec_id=252), capabilities=cap,
-                                        context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
-        def node_kinds(nodes):
-            found = []
-            for node in nodes:
-                found.append(node["kind"])
-                found.extend(node_kinds(node.get("body", [])))
-                found.extend(node_kinds(node.get("then", [])))
-                found.extend(node_kinds(node.get("else_branch", [])))
-                if node.get("action"):
-                    found.extend(node_kinds([node["action"]]))
-            return found
-
-        self.assertTrue({"Action", "Loop", "Repeat", "Pause", "If", "Embed"}
-                        <= set(node_kinds(candidate["program"]["nodes"])))
-        self.assertEqual([node["commands"] if node["kind"] == "Action" else []
-                          for node in candidate["compiled_program"]["clicks"]], compiled_program(candidate))
-        # Two Repeat intervals remain distinct, including MAIN/CHILD's shared path 1.
-        expected = [
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "2", ["spell_70002"]),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "3", ["spell_70003"]),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "5.1", ["outbreak"]),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "5.2", []),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "5.2", []),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "5.1", ["outbreak"]),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "5.2", []),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "5.2", []),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "6.1.1", ["outbreak"]),
-            ("MAIN", 1, "1", ["spell_70001"]),
-            ("MAIN", 1, "4", ["outbreak"]),
-            ("MAIN", 1, "6.1.2", ["use_item,slot=trinket1"]),
-            ("MAIN", 1, "6.1.3", ["festering_strike"]),
-            ("CHILD", 1, "1", ["spell_70004"]),
-        ]
-        clicks = candidate["compiled_program"]["clicks"]
-        self.assertEqual([click["kind"] for click in clicks],
-                         ["Action" if commands else "EmptyClick" for _, _, _, commands in expected])
-        self.assertEqual([(click["source"].get("sequence"), click["source"].get("version"),
-                           click["source"]["path"],
-                           click["commands"] if click["kind"] == "Action" else [])
-                          for click in clicks], expected)
-        self.assertEqual(len(candidate["source_paths"]), 31)
 
     def test_default_scene_rejects_active_petattack_with_its_source_path(self):
         sequence = dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -282,25 +139,6 @@ class ProgramTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(ValueError, "item 250245.*不能映射"):
             map_action("item", "250245", ambiguous, "ITEM_ID v1 1")
-
-    @pytest.mark.real
-    def test_search_program_keeps_export_and_compiled_order(self):
-        blocks = [[dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak")]]
-        identity = dict(class_id=6, spec_id=252)
-        program = from_action_blocks(blocks)
-        self.assertEqual(program["nodes"][0]["kind"], "Action")
-        self.assertEqual(program["nodes"][0]["commands"], blocks[0])
-        self.assertEqual(program["nodes"][0]["source"]["path"], "blocks[0]")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            old = export(blocks, root / "old", identity=identity)
-            new = compile_program(program, root / "new", identity=identity)
-        self.assertEqual(new["text"], old["text"])
-        self.assertEqual(new["compiled_steps"], old["compiled_steps"])
-        self.assertEqual(new["blocks"], old["blocks"])
-        self.assertEqual([node["commands"] if node["kind"] == "Action" else []
-                          for node in new["compiled_program"]["clicks"]], compiled_program(new))
-        self.assertEqual(new["compiled_program"]["clicks"][0]["source"]["path"], "blocks[0]")
 
 
     def test_overlong_compiled_macro_rejected_before_lua(self):

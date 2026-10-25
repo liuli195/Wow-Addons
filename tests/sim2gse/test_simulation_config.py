@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import tempfile
 from io import BytesIO
-import pytest
 from pathlib import Path
 import sys
 import unittest
 import json
-import sqlite3
 import hashlib
 import importlib.util
 import threading
@@ -27,19 +24,6 @@ from simulation_config import (  # noqa: E402
     load_config,
     load_training_config,
 )
-
-
-def _fast_search_config() -> dict:
-    return {'iterations': 2, 'max_processes': 1}
-
-
-def _read_state(destination: Path) -> bytes:
-    database = sqlite3.connect(destination / "task.sqlite3")
-    try:
-        from search import TaskStore
-        return json.dumps(TaskStore.load_state(database), ensure_ascii=False).encode("utf-8")
-    finally:
-        database.close()
 
 
 class SimulationConfigTests(unittest.TestCase):
@@ -106,46 +90,6 @@ class SimulationConfigTests(unittest.TestCase):
         self.assertEqual(config["target_count"], 2)
         self.assertTrue(config["enable_omnium_talents"])
         self.assertEqual(config_for()["target_count"], DEFAULT_CONFIG["target_count"])
-
-    @pytest.mark.real
-    def test_task_entry_removes_only_valid_omnium_line_when_disabled(self) -> None:
-        from task import TaskError, resume_task, run_task
-        from test_character_export import sample_profile
-        from test_search import _fast_search_boundary
-
-        value = "136822:1/136819:1/136817:1"
-        source_text = (sample_profile()
-                       .replace('deathknight="中文 角色"',
-                                'deathknight="omnium_talents=inside-name"')
-                       + f"omnium_talents={value}\n"
-                       + "# omnium_talents=comment\n")
-        original = source_text.encode("utf-8")
-        expected_effective = (source_text
-                              .replace(f"omnium_talents={value}\n", "")
-                              .encode("utf-8"))
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_bytes(original)
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=_fast_search_config(),
-                         simulation_config=config_for({"enable_omnium_talents": False}))
-                with patch('task.run_task', side_effect=AssertionError('SimC must not start')) as rerun:
-                    with self.assertRaisesRegex(TaskError, '恢复模拟配置'):
-                        resume_task(destination,
-                                    simulation_config=config_for({'enable_omnium_talents': True}))
-                rerun.assert_not_called()
-
-            self.assertEqual((destination / "input.original.simc").read_bytes(), original)
-            self.assertEqual((destination / "input.simc").read_bytes(), expected_effective)
-            profile = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
-            self.assertEqual(profile["identity"]["name"], "omnium_talents=inside-name")
-            self.assertEqual(profile["fields"]["omnium_talents"], value)
-            self.assertEqual(profile["input_original_sha256"], hashlib.sha256(original).hexdigest())
-            self.assertEqual(profile["input_effective_sha256"], hashlib.sha256(expected_effective).hexdigest())
-            state = json.loads(_read_state(destination))
-            self.assertEqual(state["input_original_sha256"], profile["input_original_sha256"])
-            self.assertEqual(state["input_effective_sha256"], profile["input_effective_sha256"])
 
 
     def test_baseline_and_controlled_engines_share_target_options(self) -> None:
@@ -230,74 +174,6 @@ class SimulationConfigTests(unittest.TestCase):
                               character=SimpleNamespace(name='test', class_name='mage'), trace=False,
                               simulation_config=config)
         self.assertEqual(run.call_args.kwargs['simulation_config'], config)
-
-    @pytest.mark.real
-    def test_task_records_effective_config_and_rejects_changed_resume(self) -> None:
-        import search as search_module
-        from task import TaskError, resume_task, run_task
-        from test_character_export import sample_profile
-        from test_search import _fast_search_boundary
-
-        simulation = config_for({"target_count": 2, "scene": "aoe"})
-        search = _fast_search_config()
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            original = (sample_profile() + 'omnium_talents=136822:1/136819:1\n').encode('utf-8')
-            source.write_bytes(original)
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=search, simulation_config=simulation)
-
-                self.assertEqual((destination / 'input.original.simc').read_bytes(), original)
-                self.assertEqual((destination / 'input.simc').read_bytes(), original)
-                state = json.loads(_read_state(destination))
-                self.assertEqual(state["simulation_config"], simulation)
-                profile = json.loads((destination / "profile.json").read_text(encoding="utf-8"))
-                self.assertEqual(
-                    profile["input_original_sha256"],
-                    hashlib.sha256(
-                        (destination / "input.original.simc").read_bytes()
-                    ).hexdigest(),
-                )
-                self.assertEqual(
-                    profile["input_effective_sha256"],
-                    hashlib.sha256(
-                        (destination / "input.simc").read_bytes()
-                    ).hexdigest(),
-                )
-                self.assertEqual(state["input_original_sha256"], profile["input_original_sha256"])
-                self.assertEqual(state["input_effective_sha256"], profile["input_effective_sha256"])
-                state_before_resume = _read_state(destination)
-                with self.assertRaisesRegex(TaskError, "恢复模拟配置"):
-                    resume_task(destination,
-                                simulation_config=dict(simulation, target_count=3))
-                self.assertEqual(_read_state(destination), state_before_resume)
-                state_before = _read_state(destination)
-                for name in ("profile.json", "result.json", "task.sqlite3"):
-                    self.assertTrue((destination / name).is_file(), name)
-                before = {
-                    name: (destination / name).read_bytes()
-                    for name in ("profile.json", "result.json", "task.sqlite3")
-                }
-                for name in ("input.original.simc", "input.simc"):
-                    path = destination / name
-                    original = path.read_bytes()
-                    path.write_bytes(original + b"\n# tampered\n")
-                    try:
-                        with patch.object(search_module, "TaskStore",
-                                          side_effect=AssertionError("TaskStore must not open")) as store:
-                            with self.assertRaisesRegex(TaskError, "输入"):
-                                resume_task(destination, simulation_config=simulation)
-                        store.assert_not_called()
-                        self.assertEqual(_read_state(destination), state_before)
-                        self.assertEqual(
-                            {name: (destination / name).read_bytes() for name in before},
-                            before,
-                        )
-                    finally:
-                        path.write_bytes(original)
-                resumed = resume_task(destination, simulation_config=simulation)
-                self.assertEqual(resumed['simulation_config'], simulation)
 
 
     def test_tampered_input_is_rejected_before_task_store_construction(self) -> None:

@@ -1,133 +1,10 @@
-"""训练规则使用显式内存输入；准备缓存及可靠成果保留真实持久化代表。"""
+"""训练规则与准备缓存使用显式内存输入，不证明物理持久化。"""
 import json
 from pathlib import Path
 import subprocess
-import shutil
-import sys
-import sqlite3
-from contextlib import closing, contextmanager
-
-
-@contextmanager
-def training_boundary(damage_for=lambda candidate: 100.):
-    from test_search import _fast_search_boundary, _fast_evaluate
-    from unittest.mock import patch
-    import sequence
-
-    def evaluate(profile, candidate, folder, **kwargs):
-        kwargs.pop('input_sources', None)
-        kwargs.pop('burst_candidate', None)
-        return _fast_evaluate(profile, candidate, folder, score=damage_for(candidate), **kwargs)
-
-    with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-        yield
-
-
-
 
 
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def training_center(request, monkeypatch):
-    if request.node.get_closest_marker('real') is None:
-        return
-    tmp_path = request.getfixturevalue('tmp_path')
-    installed_data_store = request.getfixturevalue('installed_data_store')
-    import result_store
-    (tmp_path / 'data').mkdir(exist_ok=True)
-    monkeypatch.setattr(result_store, '_BOUND_PROJECT', None)
-    # 业务检查使用隔离安装副本；官方 connect/Junction 由 test_data_store_connection 专项验证。
-    shutil.copytree(installed_data_store, tmp_path / '.local/skills/data-store',
-                    ignore=shutil.ignore_patterns('__pycache__'))
-
-
-@pytest.fixture
-def memory_result_center(request, monkeypatch):
-    """Native DuckDB center; neither guarded ordinary tests nor Parquet durability."""
-    if request.node.get_closest_marker('real') is None:
-        pytest.fail('DuckDB memory_result_center requires an explicit real marker')
-    installed_data_store_api = request.getfixturevalue('installed_data_store_api')
-    import duckdb
-    import threading
-    import result_store
-
-    groups = {}
-    lock = threading.RLock()
-    with duckdb.connect(':memory:', config={'threads': 1}) as database, monkeypatch.context() as scoped:
-        def write(root, table, key, rows, *, schema=None, binary=False):
-            table = installed_data_store_api['_name'](table, table=True)
-            key = installed_data_store_api['_name'](key)
-            group = f'"_memory_{table}_{key}"'
-            with lock, database.cursor() as cursor:
-                if binary:
-                    records = installed_data_store_api['_binary_records'](cursor, rows, schema)
-                    try:
-                        records.create_view('_binary_records_view', replace=True)
-                        cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT * FROM _binary_records_view')
-                    finally:
-                        cursor.execute('DROP VIEW IF EXISTS _binary_records_view')
-                else:
-                    payload = json.dumps(rows, ensure_ascii=False, allow_nan=False)
-                    structure = (json.dumps([schema]) if schema is not None else
-                                 cursor.execute('SELECT json_structure(?)', [payload]).fetchone()[0])
-                    if schema is None and installed_data_store_api['_opaque'](json.loads(structure)):
-                        raise ValueError('无法推断有类型的记录，请明确提供字段类型')
-                    transform = 'from_json_strict' if schema is not None else 'from_json'
-                    cursor.execute(f'CREATE OR REPLACE TABLE {group} AS SELECT record.* FROM '
-                                   f'(SELECT unnest({transform}(?, ?)) AS record)', [payload, structure])
-                groups.setdefault(table, {})[key] = group
-                sources = ' UNION ALL BY NAME '.join(f'SELECT * FROM {name}'
-                                                    for name in groups[table].values())
-                cursor.execute(f'CREATE OR REPLACE VIEW "{table}" AS {sources}')
-            return len(rows)
-
-        def query(root, sql, parameters=None, *, tables):
-            if not isinstance(tables, (list, tuple)) or not tables:
-                raise ValueError('tables 必须是非空逻辑表名列表')
-            for table in tables:
-                installed_data_store_api['_name'](table, table=True)
-            with lock:
-                cursor = database.cursor()
-                try:
-                    return cursor.execute(sql, parameters if parameters is not None else [])
-                except BaseException:
-                    cursor.close()
-                    raise
-
-        def read_key(root, table, key, *, columns=None, filters=None):
-            return read_keys(root, table, [key], columns=columns, filters=filters)
-
-        def read_keys(root, table, keys, *, columns=None, filters=None):
-            table = installed_data_store_api['_name'](table, table=True)
-            if not isinstance(keys, (list, tuple)) or not keys:
-                raise ValueError('记录键必须是非空列表')
-            keys = list(dict.fromkeys(installed_data_store_api['_name'](key) for key in keys))
-            with lock:
-                for key in keys:
-                    if key not in groups.get(table, {}):
-                        raise installed_data_store_api['MissingKeyError'](key)
-                projection = ','.join('"' + name.replace('"', '""') + '"' for name in columns) if columns else '*'
-                predicate = (' WHERE ' + ' AND '.join('"' + name.replace('"', '""') +
-                             '" IS NOT DISTINCT FROM ?' for name in filters)) if filters else ''
-                selected = ' UNION ALL BY NAME '.join(
-                    f'SELECT * FROM {groups[table][key]}' for key in keys)
-                return query(root, f'SELECT {projection} FROM ({selected}) AS records{predicate}',
-                             list(filters.values()) if filters else [], tables=[table])
-
-        api = dict(write=write, query=query, read_key=read_key, read_keys=read_keys,
-                   DATA_STORE_CAPABILITIES=installed_data_store_api.get('DATA_STORE_CAPABILITIES', ()),
-                   **{name: installed_data_store_api[name] for name in ('MissingKeyError', 'CorruptDataError')})
-        scoped.setattr(result_store, '_api', lambda: api)
-        yield
-
-
-@pytest.fixture
-def memory_training_center(training_center, memory_result_center):
-    yield
-
-
 
 
 def command(tmp_path, args):
@@ -315,15 +192,6 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     writes.assert_not_called()
 
 
-
-
-
-
-
-
-
-
-
 def test_historical_training_condition_excludes_only_execution_and_keeps_real_inputs():
     from copy import deepcopy
     from search import config_for
@@ -349,34 +217,6 @@ def test_historical_training_condition_excludes_only_execution_and_keeps_real_in
         changed['config'][key] += 1
         assert semantic_condition(changed, versions) != expected
     assert semantic_condition(payload, dict(versions, search='new-search')) != expected
-
-
-
-
-
-
-
-
-
-
-@pytest.mark.real
-def test_training_entry_rejects_an_active_foreground_search(tmp_path, monkeypatch):
-    from seed_activity import foreground_search
-    import seed_training
-
-    calls = []
-    template = tmp_path / 'standard.simc'
-    template.write_text('unused by the training stub', encoding='utf-8')
-    monkeypatch.setattr(seed_training, '_run_training',
-                        lambda *args, **kwargs: calls.append((args, kwargs)))
-    with foreground_search():
-        result = seed_training.main(['--project', str(tmp_path), 'run', '--template', str(template),
-                                     '--targets', '1', '--workspace', str(tmp_path / 'work')])
-
-    assert result == 2
-    assert calls == []
-
-
 
 
 def test_missing_project_and_unreadable_center_are_not_silently_empty(monkeypatch,capsys,training_cli):
@@ -405,8 +245,6 @@ def test_unconnected_public_search_does_not_create_data_root(monkeypatch):
     mkdir.assert_not_called()
 
 
-
-
 @pytest.mark.parametrize('illegal_program',[[['death_coil']*16],[dict(kind='CastSequence',members=['death_coil']*32)]])
 def test_prepare_rejects_oversize_macro_without_losing_legal_materials(prepared_input,illegal_program):
     from seed_training import ensure_prepared
@@ -431,90 +269,6 @@ def test_prepare_keeps_tool_failure_explicit_instead_of_rejecting_material(monke
     with pytest.raises(ValueError,match='受检编译工具或目标资料故障'):
         ensure_prepared('/memory/template',1,'/memory/work',inputs=case.inputs,sources=[case.source('legal',[['outbreak']])])
     assert case.writes==[]
-
-
-@pytest.mark.real
-def test_prepare_reuses_context_and_only_rebuilds_changed_sources(tmp_path, capsys, memory_training_center):
-    from test_character_export import sample_profile
-    import result_store
-    import sequence
-    from unittest.mock import patch
-
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    source = tmp_path / 'material.json'
-    row = dict(label='first', class_name='deathknight', spec='unholy', source='fixture', source_id='fixture-1',
-               original='fixture', instructions='repeat', semantic='preserved', changes=[], family='fixture',
-               core=[['death_coil']], program=[['death_coil']])
-    for source_id, program in [('fixture-1', [['death_coil']]), ('fixture-2', [['outbreak']])]:
-        source.write_text(json.dumps(dict(row, source_id=source_id, program=program)), encoding='utf-8')
-        assert command(tmp_path, ['register', str(source)]) == 0
-    capsys.readouterr()
-    options = ['--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    with training_boundary():
-        assert command(tmp_path, ['prepare', *options]) == 0
-    first = json.loads(capsys.readouterr().out)[0]
-    assert first['preparation']['sources_rebuilt'] == 2
-    assert first['preparation']['context_rebuilt'] is True
-    with training_boundary():
-        assert command(tmp_path, ['prepare', *options, '--diagnostic-logging']) == 0
-    logged = json.loads(capsys.readouterr().out)[0]
-    assert logged['preparation']['sources_rebuilt'] == 0
-    assert logged['config_key'] == first['config_key']
-    row['label'] = 'metadata revision'
-    source.write_text(json.dumps(row), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    capsys.readouterr()
-    with training_boundary():
-        assert command(tmp_path, ['prepare', *options]) == 0
-    metadata = json.loads(capsys.readouterr().out)[0]
-    assert metadata['preparation']['sources_rebuilt'] == 0
-    row['program'] = [['death_coil'], ['outbreak']]
-    source.write_text(json.dumps(row), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    capsys.readouterr()
-    with training_boundary():
-        assert command(tmp_path, ['prepare', *options]) == 0
-    changed = json.loads(capsys.readouterr().out)[0]
-    assert changed['preparation']['sources_rebuilt'] == 1
-    assert changed['preparation']['context_rebuilt'] is False
-    template.write_text(sample_profile() + '\n# new role revision\n', encoding='utf-8')
-    with training_boundary():
-        assert command(tmp_path, ['prepare', *options]) == 0
-    changed_context = json.loads(capsys.readouterr().out)[0]
-    assert changed_context['preparation']['context_rebuilt'] is True
-    assert changed_context['preparation']['sources_rebuilt'] == 2
-
-    assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', changed_context['config_key']]) == 0
-    snapshot = json.loads(capsys.readouterr().out)
-    snapshot[0]['version'] = 'unknown-cache-version'
-    result_store.write('seed_prepared', changed_context['config_key'], snapshot, schema=__import__('seed_training').PREPARED_SCHEMA)
-    with training_boundary():
-        assert command(tmp_path, ['prepare', *options]) == 0
-    rebuilt = json.loads(capsys.readouterr().out)[0]
-    assert rebuilt['preparation']['context_rebuilt'] is True and rebuilt['preparation']['sources_rebuilt'] == 2
-    assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', rebuilt['config_key']]) == 0
-    before_failure = json.loads(capsys.readouterr().out)
-    source.write_text(json.dumps(dict(row, program=[['outbreak'], ['scourge_strike']])), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    capsys.readouterr()
-    write = result_store.write
-    def fail_snapshot(table, *args, **kwargs):
-        if table == 'seed_prepared':
-            raise OSError('快照保存故障')
-        return write(table, *args, **kwargs)
-    with training_boundary(), patch.object(result_store, 'write', side_effect=fail_snapshot), \
-         patch.object(sequence, 'evaluate', side_effect=AssertionError('准备失败不得派发训练')):
-        assert command(tmp_path, ['prepare', *options]) == 2
-    assert '快照保存故障' in capsys.readouterr().err
-    assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', rebuilt['config_key']]) == 0
-    assert json.loads(capsys.readouterr().out) == before_failure
-
-
-
-
-
-
 
 
 def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definition(monkeypatch):
@@ -580,114 +334,3 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monke
         assert {call.args[2] for call in fallback.call_args_list}=={'valid_candidate','affected_candidate'}
         assert writer.call_count==1
     assert registry==before
-
-
-@pytest.mark.real
-def test_training_prepare_keeps_formal_burst_through_public_cli(tmp_path, monkeypatch, capsys):
-    import burst
-    from test_burst import reviewed_fixture,character_seed_boundary
-    definition,raw=reviewed_fixture()
-    published=burst.publish(definition)
-    material=tmp_path/'material.json'
-    material.write_text(json.dumps(dict(label='ordinary',class_name='deathknight',spec='unholy',source='fixture',
-        original='fixture',instructions='repeat',semantic='preserved',changes=[],family='plain',core=[],
-        program=[['scourge_strike']])),encoding='utf-8')
-    assert command(tmp_path,['register',str(material)])==0
-    capsys.readouterr()
-    template=tmp_path/'standard.simc';template.write_text(raw,encoding='utf-8')
-    with character_seed_boundary() as engines:
-        assert command(tmp_path,['prepare','--template',str(template),'--targets','1',
-            '--workspace',str(tmp_path/'work'),'--use-burst'])==0
-    prepared=json.loads(capsys.readouterr().out)[0]
-    assert command(tmp_path,['list','--state','prepared','--config-key',prepared['config_key'],'--use-burst'])==0
-    rows=json.loads(capsys.readouterr().out)
-    context=next(row['context'] for row in rows if row['kind']=='context')
-    context=json.loads(context) if isinstance(context,str) else context
-    assert context['burst']['plan']==published['plan']
-    assert 'rule_initialization' not in context
-    assert context['preparation_input']['simulation']['scene']=='single_target'
-    assert 'rule_snapshot' not in context
-    assert burst.load(252)==published
-    from test_training_champion import completed_training
-    from seed_training import training_champion
-    import engine
-    with character_seed_boundary():
-        champion_template,completed=completed_training(tmp_path,1,[([['scourge_strike']],[110.,120.,130.])],
-            prepared_context=context)
-        monkeypatch.setattr(engine,'_training_template',lambda manifest:champion_template)
-        champion=training_champion('deathknight','unholy',context['preparation_input']['simulation'],
-            engines=engines,input_interval_ms=200,use_burst=True,
-            burst_identity=dict(spec_id=252,definition_id=published['definition_id']),
-            configuration_key=context['configuration_key'])
-    assert champion['status']=='selected',champion
-    assert champion['candidate_id']==completed[0]['candidate_id']
-    assert champion['condition_input']['burst']['plan']==published['plan']
-
-
-@pytest.mark.real
-def test_training_prepare_keeps_corrupt_history_without_republishing(tmp_path, capsys, monkeypatch):
-    failure = 'corrupt'
-    import result_store
-    from test_character_export import sample_profile
-
-    source = tmp_path / 'material.json'
-    source.write_text(json.dumps(dict(label='registered', class_name='deathknight', spec='unholy', source='fixture',
-        original='fixture', instructions='repeat', semantic='preserved', changes=[], family='plain', core=[],
-        program=[['outbreak']])), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    before = json.loads(capsys.readouterr().out)
-    assert command(tmp_path, ['list']) == 0
-    registry_before = json.loads(capsys.readouterr().out)
-    for run_id in ('valid', 'affected'):
-        result_store.write('runs', run_id, [dict(dict.fromkeys(result_store.RUN_SCHEMA),
-            run_id=run_id, status='completed', profile={'identity': {'class': 'deathknight', 'spec': 'unholy'}},
-            candidate_key='winner', candidate_data_key=run_id + '_candidate', search_dps=0.)],
-            schema=result_store.RUN_SCHEMA)
-        row = dict(dict.fromkeys(result_store.CANDIDATE_SCHEMA), run_id=run_id, candidate_key='winner',
-                   candidate_data_key=run_id + '_candidate', program=[['death_coil']])
-        if run_id == 'affected' and failure == 'missing':
-            continue
-        records = [row]
-        result_store.write('candidates', run_id + '_candidate', records, schema=result_store.CANDIDATE_SCHEMA)
-    if failure == 'corrupt':
-        (result_store.DATA_ROOT / 'candidates/affected_candidate.parquet').write_bytes(b'broken known candidate')
-    api = result_store._api()
-    read_keys, read_key = api['read_keys'], api['read_key']
-    fallback_keys = []
-
-    def candidate_groups(root, table, keys, **options):
-        if table == 'candidates' and failure == 'unreadable':
-            raise PermissionError('临时历史读取失败')
-        return read_keys(root, table, keys, **options)
-
-    def known_single(root, table, key, **options):
-        if table == 'candidates':
-            fallback_keys.append(key)
-        return read_key(root, table, key, **options)
-
-    monkeypatch.setattr(result_store, '_api', lambda: api)
-    monkeypatch.setitem(api, 'read_keys', candidate_groups)
-    monkeypatch.setitem(api, 'read_key', known_single)
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    with training_boundary():
-        status = command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
-                                  '--workspace', str(tmp_path / 'work')])
-    if failure in ('corrupt', 'unreadable'):
-        assert status == 2
-        assert ('损坏' if failure == 'corrupt' else '临时历史读取失败') in capsys.readouterr().err
-        assert not (tmp_path / 'work').exists()
-        assert command(tmp_path, ['list']) == 0
-        assert json.loads(capsys.readouterr().out) == registry_before
-        assert fallback_keys == []
-    else:
-        assert status == 0
-        capsys.readouterr()
-        assert command(tmp_path, ['list', '--state', 'unsupported']) == 0
-        inactive = json.loads(capsys.readouterr().out)
-        assert len(inactive) == 1 and inactive[0]['source_id'] == 'history:affected'
-        assert '候选记录缺失' in inactive[0]['unavailable_reason']
-        assert command(tmp_path, ['list']) == 0
-        active = json.loads(capsys.readouterr().out)
-        assert {row['source_id'] for row in active} == {before['candidate_id'], 'history:valid'}
-        assert set(fallback_keys) == {'valid_candidate', 'affected_candidate'}

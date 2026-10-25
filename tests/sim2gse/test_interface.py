@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import tempfile
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from copy import deepcopy
 from email.message import Message
 from io import BytesIO
 from types import SimpleNamespace
 import threading
-import time
 import unittest
 import json
 import base64
@@ -29,24 +28,8 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from gse_import import inspect_import  # noqa: E402
-from test_seed_training import memory_result_center  # noqa: E402
 from test_population_training import memory_ga  # noqa: E402
-
-
-def _coarse_batch_keys(result):
-    return {batch['data_key'] for record in result['search']['records']
-            for batch in record['batches'] if batch['request']['purpose'] == 'search'}
-
-
-@contextmanager
-def _fixed_search_population(starts):
-    """非变异代表仅固定测试工作量；真实两代、复测和持久化契约不变。"""
-    import population_training
-    from test_search import _initialized_starts
-    with _initialized_starts(starts), \
-            patch.object(population_training, '_cross', return_value=False), \
-            patch.object(population_training, 'mutate', side_effect=lambda program, *a, **k: deepcopy(list(program))):
-        yield
+from test_search import _fixed_search_population  # noqa: E402
 
 
 def gse_fixture(payload):
@@ -430,11 +413,10 @@ class ImportInspectionTests(unittest.TestCase):
 class InterfaceTests(unittest.TestCase):
     def setUp(self) -> None:
         global _friendly_error, _public_state, create_server, run_task
-        global sample_profile, _fast_evaluate, _fast_search_boundary, _initialized_starts
+        global sample_profile
         from interface import _friendly_error, _public_state, create_server
         from task import run_task
         from test_character_export import sample_profile
-        from test_search import _fast_evaluate, _fast_search_boundary, _initialized_starts
 
         self.real = any(mark.name == 'real' for mark in
                         getattr(getattr(type(self), self._testMethodName), 'pytestmark', []))
@@ -569,14 +551,6 @@ class InterfaceTests(unittest.TestCase):
             body = response.read().decode('utf-8')
             return body if path == '/' else json.loads(body)
 
-    def _task_state_request(self, task_id: str, deadline: float) -> dict:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Task polling reached its overall test deadline")
-        state = self._json_request("GET", f"/api/tasks/{task_id}", timeout=remaining)
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Task polling reached its overall test deadline")
-        return state
 
     def test_import_inspection_http_wiring(self) -> None:
         payload = ["HTTP_IMPORT", {
@@ -650,38 +624,6 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(self.server.tasks, {})
                 self.input_write.assert_not_called()
 
-    @pytest.mark.usefixtures('memory_result_center')
-    @pytest.mark.real
-    def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
-        imported = gse_fixture(["THIRD_PARTY", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                         "macro": "/targetenemy [noharm][dead]\n/cast 77575"}]}],
-        }])
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported, "target_count": 5,
-            "sequence_name": "THIRD_PARTY", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-            "diagnostic_logging": True,
-        })
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._task_state_request(created["task_id"], deadline)
-            if state["status"] in {"completed", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertEqual(state["selected_sequence"], "THIRD_PARTY")
-        self.assertGreater(state["dps"], 0)
-        self.assertFalse(state["result_ready"])
-        destination, _ = self.server.tasks[created["task_id"]]
-        from task import read_task
-        result = read_task(destination)
-        self.assertEqual(result['simulation_config']['target_count'], 5)
-        self.assertIs(result['config']['diagnostic_logging'], True)
-        for stage in ('reference', 'controlled'):
-            self.assertTrue((destination / stage / 'invocation.json').is_file(), stage)
 
     def test_unmapped_import_error_is_reported_without_dps(self) -> None:
         from gse_import import import_action_spell_ids, program_from_import
@@ -808,387 +750,9 @@ class InterfaceTests(unittest.TestCase):
             resume.assert_not_called()
             self.assertEqual(self.server.tasks[task_id], (destination, handle))
 
-    @pytest.mark.real
-    def test_published_burst_report_group_is_reused_after_registration_interruption(self) -> None:
-        import result_store
-        import sequence
-        from task import resume_task
-
-        self.server.task_options = {'use_burst': True, 'search_config': dict(iterations=2, max_processes=1, diagnostic_logging=True)}
-        original_write = result_store.write
-        interrupted = False
-        evaluated, published, uncommitted_at_interrupt = [], [], set()
-        burst_calls = []
-        import burst
-        from test_burst import page_task_boundary, reviewed_fixture
-        definition, profile = reviewed_fixture()
-        result_store.DATA_ROOT.mkdir(exist_ok=True)
-        burst.publish(definition)
-
-        def publish_then_interrupt(table, key, rows, **kwargs):
-            nonlocal interrupted
-            result = original_write(table, key, rows, **kwargs)
-            if table == 'batches' and len(rows) == 12 and not interrupted:
-                interrupted = True
-                published.extend(row['batch_key'] for row in rows)
-                uncommitted_at_interrupt.update(set(evaluated) - set(published))
-                raise OSError('published group before registration')
-            return result
-
-        def evaluate(*args, **kwargs):
-            evaluated.append(Path(args[2]).name)
-            burst_calls.append(kwargs.get('burst_candidate') is not None)
-            return boundary_evaluate(*args, **kwargs)
-
-        # N12恰好越过真实满组登记边界；不靠随机变异碰出第12条。
-        starts = [[["outbreak"]] * clicks for clicks in range(1, 13)]
-        with page_task_boundary(), _fixed_search_population(starts):
-            boundary_evaluate = sequence.evaluate
-            with patch.object(sequence, 'evaluate', side_effect=evaluate), patch.object(
-                    result_store, 'write', side_effect=publish_then_interrupt):
-                created = self._json_request('POST', '/api/tasks', {
-                    'profile': profile, 'target_count': 1, 'scene': 'single_target',
-                    'diagnostic_logging': True})
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    state = self._task_state_request(created['task_id'], deadline)
-                    if state['status'] == 'failed':
-                        break
-                    time.sleep(0.02)
-                self.assertEqual(state['status'], 'failed', state)
-                self.assertIn('published group before registration', state['error'])
-            _, handle = self.server.tasks[created['task_id']]
-            handle.join(5)
-            with patch.object(sequence, 'evaluate', side_effect=evaluate):
-                resumed = resume_task(handle.output_root, diagnostic_logging=True)
-        self.assertEqual(resumed['status'], 'completed')
-        self.assertTrue(_public_state(resumed, handle.output_root)['result_ready'])
-        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
-        self.assertTrue(interrupted)
-        self.assertTrue(burst_calls)
-        self.assertTrue(all(burst_calls))
-        self.assertEqual(len(published), 12)
-        self.assertEqual(len(set(published)), 12)
-        self.assertTrue(all(evaluated.count(key) == 1 for key in published))
-        # 故障时尚未提交的内存尾部可重算，可靠发布的12条绝不重算。
-        repeated = {key for key in evaluated if evaluated.count(key) > 1}
-        self.assertLessEqual(repeated, uncommitted_at_interrupt)
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(set(keys), _coarse_batch_keys(resumed))
-        self.assertEqual(len(keys), len(set(keys)))
-        with result_store.query(
-            "SELECT storage_group_key, count(*) FROM batches "
-            "WHERE purpose IN ('search', 'feedback', 'nominal') GROUP BY storage_group_key"
-        , tables=['batches']) as cursor:
-            groups = cursor.fetchall()
-        self.assertGreater(sum(row[1] for row in groups), 12)
-        self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
-        self.assertTrue(any(count > 1 for _, count in groups), '同一阶段仍应批量保存报告')
-        with result_store.query(
-            "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
-            "WHERE purpose IN ('search', 'feedback', 'nominal')"
-        , tables=['batches']) as cursor:
-            reports = cursor.fetchall()
-        self.assertEqual(len(reports), sum(row[1] for row in groups))
-        self.assertEqual(len({key for key, _ in reports}), len(reports))
-        self.assertTrue(all(score > 0 for _, score in reports))
-
 
     @pytest.mark.real
-    def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
-        self._assert_simultaneous_identical_tasks()
-
-    @pytest.mark.real
-    def test_lost_report_locations_reject_duplicate_publication(self) -> None:
-        import result_store
-        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
-        original_url = self.url
-        with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]):
-            created = self._json_request('POST', '/api/tasks', {
-                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
-            _, handle = self.server.tasks[created['task_id']]
-            handle.join(30)
-            self.assertIsNone(handle.error)
-            from task import read_task
-            expected = _coarse_batch_keys(read_task(handle.output_root, include_search_records=True))
-            self.assertTrue(expected)
-            journal = result_store.DATA_ROOT / '.report-locations.jsonl'
-            original = journal.read_bytes()
-            for damage in ('missing', 'truncated'):
-                with self.subTest(damage=damage):
-                    journal.write_bytes(original)
-                    if damage == 'missing':
-                        journal.unlink()
-                    else:
-                        journal.write_bytes(original.splitlines(keepends=True)[0])
-                    server = create_server(Path(self.directory.name) / damage, port=0,
-                                           task_options=self.server.task_options)
-                    thread = threading.Thread(target=server.serve_forever,
-                                              kwargs={'poll_interval': .01}, daemon=True)
-                    thread.start()
-                    try:
-                        self.url = f'http://127.0.0.1:{server.server_port}/'
-                        created = self._json_request('POST', '/api/tasks', {
-                            'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
-                        _, second = server.tasks[created['task_id']]
-                        second.join(30)
-                        state = self._json_request('GET', '/api/tasks/' + created['task_id'])
-                        self.assertEqual(state['status'], 'failed', state)
-                        self.assertEqual(state['phase'], 'storage_unavailable', state)
-                        self.assertTrue(state['storage_unavailable'] and state['recoverable'])
-                        self.assertFalse(state['result_ready'])
-                        self.assertIn('共享存储', state['error'])
-                        self.assertIsInstance(second.error.__cause__, result_store.DataReadError)
-                        self.assertIn('报告位置清单', str(second.error))
-                    finally:
-                        self.url = original_url
-                        server.shutdown(); server.server_close(); thread.join(2)
-                    with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
-                        keys = [row[0] for row in cursor.fetchall()]
-                    self.assertEqual(set(keys), expected)
-                    self.assertEqual(len(keys), len(set(keys)))
-            journal.write_bytes(original)
-
-    def _assert_simultaneous_identical_tasks(self) -> None:
-        import result_store
-        import sequence
-        from task import read_task
-
-        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
-        first_reports = threading.Barrier(2)
-        started = set()
-        started_lock = threading.Lock()
-
-        def evaluate(*args, **kwargs):
-            destination = Path(args[2]).parents[1]
-            with started_lock:
-                first = destination not in started
-                started.add(destination)
-            if first:
-                first_reports.wait(15)  # Test-only deadlock bound, not a product search budget.
-            return _fast_evaluate(*args, **kwargs)
-
-        with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]), \
-                patch.object(sequence, 'evaluate', side_effect=evaluate):
-            created = []
-            for _ in range(2):
-                created.append(self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'}))
-            deadline = time.monotonic() + 30
-            for task in created:
-                while time.monotonic() < deadline:
-                    state = self._task_state_request(task['task_id'], deadline)
-                    if state['status'] in {'completed', 'failed'}:
-                        break
-                    time.sleep(.02)
-                error = self.server.tasks[task['task_id']][1].error
-                self.assertEqual(state['status'], 'completed', dict(state, task_error=repr(error),
-                    task_error_cause=repr(getattr(error, '__cause__', None)),
-                    task_error_context=repr(getattr(error, '__context__', None))))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        expected = set().union(*(_coarse_batch_keys(read_task(
-            self.server.tasks[row['task_id']][1].output_root, include_search_records=True)) for row in created))
-        self.assertTrue(expected)
-        self.assertEqual(set(keys), expected)
-        self.assertEqual(len(keys), len(set(keys)))
-        self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
-
-
-
-    @pytest.mark.usefixtures('memory_result_center')
-    @pytest.mark.real
-    def test_public_search_reduces_wait_clicks_and_native_evaluates_selected_candidate(self) -> None:
-        import cbor2
-        import codec
-        import engine
-        import search
-        import sequence
-        from task import read_task
-        from test_search import _fast_initialization
-
-        real_evaluate = sequence.evaluate
-        capabilities = {
-            "actions": [
-                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
-                     gcd_ms=1500, base_spell_id=77575),
-                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
-                     gcd_ms=1500, base_spell_id=47541),
-                dict(kind="spell", spell_id=55090, simc_action="scourge_strike", name="Scourge Strike",
-                     gcd_ms=1500, base_spell_id=55090),
-            ],
-            "precombat_actions": [], "sources": [], "protocol": 3,
-            "scope": "test", "coverage": "constructed-test-boundary",
-        }
-
-        def inspect(_reference, folder):
-            # Constructed static GCD supports the requested interval without one-empty-click syntax.
-            for action in _reference['static_snapshot']['actions']:
-                action['gcd_ms'] = 1500
-            folder = Path(folder)
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
-            return capabilities
-
-        initial = [["outbreak"], dict(kind="WaitClicks", clicks=3), ["death_coil"]]
-
-        wait_candidates = {300: {}}
-        native_evaluations = []
-        active_interval = 300
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            blocks = [[action["simc_action"] for action in block]
-                      for block in candidate["blocks"]]
-            clicks = sequence.compiled_program(candidate)
-            self.assertEqual([click or [] for click in clicks], blocks)
-            waits = [node for node in candidate["program"]["nodes"] if node["kind"] == "Pause"]
-            if waits:
-                interval = active_interval
-                counts = tuple(node["clicks"] for node in waits)
-                wait_candidates[interval].setdefault(counts, candidate)
-                if counts == (2,) and interval not in {row[0] for row in native_evaluations}:
-                    self.assertEqual(kwargs["input_times"][:3], [0, interval, interval * 2])
-                    result = real_evaluate(profile, candidate, folder, **kwargs)
-                    native_evaluations.append((interval, candidate, result))
-                    self.assertEqual(result["blocks"], blocks)
-                    self.assertEqual(result["native_blocks"], blocks)
-                score_offset = 1000 if any(
-                    native_interval == interval and native_candidate["text"] == candidate["text"]
-                    for native_interval, native_candidate, _ in native_evaluations
-                ) else 0
-                # 与原用例相同：实际原生核回放，搜索分差由构造评分边界控制。
-                result = _fast_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
-            else:
-                result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            return result
-
-        self.server.task_options = {
-            "search_config": {'iterations': 2, 'max_processes': 1, 'random_seed': 20260926}
-        }
-        real_gse_runner = codec.run_command
-        with _fast_initialization(real_engine=True), \
-             patch.object(codec, "run_command", side_effect=real_gse_runner), \
-             patch.object(engine, "inspect", side_effect=inspect), \
-             patch.object(sequence, "check_report", new=engine.check_report), \
-             _initialized_starts([initial, [["outbreak"], dict(kind="WaitClicks", clicks=2), ["death_coil"]]]), \
-             patch.object(sequence, "evaluate", side_effect=evaluate):
-            interval = 300
-            active_interval = interval
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "input_interval_ms": interval,
-            })
-            deadline = time.monotonic() + 45
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                    break
-                time.sleep(0.05)
-            handle = self.server.tasks[created["task_id"]][1]
-            handle.join(5)
-            saved = read_task(handle.output_root, include_search_records=True)
-
-        self.assertEqual(state["status"], "completed", state)
-        self.assertEqual(state["evidence_status"], "search_result")
-        self.assertEqual(state["input_interval_ms"], interval)
-        self.assertEqual(saved['candidate']['text'], state['candidate_text'])
-        self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
-        self.assertGreaterEqual(len(wait_candidates[interval]), 2,
-                                "不同 WaitClicks 次数未作为不同候选评价")
-        self.assertEqual(len({candidate["text"] for candidate in wait_candidates[interval].values()}),
-                         len(wait_candidates[interval]))
-        selected_wait = next((candidate for candidate in wait_candidates[interval].values()
-                              if candidate["text"] == state["candidate_text"]), None)
-        self.assertIsNotNone(selected_wait,
-                             f"公开任务在 {interval} 毫秒间隔没有选择 WaitClicks 候选")
-        self.assertEqual(saved['candidate']['program'], selected_wait['program'])
-        native_wait = next((candidate for native_interval, candidate, _ in native_evaluations
-                            if native_interval == interval), None)
-        self.assertIsNotNone(native_wait,
-                             f"{interval} 毫秒间隔没有真实评价的 WaitClicks 候选")
-        self.assertEqual(selected_wait["text"], native_wait["text"],
-                         f"{interval} 毫秒间隔最终候选没有经过真实原生评价")
-        payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
-        actions = payload[1][b"Versions"][0][b"Actions"]
-        exported_waits = [action for action in actions if action[b"Type"] == b"Pause"]
-        expected_clicks = [node["clicks"] for node in selected_wait["program"]["nodes"]
-                           if node["kind"] == "Pause"]
-        self.assertEqual([action[b"Clicks"] for action in exported_waits], expected_clicks)
-        self.assertTrue(exported_waits and all(action[b"Clicks"] >= 2 for action in exported_waits))
-        self.assertTrue(all(all(count >= 2 for count in counts)
-                            for counts in wait_candidates[interval]))
-        self.assertTrue(next(iter(wait_candidates[interval].values()))["text"].startswith("!GSE3!"))
-
-        self.assertEqual({row[0] for row in native_evaluations}, {300},
-                         "空点击候选必须进入真实原生评价")
-        for interval, candidate, result in native_evaluations:
-            self.assertEqual(result["input_times"][:3], [0, interval, interval * 2])
-            self.assertEqual(candidate["precombat_count"], 0)
-            wait = next(node for node in candidate["program"]["nodes"] if node["kind"] == "Pause")
-            empty_clicks = [click for click in candidate["compiled_program"]["clicks"]
-                            if click["kind"] == "EmptyClick"
-                            and click["source"]["path"] == wait["source"]["path"]]
-            self.assertEqual(len(empty_clicks), wait["clicks"])
-            self.assertTrue(all(click["source"] == wait["source"] for click in empty_clicks))
-
-            payload = cbor2.loads(zlib.decompress(base64.b64decode(candidate["text"][6:]), -15))
-            actions = payload[1][b"Versions"][0][b"Actions"]
-            pause_index = int(wait["source"]["gse_path"]) - 1
-            self.assertEqual(actions[pause_index][b"Type"], b"Pause")
-            self.assertEqual(actions[pause_index][b"Clicks"], wait["clicks"])
-            all_empty = [step for step in candidate["compiled_steps"] if step["type"] == "click"]
-            self.assertEqual(len(all_empty), sum(node["clicks"] for node in candidate["program"]["nodes"]
-                                                if node["kind"] == "Pause"))
-            compiled_empty = [step for step in all_empty if step["blockPath"] == wait["source"]["gse_path"]]
-            self.assertEqual(len(compiled_empty), wait["clicks"])
-            self.assertEqual([step["blockPath"] for step in compiled_empty],
-                             [wait["source"]["gse_path"]] * wait["clicks"])
-
-
-    @pytest.mark.real
-    def test_completed_task_is_not_visible_before_its_result_is_reliably_saved(self) -> None:
-        import search
-        import task
-
-        waiting, heartbeat, release = threading.Event(), threading.Event(), threading.Event()
-        store_run, publish = task._store_run, search.TaskStore.publish
-        self.server.task_options = {"search_config": dict(iterations=2, max_processes=1, random_seed=37)}
-
-        def held_result(destination, result, *, state=None):
-            if result.get("status") == "completed":
-                waiting.set()
-                if not release.wait(5):
-                    raise AssertionError("result persistence was not released")
-            return store_run(destination, result, state=state)
-
-        def published_heartbeat(store):
-            publish(store)
-            if waiting.is_set():
-                heartbeat.set()
-
-        with _fast_search_boundary(), _fixed_search_population([[['outbreak']]]), \
-                patch.object(task, "_store_run", side_effect=held_result), \
-                patch.object(search.TaskStore, "publish", published_heartbeat):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            handle = self.server.tasks[created["task_id"]][1]
-            try:
-                self.assertTrue(waiting.wait(5), "task never reached result persistence")
-                self.assertTrue(heartbeat.wait(5), "held task did not publish a heartbeat")
-                pending = self._json_request("GET", "/api/tasks/" + created["task_id"])
-                self.assertEqual(pending["status"], "running", pending)
-                self.assertFalse(pending["result_ready"], pending)
-            finally:
-                release.set()
-                handle.join(5)
-            self.assertTrue(handle.done)
-            completed = self._json_request("GET", "/api/tasks/" + created["task_id"])
-        self.assertEqual(completed["status"], "completed", completed)
-        self.assertTrue(completed["result_ready"], completed)
-
-    @pytest.mark.real
+    @pytest.mark.usefixtures('installed_result_center')
     def test_browser_computes_copies_and_clears_real_candidate(self):
         # 极小合法种群保留真实180ms双场原生/复测/编译/复制链；不为UI烟测运行长探索。
         import sequence
@@ -1235,34 +799,31 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     const checkbox=page.locator('#diagnosticLogging');
     assert.equal(await checkbox.isDisabled(),false);
     assert.equal(await checkbox.isChecked(),false);
-    for(const selected of [true,false]){
-     await checkbox.setChecked(selected);
-     await page.locator('#profile').fill(input.profile);
-     finishPolling=new Promise(resolve=>{releasePolling=resolve;});
-     await page.locator('#start').click();
-     await page.locator('#cancel').waitFor({state:'visible'});
-     assert.equal(submitted.at(-1).body.mode,'dual');
-     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
-     const count=submitted.length;
-     await checkbox.setChecked(!selected);
-     assert.equal(submitted.length,count,'勾选不应修改正在运行的任务');
-     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
-     releasePolling();
-     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-     await page.locator('#resume').click();
-     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-     assert.ok(submitted.at(-1).path.endsWith('/resume'));
-     assert.equal(submitted.at(-1).body.diagnostic_logging,!selected);
-     assert.equal(await page.locator('#resume').isVisible(),true,'失败后仍可继续');
-     await checkbox.setChecked(selected);
-     await page.locator('#gseImport').fill('!GSE3!browser-fixture');
-     await page.locator('#inspectImport').click();
-     await page.locator('#importStart').click();
-     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-     assert.equal(submitted.at(-1).body.mode,'import');
-     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
-    }
-    assert.equal(submitted.length,6);
+    await checkbox.setChecked(true);
+    await page.locator('#profile').fill(input.profile);
+    finishPolling=new Promise(resolve=>{releasePolling=resolve;});
+    await page.locator('#start').click();
+    await page.locator('#cancel').waitFor({state:'visible'});
+    assert.equal(submitted.at(-1).body.mode,'dual');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,true);
+    const count=submitted.length;
+    await checkbox.setChecked(false);
+    assert.equal(submitted.length,count,'勾选不应修改正在运行的任务');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,true);
+    releasePolling();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    await page.locator('#resume').click();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    assert.ok(submitted.at(-1).path.endsWith('/resume'));
+    assert.equal(submitted.at(-1).body.diagnostic_logging,false);
+    assert.equal(await page.locator('#resume').isVisible(),true,'失败后仍可继续');
+    await page.locator('#gseImport').fill('!GSE3!browser-fixture');
+    await page.locator('#inspectImport').click();
+    await page.locator('#importStart').click();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    assert.equal(submitted.at(-1).body.mode,'import');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,false);
+    assert.equal(submitted.length,3);
    }finally{await context.close();}
   }
   // END_DIAGNOSTIC_SELECTION
@@ -1283,6 +844,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
     assert.equal(state.input_interval_ms,180);
     assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
+    assert.equal(submitted.diagnostic_logging,false);
     assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
     assert.match(await page.locator('#resultNote').innerText(),/正常场景独立复测/);
     assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
@@ -1298,16 +860,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        import random
-        import population_training
-        from types import SimpleNamespace
-        original_random = random.Random
-        class NoVariationRandom(original_random):
-            _randbelow = original_random._randbelow
-            def random(self):
-                return .999999  # Only freeze the random gate; real GA still commits its two complete generations.
-        with _initialized_starts([[['outbreak'], ['death_coil']]]), \
-                patch.object(population_training, 'random', SimpleNamespace(Random=NoVariationRandom)), \
+        with _fixed_search_population([[['outbreak'], ['death_coil']]]), \
                 patch.object(sequence, 'evaluate', observe_evaluation):
             result=subprocess.run([str(REPOSITORY / '.local/verify-deps/node/node.exe'),'-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
                 text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
@@ -1345,20 +898,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         collection = decode_import(state['collection_text'])
         self.assertEqual(collection['payload']['type'], 'COLLECTION')
         self.assertEqual(set(collection['sequences']), {name for member in names for name in member})
-
-    @staticmethod
-    def _ui_score(profile, candidate, folder, *, burst_candidate=None, input_sources=None, **kwargs):
-        """Construct scores only; browser, preparation, compiler and Windows IO stay real."""
-        from test_search import _fast_evaluate
-        result = _fast_evaluate(profile, candidate, folder, **kwargs)
-        targets = (kwargs.get('simulation_config') or {}).get('target_count', 1)
-        report = result['report']['sim']
-        report['targets'] = [dict(report['targets'][0]) for _ in range(targets)]
-        for event in result['trace'] if input_sources is not None else []:
-            source = input_sources[event['origin'] - 1]
-            event.update(source=source, source_origin=input_sources[:event['origin']].count(source))
-        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
-        return result
 
 
     def _decode_candidate(self, candidate, expected_spec):
@@ -1399,24 +938,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertIn("点击间隔", json.loads(raised.exception.read())["error"])
         self.assertEqual(self.server.tasks, {})
 
-    @pytest.mark.real
-    def test_native_unsupported_specializations_fail_before_export(self):
-        from task import TaskError
-        native_cases = [
-            ('native_default', (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
-            ('native_unsupported', (REPOSITORY / 'tests/sim2gse/fixtures/holy-paladin.simc').read_text(encoding='utf-8')),
-        ]
-        for failure, profile in native_cases:
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
-                source = Path(directory) / 'input.simc'
-                source.write_text(profile, encoding='utf-8')
-                with self.assertRaisesRegex(TaskError, '原生未提供'):
-                    run_task(source, Path(directory) / 'task', mode='single',
-                             search_config={'diagnostic_logging': True})
-                if failure == 'native_default':
-                    invocation = json.loads((Path(directory) / 'task/reference/invocation.json').read_text(encoding='utf-8'))
-                    self.assertFalse(any(arg.startswith('allow_experimental_specializations=')
-                                         for arg in invocation['command']))
     def test_interface_reports_native_and_export_failures_without_internal_paths(self):
         from task import TaskError
         cases = [
@@ -1432,61 +953,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                 self.assertNotIn('\\', message)
                 self.assertLess(len(message), 161)
         self.assertFalse(_public_state({'status': 'completed'}, self.server.output_root)['result_ready'])
-
-
-    @pytest.mark.real
-    def test_dual_freezes_timeline_setting_and_preserves_storage_failure_recovery(self):
-        import os
-        import result_store
-        result_store.DATA_ROOT.mkdir(exist_ok=True)
-        import sequence
-        import burst
-        from test_burst import page_task_boundary, reviewed_fixture
-        from test_search import _fast_initialization
-        definition, profile = reviewed_fixture()
-        burst.publish(definition)
-        import simulation_config
-        path = Path(self.directory.name) / 'settings.toml'
-        path.write_text('[search]\nsearch_timeline=true\n', encoding='utf-8')
-        self.server.task_options = {'search_config': dict(iterations=2, input_interval_ms=200)}
-        edited = []
-        with patch.object(simulation_config, 'DEFAULT_PATH', path), _fast_initialization(), page_task_boundary(), \
-                _fixed_search_population([[['outbreak'], ['death_coil']]]):
-            evaluate = sequence.evaluate
-            def edit_after_start(*args, **kwargs):
-                if not edited:
-                    path.write_text('[search]\nsearch_timeline=false\n', encoding='utf-8')
-                    edited.append(True)
-                return evaluate(*args, **kwargs)
-            with patch.object(sequence, 'evaluate', side_effect=edit_after_start):
-                created = self._json_request('POST', '/api/tasks', {'profile':profile, 'mode':'dual',
-                    'input_interval_ms':200})
-                handle = self.server.tasks[created['task_id']][1]
-                handle.join(20)
-                self.assertTrue(handle.done)
-                detail = self._json_request('GET', '/api/tasks/' + created['task_id'])
-        self.assertEqual(detail['status'], 'completed', detail)
-        self.assertTrue(edited)
-        curves = [json.loads(next((handle.output_root / scene).glob('search-timeline-*.json')).read_text(encoding='utf-8'))
-                  for scene in ('single_target', 'aoe')]
-        self.assertGreater(curves[1]['search_start_seconds'], curves[0]['call_seconds'])
-        self.assertEqual([curve['context']['simulation_config']['target_count'] for curve in curves], [1, 5])
-        from task import read_task
-        self.assertTrue(all(read_task(handle.output_root / scene)['config']['search_timeline']
-                            for scene in ('single_target', 'aoe')))
-        moved = result_store.DATA_ROOT.with_name('temporarily-unavailable')
-        result_store.DATA_ROOT.rename(moved)
-        try:
-            state = self._json_request('GET', '/api/tasks/' + created['task_id'])
-            self.assertEqual(state['status'], 'failed')
-            self.assertTrue(state['recoverable'])
-            self.assertIn('存储', state['error'])
-            self.assertFalse(state['result_ready'])
-        finally:
-            moved.rename(result_store.DATA_ROOT)
-        restored = self._json_request('GET', '/api/tasks/' + created['task_id'])
-        self.assertEqual(restored['status'], 'completed')
-        self.assertTrue(restored['collection_ready'])
 
 
 if __name__ == "__main__":

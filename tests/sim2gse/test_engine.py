@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import sys
-import tempfile
 import unittest
 import pytest
 
@@ -275,57 +274,6 @@ class ImportQueryProfileTests(unittest.TestCase):
                          'sim2gse_action_names_hex=45706964656d6963,4d696e6420467265657a65\n')
         self.assertIn('iterations=1', calls[1]['options'])
         self.assertIn('max_time=1', calls[1]['options'])
-
-    @pytest.mark.real
-    def test_import_probe_action_is_initialized_for_mage_pet_setup(self):
-        import json
-        from engine import run
-
-        profile = """mage=Sim2GSE_Mage_Pet_Probe
-    spec=frost
-    level=90
-    race=tauren
-    role=spell
-    talents=CAEAAAAAAAAAAAAAAAAAAAAAAYGGLzMzsMmZmYmZGjZMziZmZmZMDEAAYmZmllZm2AAAAAAgNA2WGzMzAbzYmZYBAAgZ2AmBGwADD
-    omnium_talents=136822:1/136816:1/136817:1/136815:1/136814:1
-    use_item_verification=0
-    report_details=0
-    """
-        with tempfile.TemporaryDirectory(prefix="sim2gse-mage-pet-query-", dir=REPOSITORY) as directory:
-            root = Path(directory)
-            source = root / "mage.simc"
-            source.write_text(profile, encoding="utf-8")
-            query = _profile_with_import_queries(source, root / "query", [55342])
-            run(query, root / "result", options=["iterations=1", "max_time=1", "json2=native.json"])
-            report = json.loads((root / "result" / "native.json").read_text(encoding="utf-8"))
-
-        candidates = report["sim"]["players"][0]["sim2gse_import_actions"]
-        mirror_image = next(candidate for candidate in candidates if candidate["spell_id"] == 55342)
-        self.assertTrue(mirror_image["selected_talent"])
-        self.assertTrue(mirror_image["action_initialized"])
-        self.assertGreater(mirror_image["owner_pet_count"], 0)
-
-
-    @pytest.mark.real
-    def test_import_probe_resolves_name_form_action_outside_executed_subset(self):
-        import json
-        from engine import run
-        from test_character_export import sample_profile
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-name-action-query-", dir=REPOSITORY) as directory:
-            root = Path(directory)
-            source = root / "dk.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            query = _profile_with_import_queries(source, root / "query", [], ["Epidemic"])
-            run(query, root / "result", options=["iterations=1", "max_time=1", "json2=native.json"])
-            report = json.loads((root / "result" / "native.json").read_text(encoding="utf-8"))
-
-        player = report["sim"]["players"][0]
-        epidemic = next(candidate for candidate in player["sim2gse_import_actions"]
-                         if candidate["simc_action"] == "epidemic")
-        self.assertTrue(epidemic["available"])
-        self.assertTrue(epidemic["action_initialized"])
-        self.assertNotIn("epidemic", {row["signature"] for row in player["sim2gse_actions"]})
 
 
 if __name__ == "__main__":

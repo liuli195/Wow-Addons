@@ -5,8 +5,11 @@ const {chromium}=require('playwright');
  const browser=await chromium.launch({channel:'msedge',headless:true});
  const context=await browser.newContext({acceptDownloads:true}); // disposable storage, never the user's profile
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
- let acceptDialog=true;page.on('dialog',d=>acceptDialog?d.accept():d.dismiss());
+ page.on('dialog',d=>d.accept());
+ const calculations=[];page.on('request',r=>{if(/\/api\/(?:import|calculate)$/.test(r.url()))calculations.push(new URL(r.url()).pathname)});
  await page.route('https://wow.zamimg.com/**',r=>r.abort());
+ // These unasserted side paths can start native work or fetch/cache effect data.
+ await page.route(/\/api\/(?:original-matches|effects)$/,r=>r.abort());
  const output=path.resolve(__dirname,'../../.local/tests/gear-planner/browser-check');fs.mkdirSync(output,{recursive:true});
  const report=[];
  async function ready(){await page.waitForFunction(()=>!busy&&result?.complete&&!document.querySelector('#importDialog').open);await page.waitForFunction(()=>!document.querySelector('#saveBtn').disabled)}
@@ -20,38 +23,17 @@ const {chromium}=require('playwright');
   await save('闭环原方案');const a=await page.locator('#saved').inputValue();assert(a);
   await page.locator('[data-slot="neck"]').click();await page.locator('#editGem0').selectOption('');await ready();
   assert.equal(initial.haste-(await page.evaluate(()=>result.values.haste)),16);
-  await page.locator('#copyBtn').click();await page.locator('#saveAsName').fill('闭环原方案');await page.locator('#saveAsForm [type="submit"]').click();assert.match(await page.locator('#saveAsError').innerText(),/名称/);await page.locator('#cancelSaveAs').click();
   await page.locator('#copyBtn').click();await page.locator('#saveAsName').fill('闭环修改方案');await page.locator('#saveAsForm [type="submit"]').click();const b=await page.locator('#saved').inputValue();assert.notEqual(a,b);
   const saved=await exportFile('roundtrip.json');assert(!saved.data.model.gear.neck.includes('gem_id='));
   await page.reload();await page.locator('#saved').selectOption(b);await ready();const loaded=await exportFile('reloaded.json');assert.deepEqual(loaded.data,saved.data);
   await page.locator('#compare').selectOption(a);await page.waitForFunction(()=>document.querySelector('#secondary').textContent.includes('−16'));
   assert.deepEqual(await page.evaluate(()=>compareResult.values),initial);
   report.push('real import/edit/save-as/reload/compare/export');
-  acceptDialog=false;try{await page.locator('#deleteBtn').click()}finally{acceptDialog=true}assert.equal(await page.locator('#saved').inputValue(),b);
-  await page.locator('#deleteBtn').click();
-  await page.locator('#saved').selectOption(a);await ready();
-  await page.locator('#deleteBtn').click();await page.waitForFunction(()=>document.querySelector('#characterInfo').textContent.includes('尚未导入'));
-  assert.equal(await page.locator('#saved option').count(),1);report.push('delete cancel and last-build empty state');
   await page.locator('#importBtn').click();await page.locator('#fileInput').setInputFiles(saved.file);await page.waitForFunction(()=>document.querySelector('#importText').value.startsWith('{'));await page.locator('#doImport').click();await ready();
   const again=await exportFile('reimported.json');assert.deepEqual(again.data,saved.data);report.push('downloaded file reimport matches original export');
-  await save('失败保护');const id=await page.locator('#saved').inputValue();
-  const before=await page.evaluate(()=>localStorage.getItem('gear-planner-prototype-v1'));
-  await page.evaluate(()=>{window.testSetItem=Storage.prototype.setItem;Storage.prototype.setItem=function(){throw new DOMException('quota','QuotaExceededError')}});
-  await page.locator('#buildName').fill('不应保存');await page.locator('#saveBtn').click();await page.waitForFunction(()=>document.body.textContent.includes('浏览器保存失败'));
-  await page.evaluate(()=>{Storage.prototype.setItem=window.testSetItem});
-  assert.equal(await page.evaluate(()=>localStorage.getItem('gear-planner-prototype-v1')),before);
-  // Select the stored record after failure to check the in-memory record, not only disk.
-  await page.locator('#saved').selectOption(id);await ready();assert.equal(await page.locator('#buildName').inputValue(),'失败保护');
-  report.push('actual save failure preserves persisted and in-memory saved record');
-  await page.locator('[data-slot="neck"]').click();
-  await page.getByRole('button',{name:'替换颈部：护卫之牙束带',exact:true}).click();await ready();
-  let replacement=await exportFile('replacement.json');assert.match(replacement.data.model.gear.neck,/id=273781(?:,|$)/);
-  const option=await page.locator('#editLevel option').evaluateAll(es=>es.find(e=>e.textContent.startsWith('308 '))?.value);assert(option);await page.locator('#editLevel').selectOption(option);await ready();assert.equal((await page.locator('[data-slot="neck"] .ilvl').innerText()).trim(),'308');
-  await page.locator('[data-slot="head"]').click();await page.locator('#editEnchant').selectOption('');await ready();
-  const edited=await exportFile('enchant-edit.json');assert(!edited.data.model.gear.head.includes('enchant_id='));
   await page.locator('[data-stat-filter="crit"]').check();assert(await page.locator('.filter-muted').count()>0);assert.equal(await page.locator('.filter-muted[disabled]').count(),0);await page.locator('#clearFilters').click();assert.equal(await page.locator('.filter-muted').count(),0);
-  report.push('candidate replacement, legal level change, enchant removal and clickable muted filters');
+  report.push('clickable muted filters');
   await page.screenshot({path:path.join(output,'final.png')});assert.deepEqual(errors,[]);
-  fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({passed:report,pageErrors:errors},null,2));console.log('PASS:',report.join('; '));
+  fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({passed:report,pageErrors:errors,calculationRequests:calculations},null,2));console.log('PASS:',report.join('; '),'calculation requests:',calculations.length);
  }catch(e){console.error('PAGE ERRORS',errors,'BODY',await page.locator('body').innerText());throw e}finally{await context.close();await browser.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});

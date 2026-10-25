@@ -47,10 +47,13 @@ def isolated_result_center(request):
         return
     tmp_path = request.getfixturevalue('tmp_path')
     monkeypatch = request.getfixturevalue('monkeypatch')
-    installed_data_store_api = request.getfixturevalue('installed_data_store_api')
-    installed_data_store = request.getfixturevalue('installed_data_store')
     import result_store
     monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'data')
+
+
+@pytest.fixture
+def installed_result_center(monkeypatch, installed_data_store, installed_data_store_api):
+    import result_store
     # Business tests use the real package copy; connection tests launch clean processes.
     monkeypatch.setattr(result_store, '_SKILL_API', installed_data_store_api)
     monkeypatch.setenv('DATA_STORE_TEST_SKILL', str(installed_data_store))

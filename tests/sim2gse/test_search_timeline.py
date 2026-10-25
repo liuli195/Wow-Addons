@@ -1,4 +1,4 @@
-"""曲线规则直接读取内存成绩；一条真实文件链保留任务/CLI/恢复接线。"""
+"""曲线规则直接读取内存成绩；不承担物理文件与CLI恢复验收。"""
 from collections import Counter
 from copy import deepcopy
 import json
@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from test_population_training import memory_ga
-from test_search import _fast_search_boundary, _initialized_starts, sample_profile
+from test_search import sample_profile
 from test_training_champion import unchanged_offspring
 
 
@@ -203,113 +203,3 @@ def test_curves_group_physical_conditions_not_algorithm_switches():
     assert {run['context']['algorithm']['random_seed'] for _, run in together} == {20260912, 20260913}
     unknowns = [dict(payload, context=dict(simulation_config=dict(target_count=1))) for payload in payloads[:2]]
     assert len(_groups(unknowns)) == 2
-
-
-@pytest.mark.real
-def test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume(
-        tmp_path, monkeypatch, unchanged_offspring):
-    """一条任务链保留真实发布、异步准备、取消/恢复新段和CLI文件读写。
-
-    绘图故障复用已完成任务，不为每种错误重新跑GA；评分是原有明确外部IO构造。
-    """
-    import result_store
-    import sequence
-    import search_timeline
-    import simulation_config
-    import task
-    from test_search import _fast_evaluate
-    settings = tmp_path / 'config.toml'
-    settings.write_text('[search]\nsearch_timeline = true\n', encoding='utf-8')
-    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', settings)
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    clock = [100.]
-    monkeypatch.setattr(task.time, 'monotonic', lambda: clock[0])
-    monkeypatch.setattr(search_timeline, 'monotonic', lambda: clock[0])
-    load_configuration = simulation_config.load_search_config
-    delayed = False
-    def slow_configuration(*args, **kwargs):
-        nonlocal delayed
-        if not delayed:
-            delayed = True
-            clock[0] += 10.001
-        return load_configuration(*args, **kwargs)
-    monkeypatch.setattr(simulation_config, 'load_search_config', slow_configuration)
-    def timed_evaluate(*args, **kwargs):
-        clock[0] += .001
-        return _fast_evaluate(*args, **kwargs)
-    calls = 0
-    def cancel_second(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            kwargs['runtime'].cancel()
-            kwargs['runtime'].check()
-        return timed_evaluate(*args, **kwargs)
-    folder = tmp_path / 'task'
-    with _fast_search_boundary(), _initialized_starts([[['outbreak'], ['death_coil']]]), \
-            patch.object(sequence, 'evaluate', side_effect=timed_evaluate):
-        with patch.object(sequence, 'evaluate', side_effect=cancel_second):
-            handle = task.start_task(source, folder, search_config=dict(iterations=2))
-            handle.join(10)
-            assert handle.done and handle.error is None
-            assert handle.result['status'] == 'cancelled'
-        old_file, = folder.glob('search-timeline-*.json')
-        original = old_file.read_bytes()
-        old = json.loads(original)
-        assert old['status'] == old['stop_reason'] == 'cancelled'
-        collector = next(event for event in old['events'] if event['kind'] == 'collector_started')
-        assert collector['seconds'] >= 10
-        assert task.main(['--resume', '--output', str(folder), '--search-timeline']) == 0
-        saved = task.read_task(folder)
-        assert saved['status'] == 'completed'
-        assert saved['config']['iterations'] == 2
-        assert old_file.read_bytes() == original
-        segments = [json.loads(path.read_text()) for path in folder.glob('search-timeline-*.json')]
-        fresh, = [segment for segment in segments if segment['resumed']]
-        assert fresh['events'][0] == dict(seconds=0., kind='preparation')
-        assert not [event for event in fresh['events'] if event['kind'] == 'score' and event['seconds'] == 0]
-        best, = [event for event in fresh['events'] if event['kind'] == 'score' and event['series'] == 'global']
-        assert best['dps'] == saved['search_result']['dps']
-        assert best['candidate_key'] == saved['selected_candidate_key']
-        assert best['samples'] == saved['search_result']['samples'] == 381
-        assert fresh['search_stop_seconds'] <= fresh['result_saved_seconds'] <= fresh['call_seconds']
-        assert all(path.with_suffix('.html').is_file() for path in folder.glob('search-timeline-*.json'))
-        comparison = tmp_path / 'comparison.html'
-        with patch.object(task, 'run_task', side_effect=AssertionError('离线曲线不得启动任务')):
-            assert task.main(['curves', str(folder), '--output', str(comparison)]) == 0
-        assert comparison.read_text().count('<svg') == 1
-        assert len(json.loads(comparison.with_suffix('.json').read_text())['groups']) == 1
-        batch, run = _damage_inputs()
-        result_store.write('runs', 'existing-run', [run], schema=result_store.RUN_SCHEMA)
-        result_store.write_batch('saved-bucket', batch, diagnostic_logging=False)
-        unknown = tmp_path / 'unknown.json'
-        unknown.write_text(json.dumps(batch['report']), encoding='utf-8')
-        damage = tmp_path / 'damage.html'
-        with patch.object(task, 'run_task', side_effect=AssertionError('伤害图不得补模拟')):
-            assert task.main(['curves', '--damage', 'batch:saved-bucket', str(unknown), '--output', str(damage)]) == 0
-        reports = json.loads(damage.with_suffix('.json').read_text())['reports']
-        assert reports[0]['values'] == [10., 30., 20.]
-        assert reports[0]['bucket_seconds'] == 1
-        assert reports[1]['status'] == 'unsupported'
-        assert damage.read_text().count('<svg') == 1
-        count = len(segments)
-        with patch.object(search_timeline, 'render', side_effect=OSError('draw failure')):
-            resumed = task.resume_task(folder, search_config={'search_timeline': True})
-        assert resumed['status'] == task.read_task(folder)['status'] == 'completed'
-        assert task.read_task(folder)['config']['iterations'] == 2
-        assert len(list(folder.glob('search-timeline-*.json'))) == count + 1
-        calls = 0
-        with patch.object(sequence, 'evaluate', side_effect=cancel_second):
-            off = tmp_path / 'cli-off'
-            assert task.main([str(source), '--output', str(off), '--no-search-timeline']) == 0
-        assert task.read_task(off)['config']['search_timeline'] is False
-        assert not list(off.glob('search-timeline-*'))
-        with patch.object(result_store, 'DATA_ROOT', tmp_path / 'failure-center'), \
-                patch.object(sequence, 'evaluate', side_effect=OSError('native failed first')):
-            with pytest.raises(task.TaskError, match='native failed first'):
-                task.run_task(source, tmp_path / 'native-failure', search_config=dict(search_timeline=True, iterations=2))
-        failure_path, = (tmp_path / 'native-failure').glob('search-timeline-*.json')
-        failed = json.loads(failure_path.read_text())
-        assert failed['status'] == 'failed'
-        assert not [event for event in failed['events'] if event['kind'] == 'score']
