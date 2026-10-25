@@ -1,8 +1,8 @@
 # 完整退役旧正式搜索
 
-**Status:** ready-for-agent
+**Status:** implemented; delivery-gate2 pending final acceptance
 **Flow Level:** Full（完整）
-**Development authorization:** 用户在完整退役范围、兼容取舍和90–150分钟预计投入展示后回复“确认”，授权实施到验收结束；不包含合并主干。
+**Development authorization:** 用户在完整退役范围、兼容取舍和90–150分钟预计投入展示后回复“确认”，授权实施到验收结束；该次实施批准不包含合并主干。后来确认的正规合并与分支清理授权保持，实际执行须按交付门禁收口后继续。
 
 ## Problem Statement
 
@@ -46,7 +46,7 @@
 
 ## Out of Scope
 
-不改HTTP诊断参数传播或BAV超时配置，不调整GA算法、默认采样、停止阈值或并发，不新跑AB/训练，不构建引擎，不删除正式数据，不放宽历史身份，不合并主干或部署。
+不改HTTP诊断参数传播或BAV超时配置，不调整GA算法、默认采样、停止阈值或并发，不新跑AB/训练，不构建引擎，不删除正式数据，不放宽历史身份，实施阶段不直接合并主干；后续已授权的正规合并与分支清理须在完整交付门禁收口后执行，发布与部署未获授权。
 
 ## Further Notes
 
