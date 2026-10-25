@@ -60,7 +60,7 @@ def test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_comp
     import task
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    burst.publish(definition)
+    published = burst.publish(definition)
     reference = engine.reference
 
     def four_native_sources(*args, **kwargs):
@@ -83,7 +83,16 @@ def test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_comp
         monkeypatch.setattr(sequence, 'evaluate', source_scores)
         template, _ = completed_training(tmp_path, 1, [(former, [200.] * 3)])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
-        first = dual_result(tmp_path / 'first', raw, candidate_limit=10, validation_batches=2)
+        profile = tmp_path / 'first.simc'
+        profile.write_text(raw, encoding='utf-8', newline='')
+        first = task.run_task(profile, tmp_path / 'first', use_burst=True,
+            burst_identity={key: published[key] for key in ('spec_id', 'definition_id')},
+            simulation_config=dict(target_count=1, scene='single_target'),
+            search_config=dict(input_interval_ms=200, candidate_limit=10, batch_targets=(2,),
+                iterations=2, validation_batches=2, final_batches=1, final_iterations=2,
+                scenarios=('nominal',)))
+        assert first['status'] == 'completed', first
+        assert first['search']['formal_champion_publication']['status'] == 'published'
         _, rows = completed_training(tmp_path, 1, [(challenger, [300.] * 3)], name='later')
         engines = {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
         selected = [dict(configuration_key=rows[0]['configuration_key'], candidate_id='selected-' + str(index), condition=rows[0]['condition'],
@@ -107,7 +116,7 @@ def test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_comp
         assert saved['stop_policy'] == dict(version=1, kind='natural_stagnation')
         assert saved['search_result']['dps'] == 300.
         assert scene['formal_champion_publication']['status'] == 'published'
-        assert scene['formal_champion_publication']['source_run_id'] != first['scenes'][0][
+        assert scene['formal_champion_publication']['source_run_id'] != first['search'][
             'formal_champion_publication']['source_run_id']
         champion = result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
         assert champion['contract_version'] == 2

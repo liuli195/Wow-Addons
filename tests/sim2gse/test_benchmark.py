@@ -61,9 +61,19 @@ class BenchmarkTests(TestCase):
   self.assertEqual(row['final_dps'],120)
   self.assertEqual(row['reference_ratio'],.8)
   self.assertEqual(row['measurement'],'search_score')
+ def test_replacement_retries_two_permission_failures_then_succeeds(self):
+  import runtime
+  from unittest.mock import call
+  source,destination=Path('/memory/pending'),Path('/memory/published')
+  occupied=PermissionError('constructed temporary occupation')
+  with patch.object(runtime.os,'replace',side_effect=[occupied,occupied,None]) as replace, \
+       patch.object(runtime.time,'sleep') as sleep:
+   runtime.replace_file(source,destination)
+  self.assertEqual(replace.call_args_list,[call(source,destination)]*3)
+  self.assertEqual(sleep.call_args_list,[call(0.02)]*2)
  @pytest.mark.real
  def test_snapshot_publication_recovers_from_brief_directory_occupation(self):
-  import os
+  import os,time
   import benchmark
   with TemporaryDirectory() as directory:
    root=Path(directory);project=root/"projects/sim2gse";project.mkdir(parents=True)
@@ -71,21 +81,30 @@ class BenchmarkTests(TestCase):
     (project/name).write_text("ROOT = Path(__file__).resolve().parents[2]\n")
    (project/"search.py").write_text("uncommitted_source\n")
    names="\n".join(p.relative_to(root).as_posix() for p in project.iterdir())
-   replace=os.replace;attempts=[]
+   replace,pause=os.replace,time.sleep
+   attempts,injected,external=[],[],[]
    occupied=PermissionError("directory temporarily occupied");occupied.winerror=5
    def publish(pending,base):
     attempts.append(pending)
-    self.assertFalse(base.exists())
-    self.assertEqual((pending/"projects/sim2gse/search.py").read_text(),"uncommitted_source\n")
-    self.assertTrue((pending/"source-manifest.json").is_file())
-    if len(attempts)<=2:raise occupied
-    return replace(pending,base)
-   with patch.object(benchmark,"ROOT",root),patch.object(benchmark,"_git",return_value=names),patch("os.replace",side_effect=publish),patch("time.sleep") as sleep:
+    try:
+     self.assertFalse(base.exists())
+     self.assertEqual((pending/"projects/sim2gse/search.py").read_text(),"uncommitted_source\n")
+     self.assertTrue((pending/"source-manifest.json").is_file())
+     if len(injected)<2:
+      injected.append(occupied)
+      raise occupied
+     return replace(pending,base)
+    except PermissionError as error:
+     if error is not occupied:external.append(error)
+     raise
+   with patch.object(benchmark,"ROOT",root),patch.object(benchmark,"_git",return_value=names),patch("os.replace",side_effect=publish),patch("time.sleep",wraps=pause) as sleep:
     source=materialize(root/"evidence","head","current",worktree=True)
    self.assertEqual((source/"search.py").read_text(),"uncommitted_source\n")
    self.assertEqual(len(set(attempts)),1)
-   self.assertEqual(len(attempts),3)
-   self.assertEqual(sleep.call_count,2)
+   details=[(error.errno,getattr(error,'winerror',None),str(error)) for error in external]
+   self.assertEqual(injected,[occupied,occupied])
+   self.assertEqual(len(attempts),3+len(external),details)
+   self.assertEqual(sleep.call_args_list,[((0.02,),)]*(2+len(external)),details)
    self.assertEqual((project/"search.py").read_text(),"uncommitted_source\n")
    self.assertFalse(attempts[0].exists())
    (project/"search.py").write_text("changed_after_snapshot\n")
