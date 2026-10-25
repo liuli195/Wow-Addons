@@ -6,6 +6,7 @@ import pytest
 
 
 
+@pytest.mark.real
 @pytest.mark.parametrize('enabled', [True])
 def test_public_report_write_records_only_opt_in_stage_totals(enabled):
     from runtime import TaskRuntime

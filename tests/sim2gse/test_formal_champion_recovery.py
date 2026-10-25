@@ -1,11 +1,12 @@
 """公开双场完整复测、来源核验及持久成果补发。"""
 import json
+import pytest
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.request import Request, urlopen
 from test_burst import page_task_engine, reviewed_fixture
-from test_training_champion import champion_engine
+from test_training_champion import unchanged_offspring, unchanged_champion_engine, champion_engine
 from test_seed_training import memory_result_center
 
 
@@ -47,8 +48,9 @@ def dual_page(root, raw):
         worker.join(3)
 
 
+@pytest.mark.real
 def test_public_formal_search_naturally_retests_and_exports_one_champion_per_scene(
-        tmp_path, monkeypatch, memory_result_center, champion_engine):
+        tmp_path, monkeypatch, memory_result_center, unchanged_champion_engine):
     """真实页面生命周期保留，只在原生评分边界提供等分，促成自然早停。"""
     import burst
     import sequence
@@ -76,8 +78,9 @@ def test_public_formal_search_naturally_retests_and_exports_one_champion_per_sce
         assert scene['formal_champion_publication']['status'] == 'published'
 
 
+@pytest.mark.real
 def test_public_formal_publication_failure_is_recoverable_without_rescoring_saved_scene(
-        tmp_path, monkeypatch, memory_result_center, champion_engine):
+        tmp_path, monkeypatch, memory_result_center, unchanged_champion_engine):
     import burst
     import result_store
     import sequence
@@ -115,8 +118,9 @@ def test_public_formal_publication_failure_is_recoverable_without_rescoring_save
     assert continued['scenes'][0]['search_result']['samples'] == 381
 
 
+@pytest.mark.real
 def test_public_failed_first_score_keeps_reference_readable_without_search_columns(
-        tmp_path, monkeypatch, memory_result_center, champion_engine):
+        tmp_path, monkeypatch, memory_result_center, unchanged_champion_engine):
     import burst
     import sequence
     import task
@@ -139,48 +143,28 @@ def test_public_failed_first_score_keeps_reference_readable_without_search_colum
     assert not saved['search'].get('records')
 
 
-def test_public_formal_champion_rejects_a_truncated_finalist_cohort_before_scoring(
-        tmp_path, monkeypatch, memory_result_center, champion_engine):
+def test_public_formal_champion_rejects_a_truncated_finalist_cohort_before_scoring():
     from copy import deepcopy
-    import burst
     import result_store
-    import sequence
-    definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    evaluate, scored = sequence.evaluate, []
-
-    def equal_native_scores(profile, candidate, folder, **kwargs):
-        scored.append(str(folder))
-        return evaluate(profile, candidate, folder, score=100., **kwargs)
-
-    monkeypatch.setattr(sequence, 'evaluate', equal_native_scores)
-    with dual_page(tmp_path / 'source', raw) as (read, _):
-        source = read()
-    assert source['status'] == 'completed', source
-    key = source['scenes'][0]['formal_champion_snapshot']['condition_key']
-    original = result_store.read_search_champion(key)
-    truncated = deepcopy(original)
-    cohort = truncated['evaluation']['finalists']
-    removed = next(row for row in cohort if row['key'] != truncated['behavior_identity'])
-    truncated['evaluation']['finalists'] = [row for row in cohort if row['key'] != removed['key']]
+    import task
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, run, candidate, _ = formal_cohort()
+    task._validate_formal_source(record, state, character, run=run, candidate=candidate,
+        verify_reports=False)
+    truncated = deepcopy(record)
+    removed = truncated['evaluation']['finalists'].pop(0)
     truncated['evaluation']['finalist_keys'].remove(removed['key'])
     removed_batches = {batch['data_key'] for batch in removed['batches']}
-    truncated['batch_keys'] = [value for value in truncated['batch_keys'] if value not in removed_batches]
-    result_store.write('search_champions', key, [truncated], schema=result_store.SEARCH_CHAMPION_SCHEMA)
-    scored.clear()
-    try:
-        with dual_page(tmp_path / 'probe', raw) as (read, _):
-            failed = read()
-        assert failed['status'] == 'failed', failed
-        assert failed['recoverable'] and not failed['collection_ready']
-        assert not scored
-        assert result_store.read_search_champion(key) == truncated
-    finally:
-        result_store.write('search_champions', key, [original], schema=result_store.SEARCH_CHAMPION_SCHEMA)
+    truncated['batch_keys'] = [key for key in truncated['batch_keys'] if key not in removed_batches]
+    with pytest.raises(result_store.InvalidRecordError, match='完整正式来源'):
+        task._validate_formal_source(truncated, state, character, run=run,
+            candidate=candidate, verify_reports=False)
+    assert len(run['final_scenarios']['nominal']['finalists']) == 2
 
 
+@pytest.mark.real
 def test_public_formal_completed_save_failure_resumes_verified_winner_without_rescoring(
-        tmp_path, monkeypatch, memory_result_center, champion_engine):
+        tmp_path, monkeypatch, memory_result_center, unchanged_champion_engine):
     import burst
     import sequence
     import task

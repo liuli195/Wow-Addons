@@ -5,28 +5,32 @@ const {chromium}=require('playwright');
  const browser=await chromium.launch({channel:'msedge',headless:true});
  const context=await browser.newContext({acceptDownloads:true}); // disposable storage, never the user's profile
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ let acceptDialog=true;page.on('dialog',d=>acceptDialog?d.accept():d.dismiss());
  await page.route('https://wow.zamimg.com/**',r=>r.abort());
  const output=path.resolve(__dirname,'../../.local/tests/gear-planner/browser-check');fs.mkdirSync(output,{recursive:true});
  const report=[];
- async function ready(){await page.waitForFunction(()=>document.querySelector('#calcStatus').textContent.includes('计算完成'));await page.waitForFunction(()=>!document.querySelector('#saveBtn').disabled)}
+ async function ready(){await page.waitForFunction(()=>!busy&&result?.complete&&!document.querySelector('#importDialog').open);await page.waitForFunction(()=>!document.querySelector('#saveBtn').disabled)}
  async function exportFile(name){const wait=page.waitForEvent('download');await page.locator('#exportBtn').click();const d=await wait;const file=path.join(output,name);await d.saveAs(file);return {file,data:JSON.parse(fs.readFileSync(file,'utf8'))}}
  async function save(name){await page.locator('#buildName').fill(name);await page.locator('#saveBtn').click()}
  try{
   await page.goto('http://127.0.0.1:8765/?variant=a');
   await page.locator('#importBtn').click();await page.locator('#importText').fill(fs.readFileSync(path.resolve(PROJECT,'fixtures/cn-user-20260909-0349.input.simc'),'utf8'));await page.locator('#doImport').click();await ready();
   assert.match(await page.locator('#core').innerText(),/3,449/);
+  const initial=await page.evaluate(()=>structuredClone(result.values));
   await save('闭环原方案');const a=await page.locator('#saved').inputValue();assert(a);
   await page.locator('[data-slot="neck"]').click();await page.locator('#editGem0').selectOption('');await ready();
+  assert.equal(initial.haste-(await page.evaluate(()=>result.values.haste)),16);
   await page.locator('#copyBtn').click();await page.locator('#saveAsName').fill('闭环原方案');await page.locator('#saveAsForm [type="submit"]').click();assert.match(await page.locator('#saveAsError').innerText(),/名称/);await page.locator('#cancelSaveAs').click();
   await page.locator('#copyBtn').click();await page.locator('#saveAsName').fill('闭环修改方案');await page.locator('#saveAsForm [type="submit"]').click();const b=await page.locator('#saved').inputValue();assert.notEqual(a,b);
   const saved=await exportFile('roundtrip.json');assert(!saved.data.model.gear.neck.includes('gem_id='));
   await page.reload();await page.locator('#saved').selectOption(b);await ready();const loaded=await exportFile('reloaded.json');assert.deepEqual(loaded.data,saved.data);
   await page.locator('#compare').selectOption(a);await page.waitForFunction(()=>document.querySelector('#secondary').textContent.includes('−16'));
+  assert.deepEqual(await page.evaluate(()=>compareResult.values),initial);
   report.push('real import/edit/save-as/reload/compare/export');
-  page.once('dialog',d=>d.dismiss());await page.locator('#deleteBtn').click();assert.equal(await page.locator('#saved').inputValue(),b);
-  page.once('dialog',d=>d.accept());await page.locator('#deleteBtn').click();
-  page.once('dialog',d=>d.accept());await page.locator('#saved').selectOption(a);await ready();
-  page.once('dialog',d=>d.accept());await page.locator('#deleteBtn').click();await page.waitForFunction(()=>document.querySelector('#characterInfo').textContent.includes('尚未导入'));
+  acceptDialog=false;try{await page.locator('#deleteBtn').click()}finally{acceptDialog=true}assert.equal(await page.locator('#saved').inputValue(),b);
+  await page.locator('#deleteBtn').click();
+  await page.locator('#saved').selectOption(a);await ready();
+  await page.locator('#deleteBtn').click();await page.waitForFunction(()=>document.querySelector('#characterInfo').textContent.includes('尚未导入'));
   assert.equal(await page.locator('#saved option').count(),1);report.push('delete cancel and last-build empty state');
   await page.locator('#importBtn').click();await page.locator('#fileInput').setInputFiles(saved.file);await page.waitForFunction(()=>document.querySelector('#importText').value.startsWith('{'));await page.locator('#doImport').click();await ready();
   const again=await exportFile('reimported.json');assert.deepEqual(again.data,saved.data);report.push('downloaded file reimport matches original export');
@@ -37,7 +41,7 @@ const {chromium}=require('playwright');
   await page.evaluate(()=>{Storage.prototype.setItem=window.testSetItem});
   assert.equal(await page.evaluate(()=>localStorage.getItem('gear-planner-prototype-v1')),before);
   // Select the stored record after failure to check the in-memory record, not only disk.
-  page.once('dialog',d=>d.accept());await page.locator('#saved').selectOption(id);await ready();assert.equal(await page.locator('#buildName').inputValue(),'失败保护');
+  await page.locator('#saved').selectOption(id);await ready();assert.equal(await page.locator('#buildName').inputValue(),'失败保护');
   report.push('actual save failure preserves persisted and in-memory saved record');
   await page.locator('[data-slot="neck"]').click();
   await page.getByRole('button',{name:'替换颈部：护卫之牙束带',exact:true}).click();await ready();

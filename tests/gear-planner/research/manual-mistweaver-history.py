@@ -1,9 +1,12 @@
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "projects/gear-planner"))
-"""Run native engine and application checks; these are not independent game snapshots."""
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "projects/gear-planner"))
+"""Manual historical same-source replay. Requires the original .local control engines.
+
+Daily regression is test_real.py; these old/fixed-engine comparisons are not
+independent game snapshots and are intentionally outside the 60-second suite.
+"""
 from pathlib import Path
-import copy
 import hashlib
 import json
 import math
@@ -13,7 +16,6 @@ import server
 
 root = server.ROOT
 fixture = server.HERE / 'fixtures/mistweaver-supported/mistweaver.input.simc'
-model = server.parse_import(fixture.read_text(encoding='utf-8'))
 
 def native(text, engine=server.MISTWEAVER_EXE, extra=()):
     with tempfile.TemporaryDirectory() as d:
@@ -61,36 +63,6 @@ for spec in ('brewmaster','windwalker'):
     control = root/'.local/gear-planner-mistweaver-research/source/engine/simc-mistweaver-control.exe'
     assert snapshot(native(t, control)) == snapshot(native(t))
 
-result = server.calculate(model)
-assert result['complete'], result
-assert 'mistweaver-attributes1' in result['version']
-assert result['values']['intellect'] == attrs(jade)['intellect']
-assert result['values']['stamina'] == attrs(jade)['stamina']
-assert result['values']['ilevel'] == 334*14/16
-assert '未计入罗盘' in result['calculationState']
-assert result['items']['head']['enchantOptions']
-variant = copy.deepcopy(model)
-f = server.gear_fields(variant['gear']['neck']); f['gem_id']='240894'
-f['bonus_id'] += '/13668'; variant['gear']['neck']=server.encode(f)
-gem = server.calculate(variant); assert gem['complete']
-assert gem['values'] != result['values']
-f = server.gear_fields(variant['gear']['chest']); f['enchant_id']='7987'
-variant['gear']['chest']=server.encode(f)
-enchanted = server.calculate(variant); assert enchanted['complete']
-assert enchanted['values']['intellect'] > gem['values']['intellect']
-assert enchanted['values']['agility'] == gem['values']['agility']
-candidate=next(i for i,x in enumerate(server.CATALOG['chest']) if not x['fitReasonsBySpec']['monk:mistweaver'] and x['id']!=193764 and not x['conversion'])
-swapped=server.apply_edit(variant, {'slot':'chest','candidate':candidate})
-swap_result=server.calculate(swapped);assert swap_result['complete']
-assert swap_result['items']['chest']['ilevel']==enchanted['items']['chest']['ilevel']
-assert server.gear_fields(swapped['gear']['chest'])['enchant_id']=='7987'
-restored=json.loads(json.dumps(swapped));server.validate(restored)
-assert server.calculate(restored)['values']==swap_result['values']
-for race in ('human','blood_elf','gnome','night_elf','highmountain_tauren'):
-    race_model=copy.deepcopy(model);race_model['character']['race']=race
-    r=server.calculate(race_model);assert r['complete'], (race,r)
-    assert r['values']['intellect'] > 0
-
 # Holy stays on its already approved executable and preserves saved reference values.
 assert hashlib.sha256(server.HOLY_EXE.read_bytes()).hexdigest() == '7fc6a54acd4fa247fc4e1703619c03da3368ecb4f853a880a427ffdc7a87f6ae'
 holy_dir=server.HERE/'fixtures/holy-paladin-supported'
@@ -101,4 +73,4 @@ assert h['complete'] and 'holy-gate1' in h['version']
 ref=json.loads((holy_dir/'manifest.json').read_text())['samples'][0]['snapshot']
 for k,v in ref['attribute'].items(): assert h['values'][k] == v
 assert h['values']['armor'] == ref['stats']['armor']
-print('PASS: mixed intellect, armor specialization, native stamina talent, heal target, rating sums, physical specs, application, gems/enchants, races and holy regression')
+print('PASS: historical mixed intellect, armor specialization, native stamina talent, heal target, rating sums, physical-spec and holy comparison')

@@ -1,6 +1,7 @@
 """构建身份公开入口：拒绝自有源码和构建清单变化。"""
 from pathlib import Path
 import hashlib
+import pytest
 import json
 import sys
 import tempfile
@@ -18,39 +19,22 @@ from test_character_export import sample_profile
 
 class NativeIdentityTests(unittest.TestCase):
     def test_unknown_build_protocol_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            lock = json.loads((ROOT / 'projects/sim2gse/compatibility/lock.json').read_text())
-            lock['build_protocol'] = 99
-            target = root / 'projects/sim2gse/compatibility/lock.json'
-            target.parent.mkdir(parents=True)
-            target.write_text(json.dumps(lock), encoding='utf-8')
-            with patch.object(engine, 'ROOT', root), self.assertRaisesRegex(ValueError, '构建协议'):
-                engine.identity('baseline')
+        with patch.object(Path, 'read_text', return_value='{"build_protocol": 99}'), \
+                self.assertRaisesRegex(ValueError, '构建协议'):
+            engine.identity('baseline')
 
     def test_changed_own_source_rejects_previously_built_engine(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            module = root / 'projects/sim2gse/native/modules/report.cpp'
-            module.parent.mkdir(parents=True)
-            module.write_bytes(b'// approved source\n')
-            entry = dict(path='projects/sim2gse/native/modules/report.cpp',
-                         destination='engine/sim2gse/report.cpp', modes=['baseline', 'controlled'],
-                         sha256=hashlib.sha256(module.read_bytes()).hexdigest())
-            lock = dict(build_protocol=2, sources=[entry])
-            manifest = dict(sources=[entry])
-            for name, value in [('projects/sim2gse/compatibility/lock.json', lock),
-                                ('.local/sim2gse/build/baseline/build.json', manifest)]:
-                target = root / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(value), encoding='utf-8')
-            module.write_bytes(b'// unreviewed change\n')
-            with patch.object(engine, 'ROOT', root), self.assertRaisesRegex(ValueError, '源码'):
-                engine.identity('baseline')
-            module.write_bytes(b'// approved source\n')
-            manifest['sources'] = []
-            (root / '.local/sim2gse/build/baseline/build.json').write_text(json.dumps(manifest), encoding='utf-8')
-            with patch.object(engine, 'ROOT', root), self.assertRaisesRegex(ValueError, '源码清单'):
+        entry = dict(path='projects/sim2gse/native/modules/report.cpp',
+                     destination='engine/sim2gse/report.cpp', modes=['baseline', 'controlled'],
+                     sha256=hashlib.sha256(b'// approved source\n').hexdigest())
+        lock = dict(build_protocol=2, sources=[entry])
+        for content, manifest, message in (
+                (b'// unreviewed change\n', dict(sources=[entry]), '源码'),
+                (b'// approved source\n', dict(sources=[]), '源码清单')):
+            with self.subTest(message=message), \
+                    patch.object(Path, 'read_text', side_effect=[json.dumps(lock), json.dumps(manifest)]), \
+                    patch.object(Path, 'read_bytes', return_value=content), \
+                    self.assertRaisesRegex(ValueError, message):
                 engine.identity('baseline')
 
     def test_original_remains_a_verification_artifact_only(self):
@@ -87,6 +71,7 @@ def battle_report(report):
     return result
 
 
+@pytest.mark.real
 class NativeComparisonTests(unittest.TestCase):
     def test_original_baseline_and_disabled_controller_keep_native_combat(self):
         manifest = json.loads((ROOT / '.local/sim2gse/build/original/build.json').read_text())
@@ -179,6 +164,7 @@ class NativeComparisonTests(unittest.TestCase):
                         '产品仍依赖累计历史补丁链，尚未切换最终连接补丁')
 
 
+@pytest.mark.real
 class NativeCatalogueTests(unittest.TestCase):
     def test_reference_reads_initialized_replacement_forms_without_claiming_availability(self):
         with tempfile.TemporaryDirectory() as directory:

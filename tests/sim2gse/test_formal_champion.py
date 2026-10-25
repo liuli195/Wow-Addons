@@ -1,15 +1,16 @@
-"""正式冠军通过公开双场入口、真实隔离持久中心保留。"""
+"""正式冠军规则直接验真，公开发布/竞争/恢复保留真实代表。"""
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from contextlib import ExitStack
 from test_burst import page_task_engine, reviewed_fixture
 from test_seed_training import memory_result_center
-from test_training_champion import champion_engine, completed_training, dual_result
+from test_training_champion import unchanged_offspring, unchanged_champion_engine, champion_engine, completed_training, dual_result
 
 
+@pytest.mark.real
 def test_dual_inherits_each_scenes_formal_champion_after_publication(tmp_path,
-        champion_engine):
+        unchanged_champion_engine):
     import burst
     import result_store
     definition, raw = reviewed_fixture()
@@ -48,6 +49,7 @@ def test_dual_inherits_each_scenes_formal_champion_after_publication(tmp_path,
         assert any(source['source_kind'] == 'formal_champion' for source in sources)
 
 
+@pytest.mark.real
 def test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_complete_retests(tmp_path,
         monkeypatch, memory_result_center, champion_engine):
     import burst
@@ -115,6 +117,7 @@ def test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_comp
                    for row in champion['evaluation']['finalists'])
 
 
+@pytest.mark.real
 def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_path,
         memory_result_center, champion_engine):
     import burst
@@ -186,8 +189,9 @@ def test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion(tmp_
         'formal_champion_publication']['source_run_id']
 
 
+@pytest.mark.real
 def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_early_return(tmp_path,
-        champion_engine):
+        unchanged_champion_engine):
     import burst
     import result_store
     import sequence
@@ -230,41 +234,33 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
         assert again['search']['formal_champion_snapshot'] == previous['search']['formal_champion_snapshot']
 
 
-def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(tmp_path,
-        memory_result_center, champion_engine, subtests):
-    import burst
-    import engine
+@pytest.mark.parametrize('change', ['equipment', 'cadence', 'engine', 'targets'])
+def test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions(monkeypatch, change):
     import result_store
-    definition, raw = reviewed_fixture()
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
-    assert first['input_interval_ms'] == 200
-    originals = {scene['formal_champion_snapshot']['condition_key']:
-        result_store.read_search_champion(scene['formal_champion_snapshot']['condition_key'])
-        for scene in first['scenes']}
-    identity = engine.identity
-    for change in ('equipment', 'cadence', 'engine'):
-        with subtests.test(change=change):
-            with ExitStack() as condition_patches:
-                case_raw, interval = raw, 200
-                if change == 'equipment':
-                    case_raw = raw.replace('id=273795', 'id=273795,bonus_id=1')
-                elif change == 'cadence':
-                    # 250ms keeps the 1000ms fixture GCD and burst pause representable.
-                    # 400ms would leave one empty input at 2800ms before the 4000ms resume.
-                    interval = 250
-                else:
-                    condition_patches.enter_context(patch.object(engine, 'identity', lambda *args, **kwargs:
-                        (lambda value: (value[0], dict(value[1], constructed_identity='different')))(identity(*args, **kwargs))))
-                second = dual_result(tmp_path / ('second-' + change), case_raw,
-                    candidate_limit=1, interval_ms=interval)
-                assert second['input_interval_ms'] == interval
-                assert all(scene['formal_champion_snapshot']['status'] == 'absent' for scene in second['scenes'])
-                assert [scene['formal_champion_snapshot']['condition_key'] for scene in first['scenes']] != [
-                    scene['formal_champion_snapshot']['condition_key'] for scene in second['scenes']]
-            assert engine.identity is identity
-            assert {key: result_store.read_search_champion(key) for key in originals} == originals
+    import task
+    from champion_evidence_fixture import formal_cohort
+    from search import digest
+    record, state, character, run, candidate, _ = formal_cohort()
+    native = dict(identity=dict(spec_id=252, race=character.race))
+    read = Mock(return_value=None)
+    monkeypatch.setattr(result_store, 'read_search_champion', read)
+    original = task._freeze_formal_champion(state, character, native, state['capabilities'])
+    from copy import deepcopy
+    changed = deepcopy(state)
+    if change == 'equipment':
+        changed['input_effective_sha256'] = 'different-equipment'
+    elif change == 'targets':
+        changed['simulation_config']['target_count'] = 5
+        changed['condition'] = digest(dict(targets=5))
+    else:
+        # 正式condition已包含完整配置/引擎；冻结不得退化为只按职业查冠军。
+        changed['condition'] = digest(dict(**state, **{change: 'different'}))
+    second = task._freeze_formal_champion(changed, character, native, changed['capabilities'])
+    assert original['status'] == second['status'] == 'absent'
+    assert original['condition_key'] != second['condition_key']
+    assert original['binding']['input_effective_sha256'] == 'frozen-character'
+    assert second['target_count'] == (5 if change == 'targets' else 1)
+    assert read.call_args.args == (second['condition_key'],)
 
 
 def _legacy_formal_source(folder, raw, program, score, *, targets=1):
@@ -327,8 +323,9 @@ def _legacy_formal_source(folder, raw, program, score, *, targets=1):
     return run_id
 
 
+@pytest.mark.real
 def test_management_selects_the_highest_within_two_known_old_rule_sources_and_rejects_missing_proof(
-        tmp_path, monkeypatch, memory_result_center, champion_engine, subtests):
+        tmp_path, monkeypatch, memory_result_center, unchanged_champion_engine, subtests):
     from copy import deepcopy
     import burst
     import engine
@@ -429,8 +426,9 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
 
 
 @pytest.mark.parametrize('stage', ['complete_winner', 'partial_first_batch'])
+@pytest.mark.real
 def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch(tmp_path,
-        monkeypatch, memory_result_center, champion_engine, stage):
+        monkeypatch, memory_result_center, unchanged_champion_engine, stage):
     import burst
     import result_store
     import sequence
@@ -475,58 +473,139 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     assert resumed['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'
 
 
-def test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_the_incumbent(tmp_path,
-        memory_result_center, champion_engine, subtests):
-    import burst
-    import json
+@pytest.mark.parametrize('fault', ['corrupt_champion', 'temporary_read', 'corrupt_candidate',
+    'temporary_candidate_read', 'source_program'])
+def test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_the_incumbent(monkeypatch, fault):
+    from copy import deepcopy
+    from unittest.mock import Mock
     import result_store
-    definition, raw = reviewed_fixture()
-    result_store.DATA_ROOT.mkdir(exist_ok=True)
-    burst.publish(definition)
-    first = dual_result(tmp_path / 'first', raw, candidate_limit=1)
-    snapshot = first['scenes'][0]['formal_champion_snapshot']
-    original = result_store.read_search_champion(snapshot['condition_key'])
-    candidate_key = original['source_candidate_data_key']
-    original_candidate = result_store.read_records('candidates', candidate_key)[0]
-    source_program = original_candidate['program']
-    if isinstance(source_program, str):
-        source_program = json.loads(source_program)
-    api = result_store._api()
-    for fault in ('corrupt_champion', 'temporary_read', 'corrupt_candidate',
-                  'temporary_candidate_read', 'source_program'):
-        with subtests.test(fault=fault):
-            case_api = dict(api)
-            try:
-                if fault == 'corrupt_champion':
-                    def unreadable(root, table, key, **kwargs):
-                        if table == 'search_champions':
-                            raise api['CorruptDataError']('constructed corrupt incumbent')
-                        return api['read_key'](root, table, key, **kwargs)
-                    case_api['read_key'] = unreadable
-                elif fault == 'temporary_read':
-                    def unavailable(root, table, key, **kwargs):
-                        if table == 'search_champions':
-                            raise OSError('constructed temporary champion read failure')
-                        return api['read_key'](root, table, key, **kwargs)
-                    case_api['read_key'] = unavailable
-                elif fault in ('corrupt_candidate', 'temporary_candidate_read'):
-                    def unreadable_candidate(root, table, key, **kwargs):
-                        if table == 'candidates':
-                            if fault == 'corrupt_candidate':
-                                raise api['CorruptDataError']('constructed corrupt champion artifact')
-                            raise OSError('constructed temporary champion artifact read failure')
-                        return api['read_key'](root, table, key, **kwargs)
-                    case_api['read_key'] = unreadable_candidate
-                else:
-                    result_store.write('candidates', candidate_key, [dict(original_candidate, program={})],
-                                       schema=result_store.CANDIDATE_SCHEMA)
-                with patch.object(result_store, '_api', return_value=case_api):
-                    failed = dual_result(tmp_path / ('failed-' + fault), raw, candidate_limit=1, expected='failed')
-                    assert failed['error']
-            finally:
-                if fault == 'source_program':
-                    result_store.write('candidates', candidate_key, [dict(original_candidate, program=source_program)],
-                                       schema=result_store.CANDIDATE_SCHEMA)
-            assert result_store._api() is api
-            assert result_store.read_search_champion(snapshot['condition_key']) == original
-            assert result_store.read_records('candidates', candidate_key)[0] == original_candidate
+    import task
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, run, candidate, _ = formal_cohort()
+    original = deepcopy(record)
+    read = Mock(return_value=record)
+    one = Mock(side_effect=[run, candidate])
+    if fault in ('corrupt_champion', 'temporary_read'):
+        read.side_effect = (result_store.InvalidRecordError('corrupt incumbent') if fault == 'corrupt_champion'
+                            else result_store.DataReadError('temporarily unreadable incumbent'))
+    elif fault == 'corrupt_candidate':
+        one.side_effect = [run, result_store.InvalidRecordError('corrupt candidate')]
+    elif fault == 'temporary_candidate_read':
+        one.side_effect = [run, result_store.DataReadError('temporarily unreadable candidate')]
+    else:
+        candidate['program'] = {}
+    monkeypatch.setattr(result_store, 'read_search_champion', read)
+    monkeypatch.setattr(result_store, 'one', one)
+    write = Mock(side_effect=AssertionError('只读冻结不得改写冠军'))
+    monkeypatch.setattr(result_store, 'write', write)
+    with pytest.raises((result_store.DataReadError, ValueError)):
+        task._freeze_formal_champion(state, character,
+            dict(identity=dict(spec_id=252, race=character.race)), state['capabilities'])
+    assert record == original
+    write.assert_not_called()
+
+
+@pytest.mark.parametrize('version', [None, 1, 2])
+def test_formal_source_consumes_only_supported_explicit_contracts(version):
+    import task
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, run, candidate, _ = formal_cohort()
+    if version is None:
+        record.pop('contract_version')
+    else:
+        record['contract_version'] = version
+    evidence = task._validate_formal_source(record, state, character, run=run,
+        candidate=candidate, verify_reports=False)
+    assert evidence['status'] == 'completed'
+
+
+@pytest.mark.parametrize('version', [True, 0, 3, '2'])
+def test_formal_source_rejects_unknown_or_noninteger_contract_versions(version):
+    import task
+    import result_store
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, run, candidate, _ = formal_cohort()
+    record['contract_version'] = version
+    with pytest.raises(result_store.InvalidRecordError, match='契约版本'):
+        task._validate_formal_source(record, state, character, run=run,
+            candidate=candidate, verify_reports=False)
+
+
+@pytest.mark.parametrize('fault', ['winner', 'samples', 'batch_key', 'request', 'score',
+    'report_missing', 'report_duplicate', 'report_identity', 'report_score', 'source_profile', 'source_program'])
+def test_formal_champion_requires_complete_request_reports_and_matching_source(monkeypatch, fault):
+    import result_store
+    import task
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, run, candidate, reports = formal_cohort()
+    if fault == 'winner': record['behavior_identity'] = record['evaluation']['finalists'][0]['key']
+    elif fault == 'samples': record['samples'] = 380
+    elif fault == 'batch_key': record['batch_keys'].pop()
+    elif fault == 'request': record['evaluation']['finalists'][0]['batches'][0]['request']['iterations'] = 127
+    elif fault == 'score': record['evaluation']['finalists'][0]['score'] = 999.
+    elif fault == 'report_missing': reports.pop()
+    elif fault == 'report_duplicate': reports.append(reports[0])
+    elif fault == 'report_identity': reports[0]['input_seed'] += 1
+    elif fault == 'report_score': reports[0]['report']['sim']['players'][0]['collected_data']['dps']['mean'] = 999.
+    elif fault == 'source_profile': run['profile']['input_effective_sha256'] = 'foreign'
+    else: candidate['program'] = {}
+    monkeypatch.setattr(result_store, 'report_locations', lambda keys: {})
+    monkeypatch.setattr(result_store, 'read_many', lambda *args, **kwargs: reports)
+    with pytest.raises((result_store.InvalidRecordError, ValueError)):
+        task._validate_formal_source(record, state, character, run=run, candidate=candidate)
+
+
+def test_formal_champion_validates_all_six_original_reports_without_a_center(monkeypatch):
+    import result_store
+    import task
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, run, candidate, reports = formal_cohort()
+    monkeypatch.setattr(result_store, 'report_locations', lambda keys: {})
+    monkeypatch.setattr(result_store, 'read_many', lambda *args, **kwargs: reports)
+    assert task._validate_formal_source(record, state, character, run=run,
+        candidate=candidate)['status'] == 'completed'
+    assert record['score'] == 200. and record['samples'] == 381
+    assert len(reports) == 6
+
+
+def test_formal_snapshot_freezes_the_verified_published_version_without_rewriting_it(monkeypatch):
+    from copy import deepcopy
+    import result_store
+    import task
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, run, candidate, _ = formal_cohort()
+    before = deepcopy(record)
+    monkeypatch.setattr(result_store, 'read_search_champion', Mock(return_value=record))
+    monkeypatch.setattr(result_store, 'one', Mock(side_effect=[run, candidate]))
+    write = Mock(side_effect=AssertionError('冻结来源不能发布或修改记录'))
+    monkeypatch.setattr(result_store, 'write', write)
+    snapshot = task._freeze_formal_champion(state, character,
+        dict(identity=dict(spec_id=252, race=character.race)), state['capabilities'])
+    assert snapshot['status'] == 'selected'
+    assert snapshot['version'] == 1 and snapshot['source_run_id'] == 'source-run'
+    assert snapshot['score'] == 200. and snapshot['samples'] == 381
+    assert snapshot['evaluation']['finalist_keys'] == record['evaluation']['finalist_keys']
+    assert record == before
+    write.assert_not_called()
+
+
+@pytest.mark.parametrize('fault', ['search_version', 'failure_policy_version', 'engines', 'generations',
+    'stagnant', 'promotion', 'duplicate_finalist', 'retest_count', 'sample_type', 'nonfinite_score'])
+def test_formal_champion_rejects_changed_algorithm_or_incomplete_retest_contract(fault):
+    import formal_search
+    import result_store
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, _, _, _ = formal_cohort()
+    evaluation = record['evaluation']
+    if fault == 'search_version': evaluation['search']['version'] = True
+    elif fault == 'failure_policy_version': evaluation['search']['coarse_failure_policy']['version'] = True
+    elif fault == 'engines': evaluation['engines'] = {'controlled': 'foreign'}
+    elif fault == 'generations': evaluation['complete_generations'] = 1
+    elif fault == 'stagnant': evaluation['stagnant'] = 1
+    elif fault == 'promotion': record['promotion_evidence'] = ['old-ci-promotion']
+    elif fault == 'duplicate_finalist': evaluation['finalists'].append(evaluation['finalists'][0])
+    elif fault == 'retest_count': evaluation['finalists'][0]['batches'].pop()
+    elif fault == 'sample_type': evaluation['finalists'][0]['batches'][0]['samples'] = True
+    else: evaluation['finalists'][0]['batches'][0]['dps'] = float('nan')
+    with pytest.raises(result_store.InvalidRecordError):
+        formal_search.validate_evidence(record, state, character, verify_reports=False)

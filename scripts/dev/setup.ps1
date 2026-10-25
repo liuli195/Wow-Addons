@@ -97,10 +97,17 @@ if ((Get-Content .tools/wow-ui-source/version.txt).Trim() -ne $expected) {
     throw '界面源码构建号不匹配。'
 }
 if (-not (Test-Path '.venv/Scripts/python.exe')) { python -m venv .venv }
-$requirements = @('-r', 'scripts/dev/requirements.txt')
-if (-not $Pr) { $requirements += @('-r', 'projects/sim2gse/requirements.txt') }
+$requirements = @('-r', 'scripts/dev/requirements.txt', '-r', 'projects/sim2gse/requirements.txt')
 & .venv/Scripts/python.exe -m pip install --disable-pip-version-check @requirements
 npm ci --ignore-scripts --no-audit --no-fund
+$nodeSource = (Get-Command node -CommandType Application).Source
+$nodeDestination = Join-Path $PWD '.local/verify-deps/node/node.exe'
+New-Item -ItemType Directory -Force (Split-Path $nodeDestination) | Out-Null
+Copy-Item -LiteralPath $nodeSource -Destination $nodeDestination -Force
+if ((Get-FileHash $nodeSource -Algorithm SHA256).Hash -ne (Get-FileHash $nodeDestination -Algorithm SHA256).Hash) {
+    throw '冻结Node副本与实际已安装程序字节不符。'
+}
+& $nodeDestination --version
 & .tools/lua-5.1.5/src/lua.exe -e 'assert(_VERSION == "Lua 5.1"); print(_VERSION)'
 & .tools/downloads/luacheck.exe --version
 & .tools/luals/bin/lua-language-server.exe --version

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import tempfile
+from io import BytesIO
+import pytest
 from pathlib import Path
 import sys
 import unittest
@@ -13,7 +15,6 @@ import importlib.util
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
-from urllib.request import Request, urlopen
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -55,56 +56,46 @@ def _read_state(destination: Path) -> bytes:
 
 class SimulationConfigTests(unittest.TestCase):
     def test_training_section_is_independent_validated_and_bounded(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'config.toml'
-            expected = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
-                retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
-                tournament_size=3, crossover_probability=.8, mutation_probability=.8)
-            self.assertEqual(load_training_config(path), expected)
-            path.write_text('[training]\nmax_trainings=10\nmax_processes=2', encoding='utf-8')
-            self.assertEqual(load_training_config(path), dict(expected, max_processes=2, max_trainings=10))
-            for outer, inner in ((11, 1), (10, 3)):
-                with self.subTest(outer=outer, inner=inner):
-                    with self.assertRaises(ValueError):
-                        load_training_config(path, max_trainings=outer, max_processes=inner)
-            for value in (1, 16):
-                path.write_text('[simulation]\ntarget_count=5\n[training]\nmax_trainings=1\nmax_processes=' + str(value),
-                                encoding='utf-8')
-                self.assertEqual(load_config(path)['target_count'], 5)
-                self.assertEqual(load_training_config(path), dict(expected, max_processes=value, max_trainings=1))
-            for option in ('max_processes=0', 'max_processes=17', 'max_processes=true',
-                           'max_processes=2.5', 'max_processes="4"', 'unknown=2',
-                           'top_k=3', 'top_k=true', 'tournament_size=0', 'coarse_iterations=0',
-                           'retest_batches=0', 'retest_iterations=true', 'stagnation_generations=0',
-                           'crossover_probability=nan', 'mutation_probability=inf',
-                           'mutation_probability=-0.1', 'crossover_probability=1.1'):
-                path.write_text('[training]\n' + option, encoding='utf-8')
-                with self.subTest(option=option):
-                    self.assertEqual(load_config(path), DEFAULT_CONFIG)
-                    with self.assertRaises(ValueError):
-                        load_training_config(path)
+        path = BytesIO()
+        expected = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
+            retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
+            tournament_size=3, crossover_probability=.8, mutation_probability=.8)
+        self.assertEqual(load_training_config(BytesIO(path.getvalue())), expected)
+        path = BytesIO(('[training]\nmax_trainings=10\nmax_processes=2').encode("utf-8"))
+        self.assertEqual(load_training_config(BytesIO(path.getvalue())), dict(expected, max_processes=2, max_trainings=10))
+        for outer, inner in ((11, 1), (10, 3)):
+            with self.subTest(outer=outer, inner=inner):
+                with self.assertRaises(ValueError):
+                    load_training_config(BytesIO(path.getvalue()), max_trainings=outer, max_processes=inner)
+        for value in (1, 16):
+            path = BytesIO(('[simulation]\ntarget_count=5\n[training]\nmax_trainings=1\nmax_processes=' + str(value)).encode("utf-8"))
+            self.assertEqual(load_config(BytesIO(path.getvalue()))['target_count'], 5)
+            self.assertEqual(load_training_config(BytesIO(path.getvalue())), dict(expected, max_processes=value, max_trainings=1))
+        for option in ('max_processes=0', 'max_processes=17', 'max_processes=true',
+                       'max_processes=2.5', 'max_processes="4"', 'unknown=2',
+                       'top_k=3', 'top_k=true', 'tournament_size=0', 'coarse_iterations=0',
+                       'retest_batches=0', 'retest_iterations=true', 'stagnation_generations=0',
+                       'crossover_probability=nan', 'mutation_probability=inf',
+                       'mutation_probability=-0.1', 'crossover_probability=1.1'):
+            path = BytesIO(('[training]\n' + option).encode("utf-8"))
+            with self.subTest(option=option):
+                self.assertEqual(load_config(BytesIO(path.getvalue())), DEFAULT_CONFIG)
+                with self.assertRaises(ValueError):
+                    load_training_config(BytesIO(path.getvalue()))
 
     def test_missing_config_uses_documented_defaults(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            config = load_config(Path(directory) / "missing.toml")
-
+        with patch.object(Path, 'exists', return_value=False), \
+                patch.object(Path, 'read_bytes', side_effect=AssertionError('missing config must not be read')):
+            config = load_config(Path('missing.toml'))
         self.assertEqual(config, DEFAULT_CONFIG)
-        self.assertTrue(config["enable_omnium_talents"])
-        self.assertEqual(
-            engine_options(config),
-            ["desired_targets=1"],
-        )
+        self.assertTrue(config['enable_omnium_talents'])
+        self.assertEqual(engine_options(config), ['desired_targets=1'])
 
     def test_partial_config_inherits_defaults(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.toml"
-            path.write_text(
-                '[simulation]\ntarget_count = 3\n'
-                'enable_omnium_talents = true\n',
-                encoding="utf-8",
-            )
+        path = BytesIO(('[simulation]\ntarget_count = 3\n'
+            'enable_omnium_talents = true\n').encode("utf-8"))
 
-            config = load_config(path)
+        config = load_config(BytesIO(path.getvalue()))
 
         self.assertEqual(config["target_count"], 3)
         self.assertTrue(config["enable_omnium_talents"])
@@ -116,11 +107,10 @@ class SimulationConfigTests(unittest.TestCase):
         )
         for text in cases:
             with self.subTest(text=text):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "config.toml"
-                    path.write_text(text, encoding="utf-8")
-                    with self.assertRaises(ValueError):
-                        load_config(path)
+                path = BytesIO()
+                path = BytesIO((text).encode("utf-8"))
+                with self.assertRaises(ValueError):
+                    load_config(BytesIO(path.getvalue()))
 
     def test_config_for_returns_a_valid_copy(self) -> None:
         config = config_for({"target_count": 2})
@@ -129,6 +119,7 @@ class SimulationConfigTests(unittest.TestCase):
         self.assertTrue(config["enable_omnium_talents"])
         self.assertEqual(config_for()["target_count"], DEFAULT_CONFIG["target_count"])
 
+    @pytest.mark.real
     def test_task_entry_removes_only_valid_omnium_line_when_disabled(self) -> None:
         from task import TaskError, resume_task, run_task
         from test_character_export import sample_profile
@@ -181,13 +172,11 @@ class SimulationConfigTests(unittest.TestCase):
             commands.append(command)
             return SimpleNamespace(returncode=0, stdout=b"", stderr=b"", elapsed_seconds=0)
 
-        with tempfile.TemporaryDirectory() as directory:
-            profile = Path(directory) / "role.simc"
-            profile.write_text("mage=test\nlevel=90\nspec=frost\n", encoding="utf-8")
-            with patch.object(engine, "identity", return_value=(Path("simc.exe"), {})), \
-                    patch.object(engine, "run_command", side_effect=run_command):
-                engine.run(profile, Path(directory) / "baseline", "baseline", simulation_config=config)
-                engine.run(profile, Path(directory) / "controlled", "controlled", simulation_config=config)
+        profile = Path("unused-task") / "role.simc"
+        with patch.object(Path, "mkdir"), patch.object(engine, "identity", return_value=(Path("simc.exe"), {})), \
+                patch.object(engine, "run_command", side_effect=run_command):
+            engine.run(profile, Path("unused-task") / "baseline", "baseline", simulation_config=config)
+            engine.run(profile, Path("unused-task") / "controlled", "controlled", simulation_config=config)
 
         options = engine_options(config)
         target_prefixes = ("enemy=", "level=", "armor_coefficient=", "desired_targets=")
@@ -238,42 +227,23 @@ class SimulationConfigTests(unittest.TestCase):
 
     def test_controlled_sequence_passes_the_effective_config_to_the_engine(self) -> None:
         import sequence
+        config = config_for({'target_count': 2})
+        report = {'sim': {'players': [dict(name='test', sim2gse_class='mage', sim2gse_skipped_commands=[]),
+                                      {'name': 'other'}], 'targets': [{}, {}],
+                          'statistics': {'raid_dps': {'mean': 100.0, 'count': 1}}}}
+        candidate = dict(blocks=[[dict(kind='spell', simc_action='outbreak', spell_id=1, name='outbreak')]],
+                         compiled_steps=[dict(type='spell', spell=1)], precombat_count=0)
+        with patch.object(sequence, 'run', return_value='S2GBLOCK\t0\t0\toutbreak\n') as run, \
+                patch.object(sequence, 'check_report', return_value={'dps': 100.0, 'samples': 1}), \
+                patch.object(Path, 'mkdir'), patch.object(Path, 'write_text'), \
+                patch.object(Path, 'read_text', side_effect=['mage=test\nlevel=90\nspec=frost\n', json.dumps(report)]), \
+                patch.object(sequence, 'replace_file'):
+            sequence.evaluate(Path('role.simc'), candidate, Path('unused-run'),
+                              character=SimpleNamespace(name='test', class_name='mage'), trace=False,
+                              simulation_config=config)
+        self.assertEqual(run.call_args.kwargs['simulation_config'], config)
 
-        config = config_for({"target_count": 2})
-        observed = []
-        report = {
-            "sim": {
-                "players": [{"name": "test", "sim2gse_class": "mage",
-                             "sim2gse_skipped_commands": []}, {"name": "other"}],
-                "targets": [{}, {}],
-                "statistics": {"raid_dps": {"mean": 100.0, "count": 1}},
-            }
-        }
-
-        def fake_run(profile, folder, mode, options, *, runtime=None, simulation_config=None):
-            observed.append(simulation_config)
-            Path(folder, "native.pending.json").write_text(
-                json.dumps(report), encoding="utf-8"
-            )
-            return "S2GBLOCK\t0\t0\toutbreak\n"
-
-        with tempfile.TemporaryDirectory() as directory:
-            profile = Path(directory) / "role.simc"
-            profile.write_text("mage=test\nlevel=90\nspec=frost\n", encoding="utf-8")
-            candidate = {
-                "blocks": [[{"kind": "spell", "simc_action": "outbreak", "spell_id": 1,
-                              "name": "outbreak"}]],
-                "compiled_steps": [{"type": "spell", "spell": 1}],
-                "precombat_count": 0,
-            }
-            with patch.object(sequence, "run", side_effect=fake_run), \
-                    patch.object(sequence, "check_report", return_value={"dps": 100.0, "samples": 1}):
-                sequence.evaluate(profile, candidate, Path(directory) / "run",
-                                  character=SimpleNamespace(name="test", class_name="mage"), trace=False,
-                                  simulation_config=config)
-
-        self.assertEqual(observed, [config])
-
+    @pytest.mark.real
     def test_task_records_effective_config_and_rejects_changed_resume(self) -> None:
         from task import TaskError, resume_task, run_task
         from test_character_export import sample_profile
@@ -317,6 +287,7 @@ class SimulationConfigTests(unittest.TestCase):
                 self.assertEqual(resumed['simulation_config'], simulation)
 
 
+    @pytest.mark.real
     def test_tampered_input_is_rejected_before_task_store_construction(self) -> None:
         import search
         from task import TaskError, resume_task, run_task
@@ -357,58 +328,50 @@ class SimulationConfigTests(unittest.TestCase):
 
     def test_http_target_selection_keeps_startup_options_isolated(self) -> None:
         import interface
-
-        simulation = config_for({"target_count": 2, "enable_omnium_talents": False})
         from test_character_export import sample_profile
-
-        with tempfile.TemporaryDirectory() as directory:
-            server = interface.create_server(
-                Path(directory) / "output",
-                port=0,
-                task_options={"simulation_config": simulation},
-            )
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            try:
-                for selection in ({"target_count": 5}, {}, {"target_count": 1}):
-                    with self.subTest(selection=selection):
-                        payload = json.dumps({"profile": sample_profile(), **selection}).encode("utf-8")
-                        request = Request(
-                            f"http://127.0.0.1:{server.server_port}/api/tasks",
-                            data=payload, method="POST",
-                            headers={"Content-Type": "application/json"},
-                        )
-                        with patch.object(interface, "start_task",
-                                          return_value=SimpleNamespace(done=True, error=None)) as start:
-                            with urlopen(request, timeout=3) as response:
-                                self.assertEqual(response.status, 202)
-                            self.assertEqual(start.call_args.kwargs["simulation_config"],
-                                             dict(simulation, target_count=selection.get("target_count", 1)))
-                        self.assertEqual(server.task_options["simulation_config"], simulation)
-                        self.assertEqual(simulation["target_count"], 2)
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=2)
+        from unittest.mock import Mock
+        simulation = config_for({'target_count': 2, 'enable_omnium_talents': False})
+        server = SimpleNamespace(task_options={'simulation_config': simulation},
+            task_paths=Mock(return_value=(Path('input.simc'), Path('task'))),
+            tasks_lock=threading.RLock(), tasks={})
+        for selection in ({'target_count': 5}, {}, {'target_count': 1}):
+            with self.subTest(selection=selection):
+                payload = json.dumps({'profile': sample_profile(), **selection}).encode('utf-8')
+                handler = object.__new__(interface.InterfaceHandler)
+                handler.server = server
+                handler.path = '/api/tasks'
+                handler.headers = {'Host': 'localhost', 'Content-Length': str(len(payload))}
+                handler.rfile = BytesIO(payload)
+                handler.wfile = BytesIO()
+                handler.request_version = 'HTTP/1.1'
+                handler.requestline = 'POST /api/tasks HTTP/1.1'
+                with patch.object(interface, 'start_task',
+                                  return_value=SimpleNamespace(done=True, error=None)) as start, \
+                        patch.object(Path, 'write_text'):
+                    handler.do_POST()
+                self.assertIn(b'202 Accepted', handler.wfile.getvalue())
+                self.assertEqual(start.call_args.kwargs['simulation_config'],
+                                 dict(simulation, target_count=selection.get('target_count', 1)))
+                self.assertEqual(server.task_options['simulation_config'], simulation)
+                self.assertEqual(simulation['target_count'], 2)
 
     def test_command_line_task_entry_loads_config_for_new_and_resume(self) -> None:
         import task
 
         simulation = config_for({"enable_omnium_talents": False})
-        with tempfile.TemporaryDirectory() as directory:
-            input_path = Path(directory) / "role.simc"
-            output_path = Path(directory) / "task"
-            with patch.object(task, "load_config", return_value=simulation), \
-                    patch.object(task, "run_task", return_value={"status": "completed"}) as run, \
-                    patch.object(sys, "argv", ["sim2gse-task", str(input_path), "--output", str(output_path)]):
-                self.assertEqual(task.main(), 0)
-            self.assertEqual(run.call_args.kwargs["simulation_config"], simulation)
+        input_path = Path("unused-task") / "role.simc"
+        output_path = Path("unused-task") / "task"
+        with patch.object(task, "load_config", return_value=simulation), \
+                patch.object(task, "run_task", return_value={"status": "completed"}) as run, \
+                patch.object(sys, "argv", ["sim2gse-task", str(input_path), "--output", str(output_path)]):
+            self.assertEqual(task.main(), 0)
+        self.assertEqual(run.call_args.kwargs["simulation_config"], simulation)
 
-            with patch.object(task, "load_config", return_value=simulation), \
-                    patch.object(task, "resume_task", return_value={"status": "completed"}) as resume, \
-                    patch.object(sys, "argv", ["sim2gse-task", "--resume", "--output", str(output_path)]):
-                self.assertEqual(task.main(), 0)
-            self.assertEqual(resume.call_args.kwargs["simulation_config"], simulation)
+        with patch.object(task, "load_config", return_value=simulation), \
+                patch.object(task, "resume_task", return_value={"status": "completed"}) as resume, \
+                patch.object(sys, "argv", ["sim2gse-task", "--resume", "--output", str(output_path)]):
+            self.assertEqual(task.main(), 0)
+        self.assertEqual(resume.call_args.kwargs["simulation_config"], simulation)
 
     def test_command_line_service_reads_config_once_at_startup(self) -> None:
         script = REPOSITORY / "scripts" / "dev" / "sim2gse" / "interface.py"

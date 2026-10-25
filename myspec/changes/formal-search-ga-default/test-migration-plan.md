@@ -1,5 +1,7 @@
 # 全仓测试与验证工具扩展门禁一草案
 
+> 2026-10-25 恢复说明：以下2026-10-24测试与审查为遗失d3版本的历史记录，不能作为当前重做版本验收。当前以远端a311为基线重做；7个已上传blob已核Git哈希恢复，其余按原脚本/审查增量重新实施、重新测试并接受新独审。官方配置、Windows真实全集、60秒与默认对照仍未验收。
+
 **状态：** 用户已允许执行六步方向；本文补齐完整门禁选择及精确配置。正式配置尚未 overwrite（覆盖），全仓测试实现尚未开始。
 
 ## 核心摘要
@@ -70,7 +72,8 @@ gear目前只有8个Node VM（脚本虚拟机）／伪DOM（页面对象）检�
 - 原2个build保留，verify迁移43项（表列如下），验收要求为无空检查。普通／真实配对用同目录／模块的严格互补real标记，inventory须以实际收集证明全集无遗漏无重复，保留不许-k筛测试的门禁。
 - 普通GSE与新gear纯组拟加入PR，CI只增可公开纯依赖，不准备GSE/gear原生引擎；真实GSE／gear仍pr:false。其他原PR归属保留。新增真实gear链计入本机60秒，不藏在预算外。
 - 依赖固定副本放repo内 `.local/verify-deps/data-store`，实际两脚本、requirements逐文件进入inputs；测试复制源只读，不重新建生产中心。版本／实现记录在正式证据，不用缺失身份文件冒充可靠缓存。
-- 不引入身份sidecar刷新框架。对ignored API目录，已从版本清单固定的Ketho/vscode-wow-api提交d0b5b51逐项读取非截断Git树，519个Core实际文件逐条列入使用者inputs；GSE锁定上游Lua也用显式文件。Node在必要环境准备时把当前已安装的可用运行时冻结到repo内 `.local/verify-deps/node/node.exe`，普通Node命令和真实浏览器调用均使用此明确路径，实际二进制直接入inputs；不是安装另一版本，不改系统PATH。若输入缺失／运行时不可用必须失败，不以missing键缓存成功。
+- 不引入身份sidecar刷新框架。对ignored Ketho API目录，已从版本清单固定的Ketho/vscode-wow-api提交d0b5b51逐项读取非截断Git树，519个Annotations/Core实际文件逐条列入使用者inputs；GSE锁定上游Lua也用显式文件。Node在必要环境准备时把当前已安装的可用运行时冻结到repo内 `.local/verify-deps/node/node.exe`，普通Node命令和真实浏览器调用均使用此明确路径，实际二进制直接入inputs；不是安装另一版本，不改系统PATH。若输入缺失／运行时不可用必须失败，不以missing键缓存成功。
+- 两份上游不是同一API目录：Ketho/vscode-wow-api d0b5b51的Annotations/Core固定519文件供LuaLS类型库；Gethe/wow-ui-source 4e3cbb8的Blizzard_APIDocumentationGenerated固定TOC列612 Lua，注解生成实际消费其中611正文（排除ConfigurationWarningsDocumentation.lua）。annotation-build显式输入611正文、TOC和实现中的排除规则；不拿519与612相减、不清理正确本机资料或更改版本。
 - 具名插件LuaLS补生成注解、实际LuaLS二进制／主脚本及519个API文件；luacheck／TOC分别补实际luacheck／Lua二进制；技能真实组补Lua；checker／annotation补实际工具和API。所有pytest组补共享tests/conftest.py与pytest.ini的paths/inputs；Node／锁依赖及工具实现身份纳验证输入。构建身份核真，不重标签已有artifact（产物）。
 - 2.7.1只用公开init --config --overwrite应用已审精确候选；PR Flow公开初始化写真实toolchain身份与受管workflow，不伪造哈希。当前旧de7871a CI pin必须更新，开发模式保留。
 - Windows verify.yml的PR full是真验证；toolchain工作流干净fast可能skipped，不以该绿灯冒称全套。build配置1200秒在当前源码未传run调用，不称已有防挂保证，也不本票越权修工具。
@@ -95,9 +98,9 @@ gear目前只有8个Node VM（脚本虚拟机）／伪DOM（页面对象）检�
 
 先写最小公开2.7.1入口红证据，迁移相同入口转绿；云端能执行的纯计算与可移植部分先完成，准确标新工具版本和守卫证据。Windows Lua5.1、Edge、原生引擎与进程所有权必须在对应可用环境验证；本机连接状态由父协调在执行前核验，不因先前offline阻云实施，也不伪造本机结果。各域完成后固定整票独审，最后同HEAD官方无缓存全集≤60、PR检查、gear专项、游戏未验分别报告；之后继续原同角色同冻结输入的新旧完整默认自然对照。
 
-## 确认后进入的下一步
+## 已确认的实施边界
 
-请按推荐整套确认：沿用 `codex/formal-search-ga-default`；互不冲突领域子代理并行、共享文件/Git串行；全部完成后独立Reviewer整票审；应用附件43项精确配置时使用官方overwrite，保留备份。该确认不授权合并、主干推送、release或游戏部署。
+用户已明确确认以下整套选择，现已进入分域实施（进度与覆盖退让见`test-migration-evidence.md`）：沿用 `codex/formal-search-ga-default`；互不冲突领域子代理并行、共享文件/Git串行；全部完成后独立Reviewer整票审；应用附件43项精确配置时使用官方overwrite，保留备份。该确认不授权合并、主干推送、release或游戏部署。
 
 ## 43项公开入口
 

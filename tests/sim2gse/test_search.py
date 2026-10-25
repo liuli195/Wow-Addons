@@ -14,6 +14,7 @@ from unittest import TestCase
 from unittest.mock import patch
 import pytest
 from test_seed_training import memory_result_center
+from test_population_training import memory_ga
 
 import sys
 
@@ -317,27 +318,34 @@ def _prepared_search_boundary(directory, starts, *, evaluate=None):
 
 
 class SearchAndValidationTests(TestCase):
+    @pytest.fixture(autouse=True)
+    def _explicit_search_inputs(self, request):
+        if request.node.get_closest_marker('real') is None:
+            self.memory_ga = request.getfixturevalue('memory_ga')
+            yield
+        elif request.node.name == 'test_task_mutates_unexecuted_apl_button_and_scores_exports_it':
+            yield  # This representative must exercise the actual mutation gate.
+        else:
+            from simulation_config import TRAINING_DEFAULTS
+            with patch.dict(TRAINING_DEFAULTS, crossover_probability=0., mutation_probability=0.):
+                yield  # Explicit smoke-test inputs, never product defaults.
+
     def test_task_store_initialization_failure_closes_connection(self):
         import sqlite3
+        with _captured_task_connections() as connections:
+            database=sqlite3.connect(':memory:')
+            database.execute('CREATE TABLE state (id INTEGER PRIMARY KEY,value TEXT NOT NULL)')
+            database.execute('INSERT INTO state VALUES (1,?)',('{invalid-state',))
+            database.commit()
+            with self.assertRaises(json.JSONDecodeError) as caught:
+                TaskStore(Path('/memory/init-failure'), connection=database,
+                          reusable_database=':memory:', report_locations={})
+            self.assertEqual(caught.exception.doc,'{invalid-state')
+            self.assertEqual(len(connections),1)
+            with self.assertRaisesRegex(sqlite3.ProgrammingError,'closed'):
+                connections[0].execute('SELECT 1')
 
-        with tempfile.TemporaryDirectory(prefix='sim2gse-store-init-failure-') as directory:
-            destination = Path(directory) / 'task'
-            destination.mkdir()
-            database = sqlite3.connect(destination / 'task.sqlite3')
-            try:
-                database.execute('CREATE TABLE state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
-                database.execute('INSERT INTO state VALUES (1, ?)', ('{invalid-state',))
-                database.commit()
-            finally:
-                database.close()
-            with _captured_task_connections() as connections:
-                with self.assertRaises(json.JSONDecodeError) as caught:
-                    TaskStore(destination)
-                self.assertEqual(caught.exception.doc, '{invalid-state')
-                self.assertEqual(len(connections), 1)
-                with self.assertRaisesRegex(sqlite3.ProgrammingError, 'closed'):
-                    connections[0].execute('SELECT 1')
-
+    @pytest.mark.real
     def test_task_final_publish_failure_still_closes_connection(self):
         import sqlite3
         from runtime import TaskRuntime
@@ -373,34 +381,30 @@ class SearchAndValidationTests(TestCase):
     def test_normal_task_and_dual_scene_still_refuse_four_processes(self):
         import dual_task
         from search import config_for
-        self.assertEqual(config_for()['max_processes'], 2)
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            for entry in (run_task, dual_task.start):
-                with self.subTest(entry=entry.__name__), self.assertRaisesRegex(ValueError, 'max_processes'):
-                    entry(source, Path(directory) / 'task', search_config={'max_processes': 4})
+        self.assertEqual(config_for()['max_processes'],2)
+        with patch.object(Path,'read_bytes',return_value=sample_profile().encode('utf-8')):
+            for entry in (run_task,dual_task.start):
+                with self.subTest(entry=entry.__name__),self.assertRaisesRegex(ValueError,'max_processes'):
+                    entry(Path('/absent/role.simc'),Path('/absent/task'),search_config={'max_processes':4})
 
     def test_task_uses_full_apl_pool_without_changing_baseline_starts(self):
-        native = apl_pool_reference()
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _apl_task_boundary(native):
-                result = run_task(source, Path(directory) / 'search', search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2))
-                single = run_task(source, Path(directory) / 'single', mode='single')
-        self.assertEqual(result['status'], 'completed')
-        self.assertEqual([row['simc_action'] for row in result['capabilities']['actions']],
-                         ['outbreak', 'death_coil', 'scourge_strike', 'death_and_decay', 'epidemic'])
-        self.assertEqual(initial_programs(result['capabilities'], native,
-                         scene='single_target')[1:], [
-            [['outbreak'], ['outbreak'], ['death_coil']],
-            [['outbreak'], ['death_coil'], ['outbreak'], ['death_coil']],
-            [['scourge_strike'], ['death_coil'], ['outbreak']],
+        import engine
+        from sequence import select
+        native=apl_pool_reference()
+        capabilities=engine.inspect(native)  # No folder: the existing data-only seam.
+        self.assertEqual([row['simc_action'] for row in capabilities['actions']],
+                         ['outbreak','death_coil','scourge_strike','death_and_decay','epidemic'])
+        self.assertEqual(initial_programs(capabilities,native,scene='single_target')[1:],[
+            [['outbreak'],['outbreak'],['death_coil']],
+            [['outbreak'],['death_coil'],['outbreak'],['death_coil']],
+            [['scourge_strike'],['death_coil'],['outbreak']],
         ])
-        self.assertEqual([[row['simc_action'] for row in block] for block in single['candidate']['blocks']],
-                         [['outbreak'], ['death_coil'], ['scourge_strike']])
+        self.assertEqual([[row['simc_action'] for row in block] for block in select(capabilities)],
+                         [['outbreak'],['death_coil'],['scourge_strike']])
+        # The distinct real APL mutation representative retains public completion,
+        # macro/export, persisted projection and controlled-score assertions.
 
+    @pytest.mark.real
     def test_task_mutates_unexecuted_apl_button_and_scores_exports_it(self):
         import result_store
         import search
@@ -464,297 +468,201 @@ class SearchAndValidationTests(TestCase):
                          {'type': 'macro', 'macrotext': '/cast [@player] death_and_decay'})
         self.assertGreater(ground['controlled_simulation']['summary']['dps'], 0)
 
-    @pytest.mark.usefixtures('memory_result_center')
     def test_formal_nominal_retest_selects_from_all_finalists_without_paired_ci(self):
         import search
         from program import canonicalize_search_program
-        preferred = [['outbreak']]
-        def evaluate(profile, candidate, folder, **kwargs):
-            blocks = [[row['simc_action'] for row in block] for block in candidate['blocks']]
-            damage = (200. if blocks == preferred else 100.) if kwargs['iterations'] == 32 else (
-                50. if blocks == preferred else 150.)
-            return _fast_evaluate(profile, candidate, folder, score=damage, **kwargs)
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _prepared_search_boundary(directory, [preferred, [['death_coil']]], evaluate=evaluate), \
-                    patch.object(search, 'paired_ci', side_effect=AssertionError('正式GA不得套旧CI晋级')):
-                result = run_task(source, Path(directory) / 'task')
-                saved = read_task(Path(directory) / 'task', include_search_records=True)
-            preferred_key = canonicalize_search_program(preferred, result['capabilities'])['identity']
-        finalists = result['final']['scenarios']['nominal']['finalists']
-        self.assertIn(preferred_key, [row['key'] for row in finalists])
-        self.assertNotEqual(result['selected_candidate_key'], preferred_key)
-        self.assertEqual(result['search_result']['dps'], 150.)
-        self.assertEqual(result['search_result']['samples'], 381)
-        self.assertTrue(all(len(row['batches']) == 3 for row in finalists))
-        self.assertTrue(all(batch['requested_iterations'] == 32 for row in result['search']['records'] for batch in row['batches']))
-        self.assertEqual(saved['search_result'], result['search_result'])
-        self.assertEqual(saved['candidate']['text'], result['candidate']['text'])
+        from simulation_config import TRAINING_DEFAULTS
+        preferred=[['outbreak']]
+        def score(candidate,options):
+            blocks=[[row['simc_action'] for row in block] for block in candidate['blocks']]
+            return (200. if blocks==preferred else 100.) if options['iterations']==32 else (50. if blocks==preferred else 150.)
+        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+            case=self.memory_ga(formal=True,programs=[preferred,[['death_coil']]],score_for=score)
+            with patch.object(search,'paired_ci',side_effect=AssertionError('正式GA不得套旧CI晋级')):
+                result=case.run()
+        preferred_key=canonicalize_search_program(preferred,case.capabilities)['identity']
+        finalists=result['final']['scenarios']['nominal']['finalists']
+        self.assertIn(preferred_key,[row['key'] for row in finalists])
+        self.assertNotEqual(result['selected_candidate_key'],preferred_key)
+        self.assertEqual(result['search_result']['dps'],150.)
+        self.assertEqual(result['search_result']['samples'],381)
+        self.assertTrue(all(len(row['batches'])==3 for row in finalists))
+        self.assertTrue(all(batch['requested_iterations']==32 for row in result['search']['records'] for batch in row['batches']))
+        saved=TaskStore.load_state(case.store.db)
+        self.assertEqual(saved['search_result'],result['search_result'])
+        self.assertEqual(saved['formal_winner']['candidate']['text'],result['candidate']['text'])
 
 
-    @pytest.mark.usefixtures('memory_result_center')
     def test_formal_initial_scores_overlap_with_at_most_two_engines(self):
         import threading
-        barrier, lock = threading.Barrier(2, timeout=2), threading.Lock()
-        active, peak, initial_calls = 0, 0, []
-        starts = [[['outbreak']], [['death_coil']]]
-        def evaluate(profile, candidate, folder, **kwargs):
-            nonlocal active, peak
-            blocks = [[row['simc_action'] for row in block] for block in candidate['blocks']]
+        from simulation_config import TRAINING_DEFAULTS
+        barrier,lock=threading.Barrier(2,timeout=2),threading.Lock()
+        active,peak,initial_calls=0,0,[]
+        starts=[[['outbreak']],[['death_coil']]]
+        def score(candidate,options):
+            nonlocal active,peak
+            blocks=[[row['simc_action'] for row in block] for block in candidate['blocks']]
             with lock:
-                active += 1
-                peak = max(active, peak)
+                active+=1
+                peak=max(peak,active)
             try:
-                if kwargs['iterations'] == 32 and blocks in starts:
+                if options['iterations']==32 and blocks in starts:
                     initial_calls.append(blocks)
                     barrier.wait()
-                return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
+                return 100.
             finally:
-                with lock:
-                    active -= 1
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _prepared_search_boundary(directory, starts, evaluate=evaluate):
-                result = run_task(source, Path(directory) / 'task', search_config=dict(max_processes=2))
-        self.assertEqual(result['status'], 'completed')
-        self.assertEqual(peak, 2)
-        self.assertCountEqual(initial_calls, starts)
-        self.assertEqual(result['search']['starts'], starts)
+                with lock: active-=1
+        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+            case=self.memory_ga(formal=True,programs=starts,score_for=score,search_settings=dict(max_processes=2))
+            result=case.run()
+        self.assertEqual(result['status'],'completed')
+        self.assertEqual(peak,2)
+        self.assertCountEqual(initial_calls,starts)
+        self.assertEqual(result['search']['starts'],starts)
 
 
-    @pytest.mark.usefixtures('memory_result_center')
     def test_cancelled_formal_batches_resume_without_repeating_successful_native_requests(self):
         import threading
-        import sequence
-        cancel, interrupted, calls = threading.Event(), [False], []
-        def evaluate(profile, candidate, folder, **kwargs):
-            calls.append(Path(folder).name)
-            result = _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
+        from runtime import TaskRuntime,TaskCancelled
+        from simulation_config import TRAINING_DEFAULTS
+        cancel=threading.Event()
+        interrupted=[False]
+        def score(candidate,options):
             if not interrupted[0]:
-                interrupted[0] = True
+                interrupted[0]=True
                 cancel.set()
-            return result
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            destination = Path(directory) / 'task'
-            with _prepared_search_boundary(directory, [[['outbreak']], [['death_coil']]], evaluate=evaluate):
-                stopped = run_task(source, destination, cancel_event=cancel, search_config=dict(max_processes=1))
-                self.assertEqual(stopped['status'], 'cancelled')
-                self.assertIsNone(stopped.get('selected_candidate_key'))
-                self.assertTrue(calls)
-                first = calls[0]
-                cancel.clear()
-                resumed = resume_task(destination)
-        self.assertEqual(resumed['status'], 'completed')
-        self.assertEqual(calls.count(first), 1)
-        self.assertEqual(len(calls), len(set(calls)))
-        self.assertEqual(resumed['search_result']['samples'], 381)
+            return 100.
+        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+            case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]],score_for=score)
+            with self.assertRaises(TaskCancelled):
+                case.run(runtime=TaskRuntime(float('inf'),cancel_event=cancel))
+            self.assertIsNone(case.store.state.get('selected_candidate_key'))
+            self.assertTrue(case.calls)
+            first=case.calls[0][0]
+            case.store.checkpoint()
+            case.store.state=TaskStore.load_state(case.store.db)
+            case.store.verified_batches.clear()
+            cancel.clear()
+            resumed=case.run(runtime=TaskRuntime(float('inf'),cancel_event=cancel))
+        calls=[row[0] for row in case.calls]
+        self.assertEqual(resumed['status'],'completed')
+        self.assertEqual(calls.count(first),1)
+        self.assertEqual(len(calls),len(set(calls)))
+        self.assertEqual(resumed['search_result']['samples'],381)
 
 
 
 
 
     def test_run_task_deduplicates_equivalent_programs_before_native_evaluation(self):
-        import codec
-        import search
+        import program
         import sequence
-
-        action = "use_item,slot=trinket1"
-        equivalent_programs = [
-            [dict(kind="Loop", count=2, blocks=[[action]])],
-            [[action], [action]],
-        ]
-        evaluated = []
-        compiler_calls = []
-
-        def compiler(command, *args, **kwargs):
-            compiler_calls.append((command[-1], str(kwargs.get("output_dir"))))
-            if kwargs.get("on_start") is not None:
-                kwargs["on_start"]()
-            output = b"CHECKSUM\ttest\nPASS\ttest\n"
-            return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            clicks = candidate["compiled_program"]["clicks"]
-            plan = [click.get("commands", []) for click in clicks]
-            evaluated.append((kwargs["iterations"], plan))
-            return _fast_evaluate(profile, candidate, folder, **kwargs)
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-task-") as directory:
-            source = Path(directory) / "角色.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=37)
-            with _fast_search_boundary(), \
-                    _initialized_starts(equivalent_programs), \
-                    patch.object(codec, "run_command", side_effect=compiler), \
-                    patch.object(sequence, "evaluate", side_effect=evaluate):
-                result = run_task(source, Path(directory) / "task", search_config=config)
-
-        expected_plan = [[action], [action]]
-        matching_records = [
-            record for record in result["search"]["records"]
-            if [click.get("commands", []) for click in record["candidate"]["compiled_program"]["clicks"]]
-            == expected_plan
-        ]
-        matching_evaluations = [row for row in evaluated if row == (32, expected_plan)]
-        self.assertEqual((len(matching_records), len(matching_evaluations)), (1, 1))
-        matching_compiles = [mode for mode, folder in compiler_calls
-                             if folder.endswith(matching_records[0]["key"])]
-        self.assertEqual(len(matching_compiles), 1)
+        from formal_search import freeze_starts
+        from runtime import TaskRuntime
+        from simulation_config import TRAINING_DEFAULTS
+        action='use_item,slot=trinket1'
+        equivalents=[[dict(kind='Loop',count=2,blocks=[[action]])],[[action],[action]]]
+        compiles=[]
+        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+            case=self.memory_ga(formal=True,programs=equivalents)
+            starts,_=freeze_starts(case.starts,case.capabilities,TaskRuntime(float('inf')))
+            case.store.state['starts']=starts
+            compiler=program.compile_program
+            def compiled(mapped,folder,**options):
+                compiles.append(str(folder))
+                return compiler(mapped,folder,**options)
+            with patch.object(program,'compile_program',side_effect=compiled):
+                result=case.run()
+        expected=[[action],[action]]
+        records=[row for row in result['search']['records'] if sequence.compiled_program(row['candidate'])==expected]
+        evaluations=[row for row in case.calls if row[2]['iterations']==32 and sequence.compiled_program(row[1])==expected]
+        self.assertEqual((len(records),len(evaluations)),(1,1))
+        self.assertEqual(len([folder for folder in compiles if folder.endswith(records[0]['key'])]),1)
 
     def test_search_observability_is_off_by_default_and_preserves_selection(self):
         import sequence
         import result_store
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-search-observability-") as directory:
-            root = Path(directory)
-            source = root / "role.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, round_candidate_limit=1, batch_targets=(2,),
-                          iterations=2, validation_batches=1, final_batches=1,
-                          final_iterations=2, scenarios=("nominal",), max_processes=1,
-                          random_seed=37)
-
-            def run(name, mode=None):
-                destination = root / name / "task"
-                options = dict(config)
-                if mode is not None:
-                    options["search_observability"] = mode
-                    options["diagnostic_logging"] = True
-                center = root / (name + '-center')
-                center.mkdir()
-                requests = []
-                with patch.object(result_store, 'DATA_ROOT', center), \
-                        _fast_search_boundary(), _initialized_starts([[['outbreak']]]):
-                    evaluate = sequence.evaluate
-                    def record_request(profile, candidate, folder, **kwargs):
-                        requests.append((sequence.behavior_key(candidate), kwargs['seed'],
-                                         kwargs['iterations'], kwargs['trace']))
-                        return evaluate(profile, candidate, folder, **kwargs)
-                    with patch.object(sequence, 'evaluate', side_effect=record_request):
-                        result = run_task(source, destination, search_config=options)
-                progress = (json.loads((destination / 'diagnostics.json').read_text())['performance']['candidate_progress']
-                            if mode is not None else None)
-                return result, requests, result['search']['formal_champion_snapshot']['binding']['condition'], progress
-
-            baseline, baseline_requests, baseline_condition, _ = run("off")
-            observed, observed_requests, observed_condition, progress = run("full", "full")
-
-        self.assertEqual(baseline['search']['starts'], observed['search']['starts'])
-        self.assertEqual(baseline['search']['formal_champion_snapshot']['status'], 'absent')
-        self.assertEqual(observed['search']['formal_champion_snapshot']['status'], 'absent')
-        self.assertNotIn("observability", baseline["search"])
-        self.assertEqual(baseline["selected_candidate_key"], observed["selected_candidate_key"])
-        self.assertEqual(baseline_requests, observed_requests)
-        self.assertEqual(baseline_condition, observed_condition)
-
+        from task import _freeze_formal_champion
+        from runtime import diagnostic_summary
+        def run(mode=None):
+            options={} if mode is None else dict(search_observability=mode,diagnostic_logging=True,diagnostics='summary')
+            case=self.memory_ga(formal=True,programs=[[['outbreak']]],search_settings=options)
+            result=case.run()
+            requests=[(sequence.behavior_key(candidate),settings['seed'],settings['iterations'],settings['trace'])
+                      for _,candidate,settings in case.calls]
+            progress=diagnostic_summary(case.store)['candidate_progress']
+            binding_state=dict(condition=case.condition,input_effective_sha256='fixed-role-bytes',
+                               simulation_config=case.ready['simulation_config'])
+            native=dict(identity=dict(spec_id=252))
+            with patch.object(result_store,'read_search_champion',return_value=None):
+                champion=_freeze_formal_champion(binding_state,case.character,native,case.capabilities)
+            return result,requests,champion,progress
+        baseline,baseline_requests,baseline_condition,_=run()
+        observed,observed_requests,observed_condition,progress=run('full')
+        self.assertEqual(baseline['search']['starts'],observed['search']['starts'])
+        self.assertNotIn('observability',baseline['search'])
+        self.assertEqual(baseline['selected_candidate_key'],observed['selected_candidate_key'])
+        self.assertEqual(baseline_requests,observed_requests)
+        self.assertEqual(baseline_condition['status'],'absent')
+        self.assertEqual(observed_condition['status'],'absent')
+        self.assertEqual(baseline_condition['binding']['condition'],observed_condition['binding']['condition'])
         def score_snapshot(result):
-            records = []
-            for record in result["search"]["records"]:
-                validations = {}
-                for name in ("validation", "global_validation"):
-                    comparison = record.get(name)
+            records=[]
+            for record in result['search']['records']:
+                validations={}
+                for name in ('validation','global_validation'):
+                    comparison=record.get(name)
                     if comparison:
-                        validations[name] = tuple(
-                            tuple((row["dps"], row["samples"], row["request"]["seed"])
-                                  for row in comparison[side])
-                            for side in ("candidate", "control"))
-                records.append((record["key"], record["program"], record["score"],
-                                tuple((row["dps"], row["samples"], row["request"]["seed"])
-                                      for row in record["batches"]), validations))
+                        validations[name]=tuple(tuple((row['dps'],row['samples'],row['request']['seed'])
+                            for row in comparison[side]) for side in ('candidate','control'))
+                records.append((record['key'],record['program'],record['score'],
+                    tuple((row['dps'],row['samples'],row['request']['seed']) for row in record['batches']),validations))
             return records
-
-        self.assertEqual(sorted(score_snapshot(baseline)), sorted(score_snapshot(observed)))
-        summary = observed['search']['observability']['summary']
-        self.assertEqual(summary['initial_candidates'], 1)
-        self.assertGreater(summary['mutation_attempts'], 0)
-        self.assertEqual(summary['score_completed'], len(observed['search']['records']))
+        self.assertEqual(sorted(score_snapshot(baseline)),sorted(score_snapshot(observed)))
+        summary=observed['search']['observability']['summary']
+        self.assertEqual(summary['initial_candidates'],1)
+        self.assertGreater(summary['mutation_attempts'],0)
+        self.assertEqual(summary['score_completed'],len(observed['search']['records']))
         self.assertTrue(observed['search']['observability']['details'])
-        actual_coarse = {key for key, _, iterations, _ in observed_requests if iterations == 32}
-        self.assertEqual({row['behavior_identity'] for row in progress['screening_archived']}, actual_coarse)
+        actual_coarse={key for key,_,iterations,_ in observed_requests if iterations==32}
+        self.assertEqual({row['behavior_identity'] for row in progress['screening_archived']},actual_coarse)
+        # Physical champion binding/read-through is retained by the real public
+        # persistence representative; this case compares the executor's frozen condition.
 
 
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
-        import sqlite3
-
-        directory = tempfile.mkdtemp(prefix="sim2gse-old-identity-")
-        try:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1)
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=config)
-            result_before = json.loads((destination / "result.json").read_text(encoding="utf-8"))
-            with sqlite3.connect(destination / "task.sqlite3") as database:
-                state = TaskStore.load_state(database)
-                state["behavior_identity_version"] = "obsolete-version"
-                state["elapsed_seconds"] = config["total_budget_seconds"]
-                database.execute("UPDATE state SET value=? WHERE id=1",
-                                 (json.dumps(state),))
-                database.commit()
-            database.close()
-            with _fast_search_boundary(), self.assertRaisesRegex(
-                    TaskError, "候选行为身份版本已变化"):
-                resume_task(destination)
-            self.assertEqual(json.loads((destination / "result.json").read_text(encoding="utf-8")),
-                             result_before)
-        finally:
-            for attempt in range(20):
-                try:
-                    shutil.rmtree(directory)
-                    break
-                except PermissionError:
-                    if attempt == 19:
-                        raise
-                    time.sleep(0.05)
+        from copy import deepcopy
+        from simulation_config import TRAINING_DEFAULTS
+        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+            case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]])
+            result=case.run()
+            before=deepcopy(result['search_result'])
+            state=TaskStore.load_state(case.store.db)
+            state['behavior_identity_version']='obsolete-version'
+            state['elapsed_seconds']=case.search_config['total_budget_seconds']
+            case.store.state=state
+            case.store.checkpoint()
+            with self.assertRaisesRegex(ValueError,'候选行为身份版本已变化'):
+                case.run()
+        self.assertEqual(TaskStore.load_state(case.store.db)['search_result'],before)
 
     def test_run_task_rejects_canonical_compiler_mismatch_before_native_evaluation(self):
-        import program as program_module
-        import search
+        import program
         import sequence
-
-        real_canonicalize = program_module.canonicalize_search_program
-        evaluated = []
-
-        def canonicalize(search_program, capabilities):
-            result = real_canonicalize(search_program, capabilities)
-            if search_program == [["outbreak"]]:
-                result["form"] = dict(result["form"], clicks=[["death_coil"]])
+        from engine import CandidateError
+        from simulation_config import TRAINING_DEFAULTS
+        canonicalize=program.canonicalize_search_program
+        def wrong_form(search_program,capabilities):
+            result=canonicalize(search_program,capabilities)
+            if search_program==[['outbreak']]:
+                result['form']=dict(result['form'],clicks=[['death_coil']])
             return result
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            plan = [click.get("commands", [])
-                    for click in candidate["compiled_program"]["clicks"]]
-            evaluated.append(plan)
-            return _fast_evaluate(profile, candidate, folder, **kwargs)
-
-        with tempfile.TemporaryDirectory(prefix="sim2gse-canonical-mismatch-") as directory:
-            source = Path(directory) / "角色.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=60, search_budget_seconds=30,
-                          candidate_limit=2, batch_targets=(2,), iterations=2,
-                          validation_batches=1, final_batches=1, final_iterations=2,
-                          scenarios=("nominal",), max_processes=1, random_seed=41)
-            with _fast_search_boundary(), \
-                    _initialized_starts([[['outbreak']], [['death_coil']]]), \
-                    patch.object(program_module, "canonicalize_search_program",
-                                 side_effect=canonicalize), \
-                    patch.object(sequence, "evaluate", side_effect=evaluate):
-                with self.assertRaisesRegex(TaskError, "标准形式与编译计划不一致"):
-                    run_task(source, Path(directory) / "task", search_config=config)
-
-        self.assertNotIn([["outbreak"]], evaluated)
+        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+            case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]])
+            with patch.object(program,'canonicalize_search_program',side_effect=wrong_form):
+                with self.assertRaisesRegex(CandidateError,'标准形式与编译计划不一致'):
+                    case.run()
+        self.assertNotIn([['outbreak']],[sequence.compiled_program(row[1]) for row in case.calls])
 
     def test_canonical_identity_expands_repeat_once_and_preserves_source_tree(self):
         from program import canonicalize_search_program
@@ -858,14 +766,14 @@ class SearchAndValidationTests(TestCase):
             [["scourge_strike"], ["death_coil"], ["outbreak"]],
         ]
 
-        with _fast_initialization():
-            starts = initial_programs(capabilities, reference, seed=20260912, scene='single_target')
+        starts = initial_programs(capabilities, reference, seed=20260912, scene='single_target')
         self.assertEqual(starts[1:], expected)
         from search import input_times
         first = input_times("jitter", seed=20260912)
         self.assertEqual(first, input_times("jitter", seed=20260912))
         self.assertNotEqual(first, input_times("jitter", seed=20260913))
 
+    @pytest.mark.real
     def test_public_entry_runs_multi_start_search_with_isolated_validation(self):
         import sequence
         real_evaluate = sequence.evaluate
@@ -906,7 +814,12 @@ class SearchAndValidationTests(TestCase):
             self.assertIn("final", result)
             self.assertEqual(result["improvement"], "search_result")
             self.assertEqual(result["selected_candidate_key"], result["locked_candidate_key"])
-            self.assertEqual(read_task(destination)["candidate"]["text"], result["candidate"]["text"])
+            loaded = read_task(destination)
+            self.assertEqual(loaded['candidate']['text'], result['candidate']['text'])
+            self.assertEqual(loaded['search_result'], result['search_result'])
+            self.assertEqual(loaded['search']['stop_reason'], result['search']['stop_reason'])
+            self.assertEqual(loaded['search_result']['samples'], 381)
+            self.assertEqual(result['search']['formal_champion_snapshot']['status'], 'absent')
             self.assertNotEqual(result["search"]["dataset"], result["validation"]["dataset"])
             self.assertNotEqual(result["validation"]["dataset"], result["final"]["dataset"])
 
@@ -918,6 +831,7 @@ class SearchAndValidationTests(TestCase):
             self.assertTrue(result['independent_validation_complete'])
 
 
+    @pytest.mark.real
     def test_search_resumes_without_resetting_budget_or_batches(self):
         import sequence
         import threading
@@ -974,6 +888,7 @@ class SearchAndValidationTests(TestCase):
             self.assertTrue(resumed["independent_validation_complete"])
             self.assertEqual(set(resumed["final"]["scenarios"]), {"nominal"})
 
+    @pytest.mark.real
     def test_corrupt_parquet_cache_shard_is_recomputed(self):
         import result_store
         import sequence
@@ -991,7 +906,8 @@ class SearchAndValidationTests(TestCase):
                           final_batches=1, final_iterations=2, scenarios=('nominal',),
                           max_processes=1, diagnostic_logging=True, diagnostics='summary')
             # Freeze the same starts for all invocations; this case tests cache repair, not champion inheritance.
-            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+            with _fast_search_boundary(), _initialized_starts([[['outbreak']], [['death_coil']]]), \
+                    patch.object(sequence, 'evaluate', side_effect=evaluate), \
                     patch.object(result_store, 'read_search_champion', return_value=None):
                 first_destination = Path(directory) / 'first'
                 first = run_task(source, first_destination, search_config=config)
@@ -999,7 +915,7 @@ class SearchAndValidationTests(TestCase):
                 performance = json.loads((first_destination / 'diagnostics.json').read_text())['performance']
                 progress = performance['candidate_progress']
                 keys = {row['key'] for row in saved_task['search']['records']}
-                self.assertTrue(keys)
+                self.assertGreaterEqual(len(keys), 2)
                 self.assertGreaterEqual(performance['stages']['candidate.compile']['calls'], len(keys))
                 self.assertEqual(performance['stages']['candidate.write']['calls'],
                                  performance['stages']['candidate.compile']['calls'])
@@ -1020,7 +936,9 @@ class SearchAndValidationTests(TestCase):
                 batch_key = first['search']['records'][0]['batches'][0]['data_key']
                 # Fault injection only: mimic a damaged Parquet shard behind the read-only API.
                 saved = result_store.one('batches', 'batch_key', batch_key)
-                lost_keys = {row['batch_key'] for row in result_store.read_records('batches', saved['storage_group_key'])}
+                lost_rows = result_store.read_records('batches', saved['storage_group_key'])
+                lost_keys = {row['batch_key'] for row in lost_rows}
+                self.assertGreaterEqual(len({row['candidate_key'] for row in lost_rows}), 2)
                 shard = result_store.DATA_ROOT / 'batches' / f"{saved['storage_group_key']}.parquet"
                 shard.write_bytes(b'corrupt parquet')
                 second = run_task(source, Path(directory) / 'second', search_config=config)
@@ -1034,6 +952,7 @@ class SearchAndValidationTests(TestCase):
             self.assertFalse(second['search']['records'][0]['batches'][0].get('cached', False))
             self.assertIsNotNone(result_store.one('batches', 'batch_key', batch_key)['report'])
 
+    @pytest.mark.real
     def test_cold_cache_storage_failure_and_cancellation_do_not_resimulate(self):
         import result_store
         import sequence
@@ -1071,6 +990,7 @@ class SearchAndValidationTests(TestCase):
                                 self.assertEqual(result['status'], 'cancelled')
                 self.assertEqual(read_task(Path(directory) / 'first')['status'], first['status'])
 
+    @pytest.mark.real
     def test_valid_exchange_report_is_kept_when_center_write_fails(self):
         import result_store
         import sequence
@@ -1102,6 +1022,7 @@ class SearchAndValidationTests(TestCase):
                 self.assertTrue(path.is_file(), '保存失败不能删除已成功原生报告: ' + str(path))
                 self.assertIsInstance(json.loads(path.read_text(encoding='utf-8')), dict)
 
+    @pytest.mark.real
     def test_task_hard_exit_preserves_checkpoint_and_cleans_owned_engine(self):
         import os
         import ctypes
@@ -1158,7 +1079,8 @@ class SearchAndValidationTests(TestCase):
                 # This ownership/recovery smoke keeps real native scoring, not exploration cost.
                 "native_starts=search.initial_programs",
                 "search.initial_programs=lambda *a,**k: native_starts(*a,**k)[:1]",
-                "search.mutate=lambda program,*a,**k: program",
+                "from simulation_config import TRAINING_DEFAULTS",
+                "TRAINING_DEFAULTS.update(crossover_probability=0.,mutation_probability=0.)",
                 "class CheckpointStore(search.TaskStore):",
                 "    def stage_report(self,key,row,stored,**kwargs):",
                 "        super().stage_report(key,row,stored,**kwargs)",
@@ -1227,6 +1149,7 @@ class SearchAndValidationTests(TestCase):
                 before = checkpoint['elapsed_seconds']
                 self.assertGreater(checkpoint['completed_batches'], 0)
                 resumed=resume_task(destination, simulation_config=dict(scene='single_target'))
+                self.assertEqual(resumed['status'], 'completed')
                 self.assertGreaterEqual(resumed['elapsed_seconds'], before,
                     f"durable={before}, live_before_crash={state['elapsed_seconds']}")
                 self.assertGreaterEqual(resumed['completed_batches'], checkpoint['completed_batches'])
@@ -1235,6 +1158,7 @@ class SearchAndValidationTests(TestCase):
                 if held:kernel.CloseHandle(held)
                 if process.poll() is None:process.kill();process.wait(timeout=5)
 
+    @pytest.mark.real
     def test_owned_process_tree_hard_exit_does_not_stop_other_owner(self):
         # 补充进程系统边界检查；产品恢复仍由上方 run_task 测试覆盖。
         import ctypes
@@ -1282,6 +1206,7 @@ class SearchAndValidationTests(TestCase):
                     if attempt==20:raise
                     time.sleep(0.05)
 
+    @pytest.mark.real
     def test_completed_search_removes_native_report_exchange_files(self):
         import sequence
         import result_store
@@ -1355,6 +1280,7 @@ class SearchAndValidationTests(TestCase):
                              result["search"]["records"][0]["key"])
             self.assertNotIn("report", known.get("controlled_simulation", {}))
 
+    @pytest.mark.real
     def test_native_global_failure_stops_task(self):
         import ctypes
         from unittest.mock import patch
@@ -1372,31 +1298,31 @@ class SearchAndValidationTests(TestCase):
                 with self.assertRaisesRegex(TaskError,'原生引擎失败'):
                     run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=2))
 
-    @pytest.mark.usefixtures('memory_result_center')
     def test_formal_deduplicates_legal_starts_and_stops_on_complete_generation_stagnation(self):
-        starts = [[['outbreak']], [['death_coil']]]
-        def equal_damage(*args, **kwargs):
-            return _fast_evaluate(*args, score=100., **kwargs)
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'role.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            with _prepared_search_boundary(directory, starts + [starts[0], [['missing_action']]], evaluate=equal_damage):
-                result = run_task(source, Path(directory) / 'task')
-                saved = read_task(Path(directory) / 'task')
-        self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['search']['starts'], starts)
-        self.assertEqual(result['search']['stop_reason'], 'stagnation')
-        self.assertGreaterEqual(result['search']['complete_generations'], 2)
-        self.assertEqual(result['search']['formal_search']['config']['stagnation_generations'], 2)
+        from formal_search import freeze_starts
+        from runtime import TaskRuntime
+        from simulation_config import TRAINING_DEFAULTS
+        starts=[[['outbreak']],[['death_coil']]]
+        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+            case=self.memory_ga(formal=True,programs=starts+[starts[0],[['missing_action']]])
+            frozen,decisions=freeze_starts(case.starts,case.capabilities,TaskRuntime(float('inf')))
+            case.store.state.update(starts=frozen,start_adaptations=decisions)
+            result=case.run()
+        saved=TaskStore.load_state(case.store.db)
+        self.assertEqual(result['status'],'completed')
+        self.assertEqual(result['search']['starts'],starts)
+        self.assertEqual(result['search']['stop_reason'],'stagnation')
+        self.assertGreaterEqual(result['search']['complete_generations'],2)
+        self.assertEqual(result['search']['formal_search']['config']['stagnation_generations'],2)
         self.assertFalse(result['search']['partial_round'])
-        self.assertEqual(saved['search']['stop_reason'], 'stagnation')
-        self.assertEqual(saved['search_result']['samples'], 381)
-        self.assertEqual([row['status'] for row in saved['search']['start_adaptations']],
-                         ['accepted', 'accepted', 'duplicate', 'rejected'])
+        self.assertEqual(saved['ga']['generation'],result['search']['complete_generations'])
+        self.assertEqual(saved['search_result']['samples'],381)
+        self.assertEqual([row['status'] for row in saved['start_adaptations']],['accepted','accepted','duplicate','rejected'])
 
 
 
 
+    @pytest.mark.real
     def test_process_creation_failure_releases_thread_and_temporary_files(self):
         import ctypes
         from ctypes import wintypes

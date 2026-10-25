@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 
+pytestmark = pytest.mark.real
+
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 

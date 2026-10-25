@@ -6,7 +6,6 @@ import runpy
 from contextlib import contextmanager
 import hashlib
 import json
-import msvcrt
 import os
 import re
 from pathlib import Path
@@ -65,6 +64,7 @@ class ReportLocations:
 
     @contextmanager
     def locked(self):
+        import msvcrt
         with _PUBLICATION_LOCK, (self.root / '.report-publish.lock').open('a+b') as lease:
             if lease.tell() == 0:
                 lease.write(b'0')
@@ -223,6 +223,7 @@ def read_search_champion(condition_key):
 
 @contextmanager
 def _search_champion_lock():
+    import msvcrt
     # ponytail: one short global publication lock; split by condition only if contention matters.
     with _PUBLICATION_LOCK, (DATA_ROOT / '.search-champions.lock').open('a+b') as lease:
         if lease.tell() == 0:

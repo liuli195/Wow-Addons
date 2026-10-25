@@ -21,7 +21,6 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
-import msvcrt
 
 from runtime import replace_file, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
@@ -1605,6 +1604,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
 
 @contextmanager
 def _task_lease(destination, *, lock_name='.runner.lock', conflict_message='任务正在运行，不能同时恢复'):
+    import msvcrt
     with (destination/lock_name).open('a+b') as lock:
         if lock.tell()==0:
             lock.write(b'0')

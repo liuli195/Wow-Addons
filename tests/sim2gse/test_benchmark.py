@@ -1,4 +1,5 @@
 import json
+import pytest
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -18,14 +19,15 @@ class BenchmarkTests(TestCase):
                   'comparison':{'candidate_mean_dps':120}}}}
   self.assertFalse(benchmark.extract_product(old)['evidence_complete'])
  def test_product_command_summarizes_without_requiring_five_final_scenarios(self):
-  import benchmark
-  with TemporaryDirectory() as directory:
-   root=Path(directory)
-   with patch.object(benchmark,'ROOT',root),patch('sys.argv',['benchmark.py','--run-id','product-smoke','--product','--summarize']):
-    self.assertEqual(benchmark.main(),0)
-   report=json.loads((root/'.local/sim2gse/benchmarks/search-v1/product-smoke/product-overview.json').read_text())
-   self.assertEqual(report['status'],'insufficient_evidence')
-   self.assertEqual(len(report['pairs']),3)
+     import benchmark
+     with patch.object(Path, 'mkdir'), patch.object(Path, 'is_file', return_value=False), \
+             patch.object(Path, 'write_text', autospec=True) as write, \
+             patch('sys.argv', ['benchmark.py', '--run-id', 'product-smoke', '--product', '--summarize']):
+         self.assertEqual(benchmark.main(), 0)
+     report = json.loads(write.call_args.args[1])
+     self.assertEqual(write.call_args.args[0].name, 'product-overview.json')
+     self.assertEqual(report['status'], 'insufficient_evidence')
+     self.assertEqual(len(report['pairs']), 3)
  def test_product_summary_uses_exported_nominal_and_side_budgets(self):
   import benchmark
   old={'status':'completed','selected_candidate_key':'initial','locked_candidate_key':'locked',
@@ -39,19 +41,16 @@ class BenchmarkTests(TestCase):
   for row,budget in ((baseline,420),(current,600)):
    row.update(search_budget_seconds=budget,engine_identities=['same'],profile_sha256='profile',
               random_seed=1,candidate_timeline=[{'score':80,'lower_seconds':8,'upper_seconds':10}])
-  with TemporaryDirectory() as directory:
-   root=Path(directory)
-   for side,row in (('baseline',baseline),('current',current)):
-    for seed in SEEDS[:3]:
-     row=dict(row,random_seed=seed)
-     path=root/side/'current'/str(seed)/'summary.json';path.parent.mkdir(parents=True)
-     path.write_text(json.dumps(row))
-   report=benchmark.summarize_product(root)
-   self.assertEqual(report['status'],'ready_for_human')
-   self.assertEqual(report['pairs'][0]['dps_change'],.2)
-   self.assertEqual(report['pairs'][0]['baseline']['threshold_time']['limit_seconds'],420)
-   self.assertEqual(report['pairs'][0]['current']['threshold_time']['limit_seconds'],600)
-   self.assertFalse(report['pairs'][0]['current']['threshold_time']['reached'])
+  rows = [json.dumps(dict(row, random_seed=seed))
+          for row in (baseline, current) for seed in SEEDS[:3]]
+  with patch.object(Path, 'mkdir'), patch.object(Path, 'is_file', return_value=True), \
+       patch.object(Path, 'read_text', side_effect=rows), patch.object(Path, 'write_text'):
+   report = benchmark.summarize_product(Path('unused-product'))
+  self.assertEqual(report['status'], 'ready_for_human')
+  self.assertEqual(report['pairs'][0]['dps_change'], .2)
+  self.assertEqual(report['pairs'][0]['baseline']['threshold_time']['limit_seconds'], 420)
+  self.assertEqual(report['pairs'][0]['current']['threshold_time']['limit_seconds'], 600)
+  self.assertFalse(report['pairs'][0]['current']['threshold_time']['reached'])
  def test_product_comparison_reads_search_result_without_final_retest(self):
   import benchmark
   result={'status':'completed','candidate':{'simulation':'passed_native_model','text':'!GSE3!test'},
@@ -62,6 +61,7 @@ class BenchmarkTests(TestCase):
   self.assertEqual(row['final_dps'],120)
   self.assertEqual(row['reference_ratio'],.8)
   self.assertEqual(row['measurement'],'search_score')
+ @pytest.mark.real
  def test_snapshot_publication_recovers_from_brief_directory_occupation(self):
   import os
   import benchmark
@@ -92,6 +92,7 @@ class BenchmarkTests(TestCase):
    with patch.object(benchmark,"ROOT",root),patch.object(benchmark,"_git",return_value=names):
     with self.assertRaisesRegex(RuntimeError,"源码"):
      materialize(root/"evidence","head","current",worktree=True)
+ @pytest.mark.real
  def test_snapshot_publication_preserves_persistent_and_unrelated_failures(self):
   import benchmark
   occupied=PermissionError("directory remains occupied");occupied.winerror=5
@@ -109,6 +110,7 @@ class BenchmarkTests(TestCase):
     self.assertEqual(sleep.call_args_list,[((0.02,),)]*(expected_attempts-1))
     self.assertFalse((root/"evidence/current-source").exists())
     self.assertEqual(list((root/"evidence").iterdir()),[])
+@pytest.mark.real
 def test_snapshot_result_reader_binds_the_original_connected_project(tmp_path, installed_data_store, monkeypatch):
  import benchmark, result_store, shutil, subprocess
  run_id = 'snapshot-run'

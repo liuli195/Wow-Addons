@@ -1,4 +1,4 @@
-"""Manual training command uses the existing installed data center."""
+"""训练规则使用显式内存输入；准备缓存及可靠成果保留真实持久化代表。"""
 import json
 from pathlib import Path
 import subprocess
@@ -30,7 +30,11 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def training_center(tmp_path, installed_data_store, monkeypatch):
+def training_center(request, monkeypatch):
+    if request.node.get_closest_marker('real') is None:
+        return
+    tmp_path = request.getfixturevalue('tmp_path')
+    installed_data_store = request.getfixturevalue('installed_data_store')
     import result_store
     (tmp_path / 'data').mkdir(exist_ok=True)
     monkeypatch.setattr(result_store, '_BOUND_PROJECT', None)
@@ -40,8 +44,11 @@ def training_center(tmp_path, installed_data_store, monkeypatch):
 
 
 @pytest.fixture
-def memory_result_center(installed_data_store_api, monkeypatch):
-    """纯逻辑检查的中心IO；TaskStore/报告位置清单仍真实，不证明Parquet耐久性。"""
+def memory_result_center(request, monkeypatch):
+    """Native DuckDB center; neither guarded ordinary tests nor Parquet durability."""
+    if request.node.get_closest_marker('real') is None:
+        pytest.fail('DuckDB memory_result_center requires an explicit real marker')
+    installed_data_store_api = request.getfixturevalue('installed_data_store_api')
     import duckdb
     import threading
     import result_store
@@ -135,179 +142,177 @@ def command(tmp_path, args):
     return main(['--project', str(tmp_path), *args])
 
 
-def test_training_check_locates_current_template_without_starting_compute(tmp_path, capsys, monkeypatch):
+@pytest.fixture
+def training_cli(monkeypatch):
+    """CLI scheduling with fixed template/registry IO, never a training executor."""
+    from contextlib import nullcontext
+    import threading
+    import engine, result_store, seed_training, seed_activity, simulation_config
+    from test_character_export import sample_profile
+    monkeypatch.setattr(result_store,'bind_project',lambda project:None)
+    monkeypatch.setattr(result_store,'ensure_available',lambda:None)
+    monkeypatch.setattr(seed_training,'writer_lock',nullcontext)
+    monkeypatch.setattr(seed_activity,'training_activity',lambda:nullcontext(threading.Event()))
+    monkeypatch.setattr(seed_training,'registry_rows',lambda:[])
+    monkeypatch.setattr(seed_training,'sync_history',lambda character,**kwargs:kwargs.get('sources',[]))
+    template=Path('/.tools/sim2gse/build/baseline/Rider.simc')
+    monkeypatch.setattr(engine,'training_templates',lambda:(template,))
+    monkeypatch.setattr(engine,'identity',lambda mode:(Path('/engine'),dict(upstream_commit='fixed-engine')))
+    monkeypatch.setattr(Path,'is_file',lambda path:True)
+    monkeypatch.setattr(Path,'read_text',lambda path,**kwargs:sample_profile())
+    monkeypatch.setattr(simulation_config,'DEFAULT_PATH',Path('/absent/training.toml'))
+    return template
+
+
+@pytest.fixture
+def prepared_input(monkeypatch):
+    """A verified preparation cache is a data input, not an emulated center."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+    import codec,program,result_store,seed_training as seeds,task
+    from test_search import _fast_capabilities
+    from test_character_export import sample_profile
+    from search import config_for,digest
+    config=config_for(dict(max_processes=1),training=True)
+    character=seeds.template_character(sample_profile())
+    capabilities=_fast_capabilities()
+    native=dict(identity=dict(spec_id=252,race=character.race,resource='runic_power'),
+                static_snapshot=dict(hero_subtree_ids=[32]))
+    inputs=dict(text=sample_profile(),character=character,scope='deathknight-unholy-1',config=config,
+        simulation_config=dict(target_count=1,scene='single_target',enable_omnium_talents=True),
+        engines={'baseline':'fixed'},template_sha='fixed-template',definition=None,rule_snapshot=None)
+    preparation=dict(version=seeds.PREPARATION_VERSION,template=inputs['template_sha'],engines=inputs['engines'],
+        simulation=inputs['simulation_config'],definition=None,semantics=seeds.semantic_versions(),
+        config=seeds._identity_config(config))
+    key=digest(preparation)
+    header=dict.fromkeys(seeds.PREPARED_SCHEMA)
+    header.update(kind='context',config_key=key,version=seeds.PREPARATION_VERSION,
+        context=dict(native=native,all_capabilities=capabilities,capabilities=capabilities,burst=None,
+                     representations={}))
+    header['checksum']=digest([{name:value for name,value in header.items() if name!='checksum'}])
+    writes=[]
+    monkeypatch.setattr(result_store,'read_records',lambda table,key:deepcopy([header]))
+    monkeypatch.setattr(result_store,'write',lambda *args,**kwargs:writes.append(deepcopy(args)))
+    monkeypatch.setattr(codec,'load_targeting',lambda **kwargs:dict(target_masks={}))
+    monkeypatch.setattr(program,'compile_program',lambda *args,**kwargs:{})
+    monkeypatch.setattr(task,'_rule_hashes',lambda **kwargs:{})
+    def source(label,program):
+        return dict(dict.fromkeys(seeds.CANDIDATE_SCHEMA),candidate_id=label,source_id=label,label=label,
+            class_name='deathknight',spec='unholy',source='fixture',original='fixture',instructions='repeat',
+            semantic='preserved',changes=[],family='plain',core=[],program=program,active=True)
+    return SimpleNamespace(inputs=inputs,header=header,writes=writes,source=source)
+
+def test_training_check_locates_current_template_without_starting_compute(monkeypatch,capsys,training_cli):
     from seed_training import main
-
-    def forbidden_process(*args, **kwargs):
-        raise AssertionError('只读训练检查不能启动计算进程')
-
-    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
-    import engine
-    from test_search import _fast_identity, _fast_training_template
-    monkeypatch.setattr(engine, "identity", _fast_identity)
-    monkeypatch.setattr(engine, "_training_template", _fast_training_template)
-    assert main(['--project', str(tmp_path), 'check', '--legacy']) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result['status'] == 'ready'
-    assert '/.tools/sim2gse/build/baseline/' in result['template'].replace('\\', '/')
-    assert result['engines']['baseline']['upstream_commit'] == result['engines']['controlled']['upstream_commit']
-    assert not (tmp_path / 'work').exists()
+    def forbidden(*args,**kwargs): raise AssertionError('只读训练检查不能启动计算进程')
+    monkeypatch.setattr(subprocess,'Popen',forbidden)
+    assert main(['--project','/memory','check','--legacy'])==0
+    result=json.loads(capsys.readouterr().out)
+    assert result['status']=='ready' and '/.tools/sim2gse/build/baseline/' in result['template']
+    assert result['engines']['baseline']['upstream_commit']==result['engines']['controlled']['upstream_commit']
 
 
-@pytest.mark.parametrize('entry', ['run'])
-def test_training_entry_refuses_missing_definition_before_starting_compute(tmp_path, capsys, monkeypatch, entry):
+@pytest.mark.parametrize('entry',['run'])
+def test_training_entry_refuses_missing_definition_before_starting_compute(monkeypatch,capsys,training_cli,entry):
+    from unittest.mock import MagicMock
+    import result_store
     from seed_training import main
-
-    def forbidden_process(*args, **kwargs):
-        raise AssertionError('缺少审核定义时不能启动计算进程')
-
-    monkeypatch.setattr(subprocess, 'Popen', forbidden_process)
-    import engine
-    from test_search import _fast_identity, _fast_training_template
-    monkeypatch.setattr(engine, 'identity', _fast_identity)
-    monkeypatch.setattr(engine, '_training_template', _fast_training_template)
-    assert main(['--project', str(tmp_path), entry,
-                 '--workspace', str(tmp_path / 'work')]) == 2
+    cursor=MagicMock()
+    cursor.__enter__.return_value.fetchone.return_value=None
+    monkeypatch.setattr(result_store,'query',lambda *args,**kwargs:cursor)
+    def forbidden(*args,**kwargs): raise AssertionError('缺少审核定义时不能启动计算进程')
+    monkeypatch.setattr(subprocess,'Popen',forbidden)
+    assert main(['--project','/memory',entry,'--workspace','/memory/work'])==2
     assert '已审核' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize('entry', ['run', 'prepare'])
-def test_training_cli_override_repairs_partial_config_without_precheck_losing_it(
-        tmp_path, capsys, monkeypatch, memory_training_center, entry):
-    from itertools import permutations
-    from seed_training import main
-    from test_character_export import sample_profile
-    import simulation_config
-
-    config = tmp_path / 'training.toml'
-    config.write_text('[training]\nmax_trainings=10\ntop_k=4\n'
-                      'crossover_probability=0.0\nmutation_probability=0.0\n', encoding='utf-8')
-    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    material = tmp_path / 'material.json'
-    for index, actions in enumerate(list(permutations(('outbreak', 'death_coil', 'scourge_strike')))[:4]):
-        material.write_text(json.dumps(dict(label=str(index), class_name='deathknight', spec='unholy',
-            source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
-            family='fixture', core=[], program=[[action] for action in actions])), encoding='utf-8')
-        assert command(tmp_path, ['register', str(material)]) == 0
-    capsys.readouterr()
-    with training_boundary():
-        assert command(tmp_path, [entry, '--template', str(template), '--targets', '1', '--max-processes', '2',
-                                 '--workspace', str(tmp_path / 'work')]) == 0
-    outcome = json.loads(capsys.readouterr().out)[0]
-    assert outcome['status'] == ('completed' if entry == 'run' else 'prepared')
-    if entry == 'run':
-        assert outcome['training_config']['max_trainings'] == 10
-        assert outcome['training_config']['max_processes'] == 2
-    # 独立check仍校验文件本身，不继承上一条CLI调用的覆盖值。
-    with training_boundary():
-        assert main(['--project', str(tmp_path), 'check', '--template', str(template), '--legacy']) == 2
+@pytest.mark.parametrize('entry',['run','prepare'])
+def test_training_cli_override_repairs_partial_config_without_precheck_losing_it(monkeypatch,capsys,training_cli,entry):
+    import population_training,seed_training,simulation_config
+    from unittest.mock import Mock
+    monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(training=dict(max_trainings=10,top_k=4,
+        crossover_probability=0.,mutation_probability=0.)))
+    monkeypatch.setattr(population_training,'_unfinished',lambda *args,**kwargs:iter(()))
+    execute=Mock(side_effect=lambda *args,**kwargs:dict(status='prepared' if kwargs['prepare_only'] else 'completed',
+        training_config=kwargs['training_config']))
+    monkeypatch.setattr(seed_training,'_run_training',execute)
+    assert seed_training.main(['--project','/memory',entry,'--legacy','--targets','1','--max-processes','2',
+                               '--workspace','/memory/work'])==0
+    outcome=json.loads(capsys.readouterr().out)[0]
+    assert outcome['status']==('completed' if entry=='run' else 'prepared')
+    assert outcome['training_config']['max_trainings']==10 and outcome['training_config']['max_processes']==2
+    assert execute.call_count==1
+    assert seed_training.main(['--project','/memory','check','--legacy'])==2
     assert '乘积不得超过20' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(('settings', 'expected'), [
-    ('', ('8候选', '120请求批', '15360请求迭代')),
-    ('top_k=4\nretest_batches=2\nretest_iterations=7\n', ('4候选', '40请求批', '280请求迭代')),
-])
+@pytest.mark.parametrize(('settings','expected'),[
+    ({},('8候选','120请求批','15360请求迭代')),
+    (dict(top_k=4,retest_batches=2,retest_iterations=7),('4候选','40请求批','280请求迭代'))])
 def test_training_run_shows_requested_retest_maximum_before_compute_and_keeps_it_on_resume(
-        tmp_path, capsys, monkeypatch, memory_training_center, settings, expected):
-    from itertools import permutations
-    from unittest.mock import patch
-    from test_character_export import sample_profile
-    from test_search import _fast_evaluate
+        monkeypatch,capsys,training_cli,settings,expected):
+    import population_training,seed_training,simulation_config
     from runtime import TaskCancelled
-    import engine
-    import sequence
-    import simulation_config
-
-    config = tmp_path / 'training.toml'
-    config.write_text('[training]\nmax_trainings=1\nmax_processes=1\n'
-                      'crossover_probability=0.0\nmutation_probability=0.0\n' + settings, encoding='utf-8')
-    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    material = tmp_path / 'material.json'
-    for index, actions in enumerate(list(permutations(('outbreak', 'death_coil', 'scourge_strike')))[:4]):
-        material.write_text(json.dumps(dict(label=str(index), class_name='deathknight', spec='unholy',
-            source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
-            family='fixture', core=[], program=[[action] for action in actions])), encoding='utf-8')
-        assert command(tmp_path, ['register', str(material)]) == 0
-    capsys.readouterr()
-    options = ['run', '--template', str(template), '--targets', '1', '--workspace', str(tmp_path / 'work')]
-    for resume in (False, True):
-        checked = []
-
-        def check_startup():
-            if not checked:
-                message = capsys.readouterr()
-                assert all(value in message.err for value in expected)
-                assert '五场景复测' in message.err and '非实际有效样本' in message.err
-                assert message.out == ''
-                checked.append(True)
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            check_startup()
-            if not resume:
-                raise TaskCancelled('fixture pause after startup')
-            return _fast_evaluate(profile, candidate, folder, score=100., **kwargs)
-
-        with training_boundary():
-            reference = engine.reference
-
-            def checked_reference(*args, **kwargs):
-                check_startup()
-                return reference(*args, **kwargs)
-
-            with patch.object(engine, 'reference', side_effect=checked_reference), \
-                    patch.object(sequence, 'evaluate', side_effect=evaluate):
-                assert command(tmp_path, options) == (0 if resume else 2)
+    current=dict(max_trainings=1,max_processes=1,**settings)
+    monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(training=current))
+    frozen=simulation_config.load_training_config()
+    manifest=dict(template_path=str(training_cli),environment=dict(template='fixed',simulation=dict(target_count=1)),training_config=frozen)
+    monkeypatch.setattr(population_training,'_unfinished',lambda *args,**kwargs:iter([(Path('/saved'),manifest)]))
+    for resume in (False,True):
+        checked=[]
+        def execute(*args,**kwargs):
+            message=capsys.readouterr()
+            assert all(value in message.err for value in expected)
+            assert '五场景复测' in message.err and '非实际有效样本' in message.err and message.out==''
+            checked.append(True)
+            if not resume: raise TaskCancelled('fixture pause after startup')
+            return dict(status='completed')
+        monkeypatch.setattr(seed_training,'_run_training',execute)
+        assert seed_training.main(['--project','/memory','run','--legacy','--targets','1','--workspace','/memory/work'])==(0 if resume else 2)
         assert checked
-        outcome = json.loads(capsys.readouterr().out)[0]
-        assert outcome['status'] == ('completed' if resume else 'paused')
-        # 下一新任务参数不可改写恢复摘要，恢复仍沿初次冻结请求量。
-        config.write_text('[training]\ntop_k=12\nretest_batches=1\nretest_iterations=2\n', encoding='utf-8')
+        outcome=json.loads(capsys.readouterr().out)[0]
+        assert outcome['status']==('completed' if resume else 'paused')
+        current=dict(top_k=12,retest_batches=1,retest_iterations=2)
 
 
-def test_training_list_defaults_to_burst_and_preserves_legacy_results(tmp_path, capsys):
-    from seed_training import main, SELECTED_SCHEMA
+def test_training_list_defaults_to_burst_and_preserves_legacy_results(monkeypatch,capsys,training_cli):
     import result_store
-
-    row = dict(configuration_key=None, candidate_id='legacy-only', condition='fixture', class_name='deathknight', spec='unholy',
-               targets=1, program=[['death_coil']], family='fixture', score=1., scores=[1.],
-               template_sha256='fixture', engines={})
-    result_store.write('seed_selected', 'deathknight-unholy-1', [row], schema=SELECTED_SCHEMA)
-    assert main(['--project', str(tmp_path), 'list', '--state', 'selected']) == 0
-    assert json.loads(capsys.readouterr().out) == []
-    assert main(['--project', str(tmp_path), 'list', '--state', 'selected', '--legacy']) == 0
-    assert json.loads(capsys.readouterr().out)[0]['candidate_id'] == 'legacy-only'
-
-
-def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenance(tmp_path, capsys):
     from seed_training import main
-    import result_store
+    from unittest.mock import Mock
+    reader=Mock(side_effect=[[],[dict(candidate_id='legacy-only')]])
+    monkeypatch.setattr(result_store,'read_records',reader)
+    assert main(['--project','/memory','list','--state','selected'])==0
+    assert json.loads(capsys.readouterr().out)==[]
+    assert reader.call_args.args==('seed_selected','deathknight-unholy-1-burst')
+    assert main(['--project','/memory','list','--state','selected','--legacy'])==0
+    assert json.loads(capsys.readouterr().out)[0]['candidate_id']=='legacy-only'
+    assert reader.call_args.args==('seed_selected','deathknight-unholy-1')
 
-    source = tmp_path / 'cleaned.json'
-    source.write_text(json.dumps(dict(label='ABC-C', spec='unholy', class_name='deathknight',
-        source='plugin:Smolbreather', original='15 ordered spell ids',
-        instructions='continuous unmodified key', semantic='rewritten',
-        changes=['remove movement'], family='plugin-opener', core=[['putrefy'], ['death_coil']],
-        program=[['outbreak'], ['putrefy'], ['death_coil']])), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) == 0
-    capsys.readouterr()
-    assert command(tmp_path, ['register', str(source)]) == 0
-    assert command(tmp_path, ['list', '--state', 'pending']) == 0
-    lines = capsys.readouterr().out.splitlines()
-    candidates = json.loads(lines[-1])
-    assert len(candidates) == 1
-    assert candidates[0]['label'] == 'ABC-C'
-    assert result_store.DATA_ROOT.joinpath('seed_candidates').is_dir()
-    invalid = json.loads(source.read_text())
-    invalid.pop('changes')
-    source.write_text(json.dumps(invalid), encoding='utf-8')
-    assert command(tmp_path, ['register', str(source)]) != 0
-    assert command(tmp_path, ['list', '--state', 'pending']) == 0
-    assert len(json.loads(capsys.readouterr().out.splitlines()[-1])) == 1
+
+def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenance(monkeypatch):
+    from contextlib import nullcontext
+    from copy import deepcopy
+    from unittest.mock import Mock
+    import result_store,seed_training
+    source=dict(label='ABC-C',spec='unholy',class_name='deathknight',source='plugin:Smolbreather',
+        original='15 ordered spell ids',instructions='continuous unmodified key',semantic='rewritten',
+        changes=['remove movement'],family='plugin-opener',core=[['putrefy'],['death_coil']],
+        program=[['outbreak'],['putrefy'],['death_coil']])
+    monkeypatch.setattr(Path,'read_text',lambda *args,**kwargs:json.dumps(source))
+    monkeypatch.setattr(seed_training,'writer_lock',nullcontext)
+    writes=Mock()
+    monkeypatch.setattr(result_store,'write',writes)
+    monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=[]))
+    first=seed_training.register('/memory/cleaned.json')
+    table,key,rows=writes.call_args.args
+    assert (table,key)==('seed_candidates','registry') and len(rows)==1 and rows[0]['label']=='ABC-C'
+    monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=deepcopy(rows)))
+    writes.reset_mock()
+    assert seed_training.register('/memory/cleaned.json')==first
+    writes.assert_not_called()
+    source.pop('changes')
+    with pytest.raises(ValueError,match='清洗件必须包含'): seed_training.register('/memory/cleaned.json')
+    writes.assert_not_called()
 
 
 
@@ -354,6 +359,7 @@ def test_training_condition_excludes_only_execution_and_keeps_real_inputs():
 
 
 
+@pytest.mark.real
 def test_training_entry_rejects_an_active_foreground_search(tmp_path, monkeypatch):
     from seed_activity import foreground_search
     import seed_training
@@ -373,97 +379,61 @@ def test_training_entry_rejects_an_active_foreground_search(tmp_path, monkeypatc
 
 
 
-def test_missing_project_and_unreadable_center_are_not_silently_empty(tmp_path, monkeypatch):
+def test_missing_project_and_unreadable_center_are_not_silently_empty(monkeypatch,capsys,training_cli):
+    import result_store
     from seed_training import main
-    import result_store
-    import runpy
-    with pytest.raises(SystemExit):
-        main(['list'])
-    real_loader = runpy.run_path
-    def unreadable_loader(path):
-        api = real_loader(path)
-        def unreadable(*args, **kwargs):
-            raise PermissionError('数据中心暂时不可读')
-        api['read_key'] = unreadable
-        return api
-    monkeypatch.setattr(runpy, 'run_path', unreadable_loader)
-    assert command(tmp_path, ['list']) == 2
+    with pytest.raises(SystemExit): main(['list'])
+    def unreadable(*args,**kwargs): raise PermissionError('数据中心暂时不可读')
+    monkeypatch.setattr(result_store,'read_records',unreadable)
+    assert main(['--project','/memory','list'])==2
+    assert '数据中心暂时不可读' in capsys.readouterr().err
 
 
-def test_unconnected_public_search_does_not_create_data_root(tmp_path, monkeypatch):
-    from test_character_export import sample_profile
+def test_unconnected_public_search_does_not_create_data_root(monkeypatch):
+    from unittest.mock import Mock
     from task import run_task
+    from contextlib import nullcontext
+    import seed_activity
+    monkeypatch.setattr(seed_activity, 'foreground_search', nullcontext)
     import result_store
-
-    data_root = tmp_path / 'unconnected' / 'data'
-    monkeypatch.setattr(result_store, 'DATA_ROOT', data_root)
-    monkeypatch.setattr(result_store, '_BOUND_PROJECT', None)
-    monkeypatch.setattr(result_store, '_SKILL_API', None)
-    monkeypatch.setattr(result_store, '_skill_root', lambda: tmp_path / 'missing-skill')
-    template = tmp_path / 'role.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-
-    with pytest.raises(RuntimeError, match='数据中心尚未接入本项目'):
-        run_task(template, tmp_path / 'unconnected-task')
-
-    assert not data_root.exists()
+    def unavailable(): raise RuntimeError('数据中心尚未接入本项目')
+    monkeypatch.setattr(result_store,'ensure_available',unavailable)
+    mkdir=Mock(side_effect=AssertionError('unconnected search must not create directories'))
+    monkeypatch.setattr(Path,'mkdir',mkdir)
+    with pytest.raises(RuntimeError,match='数据中心尚未接入本项目'):
+        run_task('/absent/role.simc','/absent/unconnected-task')
+    mkdir.assert_not_called()
 
 
 
 
-@pytest.mark.parametrize('illegal_program', [
-    [['death_coil'] * 16],
-    [dict(kind='CastSequence', members=['death_coil'] * 32)],
-])
-def test_prepare_rejects_oversize_macro_without_losing_legal_materials(
-        tmp_path, capsys, memory_training_center, illegal_program):
-    from test_character_export import sample_profile
-
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    material = tmp_path / 'material.json'
-    for label, program in [('oversize', illegal_program), ('legal', [['outbreak']])]:
-        material.write_text(json.dumps(dict(label=label, class_name='deathknight', spec='unholy',
-            source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
-            family='fixture', core=[], program=program)), encoding='utf-8')
-        assert command(tmp_path, ['register', str(material)]) == 0
-    capsys.readouterr()
-    with training_boundary():
-        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
-                                 '--workspace', str(tmp_path / 'work')]) == 0
-    prepared = json.loads(capsys.readouterr().out)[0]
-    assert prepared['preparation']['unique_inputs'] == 1
-    assert prepared['preparation']['rejected'] == 1
-    assert command(tmp_path, ['list', '--state', 'prepared', '--config-key', prepared['config_key']]) == 0
-    sources = {row['label']: row for row in json.loads(capsys.readouterr().out) if row['kind'] == 'source'}
-    assert sources['oversize']['status'] == 'rejected'
-    assert '255 字节' in sources['oversize']['reason']
-    assert sources['legal']['status'] == 'ready'
+@pytest.mark.parametrize('illegal_program',[[['death_coil']*16],[dict(kind='CastSequence',members=['death_coil']*32)]])
+def test_prepare_rejects_oversize_macro_without_losing_legal_materials(prepared_input,illegal_program):
+    from seed_training import ensure_prepared
+    case=prepared_input
+    result=ensure_prepared('/memory/template',1,'/memory/work',inputs=case.inputs,
+        sources=[case.source('oversize',illegal_program),case.source('legal',[['outbreak']])])
+    assert result['preparation']['unique_inputs']==1 and result['preparation']['rejected']==1
+    sources={row['label']:row for row in result['entries']}
+    assert sources['oversize']['status']=='rejected' and '255 字节' in sources['oversize']['reason']
+    assert sources['legal']['status']=='ready'
+    assert len(case.writes)==1 and case.writes[0][0]=='seed_prepared'
 
 
-@pytest.mark.parametrize('boundary', ['load_targeting', 'run_command'])
-def test_prepare_keeps_tool_failure_explicit_instead_of_rejecting_material(
-        tmp_path, capsys, memory_training_center, boundary):
-    from test_character_export import sample_profile
-    from unittest.mock import patch
-    import codec
-
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    material = tmp_path / 'material.json'
-    material.write_text(json.dumps(dict(label='legal', class_name='deathknight', spec='unholy',
-        source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
-        family='fixture', core=[], program=[['outbreak']])), encoding='utf-8')
-    assert command(tmp_path, ['register', str(material)]) == 0
-    capsys.readouterr()
-    with training_boundary(), patch.object(codec, boundary, side_effect=ValueError('受检编译工具或目标资料故障')):
-        assert command(tmp_path, ['prepare', '--template', str(template), '--targets', '1',
-                                 '--workspace', str(tmp_path / 'work')]) == 2
-    output = capsys.readouterr()
-    assert '受检编译工具或目标资料故障' in output.err
-    assert json.loads(output.out)[0]['status'] == 'paused'
+@pytest.mark.parametrize('boundary',['load_targeting','run_command'])
+def test_prepare_keeps_tool_failure_explicit_instead_of_rejecting_material(monkeypatch,prepared_input,boundary):
+    import codec,program
+    from seed_training import ensure_prepared
+    case=prepared_input
+    def failure(*args,**kwargs): raise ValueError('受检编译工具或目标资料故障')
+    monkeypatch.setattr(codec if boundary=='load_targeting' else program,
+                        'load_targeting' if boundary=='load_targeting' else 'compile_program',failure)
+    with pytest.raises(ValueError,match='受检编译工具或目标资料故障'):
+        ensure_prepared('/memory/template',1,'/memory/work',inputs=case.inputs,sources=[case.source('legal',[['outbreak']])])
+    assert case.writes==[]
 
 
+@pytest.mark.real
 def test_prepare_reuses_context_and_only_rebuilds_changed_sources(tmp_path, capsys, memory_training_center):
     from test_character_export import sample_profile
     import result_store
@@ -547,65 +517,116 @@ def test_prepare_reuses_context_and_only_rebuilds_changed_sources(tmp_path, caps
 
 
 
-@pytest.mark.parametrize('changed', [True])
-def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definition(tmp_path, capsys, monkeypatch,
-                                                                                 changed):
-    import burst
-    import engine
-    import result_store
+def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definition(monkeypatch):
+    from copy import deepcopy
+    from unittest.mock import Mock
+    import burst,engine,seed_training
     from test_character_export import sample_profile
+    original=json.loads(Path('projects/sim2gse/burst/unholy.json').read_text())
+    original['definition_id']=burst.definition_id(original)
+    changed=dict(deepcopy(original),version=original['version']+'-changed')
+    changed['definition_id']=burst.definition_id(changed)
+    reads=Mock(side_effect=[[original],[changed]])
+    monkeypatch.setattr(burst,'read_records',reads)
+    monkeypatch.setattr(Path,'read_text',lambda *args,**kwargs:sample_profile())
+    monkeypatch.setattr(engine,'identity',lambda mode:(Path('/engine'),{}))
+    identity=dict(spec_id=252,definition_id=original['definition_id'])
+    first=seed_training._training_inputs('/memory/template',1,use_burst=True,max_processes=1,burst_identity=identity)
+    assert first['definition']==original and first['simulation_config']['scene']=='single_target'
+    assert first['config']['input_interval_ms']==200
+    with pytest.raises(ValueError,match='爆发定义已变化'):
+        seed_training._training_inputs('/memory/template',5,use_burst=True,max_processes=1,burst_identity=identity)
+    assert reads.call_count==2
+    assert all(call.args==('burst_definitions','current_252') for call in reads.call_args_list)
 
-    result_store.bind_project(tmp_path)
-    definition = json.loads(Path('projects/sim2gse/burst/unholy.json').read_text(encoding='utf-8'))
-    definition['version'] += '-fixture'
-    definition['blocks'] = [[dict(kind='spell', simc_action='death_coil', name='死亡缠绕', spell_id=1002)]]
-    definition['excluded_spell_ids'] = [1002]
-    burst.publish(definition)
-    material = tmp_path / 'material.json'
-    material.write_text(json.dumps(dict(label='ordinary-loop', class_name='deathknight', spec='unholy',
-        source='fixture', original='fixture', instructions='repeat', semantic='preserved', changes=[],
-        family='plain', core=[], program=[['outbreak']])), encoding='utf-8')
-    assert command(tmp_path, ['register', str(material)]) == 0
+
+@pytest.mark.parametrize('failure',['missing','unreadable'])
+def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monkeypatch,failure):
+    from copy import deepcopy
+    from unittest.mock import MagicMock,Mock
+    from seed_training import sync_history,template_character
+    from test_character_export import sample_profile
+    import result_store
+    registered=dict(candidate_id='registered',source_id='registered',class_name='deathknight',spec='unholy',
+        semantic='preserved',program=[['outbreak']],core=[])
+    registry=[registered]
+    before=deepcopy(registry)
+    histories=[dict(run_id=name,profile=dict(identity=dict(**{'class':'deathknight'},spec='unholy')),
+        status='completed',candidate_data_key=name+'_candidate',candidate_key='winner',search_dps=0.) for name in ('valid','affected')]
+    valid=dict(candidate_data_key='valid_candidate',run_id='valid',candidate_key='winner',program=[['death_coil']])
+    cursor=MagicMock()
+    cursor.__enter__.return_value.fetchone.return_value=('runs',)
+    monkeypatch.setattr(result_store,'query',lambda *args,**kwargs:cursor)
+    monkeypatch.setattr(result_store,'iter_rows',lambda *args,**kwargs:iter(histories))
+    def many(*args,**kwargs):
+        if failure=='unreadable': raise PermissionError('临时历史读取失败')
+        return [valid]
+    monkeypatch.setattr(result_store,'read_many',many)
+    fallback=Mock(side_effect=[valid,None])
+    monkeypatch.setattr(result_store,'one',fallback)
+    writer=Mock()
+    monkeypatch.setattr(result_store,'write',writer)
+    if failure=='unreadable':
+        with pytest.raises(PermissionError,match='临时历史读取失败'):
+            sync_history(template_character(sample_profile()),sources=registry)
+        writer.assert_not_called()
+        fallback.assert_not_called()
+    else:
+        rows=sync_history(template_character(sample_profile()),sources=registry)
+        inactive=[row for row in rows if row.get('active') is False]
+        assert len(inactive)==1 and inactive[0]['source_id']=='history:affected'
+        assert '候选记录缺失' in inactive[0]['unavailable_reason']
+        assert {row['source_id'] for row in rows if row.get('active',True)}=={'registered','history:valid'}
+        assert {call.args[2] for call in fallback.call_args_list}=={'valid_candidate','affected_candidate'}
+        assert writer.call_count==1
+    assert registry==before
+
+
+@pytest.mark.real
+def test_training_prepare_keeps_formal_burst_through_public_cli(tmp_path, monkeypatch, capsys):
+    import burst
+    from test_burst import reviewed_fixture,character_seed_boundary
+    definition,raw=reviewed_fixture()
+    published=burst.publish(definition)
+    material=tmp_path/'material.json'
+    material.write_text(json.dumps(dict(label='ordinary',class_name='deathknight',spec='unholy',source='fixture',
+        original='fixture',instructions='repeat',semantic='preserved',changes=[],family='plain',core=[],
+        program=[['scourge_strike']])),encoding='utf-8')
+    assert command(tmp_path,['register',str(material)])==0
     capsys.readouterr()
-    api = result_store._api()
-    query = api['query']
-    discovery_queries = references = 0
-
-    def one_discovery(root, sql, parameters=None, **options):
-        nonlocal discovery_queries
-        if options.get('tables') == ['burst_definitions']:
-            discovery_queries += 1
-        return query(root, sql, parameters, **options)
-
-    monkeypatch.setattr(result_store, '_api', lambda: api)
-    monkeypatch.setitem(api, 'query', one_discovery)
-    template = tmp_path / 'standard.simc'
-    template.write_text(sample_profile(), encoding='utf-8')
-    with training_boundary(), monkeypatch.context() as scoped:
-        reference = engine.reference
-
-        def fixed_native(*args, **options):
-            nonlocal references
-            references += 1
-            native = reference(*args, **options)
-            native['identity']['data_version'] = definition['data_version']
-            if references == 1:
-                replacement = dict(definition, version=definition['version'] + '-changed', instructions='changed')
-                burst.publish(replacement)
-            return native
-
-        scoped.setattr(engine, 'reference', fixed_native)
-        status = command(tmp_path, ['prepare', '--template', str(template), '--targets', '1', '5',
-            '--use-burst', '--max-trainings', '1', '--workspace', str(tmp_path / 'work')])
-    assert status == 2
-    assert '爆发定义已变化' in capsys.readouterr().err
-    assert references == 1
-    assert not (tmp_path / 'work/5').exists()
-    assert discovery_queries == 2  # 每模板check的两条发现SQL；各组只按冻结键读取。
+    template=tmp_path/'standard.simc';template.write_text(raw,encoding='utf-8')
+    with character_seed_boundary() as engines:
+        assert command(tmp_path,['prepare','--template',str(template),'--targets','1',
+            '--workspace',str(tmp_path/'work'),'--use-burst'])==0
+    prepared=json.loads(capsys.readouterr().out)[0]
+    assert command(tmp_path,['list','--state','prepared','--config-key',prepared['config_key'],'--use-burst'])==0
+    rows=json.loads(capsys.readouterr().out)
+    context=next(row['context'] for row in rows if row['kind']=='context')
+    context=json.loads(context) if isinstance(context,str) else context
+    assert context['burst']['plan']==published['plan']
+    assert 'rule_initialization' not in context
+    assert context['preparation_input']['simulation']['scene']=='single_target'
+    assert 'rule_snapshot' not in context
+    assert burst.load(252)==published
+    from test_training_champion import completed_training
+    from seed_training import training_champion
+    import engine
+    with character_seed_boundary():
+        champion_template,completed=completed_training(tmp_path,1,[([['scourge_strike']],[110.,120.,130.])],
+            prepared_context=context)
+        monkeypatch.setattr(engine,'_training_template',lambda manifest:champion_template)
+        champion=training_champion('deathknight','unholy',context['preparation_input']['simulation'],
+            engines=engines,input_interval_ms=200,use_burst=True,
+            burst_identity=dict(spec_id=252,definition_id=published['definition_id']),
+            configuration_key=context['configuration_key'])
+    assert champion['status']=='selected',champion
+    assert champion['candidate_id']==completed[0]['candidate_id']
+    assert champion['condition_input']['burst']['plan']==published['plan']
 
 
-@pytest.mark.parametrize('failure', ['missing', 'corrupt', 'unreadable'])
-def test_training_prepare_keeps_history_missing_and_read_failure_semantics(tmp_path, capsys, monkeypatch, failure):
+@pytest.mark.real
+def test_training_prepare_keeps_corrupt_history_without_republishing(tmp_path, capsys, monkeypatch):
+    failure = 'corrupt'
     import result_store
     from test_character_export import sample_profile
 
@@ -670,44 +691,3 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(tmp_p
         active = json.loads(capsys.readouterr().out)
         assert {row['source_id'] for row in active} == {before['candidate_id'], 'history:valid'}
         assert set(fallback_keys) == {'valid_candidate', 'affected_candidate'}
-
-
-def test_training_prepare_keeps_formal_burst_through_public_cli(tmp_path, monkeypatch, capsys):
-    import burst
-    from test_burst import reviewed_fixture,character_seed_boundary
-    definition,raw=reviewed_fixture()
-    published=burst.publish(definition)
-    material=tmp_path/'material.json'
-    material.write_text(json.dumps(dict(label='ordinary',class_name='deathknight',spec='unholy',source='fixture',
-        original='fixture',instructions='repeat',semantic='preserved',changes=[],family='plain',core=[],
-        program=[['scourge_strike']])),encoding='utf-8')
-    assert command(tmp_path,['register',str(material)])==0
-    capsys.readouterr()
-    template=tmp_path/'standard.simc';template.write_text(raw,encoding='utf-8')
-    with character_seed_boundary() as engines:
-        assert command(tmp_path,['prepare','--template',str(template),'--targets','1',
-            '--workspace',str(tmp_path/'work'),'--use-burst'])==0
-    prepared=json.loads(capsys.readouterr().out)[0]
-    assert command(tmp_path,['list','--state','prepared','--config-key',prepared['config_key'],'--use-burst'])==0
-    rows=json.loads(capsys.readouterr().out)
-    context=next(row['context'] for row in rows if row['kind']=='context')
-    context=json.loads(context) if isinstance(context,str) else context
-    assert context['burst']['plan']==published['plan']
-    assert 'rule_initialization' not in context
-    assert context['preparation_input']['simulation']['scene']=='single_target'
-    assert 'rule_snapshot' not in context
-    assert burst.load(252)==published
-    from test_training_champion import completed_training
-    from seed_training import training_champion
-    import engine
-    with character_seed_boundary():
-        champion_template,completed=completed_training(tmp_path,1,[([['scourge_strike']],[110.,120.,130.])],
-            prepared_context=context)
-        monkeypatch.setattr(engine,'_training_template',lambda manifest:champion_template)
-        champion=training_champion('deathknight','unholy',context['preparation_input']['simulation'],
-            engines=engines,input_interval_ms=200,use_burst=True,
-            burst_identity=dict(spec_id=252,definition_id=published['definition_id']),
-            configuration_key=context['configuration_key'])
-    assert champion['status']=='selected',champion
-    assert champion['candidate_id']==completed[0]['candidate_id']
-    assert champion['condition_input']['burst']['plan']==published['plan']

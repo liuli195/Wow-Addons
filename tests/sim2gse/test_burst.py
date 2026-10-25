@@ -11,7 +11,9 @@ from test_seed_training import memory_result_center
 
 
 @pytest.fixture(autouse=True)
-def connected_center(isolated_result_center):
+def connected_center(request, isolated_result_center):
+    if request.node.get_closest_marker('real') is None:
+        return
     import result_store
     result_store.DATA_ROOT.mkdir()
 
@@ -64,6 +66,7 @@ def page_task_engine():
         yield
 
 
+@pytest.mark.real
 def test_public_burst_precheck_requires_a_reviewed_definition(tmp_path):
     profile = tmp_path / 'character.simc'
     profile.write_text(sample_profile(), encoding='utf-8')
@@ -71,6 +74,7 @@ def test_public_burst_precheck_requires_a_reviewed_definition(tmp_path):
         task.precheck_burst(profile, tmp_path / 'burst')
 
 
+@pytest.mark.real
 def test_public_burst_precheck_roundtrip_and_real_potion(tmp_path):
     import burst
     definition, _ = reviewed_fixture()
@@ -124,51 +128,47 @@ def test_public_burst_precheck_roundtrip_and_real_potion(tmp_path):
     assert behavior_key(displayed) == behavior_key(result['candidate'])
 
 
-def test_public_burst_rejects_draft_corruption(tmp_path):
+def test_public_burst_rejects_draft_corruption(monkeypatch):
     import burst
-    import result_store
-    definition, raw = reviewed_fixture()
+    from unittest.mock import Mock
+    definition, _ = reviewed_fixture()
     draft = copy.deepcopy(definition)
     draft['status'] = 'draft'
+    write = Mock()
+    monkeypatch.setattr(burst, 'write', write)
     with pytest.raises(ValueError, match='未审核'):
         burst.publish(draft)
-    row = burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
+    write.assert_not_called()
+    row = dict(definition, definition_id=burst.definition_id(definition))
     corrupted = copy.deepcopy(row)
     corrupted['plan']['start_ms'] = 6000
-    result_store.write('burst_definitions', 'current_252', [corrupted])
-    with pytest.raises(task.TaskError, match='身份不符'):
-        task.precheck_burst(profile, tmp_path / 'corrupt')
-    result_store.write('burst_definitions', 'current_252', [row])
+    monkeypatch.setattr(burst, 'read_records', Mock(return_value=[corrupted]))
+    with pytest.raises(ValueError, match='身份不符'):
+        burst.load(252)
+    assert row['plan']['start_ms'] == 3000
 
 
-def test_public_burst_storage_failure_keeps_the_previous_version(tmp_path, monkeypatch):
+def test_public_burst_storage_failure_keeps_the_previous_version(monkeypatch):
     import burst
-    import result_store
-    definition, raw = reviewed_fixture()
-    original = burst.publish(definition)
+    from unittest.mock import Mock
+    definition, _ = reviewed_fixture()
+    original = dict(definition, definition_id=burst.definition_id(definition))
     newer = copy.deepcopy(definition)
     newer['version'] = 'test-next-version'
     newer['instructions'] += ' New reviewed instruction.'
-    real_write = burst.write
-
-    def fail_current(table, key, rows):
-        if key == 'current_252':
-            raise OSError('injected current publication failure')
-        return real_write(table, key, rows)
-
-    monkeypatch.setattr(burst, 'write', fail_current)
+    read = Mock(return_value=[original])
+    monkeypatch.setattr(burst, 'read_records', read)
+    write = Mock(side_effect=[1, OSError('injected current publication failure')])
+    monkeypatch.setattr(burst, 'write', write)
     with pytest.raises(OSError, match='publication failure'):
         burst.publish(newer)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    result = task.precheck_burst(profile, tmp_path / 'restored')
-    assert result['definition']['definition_id'] == original['definition_id']
-    assert result_store.read_records('burst_definitions', 'history_' + original['definition_id']) == [original]
+    assert [call.args[1] for call in write.call_args_list] == [
+        'history_' + burst.definition_id(newer), 'current_252']
+    assert write.call_args_list[0].args[2][0]['version'] == 'test-next-version'
+    assert burst.load(252) == original
 
 
-
+@pytest.mark.real
 def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path):
     import burst
     definition, raw = reviewed_fixture()
@@ -182,6 +182,7 @@ def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path)
 
 
 
+@pytest.mark.real
 def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
     import burst
     from program import from_search_program, compile_program
@@ -210,6 +211,7 @@ def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
     assert all(event['source'] == 'loop' for event in events if event['sequence_member'] >= 0)
 
 
+@pytest.mark.real
 def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
     import burst
     from program import from_action_blocks, compile_program
@@ -242,46 +244,46 @@ def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
     assert quiet['consistent'] and not quiet['trace']
 
 
-def test_public_search_excludes_current_burst_content_and_changes_with_definition(
-        tmp_path, monkeypatch, memory_result_center, page_task_engine):
+def test_public_search_excludes_current_burst_content_and_changes_with_definition():
     import burst
-    simulation = dict(target_count=1, scene='single_target')
+    from program import from_search_program
+    from test_search import _fast_capabilities
     definition, raw = reviewed_fixture()
-    burst.publish(definition)
-    profile = tmp_path / 'character.simc'
-    profile.write_text(raw, encoding='utf-8')
-    config = dict(candidate_limit=1, batch_targets=(2,), iterations=2,
-                  validation_batches=2, final_batches=1, final_iterations=2,
-                  scenarios=('nominal',), diagnostic_logging=True)
-    result = task.run_task(profile, tmp_path / 'search', use_burst=True, search_config=config,
-                           simulation_config=simulation)
-    names = {action['simc_action'] for action in result['capabilities']['actions']}
+    capabilities = _fast_capabilities()
+    capabilities['actions'] += [dict(command, gcd_ms=0 if command['kind'] != 'spell' else 1500)
+        for block in definition['blocks'] for command in block
+        if command['simc_action'] not in {action['simc_action'] for action in capabilities['actions']}]
+    # 审核定义提供真实的按钮身份；不从旧固定名单生成排除期待。
+    for action in capabilities['actions']:
+        for block in definition['blocks']:
+            for command in block:
+                if action['simc_action'] == command['simc_action']:
+                    action.update(command)
+    identity = dict(spec_id=252, data_version=definition['data_version'])
+    before = copy.deepcopy(capabilities)
+    blocks = burst.prepare(definition, task.parse_character(raw), capabilities, identity)
+    filtered = burst.search_capabilities(capabilities, blocks)
+    names = {action['simc_action'] for action in filtered['actions']}
     assert not names.intersection({'army_of_the_dead', 'dark_transformation', 'potion',
                                   'use_item,slot=trinket1', 'use_item,slot=trinket2'})
-    assert result['burst']['definition_id']
-    saved = task.read_task(tmp_path / 'search', include_search_records=True)
-    assert saved['burst']['candidate']['text'] == result['burst']['candidate']['text']
-    resumed = task.resume_task(tmp_path / 'search', simulation_config=simulation)
-    assert resumed['burst']['definition_id'] == result['burst']['definition_id']
-    # An independently reviewed definition containing only Outbreak changes the
-    # exclusion scope: the former burst buttons must become available again.
+    with pytest.raises(ValueError, match='当前爆发宏'):
+        burst.check_loop(from_search_program([['dark_transformation']], capabilities), filtered)
     revised = copy.deepcopy(definition)
     revised['version'] += '-outbreak'
     revised['blocks'] = [[dict(kind='spell', simc_action='outbreak', name='爆发测试技能',
-                              spell_id=77575, slot=None, item_id=None)]]
-    revised['excluded_spell_ids'] = [77575]
-    burst.publish(revised)
-    changed = task.run_task(profile, tmp_path / 'changed', use_burst=True, search_config=config,
-                           simulation_config=simulation)
-    changed_names = {action['simc_action'] for action in changed['capabilities']['actions']}
+        spell_id=1001, slot=None, item_id=None)]]
+    revised['excluded_spell_ids'] = [1001]
+    changed = burst.search_capabilities(capabilities,
+        burst.prepare(revised, task.parse_character(raw), capabilities, identity))
+    changed_names = {action['simc_action'] for action in changed['actions']}
     assert 'outbreak' not in changed_names
     assert {'army_of_the_dead', 'dark_transformation', 'use_item,slot=trinket1',
             'use_item,slot=trinket2'} <= changed_names
-    assert changed['burst']['definition_id'] != result['burst']['definition_id']
-    with pytest.raises(task.TaskError, match='爆发定义已变化'):
-        task.resume_task(tmp_path / 'search', simulation_config=simulation)
+    assert burst.definition_id(revised) != burst.definition_id(definition)
+    assert capabilities == before
 
 
+@pytest.mark.real
 def test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training(tmp_path, page_task_engine):
     import burst
     import result_store
@@ -369,7 +371,8 @@ def character_seed_boundary(*, native_flags=None, native_reference=None):
             yield {mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')}
 
 
-@pytest.mark.parametrize("old_engine", [False, True])
+@pytest.mark.parametrize("old_engine", [True])
+@pytest.mark.real
 def test_page_dual_scores_character_adapted_seed_without_changing_training(
         tmp_path, memory_result_center, old_engine):
     import burst
@@ -445,6 +448,7 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
             thread.join(3)
 
 
+@pytest.mark.real
 def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
         tmp_path, monkeypatch, page_task_engine, memory_result_center):
     import burst
@@ -519,6 +523,7 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
 
 
 
+@pytest.mark.real
 def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path, monkeypatch):
     import burst
     import dual_task

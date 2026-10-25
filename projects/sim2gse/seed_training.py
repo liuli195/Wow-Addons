@@ -10,7 +10,6 @@ import hashlib
 from itertools import islice
 import json
 import math
-import msvcrt
 from pathlib import Path
 import sqlite3
 import sys
@@ -70,6 +69,7 @@ def decode(value):
 
 @contextmanager
 def writer_lock():
+    import msvcrt
     result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
     with (result_store.DATA_ROOT / '.seed-writer.lock').open('a+b') as handle:
         if handle.tell() == 0:

@@ -1,18 +1,24 @@
 """公开任务与恢复接缝保护局部检查点的完整状态。"""
 import copy
 import json
+from pathlib import Path
+import sqlite3
 
 import pytest
 
 
 
 
-def _new_checkpoint(tmp_path):
+def _new_checkpoint(tmp_path=None):
     from search import TaskStore
 
-    destination = tmp_path / 'task'
-    destination.mkdir()
-    store = TaskStore(destination)
+    if tmp_path is None:
+        store = TaskStore('/memory/checkpoint', connection=sqlite3.connect(':memory:'),
+                          reusable_database=':memory:', report_locations={})
+    else:
+        destination = tmp_path / 'task'
+        destination.mkdir()
+        store = TaskStore(destination)
     store.state.update(run_id='checkpoint', config={'diagnostic_logging': False}, status='running',
         elapsed_seconds=0, inflight={}, pending=[dict(receipt={'feedback': {'reward': None}})],
         archive=[dict(key='first', evidence={'samples': [1]}),
@@ -25,17 +31,26 @@ def _reopen_checkpoint(store):
     from search import TaskStore
 
     destination = store.destination
+    in_memory = destination == Path('/memory/checkpoint')
+    if in_memory:
+        # Exercise the original SQL and a fresh Store, not file/WAL durability.
+        database = sqlite3.connect(':memory:')
+        store.db.backup(database)
+        store.diagnostic_logging_override = False
     store.close()
-    reopened = TaskStore(destination)
+    reopened = (TaskStore(destination, connection=database, reusable_database=':memory:',
+                          report_locations={}) if in_memory else TaskStore(destination))
     try:
         return copy.deepcopy(reopened.state)
     finally:
+        if in_memory:
+            reopened.diagnostic_logging_override = False
         reopened.close()
 
 
 @pytest.mark.parametrize('change', ['reorder', 'delete', 'append', 'new_field', 'whole_archive'])
-def test_checkpoint_structural_changes_fall_back_without_losing_unmarked_nested_state(tmp_path, change):
-    store = _new_checkpoint(tmp_path)
+def test_checkpoint_structural_changes_fall_back_without_losing_unmarked_nested_state(change):
+    store = _new_checkpoint()
     store.state['pending'][0]['receipt']['feedback']['reward'] = .5
     if change == 'reorder':
         store.state['archive'].reverse()
@@ -54,8 +69,8 @@ def test_checkpoint_structural_changes_fall_back_without_losing_unmarked_nested_
     assert _reopen_checkpoint(store) == expected
 
 
-def test_scoped_checkpoint_deletes_an_explicit_field(tmp_path):
-    store = _new_checkpoint(tmp_path)
+def test_scoped_checkpoint_deletes_an_explicit_field():
+    store = _new_checkpoint()
     del store.state['pending']
     store.save(fields=('pending',))
     expected = copy.deepcopy(store.state)
@@ -63,11 +78,11 @@ def test_scoped_checkpoint_deletes_an_explicit_field(tmp_path):
     assert 'pending' not in expected
 
 
-def test_scoped_checkpoint_failure_rolls_back_and_retry_persists_all_changes(tmp_path):
+def test_scoped_checkpoint_failure_rolls_back_and_retry_persists_all_changes():
     import sqlite3
     from search import TaskStore
 
-    store = _new_checkpoint(tmp_path)
+    store = _new_checkpoint()
     before = copy.deepcopy(store.state)
     store.state['pending'][0]['receipt']['feedback']['reward'] = .75
     store.state['archive'][1]['evidence']['samples'].append(4)
@@ -123,6 +138,7 @@ def _stage_checkpoint_reports(store, count=1):
     return rows
 
 
+@pytest.mark.real
 def test_report_checkpoint_persists_original_locations_with_one_complete_comparison(tmp_path):
     store = _new_checkpoint(tmp_path)
     store.state['config']['diagnostic_logging'] = True
@@ -139,6 +155,7 @@ def test_report_checkpoint_persists_original_locations_with_one_complete_compari
     assert comparisons == 1
 
 
+@pytest.mark.real
 def test_mixed_checkpoint_and_immediate_batch_encode_each_summary_once(tmp_path, monkeypatch):
     from search import TaskStore
 
@@ -190,8 +207,8 @@ def test_mixed_checkpoint_and_immediate_batch_encode_each_summary_once(tmp_path,
 
 
 @pytest.mark.parametrize('with_summary', [False, True])
-def test_empty_report_checkpoint_still_saves_nested_state_and_summary_count(tmp_path, with_summary):
-    store = _new_checkpoint(tmp_path)
+def test_empty_report_checkpoint_still_saves_nested_state_and_summary_count(with_summary):
+    store = _new_checkpoint()
     store.state['config']['diagnostic_logging'] = True
     store.defer_persistence = True
     store.state['pending'][0]['receipt']['feedback']['reward'] = .25
@@ -206,6 +223,7 @@ def test_empty_report_checkpoint_still_saves_nested_state_and_summary_count(tmp_
 
 
 @pytest.mark.parametrize('resume', ['same_object', 'reopen'])
+@pytest.mark.real
 def test_last_report_group_failure_keeps_reliable_reports_for_retry_or_recovery(tmp_path, resume):
     import sqlite3
     from search import TaskStore

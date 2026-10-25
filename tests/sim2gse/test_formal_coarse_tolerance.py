@@ -5,6 +5,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from test_population_training import memory_ga
 
 
 POLICY = dict(version=1, initial='exclude_invalid_score', offspring='retain_verified_slot')
@@ -142,3 +143,54 @@ def test_formal_coarse_tolerance_fails_closed_outside_proven_new_score_data(monk
         with pytest.raises(ValueError, match='没有可靠'):
             run()
         assert not store.state['ga']['population'] and not store.state['archive']
+
+
+def test_invalid_mean_uses_real_report_validation_and_never_masks_count_or_stage(monkeypatch, memory_ga):
+    """报告先验样本身份，明确坏mean才可由正式粗评隔离；没有第二评分器。"""
+    import engine
+    import simulation_config
+    from test_search import _fast_report
+    with monkeypatch.context() as scoped:
+        scoped.setitem(simulation_config.TRAINING_DEFAULTS, 'mutation_probability', 0.)
+        scoped.setitem(simulation_config.TRAINING_DEFAULTS, 'crossover_probability', 0.)
+        def make(mean, *, formal=True, stage='search', count=None):
+            attempts = []
+            def native(profile, candidate, folder, **options):
+                blocks = [[row['simc_action'] for row in block] for block in candidate['blocks']]
+                bad = blocks == STARTS[0] and options['iterations'] == (32 if stage == 'search' else 128)
+                samples = options['iterations'] - 1
+                if bad:
+                    attempts.append(str(folder))
+                    samples = samples if count is None else count
+                report = _fast_report(options['character'], mean if bad else 100., samples)
+                summary = engine.check_report(report, options['character'], options['iterations'],
+                    simulation_config=options['simulation_config'], allow_zero=True)
+                return dict(report=report, summary=summary, trace=[])
+            case = memory_ga(formal=formal, programs=STARTS, native=native)
+            return case, attempts
+        for mean in (float('nan'), float('inf'), -1.):
+            case, attempts = make(mean)
+            result = case.run()
+            assert result['status'] == 'completed'
+            assert result['search']['effective_population_size'] == 1
+            assert len(attempts) == 2 and len(set(attempts)) == 1
+            assert len(result['search']['coarse_rejections']) == 1
+            assert result['search_result']['dps'] == 100.
+            original = list(attempts)
+            case.store.state = type(case.store).load_state(case.store.db)
+            assert case.run()['selected_candidate_key'] == result['selected_candidate_key']
+            assert attempts == original, '恢复不得重试已剔除的明确坏评分'
+        for options in (dict(count=30), dict(count=31.), dict(count=True)):
+            case, attempts = make(float('nan'), **options)
+            with pytest.raises(engine.NativeEvaluationError):
+                case.run()
+            assert len(attempts) == 2 and not case.store.state['ga'].get('coarse_rejections')
+        for options in (dict(formal=False), dict(stage='nominal')):
+            case, attempts = make(float('nan'), **options)
+            with pytest.raises(engine.CandidateScoreError):
+                case.run()
+            assert len(attempts) == 2
+        character = case.character
+        zero = _fast_report(character, 0., 31)
+        with pytest.raises(engine.NativeEvaluationError):
+            engine.check_report(zero, character, 32, allow_zero=False)

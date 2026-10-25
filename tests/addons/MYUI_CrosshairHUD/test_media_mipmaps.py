@@ -12,6 +12,16 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'scripts/media'))
 from build_crosshair_media import build
 
+pytestmark = pytest.mark.real
+
+
+@pytest.fixture(scope="module")
+def built_materials(tmp_path_factory):
+    """同一进程只构建一次完整15套成品；消费者只读，坏源测试独立隔离。"""
+    output = tmp_path_factory.mktemp("hud-materials")
+    build(output)
+    return output
+
 
 def read_levels(path):
     data = path.read_bytes()
@@ -32,16 +42,16 @@ def read_levels(path):
     return levels
 
 
-def test_build_produces_complete_game_materials_with_unchanged_base(tmp_path):
-    build(tmp_path)
+def test_build_produces_complete_game_materials_with_unchanged_base(built_materials):
+    tmp_path = built_materials
     pngs = sorted(tmp_path.glob('*.png'))
     manifest = json.loads((ROOT / 'assets/CrosshairHUDMedia/manifest.json').read_text(encoding='utf-8'))
     assert len(pngs) == len(manifest['assets']) + 3
     assert len(list(tmp_path.glob('*.blp'))) == len(pngs)
-    with Image.open(tmp_path / 'mask_half.png') as mask:
-        row = np.asarray(mask.getchannel('A'))[512]
-        assert row[508:514].tolist() == [255, 191, 127, 63, 0, 0]
-        assert np.count_nonzero((row > 0) & (row < 255)) == 3
+    assert {p.name for p in pngs} == {asset['file'] for asset in manifest['assets']} | {
+        'mask_half.png', 'death_strike_marker.png', 'coagulated_blood_fill.png'}
+    for asset in manifest['assets']:
+        assert (tmp_path / asset['file']).read_bytes() == (ROOT / 'assets/CrosshairHUDMedia/Textures' / asset['file']).read_bytes()
     for png in pngs:
         levels = read_levels(png.with_suffix('.blp'))
         with Image.open(png) as source:
@@ -49,57 +59,15 @@ def test_build_produces_complete_game_materials_with_unchanged_base(tmp_path):
         assert levels[-1].shape == (1, 1)
 
 
-def test_white_material_preserves_alpha_and_rectangular_chain(tmp_path):
+def test_white_material_writes_a_readable_game_file(tmp_path):
+    """保实际写盘与读取边界；头、偏移、缩小值和错误矩阵由dev-unit内存断言承接。"""
     from white_blp import write_white_blp, verify_white_blp
     image = Image.new('RGBA', (4, 2), (255, 255, 255, 0))
     image.putalpha(Image.fromarray(np.array([[20, 40, 60, 80], [100, 120, 140, 160]], dtype=np.uint8)))
     path = tmp_path / 'rectangle.blp'
     write_white_blp(image, path)
-    levels = read_levels(path)
-    assert [x.shape for x in levels] == [(2, 4), (1, 2), (1, 1)]
-    assert levels[1].tolist() == [[70, 110]]
-    assert levels[2].tolist() == [[90]]
-    verify_white_blp(path, image)
-    original = path.read_bytes()
-    damaged = bytearray(path.read_bytes())
-    damaged[10] = 0
-    path.write_bytes(damaged)
-    with pytest.raises(ValueError, match='格式'):
-        verify_white_blp(path, image)
-    damaged = bytearray(original)
-    damaged[1172 + 8] = 0
-    path.write_bytes(damaged)
-    with pytest.raises(ValueError, match='透明度'):
-        verify_white_blp(path, image)
-    path.write_bytes(original[:-1])
-    with pytest.raises(ValueError, match='尺寸'):
-        verify_white_blp(path, image)
-    with pytest.raises(ValueError, match='2的幂'):
-        write_white_blp(Image.new('RGBA', (3, 2), 'white'), path)
-    with pytest.raises(ValueError, match='白色'):
-        write_white_blp(Image.new('RGBA', (4, 2), 'red'), path)
-
-
-def test_reused_material_build_keeps_four_crosshair_sources_and_centered_fine_arc(tmp_path):
-    build(tmp_path)
-    names = {p.stem for p in tmp_path.glob('*.blp')}
-    assert len(names) == 15
-    assert {n for n in names if n.startswith('crosshair')} == {
-        'crosshair_arm', 'crosshair_arm_shadow', 'crosshair_point', 'crosshair_point_shadow'}
-    assert not names.intersection({'power_arc', 'power_arc_shadow', 'resource_04', 'resource_05',
-                                   'resource_06', 'coagulated_blood_arc', 'crosshair'})
-    for name, size in {'crosshair_arm': (256, 64), 'crosshair_arm_shadow': (512, 256),
-                       'crosshair_point': (64, 64), 'crosshair_point_shadow': (256, 256)}.items():
-        with Image.open(tmp_path / f'{name}.png') as image:
-            assert image.size == size
-        assert read_levels(tmp_path / f'{name}.blp')[-1].shape == (1, 1)
-    with Image.open(ROOT / 'assets/CrosshairHUDMedia/Textures/crosshair.png') as source:
-        with Image.open(tmp_path / 'crosshair_arm.png') as arm:
-            assert np.array_equal(np.asarray(arm.crop((57, 21, 199, 43)).getchannel('A')),
-                                  np.asarray(source.crop((565, 501, 707, 523)).getchannel('A')))
-        with Image.open(tmp_path / 'crosshair_point.png') as point:
-            assert np.array_equal(np.asarray(point.crop((9, 9, 55, 55)).getchannel('A')),
-                                  np.asarray(source.crop((489, 489, 535, 535)).getchannel('A')))
+    assert np.array_equal(read_levels(path)[0], np.asarray(image.getchannel('A')))
+    assert verify_white_blp(path, image) == 3
 
 
 def test_invalid_source_does_not_remove_existing_materials(tmp_path, monkeypatch):

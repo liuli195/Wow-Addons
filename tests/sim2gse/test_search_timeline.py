@@ -1,217 +1,101 @@
-"""轻量诊断从公开任务入口采集，不改变业务搜索。"""
+"""曲线规则直接读取内存成绩；一条真实文件链保留任务/CLI/恢复接线。"""
+from collections import Counter
+from copy import deepcopy
 import json
-import pytest
 from pathlib import Path
+from unittest.mock import patch
 
-from test_search import _fast_search_boundary, sample_profile
+import pytest
 
-
-def test_task_enabled_timeline_exports_existing_scores_after_completion(tmp_path):
-    from task import run_task, read_task
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _fast_search_boundary():
-        result = run_task(source, tmp_path / 'task', search_config=dict(
-            search_timeline=True, candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1))
-        saved = read_task(tmp_path / 'task')
-    files = list((tmp_path / 'task').glob('search-timeline-*.json'))
-    assert len(files) == 1
-    curve = json.loads(files[0].read_text(encoding='utf-8'))
-    assert saved['status'] == result['status'] == curve['status'] == 'completed'
-    best = next(event for event in curve['events'] if event['kind'] == 'score' and event['series'] == 'global')
-    assert best['dps'] == result['search_result']['dps']
-    assert best['candidate_key'] == result['selected_candidate_key']
-    assert best['samples'] == result['search_result']['samples']
-    assert curve['search_stop_seconds'] <= curve['result_saved_seconds'] <= curve['call_seconds']
-    assert files[0].with_suffix('.html').is_file()
+from test_population_training import memory_ga
+from test_search import _fast_search_boundary, _initialized_starts, sample_profile
+from test_training_champion import unchanged_offspring
 
 
-def test_task_cli_timeline_override_and_default_off_have_identical_results(tmp_path, monkeypatch):
+def timeline_payload(targets, status='completed', end=45):
+    """独立已知成绩：10.001秒100、25秒90，不从采样实现生成期待。"""
+    return dict(schema='sim2gse-search-timeline-v1', context=dict(simulation_config=dict(target_count=targets),
+            comparison=dict(profile_sha256='known-fixture', engines={'controlled': 'verified-fixture'},
+                simulation_config=dict(target_count=targets), input_interval_ms=300, reset_events=[], burst=None)),
+        resumed=False, time_origin='本次调用', status=status, stop_reason='candidate_limit',
+        search_start_seconds=2, search_stop_seconds=30, result_saved_seconds=end,
+        call_seconds=end, truncated_at=None, events=[
+            dict(kind='score', seconds=10.001, series='global', dps=100, candidate_key='a', samples=2),
+            dict(kind='score', seconds=25, series='global', dps=90, candidate_key='a', samples=4)])
+
+
+def test_timeline_switch_has_identical_formal_scores_and_native_requests(memory_ga, unchanged_offspring):
     import builtins
-    from collections import Counter
-    import simulation_config
-    from task import main, run_task, read_task
-    settings = tmp_path / 'config.toml'
-    settings.write_text('[search]\nsearch_timeline = true\n', encoding='utf-8')
-    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', settings)
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    import sequence
-    from test_search import _fast_evaluate
-    count = 0
-    def evaluate(*args, **kwargs):
-        nonlocal count
-        count += 1
-        if count > 1:
-            kwargs['runtime'].cancel()
-            kwargs['runtime'].check()
-        return _fast_evaluate(*args, **kwargs)
-    with _fast_search_boundary(), monkeypatch.context() as local:
-        local.setattr(sequence, 'evaluate', evaluate)
-        assert main([str(source), '--output', str(tmp_path / 'cli'), '--no-search-timeline']) == 0
-        assert read_task(tmp_path / 'cli')['config']['search_timeline'] is False
-    assert not list((tmp_path / 'cli').glob('search-timeline-*'))
+    from search_timeline import Timeline
+    from sequence import behavior_key
     original_import = builtins.__import__
     def forbid(name, *args, **kwargs):
         if name == 'search_timeline':
             raise AssertionError('默认关闭不得加载曲线模块')
         return original_import(name, *args, **kwargs)
-    results = []
-    native_requests = {}
+    results, requests = [], []
     for enabled in (False, True):
-        with _fast_search_boundary():
-            with monkeypatch.context() as local:
-                import result_store
-                local.setattr(result_store, 'DATA_ROOT', tmp_path / ('center-' + str(enabled)))
-                native_requests[enabled] = []
-                def observe_native(*args, **kwargs):
-                    native_requests[enabled].append((sequence.behavior_key(args[1]),
-                        kwargs['seed'], kwargs['iterations'], kwargs['trace']))
-                    return _fast_evaluate(*args, **kwargs)
-                local.setattr(sequence, 'evaluate', observe_native)
-                if not enabled:
-                    local.setattr(builtins, '__import__', forbid)
-                results.append(run_task(source, tmp_path / str(enabled), search_config=dict(
-                    search_timeline=enabled, candidate_limit=2, batch_targets=(2,), iterations=2,
-                    validation_batches=1)))
+        case = memory_ga(formal=True, programs=[[['outbreak'], ['death_coil']]],
+                         search_settings=dict(search_timeline=enabled))
+        timeline = Timeline(context=dict(algorithm={})) if enabled else None
+        with patch.object(builtins, '__import__', original_import if enabled else forbid):
+            results.append(case.run(timeline=timeline))
+        requests.append(Counter((behavior_key(call[1]), call[2]['seed'],
+                                 call[2]['iterations'], call[2].get('trace')) for call in case.calls))
     assert results[0]['search_result'] == results[1]['search_result']
     assert results[0]['completed_batches'] == results[1]['completed_batches']
-    assert Counter(native_requests[False]) == Counter(native_requests[True])
-    assert {request[2] for request in native_requests[True]} >= {32, 128}
+    assert requests[0] == requests[1]
+    assert {request[2] for request in requests[1]} >= {32, 128}
     def records(result):
-        # Parallel archive admission has no list-order contract; compare full scoring facts.
         return {row['key']: (row['program'], row['score'],
             [(batch['request'], batch['dps'], batch['samples']) for batch in row['batches']])
             for row in result['search']['records']}
     assert records(results[0]) == records(results[1])
-    assert not list((tmp_path / 'False').glob('search-timeline-*'))
+    best, = [event for event in timeline.events if event['kind'] == 'score' and event['series'] == 'global']
+    assert best['dps'] == results[1]['search_result']['dps']
+    assert best['candidate_key'] == results[1]['selected_candidate_key']
+    assert best['samples'] == results[1]['search_result']['samples'] == 381
 
 
-def test_offline_curves_never_start_tasks_or_backfill_future_and_split_targets(tmp_path, monkeypatch):
+def test_offline_curves_never_start_tasks_or_backfill_future_and_split_targets(monkeypatch):
     import task
-    def forbidden(*args, **kwargs):
-        raise AssertionError('离线曲线不得启动任务')
-    monkeypatch.setattr(task, 'run_task', forbidden)
-    def payload(targets, status='completed', end=45):
-        return dict(schema='sim2gse-search-timeline-v1', context=dict(simulation_config=dict(target_count=targets),
-                comparison=dict(profile_sha256='known-fixture', engines={'controlled': 'verified-fixture'},
-                    simulation_config=dict(target_count=targets), input_interval_ms=300, reset_events=[], burst=None)),
-            resumed=False, time_origin='本次调用', status=status, stop_reason='candidate_limit',
-            search_start_seconds=2, search_stop_seconds=30, result_saved_seconds=end,
-            call_seconds=end, truncated_at=None, events=[
-                dict(kind='score', seconds=10.001, series='global', dps=100, candidate_key='a', samples=2),
-                dict(kind='score', seconds=25, series='global', dps=90, candidate_key='a', samples=4)])
-    inputs = []
-    for name, content in [('a', payload(1)), ('b', payload(1, 'failed', 22)), ('c', payload(5))]:
-        path = tmp_path / ('search-timeline-' + name + '.json')
-        path.write_text(json.dumps(content), encoding='utf-8')
-        inputs.append(str(path))
-    output = tmp_path / 'comparison.html'
-    assert task.main(['curves', *inputs, '--output', str(output)]) == 0
-    comparison = json.loads(output.with_suffix('.json').read_text(encoding='utf-8'))
-    assert len(comparison['groups']) == 2
-    runs = comparison['groups'][0]['runs']
-    assert len(runs) == 2
-    first = {row['seconds']: row for row in runs[0]['samples'] if row['series'] == 'global'}
+    from search_timeline import _groups, resample
+    monkeypatch.setattr(task, 'run_task', lambda *a, **k: pytest.fail('离线曲线不得启动任务'))
+    payloads = [timeline_payload(1), timeline_payload(1, 'failed', 22), timeline_payload(5)]
+    groups = list(_groups(payloads).values())
+    assert [len(group) for group in groups] == [2, 1]
+    first = {row['seconds']: row for row in resample(payloads[0], horizon=50)}
     assert first[10]['dps'] is None
     assert first[20]['dps'] == 100
     assert first[30]['dps'] == 90
     assert first[50]['dps'] == 90 and first[50]['status'] == 'stopped'
-    failed = {row['seconds']: row for row in runs[1]['samples'] if row['series'] == 'global'}
+    failed = {row['seconds']: row for row in resample(payloads[1], horizon=50)}
     assert failed[30]['dps'] is None and failed[30]['status'] == 'incomplete'
-    assert output.read_text(encoding='utf-8').count('<svg') == 2
 
 
-def test_cancelled_timeline_resumes_as_new_segment_and_export_failure_keeps_result(tmp_path, monkeypatch):
-    import sequence
+def test_task_records_distinct_ga_stages_with_independent_clock_and_bounded_events(
+        monkeypatch, memory_ga, unchanged_offspring):
     import search_timeline
-    from task import run_task, resume_task, read_task
-    from test_search import _fast_evaluate
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    calls = 0
-    def cancel_second(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            kwargs['runtime'].cancel()
-            kwargs['runtime'].check()
-        return _fast_evaluate(*args, **kwargs)
-    with _fast_search_boundary():
-        with monkeypatch.context() as local:
-            local.setattr(sequence, 'evaluate', cancel_second)
-            result = run_task(source, tmp_path / 'task', search_config=dict(search_timeline=True,
-                candidate_limit=2, batch_targets=(2,), iterations=2, validation_batches=1))
-        assert result['status'] == 'cancelled'
-        old_file, = (tmp_path / 'task').glob('search-timeline-*.json')
-        original = old_file.read_bytes()
-        old = json.loads(original)
-        assert old['status'] == old['stop_reason'] == 'cancelled'
-        resumed = resume_task(tmp_path / 'task', search_timeline=True)
-        assert resumed['status'] == 'completed'
-        assert old_file.read_bytes() == original
-        segments = [json.loads(path.read_text(encoding='utf-8')) for path in (tmp_path / 'task').glob('search-timeline-*.json')]
-        fresh, = [segment for segment in segments if segment['resumed']]
-        assert fresh['events'][0]['seconds'] == 0
-        assert fresh['events'][0]['kind'] == 'preparation'
-        assert not [event for event in fresh['events'] if event['kind'] == 'score' and event['seconds'] == 0]
-        def broken(*args, **kwargs):
-            raise OSError('draw failure')
-        monkeypatch.setattr(search_timeline, 'render', broken)
-        result = run_task(source, tmp_path / 'plot-failure', search_config=dict(search_timeline=True,
-            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-        assert result['status'] == read_task(tmp_path / 'plot-failure')['status'] == 'completed'
-        assert len(list((tmp_path / 'plot-failure').glob('search-timeline-*.json'))) == 1
-        def failed_native(*args, **kwargs):
-            raise OSError('native failed first')
-        with monkeypatch.context() as local:
-            local.setattr(sequence, 'evaluate', failed_native)
-            import result_store
-            local.setattr(result_store, 'DATA_ROOT', tmp_path / 'failure-center')
-            from task import TaskError
-            with pytest.raises(TaskError, match='native failed first'):
-                run_task(source, tmp_path / 'native-failure', search_config=dict(search_timeline=True,
-                    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-        failure_path, = (tmp_path / 'native-failure').glob('search-timeline-*.json')
-        failed = json.loads(failure_path.read_text(encoding='utf-8'))
-        assert failed['status'] == 'failed'
-        assert not [event for event in failed['events'] if event['kind'] == 'score']
-
-
-def test_task_records_distinct_ga_stages_with_independent_clock_and_bounded_events(tmp_path, monkeypatch):
-    import search_timeline
-    from task import run_task
-    from test_search import _prepared_search_boundary
-    from test_search import _fast_evaluate
     starts = [[['outbreak'], ['scourge_strike']], [['outbreak'], ['death_coil']]]
     clock = [100.]
     monkeypatch.setattr(search_timeline, 'monotonic', lambda: clock[0])
-    def evaluate(profile, candidate, folder, **kwargs):
-        result = _fast_evaluate(profile, candidate, folder, **kwargs)
-        first = result['blocks'] == starts[0]
-        score = (100. if first else 90.) if kwargs['iterations'] != 128 else (80. if first else 120.)
-        result['summary']['dps'] = score
-        result['report']['sim']['statistics']['raid_dps']['mean'] = score
-        result['report']['sim']['players'][0]['collected_data']['dps']['mean'] = score
-        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
+    def score(candidate, options):
+        first = candidate['blocks'][-1][0]['simc_action'] == 'scourge_strike'
+        value = (100. if first else 90.) if options['iterations'] != 128 else (80. if first else 120.)
         clock[0] += 10.001
-        return result
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
+        return value
     for cap in (10000, 4):
         monkeypatch.setattr(search_timeline, 'MAX_EVENTS', cap)
-        from runtime import TaskRuntime
-        runtime = TaskRuntime(600)
-        runtime.timeline_origin = clock[0]
-        with _prepared_search_boundary(tmp_path, starts, evaluate=evaluate):
-            result = run_task(source, tmp_path / str(cap), _runtime=runtime, search_config=dict(search_timeline=True,
-                candidate_limit=3, batch_targets=(2, 4), iterations=2, validation_batches=2))
-        path, = (tmp_path / str(cap)).glob('search-timeline-*.json')
-        curve = json.loads(path.read_text(encoding='utf-8'))
-        assert result['status'] == curve['status'] == 'completed'
+        timeline = search_timeline.Timeline(origin=clock[0], context=dict(algorithm={}))
+        case = memory_ga(formal=True, programs=starts, score_for=score)
+        result = case.run(timeline=timeline)
+        timeline.saved(result['status'])
+        payload = dict(events=timeline.events, status=result['status'],
+                       call_seconds=timeline.seconds(), search_stop_seconds=timeline.search_stop_seconds,
+                       truncated_at=timeline.truncated_at)
+        assert result['status'] == 'completed'
         if cap == 10000:
-            scores = [event for event in curve['events'] if event['kind'] == 'score']
+            scores = [event for event in timeline.events if event['kind'] == 'score']
             coarse = [event for event in scores if event['series'] == 'search']
             retests = [event for event in scores if event['series'] == 'nominal']
             global_events = [event for event in scores if event['series'] == 'global']
@@ -221,69 +105,96 @@ def test_task_records_distinct_ga_stages_with_independent_clock_and_bounded_even
             assert global_events[0]['dps'] == result['search_result']['dps'] == 120.
             assert global_events[0]['reason'] == 'nominal_retest'
             assert global_events[0]['seconds'] >= max(event['seconds'] for event in retests)
-            assert max(event['seconds'] for event in coarse) <= curve['search_stop_seconds']
-            assert min(event['seconds'] for event in retests) > curve['search_stop_seconds']
+            assert max(event['seconds'] for event in coarse) <= timeline.search_stop_seconds
+            assert min(event['seconds'] for event in retests) > timeline.search_stop_seconds
             assert coarse[0]['seconds'] >= 10.001
-            assert curve['samples'][0]['dps'] is None
+            assert search_timeline.resample(payload)[0]['dps'] is None
+            assert timeline.search_stop_seconds <= timeline.result_saved_seconds <= timeline.seconds()
         else:
-            assert len(curve['events']) == 4
-            assert curve['truncated_at'] is not None
+            assert len(timeline.events) == 4
+            assert timeline.truncated_at is not None
             assert all(row['dps'] is None and row['status'] == 'incomplete'
-                       for row in curve['samples'] if row['seconds'] >= curve['truncated_at'])
+                       for row in search_timeline.resample(payload)
+                       if row['seconds'] >= timeline.truncated_at)
 
 
-def test_damage_curves_read_existing_native_buckets_without_pet_double_count_or_simulation(tmp_path, monkeypatch):
-    import task
+def _damage_inputs():
+    """既有原生来源的固定三桶报告；构造数据不冒充实际SimC运行。"""
     import result_store
+    import task
     from native_build import build_identity, identity_digest
     from test_search import REPOSITORY, _fast_report
-    from task import parse_character
     lock = json.loads((REPOSITORY / 'projects/sim2gse/compatibility/lock.json').read_text())
     manifest = build_identity(lock, 'controlled', 'fixture-compiler')
     manifest['identity_sha256'] = identity_digest(manifest)
-    run = dict.fromkeys(result_store.RUN_SCHEMA)
-    run.update(run_id='existing-run', engines=dict(controlled=manifest))
-    result_store.write('runs', 'existing-run', [run], schema=result_store.RUN_SCHEMA)
-    report = _fast_report(parse_character(sample_profile()), 777., 2)
-    report['version'] = '1210-01'
-    report['report_version'] = '2.0.0'
+    report = _fast_report(task.parse_character(sample_profile()), 777., 2)
+    report.update(version='1210-01', report_version='2.0.0')
     player = report['sim']['players'][0]
     player['collected_data']['timeline_dmg'] = dict(data=[10., 30., 20.])
     player['stats_pets'] = [dict(collected_data=dict(timeline_dmg=dict(data=[100., 100., 100.])))]
-    result_store.write_batch('saved-bucket', dict(batch_key='saved-bucket', run_id='existing-run',
-        purpose='search', report=report), diagnostic_logging=False)
-    unknown = tmp_path / 'unknown.json'
-    unknown.write_text(json.dumps(report), encoding='utf-8')
-    def forbidden(*args, **kwargs):
-        raise AssertionError('伤害图不得补模拟')
-    monkeypatch.setattr(task, 'run_task', forbidden)
-    output = tmp_path / 'damage.html'
-    assert task.main(['curves', '--damage', 'batch:saved-bucket', str(unknown), '--output', str(output)]) == 0
-    saved = json.loads(output.with_suffix('.json').read_text(encoding='utf-8'))
-    assert saved['reports'][0]['values'] == [10., 30., 20.]
-    assert saved['reports'][0]['bucket_seconds'] == 1
-    assert saved['reports'][0]['metric'] == '原生报告1秒分桶伤害统计'
-    assert saved['reports'][1]['status'] == 'unsupported'
-    assert '桶宽' in saved['reports'][1]['reason']
+    batch = dict(batch_key='saved-bucket', run_id='existing-run', purpose='search', report=report)
+    run = dict.fromkeys(result_store.RUN_SCHEMA)
+    run.update(run_id='existing-run', engines=dict(controlled=manifest))
+    return batch, run
 
 
-def test_resume_timeline_only_override_does_not_reset_frozen_algorithm(tmp_path):
-    from task import run_task, resume_task, read_task
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
-    with _fast_search_boundary():
-        run_task(source, tmp_path / 'task', search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-        resume_task(tmp_path / 'task', search_config={'search_timeline': True})
-        saved = read_task(tmp_path / 'task')
-    assert saved['config']['candidate_limit'] == 1
-    assert len(list((tmp_path / 'task').glob('search-timeline-*.json'))) == 1
-
-
-def test_async_task_timeline_includes_pre_worker_configuration_preparation(tmp_path, monkeypatch):
-    import os
+def test_damage_curves_read_existing_native_buckets_without_pet_double_count_or_simulation(monkeypatch):
+    import result_store
     import task
+    from search_timeline import damage_report
+    batch, run = _damage_inputs()
+    def read_one(table, field, key):
+        assert (table, field, key) in [('batches', 'batch_key', 'saved-bucket'), ('runs', 'run_id', 'existing-run')]
+        return deepcopy(batch if table == 'batches' else run)
+    monkeypatch.setattr(result_store, 'one', read_one)
+    monkeypatch.setattr(task, 'run_task', lambda *a, **k: pytest.fail('伤害图不得补模拟'))
+    saved = damage_report('batch:saved-bucket')
+    assert saved['values'] == [10., 30., 20.]
+    assert saved['bucket_seconds'] == 1
+    assert saved['metric'] == '原生报告1秒分桶伤害统计'
+    original_read = Path.read_text
+    def read_unknown(path, *args, **kwargs):
+        return json.dumps(batch['report']) if path.name == 'unknown.json' else original_read(path, *args, **kwargs)
+    with patch.object(Path, 'is_dir', return_value=False), patch.object(Path, 'read_text', read_unknown):
+        unknown = damage_report('/unknown.json')
+    assert unknown['status'] == 'unsupported' and '桶宽' in unknown['reason']
+
+
+def test_curves_group_physical_conditions_not_algorithm_switches():
+    from search_timeline import Timeline, _groups
+    from task import parse_character
+    payloads = []
+    for seed, race in [(20260912, 'highmountain_tauren'), (20260913, 'highmountain_tauren'), (20260912, 'orc')]:
+        import hashlib
+        profile = sample_profile().replace('race=highmountain_tauren', 'race=' + race)
+        assert parse_character(profile).race == race
+        timeline = Timeline(context=dict(simulation_config=dict(target_count=1)))
+        timeline.configure(profile_sha=hashlib.sha256(profile.encode()).hexdigest(),
+            engines=dict(controlled=dict(identity_sha256='verified', binary_sha256='binary')),
+            simulation_config=dict(target_count=1), config=dict(random_seed=seed, input_interval_ms=300, reset_events=[]))
+        payloads.append(dict(context=timeline.context))
+    groups = list(_groups(payloads).values())
+    assert sorted(len(group) for group in groups) == [1, 2]
+    together = next(group for group in groups if len(group) == 2)
+    assert together[0][1]['context']['comparison'] == together[1][1]['context']['comparison']
+    assert {run['context']['algorithm']['random_seed'] for _, run in together} == {20260912, 20260913}
+    unknowns = [dict(payload, context=dict(simulation_config=dict(target_count=1))) for payload in payloads[:2]]
+    assert len(_groups(unknowns)) == 2
+
+
+@pytest.mark.real
+def test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume(
+        tmp_path, monkeypatch, unchanged_offspring):
+    """一条任务链保留真实发布、异步准备、取消/恢复新段和CLI文件读写。
+
+    绘图故障复用已完成任务，不为每种错误重新跑GA；评分是原有明确外部IO构造。
+    """
+    import result_store
+    import sequence
     import search_timeline
     import simulation_config
+    import task
+    from test_search import _fast_evaluate
     settings = tmp_path / 'config.toml'
     settings.write_text('[search]\nsearch_timeline = true\n', encoding='utf-8')
     monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', settings)
@@ -301,45 +212,83 @@ def test_async_task_timeline_includes_pre_worker_configuration_preparation(tmp_p
             clock[0] += 10.001
         return load_configuration(*args, **kwargs)
     monkeypatch.setattr(simulation_config, 'load_search_config', slow_configuration)
-    with _fast_search_boundary():
-        handle = task.start_task(source, tmp_path / 'async', search_config=dict(
-            candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
-        handle.join(10)
-        assert handle.done and handle.error is None
-        assert handle.result['status'] == 'completed'
-    path, = (tmp_path / 'async').glob('search-timeline-*.json')
-    curve = json.loads(path.read_text(encoding='utf-8'))
-    first = next(event for event in curve['events'] if event['kind'] == 'collector_started')
-    assert first['seconds'] >= 10
-
-
-def test_curves_group_physical_conditions_not_algorithm_switches(tmp_path, monkeypatch):
-    import task
-    import result_store
-    sources = []
-    for name, seed, race in [('first-seed', 20260912, 'highmountain_tauren'),
-                               ('other-seed', 20260913, 'highmountain_tauren'), ('other', 20260912, 'orc')]:
-        source = tmp_path / (name + '.simc')
-        source.write_text(sample_profile().replace('race=highmountain_tauren', 'race=' + race), encoding='utf-8')
-        with _fast_search_boundary(), monkeypatch.context() as local:
-            local.setattr(result_store, 'DATA_ROOT', tmp_path / ('center-' + name))
-            task.run_task(source, tmp_path / name, search_config=dict(search_timeline=True,
-                random_seed=seed, candidate_limit=1, batch_targets=(2,),
-                iterations=2, validation_batches=1))
-        sources.append(str(tmp_path / name))
-    output = tmp_path / 'physical-groups.html'
-    assert task.main(['curves', *sources, '--output', str(output)]) == 0
-    groups = json.loads(output.with_suffix('.json').read_text())['groups']
-    assert sorted(len(group['runs']) for group in groups) == [1, 2]
-    together = next(group['runs'] for group in groups if len(group['runs']) == 2)
-    assert together[0]['context']['comparison'] == together[1]['context']['comparison']
-    assert {run['context']['algorithm']['random_seed'] for run in together} == {20260912, 20260913}
-    # Older or preparation-failed files have no proven conditions: never merge unknowns.
-    unknowns = []
-    for index in range(2):
-        payload = dict(together[index], context=dict(simulation_config=dict(target_count=1)))
-        path = tmp_path / f'unknown-{index}.json'
-        path.write_text(json.dumps(payload), encoding='utf-8')
-        unknowns.append(str(path))
-    assert task.main(['curves', *unknowns, '--output', str(output)]) == 0
-    assert len(json.loads(output.with_suffix('.json').read_text())['groups']) == 2
+    def timed_evaluate(*args, **kwargs):
+        clock[0] += .001
+        return _fast_evaluate(*args, **kwargs)
+    calls = 0
+    def cancel_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            kwargs['runtime'].cancel()
+            kwargs['runtime'].check()
+        return timed_evaluate(*args, **kwargs)
+    folder = tmp_path / 'task'
+    with _fast_search_boundary(), _initialized_starts([[['outbreak'], ['death_coil']]]), \
+            patch.object(sequence, 'evaluate', side_effect=timed_evaluate):
+        with patch.object(sequence, 'evaluate', side_effect=cancel_second):
+            handle = task.start_task(source, folder, search_config=dict(
+                candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+            handle.join(10)
+            assert handle.done and handle.error is None
+            assert handle.result['status'] == 'cancelled'
+        old_file, = folder.glob('search-timeline-*.json')
+        original = old_file.read_bytes()
+        old = json.loads(original)
+        assert old['status'] == old['stop_reason'] == 'cancelled'
+        collector = next(event for event in old['events'] if event['kind'] == 'collector_started')
+        assert collector['seconds'] >= 10
+        assert task.main(['--resume', '--output', str(folder), '--search-timeline']) == 0
+        saved = task.read_task(folder)
+        assert saved['status'] == 'completed'
+        assert saved['config']['candidate_limit'] == 1
+        assert old_file.read_bytes() == original
+        segments = [json.loads(path.read_text()) for path in folder.glob('search-timeline-*.json')]
+        fresh, = [segment for segment in segments if segment['resumed']]
+        assert fresh['events'][0] == dict(seconds=0., kind='preparation')
+        assert not [event for event in fresh['events'] if event['kind'] == 'score' and event['seconds'] == 0]
+        best, = [event for event in fresh['events'] if event['kind'] == 'score' and event['series'] == 'global']
+        assert best['dps'] == saved['search_result']['dps']
+        assert best['candidate_key'] == saved['selected_candidate_key']
+        assert best['samples'] == saved['search_result']['samples'] == 381
+        assert fresh['search_stop_seconds'] <= fresh['result_saved_seconds'] <= fresh['call_seconds']
+        assert all(path.with_suffix('.html').is_file() for path in folder.glob('search-timeline-*.json'))
+        comparison = tmp_path / 'comparison.html'
+        with patch.object(task, 'run_task', side_effect=AssertionError('离线曲线不得启动任务')):
+            assert task.main(['curves', str(folder), '--output', str(comparison)]) == 0
+        assert comparison.read_text().count('<svg') == 1
+        assert len(json.loads(comparison.with_suffix('.json').read_text())['groups']) == 1
+        batch, run = _damage_inputs()
+        result_store.write('runs', 'existing-run', [run], schema=result_store.RUN_SCHEMA)
+        result_store.write_batch('saved-bucket', batch, diagnostic_logging=False)
+        unknown = tmp_path / 'unknown.json'
+        unknown.write_text(json.dumps(batch['report']), encoding='utf-8')
+        damage = tmp_path / 'damage.html'
+        with patch.object(task, 'run_task', side_effect=AssertionError('伤害图不得补模拟')):
+            assert task.main(['curves', '--damage', 'batch:saved-bucket', str(unknown), '--output', str(damage)]) == 0
+        reports = json.loads(damage.with_suffix('.json').read_text())['reports']
+        assert reports[0]['values'] == [10., 30., 20.]
+        assert reports[0]['bucket_seconds'] == 1
+        assert reports[1]['status'] == 'unsupported'
+        assert damage.read_text().count('<svg') == 1
+        count = len(segments)
+        with patch.object(search_timeline, 'render', side_effect=OSError('draw failure')):
+            resumed = task.resume_task(folder, search_config={'search_timeline': True})
+        assert resumed['status'] == task.read_task(folder)['status'] == 'completed'
+        assert task.read_task(folder)['config']['candidate_limit'] == 1
+        assert len(list(folder.glob('search-timeline-*.json'))) == count + 1
+        calls = 0
+        with patch.object(sequence, 'evaluate', side_effect=cancel_second):
+            off = tmp_path / 'cli-off'
+            assert task.main([str(source), '--output', str(off), '--no-search-timeline']) == 0
+        assert task.read_task(off)['config']['search_timeline'] is False
+        assert not list(off.glob('search-timeline-*'))
+        with patch.object(result_store, 'DATA_ROOT', tmp_path / 'failure-center'), \
+                patch.object(sequence, 'evaluate', side_effect=OSError('native failed first')):
+            with pytest.raises(task.TaskError, match='native failed first'):
+                task.run_task(source, tmp_path / 'native-failure', search_config=dict(search_timeline=True,
+                    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+        failure_path, = (tmp_path / 'native-failure').glob('search-timeline-*.json')
+        failed = json.loads(failure_path.read_text())
+        assert failed['status'] == 'failed'
+        assert not [event for event in failed['events'] if event['kind'] == 'score']

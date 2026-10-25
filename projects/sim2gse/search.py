@@ -883,24 +883,35 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
 
 class TaskStore:
     """任务检查点与成功批次；锁保护心跳与主线程共用的事务。"""
-    def __init__(self, destination, *, lock=None):
+    def __init__(self, destination, *, lock=None, connection=None,
+                 reusable_database=None, report_locations=None):
+        # TaskStore owns and closes supplied connections too. Callers sharing a
+        # connection across threads must create it with check_same_thread=False.
         self.lock = lock or threading.RLock()
         with self.lock:
             try:
-                self._initialize(destination)
+                self._initialize(destination, connection=connection,
+                                 reusable_database=reusable_database,
+                                 report_locations=report_locations)
             except BaseException:
                 if hasattr(self, 'db'):
                     self.db.close()
                 raise
 
-    def _initialize(self, destination):
+    def _initialize(self, destination, *, connection=None, reusable_database=None,
+                    report_locations=None):
         self.destination = Path(destination)
-        self.db = sqlite3.connect(self.destination / 'task.sqlite3', check_same_thread=False)
-        self.db.execute('PRAGMA journal_mode=WAL')
-        self.db.execute('PRAGMA synchronous=FULL')
-        self.db.execute('ATTACH DATABASE ? AS shared',(str(self.destination.parent/'cache.sqlite3'),))
-        self.db.execute('PRAGMA shared.journal_mode=WAL')
-        self.db.execute('PRAGMA shared.synchronous=FULL')
+        self.db = connection if connection is not None else sqlite3.connect(
+            self.destination / 'task.sqlite3', check_same_thread=False)
+        if connection is None:
+            self.db.execute('PRAGMA journal_mode=WAL')
+            self.db.execute('PRAGMA synchronous=FULL')
+        self.db.execute('ATTACH DATABASE ? AS shared', (
+            reusable_database if reusable_database is not None else
+            str(self.destination.parent/'cache.sqlite3'),))
+        if reusable_database is None:
+            self.db.execute('PRAGMA shared.journal_mode=WAL')
+            self.db.execute('PRAGMA shared.synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS shared.reusable (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS state_fields (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
@@ -925,8 +936,10 @@ class TaskStore:
         self.verified_batches = {}
         self.report_buffer = []
         self.unsaved_batches = {}
-        from result_store import DATA_ROOT, ReportLocations
-        self.report_locations = ReportLocations(DATA_ROOT)
+        if report_locations is None:
+            from result_store import DATA_ROOT, ReportLocations
+            report_locations = ReportLocations(DATA_ROOT)
+        self.report_locations = report_locations
         self.persisted_batches = self.db.execute(
             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
         self.db.commit()

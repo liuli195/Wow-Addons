@@ -11,7 +11,7 @@ import pytest
 from engine import identity as REAL_IDENTITY
 from test_burst import page_task_engine, reviewed_fixture
 from test_seed_training import memory_result_center
-from test_training_champion import REAL_CHECK_REPORT, champion_engine, completed_training, dual_result
+from test_training_champion import unchanged_offspring, unchanged_champion_engine, REAL_CHECK_REPORT, champion_engine, completed_training, dual_result
 
 
 @pytest.fixture
@@ -62,8 +62,9 @@ def small_verified_engines(tmp_path, monkeypatch, page_task_engine):
         yield executables
 
 
+@pytest.mark.real
 def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_runtimes(
-        tmp_path, memory_result_center, champion_engine, small_verified_engines):
+        tmp_path, memory_result_center, unchanged_champion_engine, small_verified_engines):
     import burst
     import engine
     import result_store
@@ -138,6 +139,7 @@ def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_run
             assert reads == {'baseline': 5, 'controlled': 5}
 
 
+@pytest.mark.real
 def test_dual_rejects_changed_engine_on_first_verification(
         tmp_path, memory_result_center, page_task_engine, small_verified_engines):
     import burst
