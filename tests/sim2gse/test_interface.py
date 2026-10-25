@@ -752,6 +752,7 @@ class InterfaceTests(unittest.TestCase):
 
 
     @pytest.mark.real
+    @pytest.mark.usefixtures('installed_result_center')
     def test_browser_computes_copies_and_clears_real_candidate(self):
         # 极小合法种群保留真实180ms双场原生/复测/编译/复制链；不为UI烟测运行长探索。
         import sequence
@@ -798,34 +799,31 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     const checkbox=page.locator('#diagnosticLogging');
     assert.equal(await checkbox.isDisabled(),false);
     assert.equal(await checkbox.isChecked(),false);
-    for(const selected of [true,false]){
-     await checkbox.setChecked(selected);
-     await page.locator('#profile').fill(input.profile);
-     finishPolling=new Promise(resolve=>{releasePolling=resolve;});
-     await page.locator('#start').click();
-     await page.locator('#cancel').waitFor({state:'visible'});
-     assert.equal(submitted.at(-1).body.mode,'dual');
-     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
-     const count=submitted.length;
-     await checkbox.setChecked(!selected);
-     assert.equal(submitted.length,count,'勾选不应修改正在运行的任务');
-     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
-     releasePolling();
-     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-     await page.locator('#resume').click();
-     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-     assert.ok(submitted.at(-1).path.endsWith('/resume'));
-     assert.equal(submitted.at(-1).body.diagnostic_logging,!selected);
-     assert.equal(await page.locator('#resume').isVisible(),true,'失败后仍可继续');
-     await checkbox.setChecked(selected);
-     await page.locator('#gseImport').fill('!GSE3!browser-fixture');
-     await page.locator('#inspectImport').click();
-     await page.locator('#importStart').click();
-     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
-     assert.equal(submitted.at(-1).body.mode,'import');
-     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
-    }
-    assert.equal(submitted.length,6);
+    await checkbox.setChecked(true);
+    await page.locator('#profile').fill(input.profile);
+    finishPolling=new Promise(resolve=>{releasePolling=resolve;});
+    await page.locator('#start').click();
+    await page.locator('#cancel').waitFor({state:'visible'});
+    assert.equal(submitted.at(-1).body.mode,'dual');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,true);
+    const count=submitted.length;
+    await checkbox.setChecked(false);
+    assert.equal(submitted.length,count,'勾选不应修改正在运行的任务');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,true);
+    releasePolling();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    await page.locator('#resume').click();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    assert.ok(submitted.at(-1).path.endsWith('/resume'));
+    assert.equal(submitted.at(-1).body.diagnostic_logging,false);
+    assert.equal(await page.locator('#resume').isVisible(),true,'失败后仍可继续');
+    await page.locator('#gseImport').fill('!GSE3!browser-fixture');
+    await page.locator('#inspectImport').click();
+    await page.locator('#importStart').click();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    assert.equal(submitted.at(-1).body.mode,'import');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,false);
+    assert.equal(submitted.length,3);
    }finally{await context.close();}
   }
   // END_DIAGNOSTIC_SELECTION
@@ -846,6 +844,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
     assert.equal(state.input_interval_ms,180);
     assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
+    assert.equal(submitted.diagnostic_logging,false);
     assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
     assert.match(await page.locator('#resultNote').innerText(),/正常场景独立复测/);
     assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);

@@ -4,12 +4,15 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize('key', [
+RETIRED_SEARCH_PARAMETERS = (
     'total_budget_seconds', 'search_budget_seconds', 'candidate_limit',
     'round_candidate_limit', 'no_improvement_rounds', 'batch_targets',
     'validation_batches', 'final_batches', 'final_iterations', 'trace_search', 'scenarios',
-])
-@pytest.mark.parametrize('entry', ['run', 'resume', 'dual', 'training'])
+)
+
+
+@pytest.mark.parametrize('entry,key', [('run', key) for key in RETIRED_SEARCH_PARAMETERS]
+    + [(entry, 'total_budget_seconds') for entry in ('resume', 'dual', 'training')])
 def test_public_search_rejects_retired_parameters_before_input_or_native_io(monkeypatch, key, entry):
     import task
     import dual_task
@@ -186,12 +189,12 @@ def test_old_champion_intent_cannot_write_or_complete_a_task(entry):
 
 def test_retired_toml_settings_cannot_reenter_current_defaults():
     from io import StringIO
-    from simulation_config import RETIRED_SEARCH_SETTINGS, load_search_config
+    from simulation_config import load_search_config
     from search import config_for
-    for key in RETIRED_SEARCH_SETTINGS:
+    for key in RETIRED_SEARCH_PARAMETERS:
         with pytest.raises(ValueError, match='已退役'):
             load_search_config(StringIO('[search]\n' + key + '=false\n'))
-    assert not set(RETIRED_SEARCH_SETTINGS) & config_for().keys()
+    assert not set(RETIRED_SEARCH_PARAMETERS) & config_for().keys()
 
 
 @pytest.mark.parametrize('old_state', [

@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 import struct
+import subprocess
 import sys
 from unittest.mock import patch
 
@@ -128,6 +129,44 @@ def test_patch_bytes_are_crlf_independent():
     with patch.object(Path, "read_bytes", return_value=b"one\r\ntwo\r\n"):
         assert build.patch_digest(Path("memory.patch")) == lf
         assert prototype.patch_bytes(Path("memory.patch")) == b"one\ntwo\n"
+
+
+@pytest.mark.parametrize(("commit", "tree", "matches"), [
+    ("a" * 40, "b" * 40, True),
+    ("0" * 40, "b" * 40, False),
+    ("a" * 40, "0" * 40, False),
+])
+def test_upstream_commit_and_tree_identity(commit, tree, matches):
+    build = load("scripts/dev/sim2gse/build.py")
+    lock = {"upstream_commit": "a" * 40, "upstream_tree": "b" * 40}
+    with patch.object(build.subprocess, "run", side_effect=[
+        subprocess.CompletedProcess([], 0, stdout=commit + "\n"),
+        subprocess.CompletedProcess([], 0, stdout=tree + "\n"),
+    ]):
+        if matches:
+            assert build.verify_upstream(Path("memory-source"), lock) == "a" * 40
+        else:
+            with pytest.raises(ValueError, match="固定上游提交身份不符"):
+                build.verify_upstream(Path("memory-source"), lock)
+
+
+def test_missing_toc_file_is_rejected_before_lua_starts():
+    checks = load("scripts/dev/check.py")
+    folder = Path("memory-addon").resolve()
+    toc = folder / "Example.toc"
+    contents = {
+        ROOT / "scripts/dev/versions.json": json.dumps({"client": {"interface": 120100}}),
+        toc: "## Interface: 120100\nMissing.lua\n",
+    }
+    with (
+        patch.object(Path, "glob", return_value=[toc]),
+        patch.object(Path, "read_text", autospec=True, side_effect=lambda path, **kwargs: contents[path]),
+        patch.object(Path, "is_file", return_value=False),
+        patch.object(checks, "run") as run,
+    ):
+        with pytest.raises(ValueError, match="加载文件缺失或越界：Missing.lua"):
+            checks.check_toc(folder)
+    run.assert_not_called()
 
 
 def rectangle():
