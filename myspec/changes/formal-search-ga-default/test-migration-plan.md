@@ -117,6 +117,14 @@ gear目前只有8个Node VM（脚本虚拟机）／伪DOM（页面对象）检�
 - 真实DK模块的全部ordinary经现有官方guard源码保护运行内2：13 passed，0.33秒；两个worker均有start／finish，evidence_error=null，无违规。保留一次xdist提前导入的assert-rewrite警告，不隐藏；该警告不等于守卫缺失。完整摘要ordinary-summary.json及日志在同证据目录。这是云端定向开发验证，不冒充已安装Windows官方CLI验收。
 - 候选结构语义白名单核对：仅顺序、外6与13条pytest内2改变；43项完整对象中的其他字段／realChecks／预算60／构建完全不变。正式config未改，Lua-memory-prototype未纳切片。原测试函数AST逐个与f002713一致；git diff --check通过。下一步为独立审查，再经父协调同步及本机官方init备份应用、全43无缓存验证。
 
+### 第一步本机结果及单字段恢复候选（2026-10-25 10:32 UTC，待确认）
+
+- 父协调回传：官方init应用六路／全部pytest内2后保存为57a62bc，DK定向12 passed，pytest2.99秒／外层3.391秒；两worker分别产出可解析dk-run／dk-actual。随后全43为42通过、1个sim2gse-real超时、0未启动；工具60.0236367秒／外层60.281秒，不能记为整体通过，且不如此前f002713单次58.875秒全部通过。
+- GSE真实检查记录运行49.55秒；输出仅可数55个通过点和6个子测试标记，没有最终summary，不据此声称完整测试数量或全部通过。gear21.42秒、checker11.02秒、DK4.27秒、GSE普通8.02秒；17普通守卫证据齐、未见残留。该记录为父协调回传，不冒称云端读取本机原始文件。
+- 本机证据位于.local/formal-ga-development/stage1-full-ad95ffe2f22848d8a50b1d397a5a3946/的verify.log、performance-report.json、result.json；DK定向为同根dk-two-598f0590ad234015b1acdf0ce733f582/pytest.log。
+- 云端已核c870e03与远端a43b769整树相同（82e4bba），保留preserve/six-way-c870e03后安全对齐57a62bc；未跟踪Lua-memory-prototype文档原样保留。本次候选**仅verify.sim2gse-real.pytestXdistWorkers从2恢复6**，外6、其他12条pytest内2、所有顺序、43项、角色、命令／worksteal、inputs及60秒硬截止均不变；结构语义核对精确为这一个字段。
+- 此单字段恢复不保证混合竞争下更快或通过；没有将排队认定为唯一根因。等待本次独立确认后，才通过官方init备份应用并另验一轮；当前未应用正式config、未测试、未提交或推送，不提前进入后续三个步骤。
+
 ## 票据、分域所有权与验证顺序
 
 沿用票01的扩展验收：
