@@ -1,6 +1,6 @@
 # 完整退役旧正式搜索
 
-**Status:** implemented; delivery-gate2 pending final acceptance
+**Status:** implemented; delivery-gate2 approved; formal specifications applied; pull request delivery pending
 **Flow Level:** Full（完整）
 **Development authorization:** 用户在完整退役范围、兼容取舍和90–150分钟预计投入展示后回复“确认”，授权实施到验收结束；该次实施批准不包含合并主干。后来确认的正规合并与分支清理授权保持，实际执行须按交付门禁收口后继续。
 
