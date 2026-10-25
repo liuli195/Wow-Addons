@@ -2,7 +2,10 @@
 from test_population_training import memory_ga
 
 
-def test_default_task_keeps_old_starts_without_rule_generation(memory_ga):
+def test_default_task_keeps_old_starts_without_rule_generation(memory_ga, monkeypatch):
+    from pathlib import Path
+    from unittest.mock import patch
+    import result_store
     from search import initial_programs
     from test_search import _fast_capabilities
     capabilities = _fast_capabilities()
@@ -10,7 +13,15 @@ def test_default_task_keeps_old_starts_without_rule_generation(memory_ga):
         ('outbreak', 'death_coil', 'scourge_strike')])
     starts = initial_programs(capabilities, native)
     ga = memory_ga(formal=True, programs=starts)
-    result = ga.run()
+    journal = result_store.DATA_ROOT / '.report-locations.jsonl'
+    exists = Path.exists
+    monkeypatch.setattr(Path, 'exists', lambda path: path == journal or exists(path))
+    with patch.object(result_store.ReportLocations, 'locked',
+                      side_effect=AssertionError('ordinary must not open a physical result center')), \
+            patch.object(result_store, 'report_locations', wraps=result_store.report_locations) as locations:
+        result = ga.run()
+    assert locations.called
+    assert all(set(call.args[0]) <= ga.reports.keys() for call in locations.call_args_list)
     assert result['status'] == 'completed'
     assert 'rule_initialization_enabled' not in ga.store.state['config']
     assert 'adaptive_selector_enabled' not in ga.store.state['config']

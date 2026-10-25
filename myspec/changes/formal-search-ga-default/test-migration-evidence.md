@@ -100,3 +100,7 @@ Node普通命令和两browser都运行repo内同一冻结exe，inputs直接hash�
 - 纯输入拒绝代表显式隔离真实中心预检，生产缺DuckDB早失败契约不变；模板及冻结manifest路径先resolve、比较Path，不依赖操作系统分隔符。并发上限拒绝代表使用公开配置读取器及空StringIO，避免读取用户本机配置，原max_processes断言保留。
 - 云端使用固定`0cecf8a`的守卫原源码（SHA256 `7b412689b8020dfba993a33ba0bb3a0c433139168a385ab3920fef523392d2b6`）作直接开发诊断，不冒充cloud已安装新版CLI。原两代表在守卫下2failed；修复后8个代表通过。完整GSE普通组保持内4后先暴露9项deserialize同源失败，再集中修复，284 passed／106 subtests，3.05秒；4个守卫worker全部start/finish闭合，evidence_error为空，无违规。
 - 本机正式2.7.1普通组、真实组慢点与完整43项60秒仍待后续验收；不提高预算、不将普通组改真实角色、不删原断言或恢复重复真实矩阵。
+
+### 已存在数据中心下的普通定位隔离（07:31 UTC）
+
+本机普通守卫继续定位到18项共享内存夹具缺少report_locations输入：生产journal存在才触发物理锁，云端目录缺失曾掩盖。仅memory_ga显式使用虚拟DATA_ROOT及同一reports字典的键位置；生产数据中心、守卫、官方配置及算法不改。原closeout代表强制journal存在、禁止物理锁边界并验证内存定位确被调用，旧夹具红于物理入口；修复后固定0ce守卫源码下全284普通／106子测试通过，内4、2.72秒，四worker证据完整且无违规。测试计数和原行为断言不变；不是Windows或全43验收已通过。

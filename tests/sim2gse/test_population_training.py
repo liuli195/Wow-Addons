@@ -100,6 +100,9 @@ def memory_ga(monkeypatch):
         monkeypatch.setattr(codec, 'load_targeting', lambda **kwargs: dict(target_masks={}))
         monkeypatch.setattr(program, 'compile_program', compile_input)
         monkeypatch.setattr(sequence, 'evaluate', evaluate)
+        monkeypatch.setattr(result_store, 'DATA_ROOT', Path('/memory/ga-result-center'))
+        monkeypatch.setattr(result_store, 'report_locations', lambda keys:
+                            {key: key if key in reports else None for key in keys})
         monkeypatch.setattr(result_store, 'write', lambda *args, **kwargs: None)
         monkeypatch.setattr(result_store, 'write_traces', lambda *args, **kwargs: None)
         monkeypatch.setattr(result_store, 'one', lambda table, field, key, **kwargs: deepcopy(reports.get(key)))
