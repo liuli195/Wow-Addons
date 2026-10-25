@@ -189,12 +189,10 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if type(target_count) is not int or target_count not in (1, 5):
             raise TaskError("目标数量必须为 1 或 5")
         observation_mode = value.get("search_observability", "off")
-        if type(value.get("diagnostic_logging", False)) is not bool:
-            raise TaskError("诊断日志总开关必须为布尔值")
+        diagnostic_logging = self._diagnostic_logging(value)
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
-        diagnostic_logging = (options.get('search_config') or {}).get('diagnostic_logging', False)
         simulation = options.get("simulation_config") or {}
         options["simulation_config"] = simulation_config_for(dict(
             simulation, target_count=target_count, scene=value.get("scene", simulation.get("scene"))))
@@ -303,9 +301,16 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         state = cancel_task(entry[1] if entry else destination)
         self._send_json(HTTPStatus.OK, _public_state(state, destination))
 
+    def _diagnostic_logging(self, value):
+        default = (self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False)
+        selected = value.get('diagnostic_logging', default)
+        if type(selected) is not bool:
+            raise TaskError('诊断日志总开关必须为布尔值')
+        return selected
+
     def _resume_task(self, task_id):
-        if self.headers.get('Content-Length', '0') != '0':
-            self._body()
+        value = self._body() if self.headers.get('Content-Length', '0') != '0' else {}
+        diagnostic_logging = self._diagnostic_logging(value)
         _, destination = self.server.task_paths(task_id)
         with self.server.tasks_lock:
             entry = self.server.tasks.get(task_id)
@@ -314,8 +319,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             if not (destination / 'dual.json').exists():
                 raise TaskError('此入口只恢复双场任务')
             from dual_task import resume
-            handle = resume(destination, diagnostic_logging=(
-                self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False),
+            handle = resume(destination, diagnostic_logging=diagnostic_logging,
                 search_timeline=(self.server.task_options.get('search_config') or {}).get('search_timeline'))
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, dict(task_id=task_id, status='starting'))

@@ -51,7 +51,7 @@ def skill_env():
 
 
 def load_entry():
-    """按路径加载技能入口，供**预算边界**用例直接驱动它的输出出口。"""
+    """按路径加载公开命令入口及输出预算出口。"""
     if str(ENTRY.parent) not in sys.path:
         sys.path.insert(0, str(ENTRY.parent))
     import importlib.util
@@ -63,6 +63,93 @@ def load_entry():
 
 class _JsonArgs:
     json = True
+
+
+@pytest.mark.parametrize('available', [False, True])
+def test_doctor_saves_complete_result_without_changing_exit_code(monkeypatch, capsys, available):
+    entry = load_entry()
+    # 已校验资产的明确输入；本例只验公开命令输出，不重复资产完整性检查。
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'diagnostic output fixture'}))
+    backend = dict(available=available, reason='backend diagnostic ' * 100)
+    monkeypatch.setattr(entry, 'backend', lambda: backend)
+    saved = []
+    monkeypatch.setattr(entry.core, 'write_json', lambda path, value: saved.append((path, value)))
+
+    assert entry.main(['doctor', '--json', '--output', '完整环境诊断.json']) == (0 if available else 2)
+    preview = json.loads(capsys.readouterr().out)
+    (path, full), = saved
+    assert path == '完整环境诊断.json'
+    assert full['lua'] == backend
+    assert full['data_integrity'] == 'pass'
+    assert set(full) == {'version', 'python', 'platform', 'data_integrity', 'lua', 'scope', 'note'}
+    assert preview['details_truncated'] is True
+    assert len(preview['lua']['reason']) < len(full['lua']['reason'])
+    assert 'details_truncated' not in full
+
+    def unexpected_write(*args):
+        raise AssertionError('doctor without --output must not write a report')
+    monkeypatch.setattr(entry.core, 'write_json', unexpected_write)
+    assert entry.main(['doctor', '--json']) == (0 if available else 2)
+    assert json.loads(capsys.readouterr().out)['lua']['available'] is available
+
+
+def test_doctor_output_write_failure_is_a_tool_error(monkeypatch, capsys):
+    entry = load_entry()
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'diagnostic output fixture'}))
+    monkeypatch.setattr(entry, 'backend', lambda: dict(available=True, kind='executable'))
+    def cannot_write(*args):
+        raise OSError('output unavailable')
+    monkeypatch.setattr(entry.core, 'write_json', cannot_write)
+    assert entry.main(['doctor', '--json', '--output', 'unwritable.json']) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert json.loads(captured.err)['status'] == 'tool_error'
+
+
+@pytest.mark.real
+def test_doctor_output_file_roundtrip(tmp_path, monkeypatch, capsys):
+    entry = load_entry()
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'diagnostic output fixture'}))
+    monkeypatch.setattr(entry, 'backend', lambda: dict(available=True, kind='executable'))
+    output = tmp_path / '完整环境诊断.json'
+    assert entry.main(['doctor', '--json', '--output', str(output)]) == 0
+    assert json.loads(output.read_text(encoding='utf-8')) == json.loads(capsys.readouterr().out)
+
+
+def test_doctor_explains_executable_override_and_preserves_automatic_library_discovery(monkeypatch, capsys):
+    entry = load_entry()
+    from wowtestlib import luaexec
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'backend discovery fixture'}))
+    monkeypatch.delenv('WOWTEST_LUA', raising=False)
+    monkeypatch.setenv('WOWTEST_LUA_BACKEND', '')
+    monkeypatch.setattr(luaexec.importlib.util, 'find_spec', lambda name: None)
+    monkeypatch.setattr(luaexec.ctypes.util, 'find_library', lambda name: None)
+    monkeypatch.setattr(luaexec.shutil, 'which', lambda name: None)
+
+    assert entry.main(['doctor', '--json']) == 2
+    missing = json.loads(capsys.readouterr().out)['lua']
+    assert missing['available'] is False
+    assert 'WOWTEST_LUA 指向 Lua 可执行程序' in missing['reason']
+    assert '程序或共享库' not in missing['reason']
+
+    monkeypatch.setattr(luaexec.ctypes.util, 'find_library', lambda name: 'liblua.so')
+    assert entry.main(['doctor', '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['lua'] == dict(
+        available=True, kind='library', path='liblua.so', version='lua5.4')
+
+    monkeypatch.setenv('WOWTEST_LUA', 'lua-program')
+    monkeypatch.setattr(luaexec.shutil, 'which', lambda name: '/tools/lua-program')
+    assert entry.main(['doctor', '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['lua'] == dict(
+        available=True, kind='executable', path='/tools/lua-program')
+
+    monkeypatch.setattr(luaexec.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(Path, 'is_file', lambda path: False)
+    assert entry.main(['doctor', '--json']) == 2
+    assert json.loads(capsys.readouterr().out)['lua'] == dict(
+        available=False, reason='WOWTEST_LUA 指定的程序不存在')
+
+
 # 打包不变量：载荷里不得出现未被声明的纯文本大文件（应放进压缩容器）
 PLAIN_TEXT_CEILING_BYTES = 64 * 1024
 PLAIN_TEXT_SUFFIXES = {".json", ".lua", ".md", ".txt", ".csv", ".py"}

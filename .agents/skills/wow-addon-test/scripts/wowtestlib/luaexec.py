@@ -32,8 +32,9 @@ def backend() -> dict:
             if path:
                 return {'available': True, 'kind': 'executable', 'path': path}
     return {'available': False,
-            'reason': '未找到可用的 Lua 后端：设置 WOWTEST_LUA 指向 Lua 程序或共享库，'
-                      '或安装 lupa.lua51。本技能不修改系统与用户级环境。'}
+            'reason': '未找到可用的 Lua 后端：设置 WOWTEST_LUA 指向 Lua 可执行程序，'
+                      '或安装 lupa.lua51；未指定程序时也会自动探测本机 Lua 共享库。'
+                      '本技能不修改系统与用户级环境。'}
 
 def _library_eval(source: str, path: str) -> str:
     lib = ctypes.CDLL(path)
