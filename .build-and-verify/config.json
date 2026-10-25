@@ -121,7 +121,7 @@
           ".local/verify-deps/node/node.exe"
         ],
         "timeoutSeconds": 600,
-        "pytestXdistWorkers": 4
+        "pytestXdistWorkers": 6
       },
       {
         "id": "verify.luals",
