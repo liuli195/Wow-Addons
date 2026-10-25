@@ -11,6 +11,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'projects' / 'sim2gse'))
 
 
+@pytest.fixture(autouse=True)
+def explicit_unit_configuration(request, monkeypatch):
+    if request.node.get_closest_marker('real') is not None:
+        return
+    from io import StringIO
+    import simulation_config
+    read_document = simulation_config._load_document
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None:
+                        read_document(StringIO('') if path is None else path))
+
+
 @pytest.fixture(scope="session")
 def installed_data_store(tmp_path_factory):
     """The test runner provides a real installed package, never a user home link."""

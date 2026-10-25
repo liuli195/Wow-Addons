@@ -43,10 +43,15 @@ def test_public_task_rejects_removed_capability_even_when_disabled(key,value):
 
 @pytest.mark.parametrize('key',['adaptive_selector_enabled','rule_initialization_enabled','rule_diagnostics_policy'])
 def test_public_task_rejects_removed_toml_before_reading_profile(monkeypatch,key):
+    from io import StringIO
     import simulation_config
     from task import run_task
-    monkeypatch.setattr(Path,'exists',lambda path:True)
-    monkeypatch.setattr(Path,'read_bytes',lambda path:('[search]\n'+key+' = false\n').encode())
+    load_search_config = simulation_config.load_search_config
+    monkeypatch.setattr(simulation_config, 'load_search_config', lambda **values:
+                        load_search_config(StringIO('[search]\n'+key+' = false\n'), **values))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('removed configuration must reject before profile IO')
+    monkeypatch.setattr(Path, 'read_bytes', forbidden)
     with pytest.raises(ValueError,match='已移除'):
         run_task('/absent/role.simc','/absent/task')
 
