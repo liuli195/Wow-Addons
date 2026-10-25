@@ -82,7 +82,7 @@
           ".local/verify-deps/node/node.exe"
         ],
         "timeoutSeconds": 600,
-        "pytestXdistWorkers": 2
+        "pytestXdistWorkers": 6
       },
       {
         "id": "verify.gear-real",
