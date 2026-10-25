@@ -345,11 +345,14 @@ def character_seed_boundary(*, native_flags=None, native_reference=None):
     native = native_reference if native_reference is not None else apl_pool_reference()
     template = native['apl_actions'][0]
     auto = dict(template, name='auto_attack', signature='auto_attack',
-                data_id=6603, base_spell_id=6603, gcd_ms=0)
+                type='attack', data_id=6603, base_spell_id=6603, gcd_ms=0)
     native['executed_actions'].append(auto)
     native['apl_actions'] += [auto, *[dict(template, name=name, signature=name,
         data_id=spell, base_spell_id=spell, available=False) for name, spell in
         [('berserking', 26297), ('soul_reaper', 343294)]]]
+    # 实际非巨魔目录形状：已初始化、静态不可用，同时背景化且没有有效法术数据。
+    native['apl_actions'][-2].update(id=0, data_id=0, base_spell_id=0, data_valid=False,
+                                   background=True, harmful=False, executions=0)
     if native_flags:
         native['apl_actions'][-2].update(native_flags)
     inspect = engine.inspect

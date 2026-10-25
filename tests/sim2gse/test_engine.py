@@ -86,7 +86,7 @@ def apl_pool_reference():
     """固定协议样例：单目标未执行群体动作，仍是当前角色合法按钮。"""
     def spell(name, spell_id, **flags):
         return dict(name=name, signature=name, player_owned=True, background=False,
-                    quiet=False, passive=False, type='spell', precombat=False,
+                    quiet=False, passive=False, type='hostile_spell', precombat=False,
                     data_id=spell_id, data_valid=True, base_spell_id=spell_id,
                     gcd_ms=1500, harmful=True, action_initialized=True, available=True,
                     **flags)

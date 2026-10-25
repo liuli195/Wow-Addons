@@ -131,6 +131,27 @@ def _mapped_search_blocks(capabilities, blocks, sources):
     return selected
 
 
+def _search_castsequence_parts(segment, source_path):
+    """共享搜索节点的结构检查与宏重置文本；技能绑定和宏语法仍由原解析器负责。"""
+    members = segment.get("members")
+    reset = segment.get("reset")
+    if (not isinstance(members, list) or not 2 <= len(members) <= 32
+            or any(not isinstance(member, str) or not member for member in members)):
+        raise ValueError(f"{source_path}: 搜索 /castsequence 必须包含 2 至 32 个技能成员")
+    reset_text = ""
+    if reset:
+        if not isinstance(reset, dict):
+            raise ValueError(f"{source_path}.reset: /castsequence reset 定义无效")
+        parts = []
+        timeout = reset.get("timeout_seconds")
+        if timeout is not None:
+            parts.append(str(timeout).rstrip("0").rstrip(".") if isinstance(timeout, float) else str(timeout))
+        parts.extend(sorted(set(reset.get("flags") or [])))
+        if parts:
+            reset_text = " reset=" + "/".join(parts)
+    return list(members), reset_text
+
+
 def from_search_program(program, capabilities):
     """把搜索动作块、顺序 Loop 和 WaitClicks 转成共享的 Program。"""
     if not isinstance(program, list) or not program:
@@ -169,12 +190,8 @@ def from_search_program(program, capabilities):
                 raise ValueError(f"segments[{segment_index}]: 搜索 WaitClicks 次数必须为 2 至 4096")
             segments.append(("WaitClicks", clicks))
         elif isinstance(segment, dict) and segment.get("kind") == "CastSequence":
-            members = segment.get("members")
-            reset = segment.get("reset")
-            if (not isinstance(members, list) or not 2 <= len(members) <= 32
-                    or any(not isinstance(member, str) or not member for member in members)):
-                raise ValueError(f"segments[{segment_index}]: 搜索 /castsequence 必须包含 2 至 32 个技能成员")
-            segments.append(("CastSequence", list(members), reset))
+            members, reset_text = _search_castsequence_parts(segment, f"segments[{segment_index}]")
+            segments.append(("CastSequence", members, reset_text))
         else:
             raise ValueError(f"segments[{segment_index}]: 搜索程序包含不支持的节点")
 
@@ -205,24 +222,13 @@ def from_search_program(program, capabilities):
         if shape[0] == "CastSequence":
             from macro_interpreter import parse_castsequence
 
-            _, members, reset = shape
+            _, members, reset_text = shape
             by_name = {action["simc_action"]: action for action in capabilities["actions"]
                        if action.get("kind") == "spell"}
             for member_index, member in enumerate(members):
                 if member not in by_name:
                     raise ValueError(f"segments[{segment_index}].members[{member_index}]: "
                                      "技能不受当前角色支持")
-            reset_text = ""
-            if reset:
-                if not isinstance(reset, dict):
-                    raise ValueError(f"segments[{segment_index}].reset: /castsequence reset 定义无效")
-                parts = []
-                timeout = reset.get("timeout_seconds")
-                if timeout is not None:
-                    parts.append(str(timeout).rstrip("0").rstrip(".") if isinstance(timeout, float) else str(timeout))
-                parts.extend(sorted(set(reset.get("flags") or [])))
-                if parts:
-                    reset_text = " reset=" + "/".join(parts)
             macro = "/castsequence" + reset_text + " " + ",".join(
                 str(by_name[member]["spell_id"]) for member in members)
             try:

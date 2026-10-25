@@ -762,22 +762,23 @@ def _seed_programs(starts, snapshot, *, character, targets, configuration_key,
             continue
 
     # 原生静态资格不读取冷却、资源或是否执行；同名当前可用按钮优先。
-    known = {action['simc_action']: action for action in capabilities['actions']}
     available = {variant['simc_action'] for action in capabilities['actions']
                  for variant in action.get('variants', [action])}
     excluded = set()
     for row in capabilities.get('sources', []):
-        if (row.get('catalogue') != 'apl' or row.get('status') != 'native_unavailable'
+        # 不可用技能可能先被通用按钮分类标为 native_non_button，且没有有效法术编号。
+        # 只认原生技能类型；设施、物品和未知类型不因 available=false 被静默删除。
+        if (row.get('catalogue') != 'apl'
+                or row.get('type') not in ('hostile_spell', 'attack', 'heal_spell', 'absorb_spell')
+                or row.get('player_owned') is not True or row.get('passive') is not False
+                or row.get('quiet') is not False or row.get('precombat') is not False
+                or not isinstance(row.get('signature'), str)
                 or row.get('action_initialized') is not True or row.get('available') is not False):
             continue
         name = row.get('signature', '').split(',', 1)[0]
         if not name or name in available:
             continue
         excluded.add(name)
-        if row.get('data_valid') is True and type(row.get('data_id')) is int and row['data_id'] > 0:
-            known[name] = dict(kind='spell', simc_action=name, spell_id=row['data_id'],
-                              name=row.get('name') or name, gcd_ms=row.get('gcd_ms', 0))
-    validation_capabilities = dict(capabilities, actions=list(known.values()))
     target_masks = None
     added, decisions = [], []
     for row in snapshot:
@@ -798,7 +799,7 @@ def _seed_programs(starts, snapshot, *, character, targets, configuration_key,
         decisions.append(decision)
         try:
             check_original_limits(program)
-            derived, removed = filter_search_program(program, excluded, validation_capabilities)
+            derived, removed = filter_search_program(program, excluded, capabilities)
             decision.update(derived_program=derived, removed=[dict(item,
                 reason='当前原生动作已初始化但种族、天赋或等级资格不可用') for item in removed])
             canonical = canonicalize_search_program(derived, capabilities)
@@ -1278,6 +1279,64 @@ def _publish_formal_champion(store, destination):
             pass  # The already durable pending intent is enough for an idempotent retry.
 
 
+def _assemble_formal_starts(state, starts, *, character, configuration_key, capabilities, runtime, use_burst):
+    """组装已冻结来源；不保存状态或改变调用者的持久化时序。"""
+    simulation_config = state['simulation_config']
+    state['starts'], state['seed_adaptations'] = _seed_programs(
+        starts, state['seed_selected_snapshot'], character=character,
+        targets=simulation_config['target_count'], configuration_key=configuration_key,
+        capabilities=capabilities, runtime=runtime)
+    champion = state['training_champion_snapshot']
+    state['starts'], adaptations = _seed_programs(
+        state['starts'], [champion] if champion.get('status') == 'selected' else [],
+        character=character, targets=simulation_config['target_count'], configuration_key=configuration_key,
+        capabilities=capabilities, runtime=runtime)
+    state['training_champion_adaptation'] = adaptations[0] if adaptations else None
+    from program import canonicalize_search_program
+    sources = {}
+    for index, program in enumerate(starts):
+        try:
+            key = canonicalize_search_program(program, capabilities)['identity']
+        except (TypeError, ValueError, KeyError):
+            continue  # 原优化器仍逐条记录无效起点，来源标记不改变失败语义。
+        sources.setdefault(key, []).append(dict(source_kind='native', index=index))
+    for kind, decisions in [('seed_selected', state['seed_adaptations']),
+                            ('training_champion', adaptations)]:
+        for decision in decisions:
+            if decision['status'] in ('accepted', 'duplicate'):
+                sources.setdefault(decision['behavior_identity'], []).append(dict(
+                    source_kind=kind, candidate_id=decision['candidate_id']))
+    formal = state['formal_champion_snapshot']
+    state['formal_champion_adaptation'] = None
+    if formal['status'] == 'selected':
+        try:
+            canonical = canonicalize_search_program(formal['program'], capabilities)
+            if canonical['identity'] != formal['behavior_identity']:
+                raise ValueError('正式冠军行为身份不符')
+            from burst import check_loop
+            if use_burst:
+                check_loop(canonical['program'], capabilities)
+            key = canonical['identity']
+            remaining = []
+            for program in state['starts']:
+                try:
+                    duplicate = canonicalize_search_program(program, capabilities)['identity'] == key
+                except (TypeError, ValueError, KeyError):
+                    duplicate = False  # Keep the optimizer's per-native rejection semantics.
+                if not duplicate:
+                    remaining.append(program)
+            state['starts'] = [formal['program']] + remaining
+            sources.setdefault(key, []).append(dict(source_kind='formal_champion',
+                source_run_id=formal['source_run_id'], version=formal['version']))
+            state['formal_champion_adaptation'] = dict(status='accepted',
+                behavior_identity=key, derived_program=formal['program'])
+        except (TypeError, ValueError, KeyError) as error:
+            state['formal_champion_adaptation'] = dict(status='rejected', reason=str(error))
+    from formal_search import freeze_starts
+    state['starts'], state['start_adaptations'] = freeze_starts(state['starts'], capabilities, runtime)
+    state['start_sources'] = sources
+
+
 def _run_optimize(destination, character, *, config, runtime, simulation_config, use_burst=False,
                   burst_identity=None, formal_source_run_ids=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
@@ -1447,59 +1506,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         snapshot = _historical_formal_champion(state, checked_character, native, capabilities, snapshot)
                     state['formal_champion_snapshot'] = snapshot
                     store.save()
-                state['starts'], state['seed_adaptations'] = _seed_programs(
-                    starts, state['seed_selected_snapshot'], character=character,
-                    targets=simulation_config['target_count'], configuration_key=configuration_key,
-                    capabilities=capabilities, runtime=runtime)
-                champion = state['training_champion_snapshot']
-                state['starts'], adaptations = _seed_programs(
-                    state['starts'], [champion] if champion.get('status') == 'selected' else [],
-                    character=character, targets=simulation_config['target_count'], configuration_key=configuration_key,
-                    capabilities=capabilities, runtime=runtime)
-                state['training_champion_adaptation'] = adaptations[0] if adaptations else None
-                from program import canonicalize_search_program
-                sources = {}
-                for index, program in enumerate(starts):
-                    try:
-                        key = canonicalize_search_program(program, capabilities)['identity']
-                    except (TypeError, ValueError, KeyError):
-                        continue  # 原优化器仍逐条记录无效起点，来源标记不改变失败语义。
-                    sources.setdefault(key, []).append(dict(source_kind='native', index=index))
-                for kind, decisions in [('seed_selected', state['seed_adaptations']),
-                                        ('training_champion', adaptations)]:
-                    for decision in decisions:
-                        if decision['status'] in ('accepted', 'duplicate'):
-                            sources.setdefault(decision['behavior_identity'], []).append(dict(
-                                source_kind=kind, candidate_id=decision['candidate_id']))
-                formal = state['formal_champion_snapshot']
-                state['formal_champion_adaptation'] = None
-                if formal['status'] == 'selected':
-                    try:
-                        canonical = canonicalize_search_program(formal['program'], capabilities)
-                        if canonical['identity'] != formal['behavior_identity']:
-                            raise ValueError('正式冠军行为身份不符')
-                        from burst import check_loop
-                        if use_burst:
-                            check_loop(canonical['program'], capabilities)
-                        key = canonical['identity']
-                        remaining = []
-                        for program in state['starts']:
-                            try:
-                                duplicate = canonicalize_search_program(program, capabilities)['identity'] == key
-                            except (TypeError, ValueError, KeyError):
-                                duplicate = False  # Keep the optimizer's per-native rejection semantics.
-                            if not duplicate:
-                                remaining.append(program)
-                        state['starts'] = [formal['program']] + remaining
-                        sources.setdefault(key, []).append(dict(source_kind='formal_champion',
-                            source_run_id=formal['source_run_id'], version=formal['version']))
-                        state['formal_champion_adaptation'] = dict(status='accepted',
-                            behavior_identity=key, derived_program=formal['program'])
-                    except (TypeError, ValueError, KeyError) as error:
-                        state['formal_champion_adaptation'] = dict(status='rejected', reason=str(error))
-                from formal_search import freeze_starts
-                state['starts'], state['start_adaptations'] = freeze_starts(state['starts'], capabilities, runtime)
-                state['start_sources'] = sources
+                _assemble_formal_starts(state, starts, character=character, configuration_key=configuration_key,
+                    capabilities=capabilities, runtime=runtime, use_burst=use_burst)
                 if not state['starts']:
                     raise TaskError('当前爆发排除条件下没有有效搜索起点')
                 if not config['diagnostic_logging']:

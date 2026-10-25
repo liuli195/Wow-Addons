@@ -4,7 +4,7 @@ import json
 import threading
 from pathlib import Path
 from urllib.error import HTTPError
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -60,6 +60,35 @@ def small_verified_engines(tmp_path, monkeypatch, page_task_engine):
     with patch.object(engine, 'identity', REAL_IDENTITY), \
             patch.object(task, '_rule_hashes', side_effect=verified_rules):
         yield executables
+
+
+def test_changed_engine_bytes_fail_identity_and_map_to_page_error(monkeypatch):
+    import engine
+    import interface
+    from native_build import build_identity, identity_digest
+
+    root = Path('/memory-engine')
+    lock = dict(build_protocol=2, upstream_commit='a' * 40, upstream_tree='b' * 40,
+                build_options=[], baseline_patches=[], patches=[], sources=[])
+    executable = root / '.local/sim2gse/build/baseline/simc.exe'
+    contents = b'verified test engine: baseline'
+    identity = build_identity(lock, 'baseline', 'c' * 64)
+    manifest = dict(identity, identity_sha256=identity_digest(identity), exit_code=0,
+                    executable=executable.relative_to(root).as_posix(), command=['make', '-j4'],
+                    binary_sha256=hashlib.sha256(contents).hexdigest())
+    documents = {
+        root / 'projects/sim2gse/compatibility/lock.json': json.dumps(lock),
+        executable.parent / 'build.json': json.dumps(manifest),
+    }
+    binaries = {executable: contents}
+    monkeypatch.setattr(engine, 'ROOT', root)
+    monkeypatch.setattr(Path, 'read_text', lambda path: documents[path])
+    monkeypatch.setattr(Path, 'read_bytes', lambda path: binaries[path])
+    assert REAL_IDENTITY('baseline') == (executable, manifest)
+    binaries[executable] = contents + b'changed'
+    with pytest.raises(ValueError, match='独立引擎身份或构建状态不符') as error:
+        REAL_IDENTITY('baseline')
+    assert interface._friendly_error(error.value) == '引擎计算失败，请检查本机模拟环境后重试。'
 
 
 @pytest.mark.real
@@ -148,15 +177,18 @@ def test_dual_rejects_changed_engine_on_first_verification(
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     result_store.DATA_ROOT.mkdir(exist_ok=True)
-    read_bytes = Path.read_bytes
     executable = small_verified_engines['baseline']
-
-    def corrupt_read(path):
-        contents = read_bytes(path)
-        return contents + b'changed' if path == executable else contents
-
-    with patch.object(Path, 'read_bytes', corrupt_read), pytest.raises(HTTPError) as rejected:
+    # 改坏物理微型产物而非读取API；真实清单/SHA必须在启动原生计算前拒绝。
+    executable.write_bytes(executable.read_bytes() + b'changed')
+    with pytest.raises(ValueError, match='独立引擎身份或构建状态不符'):
+        REAL_IDENTITY('baseline')
+    forbidden_compute = Mock(side_effect=AssertionError('changed engine must not compute'))
+    forbidden_launch = Mock(side_effect=AssertionError('changed engine must not launch a task'))
+    with patch('subprocess.Popen', forbidden_compute), \
+            patch('dual_task._launch', forbidden_launch), pytest.raises(HTTPError) as rejected:
         dual_result(tmp_path, raw, candidate_limit=1)
     assert rejected.value.code == 500
     with rejected.value as response:
         assert json.load(response)['error'] == '引擎计算失败，请检查本机模拟环境后重试。'
+    forbidden_compute.assert_not_called()
+    forbidden_launch.assert_not_called()

@@ -247,6 +247,51 @@ def test_report_checkpoint_persists_original_locations_with_one_complete_compari
     assert comparisons == 1
 
 
+def test_mixed_summary_encoding_and_shared_filtering_use_real_memory_sql(monkeypatch):
+    store = _new_checkpoint()
+    store.state['config']['diagnostic_logging'] = True
+    store.defer_persistence = True
+    report = dict(status='success', request=dict(purpose='search'), data_key='batch-0',
+        dps=100., samples=2, variance=0, storage_group_key='checkpoint_g0', batch_index=0, scenario='nominal')
+    summaries = {
+        'cached': dict(status='success', request=dict(purpose='search'), data_key='cached',
+                       dps=101, samples=2, variance=0),
+        'final': dict(status='success', request=dict(purpose='final'), data_key='final',
+                      dps=102, samples=2, variance=0),
+        'failed': dict(status='failed', data_key='failed', error='constructed failure'),
+    }
+    for key, row in summaries.items():
+        store.put_batch(key, row)
+    encodings = {}
+    dumps = json.dumps
+
+    def counted_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and value.get('data_key') and value.get('status'):
+            key = value['data_key']
+            encodings[key] = encodings.get(key, 0) + 1
+        return dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, 'dumps', counted_dumps)
+    try:
+        # 直接测SQL提交规则；不冒充flush的物理发布或原引用位置回填。
+        store._commit_report_group('checkpoint_g0', 0, [('batch-0', report)])
+        store.checkpoint()  # 空report_buffer使真实flush自然返回，不替换其返回值。
+        assert store.state_write_count == 2
+        store.defer_persistence = False
+        immediate = dict(summaries['cached'], data_key='immediate')
+        store.put_batch('immediate', immediate)
+        assert store.state['completed_batches'] == store.persisted_batches == 4
+        assert store.batch('batch-0') == report
+        assert all(store.batch(key) == row for key, row in summaries.items())
+        assert store.batch('immediate') == immediate
+        assert store.db.execute('SELECT key FROM shared.reusable ORDER BY key').fetchall() == [
+            ('batch-0',), ('cached',), ('immediate',)]
+        assert encodings == {'batch-0': 1, 'cached': 1, 'final': 1, 'failed': 1, 'immediate': 1}
+    finally:
+        store.diagnostic_logging_override = False
+        store.close()
+
+
 @pytest.mark.real
 def test_mixed_checkpoint_and_immediate_batch_encode_each_summary_once(tmp_path, monkeypatch):
     from search import TaskStore
@@ -279,9 +324,7 @@ def test_mixed_checkpoint_and_immediate_batch_encode_each_summary_once(tmp_path,
     store.defer_persistence = False
     immediate = dict(summaries['cached'], data_key='immediate')
     store.put_batch('immediate', immediate)
-    assert store.state['completed_batches'] == store.persisted_batches == 4
-    assert all(store.batch(key) == row for key, row in summaries.items())
-    assert store.batch('immediate') == immediate
+    # 本对象摘要计数/逐值规则在内存SQL节点；此处保真实跨Store共享隔离。
     other = store.destination.parent / 'other-task'
     other.mkdir()
     shared = TaskStore(other)
@@ -295,6 +338,7 @@ def test_mixed_checkpoint_and_immediate_batch_encode_each_summary_once(tmp_path,
         shared.close()
     expected = copy.deepcopy(store.state)
     assert _reopen_checkpoint(store) == expected
+    # 保留flush→commit真实接线的编码交叉证明，不能由直接_commit冒充。
     assert encodings == {'batch-0': 1, 'cached': 1, 'final': 1, 'failed': 1, 'immediate': 1}
 
 
