@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Execution:** in progress — 完整Gate1已获用户Sentinel_0ac161c3fe8c8191b697b37d3c04d7ee明确确认；root已将实现提交于18ea771，正在独立审查。新内存规则已定向通过，完整开发普通仍有1个PNG环境失败，Windows真实/全仓未验收。
+**Execution:** technically complete, delivery pending — 三票代码独审与文案增量已收口；b18/tree560088的Windows正式43项全过、0成功缓存跳过。8×2后续实验亦43项全过；用户已明确保留，官方配置已保存于42eb6c8并核对一致。正式规格应用、PR、合并及安全清理仍待完整第二门禁。
 
 ## 实施边界与所有权
 
@@ -18,13 +18,15 @@
 
 ## Acceptance criteria
 
-- [ ] 两个真实检查器实际启动，返回失败且错误类型符合输入，不能仅用非零退出掩盖工具缺失。
+- [x] 两个真实检查器实际启动，返回失败且错误类型符合输入，不能仅用非零退出掩盖工具缺失。
 - [x] 现行源码commit/tree身份匹配与错配规则在普通守卫下通过；不以模拟Git输出证明真实Git应用已测。
-- [ ] 准确披露TOC缺文件规则移内存（不再走真实CLI/文件链）、重复语法和旧prototype Git/写盘路径删除；正式主检查未被移除。
-- [ ] 只删除本票专属无消费者辅助代码；最终完整43项通过并报告checker组耗时。
+- [x] 准确披露TOC缺文件规则移内存（不再走真实CLI/文件链）、重复语法和旧prototype Git/写盘路径删除；正式主检查未被移除。
+- [x] 只删除本票专属无消费者辅助代码；最终完整43项通过并报告checker组耗时。
 
 ## Comments
 
 既有技术精简方案已经用户批准；完整Gate1已明确确认同树新分支、并行子代理、最后独审和本轮取舍。三个票据无产品或文件依赖；不得各自提交、推送或运行Windows重验证。必要普通定向检查云端完成，测试资源冲突时排队。
 
 开发收据（2026-10-25）：`.local/verification-top-five/checker/ordinary-before-trim{.log,-summary.json}`确认新内存4项在删除真实重复路径前通过（0.17秒），守卫错误为空。`ordinary-after-trim{.log,-summary.json}`为完整dev普通24通过/1失败（0.27秒），失败是`test_committed_crosshair_names_sizes_and_source_pixels`读取当前浅clone的LFS指针而非PNG；不将退出1写成全过。两改动Python文件解析通过，守卫零违规不消除该环境缺口；本轮未填充大型工具或LFS资产，Windows冻结环境统一验证。保留LuaLS/luacheck两真实反例尚未在云端执行。
+
+正式收据（2026-10-25）：b18/tree560088在官方BAV 2.7.1完整入口43项全部实际通过、0缓存跳过，17普通守卫完整，GSE388普通＋168子测试/4真实＋2子测试、gear两真实与checker均通过；原参数工具36.2841764秒、实际36.532秒。后续已授权8×2实验工具28.733572秒、实际28.975秒，同样43项全过且0缓存跳过。原云端环境失败记录保持原事实，不改写为通过；Windows正式结果和后续授权、清理、配置保存状态统一见[verification.md](../verification.md)。

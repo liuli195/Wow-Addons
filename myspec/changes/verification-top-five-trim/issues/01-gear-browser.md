@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Execution:** in progress — 完整Gate1已获用户Sentinel_0ac161c3fe8c8191b697b37d3c04d7ee明确确认；root已将实现提交于18ea771，正在独立审查，尚未Windows真实/全仓验收。
+**Execution:** technically complete, delivery pending — 三票代码独审与文案增量已收口；b18/tree560088的Windows正式43项全过、0成功缓存跳过。8×2后续实验亦43项全过；用户已明确保留，官方配置已保存于42eb6c8并核对一致。正式规格应用、PR、合并及安全清理仍待完整第二门禁。
 
 ## 实施边界与所有权
 
@@ -17,13 +17,15 @@
 
 ## Acceptance criteria
 
-- [ ] 主要完整配装闭环保留，计算结果不是fixture预设；样本差值和实际下载/重导断言通过。
+- [x] 主要完整配装闭环保留，计算结果不是fixture预设；样本差值和实际下载/重导断言通过。
 - [x] 文档明确不再执行原装备匹配/特效取得及物理缓存的真实组合链，不能称普通规则全部替代该风险。
-- [ ] 不改产品、引擎、并发或服务锁；本票固定差异与独立审查通过。
-- [ ] 由root统一Windows真实入口及最终全仓验收，记录该组实际耗时。
+- [x] 不改产品、引擎、并发或服务锁；本票固定差异与独立审查通过。
+- [x] 由root统一Windows真实入口及最终全仓验收，记录该组实际耗时。
 
 ## Comments
 
 既有技术精简方案已经用户批准；完整Gate1已明确确认同树新分支、并行子代理、最后独审和本轮取舍。三个票据无产品或文件依赖；不得各自提交、推送或运行Windows重验证。必要普通定向检查云端完成，测试资源冲突时排队。
 
-开发收据（2026-10-25）：`.local/verification-top-five/gear/summary.json`、stdout/stderr及8份审计JSONL。现有2.7.1源审计适配器运行8段Node普通检查，退出0、8 start/finish完整、零违规、evidence_error=null，wall0.939秒。环境为云端Node v24.22.1，不能冒充Windows冻结Node或真实Edge/SimC烟测；浏览器5次主计算和实际下载/重导仍待root正式验证。此次不是官方CLI完整通过。
+开发收据（历史前态，2026-10-25）：`.local/verification-top-five/gear/summary.json`、stdout/stderr及8份审计JSONL。现有2.7.1源审计适配器运行8段Node普通检查，退出0、8 start/finish完整、零违规、evidence_error=null，wall0.939秒。环境为云端Node v24.22.1，不能冒充Windows冻结Node或真实Edge/SimC烟测；当时浏览器5次主计算和实际下载/重导尚待正式验证，后续Windows通过见下段。该次云端检查不是官方CLI完整通过。
+
+正式收据（2026-10-25）：b18/tree560088在官方BAV 2.7.1完整入口43项全部实际通过、0缓存跳过，17普通守卫完整，GSE388普通＋168子测试/4真实＋2子测试、gear两真实与checker均通过；原参数工具36.2841764秒、实际36.532秒。后续已授权8×2实验工具28.733572秒、实际28.975秒，同样43项全过且0缓存跳过。原云端环境失败记录保持原事实，不改写为通过；Windows正式结果和后续授权、清理、配置保存状态统一见[verification.md](../verification.md)。
