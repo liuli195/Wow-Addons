@@ -575,6 +575,8 @@ def _export_search_observability(value, *, include_details=True):
 def _observe_ga(store, kind, **values):
     """Observe actual GA work only; never draw randomness or request extra scores."""
     with store.lock:
+        if not store.diagnostic_logging or store.state['config']['search_observability'] == 'off':
+            return
         observation = store.state.get('search_observability')
         if not observation:
             return

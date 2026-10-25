@@ -855,6 +855,40 @@ def test_public_four_group_resume_uses_frozen_outer_pool_after_next_batch_toml_c
     assert manifests==before
 
 
+@pytest.mark.parametrize('resume_logging', [False, True], ids=['logging-off', 'search-records-off'])
+def test_formal_resume_stops_new_search_observations_without_removing_history(memory_ga, resume_logging):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from runtime import TaskCancelled, TaskRuntime
+    from search import config_for
+    case = memory_ga(formal=True, programs=[[['outbreak']]],
+                     search_settings=dict(diagnostic_logging=True, search_observability='full'))
+    cancel = SimpleNamespace(is_set=lambda: case.store.state['ga']['generation'] >= 1)
+    with pytest.raises(TaskCancelled):
+        case.run(runtime=TaskRuntime(float('inf'), diagnostic_logging=True, cancel_event=cancel))
+    case.store.checkpoint()
+    case.store.state = case.store.load_state(case.store.db)
+    history = deepcopy(case.store.state['search_observability'])
+    assert history['summary']['mutation_attempts'] > 0 and history['details']
+    frozen = deepcopy(case.store.state['formal_search'])
+    previous_calls = [folder for folder, _, _ in case.calls]
+    case.search_config.update(config_for(dict(case.search_config,
+        diagnostic_logging=resume_logging, search_observability='off')))
+    case.store.state['config'] = case.search_config
+    result = case.run()
+    assert result['status'] == 'completed'
+    assert case.store.state['ga']['generation'] > 1
+    assert case.store.load_state(case.store.db)['search_observability'] == history
+    assert case.store.state['formal_search'] == frozen
+    all_calls = [folder for folder, _, _ in case.calls]
+    assert len(all_calls) == len(set(all_calls)) and all_calls[:len(previous_calls)] == previous_calls
+    baseline = memory_ga(formal=True, programs=[[['outbreak']]])
+    expected = baseline.run()
+    assert result['selected_candidate_key'] == expected['selected_candidate_key']
+    assert result['search_result'] == expected['search_result']
+    assert case.calls == baseline.calls
+
+
 def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_errors(monkeypatch,memory_ga):
     from copy import deepcopy
     import population_training

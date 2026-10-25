@@ -222,7 +222,8 @@ def _worker(handle):
             started = time.monotonic()
             row['collection_text'] = collection([compiled_exports[key] for key in ('single_target', 'aoe', 'burst')],
                 destination / 'collection', identity=native_identity,
-                runtime=TaskRuntime(600, cancel_event=handle.cancel_event))
+                runtime=TaskRuntime(600, cancel_event=handle.cancel_event,
+                                    diagnostic_logging=row['config']['diagnostic_logging']))
             row['packaging_seconds'] += time.monotonic() - started
             row.update(status='completed', phase='done')
             _save(row)

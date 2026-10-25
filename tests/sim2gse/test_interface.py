@@ -545,7 +545,7 @@ class InterfaceTests(unittest.TestCase):
             self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
 
     def _json_request(self, method: str, path: str, value: dict | None = None,
-                      timeout: float = 3) -> dict:
+                      timeout: float = 3) -> dict | str:
         body = None if value is None else json.dumps(value, ensure_ascii=False).encode("utf-8")
         if not self.real:
             from interface import InterfaceHandler
@@ -562,11 +562,12 @@ class InterfaceTests(unittest.TestCase):
             status = int(headers.split(b' ', 2)[1])
             if status >= 400:
                 raise HTTPError(path, status, 'interface response', None, BytesIO(response))
-            return json.loads(response)
+            return response.decode('utf-8') if path == '/' else json.loads(response)
         request = Request(self.url + path, data=body, method=method,
                           headers={"Content-Type": "application/json"} if body else {})
         with urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read().decode('utf-8')
+            return body if path == '/' else json.loads(body)
 
     def _task_state_request(self, task_id: str, deadline: float) -> dict:
         remaining = deadline - time.monotonic()
@@ -661,6 +662,7 @@ class InterfaceTests(unittest.TestCase):
             "profile": sample_profile(), "mode": "import", "gse": imported, "target_count": 5,
             "sequence_name": "THIRD_PARTY", "version": 1,
             "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
+            "diagnostic_logging": True,
         })
         deadline = time.monotonic() + 30
         state = {}
@@ -675,7 +677,11 @@ class InterfaceTests(unittest.TestCase):
         self.assertFalse(state["result_ready"])
         destination, _ = self.server.tasks[created["task_id"]]
         from task import read_task
-        self.assertEqual(read_task(destination)["simulation_config"]["target_count"], 5)
+        result = read_task(destination)
+        self.assertEqual(result['simulation_config']['target_count'], 5)
+        self.assertIs(result['config']['diagnostic_logging'], True)
+        for stage in ('reference', 'controlled'):
+            self.assertTrue((destination / stage / 'invocation.json').is_file(), stage)
 
     def test_unmapped_import_error_is_reported_without_dps(self) -> None:
         from gse_import import import_action_spell_ids, program_from_import
@@ -723,6 +729,84 @@ class InterfaceTests(unittest.TestCase):
         self.assertIs(start.call_args.kwargs['use_burst'], False)
         self.assertEqual(start.call_args.kwargs['simulation_config']['target_count'], 1)
         self.assertEqual(start.call_args.kwargs['simulation_config']['scene'], 'single_target')
+
+    def test_task_logging_choice_overrides_only_this_request(self):
+        import interface
+        import dual_task
+
+        source = SimpleNamespace(write_text=lambda *args, **kwargs: None)
+        destination = self.server.task_root / ('d' * 32)
+        handle = SimpleNamespace(done=True, error=None)
+        imported = gse_fixture(['LOGGING', {
+            'MetaData': {'SpecID': 252, 'GSEVersion': 3331}, 'Default': 1,
+            'Versions': [{'Actions': [{'Type': 'Action', 'type': 'spell', 'spell': 77575}]}],
+        }])
+        with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                patch.object(interface, 'start_task', return_value=handle) as single, \
+                patch.object(dual_task, 'start', return_value=handle) as dual:
+            for default in (False, True):
+                original = dict(search_config=dict(diagnostic_logging=default, diagnostics='summary',
+                                                   search_timeline=True))
+                self.server.task_options = deepcopy(original)
+                previous = []
+                for mode in ('optimize', 'import', 'dual'):
+                    for choice in ('omitted', True, False):
+                        with self.subTest(default=default, mode=mode, choice=choice):
+                            request = dict(profile=sample_profile(), mode=mode, gse=imported,
+                                sequence_name='LOGGING', version=1, gse_click_ms=300, gcd_ms=1500,
+                                input_interval_ms=300)
+                            if choice != 'omitted':
+                                request['diagnostic_logging'] = choice
+                            created = self._json_request('POST', '/api/tasks', request)
+                            self.assertEqual(created['status'], 'starting')
+                            options = (dual if mode == 'dual' else single).call_args.kwargs['search_config']
+                            expected = default if choice == 'omitted' else choice
+                            self.assertIs(options['diagnostic_logging'], expected)
+                            self.assertEqual(options['diagnostics'], 'summary')
+                            self.assertIs(options['search_timeline'], True)
+                            self.assertEqual(self.server.task_options, original)
+                            previous.append((options, expected))
+                for options, expected in previous:
+                    self.assertIs(options['diagnostic_logging'], expected)
+
+    def test_served_page_uses_service_logging_only_as_initial_selection(self):
+        for default in (False, True):
+            self.server.task_options = dict(search_config=dict(diagnostic_logging=default))
+            page = self._json_request('GET', '/')
+            self.assertIn('diagnosticLogging.checked=' + str(default).lower(), page)
+            self.assertNotIn('diagnosticLogging.disabled=true', page)
+            self.assertIn('本次任务', page)
+
+    def test_resume_logging_choice_inherits_default_and_rejects_invalid_or_running_requests(self):
+        import dual_task
+        task_id = 'e' * 32
+        _, destination = self.server.task_paths(task_id)
+        handle = SimpleNamespace(done=True, error=None)
+        path = '/api/tasks/' + task_id + '/resume'
+        with patch.object(Path, 'exists', lambda value: value.name == 'dual.json'), \
+                patch.object(dual_task, 'resume', return_value=handle) as resume:
+            for default in (False, True):
+                self.server.task_options = dict(search_config=dict(diagnostic_logging=default))
+                for body, expected in ((None, default), ({}, default),
+                                       ({'diagnostic_logging': True}, True),
+                                       ({'diagnostic_logging': False}, False)):
+                    with self.subTest(default=default, body=body):
+                        self.assertEqual(self._json_request('POST', path, body)['status'], 'starting')
+                        self.assertIs(resume.call_args.kwargs['diagnostic_logging'], expected)
+                        self.assertIs(self.server.task_options['search_config']['diagnostic_logging'], default)
+            resume.reset_mock()
+            for invalid in (None, 0, 1, 'true', [], {}):
+                for endpoint in ('/api/tasks', path):
+                    with self.subTest(invalid=invalid, endpoint=endpoint), self.assertRaises(HTTPError) as caught:
+                        self._json_request('POST', endpoint, dict(profile=sample_profile(), diagnostic_logging=invalid))
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertIn('布尔值', json.loads(caught.exception.read())['error'])
+            handle.done = False
+            with self.assertRaises(HTTPError) as caught:
+                self._json_request('POST', path, {'diagnostic_logging': False})
+            self.assertIn('仍在运行', json.loads(caught.exception.read())['error'])
+            resume.assert_not_called()
+            self.assertEqual(self.server.tasks[task_id], (destination, handle))
 
     @pytest.mark.real
     def test_published_burst_report_group_is_reused_after_registration_interruption(self) -> None:
@@ -1131,6 +1215,57 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
  const browser=await chromium.launch({channel:'msedge',headless:true});
  try{
+  // 浏览器只拦截计算请求；真实页面的可操作状态、点击和请求正文均实际执行。
+  {
+   const context=await browser.newContext();
+   try{
+    const page=await context.newPage(),submitted=[];let finishPolling=Promise.resolve(),releasePolling;
+    await page.route('**/api/**',async route=>{
+     const request=route.request(),path=new URL(request.url()).pathname;
+     let body;
+     if(path==='/api/gse/inspect')body={syntax:['Action'],sequences:[{name:'LOGGING',version_count:1,default_version:1,version_support:[{version:1,simulation_preflight_passed:true,support_status:'requires_character_validation'}]}]};
+     else if(request.method()==='POST'){
+      submitted.push({path,body:request.postDataJSON()});
+      if(path.endsWith('/resume')){await route.fulfill({status:400,json:{error:'本次恢复未启动'}});return;}
+      body={task_id:'a'.repeat(32),status:'starting'};
+     }else{await finishPolling;body={status:'cancelled',phase:'done',recoverable:true,error:'本次计算已停止'};}
+     await route.fulfill({json:body});
+    });
+    await page.goto(input.url);
+    const checkbox=page.locator('#diagnosticLogging');
+    assert.equal(await checkbox.isDisabled(),false);
+    assert.equal(await checkbox.isChecked(),false);
+    for(const selected of [true,false]){
+     await checkbox.setChecked(selected);
+     await page.locator('#profile').fill(input.profile);
+     finishPolling=new Promise(resolve=>{releasePolling=resolve;});
+     await page.locator('#start').click();
+     await page.locator('#cancel').waitFor({state:'visible'});
+     assert.equal(submitted.at(-1).body.mode,'dual');
+     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
+     const count=submitted.length;
+     await checkbox.setChecked(!selected);
+     assert.equal(submitted.length,count,'勾选不应修改正在运行的任务');
+     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
+     releasePolling();
+     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+     await page.locator('#resume').click();
+     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+     assert.ok(submitted.at(-1).path.endsWith('/resume'));
+     assert.equal(submitted.at(-1).body.diagnostic_logging,!selected);
+     assert.equal(await page.locator('#resume').isVisible(),true,'失败后仍可继续');
+     await checkbox.setChecked(selected);
+     await page.locator('#gseImport').fill('!GSE3!browser-fixture');
+     await page.locator('#inspectImport').click();
+     await page.locator('#importStart').click();
+     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+     assert.equal(submitted.at(-1).body.mode,'import');
+     assert.equal(submitted.at(-1).body.diagnostic_logging,selected);
+    }
+    assert.equal(submitted.length,6);
+   }finally{await context.close();}
+  }
+  // END_DIAGNOSTIC_SELECTION
   {
    const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
    try{
