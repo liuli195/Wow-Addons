@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-**Execution:** in progress — 完整门禁已确认，已同步9676c51f6bb7f4e8daa7295f08caed0b5a84acea/tree e27443401f723e21de7b8ee789e2957904d54bd5。
+**Execution:** in progress — 完整门禁已确认；首候选全仓尚未达标，唯一身份前置回归已修复。用户要求的同8单组对照确认wall减少2.512秒，但不替代全仓；现按实测继续统一最简真实通道，固定增量后独审与完整验收。证据及契约承接见同目录verification/coverage-changes。
 
 ## 范围与串行顺序
 

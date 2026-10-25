@@ -53,8 +53,39 @@
 
 云端直接开发诊断已核两生产者×单目标/5目标四种组合：一次native.json写入、实际文件JSON等于返回报告、目标数正确。该诊断不冒充原生引擎/Windows验收；现有公开结果、历史报告验真和损坏/恢复断言仍由最终完整真实组运行。
 
-## 开发证据与未完成项
+## 首候选前的云端开发证据（历史）
 
 - 云端普通层改前410+130通过；共同报告/候选修改后以及统一夹具整合后均410+130通过，118真实仅收集/未运行。
 - 改动文件全部原assert/self.assert/pytest.raises的AST相同；这仅证明未删字面断言，上述触发链分析和最终Astra/真实验收才负责覆盖有效性。
-- 尚无修改后GSE时间，不承诺节省>7.61秒；只有整个候选官方全仓无缓存通过且<30才可达标。
+- 当时尚无修改后GSE时间，不承诺节省>7.61秒；后续实测见第6节及`verification.md`，只有整个候选官方全仓无缓存通过且<30才可达标。
+
+## 6. 实测后统一收窄非目标探索（第二候选，待正式全仓）
+
+首候选并未达到全仓目标。修正独立单场/HTTP的`max_processes`身份不一致后，同8路单组对照证明工作量确有下降，但不证明全仓达标；详见`verification.md`。新证据显示准备/清理很短、worker无大偏斜，所以本次不再扩共享准备，也不改调度器，而是统一真实流程的最小合法工作量。
+
+既有`_fixed_search_population`移至其依赖`_initialized_starts`所在的`test_search`，仍先调用生产初始化，再交明确合法输入；其它模块复用同一函数。它不替换生产GA、分代、评分、复测或持久化。浏览器原有自定义随机数类被该既有能力替代。全局产品默认值、随机变异专测及并发专测均不改。
+
+### 每个变化后的风险触发链
+
+| 节点（模块内唯一方法名） | 最小前置及仍实际触发的风险 | 本节点不再重复承担什么、承接在哪里 |
+|---|---|---|
+| burst `test_page_dual_scores_character_adapted_seed_without_changing_training[True]` | 一个普通合法起点；旧训练冠军仍通过生产适配和注入加入当前GA，HTTP双场均完成。仍逐项检查原程序/移除位置/移除原因/适配后程序确实进入search records、当前成绩不等于99999、源记录完全不变。若跳过适配、误用旧分、改坏来源或漏掉注入，原断言仍失败。 | 不是四默认来源或随机新候选测试；四来源真实入口与真实变异代表见下方。两场及其resume使用同一显式`max_processes=1`，没有独立默认2的同条件预建任务。 |
+| burst `test_dual_keeps_completed_child_and_recovers_without_searching_it_again` | 一个起点、无无关子代。第一次真正完成single_target后在aoe的`run_task`入口抛错；公开HTTP恢复仍运行aoe，调用计数强制single_target恰好一次，最终三导出/说明一致。之后篡改真实input.original.simc，必须拒绝恢复。 | 不承担GA多样性。真实任务目录/SQLite和冻结字节保留；该节点原本已用内存报告中心，本次未进一步替换物理层。 |
+| search `test_task_final_publish_failure_still_closes_connection` | 一个起点；最终实际写`progress.pending.json`仍在reservation释放后抛同一OSError，真实连接必须关闭且只记录该一次失败。报告中心改用现有typed-memory，SQLite连接和失败的物理文件接缝不变。 | 不再在此证明Parquet落盘；物理报告写入/重开由下方代表保留。不是随机候选或默认数量测试。 |
+| search `test_public_entry_runs_multi_start_search_with_isolated_validation` | 明确两个不同合法起点，首个候选仍真实原生执行，其后构造评分边界不变。仍要求至少两起点、公开read一致、winner/locked一致、381样本、search与final种子互斥、独立验证完成。报告中心typed-memory，真实任务文件/SQLite保留。 | 不承担默认恰好四来源；独立retired_capabilities真实节点明确断言4。统计分离与样本断言不减；不把内存中心算Parquet持久性通过。 |
+| search `test_search_resumes_without_resetting_elapsed_time_or_batches` | **保留两个起点**，第二次评分新增断言必须32场粗评，不能变成128场复测。仍在该点阻塞、通过公开入口观察0个已提交批次、拒绝运行中恢复、取消后真实重开SQLite并恢复；已成功key、累计时间/批次及诊断计数原断言全部保留。报告中心typed-memory。 | 不承担跨进程Parquet重新打开；真实硬退出、checkpoint重开和损坏分组代表不改。不能将这条内存中心结果声称为物理中心耐久证明。 |
+| search `test_cold_cache_storage_failure_and_cancellation_do_not_resimulate` | 三次公开调用共享同一明确起点与配置；先真实写入物理中心，再在读取成功缓存时分别注入DataReadError或置取消事件。评分仍被禁止，第一份结果必须保持。 | 一个起点不再重复多样性；该节点**仍为物理中心**，未以内存替换冷读风险。 |
+| search `test_valid_exchange_report_is_kept_when_center_write_fails` | 一个起点足以生成真实native.json；实际中心写search组时仍抛错，所有已成功交换报告必须仍存在且可解析。 | 不要求达到12条满组；12条边界由interface登记中断及population补报代表保留。此节点仍有真实文件和物理中心，未改失败位置。 |
+| search `test_completed_search_removes_native_report_exchange_files` | 一个起点仍走完成和实际清理；文件全消失、伤害分布/宠物伤害数值和类型、read_task结果、候选引用、原始参考报告及只读指针断言保留。仍写入真实foreign.parquet坏分片并验证点读不扫坏片。 | 不承担候选多样性；**物理中心和坏片都保留**，不是内存清理模拟。 |
+| interface `test_browser_computes_copies_and_clears_real_candidate` | 使用既有typed-memory报告中心；真实Edge、页面交互、诊断开关6次请求、一次真实POST双场任务、真实原生评分/上游编译/剪贴板/输入修改清空仍运行。任务SQLite和输入/结果文件仍真实，1候选两代、381样本、180ms输入、三导出和完整集合不变。 | 不再在浏览器一例重复Parquet持久性；下列物理发布/损坏/位置/锁代表承担。它仍不能被ordinary或构造HTTP代替。 |
+| interface `test_public_service_simulates_selected_import_and_returns_dps` | 本用例显式iterations=2、max_processes=1；原生参考和受控执行均真实，选中THIRD_PARTY、目标5、DPS>0、无可复制搜索结果和diagnostic invocation文件全部保留。2次请求产生合法非空样本。 | 这不是100场精度/方差验收，原来也没有这种断言；正式GA统计仍保32场粗评与每finalist三份128、381样本。默认无覆盖参数的真实入口由character_export的原生引导饰品节点保留，不修改生产默认100/2。 |
+| interface `test_dual_freezes_timeline_setting_and_preserves_storage_failure_recovery` | 仅该服务实例显式max_processes=1，两场和恢复都沿同一配置；仍在首评分时改真实配置文件、检查两曲线冻结/时序，实际rename物理中心引发storage错误，再恢复目录和完整集合。 | 不承担默认进程数或内层并发；物理中心不替换。四模板4×5和同时任务/进程所有权专测不动。 |
+
+### 不变的明确代表，而不是按数量声称覆盖
+
+- **四来源/默认入口：**`test_retired_capabilities::test_public_formal_search_without_profession_rule_library_keeps_native_three_part_scope`仍通过公共run/resume并明确`len(starts)==4`，不应用本次固定群体；`test_character_export::CharacterExportTests::test_public_entry_simulates_native_channel_item`仍不覆盖search_config，真实走参考/受控原生执行。数值默认值还由原普通配置测试直接约束。
+- **变异/多样性：**`test_search::SearchAndValidationTests::test_task_mutates_unexecuted_apl_button_and_scores_exports_it`仍例外保真实变异门；interface的WaitClicks多候选选择和原生导出也不改。新最简通道不冒称这些风险已在自身重复覆盖。
+- **统计：**原formal生产合同、32场粗评、两完整代、独立三份128及381样本不缩减；浏览器真实原生双场、正式冠军自然复测和multi-start原断言均保留。此次降低iterations只影响导入烟测，不降低正式复测合同。
+- **物理报告/故障：**interface的12条发布后登记中断、丢失/截断.report-locations、两个任务真正同时写入；search的损坏Parquet精确补发、冷读失败、交换文件保留/清理；population的完整64条发布及12条损坏补报；全部checkpoint/连接节点继续物理执行。真实硬退出、真实进程所有权及四模板4×5不改。
+
+云端使用现有`memory_ga`直接驱动生产formal_search得到反例：1起点的前两次评分为`32,128`，2起点为`32,32`；均两完整代。因此不能把暂停第二批的前置缩到1。该证据只证明阶段/采样链，不证明物理提交；实际SQLite的0→已提交/重开断言留在真实节点并等待最终全仓。

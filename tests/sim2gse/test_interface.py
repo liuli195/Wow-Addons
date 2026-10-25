@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tempfile
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from copy import deepcopy
 from email.message import Message
 from io import BytesIO
@@ -31,22 +31,12 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from gse_import import inspect_import  # noqa: E402
 from test_seed_training import memory_result_center  # noqa: E402
 from test_population_training import memory_ga  # noqa: E402
+from test_search import _fixed_search_population  # noqa: E402
 
 
 def _coarse_batch_keys(result):
     return {batch['data_key'] for record in result['search']['records']
             for batch in record['batches'] if batch['request']['purpose'] == 'search'}
-
-
-@contextmanager
-def _fixed_search_population(starts):
-    """非变异代表仅固定测试工作量；真实两代、复测和持久化契约不变。"""
-    import population_training
-    from test_search import _initialized_starts
-    with _initialized_starts(starts), \
-            patch.object(population_training, '_cross', return_value=False), \
-            patch.object(population_training, 'mutate', side_effect=lambda program, *a, **k: deepcopy(list(program))):
-        yield
 
 
 def gse_fixture(payload):
@@ -653,6 +643,7 @@ class InterfaceTests(unittest.TestCase):
     @pytest.mark.usefixtures('memory_result_center')
     @pytest.mark.real
     def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
             "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
@@ -1188,6 +1179,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(completed["status"], "completed", completed)
         self.assertTrue(completed["result_ready"], completed)
 
+    @pytest.mark.usefixtures('memory_result_center')
     @pytest.mark.real
     def test_browser_computes_copies_and_clears_real_candidate(self):
         # 极小合法种群保留真实180ms双场原生/复测/编译/复制链；不为UI烟测运行长探索。
@@ -1298,16 +1290,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        import random
-        import population_training
-        from types import SimpleNamespace
-        original_random = random.Random
-        class NoVariationRandom(original_random):
-            _randbelow = original_random._randbelow
-            def random(self):
-                return .999999  # Only freeze the random gate; real GA still commits its two complete generations.
-        with _initialized_starts([[['outbreak'], ['death_coil']]]), \
-                patch.object(population_training, 'random', SimpleNamespace(Random=NoVariationRandom)), \
+        with _fixed_search_population([[['outbreak'], ['death_coil']]]), \
                 patch.object(sequence, 'evaluate', observe_evaluation):
             result=subprocess.run([str(REPOSITORY / '.local/verify-deps/node/node.exe'),'-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
                 text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
@@ -1444,7 +1427,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         import simulation_config
         path = Path(self.directory.name) / 'settings.toml'
         path.write_text('[search]\nsearch_timeline=true\n', encoding='utf-8')
-        self.server.task_options = {'search_config': dict(iterations=2, input_interval_ms=200)}
+        self.server.task_options = {'search_config': dict(iterations=2, input_interval_ms=200, max_processes=1)}
         edited = []
         with patch.object(simulation_config, 'DEFAULT_PATH', path), _fast_initialization(), page_task_boundary(), \
                 _fixed_search_population([[['outbreak'], ['death_coil']]]):

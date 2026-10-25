@@ -311,6 +311,17 @@ def _initialized_starts(starts):
 
 
 @contextmanager
+def _fixed_search_population(starts):
+    """非变异代表仅固定测试工作量；真实两代、复测和持久化契约不变。"""
+    from copy import deepcopy
+    import population_training
+    with _initialized_starts(starts), \
+            patch.object(population_training, '_cross', return_value=False), \
+            patch.object(population_training, 'mutate', side_effect=lambda program, *a, **k: deepcopy(list(program))):
+        yield
+
+
+@contextmanager
 def _prepared_search_boundary(directory, starts, *, evaluate=None):
     """构造原生报告，保留真实四起点接口、随机变异、评分和存储。"""
     import sequence
@@ -347,6 +358,7 @@ class SearchAndValidationTests(TestCase):
             with self.assertRaisesRegex(sqlite3.ProgrammingError,'closed'):
                 connections[0].execute('SELECT 1')
 
+    @pytest.mark.usefixtures('memory_result_center')
     @pytest.mark.real
     def test_task_final_publish_failure_still_closes_connection(self):
         import sqlite3
@@ -367,7 +379,8 @@ class SearchAndValidationTests(TestCase):
                     raise failure
                 return original_write(path, *args, **kwargs)
 
-            with _fast_search_boundary(), _captured_task_connections() as connections, \
+            with _fast_search_boundary(), _fixed_search_population([[['outbreak']]]), \
+                    _captured_task_connections() as connections, \
                     patch.object(Path, 'write_text', new=write):
                 with self.assertRaises(OSError) as caught:
                     run_task(source, destination, _runtime=runtime, search_config=dict(iterations=2, max_processes=1))
@@ -780,6 +793,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(first, input_times("jitter", seed=20260912))
         self.assertNotEqual(first, input_times("jitter", seed=20260913))
 
+    @pytest.mark.usefixtures('memory_result_center')
     @pytest.mark.real
     def test_public_entry_runs_multi_start_search_with_isolated_validation(self):
         import sequence
@@ -796,7 +810,9 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / "角色.simc"
             destination = Path(directory) / "任务"
             source.write_text(sample_profile(), encoding="utf-8")
-            with _fast_initialization(real_engine=True), patch.object(sequence, "evaluate", side_effect=evaluate):
+            with _fast_initialization(real_engine=True), \
+                    _fixed_search_population([[['outbreak']], [['death_coil']]]), \
+                    patch.object(sequence, "evaluate", side_effect=evaluate):
                 result = run_task(
                     source,
                     destination,
@@ -828,6 +844,7 @@ class SearchAndValidationTests(TestCase):
             self.assertTrue(result['independent_validation_complete'])
 
 
+    @pytest.mark.usefixtures('memory_result_center')
     @pytest.mark.real
     def test_search_resumes_without_resetting_elapsed_time_or_batches(self):
         import sequence
@@ -839,6 +856,7 @@ class SearchAndValidationTests(TestCase):
             nonlocal calls
             calls += 1
             if calls == 2:
+                self.assertEqual(kwargs['iterations'], 32, '取消点必须仍是第二个粗评，不能移到128场复测')
                 paused.set()
                 if not kwargs["runtime"].cancel_event.wait(5):
                     raise AssertionError("test did not cancel the paused batch")
@@ -849,7 +867,9 @@ class SearchAndValidationTests(TestCase):
             destination = Path(directory) / "task"
             source.write_text(sample_profile(), encoding="utf-8")
             config = dict(iterations=2, max_processes=1, diagnostic_logging=True)
-            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=pause_second_batch):
+            with _fast_search_boundary(), \
+                    _fixed_search_population([[['outbreak']], [['death_coil']]]), \
+                    patch.object(sequence, 'evaluate', side_effect=pause_second_batch):
                 handle = start_task(source, destination, search_config=config)
                 try:
                     self.assertTrue(paused.wait(5), "search never reached its second batch")
@@ -954,7 +974,7 @@ class SearchAndValidationTests(TestCase):
             source.write_text(sample_profile(), encoding='utf-8')
             config = dict(iterations=2, max_processes=1)
             original = result_store.one
-            with _fast_search_boundary():
+            with _fast_search_boundary(), _fixed_search_population([[['outbreak']]]):
                 first = run_task(source, Path(directory) / 'first', search_config=config)
                 for failure in ('unavailable', 'cancelled'):
                     with self.subTest(failure=failure):
@@ -999,7 +1019,8 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             destination = Path(directory) / 'task'
             source.write_text(sample_profile(), encoding='utf-8')
-            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
+            with _fast_search_boundary(), _fixed_search_population([[['outbreak']]]), \
+                    patch.object(sequence, 'evaluate', side_effect=evaluate), \
                     patch.object(result_store, 'write', side_effect=fail_search_batch_write):
                 with self.assertRaisesRegex(TaskError, 'synthetic data-center write failure'):
                     run_task(source, destination, search_config=dict(iterations=2, max_processes=1))
@@ -1212,7 +1233,8 @@ class SearchAndValidationTests(TestCase):
             destination = Path(directory) / 'task'
             source.write_text(sample_profile(), encoding='utf-8')
             config = dict(iterations=2, max_processes=1)
-            with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate_with_damage_detail):
+            with _fast_search_boundary(), _fixed_search_population([[['outbreak']]]), \
+                    patch.object(sequence, 'evaluate', side_effect=evaluate_with_damage_detail):
                 result = run_task(source, destination, search_config=config)
 
             self.assertEqual(result['status'], 'completed')

@@ -90,6 +90,13 @@ def page_task_engine():
         yield
 
 
+@pytest.fixture
+def single_start_formal_task():
+    from test_search import _fixed_search_population
+    with _fixed_search_population([[['outbreak'], ['death_coil']]]):
+        yield
+
+
 @pytest.mark.real
 def test_public_burst_precheck_requires_a_reviewed_definition(tmp_path):
     profile = tmp_path / 'character.simc'
@@ -399,7 +406,7 @@ def character_seed_boundary(*, native_flags=None, native_reference=None):
 @pytest.mark.parametrize("old_engine", [True])
 @pytest.mark.real
 def test_page_dual_scores_character_adapted_seed_without_changing_training(
-        tmp_path, memory_result_center, old_engine):
+        tmp_path, memory_result_center, single_start_formal_task, old_engine):
     import burst
     import result_store
     import seed_training
@@ -421,7 +428,8 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
         result_store.write('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe')), [row],
                            schema=seed_training.SELECTED_SCHEMA)
         before = result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe')))
-        server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(iterations=2)))
+        server = create_server(tmp_path / 'page', task_options=dict(
+            search_config=dict(iterations=2, max_processes=1)))
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
@@ -473,7 +481,7 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
 
 @pytest.mark.real
 def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
-        tmp_path, monkeypatch, page_task_engine, memory_result_center):
+        tmp_path, monkeypatch, page_task_engine, memory_result_center, single_start_formal_task):
     import burst
     import dual_task
     import threading
@@ -496,7 +504,8 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
         return original_run(*args, **kwargs)
 
     monkeypatch.setattr(task, 'run_task', run)
-    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(iterations=2)))
+    server = create_server(tmp_path / 'page', task_options=dict(
+        search_config=dict(iterations=2, max_processes=1)))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
