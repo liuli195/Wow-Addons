@@ -128,3 +128,10 @@ Timeline产品修复独立提交后，原真实失败节点本机已完整通过
 最新real机制数量为C++/角色/Lua编译38、爆发9、训练/材料/前台16、冠军/双场15、HTTP/browser/时间线10、搜索存储/进程12、检查点/接入/快照/诊断18、战斗日志2、有效输入/配置3，合计123。4+4+1+1旧来源消费未改；唯一browser、异构原生C++/Lua、整组损坏、hardexit/other-owner和DataStore独立接入均保留。不宣称旧重复交叉广度仍真实联调。
 
 各域普通诊断先验证承接，迁移敏感性故障由同输入边界实测，不捏造生产红灯。集中固定0ce守卫＋坏默认配置存在／禁止生产DC读取探针：287 passed、106 subtests、2.98秒，四worker证据完整、evidence_error为空。清单及每个a311原函数映射已按实际收集更新；同名/AST只是索引，新增跨机制承接须独立读断言复核。Windows新真实节点、完整43项/60秒、内2实测及同输入默认新旧DPS对照仍待；本节不是速度或整体通过承诺。
+
+## 2026-10-25 已测真实内4候选（08:29 UTC）
+
+- 固定源码e4ecc2d：本机普通287 passed／106 subtests，官方守卫四worker证据完整无违规；新partial-group真实节点和原Timeline生命周期均通过。真实内2一次60.266秒时79通过、44未完成，无已见失败，不作为通过证据。
+- 同源码真实内4单次123 passed／24 subtests，0失败／0未完成，pytest55.36秒、外层55.687秒；没有修改正式配置，未发现本轮内存／路径污染。只证明完整真实组完成，尚不证明全43项入口至收尾60秒通过。
+- 本机已有保存argv和WorkStealingScheduling日志确认当次为-n 4 --dist=worksteal；候选仅为verify.sim2gse-real增加pytestXdistWorkers:4及同--dist=worksteal。43个检查、17普通／26 native、real角色、全部123覆盖、paths／inputs、outer4／ordinary4／60秒均不变。0cecf8a官方runner先统一校验/注入xdist字段，再按角色运行，不需要把原生组改为普通组。real仍为第二个并行检查，外4第一波启动；不新增调度机制或串行其他检查。正式config不手改，由本机官方init --config --overwrite应用此候选后统一验证。
+- 静态资源边界：两GSE组同时内4，含控制端及另外两check主进程共12个，不含BAV／guard。GSE真实引擎局部上界8个单线程SimC，gear并行原生调用最多再叠1个；浏览器自身多进程、HTTP／Node与所有权helper另计。训练受控20线程回调不是20真实引擎。OS总峰值未实测，不承诺不超过16。

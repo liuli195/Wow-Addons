@@ -60,7 +60,7 @@
       {
         "id": "verify.sim2gse-real",
         "pr": false,
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -m real --strict-markers --basetemp=.local/t/gse-r",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -m real --strict-markers --basetemp=.local/t/gse-r --dist=worksteal",
         "checkParallel": true,
         "paths": [
           "projects/sim2gse/**",
@@ -120,7 +120,8 @@
           "pytest.ini",
           ".local/verify-deps/node/node.exe"
         ],
-        "timeoutSeconds": 600
+        "timeoutSeconds": 600,
+        "pytestXdistWorkers": 4
       },
       {
         "id": "verify.luals",
