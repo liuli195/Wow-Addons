@@ -10,6 +10,31 @@ from test_training_champion import unchanged_offspring, unchanged_champion_engin
 from test_seed_training import memory_result_center
 
 
+def final_export_compilations(compiled, destination):
+    purposes = {destination / 'exports' / purpose: purpose
+                for purpose in ('single_target', 'aoe', 'burst')}
+    purposes[destination / 'collection'] = 'collection'
+    return [(purposes[folder], enabled) for folder, enabled in compiled if folder in purposes]
+
+
+def test_final_export_observer_excludes_candidate_and_other_task_compilations():
+    destination = Path('/memory/tasks/current')
+    expected = [('single_target', True), ('aoe', True), ('burst', True),
+                ('burst', True), ('collection', True)]
+    compiled = [(destination / 'exports' / purpose, enabled)
+                for purpose, enabled in expected if purpose != 'collection']
+    compiled.append((destination / 'collection', True))
+    compiled.extend((folder, False) for folder in (
+        destination / 'aoe' / 'exports' / 'sim2gse-search-behavior-v2-candidate',
+        destination / 'aoe' / 'exports' / 'aoe',
+        destination / 'aoe' / 'collection',
+        destination.parent / 'other' / 'exports' / 'burst'))
+    assert final_export_compilations(compiled, destination) == expected
+    # Every real final invocation remains visible, including repeated burst exports.
+    compiled.append((destination / 'exports' / 'burst', False))
+    assert final_export_compilations(compiled, destination) == [*expected, ('burst', False)]
+
+
 @contextmanager
 def dual_page(root, raw, *, diagnostic_logging=False, resume_logging=False):
     from interface import create_server
@@ -133,9 +158,8 @@ def test_public_formal_publication_failure_is_recoverable_without_rescoring_save
     assert all(enabled is False for path, enabled in logging if 'single_target' in path)
     assert any('aoe' in path for path, _ in logging)
     assert all(enabled is True for path, enabled in logging if 'aoe' in path)
-    exported = [(folder, enabled) for folder, enabled in compiled
-                if 'exports' in folder.parts or folder.name == 'collection']
-    assert {folder.name for folder, _ in exported} == {'single_target', 'aoe', 'burst', 'collection'}
+    exported = final_export_compilations(compiled, destination)
+    assert {purpose for purpose, _ in exported} == {'single_target', 'aoe', 'burst', 'collection'}
     assert all(enabled is True for _, enabled in exported)
     for purpose in ('single_target', 'aoe', 'burst'):
         assert (destination / 'exports' / purpose / 'checked.log').is_file()
