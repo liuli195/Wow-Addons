@@ -305,7 +305,8 @@ def test_concurrent_saved_formal_winners_use_real_lock_and_reject_stale_publicat
             pass
         assert fresh[0]['condition_key'] == stale[0]['condition_key']
         assert fresh[0]['behavior_identity'] != stale[0]['behavior_identity']
-        first_locked, second_attempted, second_locked, release = (threading.Event() for _ in range(4))
+        first_ready, second_ready, first_locked, second_attempted, second_locked, release = (
+            threading.Event() for _ in range(6))
         actual_lock = result_store._search_champion_lock
         counter, counter_lock = [0], threading.Lock()
 
@@ -314,7 +315,20 @@ def test_concurrent_saved_formal_winners_use_real_lock_and_reject_stale_publicat
             with counter_lock:
                 counter[0] += 1
                 first = counter[0] == 1
-            if not first:
+            # 两者须先完成报告定位器核验；它与冠军锁共用_PUBLICATION_LOCK。
+            # 首发布者不能持锁等待尚卡在核验的第二发布者。
+            if first:
+                first_ready.set()
+                if not second_ready.wait(10):
+                    raise AssertionError('second publisher never completed source validation')
+            else:
+                second_ready.set()
+                if not first_locked.wait(10):
+                    raise AssertionError('first publisher never acquired the real lock')
+                # 非阻塞探针确认真实共用锁正在竞争，再进入未替换的完整文件锁。
+                if result_store._PUBLICATION_LOCK.acquire(blocking=False):
+                    result_store._PUBLICATION_LOCK.release()
+                    raise AssertionError('first publisher did not retain the real shared lock')
                 second_attempted.set()
             with actual_lock():
                 if first:
@@ -329,7 +343,7 @@ def test_concurrent_saved_formal_winners_use_real_lock_and_reject_stale_publicat
         with ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(task._publish_formal_champion, stores[0], tmp_path / 'fresh')
             try:
-                assert first_locked.wait(10)
+                assert first_ready.wait(10)
                 second = pool.submit(task._publish_formal_champion, stores[1], tmp_path / 'stale')
                 assert second_attempted.wait(10)
                 assert not second_locked.is_set()
@@ -635,7 +649,9 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
     profile = tmp_path / 'role.simc'
-    profile.write_text(raw, encoding='utf-8')
+    # HTTP入口按原字节写入；Windows文本换行转换会产生不同的冻结角色身份。
+    profile.write_bytes(raw.encode('utf-8'))
+    assert profile.read_bytes() == raw.encode('utf-8')
     # 只准备待取消的单场冠军；另一场无需预先执行完整双场。
     first = task.run_task(profile, tmp_path / 'first', use_burst=True,
         simulation_config=dict(target_count=1, scene='single_target'),
@@ -643,6 +659,7 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
             iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
             scenarios=('nominal',)))
     assert first['status'] == 'completed', first
+    assert (tmp_path / 'first/input.original.simc').read_bytes() == raw.encode('utf-8')
     key = first['search']['formal_champion_snapshot']['condition_key']
     incumbent = result_store.read_search_champion(key)
     evaluate = sequence.evaluate
@@ -658,6 +675,7 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
 
     def newer_version(previous):
         snapshot = previous['scenes'][0]['formal_champion_snapshot']
+        assert snapshot['condition_key'] == key
         record = result_store.read_search_champion(snapshot['condition_key'])
         assert record['source_run_id'] == first['search']['formal_champion_publication']['source_run_id']
         assert record['version'] == snapshot['version']

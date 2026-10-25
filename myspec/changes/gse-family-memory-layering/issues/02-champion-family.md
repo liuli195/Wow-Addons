@@ -1,7 +1,7 @@
 # 02：冠军与双场整族下沉，保一个产品主路
 
-**Status:** ready-for-human（云端实施与独审完成，待Windows组合验收）
-**Blocked by:** Windows官方守卫、真实边界及完整43组合验收；由父层在AB终态后串行安排。
+**Status:** ready-for-agent（Windows组合定向发现两处夹具缺陷，返工中）
+**Blocked by:** 修复CAS等待环及准备输入换行身份差异，独审后由父层串行重跑定向/完整43。
 **What to build:** 14函数及全部参数按mapping保留。唯一原样提取task起点组装逻辑，由生产原调用者与内存规则测试共用；复用formal_cohort、training_history、memory_ga，补v1明确凭据而非假中心。
 
 - [ ] 十来源、完整复测、来源替换、双场冻结继承、旧成果选择/拒绝/CAS组合逐条原assert有新nodeid承接。
