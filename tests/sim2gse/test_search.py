@@ -368,9 +368,7 @@ class SearchAndValidationTests(TestCase):
             with _fast_search_boundary(), _captured_task_connections() as connections, \
                     patch.object(Path, 'write_text', new=write):
                 with self.assertRaises(OSError) as caught:
-                    run_task(source, destination, _runtime=runtime, search_config=dict(
-                        candidate_limit=1, batch_targets=(2,), iterations=2,
-                        validation_batches=1, scenarios=('nominal',), max_processes=1))
+                    run_task(source, destination, _runtime=runtime, search_config=dict(iterations=2, max_processes=1))
                 self.assertIs(caught.exception, failure)
                 self.assertEqual(failed_writes, [destination / 'progress.pending.json'])
                 self.assertIsNone(runtime.reservation)
@@ -435,8 +433,7 @@ class SearchAndValidationTests(TestCase):
             with _prepared_search_boundary(directory, [[['outbreak'], ['death_coil']]],
                                          evaluate=_fast_evaluate), \
                     patch.object(population_training, 'mutate', side_effect=insert_unexecuted):
-                result = run_task(source, Path(directory) / 'search', search_config=dict(input_interval_ms=200, candidate_limit=9, round_candidate_limit=8,
-                    batch_targets=(2,), iterations=2, validation_batches=2))
+                result = run_task(source, Path(directory) / 'search', search_config=dict(input_interval_ms=200, iterations=2))
                 ground = run_task(source, Path(directory) / 'ground', mode='single',
                                   program=[['death_and_decay'], ['epidemic']])
                 saved = read_task(Path(directory) / 'search', include_search_records=True)
@@ -482,8 +479,7 @@ class SearchAndValidationTests(TestCase):
             return (200. if blocks==preferred else 100.) if options['iterations']==32 else (50. if blocks==preferred else 150.)
         with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[preferred,[['death_coil']]],score_for=score)
-            with patch.object(search,'paired_ci',side_effect=AssertionError('正式GA不得套旧CI晋级')):
-                result=case.run()
+            result=case.run()
         preferred_key=canonicalize_search_program(preferred,case.capabilities)['identity']
         finalists=result['final']['scenarios']['nominal']['finalists']
         self.assertIn(preferred_key,[row['key'] for row in finalists])
@@ -648,7 +644,7 @@ class SearchAndValidationTests(TestCase):
             before=deepcopy(result['search_result'])
             state=TaskStore.load_state(case.store.db)
             state['behavior_identity_version']='obsolete-version'
-            state['elapsed_seconds']=case.search_config['total_budget_seconds']
+            state['elapsed_seconds']=601.
             case.store.state=state
             case.store.checkpoint()
             with self.assertRaisesRegex(ValueError,'候选行为身份版本已变化'):
@@ -803,17 +799,7 @@ class SearchAndValidationTests(TestCase):
                     source,
                     destination,
                     mode="optimize",
-                    search_config={
-                    "total_budget_seconds": 120,
-                    "search_budget_seconds": 90,
-                    "candidate_limit": 4,
-                    "batch_targets": (2,),
-                    "validation_batches": 2,
-                    "final_batches": 1,
-                    "iterations": 2,
-                    "scenarios": ("nominal",),
-                    "max_processes": 1,
-                    },
+                    search_config={'iterations': 2, 'max_processes': 1},
                 )
 
             self.assertIsNotNone(native_score)
@@ -841,7 +827,7 @@ class SearchAndValidationTests(TestCase):
 
 
     @pytest.mark.real
-    def test_search_resumes_without_resetting_budget_or_batches(self):
+    def test_search_resumes_without_resetting_elapsed_time_or_batches(self):
         import sequence
         import threading
         paused = threading.Event()
@@ -860,10 +846,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
             source.write_text(sample_profile(), encoding="utf-8")
-            config = dict(total_budget_seconds=120, search_budget_seconds=60,
-                          candidate_limit=4, batch_targets=(2,), validation_batches=2,
-                          final_batches=3, final_iterations=2, iterations=2, max_processes=1,
-                          diagnostic_logging=True)
+            config = dict(iterations=2, max_processes=1, diagnostic_logging=True)
             with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=pause_second_batch):
                 handle = start_task(source, destination, search_config=config)
                 try:
@@ -910,10 +893,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-corrupt-center-') as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            config = dict(total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-                          batch_targets=(2,), iterations=2, validation_batches=1,
-                          final_batches=1, final_iterations=2, scenarios=('nominal',),
-                          max_processes=1, diagnostic_logging=True, diagnostics='summary')
+            config = dict(iterations=2, max_processes=1, diagnostic_logging=True, diagnostics='summary')
             # Freeze the same starts for all invocations; this case tests cache repair, not champion inheritance.
             with _fast_search_boundary(), _initialized_starts([[['outbreak']], [['death_coil']]]), \
                     patch.object(sequence, 'evaluate', side_effect=evaluate), \
@@ -970,9 +950,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-cold-read-') as directory:
             source = Path(directory) / 'role.simc'
             source.write_text(sample_profile(), encoding='utf-8')
-            config = dict(total_budget_seconds=60, candidate_limit=1, batch_targets=(2,),
-                          iterations=2, validation_batches=1, max_processes=1,
-                          scenarios=('nominal',))
+            config = dict(iterations=2, max_processes=1)
             original = result_store.one
             with _fast_search_boundary():
                 first = run_task(source, Path(directory) / 'first', search_config=config)
@@ -1022,10 +1000,7 @@ class SearchAndValidationTests(TestCase):
             with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate), \
                     patch.object(result_store, 'write', side_effect=fail_search_batch_write):
                 with self.assertRaisesRegex(TaskError, 'synthetic data-center write failure'):
-                    run_task(source, destination, search_config=dict(
-                        total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-                        batch_targets=(2,), iterations=2, validation_batches=1,
-                        final_batches=1, final_iterations=2, scenarios=('nominal',), max_processes=1))
+                    run_task(source, destination, search_config=dict(iterations=2, max_processes=1))
             self.assertTrue(exchange_paths)
             for path in exchange_paths:
                 self.assertTrue(path.is_file(), '保存失败不能删除已成功原生报告: ' + str(path))
@@ -1073,9 +1048,7 @@ class SearchAndValidationTests(TestCase):
         with tempfile.TemporaryDirectory(prefix='sim2gse-crash-') as directory, ExitStack() as outputs:
             source=Path(directory)/'role.simc';destination=Path(directory)/'task'
             source.write_text(sample_profile(),encoding='utf-8')
-            config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=20,
-                        batch_targets=(2,),validation_batches=1,final_batches=2,iterations=2,
-                        final_iterations=32,max_processes=2)
+            config=dict(iterations=2, max_processes=2)
             import result_store
             # 此场景提前提交首个真实成功批次；生产报告仍保留原分组缓冲策略。
             code='\n'.join((
@@ -1236,10 +1209,7 @@ class SearchAndValidationTests(TestCase):
             source = Path(directory) / 'role.simc'
             destination = Path(directory) / 'task'
             source.write_text(sample_profile(), encoding='utf-8')
-            config = dict(total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-                          batch_targets=(2,), iterations=2, validation_batches=1,
-                          final_batches=1, final_iterations=2, scenarios=('nominal',),
-                          max_processes=1)
+            config = dict(iterations=2, max_processes=1)
             with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate_with_damage_detail):
                 result = run_task(source, destination, search_config=config)
 
@@ -1305,7 +1275,7 @@ class SearchAndValidationTests(TestCase):
             source=Path(directory)/'role.simc';source.write_text(sample_profile(),encoding='utf-8')
             with _fast_initialization(), patch.object(runtime._kernel32,'CreateProcessW',side_effect=process_boundary):
                 with self.assertRaisesRegex(TaskError,'原生引擎失败'):
-                    run_task(source,Path(directory)/'task',search_config=dict(total_budget_seconds=60,search_budget_seconds=30,candidate_limit=2))
+                    run_task(source,Path(directory)/'task',search_config=dict())
 
     def test_formal_deduplicates_legal_starts_and_stops_on_complete_generation_stagnation(self):
         from formal_search import freeze_starts

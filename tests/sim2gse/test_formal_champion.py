@@ -56,7 +56,7 @@ def test_legacy_ten_sources_are_assembled_before_complete_formal_retests(memory_
         ('native', 'seed_selected', 'training_champion', 'formal_champion')] == [4, 4, 1, 1]
     assert state['formal_champion_adaptation']['status'] == 'accepted'
     result = case.run()
-    assert result['search']['chains'] == []
+    assert 'chains' not in result['search']
     assert result['search']['stop_reason'] == 'stagnation'
     assert result['stop_policy'] == dict(version=1, kind='natural_stagnation')
     assert result['search_result']['dps'] == 300.
@@ -220,7 +220,7 @@ def test_http_dual_publishes_both_scenes_and_complete_export_collection(tmp_path
     evaluate = sequence.evaluate
     with patch.object(sequence, 'evaluate', side_effect=lambda *args, **kwargs:
             evaluate(*args, score=100., **kwargs)):
-        state = dual_result(tmp_path, raw, candidate_limit=10, validation_batches=2)
+        state = dual_result(tmp_path, raw)
     assert sequence.evaluate is evaluate
     assert state['collection_ready']
     assert len(state['scenes']) == 2
@@ -390,9 +390,7 @@ def test_public_resume_publishes_a_saved_winner_before_completion_or_budget_earl
     with patch.object(result_store, '_api', return_value=dict(api, write=fail_champion)):
         task.run_task(profile, folder, use_burst=True,
             simulation_config=dict(target_count=1, scene='single_target'),
-            search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-                iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
-                scenarios=('nominal',)))
+            search_config=dict(input_interval_ms=200, iterations=2))
     previous = task.read_task(folder)
     assert previous['status'] == 'completed'
     store = TaskStore(folder)
@@ -584,8 +582,7 @@ def test_management_imports_known_v1_source_without_reusing_old_score(
     profile = tmp_path / 'current.simc'
     profile.write_bytes(raw.encode('utf-8'))
     options = dict(use_burst=True, simulation_config=dict(target_count=1, scene='single_target'),
-        search_config=dict(candidate_limit=1, batch_targets=(2,), iterations=2,
-        validation_batches=1, final_batches=1, final_iterations=2, scenarios=('nominal',), input_interval_ms=200))
+        search_config=dict(iterations=2, input_interval_ms=200))
     low_id = _legacy_formal_source(tmp_path / 'low', raw, [['outbreak'], ['death_coil']], 200.)
     high_id = _legacy_formal_source(tmp_path / 'high', raw, [['outbreak'], ['scourge_strike']], 300.)
     def normalized(row):
@@ -656,9 +653,7 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     # 只准备待取消的单场冠军；另一场无需预先执行完整双场。
     first = task.run_task(profile, tmp_path / 'first', use_burst=True,
         simulation_config=dict(target_count=1, scene='single_target'),
-        search_config=dict(input_interval_ms=200, candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1, final_batches=1, final_iterations=2,
-            scenarios=('nominal',)))
+        search_config=dict(input_interval_ms=200, iterations=2))
     assert first['status'] == 'completed', first
     assert (tmp_path / 'first/input.original.simc').read_bytes() == raw.encode('utf-8')
     key = first['search']['formal_champion_snapshot']['condition_key']
@@ -688,8 +683,7 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
                            schema=result_store.SEARCH_CHAMPION_SCHEMA)
 
     with patch.object(sequence, 'evaluate', side_effect=interrupt):
-        resumed = dual_result(tmp_path / 'cancelled', raw, candidate_limit=1,
-            expected='cancelled', before_resume=newer_version)
+        resumed = dual_result(tmp_path / 'cancelled', raw, expected='cancelled', before_resume=newer_version)
     assert resumed['scenes'][0]['formal_champion_snapshot'] == resumed['previous_state']['scenes'][0][
         'formal_champion_snapshot']
     assert resumed['scenes'][0]['formal_champion_publication']['status'] == 'unchanged'

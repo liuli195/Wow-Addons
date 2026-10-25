@@ -19,6 +19,16 @@ def _redirect(content):
 
 
 class RuntimeTests(TestCase):
+    def test_replacement_retries_two_permission_failures_then_succeeds(self):
+        from unittest.mock import call
+        source, destination = Path('/memory/pending'), Path('/memory/published')
+        occupied = PermissionError('constructed temporary occupation')
+        with patch.object(runtime.os, 'replace', side_effect=[occupied, occupied, None]) as replace, \
+                patch.object(runtime.time, 'sleep') as sleep:
+            runtime.replace_file(source, destination)
+        self.assertEqual(replace.call_args_list, [call(source, destination)] * 3)
+        self.assertEqual(sleep.call_args_list, [call(0.02)] * 2)
+
     def test_completed_process_returns_without_waiting_for_poll_interval(self):
         with patch.object(Path, 'mkdir'):
             directory = Path('/memory/process')

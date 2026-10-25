@@ -1,5 +1,7 @@
 # 正式搜索复用遗传训练链
 
+> **后续退役边界（2026-10-25）**：本阶段新旧对照已结束。文中保留旧源码用于对照、旧benchmark工具或旧测试路径的授权/说明仅为历史记录；当前旧搜索执行已退役。新GA功能与原始对照成果继续保留，见[退役契约](../retire-legacy-search/spec.md)。
+
 **Status:** ready-for-agent
 **Flow Level:** Full（完整）
 **Development authorization:** 用户已确认完整门禁一，实施中；本状态不表示验收、合并或发布。

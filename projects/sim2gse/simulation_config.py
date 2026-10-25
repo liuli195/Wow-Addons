@@ -95,12 +95,18 @@ def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, 
 
 
 REMOVED_SEARCH_SETTINGS = ('rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy')
+RETIRED_SEARCH_SETTINGS = ('total_budget_seconds', 'search_budget_seconds', 'candidate_limit',
+    'round_candidate_limit', 'no_improvement_rounds', 'batch_targets', 'validation_batches',
+    'final_batches', 'final_iterations', 'trace_search', 'scenarios')
 
 
 def reject_removed_search_settings(values):
     removed = set(REMOVED_SEARCH_SETTINGS) & set(values)
     if removed:
         raise ValueError('搜索能力及开关已移除，请删除旧配置: ' + ', '.join(sorted(removed)))
+    retired = set(RETIRED_SEARCH_SETTINGS) & set(values)
+    if retired:
+        raise ValueError('旧正式搜索参数已退役，请删除旧配置: ' + ', '.join(sorted(retired)))
 
 
 def load_search_config(path=None, **overrides):

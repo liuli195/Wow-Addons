@@ -1,4 +1,4 @@
-"""多起点局部搜索、分批统计和任务缓存。"""
+"""GA共用的候选变异、可靠评价和任务缓存；旧完整成果只读验真。"""
 
 from __future__ import annotations
 
@@ -13,34 +13,22 @@ import math
 from pathlib import Path
 import random
 import sqlite3
-import statistics
 import time
 
 from runtime import replace_file, diagnostic_start, diagnostic_finish, diagnostic_summary, diagnostic_candidate
-from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
+from runtime import BudgetExceeded, TaskCancelled
 
 
+# Shared preparation / historical evidence identities, not executable search selectors.
 SEARCH_ALGORITHM = "independent-search-modes-v2"
 PREVIOUS_SEARCH_ALGORITHM = "rule-single-step-coba-linucb-v1"
 STATS_VERSION = "paired-bootstrap-v1"
 _TASK_COUNTERS = ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates')
-SCREENING_ERROR_MULTIPLIER = 1.96
 DEFAULT_SCENARIOS = ("nominal", "jitter", "slow", "pause", "phase")
 DEFAULT_CONFIG = {
-    "total_budget_seconds": 600.0,
-    "search_budget_seconds": 600.0,
-    "candidate_limit": 1000,
-    "round_candidate_limit": 16,
-    "no_improvement_rounds": 5,
-    "batch_targets": (32, 128, 256),
-    "validation_batches": 4,
-    "final_batches": 20,
     "iterations": 100,
-    "final_iterations": 100,
     "max_processes": 2,
-    "scenarios": DEFAULT_SCENARIOS,
     "random_seed": 20260912,
-    "trace_search": False,
     "search_timeline": False,
     "diagnostic_logging": False,
     "diagnostics": "off",
@@ -48,6 +36,11 @@ DEFAULT_CONFIG = {
     "input_interval_ms": 300,
     "reset_events": (),
 }
+# Only historical receipt readers may fill the original frozen defaults.
+LEGACY_DEFAULT_CONFIG = dict(DEFAULT_CONFIG, total_budget_seconds=600.0, search_budget_seconds=600.0,
+    candidate_limit=1000, round_candidate_limit=16, no_improvement_rounds=5,
+    batch_targets=(32, 128, 256), validation_batches=4, final_batches=20,
+    final_iterations=100, trace_search=False, scenarios=DEFAULT_SCENARIOS)
 
 
 def verify_behavior_identity_state(state):
@@ -66,22 +59,24 @@ def config_for(values=None, *, training=False, legacy=False):
         reject_removed_search_settings(values or {})
     if type(training) is not bool:
         raise ValueError('训练配置开关必须为布尔值')
-    config = dict(DEFAULT_CONFIG)
+    config = dict(LEGACY_DEFAULT_CONFIG if legacy else DEFAULT_CONFIG)
     if values:
         if set(values)-set(config)-({'rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy'} if legacy else set()):
             raise ValueError('未知搜索配置')
         config.update(values)
-        if 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
+        if legacy and 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
             config['search_budget_seconds'] = config['total_budget_seconds']
-    for key, maximum in (('total_budget_seconds',600),('search_budget_seconds',600)):
-        value=config[key]
-        if type(value) not in (int,float) or not math.isfinite(value) or not 0 < value <= maximum:
-            raise ValueError('计算预算必须在已确认上限内')
-    if config['search_budget_seconds'] > config['total_budget_seconds']:
-        raise ValueError('搜索预算不能超过总预算')
-    for key, maximum in (('candidate_limit',1000),('round_candidate_limit',16),('no_improvement_rounds',5),
-                         ('max_processes',DEFAULT_CONFIG['round_candidate_limit'] if training else 2),('validation_batches',20),('final_batches',20),
-                         ('iterations',512),('final_iterations',100),('random_seed',1000000000)):
+    limits = [('max_processes', 16 if training else 2), ('iterations', 512), ('random_seed', 1000000000)]
+    if legacy:
+        for key in ('total_budget_seconds', 'search_budget_seconds'):
+            value = config[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 600:
+                raise ValueError('历史计算预算必须在原上限内')
+        if config['search_budget_seconds'] > config['total_budget_seconds']:
+            raise ValueError('历史搜索预算不能超过总预算')
+        limits += [('candidate_limit', 1000), ('round_candidate_limit', 16), ('no_improvement_rounds', 5),
+                   ('validation_batches', 20), ('final_batches', 20), ('final_iterations', 100)]
+    for key, maximum in limits:
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
     if type(config['input_interval_ms']) is not int or not 50 <= config['input_interval_ms'] <= 2000:
@@ -91,7 +86,7 @@ def config_for(values=None, *, training=False, legacy=False):
     if (not isinstance(config['search_observability'], str) or
             config['search_observability'] not in ('off', 'summary', 'full')):
         raise ValueError('搜索记录模式必须是 off、summary 或 full')
-    for key in ('search_timeline',):
+    for key in (('search_timeline', 'trace_search') if legacy else ('search_timeline',)):
         if type(config[key]) is not bool:
             raise ValueError(key + ' 必须为布尔值')
     if type(config['diagnostic_logging']) is not bool:
@@ -99,17 +94,18 @@ def config_for(values=None, *, training=False, legacy=False):
     if not config['diagnostic_logging']:
         config['diagnostics'] = 'off'
         config['search_observability'] = 'off'
-    config['batch_targets']=tuple(config['batch_targets'])
-    previous=0
-    for value in config['batch_targets']:
-        if type(value) is not int or value-previous < 2 or value>512:
-            raise ValueError('独立加测批次必须至少请求两场，累计不超过512场')
-        previous=value
-    if not config['batch_targets']:
-        raise ValueError('缺少搜索批次')
-    config['scenarios']=tuple(config['scenarios'])
-    if not config['scenarios'] or len(set(config['scenarios']))!=len(config['scenarios']) or set(config['scenarios'])-set(DEFAULT_SCENARIOS):
-        raise ValueError('最终复测情景无效')
+    if legacy:
+        config['batch_targets'] = tuple(config['batch_targets'])
+        previous = 0
+        for value in config['batch_targets']:
+            if type(value) is not int or value - previous < 2 or value > 512:
+                raise ValueError('历史独立加测批次必须至少请求两场，累计不超过512场')
+            previous = value
+        if not config['batch_targets']:
+            raise ValueError('缺少历史搜索批次')
+        config['scenarios'] = tuple(config['scenarios'])
+        if not config['scenarios'] or len(set(config['scenarios'])) != len(config['scenarios']) or set(config['scenarios']) - set(DEFAULT_SCENARIOS):
+            raise ValueError('历史最终复测情景无效')
     events = config['reset_events']
     if not isinstance(events, (list, tuple)) or any(
             not isinstance(row, (list, tuple)) or len(row) != 2 or
@@ -119,7 +115,8 @@ def config_for(values=None, *, training=False, legacy=False):
         raise ValueError('/castsequence Reset 事件配置无效')
     config['reset_events'] = tuple(tuple(row) for row in events)
     if any(kind in {'shift', 'ctrl', 'alt'} for _, kind in config['reset_events']):
-        if (config['scenarios'] != ('nominal',) or
+        scenarios = config['scenarios'] if legacy else DEFAULT_SCENARIOS if training else ('nominal',)
+        if (scenarios != ('nominal',) or
                 any(ms % config['input_interval_ms'] for ms, kind in config['reset_events']
                     if kind in {'shift', 'ctrl', 'alt'})):
             raise ValueError('修饰键 Reset 事件只支持与 nominal 情景点击对齐')
@@ -530,49 +527,6 @@ def input_times(scenario, seed=0, interval_ms=300):
     raise ValueError(f"未知输入情景: {scenario}")
 
 
-def _percentile(values, fraction):
-    if not values:
-        return None
-    values = sorted(values)
-    position = (len(values) - 1) * fraction
-    low = math.floor(position)
-    high = math.ceil(position)
-    if low == high:
-        return values[low]
-    return values[low] + (values[high] - values[low]) * (position - low)
-
-
-def paired_ci(candidate, control, seed=20260912, samples=2000):
-    differences = [a - b for a, b in zip(candidate, control)]
-    if not differences:
-        return None
-    if len(differences) < 2:
-        return None
-    rng = random.Random(seed)
-    means = [statistics.mean(rng.choices(differences, k=len(differences))) for _ in range(samples)]
-    return [_percentile(means, 0.025), _percentile(means, 0.975)]
-
-
-def summarize_pairs(candidate_rows, control_rows, seed=20260912):
-    candidate = [float(row["dps"]) for row in candidate_rows]
-    control = [float(row["dps"]) for row in control_rows]
-    differences = [a - b for a, b in zip(candidate, control)]
-    mean_candidate = statistics.mean(candidate) if candidate else None
-    mean_control = statistics.mean(control) if control else None
-    difference = statistics.mean(differences) if differences else None
-    ci = paired_ci(candidate, control, seed) if differences else None
-    return {
-        "candidate_mean_dps": mean_candidate,
-        "control_mean_dps": mean_control,
-        "mean_difference": difference,
-        "relative_gain": (mean_candidate / mean_control - 1) if mean_candidate is not None and mean_control else None,
-        "ci95": ci,
-        "status": "improvement_confirmed" if ci and ci[0] > 0 else "not_proven_better",
-        "batch_count": len(differences),
-        "method": STATS_VERSION,
-    }
-
-
 def _new_search_observability(mode):
     return {
         "mode": mode,
@@ -587,10 +541,6 @@ def _new_search_observability(mode):
             "duplicates": 0,
             "score_started": 0,
             "score_completed": 0,
-            "route_checks": 0,
-            "route_promotions": 0,
-            "global_checks": 0,
-            "global_promotions": 0,
             "invalid_reasons": {},
             "duplicate_reasons": {},
             "sampled_mutations": {},
@@ -817,8 +767,6 @@ def _checkpoint_copy(value):
     if isinstance(value, tuple):
         return tuple(_checkpoint_copy(item) for item in value)
     return value
-
-
 
 
 def _restore_checkpoint_diagnostics(state):
@@ -1454,21 +1402,6 @@ def rule_diagnostic_status(record):
     return record.get('rule_diagnostic_status', 'not_diagnosed')
 
 
-
-
-
-
-
-
-def _score_bounds(rows):
-    count = sum(row['samples'] for row in rows)
-    mean = _score(rows)
-    variance_sum = sum(row['samples'] * (row['variance'] + (row['dps'] - mean) ** 2)
-                       for row in rows)
-    error = SCREENING_ERROR_MULTIPLIER * math.sqrt(variance_sum / count / count)
-    return mean - error, mean + error
-
-
 def _tuple(value):
     return tuple(_tuple(v) for v in value) if isinstance(value, list) else value
 
@@ -1528,7 +1461,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('phase', 'search')
     state.setdefault('archive', [])
     state.setdefault('seen', [])
-    state.setdefault('chains', [])
     state.setdefault('evaluated_keys', [])
     if config['diagnostic_logging']:
         for name in ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts'):

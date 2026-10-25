@@ -135,7 +135,7 @@ def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_run
 
         with patch.object(Path, 'read_bytes', observed_read), \
                 patch.object(engine, 'reference', observed_reference):
-            state = dual_result(tmp_path, raw, candidate_limit=1, before_resume=before_resume)
+            state = dual_result(tmp_path, raw, before_resume=before_resume)
             assert reads == {'baseline': 2, 'controlled': 2}
             assert state['collection_ready']
             # 新任务先取消单场，再独立恢复它，最后由网页继续另一场。
@@ -162,8 +162,7 @@ def test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_run
                 assert reads == {'baseline': 4, 'controlled': 4}
 
             with patch.object(sequence, 'evaluate', side_effect=cancel_first_score):
-                fresh = dual_result(tmp_path / 'fresh', raw, candidate_limit=1,
-                                    expected='cancelled', before_resume=resume_single_scene)
+                fresh = dual_result(tmp_path / 'fresh', raw, expected='cancelled', before_resume=resume_single_scene)
             assert fresh['collection_ready']
             assert reads == {'baseline': 5, 'controlled': 5}
 
@@ -186,7 +185,7 @@ def test_dual_rejects_changed_engine_on_first_verification(
     forbidden_launch = Mock(side_effect=AssertionError('changed engine must not launch a task'))
     with patch('subprocess.Popen', forbidden_compute), \
             patch('dual_task._launch', forbidden_launch), pytest.raises(HTTPError) as rejected:
-        dual_result(tmp_path, raw, candidate_limit=1)
+        dual_result(tmp_path, raw)
     assert rejected.value.code == 500
     with rejected.value as response:
         assert json.load(response)['error'] == '引擎计算失败，请检查本机模拟环境后重试。'
