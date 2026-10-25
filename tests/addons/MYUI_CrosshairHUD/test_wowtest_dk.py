@@ -36,6 +36,18 @@ from wowtestlib import core  # noqa: E402  只借它的锁定数据与完整性�
 ACTUAL = OUTPUT_DIR / "dk-actual.json"
 
 
+@pytest.fixture(autouse=True)
+def worker_report_directory(request):
+    if request.node.get_closest_marker("real") is None:
+        return
+    factory = request.getfixturevalue("tmp_path_factory")
+    output = factory.getbasetemp() / "wow-addon-test"
+    output.mkdir(exist_ok=True)
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    monkeypatch.setattr(sys.modules[__name__], "OUTPUT_DIR", output)
+    monkeypatch.setattr(sys.modules[__name__], "ACTUAL", output / "dk-actual.json")
+
+
 def run_tool(output_name):
     """跑一次对照。退出码 0=范围内通过、1=发现差异，两者都属"正常完成"；
     真正的判定由仓库侧比较层做，所以这里只要求工具**没有执行错误**。"""

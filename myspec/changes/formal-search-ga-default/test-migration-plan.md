@@ -95,6 +95,28 @@ gear目前只有8个Node VM（脚本虚拟机）／伪DOM（页面对象）检�
 - 43项内容逐项不变；外4、普通内4、真实内6、worksteal、60秒硬截止及所有command／paths／inputs／角色／PR归属／构建配置均不变。队尾启动与资源竞争均可能影响结果，尚不能断言超时仅由排队造成，也不保证重排更快或全套达标。
 - 这只是配置草案准备，不是正式配置应用批准。现有记录确认原扩展开发门禁及此前附件配置，未发现对此次顺序重排的明确确认；正式覆盖前须展示本次摘要并获明确确认，再由本机官方init --config --overwrite备份和应用。未手写受管config、未改工具／生产算法／测试覆盖、未运行重测试、未提交或推送；本机量化独占期间不安排本轮验证。
 
+### 2026-10-25 六路首批统一参数候选与门禁一——开始开发（已确认）
+
+**核心摘要**
+
+- 沿用云端工作树`/workspace/scratch/0af43d0efb8f/wow-addons-performance`及功能分支`codex/formal-search-ga-default`；本次配置／小修对照提交`f0027133ffc5f3bc03f4943e6cc4cddc719e9907`，原完整任务固定主干`d08f1d6f540f3ced2496a59bdce6bd3badc7151a`不变。父协调回传该版本43项无缓存全通过58.875秒，仅为一次结果。外26旧草案已暂停，原样保留于仓库内`.local/verification-drafts/outer26-20261025/`，不是正式运行结果。
+- 全仓仍43项＝26真实角色＋17普通角色，不把真实角色数误当必须同时启动数。推荐外层6；首批依次sim2gse-real、gear-real、crosshairhud-tests、wowaddontest-skill-real、checker-tests、wowaddontest-dk-real（均verify.前缀）；随后17普通按原相对顺序补位，sim2gse-unit在普通首位；最后20其他技术真实检查按原相对顺序。所有checkParallel:true保留，没有建立跨组屏障或新调度器。
+- 全部13条pytest均内2（GSE真实6→2、普通4→2，其余11条新增2）；其余30条非pytest无现成组内xdist接缝，不加虚假inner字段。角色、覆盖、命令及已有worksteal、paths／inputs、PR归属、60秒硬截止、2构建均不变。首批名义6主进程＋5×2worker＝16，未含runner／guard及Lua／SimC／HTTP／Node／浏览器；普通补位时若6项均pytest，名义可达18。gear真实两节点并发最多2路引擎，生产LOCK仍仅进程内，不改锁；临时目录唯一、浏览器唯一8765，GSE动态端口不冲突。不保证此参数更快或整体低于60秒。
+- **唯一实现前置小修：** `tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py:23,36–64`现有OUTPUT_DIR／ACTUAL及run_tool／_normal_result读写使不同worker共用dk-run.json、dk-actual.json（技能还共用各自.tmp）。增加一个仅在real测试请求时才准备的最小fixture，从pytest本轮每worker独立basetemp派生目录并一起更新OUTPUT_DIR与ACTUAL，使正常报告及临时写文件隔离；同模块ordinary测试不得因导入或无条件autouse触发mktemp／写盘，沿用现有real标记与tmp_path_factory，不新增锁、缓存、框架，不改既有进程内lru_cache语义，不降低断言或单节点覆盖，不强制loadfile变相串行。原注入名称独占路径不扩展重构。正式配置仍必须通过官方init --config --overwrite备份应用，绝不手写。
+- 验证要求：先独立复核上述fixture接缝及普通零写盘边界，再以两worker写正常报告的最小回归证明原共享路径风险，再确认两worker输出目录不交叉、两个JSON及临时文件各归本worker并可完整重读；检查全部原断言和产品文件未变。完整真实入口用官方build先行、verify --full --performance-report --execution-context local运行全部43项，保60秒硬截止／无成功缓存；核5个普通pytest检查各2worker的guard start／finish及零违规，不能沿用旧四worker摘要。记录elapsed、各组时间、worker身份及失败／超时／未完成，前后Git状态；本机TEMP／TMP／TMPDIR与basetemp须全在仓库内。云端静态与定向回归不冒充Windows Lua／Edge／真实全套通过；三仓正式复测由父协调串行安排。
+- Flow Level沿现任务Full（完整），继续票01的验证参数切片。推荐同分支，**串行＋实施子代理**只改候选、该DK测试接缝及必要证据，完成后**独立Reviewer审查本切片**；Lua-memory-prototype需求文档与其他任务文件保留且不纳本切片。不改生产算法／工具／覆盖／Lua内存原型，不授权合并、发布、部署。用户已明确确认本轮门禁一（先调参、DK输出隔离、独立复核后官方配置与全43）；云端小修及定向证据见下，正式覆盖／Windows全43尚未执行。
+
+**确认后进入的下一步**
+
+请确认以上完整范围及三项选择：沿用`codex/formal-search-ga-default`；串行＋子代理实施DK两报告worker路径隔离及六路配置；本切片完成后独立审查。确认后先小修和最小回归，再审查、官方备份应用并串行验全43项；若回归失败或出现共享路径问题，在同一范围内修复，不自行扩大到生产、调度框架或覆盖退让。
+
+### 六路候选云端最小实施证据（2026-10-25 10:18 UTC）
+
+- 仅DK测试新增12行real条件fixture：普通先返回，不请求临时目录；真实从tmp_path_factory.getbasetemp()派生wow-addon-test目录，monkeypatch一起更新OUTPUT_DIR／ACTUAL。同worker各测试使用同目录，原_normal_result的lru_cache与全部测试函数／断言不变；无生产／工具／新锁修改。
+- 已同入口完成输出接缝诊断：pytest内2、每worker正常报告／actual JSON完整写入重读及.tmp清理；原共享路径2失败，改后2通过（0.26秒）。诊断探针与红绿日志位于.local/verification-drafts/outer6-20261025/，调用实际fixture及既有write_json，但不运行Lua，因此不是DK真实业务验收或全43通过。
+- 真实DK模块的全部ordinary经现有官方guard源码保护运行内2：13 passed，0.33秒；两个worker均有start／finish，evidence_error=null，无违规。保留一次xdist提前导入的assert-rewrite警告，不隐藏；该警告不等于守卫缺失。完整摘要ordinary-summary.json及日志在同证据目录。这是云端定向开发验证，不冒充已安装Windows官方CLI验收。
+- 候选结构语义白名单核对：仅顺序、外6与13条pytest内2改变；43项完整对象中的其他字段／realChecks／预算60／构建完全不变。正式config未改，Lua-memory-prototype未纳切片。原测试函数AST逐个与f002713一致；git diff --check通过。下一步为独立审查，再经父协调同步及本机官方init备份应用、全43无缓存验证。
+
 ## 票据、分域所有权与验证顺序
 
 沿用票01的扩展验收：
