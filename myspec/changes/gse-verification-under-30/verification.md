@@ -1,6 +1,6 @@
 # 八路采用的验证证据
 
-两档受验主干均为 ea0e2302908691a72f804db8e7b0ead1688bdec5，树 48c9630c56cc7286ea255ad97d113aa69a075573。官方工具版本2.7.1，命令为 `build-and-verify verify --project . --full --performance-report --execution-context local`。此次采用配置不新增完整测试轮次。
+两档均基于同一主干提交 ea0e2302908691a72f804db8e7b0ead1688bdec5，树 48c9630c56cc7286ea255ad97d113aa69a075573，运行时仅该并发参数不同。官方工具版本2.7.1，命令为 `build-and-verify verify --project . --full --performance-report --execution-context local`。此次采用配置不新增完整测试轮次。
 
 | 真实组内部进程数 | 真实组秒数 | 全仓工具秒数 | 全仓墙钟秒数 |
 | --- | ---: | ---: | ---: |
@@ -14,3 +14,5 @@
 本票候选为497139字节UTF-8/LF，SHA256 `c505ac85c11a4db730f955b54fcd36ab94db43decc253900476b7507800f6970`。使用官方 init --config --overwrite 写入，原配置保留在官方备份；只更改真实组 pytestXdistWorkers，其他 JSON 完全相同。
 
 最终干净提交的差异门禁使用 `build-and-verify verify --project . --base ea0e2302908691a72f804db8e7b0ead1688bdec5 --execution-context local`。实际执行与有效缓存分别记录在本机日志 `.local/gse-under-30-adoption/`；此处不把尚未执行的门禁或远端检查写成通过。
+
+本机最终固定基线差异门禁退出0，检查43项，其中2项实际执行、41项有效缓存，墙钟12.188秒；这不是新的全仓无缓存性能对照。远端推送尚未执行，远端检查及合并状态未获验证。该结果对应配置提交 `28aeb20dc42b68e784be89b486385dfd6ae8ba1d`；本次仅文案修正未追加验证，不声称新文档提交已重新通过。
