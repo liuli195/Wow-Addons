@@ -15,9 +15,48 @@
     ]
   },
   "verify": {
-    "maxParallel": 6,
+    "maxParallel": 4,
     "fullBudgetSeconds": 60,
     "checks": [
+      {
+        "id": "verify.sim2gse-unit",
+        "pr": true,
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -m \"not real\" --strict-markers --dist=worksteal",
+        "checkParallel": true,
+        "paths": [
+          "projects/sim2gse/**",
+          "scripts/dev/sim2gse/**",
+          ".agents/skills/sim2gse-upgrade/**",
+          ".build-and-verify/config.json",
+          "tests/sim2gse/**",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "projects/sim2gse/requirements.txt",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          "projects/sim2gse",
+          "scripts/dev/sim2gse",
+          ".agents/skills/sim2gse-upgrade",
+          ".build-and-verify/config.json",
+          "tests/sim2gse",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "scripts/dev/versions.json",
+          ".pr-flow/toolchain.json",
+          "projects/sim2gse/requirements.txt",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "timeoutSeconds": 600,
+        "pytestXdistWorkers": 4
+      },
       {
         "id": "verify.sim2gse-real",
         "pr": false,
@@ -126,80 +165,7 @@
           "tests/conftest.py",
           "pytest.ini",
           ".local/verify-deps/node/node.exe"
-        ],
-        "pytestXdistWorkers": 2
-      },
-      {
-        "id": "verify.crosshairhud-tests",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py tests/addons/MYUI_CrosshairHUD/test_core_readings.py tests/addons/MYUI_CrosshairHUD/test_unlock_contract.py tests/addons/MYUI_CrosshairHUD/test_config_color.py tests/addons/MYUI_CrosshairHUD/test_config_plan.py tests/addons/MYUI_CrosshairHUD/test_visibility.py tests/addons/MYUI_CrosshairHUD/test_media_placement.py tests/addons/MYUI_CrosshairHUD/test_blood_dk_features.py tests/addons/MYUI_CrosshairHUD/test_media_mipmaps.py tests/addons/MYUI_CrosshairHUD/test_release_package.py",
-        "checkParallel": true,
-        "paths": [
-          "addons/MYUI_CrosshairHUD/**",
-          "tests/addons/MYUI_CrosshairHUD/**",
-          ".build-and-verify/config.json",
-          "assets/CrosshairHUDMedia/**",
-          "scripts/media/**",
-          "scripts/dev/package_crosshair_hud.py",
-          "addons/MYUI/**",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          "addons/MYUI_CrosshairHUD",
-          "tests/addons/MYUI_CrosshairHUD",
-          ".tools/lua-5.1.5/src/lua.exe",
-          ".build-and-verify/config.json",
-          "assets/CrosshairHUDMedia",
-          "scripts/media",
-          "scripts/dev/package_crosshair_hud.py",
-          "addons/MYUI",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "pytestXdistWorkers": 2
-      },
-      {
-        "id": "verify.wowaddontest-skill-real",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/dev/test_wow_addon_test_skill.py -m real --strict-markers --basetemp=.local/t/w-s",
-        "checkParallel": true,
-        "paths": [
-          ".agents/skills/wow-addon-test/**",
-          "tests/dev/test_wow_addon_test_skill.py",
-          ".build-and-verify/config.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          ".agents/skills/wow-addon-test",
-          "tests/dev/test_wow_addon_test_skill.py",
-          ".build-and-verify/config.json",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "tests/conftest.py",
-          "pytest.ini",
-          ".tools/lua-5.1.5/src/lua.exe"
-        ],
-        "pytestXdistWorkers": 2
+        ]
       },
       {
         "id": "verify.checker-tests",
@@ -755,586 +721,6 @@
           ".tools/downloads/luacheck.exe",
           ".tools/lua-5.1.5/src/lua.exe"
         ]
-      },
-      {
-        "id": "verify.wowaddontest-dk-real",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py -m real --strict-markers --basetemp=.local/t/w-d",
-        "checkParallel": true,
-        "paths": [
-          "addons/MYUI_CrosshairHUD/**",
-          "tests/addons/MYUI_CrosshairHUD/**",
-          ".agents/skills/wow-addon-test/**",
-          ".build-and-verify/config.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          "addons/MYUI_CrosshairHUD",
-          "tests/addons/MYUI_CrosshairHUD",
-          ".agents/skills/wow-addon-test",
-          ".tools/lua-5.1.5/src/lua.exe",
-          ".build-and-verify/config.json",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "pytestXdistWorkers": 2
-      },
-      {
-        "id": "verify.sim2gse-unit",
-        "pr": true,
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/sim2gse -m \"not real\" --strict-markers --dist=worksteal",
-        "checkParallel": true,
-        "paths": [
-          "projects/sim2gse/**",
-          "scripts/dev/sim2gse/**",
-          ".agents/skills/sim2gse-upgrade/**",
-          ".build-and-verify/config.json",
-          "tests/sim2gse/**",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "projects/sim2gse/requirements.txt",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          "projects/sim2gse",
-          "scripts/dev/sim2gse",
-          ".agents/skills/sim2gse-upgrade",
-          ".build-and-verify/config.json",
-          "tests/sim2gse",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "scripts/dev/versions.json",
-          ".pr-flow/toolchain.json",
-          "projects/sim2gse/requirements.txt",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "timeoutSeconds": 600,
-        "pytestXdistWorkers": 2
-      },
-      {
-        "id": "verify.crosshair-media",
-        "command": ".venv\\Scripts\\python.exe scripts/media/verify_crosshair_media.py",
-        "checkParallel": true,
-        "paths": [
-          "assets/CrosshairHUDMedia/**",
-          "addons/MYUI/Media/CrosshairHUD/**",
-          "scripts/media/**",
-          ".build-and-verify/config.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json"
-        ],
-        "inputs": [
-          "assets/CrosshairHUDMedia",
-          "addons/MYUI/Media/CrosshairHUD",
-          "scripts/media",
-          ".build-and-verify/config.json",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ]
-      },
-      {
-        "id": "verify.wowaddontest-skill-unit",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/dev/test_wow_addon_test_skill.py -m \"not real\" --strict-markers",
-        "checkParallel": true,
-        "paths": [
-          ".agents/skills/wow-addon-test/**",
-          "tests/dev/test_wow_addon_test_skill.py",
-          ".build-and-verify/config.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          ".agents/skills/wow-addon-test",
-          "tests/dev/test_wow_addon_test_skill.py",
-          ".build-and-verify/config.json",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "pytestXdistWorkers": 2
-      },
-      {
-        "id": "verify.wowaddontest-dk-unit",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py -m \"not real\" --strict-markers",
-        "checkParallel": true,
-        "paths": [
-          "addons/MYUI_CrosshairHUD/**",
-          "tests/addons/MYUI_CrosshairHUD/**",
-          ".agents/skills/wow-addon-test/**",
-          ".build-and-verify/config.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          "addons/MYUI_CrosshairHUD",
-          "tests/addons/MYUI_CrosshairHUD",
-          ".agents/skills/wow-addon-test",
-          ".build-and-verify/config.json",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "pytestXdistWorkers": 2
-      },
-      {
-        "id": "verify.assets",
-        "command": ".venv\\Scripts\\python.exe scripts/media/verify.py",
-        "checkParallel": true,
-        "paths": [
-          "scripts/media/verify.py",
-          "addons/EUI_FacetedPortrait/**",
-          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
-          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
-          "scripts/dev/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json",
-          "scripts/media/**",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json"
-        ],
-        "inputs": [
-          "scripts/media/verify.py",
-          "addons/EUI_FacetedPortrait",
-          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
-          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
-          "scripts/dev",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json",
-          "scripts/media",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json"
-        ]
-      },
-      {
-        "id": "verify.docs",
-        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py docs",
-        "checkParallel": true,
-        "paths": [
-          "README.md",
-          "AGENTS.md",
-          "docs/**",
-          "scripts/dev/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json",
-          "myspec/changes/**",
-          "projects/sim2gse/README.md",
-          "tests/**/*.md",
-          "projects/*/README.md",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json"
-        ],
-        "inputs": [
-          "README.md",
-          "AGENTS.md",
-          "docs",
-          "scripts/dev",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          ".pr-flow/toolchain.json",
-          "myspec/changes",
-          "projects/sim2gse/README.md",
-          "tests/**/*.md",
-          "projects/*/README.md",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json"
-        ]
-      },
-      {
-        "id": "verify.test-inventory",
-        "command": ".venv\\Scripts\\python.exe tests/dev/test_inventory.py",
-        "checkParallel": true,
-        "paths": [
-          "tests/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          ".pr-flow/toolchain.json",
-          "package.json",
-          "package-lock.json",
-          "projects/sim2gse/**",
-          "projects/gear-planner/**",
-          "scripts/dev/sim2gse/build.py",
-          "projects/sim2gse/requirements.txt",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          "tests",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "projects/sim2gse",
-          "projects/gear-planner",
-          "scripts/dev/sim2gse/build.py",
-          "projects/sim2gse/requirements.txt",
-          "tests/conftest.py",
-          "pytest.ini"
-        ]
-      },
-      {
-        "id": "verify.gear-async",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-async.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.gear-build-names",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-build-names.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.gear-delete",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-delete.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.gear-empty",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-empty.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.gear-save-armor",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-save-armor.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.gear-save-as",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-save-as.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.gear-stat-filter",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-stat-filter.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.gear-summary",
-        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-summary.js",
-        "checkParallel": true,
-        "paths": [
-          "tests/gear-planner/**",
-          "projects/gear-planner/**",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json"
-        ],
-        "inputs": [
-          "tests/gear-planner",
-          "projects/gear-planner",
-          ".build-and-verify/config.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/requirements.txt",
-          "scripts/dev/versions.json",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          ".local/verify-deps/node/node.exe"
-        ]
-      },
-      {
-        "id": "verify.dev-unit",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/dev/test_validation_units.py --strict-markers",
-        "checkParallel": true,
-        "paths": [
-          "scripts/dev/**",
-          "tests/dev/**",
-          ".build-and-verify/config.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "tests/conftest.py",
-          "pytest.ini",
-          "scripts/media/**",
-          "tests/addons/MYUI_CrosshairHUD/**",
-          "assets/CrosshairHUDMedia/**",
-          "addons/MYUI/Media/CrosshairHUD/**",
-          "addons/MYUI_CrosshairHUD/**",
-          "addons/MYUI/MYUI.toc",
-          "projects/sim2gse/native_build.py"
-        ],
-        "inputs": [
-          "scripts/dev",
-          "tests/dev",
-          ".build-and-verify/config.json",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "tests/conftest.py",
-          "pytest.ini",
-          "scripts/media",
-          "tests/addons/MYUI_CrosshairHUD",
-          "assets/CrosshairHUDMedia",
-          "addons/MYUI/Media/CrosshairHUD",
-          "addons/MYUI_CrosshairHUD",
-          ".github/workflows/verify.yml",
-          "addons/MYUI/MYUI.toc",
-          "projects/sim2gse/native_build.py"
-        ],
-        "pytestXdistWorkers": 2
-      },
-      {
-        "id": "verify.gear-unit",
-        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/gear-planner -m \"not real\" --strict-markers",
-        "checkParallel": true,
-        "pr": true,
-        "paths": [
-          "projects/gear-planner/**",
-          "tests/gear-planner/**",
-          "scripts/dev/run_browser_check.py",
-          ".build-and-verify/config.json",
-          ".pr-flow/toolchain.json",
-          ".github/workflows/verify.yml",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "inputs": [
-          "projects/gear-planner",
-          "tests/gear-planner",
-          "scripts/dev/run_browser_check.py",
-          ".build-and-verify/config.json",
-          "scripts/dev/versions.json",
-          "scripts/dev/requirements.txt",
-          "package.json",
-          "package-lock.json",
-          ".pr-flow/toolchain.json",
-          "tests/conftest.py",
-          "pytest.ini"
-        ],
-        "pytestXdistWorkers": 2
       },
       {
         "id": "verify.luals",
@@ -2564,6 +1950,34 @@
         ]
       },
       {
+        "id": "verify.crosshair-media",
+        "command": ".venv\\Scripts\\python.exe scripts/media/verify_crosshair_media.py",
+        "checkParallel": true,
+        "paths": [
+          "assets/CrosshairHUDMedia/**",
+          "addons/MYUI/Media/CrosshairHUD/**",
+          "scripts/media/**",
+          ".build-and-verify/config.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "assets/CrosshairHUDMedia",
+          "addons/MYUI/Media/CrosshairHUD",
+          "scripts/media",
+          ".build-and-verify/config.json",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ]
+      },
+      {
         "id": "verify.myseries-luals",
         "command": ".venv\\Scripts\\python.exe scripts/dev/check.py luals --source addons/MYUI",
         "checkParallel": true,
@@ -3200,8 +2614,7 @@
           ".pr-flow/toolchain.json",
           "tests/conftest.py",
           "pytest.ini"
-        ],
-        "pytestXdistWorkers": 2
+        ]
       },
       {
         "id": "verify.crosshairhud-luals",
@@ -3812,6 +3225,171 @@
         ]
       },
       {
+        "id": "verify.crosshairhud-tests",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_logic.py tests/addons/MYUI_CrosshairHUD/test_core_readings.py tests/addons/MYUI_CrosshairHUD/test_unlock_contract.py tests/addons/MYUI_CrosshairHUD/test_config_color.py tests/addons/MYUI_CrosshairHUD/test_config_plan.py tests/addons/MYUI_CrosshairHUD/test_visibility.py tests/addons/MYUI_CrosshairHUD/test_media_placement.py tests/addons/MYUI_CrosshairHUD/test_blood_dk_features.py tests/addons/MYUI_CrosshairHUD/test_media_mipmaps.py tests/addons/MYUI_CrosshairHUD/test_release_package.py",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          ".build-and-verify/config.json",
+          "assets/CrosshairHUDMedia/**",
+          "scripts/media/**",
+          "scripts/dev/package_crosshair_hud.py",
+          "addons/MYUI/**",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD",
+          "tests/addons/MYUI_CrosshairHUD",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".build-and-verify/config.json",
+          "assets/CrosshairHUDMedia",
+          "scripts/media",
+          "scripts/dev/package_crosshair_hud.py",
+          "addons/MYUI",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ]
+      },
+      {
+        "id": "verify.wowaddontest-skill-unit",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/dev/test_wow_addon_test_skill.py -m \"not real\" --strict-markers",
+        "checkParallel": true,
+        "paths": [
+          ".agents/skills/wow-addon-test/**",
+          "tests/dev/test_wow_addon_test_skill.py",
+          ".build-and-verify/config.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          ".agents/skills/wow-addon-test",
+          "tests/dev/test_wow_addon_test_skill.py",
+          ".build-and-verify/config.json",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ]
+      },
+      {
+        "id": "verify.wowaddontest-skill-real",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/dev/test_wow_addon_test_skill.py -m real --strict-markers --basetemp=.local/t/w-s",
+        "checkParallel": true,
+        "paths": [
+          ".agents/skills/wow-addon-test/**",
+          "tests/dev/test_wow_addon_test_skill.py",
+          ".build-and-verify/config.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          ".agents/skills/wow-addon-test",
+          "tests/dev/test_wow_addon_test_skill.py",
+          ".build-and-verify/config.json",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "tests/conftest.py",
+          "pytest.ini",
+          ".tools/lua-5.1.5/src/lua.exe"
+        ]
+      },
+      {
+        "id": "verify.wowaddontest-dk-unit",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py -m \"not real\" --strict-markers",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          ".agents/skills/wow-addon-test/**",
+          ".build-and-verify/config.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD",
+          "tests/addons/MYUI_CrosshairHUD",
+          ".agents/skills/wow-addon-test",
+          ".build-and-verify/config.json",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ]
+      },
+      {
+        "id": "verify.wowaddontest-dk-real",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/MYUI_CrosshairHUD/test_wowtest_dk.py -m real --strict-markers --basetemp=.local/t/w-d",
+        "checkParallel": true,
+        "paths": [
+          "addons/MYUI_CrosshairHUD/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          ".agents/skills/wow-addon-test/**",
+          ".build-and-verify/config.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          "addons/MYUI_CrosshairHUD",
+          "tests/addons/MYUI_CrosshairHUD",
+          ".agents/skills/wow-addon-test",
+          ".tools/lua-5.1.5/src/lua.exe",
+          ".build-and-verify/config.json",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ]
+      },
+      {
         "id": "verify.sim2gse-probe-test",
         "command": ".venv\\Scripts\\python.exe -m pytest -q tests/addons/Sim2GSEProbe/test_probe.py",
         "checkParallel": true,
@@ -3840,8 +3418,7 @@
           ".pr-flow/toolchain.json",
           "tests/conftest.py",
           "pytest.ini"
-        ],
-        "pytestXdistWorkers": 2
+        ]
       },
       {
         "id": "verify.addon-probe-luals",
@@ -4480,8 +4057,81 @@
           ".pr-flow/toolchain.json",
           "tests/conftest.py",
           "pytest.ini"
+        ]
+      },
+      {
+        "id": "verify.assets",
+        "command": ".venv\\Scripts\\python.exe scripts/media/verify.py",
+        "checkParallel": true,
+        "paths": [
+          "scripts/media/verify.py",
+          "addons/EUI_FacetedPortrait/**",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "scripts/dev/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "scripts/media/**",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json"
         ],
-        "pytestXdistWorkers": 2
+        "inputs": [
+          "scripts/media/verify.py",
+          "addons/EUI_FacetedPortrait",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/statusbar/EUI Faceted Bar.tga",
+          "assets/EUI_FacetedMedia/SharedMedia_MyMedia/border/EUI Faceted Border.tga",
+          "scripts/dev",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "scripts/media",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.docs",
+        "command": ".venv\\Scripts\\python.exe scripts/dev/check.py docs",
+        "checkParallel": true,
+        "paths": [
+          "README.md",
+          "AGENTS.md",
+          "docs/**",
+          "scripts/dev/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "myspec/changes/**",
+          "projects/sim2gse/README.md",
+          "tests/**/*.md",
+          "projects/*/README.md",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json"
+        ],
+        "inputs": [
+          "README.md",
+          "AGENTS.md",
+          "docs",
+          "scripts/dev",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          ".pr-flow/toolchain.json",
+          "myspec/changes",
+          "projects/sim2gse/README.md",
+          "tests/**/*.md",
+          "projects/*/README.md",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json"
+        ]
       },
       {
         "id": "verify.annotation-build",
@@ -5652,6 +5302,267 @@
         ]
       },
       {
+        "id": "verify.test-inventory",
+        "command": ".venv\\Scripts\\python.exe tests/dev/test_inventory.py",
+        "checkParallel": true,
+        "paths": [
+          "tests/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          ".pr-flow/toolchain.json",
+          "package.json",
+          "package-lock.json",
+          "projects/sim2gse/**",
+          "projects/gear-planner/**",
+          "scripts/dev/sim2gse/build.py",
+          "projects/sim2gse/requirements.txt",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          "tests",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "projects/sim2gse",
+          "projects/gear-planner",
+          "scripts/dev/sim2gse/build.py",
+          "projects/sim2gse/requirements.txt",
+          "tests/conftest.py",
+          "pytest.ini"
+        ]
+      },
+      {
+        "id": "verify.gear-async",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-async.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-build-names",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-build-names.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-delete",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-delete.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-empty",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-empty.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-save-armor",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-save-armor.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-save-as",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-save-as.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-stat-filter",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-stat-filter.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
+        "id": "verify.gear-summary",
+        "command": ".local/verify-deps/node/node.exe tests/gear-planner/check-summary.js",
+        "checkParallel": true,
+        "paths": [
+          "tests/gear-planner/**",
+          "projects/gear-planner/**",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json"
+        ],
+        "inputs": [
+          "tests/gear-planner",
+          "projects/gear-planner",
+          ".build-and-verify/config.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/requirements.txt",
+          "scripts/dev/versions.json",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          ".local/verify-deps/node/node.exe"
+        ]
+      },
+      {
         "id": "verify.myspec-main",
         "command": "myspec validate-main myspec/specs",
         "checkParallel": true,
@@ -5676,6 +5587,84 @@
           "scripts/dev/requirements.txt",
           "package.json",
           "package-lock.json"
+        ]
+      },
+      {
+        "id": "verify.dev-unit",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/dev/test_validation_units.py --strict-markers",
+        "checkParallel": true,
+        "paths": [
+          "scripts/dev/**",
+          "tests/dev/**",
+          ".build-and-verify/config.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "tests/conftest.py",
+          "pytest.ini",
+          "scripts/media/**",
+          "tests/addons/MYUI_CrosshairHUD/**",
+          "assets/CrosshairHUDMedia/**",
+          "addons/MYUI/Media/CrosshairHUD/**",
+          "addons/MYUI_CrosshairHUD/**",
+          "addons/MYUI/MYUI.toc",
+          "projects/sim2gse/native_build.py"
+        ],
+        "inputs": [
+          "scripts/dev",
+          "tests/dev",
+          ".build-and-verify/config.json",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "tests/conftest.py",
+          "pytest.ini",
+          "scripts/media",
+          "tests/addons/MYUI_CrosshairHUD",
+          "assets/CrosshairHUDMedia",
+          "addons/MYUI/Media/CrosshairHUD",
+          "addons/MYUI_CrosshairHUD",
+          ".github/workflows/verify.yml",
+          "addons/MYUI/MYUI.toc",
+          "projects/sim2gse/native_build.py"
+        ]
+      },
+      {
+        "id": "verify.gear-unit",
+        "command": ".venv\\Scripts\\python.exe -m pytest -q tests/gear-planner -m \"not real\" --strict-markers",
+        "checkParallel": true,
+        "pr": true,
+        "paths": [
+          "projects/gear-planner/**",
+          "tests/gear-planner/**",
+          "scripts/dev/run_browser_check.py",
+          ".build-and-verify/config.json",
+          ".pr-flow/toolchain.json",
+          ".github/workflows/verify.yml",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          "tests/conftest.py",
+          "pytest.ini"
+        ],
+        "inputs": [
+          "projects/gear-planner",
+          "tests/gear-planner",
+          "scripts/dev/run_browser_check.py",
+          ".build-and-verify/config.json",
+          "scripts/dev/versions.json",
+          "scripts/dev/requirements.txt",
+          "package.json",
+          "package-lock.json",
+          ".pr-flow/toolchain.json",
+          "tests/conftest.py",
+          "pytest.ini"
         ]
       }
     ],
