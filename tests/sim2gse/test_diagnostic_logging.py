@@ -2,20 +2,20 @@
 import pytest
 
 
-
-
-
-
-@pytest.mark.real
-@pytest.mark.parametrize('enabled', [True])
-def test_public_report_write_records_only_opt_in_stage_totals(enabled):
+@pytest.mark.parametrize('enabled', [False, True])
+def test_public_report_write_records_only_opt_in_stage_totals(enabled, monkeypatch):
+    from unittest.mock import Mock
     from runtime import TaskRuntime
     import result_store
+    write = Mock(return_value=1)
+    monkeypatch.setattr(result_store, 'write', write)
     runtime = TaskRuntime(diagnostic_logging=enabled)
     row = dict(batch_key='timed-report', run_id='run',
                report=dict(sim=dict(players=[dict(name='fixture', collected_data=dict(damage=dict(mean=12.0)))])))
     assert result_store.write_batch('timed-report', row, runtime=runtime) == 1
-    assert result_store.read_records('batches', 'timed-report')[0]['report'] == row['report']
+    write.assert_called_once()
+    assert write.call_args.args[:2] == ('batches', 'timed-report')
+    assert write.call_args.args[2][0]['report'] == row['report']
     if enabled:
         stages = runtime.performance_stages
         assert {'report.prepare', 'report.write'} <= stages.keys()

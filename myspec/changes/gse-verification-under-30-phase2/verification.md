@@ -1,53 +1,41 @@
-# 阶段2开发证据（尚未完整验收）
+# 当前精简候选验证记录：尚未最终验收
 
-## 正式首验、最小修复与同8单组对照
+## 当前最终小收口证据（2026-10-25）
 
-- `f0444f81d6183fc452878b48af31d235f71baf54` / tree `02e848f27444200245e06631e4a978bce2dbcfef`与此前审查的local7657同树。Windows BAV2.7.1完整43实际运行、0缓存：42通过1失败，GSE117通过1失败/19sub，37.95秒；工具53.7462042、wall54.016。**未达标，不是通过验收。**
-- 唯一回归是预建单场省略max_processes而HTTP显式1；生产条件哈希正确区分默认2与1。修复只给该预建任务显式1，身份/旧冠军/版本/不发布断言不变。remote `5e5cbb8d4aa1e69ab5e008f408843d8d668a4129` / tree `7c6f3e1e6d4c864749882201b9573702351fcaf9`与localb02同树；独立Astra增量通过，Windows原失败节点1通过，pytest1.84/wall2.176秒。
-- 用户要求同8单测GSE对照：before main3ee与after5e产品/依赖/正式规格相同，实验CLI均8/worksteal、相同durations/JUnit参数；不修改before正式config6。
+Astra 对 261a/tree41d4 双轴审查0阻断，指出 final_export_compilations 的真实消费者已删除、仅剩自身自测。本轮追加删除该 helper、Path 导入和**1个**普通自测（内部2次调用/断言，不是2节点），保留同文件直接调用生产 task._validate_formal_source 的另一测试；未动4真实或2迁移逻辑。
 
-| 单组诊断（不是全仓验收） | before main3ee | after5e |
-|---|---:|---:|
-| 真实结果 | 118＋19sub全过 | 118＋19sub全过 |
-| pytest秒 / wall秒 | 31.76 / 32.087 | 29.24 / 29.575 |
-| 全节点累计工作秒W / 最长L | 219.519 / 15.228 | 199.788 / 15.315 |
+- 最新收集门禁在同2.7.1原生审计适配器下通过：**422 = 418 ordinary + 4 real**；gear仍23=21+2；所有自动入口登记且选择互补，守卫错误为空。
+- 最新普通审计：**418 passed +168 subtests，3.66秒，退出0、4 worker完整、零违规**；证据 `.local/tests/gse-phase2/minimal-final-{guard.log,guard-summary.json,inventory.log}` 及审计JSONL。
+- 当前精简账本仍为旧118真实中的4保留/2迁移/112删除，额外删除上述1普通自测。原416普通保留415，迁移增加3项，合计418。没有为了数量删除其它生产逻辑测试。
+- 独立审查只需再核该建议落实；Windows4真实及官方43完整性能仍未验收。候选先以私有受控补丁交本机验证，不在此提前公开推送或合并。
 
-单组墙钟减少2.512秒（7.83%）、工作量减少19.731秒，证明自身已有收益；**29.575不能当全仓GSE<30**。主要收益来自population36.534→26.504和simulation_config7.498→2.345工作秒；interface39.944→39.572、search25.525→25.547未明显下降。setup最高0.98、teardown最高0.04、worker工作秒21.279–27.203，不支持为了这些数据另造调度器或更大共享准备。
+## 261a初次精简开发证据（历史前态）
 
-后续统一最简通道候选见`coverage-changes.md`第6节，基于after5e继续，尚未新的Windows完整验收。云端普通416＋168通过、118仅deselected，6.52秒；第6节的生产内存GA阶段反例通过。所有原断言保留，暂停第二粗评新增32场断言。普通通过不替代真实/全仓。规格、生产代码、BAV参数不变；下一固定候选先Astra增量再正式全仓，不插新profile矩阵。
+- 261a工作树在 fc696 中间提交后实施用户新范围。4 保留 / 2 迁移 / 112 删除已落代码；原 416 普通保留，迁移增加3个参数实例。
+- pytest 原生收集：**423 项 = 419 普通 + 4 真实**；不增加隐藏选择、skip 或 xfail。实际四节点见 coverage.md。
+- 清理前直接普通开发回归：419 pass +168 subtests，4真实 deselected，5.94秒；这不是守卫证明。
+- 清理后使用云端现有 BAV **2.7.1 源内置 protected_command** 和 evidence_error，原生审计适配器实际运行 `pytest -q tests/sim2gse -m "not real" --strict-markers --dist=worksteal -n 4`：**419 pass +168 subtests，4.13秒，退出0；4 worker start/finish完整，evidence_error=null，零违规**。一次 PytestAssertRewriteWarning（xdist 已导入）不影响审计完整性。
+- 适配器 SHA256：`7b412689b8020dfba993a33ba0bb3a0c433139168a385ab3920fef523392d2b6`，来自云端已存在的 plugin-migration-readonly/plugins/build-and-verify/python/build_and_verify_guard.py。未使用旧 2.3 CLI，未更改其审计规则。
+- 证据：云端 `.local/tests/gse-phase2/minimal-smoke-{real-nodes.txt,unit.log,guard.log,guard-summary.json}` 和守卫 unit JSONL。该定向开发检查不是官方 CLI 全仓通过，不能证明 Windows4真实或 <30秒。
+- 配置 SHA256 仍为 `c505ac85c11a4db730f955b54fcd36ab94db43decc253900476b7507800f6970`；产品、正式功能规格没有本轮变更。
 
-本机原始证据：首验`.local/gse-phase2-full-d4f5237b6b584b68b447575afc83e722`保留失败现场；单组对照`.local/gse-phase2-profile-e227fb2a1e004d6fb251b7074d6d320f`保留stdout/JUnit/118节点/阶段、模块、worker与comparison.json。对照成功临时回收162227065B，核心429KB；不删除首验失败现场或历史。累计上限仍1.7GB，下一本机执行前按实际账核余量。
+## 上一正式全仓结果（历史基线，不冒充当前候选）
 
-## 首候选的整合代码证据（历史）
+`4626deec00157561abed71039e4113735e8373dd` / tree `b50f144ea911ec1e578095cf7ba02ae92b65ee26`：官方完整43实际全过、0cache、17普通守卫/26真实分组完整；416+168 ordinary、118+19 real。GSE **33.05秒**，工具 **48.9808578秒**，wall **49.229秒**；local/non-diagnostic、60秒硬预算有效，无unfinished/notStarted/残留。未达到严格<30。
 
-2026-10-25已正常整合main `3ee81b5048ed51c4238b40df9abb15d17569b5e0`，无冲突。被实际测试的代码候选是`e0f42cc79b9ee593d8f7374dedb39a19a2712fab` / tree `c469d1224baef1f820a141fd2300e163cf3405b3`：云端普通选择**416 tests＋168 subtests通过，118 real仅deselected**，6.51秒。相对该新main，产品、技能及正式规格无差异，配置仍仅GSE真实6→8。
+Windows证据 `.local/gse-phase2-full-next-70de787f96e240fea7e93f1b8a1d9370/`。经用户批准清本轮可重建临时178346016B与已解决旧失败现场190618575B，保留核心结果；此前总账约960MB。结束临时量不是持续采样的峰值，不虚报峰值。
 
-当前补充提交仅修改本文和coverage状态说明，未改变上述受测代码；不为文案重复回归，也不循环改写“当前HEAD”。以下410＋130结果对应整合前`2014abd`及其开发阶段，不能充当新候选计数。历史8路37.61秒及全仓51.1566279/51.406秒来自旧main `ea0e230`的资源对照，不是本候选性能结果。
+## 更早对照与失败（保留事实）
 
-## 固定起点与授权
+- 原6/8完整对照均43全跑全过、0cache：6 GSE43.09 / tool53.2089958 / wall53.453；8 GSE37.61 / tool51.1566279 / wall51.406。8已采用，不重复矩阵。
+- 第一整组候选 f044/tree02e848：42pass1fail，GSE37.95 / tool53.7462042 / wall54.016，不能作收益证明。失败为预建max_processes2与HTTP1导致冻结身份不同；单行归一为1且原断言全保后，唯一失败节点真实绿1pass/1.84秒。
+- 用户要求的同8单组对照：main3ee前118+19全过，pytest31.76/wall32.087；5e后118+19全过，pytest29.24/wall29.575，wall少2.512秒(7.83%)。它证明当时单组改善，不是全仓<30。
+- main3ee 的诊断开关/恢复修复已正常整合，未丢失；fc696旧全契约候选保留为中间成果，不继续按旧路线验证。
 
-- 功能分支：`codex/gse-verification-under-30`。
-- 起点：`9676c51f6bb7f4e8daa7295f08caed0b5a84acea` / tree `e27443401f723e21de7b8ee789e2957904d54bd5`；8路config SHA256 `c505ac85c11a4db730f955b54fcd36ab94db43decc253900476b7507800f6970`。
-- 完整门禁一确认：`Sentinel_c68884e1dcf88191a1786b08b8313862`，沿同feature完成全部目标，不单独结束8路任务。
-- 红证据：同机全仓外层4、GSE真实8时GSE37.61秒，尚不满足严格<30；全仓工具51.1566279秒、外层51.406秒为不退化参照。
+## 下一正式验收与清理
 
-## 本候选开发检查
+固定候选后独立 Astra 双轴审查，再按正式流程由 root 排队本机验证。保持外4/普通4/GSE真实8/worksteal、43项、17/26分组和60秒硬预算；官方 BAV2.7.1 `verify --project . --full --performance-report --execution-context local` 无成功缓存跳过。验收 GSE<30、tool≤51.1566279、wall≤51.406、所有剩余检查全过，无诊断/超预算/未完成。
 
-2026-10-25云端使用已存在的Python环境，直接pytest普通选择（不是正式BAV守卫/Windows完整通过）：
+按结构化 BAV cached/cache-hit/skip 和实际计数核零成功缓存跳过；不要把测试验证产品缓存所产生的合法 hit 或节点名 cached 当违规。正式差异门禁另按固定基线执行，不与full混传base。
 
-| 状态 | 结果 |
-|---|---|
-| 修改前普通层 | 410 passed、130 subtests passed、118 deselected，5.44秒 |
-| 共同报告/候选修改后 | 410 passed、130 subtests passed、118 deselected，5.63秒 |
-| 共同夹具整合后 | 410 passed、130 subtests passed、118 deselected，5.81秒 |
-| 首候选固定前 | 410 passed、130 subtests passed、118 deselected，6.55秒 |
-
-此外：两报告生产者×单目标/5目标直接开发诊断，均一次native.json写入，实际JSON与返回报告相等且目标数正确。全部改动Python语法解析通过，diff无空白错误；原assert/self.assert/pytest.raises AST未改。AST结果不证明覆盖等价，触发链论证见`coverage-changes.md`。
-
-云端运行产物仅在当前仓库`.local/tests/gse-phase2/`，最后检查约64KB，未复制数据中心/大工具或保留成功大产物。原CI历史`.local`和BAV备份未动。
-
-## 必须保留为未完成
-
-- 首候选已独立Astra双轴通过，正式全仓发现的回归已最小修正并单节点/单组真绿；**最新第6节增量的Astra与真实全仓仍未完成**，不得沿用任何旧结果冒称新候选通过。
-- 父层三项诊断修复已随main3ee整合，其新回归已纳入上述416＋168普通结果；真实118与性能仍待官方完整全仓验收，不把8路旧基线当新main实测。
-- 未写正式规格、未合并主干；完整目标未达标不关闭总任务。
+每轮运行前核完整目录总账与1.7GB上限；临时置于正式规格约定的仓内目录。成功后保留日志/报告、身份、计时、清单，只清本轮allowlist内可重建大产物；失败现场先保留诊断，不清历史和正式数据。未取得本轮正式结果前不宣称完成或合并。

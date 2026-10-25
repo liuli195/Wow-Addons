@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import json
 from io import StringIO
-import pytest
-import os
 from pathlib import Path
-import subprocess
 import sys
-import tempfile
 import unittest
 
 
@@ -63,16 +58,6 @@ def damage_source_inputs():
 
 
 class CombatLogToolTests(unittest.TestCase):
-    def run_tool(self, combat: Path, *args: str) -> dict:
-        completed = subprocess.run(
-            [sys.executable, str(TOOL), str(combat), "--player", "测试者", *args],
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            env={**os.environ, "TZ": "UTC"},
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        return json.loads(completed.stdout)
 
     def test_preserves_real_training_damage_after_the_dummy_reaches_one_health(self) -> None:
         combat = "\n".join([
@@ -180,25 +165,6 @@ class CombatLogToolTests(unittest.TestCase):
         self.assertEqual(result['successful_casts_by_spell_id']['100']['count'], 1)
 
 
-    @pytest.mark.real
-    def test_groups_damage_by_spell_id_owner_and_button_origin(self) -> None:
-        """任务目录指针必须从真实类型化中心读到同一报告，不以字典替身证明绑定。"""
-        import result_store
-        combat, simulation = damage_source_inputs()
-        direct = analyze(StringIO(combat), '测试者', 2, simulation=simulation, primary_target='Creature-1')
-        with tempfile.TemporaryDirectory() as directory:
-            task_directory = Path(directory) / 'task'
-            task_directory.mkdir()
-            (task_directory / 'result.json').write_text('{"run_id":"analysis"}', encoding='utf-8')
-            result_store.write('batches', 'analysis-report', [dict(
-                batch_key='analysis-report', report=simulation)])
-            result_store.write('runs', 'analysis', [dict(
-                run_id='analysis', controlled_data_key='analysis-report')])
-            centered = analyze(StringIO(combat), '测试者', 2, simulation=task_directory,
-                               primary_target='Creature-1')
-        self.assertEqual(centered['simulation_damage_sources'], direct['simulation_damage_sources'])
-        self.assertEqual(centered['simulation_dps_distribution'], direct['simulation_dps_distribution'])
-
     def test_rejects_overcounted_simulation_damage_sources(self) -> None:
         combat = '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者",0,0,Creature-1,"假人",0,0,1,"技能",0,Creature-1,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,100,100,-1,1,0,0,0,nil,nil,nil,ST'
         simulation = {'sim': {
@@ -213,82 +179,72 @@ class CombatLogToolTests(unittest.TestCase):
             analyze(StringIO(combat), '测试者', 1, simulation=simulation, primary_target='Creature-1')
 
 
-    @pytest.mark.real
     def test_uses_latest_gse_session_and_compares_primary_dps_with_simulation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            combat = root / "WoWCombatLog.txt"
-            combat.write_text(
-                '\n'.join([
-                    '9/13/2026 15:50:09.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-old,"旧假人",0,0,206930,"心脏打击",0,Creature-old,0,10000,10000,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,9000,9000,-1,1,0,0,0,nil,nil,nil,ST',
-                    '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-new,"新假人",0,0,206930,"心脏打击",0,Creature-new,0,10000,10000,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,3000,3000,-1,1,0,0,0,nil,nil,nil,ST',
-                ]), encoding='utf-8')
-            debug = root / 'gse-debug.txt'
-            debug.write_text('\n'.join([
-                'S2G:1,1,1789285808,旧技能,(1) Found in Spell Book,Able To Cast,Resources Available,GCD Free,Not Casting,旧技能,block:1',
-                'S2G:1,2,1789285808,旧技能,(1) Found in Spell Book,Able To Cast,Resources Available,GCD Free,Not Casting,旧技能,block:2',
-                'S2G:1,1,1789288879,新技能,(2) Found in Spell Book,Able To Cast,Resources Available,GCD Free,Not Casting,新技能,block:1',
-                'S2G:1,2,1789288879,新技能,(2) Found in Spell Book,Not Able to Cast,Resources Not Available,GCD In Cooldown,Not Casting,新技能,block:2',
-                'S2G:1,3,1789288880,新技能,(2) Found in Spell Book,Not Able to Cast,Resources Available,GCD In Cooldown,Not Casting,新技能,block:3',
-                'S2G:1,4,1789288883,尾部技能,(3) Found in Spell Book,Not Able to Cast,Resources Not Available,GCD In Cooldown,Not Casting,尾部技能,block:4',
-            ]), encoding='utf-8')
-            simulation = root / 'simulation.json'
-            simulation.write_text(json.dumps({
-                'sim': {
-                    'options': {'max_time': 2, 'desired_targets': 1},
-                    'players': [
-                        {'name': '其他角色', 'collected_data': {'dps': {'mean': 9999}}},
-                        {'name': '测试者', 'collected_data': {'dps': {
-                            'mean': 2000, 'min': 1400, 'max': 2600, 'std_dev': 300,
-                        }}},
-                    ],
-                }
-            }), encoding='utf-8')
+        combat = '\n'.join([
+                '9/13/2026 15:50:09.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-old,"旧假人",0,0,206930,"心脏打击",0,Creature-old,0,10000,10000,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,9000,9000,-1,1,0,0,0,nil,nil,nil,ST',
+                '9/13/2026 16:41:19.0000  SPELL_DAMAGE,Player-1,"测试者-服务器-CN",0,0,Creature-new,"新假人",0,0,206930,"心脏打击",0,Creature-new,0,10000,10000,0,0,0,0,0,0,1,0,0,0,0,0,0,0,90,3000,3000,-1,1,0,0,0,nil,nil,nil,ST',
+            ])
+        debug = '\n'.join([
+            'S2G:1,1,1789285808,旧技能,(1) Found in Spell Book,Able To Cast,Resources Available,GCD Free,Not Casting,旧技能,block:1',
+            'S2G:1,2,1789285808,旧技能,(1) Found in Spell Book,Able To Cast,Resources Available,GCD Free,Not Casting,旧技能,block:2',
+            'S2G:1,1,1789288879,新技能,(2) Found in Spell Book,Able To Cast,Resources Available,GCD Free,Not Casting,新技能,block:1',
+            'S2G:1,2,1789288879,新技能,(2) Found in Spell Book,Not Able to Cast,Resources Not Available,GCD In Cooldown,Not Casting,新技能,block:2',
+            'S2G:1,3,1789288880,新技能,(2) Found in Spell Book,Not Able to Cast,Resources Available,GCD In Cooldown,Not Casting,新技能,block:3',
+            'S2G:1,4,1789288883,尾部技能,(3) Found in Spell Book,Not Able to Cast,Resources Not Available,GCD In Cooldown,Not Casting,尾部技能,block:4',
+        ])
+        simulation = {
+            'sim': {
+                'options': {'max_time': 2, 'desired_targets': 1},
+                'players': [
+                    {'name': '其他角色', 'collected_data': {'dps': {'mean': 9999}}},
+                    {'name': '测试者', 'collected_data': {'dps': {
+                        'mean': 2000, 'min': 1400, 'max': 2600, 'std_dev': 300,
+                    }}},
+                ],
+            }
+        }
+        result = analyze(StringIO(combat), '测试者', 2, gse_debug=StringIO(debug),
+                         gse_utc_offset=8, simulation=simulation, primary_target='新假人')
 
-            result = self.run_tool(
-                combat, '--duration', '2', '--gse-debug', str(debug), '--gse-utc-offset', '8',
-                '--simulation', str(simulation),
-                '--primary-target', '新假人')
-
-            self.assertEqual(result['primary_target']['name'], '新假人')
-            self.assertEqual(result['gse_debug']['rows'], 3)
-            self.assertEqual(result['gse_debug']['estimated_average_input_interval_ms'], 500)
-            self.assertEqual(result['gse_debug']['attempts_by_spell'], {'新技能': 3})
-            self.assertEqual(result['gse_debug']['blocked_reasons'], {
-                'GCD In Cooldown': 2,
-                'Not Able to Cast': 2,
-                'Resources Not Available': 1,
-            })
-            self.assertEqual(result['simulation_dps'], 2000)
-            self.assertEqual(result['simulation_conditions'], {
-                'duration_seconds': 2, 'targets': 1,
-                'actual_affected_targets': 1, 'secondary_damage_excluded': 0,
-                'damage_metric': 'logged_amount',
-            })
-            self.assertEqual(result['simulation_conditions_not_verifiable_from_combat_log'], [
+        self.assertEqual(result['primary_target']['name'], '新假人')
+        self.assertEqual(result['gse_debug']['rows'], 3)
+        self.assertEqual(result['gse_debug']['estimated_average_input_interval_ms'], 500)
+        self.assertEqual(result['gse_debug']['attempts_by_spell'], {'新技能': 3})
+        self.assertEqual(result['gse_debug']['blocked_reasons'], {
+            'GCD In Cooldown': 2,
+            'Not Able to Cast': 2,
+            'Resources Not Available': 1,
+        })
+        self.assertEqual(result['simulation_dps'], 2000)
+        self.assertEqual(result['simulation_conditions'], {
+            'duration_seconds': 2, 'targets': 1,
+            'actual_affected_targets': 1, 'secondary_damage_excluded': 0,
+            'damage_metric': 'logged_amount',
+        })
+        self.assertEqual(result['simulation_conditions_not_verifiable_from_combat_log'], [
+            'specialization', 'talents', 'gear', 'game_version', 'sequence',
+            'enemy_attack_timeline', 'enemy_health_timeline',
+            'target_defenses', 'target_skill_coverage', 'input_timing',
+        ])
+        self.assertEqual(result['primary_target_percent_of_simulation'], 75)
+        self.assertEqual(result['simulation_comparison'], {
+            'status': 'conditions_unverified',
+            'accuracy_assessed': False,
+            'damage_metric': 'logged_amount',
+            'throughput_percent': 75,
+            'unverified_conditions': [
                 'specialization', 'talents', 'gear', 'game_version', 'sequence',
                 'enemy_attack_timeline', 'enemy_health_timeline',
                 'target_defenses', 'target_skill_coverage', 'input_timing',
-            ])
-            self.assertEqual(result['primary_target_percent_of_simulation'], 75)
-            self.assertEqual(result['simulation_comparison'], {
-                'status': 'conditions_unverified',
-                'accuracy_assessed': False,
-                'damage_metric': 'logged_amount',
-                'throughput_percent': 75,
-                'unverified_conditions': [
-                    'specialization', 'talents', 'gear', 'game_version', 'sequence',
-                    'enemy_attack_timeline', 'enemy_health_timeline',
-                    'target_defenses', 'target_skill_coverage', 'input_timing',
-                ],
-            })
-            self.assertEqual(result['simulation_dps_distribution'], {
-                'mean': 2000, 'min': 1400, 'max': 2600, 'std_dev': 300,
-            })
-            self.assertTrue(result['primary_target_within_simulation_sample_range'])
+            ],
+        })
+        self.assertEqual(result['simulation_dps_distribution'], {
+            'mean': 2000, 'min': 1400, 'max': 2600, 'std_dev': 300,
+        })
+        self.assertTrue(result['primary_target_within_simulation_sample_range'])
 
-            with self.assertRaisesRegex(ValueError, 'GSE 调试记录与测试区间不重合'):
-                analyze(combat, '测试者', 2, gse_debug=debug, gse_utc_offset=7)
+        with self.assertRaisesRegex(ValueError, 'GSE 调试记录与测试区间不重合'):
+            analyze(StringIO(combat), '测试者', 2, gse_debug=StringIO(debug), gse_utc_offset=7)
 
 
     def test_rejects_ambiguous_comparison_and_malformed_debug(self) -> None:
