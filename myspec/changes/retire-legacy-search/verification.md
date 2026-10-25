@@ -74,3 +74,13 @@
 - **实际新增`task.sqlite3-wal`和`task.sqlite3-shm`辅助文件。**因此只读连接不等于绝不创建文件，不能承诺目录零变化；本证据证明旧可靠内容未被改写、不启动计算或新成果发布。
 - 脚本仅在仓内`.local/retirement-diagnostics/`，4210字节，SHA-256 `3205a49f7a5564018a412d0191d97f8f33a170853caea127e79ebb4c57d97f99`；临时产物约108KB，不入候选。使用合成旧契约夹具，**不是**新模拟或实际游戏导出的正确性证据。
 - Windows对应运行已回传：退出0、0.437秒，脚本SHA-256精确一致；特定旧契约拒绝、旧数据库/两输入/结果/导出哨兵摘要全不变。1个真实只读连接、2次SELECT、6边界调用均0；新增WAL为0字节、SHM为32768字节。合成任务目录78704字节，总探测目录84807字节/11文件。输出证据为本机仓内`.local/retirement-diagnostics/old_disk_resume.output.json`及对应运行记录。树干净、官方预览与状态指纹保持。没有读取或修改正式数据中心、原训练成果、历史对照目录。
+
+## PR 76 CI preparation repair verification
+
+The first remote Windows run failed during pinned Node preparation because command discovery returned multiple applications. Verification continued after setup failed, exposing missing upstream inputs and temporary roots; a fixed gear input also had checkout line-ending changes. The repair only changes setup, workflow success conditions, fixed-input attributes and ordinary-check cache inputs; search logic, formal specifications, commands, roles, parallelism and budget are unchanged.
+
+- A real two-PATH executable-byte fixture reproduced the old multiple-source hash mismatch and proved first-source selection and matching copied bytes. Neither fixture executable ran; production Node was untouched and PATH restored. This is not full setup validation.
+- All 38 fixed gear inputs report text unset; the existing expected-digest test passed. PowerShell parsing and workflow success/always diagnostic conditions passed.
+- Official BAV 2.7.1 init applied a candidate that only appends the Lua executable and all 94 Lua files at the pinned GSE commit to ordinary-check inputs. Approved list SHA256: 1935c4842ac9878b5d4833ce2c9b69c3db03f71a057edf8b9bd17d2cf7b891b9. An in-memory hash substitution changed the cache key and restoring the original reader restored it; no tool file was written.
+- Five affected tests passed in 0.62 seconds. Clean repair commit d1cc5a094e17075229d50ddbac9f2608bfff2227 passed official verification against fixed base f4b40e19f4118f1120df3914dae76efc19d0eef5: 43 checks actually ran and passed, zero cache hits, 17 guard receipts, 53.516 seconds wall. GSE had 410 ordinary tests plus 130 subtests and 118 real tests plus 19 subtests; real-check duration was 43.53 seconds. No owned simulation process remained.
+- These local results do not replace CI for the new pushed HEAD. Original failure evidence is retained; remote Windows, toolchain and review gates must pass before normal merge.
