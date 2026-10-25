@@ -28,15 +28,8 @@ def champion_engine(page_task_engine, monkeypatch):
 
     # 与用例的局部替换同栈撤销，避免其清理时重新装回已结束夹具。
     monkeypatch.setattr(task, '_rule_hashes', verified_rules)
-    import sequence
-    evaluate = sequence.evaluate
-    def persisted_scene_report(profile, candidate, folder, **kwargs):
-        result = evaluate(profile, candidate, folder, **kwargs)
-        # 模拟外部生产者的落盘报告必须与返回的目标场景一致，供保存报告与旧成果验真。
-        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
-        return result
-    with patch.object(sequence, 'evaluate', side_effect=persisted_scene_report), \
-            patch.object(engine, 'check_report', REAL_CHECK_REPORT):
+    # The shared native-boundary fixture writes the final scene report once.
+    with patch.object(engine, 'check_report', REAL_CHECK_REPORT):
         yield
 
 
@@ -50,7 +43,16 @@ def unchanged_offspring(monkeypatch):
 
 
 @pytest.fixture
-def unchanged_champion_engine(champion_engine, unchanged_offspring):
+def unchanged_champion_engine(champion_engine, unchanged_offspring, monkeypatch):
+    """Two real initialized alternatives; injected champions still join normally.
+
+    These cases observe publication/recovery, not the four native start sources.
+    Their complete generations and three 128-iteration finalist batches remain.
+    """
+    import search
+    initial_programs = search.initial_programs
+    monkeypatch.setattr(search, 'initial_programs',
+                        lambda *args, **kwargs: initial_programs(*args, **kwargs)[:2])
     yield
 
 
@@ -164,7 +166,8 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
 def dual_result(tmp_path, raw, *, expected='completed', interval_ms=200, before_resume=None):
     """走已批准的 POST 双场到 GET 公开结果接缝。"""
     from interface import create_server
-    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(iterations=2)))
+    server = create_server(tmp_path / 'page', task_options=dict(
+        search_config=dict(iterations=2, max_processes=1)))
     thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'

@@ -10,10 +10,36 @@ from test_training_champion import unchanged_offspring, unchanged_champion_engin
 from test_seed_training import memory_result_center
 
 
+def final_export_compilations(compiled, destination):
+    purposes = {destination / 'exports' / purpose: purpose
+                for purpose in ('single_target', 'aoe', 'burst')}
+    purposes[destination / 'collection'] = 'collection'
+    return [(purposes[folder], enabled) for folder, enabled in compiled if folder in purposes]
+
+
+def test_final_export_observer_excludes_candidate_and_other_task_compilations():
+    destination = Path('/memory/tasks/current')
+    expected = [('single_target', True), ('aoe', True), ('burst', True),
+                ('burst', True), ('collection', True)]
+    compiled = [(destination / 'exports' / purpose, enabled)
+                for purpose, enabled in expected if purpose != 'collection']
+    compiled.append((destination / 'collection', True))
+    compiled.extend((folder, False) for folder in (
+        destination / 'aoe' / 'exports' / 'sim2gse-search-behavior-v2-candidate',
+        destination / 'aoe' / 'exports' / 'aoe',
+        destination / 'aoe' / 'collection',
+        destination.parent / 'other' / 'exports' / 'burst'))
+    assert final_export_compilations(compiled, destination) == expected
+    # Every real final invocation remains visible, including repeated burst exports.
+    compiled.append((destination / 'exports' / 'burst', False))
+    assert final_export_compilations(compiled, destination) == [*expected, ('burst', False)]
+
+
 @contextmanager
-def dual_page(root, raw):
+def dual_page(root, raw, *, diagnostic_logging=False, resume_logging=False):
     from interface import create_server
-    server = create_server(root / 'page', task_options=dict(search_config=dict(iterations=2)))
+    server = create_server(root / 'page', task_options=dict(
+        search_config=dict(iterations=2, max_processes=1)))
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     worker.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -23,7 +49,8 @@ def dual_page(root, raw):
         with urlopen(Request(base + path, body, {'Content-Type': 'application/json'}), timeout=5) as response:
             return json.load(response)
 
-    created = request('/api/tasks', dict(profile=raw, mode='dual', input_interval_ms=200))
+    created = request('/api/tasks', dict(profile=raw, mode='dual', input_interval_ms=200,
+                                       diagnostic_logging=diagnostic_logging))
     task_id = created['task_id']
 
     def read():
@@ -31,7 +58,7 @@ def dual_page(root, raw):
         return request('/api/tasks/' + task_id)
 
     def resume():
-        request('/api/tasks/' + task_id + '/resume', {})
+        request('/api/tasks/' + task_id + '/resume', dict(diagnostic_logging=resume_logging))
         return read()
 
     try:
@@ -82,15 +109,23 @@ def test_public_formal_publication_failure_is_recoverable_without_rescoring_save
     import burst
     import result_store
     import sequence
+    import codec
+    import task
     definition, raw = reviewed_fixture()
     burst.publish(definition)
     evaluate, publish = sequence.evaluate, result_store.publish_search_champion
-    scored = []
+    scored, logging, compiled = [], [], []
     fail_once = [True]
+    compiler = codec.run_command
 
     def equal_native_scores(profile, candidate, folder, **kwargs):
         scored.append(str(folder))
+        logging.append((str(folder), kwargs['runtime'].diagnostic_logging))
         return evaluate(profile, candidate, folder, score=100., **kwargs)
+
+    def observed_compiler(command, *args, **kwargs):
+        compiled.append((Path(kwargs['output_dir']), kwargs['runtime'].diagnostic_logging))
+        return compiler(command, *args, **kwargs)
 
     def unavailable_publication(*args, **kwargs):
         if fail_once[0]:
@@ -100,7 +135,8 @@ def test_public_formal_publication_failure_is_recoverable_without_rescoring_save
 
     monkeypatch.setattr(sequence, 'evaluate', equal_native_scores)
     monkeypatch.setattr(result_store, 'publish_search_champion', unavailable_publication)
-    with dual_page(tmp_path, raw) as (read, resume):
+    monkeypatch.setattr(codec, 'run_command', observed_compiler)
+    with dual_page(tmp_path, raw, diagnostic_logging=False, resume_logging=True) as (read, resume):
         paused = read()
         assert paused['status'] == 'failed', paused
         assert paused['recoverable'] and not paused['collection_ready']
@@ -108,12 +144,26 @@ def test_public_formal_publication_failure_is_recoverable_without_rescoring_save
         assert paused['scenes'][0]['formal_champion_publication']['status'] == 'pending'
         completed_scene_calls = [path for path in scored if 'single_target' in path]
         assert completed_scene_calls
+        destination = next((tmp_path / 'page' / 'tasks').iterdir())
+        assert not list(destination.glob('single_target/**/checked.log'))
+        before = task.read_task(destination / 'single_target')
+        assert before['config']['diagnostic_logging'] is False
         continued = resume()
     assert continued['status'] == 'completed', continued
     assert continued['collection_ready']
     assert [path for path in scored if 'single_target' in path] == completed_scene_calls
     assert continued['scenes'][0]['formal_champion_publication']['status'] == 'published'
     assert continued['scenes'][0]['search_result']['samples'] == 381
+    assert all(enabled is False for path, enabled in logging if 'single_target' in path)
+    assert any('aoe' in path for path, _ in logging)
+    assert all(enabled is True for path, enabled in logging if 'aoe' in path)
+    exported = final_export_compilations(compiled, destination)
+    assert {purpose for purpose, _ in exported} == {'single_target', 'aoe', 'burst', 'collection'}
+    assert all(enabled is True for _, enabled in exported)
+    for purpose in ('single_target', 'aoe', 'burst'):
+        assert (destination / 'exports' / purpose / 'checked.log').is_file()
+    # 恢复可写本次导出日志，但不补写已完成场此前的编译日志。
+    assert not list(destination.glob('single_target/**/checked.log'))
 
 
 @pytest.mark.real

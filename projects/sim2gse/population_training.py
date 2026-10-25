@@ -56,6 +56,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     from codec import load_targeting, prepare_block, prepare_castsequence
     from engine import CandidateScoreError
     from search import _coarse_score_failure
+    observe_search = store.diagnostic_logging and store.state['config']['search_observability'] != 'off'
     policy = (store.state.get('formal_search') or {}).get('coarse_failure_policy')
     if policy is not None:
         from formal_search import COARSE_FAILURE_POLICY
@@ -91,7 +92,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
         return left, right
     feedback_for = None
     def observe_child(parent, child, details):
-        if not store.state.get('search_observability'):
+        if not observe_search or not store.state.get('search_observability'):
             return
         try:
             identity = canonicalize_search_program(child, capabilities)['identity']
@@ -102,7 +103,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     candidate_identity=identity, illegal_reason=reason, **details)
     def mutation(member):
         feedback_getter = None if member.crossed else lambda: feedback_for(member.parent_program)
-        details = {} if store.state.get('search_observability') else None
+        details = {} if observe_search and store.state.get('search_observability') else None
         options = {'observation': details} if details is not None else {}
         if store.state.get('formal_search'):
             options['reset_flags'] = tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']

@@ -151,6 +151,8 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
         }) / 1000.0
     samples = max(1, iterations - 1)
     report = _fast_report(character, score, samples)
+    targets = (simulation_config or {}).get('target_count', 1)
+    report['sim']['targets'] = [dict(report['sim']['targets'][0]) for _ in range(targets)]
     (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
     trace_rows = []
     if trace:

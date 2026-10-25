@@ -112,6 +112,7 @@ class SimulationConfigTests(unittest.TestCase):
         from task import TaskError, resume_task, run_task
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
+        from test_interface import _fixed_search_population
 
         value = "136822:1/136819:1/136817:1"
         source_text = (sample_profile()
@@ -127,7 +128,7 @@ class SimulationConfigTests(unittest.TestCase):
             source = Path(directory) / "role.simc"
             destination = Path(directory) / "task"
             source.write_bytes(original)
-            with _fast_search_boundary():
+            with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]):
                 run_task(source, destination, search_config=_fast_search_config(),
                          simulation_config=config_for({"enable_omnium_talents": False}))
                 with patch('task.run_task', side_effect=AssertionError('SimC must not start')) as rerun:
@@ -237,6 +238,7 @@ class SimulationConfigTests(unittest.TestCase):
         from task import TaskError, resume_task, run_task
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
+        from test_interface import _fixed_search_population
 
         simulation = config_for({"target_count": 2, "scene": "aoe"})
         search = _fast_search_config()
@@ -245,7 +247,7 @@ class SimulationConfigTests(unittest.TestCase):
             destination = Path(directory) / "task"
             original = (sample_profile() + 'omnium_talents=136822:1/136819:1\n').encode('utf-8')
             source.write_bytes(original)
-            with _fast_search_boundary():
+            with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]):
                 run_task(source, destination, search_config=search, simulation_config=simulation)
 
                 self.assertEqual((destination / 'input.original.simc').read_bytes(), original)

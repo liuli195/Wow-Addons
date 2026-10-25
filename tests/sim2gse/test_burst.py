@@ -28,6 +28,30 @@ def reviewed_fixture():
     return definition, profile
 
 
+@pytest.fixture(scope='module')
+def reviewed_native_preparation(tmp_path_factory, installed_data_store_api):
+    """One fixed native precheck per worker; consumers own all mutable outputs.
+
+    Both dual-source cases use exactly this profile, reviewed definition and
+    default simulation inputs. The separate precheck tests still run their own
+    changed definitions and inputs through the public entry point.
+    """
+    import burst
+    import result_store
+    root = tmp_path_factory.mktemp('reviewed-native-burst')
+    data = root / 'data'
+    data.mkdir()
+    definition, raw = reviewed_fixture()
+    profile = root / 'character.simc'
+    profile.write_text(raw, encoding='utf-8')
+    with pytest.MonkeyPatch.context() as boundary:
+        boundary.setattr(result_store, 'DATA_ROOT', data)
+        boundary.setattr(result_store, '_SKILL_API', installed_data_store_api)
+        burst.publish(definition)
+        prepared = task.precheck_burst(profile, root / 'prepared')
+    return definition, raw, prepared
+
+
 @contextmanager
 def page_task_boundary():
     """页面故障构造外部引擎和编译结果；HTTP、检查点、共享存储和恢复仍真实。"""
@@ -183,15 +207,14 @@ def test_public_burst_native_rejects_wrong_spell_id_with_a_real_action(tmp_path)
 
 
 @pytest.mark.real
-def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
+def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path, reviewed_native_preparation):
     import burst
     from program import from_search_program, compile_program
     from sequence import evaluate
-    definition, raw = reviewed_fixture()
+    definition, raw, prepared = copy.deepcopy(reviewed_native_preparation)
     burst.publish(definition)
     profile = tmp_path / 'character.simc'
     profile.write_text(raw, encoding='utf-8')
-    prepared = task.precheck_burst(profile, tmp_path / 'prepared')
     program = from_search_program([
         dict(kind='CastSequence', members=['outbreak', 'festering_strike'],
              reset=dict(timeout_seconds=None, flags=['combat'])),
@@ -212,15 +235,14 @@ def test_dual_source_castsequence_keeps_native_queued_origins(tmp_path):
 
 
 @pytest.mark.real
-def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path):
+def test_dual_sources_share_cooldown_and_reset_between_battles(tmp_path, reviewed_native_preparation):
     import burst
     from program import from_action_blocks, compile_program
     from sequence import evaluate, select
-    definition, raw = reviewed_fixture()
+    definition, raw, prepared = copy.deepcopy(reviewed_native_preparation)
     burst.publish(definition)
     profile = tmp_path / 'character.simc'
     profile.write_text(raw, encoding='utf-8')
-    prepared = task.precheck_burst(profile, tmp_path / 'prepared')
     loop = compile_program(from_action_blocks(select(prepared['capabilities'],
                            [['dark_transformation'], ['death_coil']])),
                            tmp_path / 'loop-export', identity=prepared['native_reference']['identity'])

@@ -252,6 +252,12 @@ def registered_six(request):
     return programs
 
 
+@pytest.fixture
+def memory_registered_six(memory_result_center, request):
+    """Register after selecting the typed center, never in a different backend."""
+    return request.getfixturevalue('registered_six')
+
+
 def test_public_selection_reads_each_report_group_once_without_skipping_receipts(monkeypatch,memory_ga):
     from copy import deepcopy
     from weakref import WeakValueDictionary
@@ -312,7 +318,7 @@ def test_public_selection_reads_each_report_group_once_without_skipping_receipts
 @pytest.mark.parametrize('fail_one', [False, True])
 @pytest.mark.real
 def test_public_default_prepare_and_run_verify_four_real_template_groups_and_shared_limit(
-        tmp_path, capsys, monkeypatch, registered_six, fail_one):
+        tmp_path, capsys, monkeypatch, memory_registered_six, fail_one):
     from contextlib import ExitStack
     from copy import deepcopy
     from unittest.mock import patch
@@ -396,7 +402,7 @@ def test_public_default_prepare_and_run_verify_four_real_template_groups_and_sha
             previous = [dict(configuration_key=failed_key, candidate_id='previous-' + str(index),
                 condition='previous', class_name='deathknight', spec='unholy', targets=1, program=program,
                 family='previous', score=9., scores=[9.] * 3, template_sha256='previous', engines={})
-                for index, program in enumerate(registered_six[:4])]
+                for index, program in enumerate(memory_registered_six[:4])]
             result_store.write('seed_selected', shared_scope(failed_key), previous, schema=SELECTED_SCHEMA)
         assert main(['--project', str(tmp_path), 'run', '--workspace', str(tmp_path / 'work')]) == (2 if fail_one else 0)
     outcomes = json.loads(capsys.readouterr().out)
@@ -426,7 +432,8 @@ def test_public_default_prepare_and_run_verify_four_real_template_groups_and_sha
 ])
 @pytest.mark.real
 def test_public_cancel_flushes_tail_and_resume_keeps_frozen_config_and_successful_batches(
-        tmp_path, capsys, monkeypatch, registered_six, cancel_mode, initial_logging, resume_logging):
+        tmp_path, capsys, monkeypatch, memory_registered_six,
+        cancel_mode, initial_logging, resume_logging):
     from unittest.mock import patch
     import threading
     import sequence
@@ -855,6 +862,40 @@ def test_public_four_group_resume_uses_frozen_outer_pool_after_next_batch_toml_c
     assert manifests==before
 
 
+@pytest.mark.parametrize('resume_logging', [False, True], ids=['logging-off', 'search-records-off'])
+def test_formal_resume_stops_new_search_observations_without_removing_history(memory_ga, resume_logging):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from runtime import TaskCancelled, TaskRuntime
+    from search import config_for
+    case = memory_ga(formal=True, programs=[[['outbreak']]],
+                     search_settings=dict(diagnostic_logging=True, search_observability='full'))
+    cancel = SimpleNamespace(is_set=lambda: case.store.state['ga']['generation'] >= 1)
+    with pytest.raises(TaskCancelled):
+        case.run(runtime=TaskRuntime(float('inf'), diagnostic_logging=True, cancel_event=cancel))
+    case.store.checkpoint()
+    case.store.state = case.store.load_state(case.store.db)
+    history = deepcopy(case.store.state['search_observability'])
+    assert history['summary']['mutation_attempts'] > 0 and history['details']
+    frozen = deepcopy(case.store.state['formal_search'])
+    previous_calls = [folder for folder, _, _ in case.calls]
+    case.search_config.update(config_for(dict(case.search_config,
+        diagnostic_logging=resume_logging, search_observability='off')))
+    case.store.state['config'] = case.search_config
+    result = case.run()
+    assert result['status'] == 'completed'
+    assert case.store.state['ga']['generation'] > 1
+    assert case.store.load_state(case.store.db)['search_observability'] == history
+    assert case.store.state['formal_search'] == frozen
+    all_calls = [folder for folder, _, _ in case.calls]
+    assert len(all_calls) == len(set(all_calls)) and all_calls[:len(previous_calls)] == previous_calls
+    baseline = memory_ga(formal=True, programs=[[['outbreak']]])
+    expected = baseline.run()
+    assert result['selected_candidate_key'] == expected['selected_candidate_key']
+    assert result['search_result'] == expected['search_result']
+    assert case.calls == baseline.calls
+
+
 def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_errors(monkeypatch,memory_ga):
     from copy import deepcopy
     import population_training
@@ -1047,7 +1088,7 @@ def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(monke
 
 @pytest.mark.real
 def test_public_failed_ga_exports_failed_timeline_and_compares_without_scoring(
-        tmp_path, capsys, monkeypatch, registered_six):
+        tmp_path, capsys, monkeypatch, memory_registered_six):
     from unittest.mock import patch
     import sequence
     import simulation_config
