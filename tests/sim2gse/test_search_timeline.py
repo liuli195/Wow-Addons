@@ -73,6 +73,29 @@ def test_offline_curves_never_start_tasks_or_backfill_future_and_split_targets(m
     assert failed[30]['dps'] is None and failed[30]['status'] == 'incomplete'
 
 
+def test_cancelled_retest_keeps_search_stop_time_but_exports_terminal_reason(monkeypatch):
+    import search_timeline
+    clock = [0.]
+    monkeypatch.setattr(search_timeline, 'monotonic', lambda: clock[0])
+    timeline = search_timeline.Timeline(origin=0.)
+    timeline.start()
+    clock[0] = 10.
+    timeline.stop('stagnation')
+    clock[0] = 12.
+    timeline.saved('cancelled')
+    clock[0] = 15.
+    writes = {}
+    with patch.object(Path, 'mkdir'), patch.object(Path, 'write_text',
+            lambda path, text, **kwargs: writes.setdefault(path.suffix, text)):
+        timeline.finish('/memory/cancelled-retest')
+    payload = json.loads(writes['.json'])
+    assert payload['status'] == payload['stop_reason'] == 'cancelled'
+    assert payload['search_stop_seconds'] == 10.
+    assert payload['result_saved_seconds'] == 12. and payload['call_seconds'] == 15.
+    stopped, = [event for event in payload['events'] if event['kind'] == 'search_stopped']
+    assert stopped == dict(seconds=10., kind='search_stopped', reason='stagnation')
+
+
 def test_task_records_distinct_ga_stages_with_independent_clock_and_bounded_events(
         monkeypatch, memory_ga, unchanged_offspring):
     import search_timeline

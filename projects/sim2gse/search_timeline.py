@@ -91,6 +91,8 @@ class Timeline:
             if status is not None:
                 self.status = status
             self.stop(self.status)
+            if self.status != 'completed':
+                self.stop_reason = self.status  # Retest/publication can stop after exploration ended.
             payload = dict(schema=SCHEMA, context=self.context, resumed=self.resumed,
                 time_origin='本次公开调用；包含准备及排队等待；不含上次运行',
                 status=self.status, stop_reason=self.stop_reason, events=self.events,
