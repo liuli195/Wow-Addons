@@ -61,3 +61,16 @@
 在同一已授权票02内返工；原断言、真实锁/报告/取消/版本更新/恢复全部保留，最终通过以修复后的Windows定向及完整43为准。
 
 返工实现只改test_formal_champion.py：两发布者在尚未持冠军锁前完成来源核验握手，再有序竞争原真实锁；原10秒界限不变，不替换_PUBLICATION_LOCK或msvcrt。单场准备写入UTF-8原始bytes，并检查实际原始输入副本与HTTP资料一致、取消冻结冠军键与已发布冠军一致。云端Windows换行敏感性红401字节/14CRLF失败、绿387字节/0CRLF通过；模块普通48通过，全普通357通过＋108子测试通过。两个真实节点仍因Linux缺msvcrt失败，未绕过；Windows成功尚待重验。证据`.local/tests/gse-family-memory-layering/repair/`，整批云端约7MB。
+
+
+## Windows修复重验与全仓新失败
+
+远端f4b40e19（云端6b5861f，同树3bc16e05）原两失败目标2通过、四模块82全部通过。随后完整43中42通过、1失败，工具55.2787422秒/墙钟55.547秒；GSE真实120通过、1失败＋21子测，检查45.58秒；普通357＋108及17守卫通过，无残留，精简产物147MB。未达完整验收，不用此失败轮宣称提速。
+
+新失败为范围外test_search.py::SearchAndValidationTests::test_native_global_failure_stops_task：期望TaskError但未抛。父层Windows单项诊断1次通过，8次CreateProcessW均有batches目录、8次命中exit9替换并产生NativeEvaluationError→TaskError；原全仓未记录注入命中，不能声称原轮机制已实证。同轮CrosshairHUD组虽通过但有cmd /c mklink /J的text=True输出解码线程警告；父层确认基线18bc也有相同byte b4/pos288，作为独立未决既有警告记录，不混修。
+
+只读复核定位本轮HTTP主路对sequence.evaluate的替换生命周期：测试使用共享monkeypatch，而champion_engine/page_task_engine用嵌套patch.object；外层monkeypatch最后撤销可能重新装回已经退出的夹具Mock。修复限原批准test_formal_champion.py的替换作用域；不改test_search断言、生产代码、故障注入或超时。原失败轮未采集调用身份的限制仍保留，必须用实际夹具退栈红绿与Windows串行组合重验确认。
+
+旧f4b40第二次完整运行仍42通过/1失败（同native_global_failure节点，gw1），工具54.0628614秒/墙钟54.313秒，GSE真实44.64秒；普通357＋108、17守卫通过，无缓存/残留。证据`.local/formal-ga-development/family-fixed-repeat-e57a19be68374b28bb75a2c6dd639338/`。原及复跑日志没有HTTP主路逐节点worker顺序，不能宣称已经观察到同worker因果。父层已停止旧版本重跑，本机本阶段累计精简产物263.68MB。
+
+云端实际fixture生命周期红绿已完成：直接组合page_task_boundary、champion_engine.__wrapped__生成器及pytest.MonkeyPatch，原顺序退栈残留MagicMock（原函数身份断言失败）；局部patch.object修复后完整退栈恢复原函数。持久测试在局部退出后也断言函数身份恢复。仅该HTTP测试+5/-4行，全部业务断言保留；同文件其余新real替换未发现同类混用。普通357＋108通过，直接pytest不是正式守卫。证据`.local/tests/gse-family-memory-layering/repair-isolation/`。

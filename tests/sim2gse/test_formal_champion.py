@@ -209,7 +209,7 @@ def test_each_scene_freezes_inherits_and_preserves_its_published_champion(monkey
 
 @pytest.mark.real
 def test_http_dual_publishes_both_scenes_and_complete_export_collection(tmp_path,
-        monkeypatch, memory_result_center, unchanged_champion_engine):
+        memory_result_center, unchanged_champion_engine):
     import burst
     import result_store
     import sequence
@@ -218,9 +218,10 @@ def test_http_dual_publishes_both_scenes_and_complete_export_collection(tmp_path
     burst.publish(definition)
     # 唯一完整HTTP双场主路：来源/复测规则由上面的真实内存组装+GA承接。
     evaluate = sequence.evaluate
-    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs:
-        evaluate(*args, score=100., **kwargs))
-    state = dual_result(tmp_path, raw, candidate_limit=10, validation_batches=2)
+    with patch.object(sequence, 'evaluate', side_effect=lambda *args, **kwargs:
+            evaluate(*args, score=100., **kwargs)):
+        state = dual_result(tmp_path, raw, candidate_limit=10, validation_batches=2)
+    assert sequence.evaluate is evaluate
     assert state['collection_ready']
     assert len(state['scenes']) == 2
     assert set(state['exports']) == {'single_target', 'aoe', 'burst'}
