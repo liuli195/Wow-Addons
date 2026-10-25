@@ -6,10 +6,26 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from unittest.mock import Mock
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
+def test_binary_write_requires_capability_before_calling_storage(monkeypatch):
+    import result_store
+
+    blocked_write = Mock()
+    monkeypatch.setattr(result_store, '_SKILL_API', {
+        'DATA_STORE_CAPABILITIES': (), 'write': blocked_write})
+    with pytest.raises(result_store.DataReadError) as error:
+        result_store.write('binary_measurements', 'blocked', [{'payload': bytes([0, 255])}],
+                           schema={'payload': 'BLOB'}, binary=True)
+    assert 'binary-write-v1' in str(error.value)
+    assert '更新技能' in str(error.value) and '重启' in str(error.value)
+    blocked_write.assert_not_called()
+
+
+@pytest.mark.real
 def test_connected_consumer_reads_writes_without_old_user_installation(tmp_path, installed_data_store):
     source = installed_data_store
     installed = tmp_path / "installed"
@@ -31,16 +47,6 @@ assert m['read_records']('measurements','one',columns=['score'],filters={'score'
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':8})==[]
 assert m['write']('binary_measurements','one',[{'score':8,'payload':bytes([0,255])}],schema={'score':'INTEGER','payload':'BLOB'},binary=True)==1
 assert m['read_records']('binary_measurements','one',columns=['payload'],filters={'score':8})==[{'payload':bytes([0,255])}]
-from unittest.mock import Mock,patch
-blocked_write=Mock()
-with patch.dict(m['_api'](),{'DATA_STORE_CAPABILITIES':(), 'write':blocked_write}):
-    try:
-        m['write']('binary_measurements','blocked',[{'payload':bytes([0,255])}],schema={'payload':'BLOB'},binary=True)
-    except m['DataReadError'] as error:
-        assert 'binary-write-v1' in str(error) and '更新技能' in str(error) and '重启' in str(error)
-    else:
-        raise AssertionError('missing capability must fail before writing')
-blocked_write.assert_not_called()
 print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM measurements',tables=['measurements']))))
 """
     result = subprocess.run([sys.executable, "-c", program, str(adapter)], env=env,
@@ -49,6 +55,7 @@ print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM m
     assert json.loads(result.stdout) == [{"score": 7, "part": 4}]
 
 
+@pytest.mark.real
 def test_unconnected_consumer_fails_before_writing_data(tmp_path):
     adapter = tmp_path / "projects/sim2gse/result_store.py"
     adapter.parent.mkdir(parents=True)
@@ -64,8 +71,29 @@ def test_unconnected_consumer_fails_before_writing_data(tmp_path):
 
 
 
+def test_page_classifies_chained_locator_permission_error_without_http(monkeypatch):
+    import interface
+    import result_store
+    import task
+
+    permission_error = PermissionError('fixture: locator access denied')
+    storage_error = result_store.DataReadError('report locator unavailable')
+    storage_error.__cause__ = permission_error
+    task_error = task.TaskError('read task failed')
+    task_error.__cause__ = storage_error
+    assert interface._is_storage_error(task_error)
+    assert interface._friendly_error(task_error) == (
+        '共享存储不可读取，请检查数据中心接入与读写权限后重试。')
+    # 与真实GET相同的read_task失败分支；只替换文件发现/读取I/O，不替换页面映射。
+    monkeypatch.setattr(Path, 'exists', lambda path: False)
+    monkeypatch.setattr(interface, 'read_task', Mock(side_effect=task_error))
+    state = interface.InterfaceHandler._read_public_state(None, Path('unused-task'), None)
+    assert state['phase'] == 'storage_unavailable'
+    assert state['storage_unavailable'] and state['recoverable']
+    assert '共享存储' in state['error']
 
 
+@pytest.mark.real
 def test_page_classifies_wrapped_storage_failure_from_the_real_target(tmp_path):
     import threading
     from urllib.request import urlopen
@@ -93,6 +121,7 @@ def test_page_classifies_wrapped_storage_failure_from_the_real_target(tmp_path):
         thread.join(2)
 
 
+@pytest.mark.real
 def test_known_batch_groups_and_legacy_single_do_not_fallback_on_missing_keys(tmp_path):
     import result_store
 
@@ -111,14 +140,12 @@ def test_known_batch_groups_and_legacy_single_do_not_fallback_on_missing_keys(tm
 
 
 @pytest.mark.parametrize('blocked_file', ['.report-publish.lock', '.report-locations.jsonl'])
+@pytest.mark.real
 def test_page_classifies_report_locator_permission_error_as_storage_failure(tmp_path, monkeypatch, blocked_file):
-    import threading
-    from urllib.request import urlopen
-    import interface
     import result_store
     import task
 
-    run_id, task_id = 'c' * 32, 'd' * 32
+    run_id = 'c' * 32
     saved = dict.fromkeys(result_store.RUN_SCHEMA)
     saved.update(run_id=run_id, status='offline_ready', phase='done', config={},
                  profile={}, identity={}, simulation_config={}, controlled_data_key='controlled')
@@ -127,11 +154,7 @@ def test_page_classifies_report_locator_permission_error_as_storage_failure(tmp_
         locations.reserve('controlled_g0', ['controlled'])
         result_store.write('batches', 'controlled_g0',
                            [{'batch_key': 'controlled', 'dps': 7., 'samples': 2}])
-    if blocked_file == '.report-publish.lock':
-        destination = tmp_path / 'task'
-    else:
-        server = interface.create_server(tmp_path / 'page', port=0)
-        _, destination = server.task_paths(task_id)
+    destination = tmp_path / 'task'
     destination.mkdir()
     (destination / 'result.json').write_text(json.dumps({'run_id': run_id}), encoding='utf-8')
     assert task.read_task(destination)['controlled_simulation']['summary'] == {'dps': 7., 'samples': 2}
@@ -143,32 +166,15 @@ def test_page_classifies_report_locator_permission_error_as_storage_failure(tmp_
         return open_file(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, 'open', denied)
-    if blocked_file == '.report-publish.lock':
-        with pytest.raises(task.TaskError) as error:
-            task.read_task(destination)
-        assert isinstance(error.value.__cause__, result_store.DataReadError)
-        assert isinstance(error.value.__cause__.__cause__, PermissionError)
-        return
-    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
-    thread.start()
-    try:
-        with urlopen(f'http://127.0.0.1:{server.server_port}/api/tasks/{task_id}') as response:
-            state = json.loads(response.read())
-        assert state['phase'] == 'storage_unavailable'
-        assert state['storage_unavailable'] and state['recoverable']
-        assert '共享存储' in state['error']
-        with pytest.raises(task.TaskError) as error:
-            task.read_task(destination)
-        assert isinstance(error.value.__cause__, result_store.DataReadError)
-        assert isinstance(error.value.__cause__.__cause__, PermissionError)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(2)
+    with pytest.raises(task.TaskError) as error:
+        task.read_task(destination)
+    assert isinstance(error.value.__cause__, result_store.DataReadError)
+    assert isinstance(error.value.__cause__.__cause__, PermissionError)
 
 
 @pytest.mark.parametrize('mode,fault', [('dual', 'api-version'), ('optimize', 'api-version'),
                                       ('dual', 'definition-file')])
+@pytest.mark.real
 def test_page_reports_storage_startup_failure_before_native_compute(tmp_path, installed_data_store,
                                                                    monkeypatch, mode, fault):
     import threading

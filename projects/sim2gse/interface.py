@@ -326,7 +326,7 @@ def _starting_state() -> dict:
         "status": "starting",
         "phase": "initialize",
         "elapsed_seconds": 0.0,
-        "total_budget_seconds": 600.0,
+        "total_budget_seconds": None,
         "progress": 0.0,
         "completed_batches": 0,
         "result_ready": False,
@@ -376,18 +376,22 @@ def _public_state(state: dict, destination: Path) -> dict:
     """把真实任务事件转为页面所需的少量状态；结果就绪前不读取候选文本。"""
     status = state.get("status", "starting")
     phase = state.get("phase", "initialize")
-    budget = float((state.get("config") or {}).get("total_budget_seconds", 600))
+    natural = bool(state.get("stop_policy") or (state.get("search") or {}).get("formal_search"))
+    budget = None if natural else float((state.get("config") or {}).get("total_budget_seconds", 600))
     elapsed = max(0.0, float(state.get("elapsed_seconds", 0)))
     response = {
         "status": status,
         "phase": "done" if phase in ("done", "complete") else phase,
         "elapsed_seconds": elapsed,
         "total_budget_seconds": budget,
-        "progress": min(1.0, elapsed / budget) if budget else 0.0,
+        "progress": (1.0 if status == "completed" else None) if natural else min(1.0, elapsed / budget) if budget else 0.0,
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
     search = state.get("search") or state
+    if natural:
+        from formal_search import STOP_POLICY
+        response.update(stop_policy=STOP_POLICY, generation=state.get("generation", search.get("rounds", 0)))
     metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
                     "canonicalized_duplicates")
     if all(search.get(name) is not None for name in metric_names):
@@ -418,7 +422,8 @@ def _public_state(state: dict, destination: Path) -> dict:
             if state.get('improvement') == 'search_result':
                 response['evidence_status'] = 'search_result'
                 response['search_result'] = state.get('search_result', {})
-                response['result_note'] = '已输出搜索选中的序列；未进行最终独立复测，游戏效果尚待验证。'
+                response['result_note'] = ('已完成正常场景独立复测并选出冠军；游戏效果尚待验证。' if natural
+                                           else '已输出搜索选中的序列；未进行最终独立复测，游戏效果尚待验证。')
                 return response
             if status == "validation_incomplete" and state.get("improvement") == "not_proven_better":
                 response["result_note"] = (

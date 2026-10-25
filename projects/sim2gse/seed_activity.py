@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import msvcrt
 from pathlib import Path
 import threading
 import time
@@ -36,6 +35,7 @@ def _open_lock(path):
 
 
 def _try_lock(path):
+    import msvcrt
     try:
         handle = _open_lock(path)
     except FileNotFoundError:
@@ -62,6 +62,7 @@ def _normal_search_active(directory):
 @contextmanager
 def foreground_search():
     """Register one foreground search without waiting for a training run."""
+    import msvcrt
     directory = _activity_directory()
     marker = directory / f'normal-{uuid.uuid4().hex}.lock'
     handle = _open_lock(marker)
@@ -88,6 +89,7 @@ def foreground_search():
 @contextmanager
 def training_activity(*, poll_seconds=0.05):
     """Reject an already-running search and stop this training when one starts."""
+    import msvcrt
     directory = _activity_directory()
     stopped = threading.Event()
     cancel = threading.Event()

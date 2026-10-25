@@ -12,7 +12,7 @@ import json
 import pytest
 from collections import Counter
 from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
@@ -24,30 +24,27 @@ from sequence import evaluate, select
 from test_character_export import sample_profile
 
 
-@pytest.mark.parametrize('enabled,outcome', [
-    (False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace')])
-def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeypatch, enabled, outcome):
+@pytest.mark.parametrize('enabled,outcome', [(False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace')])
+def test_evaluation_timing_preserves_report_and_trace_contract(monkeypatch, enabled, outcome):
     import runtime
     import sequence
     from test_search import _fast_report
 
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
+    source = Path('unused-role.simc')
     character = parse_character(sample_profile())
     candidate = dict(blocks=[[dict(kind='spell', spell_id=77575, name='Outbreak', simc_action='outbreak')]],
                      compiled_steps=[dict(type='spell', spell=77575)])
     report = _fast_report(character, 100.0, 1)
-    def native_exchange(profile, folder, *args, **kwargs):
-        (folder / 'native.pending.json').write_text(
-            json.dumps(report), encoding='utf-8')
-        trace = '\n'.join('S2GSE\t' + '\t'.join(map(str, [ms, event, 1, 0, action, 0, 0, 100,
+    trace = '\n'.join('S2GSE\t' + '\t'.join(map(str, [ms, event, 1, 0, action, 0, 0, 100,
             0, 1, signature, 0, -1, -1])) for ms, event, action, signature in [
                 (0, 'input', '-', '-'), (1, 'dispatch', 'outbreak', 'outbreak'),
                 (2, 'native_execute', 'outbreak', 'outbreak')])
-        (folder / 'native.txt').write_text(
-            'S2GSE\tinvalid' if outcome == 'invalid_trace' else trace, encoding='utf-8')
-        return 'S2GBLOCK\t0\t0\toutbreak\n'
-    monkeypatch.setattr(sequence, 'run', native_exchange)
+    monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, 'write_text', lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, 'read_text', Mock(
+        side_effect=[sample_profile(), json.dumps(report), 'S2GSE\tinvalid' if outcome == 'invalid_trace' else trace]))
+    monkeypatch.setattr(sequence, 'replace_file', lambda *args: None)
+    monkeypatch.setattr(sequence, 'run', lambda *args, **kwargs: 'S2GBLOCK\t0\t0\toutbreak\n')
     task_runtime = runtime.TaskRuntime(diagnostic_logging=enabled)
     clocks = []
     def performance_clock():
@@ -59,9 +56,9 @@ def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeyp
                      trace=outcome != 'without_trace', runtime=task_runtime)
     if outcome == 'invalid_trace':
         with pytest.raises(ValueError, match='原生来源轨迹字段数量不一致'):
-            evaluate(source, candidate, tmp_path / 'result', **arguments)
+            evaluate(source, candidate, Path('unused-result'), **arguments)
     else:
-        result = evaluate(source, candidate, tmp_path / 'result', **arguments)
+        result = evaluate(source, candidate, Path('unused-result'), **arguments)
         assert result['summary']['dps'] == 100.0
         assert result['report'] == report
         assert len(result['trace']) == (0 if outcome == 'without_trace' else 3)
@@ -93,15 +90,15 @@ class NativeTraceContractTests(unittest.TestCase):
         def candidate(count):
             return dict(blocks=[[command]] * count,
                         compiled_steps=[dict(type='spell', spell=77575)] * count)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'profile.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            character = parse_character(sample_profile())
+        root = Path('unused-trace')
+        source = root / 'profile.simc'
+        character = parse_character(sample_profile())
+        with patch.object(Path, 'mkdir'), patch.object(Path, 'read_text', return_value=sample_profile()), \
+                patch.object(Path, 'write_text', autospec=True) as write:
             for loop, burst in ((4096, 0), (4096, 4096)):
                 with self.subTest(loop=loop, burst=burst):
                     def boundary(profile, folder, *args, **kwargs):
-                        options = dict(line.split('=', 1) for line in profile.read_text().splitlines()
+                        options = dict(line.split('=', 1) for line in write.call_args.args[1].splitlines()
                                        if line.startswith('sim2gse_'))
                         self.assertEqual(len(options['sim2gse_steps'].split('/')), loop + burst)
                         if burst:
@@ -144,47 +141,54 @@ class NativeTraceContractTests(unittest.TestCase):
             (2, 'native_derived', 1, 'disease_effect', '', 0),
             (2000, 'input', 2, '-', '-', 1), (2001, 'dispatch', 2, 'death_coil', 'death_coil', 1),
             (2050, 'native_interrupt', 2, 'replacement_cast', 'death_coil', 1)]
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'input.simc'
-            source.write_text(raw, encoding='utf-8')
-            def native_exchange(profile, folder, *args, **kwargs):
-                (folder / 'native.pending.json').write_text(json.dumps(report), encoding='utf-8')
-                (folder / 'native.txt').write_text('\n'.join(
-                    'S2GSE\t' + '\t'.join(map(str, [ms, event, origin, 0, action, 0, 0, 100, 0,
-                                                    0, signature, 0, 0, member]))
-                    for ms, event, origin, action, signature, member in events), encoding='utf-8')
-                return 'S2GBLOCK\t0\t0\tdark_transformation\nS2GBLOCK\t0\t1\tdeath_coil\n'
-            with patch('sequence.run', side_effect=native_exchange):
-                result = evaluate(source, candidate, root / 'result', character=character,
-                                  iterations=2, input_times=[0, 2000])
-                original = list(events)
-                events[2] = (2, 'native_derived', 1, 'blightfall', '', 0)
-                events[6] = (2050, 'native_execute', 2, 'death_coil', 'death_coil', 1)
-                with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
-                    evaluate(source, candidate, root / 'derived', character=character,
-                             iterations=2, input_times=[0, 2000])
-                events[:] = original + [original[2]]
-                with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
-                    evaluate(source, candidate, root / 'duplicate', character=character,
-                             iterations=2, input_times=[0, 2000])
-                events[:] = original
-                events[2] = (2, 'native_execute', 1, 'blightfall', 'other_command', 0)
-                with self.assertRaisesRegex(ValueError, '不属于来源输入对应的编译块'):
-                    evaluate(source, candidate, root / 'wrong-signature', character=character,
-                             iterations=2, input_times=[0, 2000])
-                events[:] = original
-                events[2] = (2, 'native_execute', 1, 'dark_transformation', 'dark_transformation', 0)
-                events[6] = (2050, 'native_interrupt', 2, 'death_coil', 'death_coil', 1)
-                direct = evaluate(source, candidate, root / 'direct', character=character,
-                                  iterations=2, input_times=[0, 2000])
-                self.assertTrue(direct['consistent'])
+        root = Path('unused-exchange')
+        source = root / 'input.simc'
+        def native_exchange(profile, folder, *args, **kwargs):
+            return 'S2GBLOCK\t0\t0\tdark_transformation\nS2GBLOCK\t0\t1\tdeath_coil\n'
+        def read_native(path, **kwargs):
+            if path.name == 'input.simc':
+                return raw
+            if path.name == 'native.pending.json':
+                return json.dumps(report)
+            if path.name != 'native.txt':
+                raise AssertionError('unexpected read: ' + str(path))
+            return '\n'.join(
+                'S2GSE\t' + '\t'.join(map(str, [ms, event, origin, 0, action, 0, 0, 100, 0,
+                                                0, signature, 0, 0, member]))
+                for ms, event, origin, action, signature, member in events)
+        with patch('sequence.run', side_effect=native_exchange), patch.object(Path, 'mkdir'), \
+                patch.object(Path, 'write_text'), patch.object(Path, 'read_text', read_native), \
+                patch('sequence.replace_file'):
+            result = evaluate(source, candidate, root / 'result', character=character,
+                              iterations=2, input_times=[0, 2000])
+            original = list(events)
+            events[2] = (2, 'native_derived', 1, 'blightfall', '', 0)
+            events[6] = (2050, 'native_execute', 2, 'death_coil', 'death_coil', 1)
+            with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
+                evaluate(source, candidate, root / 'derived', character=character,
+                         iterations=2, input_times=[0, 2000])
+            events[:] = original + [original[2]]
+            with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
+                evaluate(source, candidate, root / 'duplicate', character=character,
+                         iterations=2, input_times=[0, 2000])
+            events[:] = original
+            events[2] = (2, 'native_execute', 1, 'blightfall', 'other_command', 0)
+            with self.assertRaisesRegex(ValueError, '不属于来源输入对应的编译块'):
+                evaluate(source, candidate, root / 'wrong-signature', character=character,
+                         iterations=2, input_times=[0, 2000])
+            events[:] = original
+            events[2] = (2, 'native_execute', 1, 'dark_transformation', 'dark_transformation', 0)
+            events[6] = (2050, 'native_interrupt', 2, 'death_coil', 'death_coil', 1)
+            direct = evaluate(source, candidate, root / 'direct', character=character,
+                              iterations=2, input_times=[0, 2000])
+            self.assertTrue(direct['consistent'])
         self.assertTrue(result['consistent'])
         self.assertEqual([(row['action'], row['signature']) for row in result['trace']
                           if row['event'] in {'native_execute', 'native_interrupt'}],
                          [('blightfall', 'dark_transformation'), ('replacement_cast', 'death_coil')])
 
 
+@pytest.mark.real
 class SequenceSimulationTests(unittest.TestCase):
     def test_native_queue_replacement_advances_castsequence_as_issued_member(self):
         from engine import training_template

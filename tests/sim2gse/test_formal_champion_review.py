@@ -5,12 +5,13 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 from test_burst import page_task_engine, reviewed_fixture
-from test_training_champion import champion_engine, dual_result
+from test_training_champion import unchanged_offspring, unchanged_champion_engine, champion_engine, dual_result
 from test_seed_training import memory_result_center
 
 
+@pytest.mark.real
 def test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_is_broken(
-        tmp_path, memory_result_center, champion_engine, subtests):
+        tmp_path, memory_result_center, unchanged_champion_engine, subtests):
     from contextlib import closing
     import shutil
     import burst
@@ -19,7 +20,7 @@ def test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    dual_result(tmp_path / 'original', raw, candidate_limit=1)
+    dual_result(tmp_path / 'original', raw)
     source = next((tmp_path / 'original' / 'page' / 'tasks').glob('*/single_target'))
     before = task.read_task(source)
     # The HTTP worker has joined and every TaskStore is closed; fold any committed WAL into the DB.

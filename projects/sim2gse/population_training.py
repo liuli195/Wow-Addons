@@ -10,7 +10,7 @@ import types
 import uuid
 
 from runtime import TaskRuntime, TaskCancelled
-from search import TaskStore, digest, optimize, mutate, _tuple, _validate_saved_batch
+from search import TaskStore, digest, optimize, mutate, _tuple, _validate_saved_batch, _observe_ga
 
 SCENARIOS = ('nominal', 'jitter', 'pause', 'slow', 'phase')
 ALGORITHM = 'ga-easimple-v1'
@@ -30,11 +30,11 @@ def _cross(left, right, rng):
     return True
 
 
-def _stage_plan(config, seed):
+def _stage_plan(config, seed, *, scenarios=SCENARIOS):
     # Independent deterministic streams, frozen before the first request.
     rng = random.Random(seed)
     seeds, used = [], set()
-    while len(seeds) < 2 + 5 * config['retest_batches']:
+    while len(seeds) < 2 + len(scenarios) * config['retest_batches']:
         value = rng.randrange(1, 1000000000)
         if not {value, value - 500000, value + 500000} & used:
             seeds.append(value)
@@ -42,18 +42,25 @@ def _stage_plan(config, seed):
     plan = dict(search=dict(iterations=config['coarse_iterations'], seeds=seeds[:1]),
                 feedback=dict(iterations=2, seeds=seeds[1:2]))
     offset = 2
-    for name in SCENARIOS:
+    for name in scenarios:
         plan[name] = dict(iterations=config['retest_iterations'],
                           seeds=seeds[offset:offset + config['retest_batches']])
         offset += config['retest_batches']
     return plan
 
 
-def _evolution(store, capabilities, runtime, config):
+def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     """The eaSimple replacement step and varAnd are group-local, including RNG."""
     from deap import algorithms, base
     from program import canonicalize_search_program, _search_expanded_nodes
     from codec import load_targeting, prepare_block, prepare_castsequence
+    from engine import CandidateScoreError
+    from search import _coarse_score_failure
+    policy = (store.state.get('formal_search') or {}).get('coarse_failure_policy')
+    if policy is not None:
+        from formal_search import COARSE_FAILURE_POLICY
+        if not isinstance(policy, dict) or type(policy.get('version')) is not int or policy != COARSE_FAILURE_POLICY:
+            raise ValueError('正式粗评候选容错政策不符，不能混接恢复')
     target_masks = load_targeting(runtime=runtime)['target_masks']
     class Fitness(base.Fitness):
         weights = (1.0,)
@@ -79,11 +86,30 @@ def _evolution(store, capabilities, runtime, config):
     def mate(left, right):
         if _cross(left, right, rng):
             left.crossed = right.crossed = True
+            observe_child(left.parent_program, left, dict(sampled_mutation='crossover', actual_mutation='crossover'))
+            observe_child(right.parent_program, right, dict(sampled_mutation='crossover', actual_mutation='crossover'))
         return left, right
     feedback_for = None
+    def observe_child(parent, child, details):
+        if not store.state.get('search_observability'):
+            return
+        try:
+            identity = canonicalize_search_program(child, capabilities)['identity']
+            reason = None
+        except (TypeError, ValueError, KeyError) as error:
+            identity, reason = None, str(error)
+        _observe_ga(store, 'mutation', parent_identity=canonicalize_search_program(parent, capabilities)['identity'],
+                    candidate_identity=identity, illegal_reason=reason, **details)
     def mutation(member):
         feedback_getter = None if member.crossed else lambda: feedback_for(member.parent_program)
-        member[:] = mutate(member, capabilities, rng, feedback_getter=feedback_getter)
+        details = {} if store.state.get('search_observability') else None
+        options = {'observation': details} if details is not None else {}
+        if store.state.get('formal_search'):
+            options['reset_flags'] = tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']
+                                                        if kind in ('target', 'combat', 'shift', 'ctrl', 'alt')))
+        member[:] = mutate(member, capabilities, rng, feedback_getter=feedback_getter, **options)
+        if details is not None:
+            observe_child(member.parent_program, member, details)
         return member,
     toolbox.register('clone', clone)
     toolbox.register('mate', mate)
@@ -111,10 +137,13 @@ def _evolution(store, capabilities, runtime, config):
                     else:
                         prepare_block(commands, target_masks)
             return canonical['identity']
-        def scores(programs, stage='search', index=0, *, record_timeline=True):
+        def scores(programs, stage='search', index=0, *, record_timeline=True, allow_rejections=False):
             unique = {}
             for program in programs:
                 unique.setdefault(key(program), program)
+            if store.diagnostic_logging:
+                counters = getattr(store, 'counter_target', store.state)
+                counters['canonicalized_duplicates'] = counters.get('canonicalized_duplicates', 0) + len(programs) - len(unique)
             results = {}
             items = list(unique.items())
             # Bounded scheduling windows also bound nondurable report memory to 12.
@@ -128,6 +157,7 @@ def _evolution(store, capabilities, runtime, config):
                     futures = [(identity, pool.submit(evaluate, program, stage, index))
                                for identity, program in window]
                     error = None
+                    rejected = False
                     for identity, future in futures:
                         try:
                             results[identity] = future.result()
@@ -135,9 +165,22 @@ def _evolution(store, capabilities, runtime, config):
                                 row = results[identity]
                                 timeline.score(dict(key=identity, score=row['dps'], batches=[row]),
                                                stage, 'training')
+                        except CandidateScoreError as failure:
+                            proof = (_coarse_score_failure(store.state, identity)
+                                     if policy and allow_rejections and stage == 'search' else None)
+                            if proof is None:
+                                error = error or failure
+                            else:
+                                results[identity] = None
+                                rejected = True
+                                rejections = ga.setdefault('coarse_rejections', {})
+                                if identity not in rejections:
+                                    rejections[identity] = dict(proof, generation=ga['generation'], phase=ga['phase'])
+                                    store.state.setdefault('errors', []).append(dict(kind='coarse_invalid_score',
+                                        candidate_key=identity, **rejections[identity]))
                         except BaseException as failure:
                             error = error or failure
-                    if len(store.report_buffer) >= 12:
+                    if rejected or len(store.report_buffer) >= 12:
                         store.checkpoint()
                     if error is not None:
                         raise error
@@ -162,13 +205,20 @@ def _evolution(store, capabilities, runtime, config):
         if any(fitness.get(row['key']) != row['score'] for row in ga['population']):
             raise ValueError('恢复种群粗分与成功凭据不符；已暂停，旧四条保持不变')
         if ga['phase'] == 'initial':
-            rows = scores(store.state['starts'])
+            rows = scores(store.state['starts'], allow_rejections=bool(policy))
             ga['population'] = [dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps'])
-                                for program, row in zip(store.state['starts'], rows)]
+                                for program, row in zip(store.state['starts'], rows) if row is not None]
+            if not ga['population']:
+                raise ValueError('没有可靠的正式粗评候选；全部候选评分无效')
+            if policy:
+                ga['effective_population_size'] = len(ga['population'])
             ga.update(phase='breed', baseline=baseline())
             store.checkpoint()
         while ga['phase'] == 'breed':
             runtime.check()
+            if policy and (type(ga.get('effective_population_size')) is not int
+                    or ga['effective_population_size'] != len(ga['population']) or not ga['population']):
+                raise ValueError('正式有效种群大小与已冻结检查点不符')
             population = [individual(row) for row in ga['population']]
             pending = ga.get('pending')
             if pending is None:
@@ -195,22 +245,36 @@ def _evolution(store, capabilities, runtime, config):
                     pending['regenerations'][slot] += 1
                     pending['rng'] = rng.getstate()
                     store.checkpoint()
-            rows = scores(pending['programs'])
+            if policy and len(pending['programs']) != ga['effective_population_size']:
+                raise ValueError('正式子代槽数量与已冻结种群不符')
+            rows = scores(pending['programs'], allow_rejections=bool(policy))
+            members, fallbacks = [], {}
+            for slot, (program, row) in enumerate(zip(pending['programs'], rows)):
+                if row is None:
+                    previous = deepcopy(ga['population'][slot])
+                    members.append(previous)
+                    fallbacks[str(slot)] = dict(rejected_key=key(program), retained_key=previous['key'])
+                else:
+                    members.append(dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps']))
             current = baseline()
             improved = len(current) > len(ga['baseline']) or any(
                 value > old for value, old in zip(current, ga['baseline']))
-            ga.update(population=[dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps'])
-                                  for program, row in zip(pending['programs'], rows)],
+            ga.update(population=members,
                 generation=ga['generation'] + 1, rng=pending['rng'], pending=None,
                 baseline=current, stagnant=0 if improved else ga['stagnant'] + 1)
+            if policy:
+                ga['last_fallbacks'] = fallbacks
             if ga['stagnant'] >= config['stagnation_generations']:
                 ga.update(phase='retest', finalists=[row['key'] for row in ranking()])
+                if timeline is not None and store.state.get('formal_search'):
+                    timeline.stop('stagnation')
+                    timeline.mark('normal_retest_started')
             store.checkpoint()
         archive = {row['key']: row for row in store.state['archive']}
         if ga['phase'] == 'retest':
             finalists = ga['finalists']
             programs = [archive[identity]['program'] for identity in finalists]
-            for scenario in SCENARIOS:
+            for scenario in scenarios:
                 for index in range(config['retest_batches']):
                     runtime.check()
                     rows = scores(programs, scenario, index)
@@ -219,6 +283,8 @@ def _evolution(store, capabilities, runtime, config):
                     # Receipts live in the bounded finalist state; reports flush at 12 or phase/cancel.
             ga['phase'] = 'qualified'
             store.checkpoint()
+            if timeline is not None and store.state.get('formal_search'):
+                timeline.mark('normal_retest_completed')
         return ga
     return execute
 
@@ -404,29 +470,26 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
                 timeline.finish(folder)
 
 
-def _selected(ga, store, manifest, character, ready, configuration_key):
+def _retest_scores(ga, store, *, condition, stage_plan, config, character, simulation_config,
+                   scenarios=SCENARIOS):
     from result_store import DATA_ROOT, read_many, report_locations
-    from seed_training import SELECTED_V2_SCHEMA
-    from program import canonicalize_search_program
-    archive = {row['key']: row for row in store.state['archive']}
-    condition = digest(manifest)
     receipts = {}
     qualified = []
     for identity in ga['finalists']:
-        scenarios = {}
-        for scenario in SCENARIOS:
+        results = {}
+        for scenario in scenarios:
             batches = [ga['finals'][identity][scenario][str(index)]
-                       for index in range(manifest['training_config']['retest_batches'])]
+                       for index in range(config['retest_batches'])]
             for index, row in enumerate(batches):
                 cached = store.batch(row['batch_key'])
                 if not cached or cached.get('status') != 'success':
                     raise ValueError('发布缺少可靠复测批次')
                 request = cached['request']
-                expected_seed = manifest['stage_plan'][scenario]['seeds'][index]
+                expected_seed = stage_plan[scenario]['seeds'][index]
                 if (digest(request) != row['batch_key'] or request['condition'] != condition
                         or request['behavior_identity'] != identity or request['purpose'] != scenario
                         or request['seed'] != expected_seed
-                        or request['iterations'] != manifest['training_config']['retest_iterations']
+                        or request['iterations'] != config['retest_iterations']
                         or any(row[field] != cached[field] for field in ('dps', 'samples'))
                         or row['candidate_key'] != identity):
                     raise ValueError('发布复测凭据与冻结候选/条件/成绩不符')
@@ -434,14 +497,14 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
                     raise ValueError('发布复测凭据重复；旧四条保持不变')
                 receipts[row['batch_key']] = (cached, index, scenario)
             samples = sum(row['samples'] for row in batches)
-            scenarios[scenario] = dict(dps=sum(row['dps'] * row['samples'] for row in batches) / samples,
+            results[scenario] = dict(dps=sum(row['dps'] * row['samples'] for row in batches) / samples,
                                        samples=samples, batches=batches)
-        nominal = scenarios['nominal']['dps']
-        if nominal <= 0:
+        nominal = results['nominal']['dps']
+        if len(scenarios) > 1 and nominal <= 0:
             ga.setdefault('ineligible', {})[identity] = '正常复测均分≤0，无法定义相对损失'
             continue
-        loss = max((nominal - scenarios[name]['dps']) / nominal for name in SCENARIOS[1:])
-        qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=scenarios))
+        loss = max(((nominal - results[name]['dps']) / nominal for name in scenarios[1:]), default=0.)
+        qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=results))
     missing_locations = [key for key, (cached, _, _) in receipts.items()
                          if not cached.get('storage_group_key')]
     locations = (report_locations(missing_locations)
@@ -464,11 +527,22 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             found.add(key)
             cached, index, scenario = targets[key]
             _validate_saved_batch(saved, key, cached, character, index, scenario,
-                                  ready['simulation_config'])
+                                  simulation_config)
         if found != targets.keys():
             raise ValueError('发布缺少完整复测报告；旧四条保持不变')
         # Only small receipts survive the group; do not retain the last full report.
         del saved_rows, saved
+    return qualified
+
+
+def _selected(ga, store, manifest, character, ready, configuration_key):
+    from seed_training import SELECTED_V2_SCHEMA
+    from program import canonicalize_search_program
+    archive = {row['key']: row for row in store.state['archive']}
+    condition = digest(manifest)
+    qualified = _retest_scores(ga, store, condition=condition,
+        stage_plan=manifest['stage_plan'], config=manifest['training_config'], character=character,
+        simulation_config=ready['simulation_config'])
     if len(qualified) < 4:
         reasons = '; '.join(identity[:12] + ': ' + reason for identity, reason in ga.get('ineligible', {}).items())
         raise ValueError('五场景完整复测后合格不同行为不足四条；旧四条保持不变' + ('; ' + reasons if reasons else ''))

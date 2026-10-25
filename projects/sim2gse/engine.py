@@ -17,6 +17,10 @@ class CandidateError(ValueError):
     """单个合法候选没有有效伤害或单批超时；不代表原生兼容性正常。"""
 
 
+class CandidateScoreError(CandidateError):
+    """已明确核对的候选评分数据无效；不包含进程、身份或存储故障。"""
+
+
 ROOT = Path(__file__).resolve().parents[2]
 # 可接受的原生报告构建号。历史报告在其对应版本上依然有效，客户端升级时追加新编号，
 # 不删除旧编号；清单之外的版本仍照旧拒绝。
@@ -184,8 +188,8 @@ def native_button_definition(row):
         and (row['data_id'] > 0 or row['harmful'] or name in ('auto_attack', 'use_item')))
 
 
-def inspect(reference, folder):
-    """完整战斗 APL 决定搜索范围，已执行目录保留原有起点。"""
+def inspect(reference, folder=None):
+    """完整战斗 APL 决定搜索范围；未指定目录时只返回结果，不写目录快照。"""
     if reference.get('actions_protocol') != 1:
         raise ValueError('基准没有返回完整的原生动作标记，请重新构建')
     if reference.get('apl_actions_protocol') != 1 or not isinstance(reference.get('apl_actions'), list):
@@ -327,8 +331,9 @@ def inspect(reference, folder):
                   import_actions=import_actions,
                   unavailable_actions=reference.get('unavailable_actions', []),
                   scope='default_apl_player_actions', coverage='combat_apl_buttons_with_baseline_forms')
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / 'catalogue.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+    if folder is not None:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'catalogue.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     if unsupported:
         raise ValueError('主动能力不完整，停止模拟与导出: ' + '; '.join(unsupported))
     if not any(a['kind'] != 'start_attack' for a in actions.values()):
@@ -389,7 +394,14 @@ def check_report(report, character, iterations, *, simulation_config=None, allow
     mean, count = damage['mean'], damage['count']
     if data['fight_length']['mean'] != 180:
         raise ValueError('原生参考数值或实际样本数无效')
-    if not math.isfinite(mean) or mean < 0 or (mean == 0 and not allow_zero) or count != max(1, iterations - 1):
+    # Sample count is an original-request receipt, not a candidate fitness failure.
+    if type(count) is not int or count != max(1, iterations - 1):
+        raise NativeEvaluationError('原生参考数值或实际样本数无效')
+    if type(mean) not in (int, float):
+        raise NativeEvaluationError('原生参考数值或实际样本数无效')
+    if not math.isfinite(mean) or mean < 0:
+        raise CandidateScoreError('原生参考数值或实际样本数无效')
+    if mean == 0 and not allow_zero:
         raise NativeEvaluationError('原生参考数值或实际样本数无效')
     return dict(dps=mean, metric=metric, personal_dps=data['dps']['mean'], samples=count, seconds=180, metadata_only=metadata_only, notices=report.get('logs', []),
                 identity=dict(class_id=player['sim2gse_class_id'], spec_id=player['sim2gse_spec_id'],

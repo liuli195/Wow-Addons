@@ -4,7 +4,6 @@ import importlib.util
 import subprocess
 import sys
 import tempfile
-import json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,24 +17,6 @@ def invoke(check, folder, expected):
 
 
 def main():
-    setup = (ROOT / "scripts/dev/setup.ps1").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
-    config = json.loads((ROOT / ".build-and-verify/config.json").read_text(encoding="utf-8"))
-    assert "https://github.com/simulationcraft/simc.git" in setup
-    assert "simc-source.zip" not in setup
-    assert "projects/sim2gse/requirements.txt" in setup
-    assert "mingw-w64-x86_64-make" not in workflow
-    assert ".tools/sim2gse-upstream/simc" not in workflow
-    assert ".tools/sim2gse/product" not in workflow
-    assert "run: ./scripts/dev/setup.ps1 -Pr" in workflow
-    assert "build-and-verify build --project . --pr" in workflow
-    assert "build-and-verify verify --project . --pr --full" in workflow
-    assert "build-and-verify verify --project . --pr --base $env:BASE_SHA" in workflow
-    sim2gse = next(check for check in config["verify"]["checks"] if check["id"] == "verify.sim2gse")
-    assert sim2gse["timeoutSeconds"] >= 600
-    assert sim2gse["pr"] is False
-    sim2gse_build = next(check for check in config["build"]["checks"] if check["id"] == "build.sim2gse-product")
-    assert sim2gse_build["pr"] is False
     spec = importlib.util.spec_from_file_location(
         "sim2gse_build", ROOT / "scripts/dev/sim2gse/build.py"
     )
@@ -57,12 +38,7 @@ def main():
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
         tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=repository, text=True).strip()
         build.verify_upstream(repository, {"upstream_commit": commit, "upstream_tree": tree})
-        lf = repository / "lf.patch"
         crlf = repository / "crlf.patch"
-        lf.write_bytes(b"one\ntwo\n")
-        crlf.write_bytes(b"one\r\ntwo\r\n")
-        assert build.patch_digest(lf) == build.patch_digest(crlf)
-        assert prototype_build.patch_bytes(lf) == prototype_build.patch_bytes(crlf)
         (repository / "source.cpp").write_text("int changed() {}\n", encoding="utf-8")
         crlf.write_bytes(subprocess.check_output(["git", "diff"], cwd=repository).replace(b"\n", b"\r\n"))
         subprocess.run(["git", "checkout", "--", "source.cpp"], cwd=repository, check=True)

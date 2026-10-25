@@ -4,6 +4,7 @@ from pathlib import Path
 import base64
 import sys
 import tempfile
+import pytest
 import unittest
 import zlib
 from unittest.mock import patch
@@ -62,8 +63,8 @@ class ProgramTests(unittest.TestCase):
                         Versions=[dict(Actions=[{"Type": "Pause", "MS": "GCD"}])])
         raw = cbor2.dumps(wire_value(["MISMATCH", sequence]))
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "点击间隔.*一致"):
-            compile_program(from_gse_import(text, "MISMATCH", 1), Path(directory),
+        with self.assertRaisesRegex(ValueError, "点击间隔.*一致"):
+            compile_program(from_gse_import(text, "MISMATCH", 1), Path("unused-output"),
                             identity=dict(class_id=6, spec_id=252), capabilities=dict(actions=[]),
                             context=dict(click_ms=300, input_interval_ms=400,
                                          gcd_ms=1500, seed=1))
@@ -75,10 +76,9 @@ class ProgramTests(unittest.TestCase):
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
         capabilities = dict(actions=[dict(kind="spell", spell_id=77575, name="Outbreak",
                                           simc_action="outbreak")])
-        with tempfile.TemporaryDirectory() as directory, \
-             patch("gse_import.run_command") as run_upstream, \
+        with patch("gse_import.run_command") as run_upstream, \
              self.assertRaisesRegex(ValueError, "3333.*3332.*不能模拟"):
-            compile_program(from_gse_import(text, "FUTURE", 1), Path(directory),
+            compile_program(from_gse_import(text, "FUTURE", 1), Path("unused-output"),
                             identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
                             context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
         run_upstream.assert_not_called()
@@ -99,9 +99,9 @@ class ProgramTests(unittest.TestCase):
             raw = cbor2.dumps(wire_value(payload))
             text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
             name = "MISSING" if isinstance(payload, list) else "A"
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory, \
+            with self.subTest(name=name), \
                  self.assertRaisesRegex(ValueError, message):
-                compile_program(from_gse_import(text, name, 1), Path(directory),
+                compile_program(from_gse_import(text, name, 1), Path("unused-output"),
                                 identity=dict(class_id=6, spec_id=252), capabilities=dict(actions=[]),
                                 context=dict(click_ms=300, input_interval_ms=300,
                                              gcd_ms=1500, seed=1))
@@ -112,15 +112,15 @@ class ProgramTests(unittest.TestCase):
                                                 1: {"Type": "Pause", "Clicks": 3000}}])])
         raw = cbor2.dumps(wire_value(["TOO_MANY", sequence]))
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
-        with tempfile.TemporaryDirectory() as directory, \
-             patch("gse_import.run_command") as run_upstream, \
+        with patch("gse_import.run_command") as run_upstream, \
              self.assertRaisesRegex(ValueError, "展开.*4096"):
-            compile_program(from_gse_import(text, "TOO_MANY", 1), Path(directory),
+            compile_program(from_gse_import(text, "TOO_MANY", 1), Path("unused-output"),
                             identity=dict(class_id=6, spec_id=252), capabilities=dict(actions=[]),
                             context=dict(click_ms=300, input_interval_ms=300,
                                          gcd_ms=1500, seed=1))
         run_upstream.assert_not_called()
 
+    @pytest.mark.real
     def test_random_loop_repeat_maps_actual_upstream_order_across_seeds(self):
         actions = [
             dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak"),
@@ -160,6 +160,7 @@ class ProgramTests(unittest.TestCase):
                     self.assertEqual(click["commands"], [by_path[step["source_path"]]])
         self.assertGreater(len(observed_orders), 1)
 
+    @pytest.mark.real
     def test_upstream_compiles_six_control_blocks_in_one_collection(self):
         def sequence(actions):
             return dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
@@ -268,9 +269,9 @@ class ProgramTests(unittest.TestCase):
         text = "!GSE3!" + base64.b64encode(zlib.compress(raw, wbits=-15)).decode("ascii")
         capabilities = dict(actions=[dict(kind="spell", spell_id=43265, name="Death and Decay",
                                           simc_action="death_and_decay")])
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+        with self.assertRaisesRegex(
                 ValueError, r"/petattack.*Sequences\[MACRO\]\.Versions\[1\]\.Actions\[1\]"):
-            compile_program(from_gse_import(text, "MACRO", 1), Path(directory),
+            compile_program(from_gse_import(text, "MACRO", 1), Path("unused-output"),
                             identity=dict(class_id=6, spec_id=252), capabilities=capabilities,
                             context=dict(click_ms=300, input_interval_ms=300, gcd_ms=1500, seed=1))
 
@@ -282,6 +283,7 @@ class ProgramTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "item 250245.*不能映射"):
             map_action("item", "250245", ambiguous, "ITEM_ID v1 1")
 
+    @pytest.mark.real
     def test_search_program_keeps_export_and_compiled_order(self):
         blocks = [[dict(kind="spell", spell_id=77575, name="Outbreak", simc_action="outbreak")]]
         identity = dict(class_id=6, spec_id=252)
@@ -302,10 +304,9 @@ class ProgramTests(unittest.TestCase):
 
 
     def test_overlong_compiled_macro_rejected_before_lua(self):
+        from codec import prepare_block
         command = dict(kind='spell', spell_id=63560, name='dark_transformation',
                        simc_action='dark_transformation')
-        with tempfile.TemporaryDirectory() as directory, patch('codec.run_command') as compiler:
-            with self.assertRaisesRegex(ValueError, '255'):
-                export([[command] * 16], Path(directory) / 'export',
-                       identity=dict(class_id=6, spec_id=252))
+        with patch('codec.run_command') as compiler, self.assertRaisesRegex(ValueError, '255'):
+            prepare_block([command] * 16, {})
         compiler.assert_not_called()

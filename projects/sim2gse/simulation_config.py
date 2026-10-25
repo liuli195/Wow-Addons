@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import tomllib
+from typing import BinaryIO, TextIO
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,11 +38,14 @@ def config_for(values: dict | None = None) -> dict:
 
 
 def _load_document(path=None):
-    path = DEFAULT_PATH if path is None else Path(path)
-    if not path.exists():
-        return {}
+    stream = path if hasattr(path, 'read') else None
+    if stream is None:
+        path = DEFAULT_PATH if path is None else Path(path)
+        if not path.exists():
+            return {}
     try:
-        document = tomllib.loads(path.read_bytes().decode("utf-8"))
+        content = stream.read() if stream is not None else path.read_bytes()
+        document = tomllib.loads(content.decode("utf-8") if isinstance(content, bytes) else content)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"本地模拟配置无效: {path}: {error}") from error
     if not isinstance(document, dict):
@@ -52,7 +56,7 @@ def _load_document(path=None):
     return document
 
 
-def load_config(path: str | Path | None = None) -> dict:
+def load_config(path: str | Path | BinaryIO | TextIO | None = None) -> dict:
     """读取模拟区域；独立训练区域不改变普通模拟。"""
     section = _load_document(path).get("simulation", {})
     if not isinstance(section, dict):
@@ -65,7 +69,7 @@ TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
 
 
-def load_training_config(path: str | Path | None = None, *, max_processes=None, max_trainings=None) -> dict:
+def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None) -> dict:
     """启动读取的GA白名单；普通搜索的资源和采样上限不变。"""
     import math
     section = _load_document(path).get("training", {})
@@ -91,12 +95,18 @@ def load_training_config(path: str | Path | None = None, *, max_processes=None, 
 
 
 REMOVED_SEARCH_SETTINGS = ('rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy')
+RETIRED_SEARCH_SETTINGS = ('total_budget_seconds', 'search_budget_seconds', 'candidate_limit',
+    'round_candidate_limit', 'no_improvement_rounds', 'batch_targets', 'validation_batches',
+    'final_batches', 'final_iterations', 'trace_search', 'scenarios')
 
 
 def reject_removed_search_settings(values):
     removed = set(REMOVED_SEARCH_SETTINGS) & set(values)
     if removed:
         raise ValueError('搜索能力及开关已移除，请删除旧配置: ' + ', '.join(sorted(removed)))
+    retired = set(RETIRED_SEARCH_SETTINGS) & set(values)
+    if retired:
+        raise ValueError('旧正式搜索参数已退役，请删除旧配置: ' + ', '.join(sorted(retired)))
 
 
 def load_search_config(path=None, **overrides):

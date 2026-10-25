@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import unittest
+
+import pytest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -32,6 +34,18 @@ from wowtestlib import core  # noqa: E402  只借它的锁定数据与完整性�
 
 
 ACTUAL = OUTPUT_DIR / "dk-actual.json"
+
+
+@pytest.fixture(autouse=True)
+def worker_report_directory(request):
+    if request.node.get_closest_marker("real") is None:
+        return
+    factory = request.getfixturevalue("tmp_path_factory")
+    output = factory.getbasetemp() / "wow-addon-test"
+    output.mkdir(exist_ok=True)
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    monkeypatch.setattr(sys.modules[__name__], "OUTPUT_DIR", output)
+    monkeypatch.setattr(sys.modules[__name__], "ACTUAL", output / "dk-actual.json")
 
 
 def run_tool(output_name):
@@ -70,6 +84,7 @@ def normal_run():
     return result, report, actual
 
 
+@pytest.mark.real
 class DeathKnightComparisonTest(unittest.TestCase):
     def test_report_loaded_real_production_files(self):
         result, data, _ = normal_run()
@@ -150,9 +165,57 @@ class DeathKnightComparisonTest(unittest.TestCase):
         self.assertEqual(errors, [], f"存在执行错误：{errors[:3]}")
 
 
+def projection_examples():
+    """独立字面量规则样例，不是生产报告，也不替代 real 的锁定全量对照。
+
+    设计稿的半条生命/符能角度分别为 -239/-661 度，满条为 -291/-609 度。
+    这里固定其弧度字面量，不调用生产曲线或被测投影生成期待。
+    两个已批准策略各保留变化前后两步，符文含一个充能格及五个就绪格。
+    """
+    half = {"has_health": True, "health_angle": -4.171336912266447,
+            "has_power": True, "power_angle": -11.536626355682519,
+            "power_type": 6, "runes": [
+                {"index": 1, "state": "recharging", "frac": 0.5},
+                {"index": 2, "state": "ready", "frac": 1.0},
+                {"index": 3, "state": "ready", "frac": 1.0},
+                {"index": 4, "state": "ready", "frac": 1.0},
+                {"index": 5, "state": "ready", "frac": 1.0},
+                {"index": 6, "state": "ready", "frac": 1.0}]}
+    reference = {"health": {"value": 50, "maximum": 100},
+                 "primary": {"value": 50, "maximum": 100, "type": 6},
+                 "resource": {"kind": "runes", "nodes": [
+                     {"state": "cooldown", "start": 0, "duration": 10},
+                     {"state": "ready"}, {"state": "ready"}, {"state": "ready"},
+                     {"state": "ready"}, {"state": "ready"}]}}
+    state = {"time": 5, "health": {"current": 50, "maximum": 100},
+             "primary": {"type": 6}, "powers": {
+                 "6": {"current": 50, "maximum": 100},
+                 "3": {"current": 100, "maximum": 100}}}
+    cases, baseline, observations = [], [], []
+    for suffix in ("disconnect-reconnect", "primary-type-roundtrip", "runes-depleted-1", "primary-full"):
+        cid = "spec-250." + suffix
+        cases.append({"id": cid, "spec_id": 250, "steps": [
+            {"state": copy.deepcopy(state)}, {"state": copy.deepcopy(state)}]})
+        baseline.append({"id": cid, "snapshots": [copy.deepcopy(reference), copy.deepcopy(reference)]})
+        observations.append({"id": cid, "snapshots": [
+            {"observed": copy.deepcopy(half)}, {"observed": copy.deepcopy(half)}]})
+    # 断线的原生参考是满条，产品批准继续读输入的半条。
+    baseline[0]["snapshots"][1]["health"]["value"] = 100
+    baseline[0]["snapshots"][1]["primary"]["value"] = 100
+    # 原生跟随类型3，产品批准固定读取类型6。
+    cases[1]["steps"][1]["state"]["primary"]["type"] = 3
+    baseline[1]["snapshots"][1]["primary"] = {"value": 100, "maximum": 100, "type": 3}
+    for snapshot in baseline[3]["snapshots"]:
+        snapshot["primary"]["value"] = 100
+    for snapshot in observations[3]["snapshots"]:
+        snapshot["observed"]["power_angle"] = -10.629055144645466
+    return cases, baseline, observations
+
+
 class LockedDataCheckTest(unittest.TestCase):
     """逐条核对与失败路径：不只看总数，也不允许"缺读数"被当成通过。"""
 
+    @pytest.mark.real
     def test_every_locked_case_and_checkpoint_is_accounted_for(self):
         _, _, observed = normal_run()
         dk_cases, _ = locked_data()
@@ -164,6 +227,7 @@ class LockedDataCheckTest(unittest.TestCase):
                       if actual[cid] != steps}
         self.assertEqual(mismatched, {}, f"检查点数与锁定数据不一致：{list(mismatched)[:3]}")
 
+    @pytest.mark.real
     def test_empty_selection_is_not_a_pass(self):
         result = subprocess.run(
             [sys.executable, str(ENTRY), "run", "--config", str(CONFIG),
@@ -175,9 +239,7 @@ class LockedDataCheckTest(unittest.TestCase):
 
     def test_unreadable_reading_is_not_a_silent_pass(self):
         """缺读数必须被显式判为无效，不得补默认值后通过。"""
-        _, _, actual = normal_run()
-        dk_cases, dk_ref = locked_data()
-        observed = copy.deepcopy(actual)
+        dk_cases, dk_ref, observed = projection_examples()
         for record in observed:
             record["snapshots"] = [dict(s, observed=dict(s["observed"], has_health=False))
                                    for s in record["snapshots"]]
@@ -206,8 +268,7 @@ class KnownDifferenceScopeTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        _, _, cls.observations = normal_run()
-        cls.cases, cls.baseline = locked_data()
+        cls.cases, cls.baseline, cls.observations = projection_examples()
 
     def _judge(self, observations=None, cases=None):
         import wowtest_projection as projection
@@ -218,6 +279,13 @@ class KnownDifferenceScopeTest(unittest.TestCase):
 
     def _copy(self):
         return copy.deepcopy(self.observations)
+
+    def test_literal_examples_start_with_no_unregistered_differences(self):
+        """反面注入之前先证明固定样例通过，避免由无关的初始错误满足断言。"""
+        judged = self._judge()
+        self.assertEqual(judged["status"], "pass")
+        self.assertEqual(judged["totals"], {"cases": 4, "pass": 2, "known_difference": 2,
+                                         "difference": 0, "error": 0, "errors": 0, "checkpoints": 8})
 
     def test_every_known_difference_names_its_field_and_approved_value(self):
         """通过了的登记差异，必须能说出「哪个字段」和「批准它是什么值」。"""
@@ -373,6 +441,7 @@ class KnownDifferenceScopeTest(unittest.TestCase):
         self.assertTrue(offenders, f"{untouched['id']} 未登记却被放行")
 
 
+@pytest.mark.real
 class DefectDetectionTest(unittest.TestCase):
     """定向缺陷注入：证明这套比较真的能抓到错误，而不是橡皮图章。
 

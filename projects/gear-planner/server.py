@@ -30,8 +30,6 @@ SLOTS = [('head','头部'),('neck','颈部'),('shoulder','肩部'),('back','背�
 SLOT_KEYS = {s for s,_ in SLOTS} | {'shirt','tabard'}
 ALIASES = {'shoulders':'shoulder','wrists':'wrist'}
 FIELDS = {'id','bonus_id','ilevel','enchant_id','gem_id','gem_bonus_id','crafted_stats','crafting_quality','content_tuning','redirected_base_stats','drop_level'}
-ITEMS = {x['id']:x for x in json.loads((DATA/'equippable-items.json').read_text())}
-BONUSES = json.loads((DATA/'bonuses.json').read_text())
 NAMES = dict(zip([251229,266314,271472,272226,273787,237834,155970,159418,271473,273777,273792,159459,250245,250228,237846,240949,158366],['掠食者面甲','新手争斗者的项链','灾厄墓骑绞架肩铠','雾猎者罩衫','陈旧的交织鳞甲','破法者的护腕','孤立护手','致命净化束腰','灾厄墓骑护腿','防毒踏靴','阿曼尼督军的指环','仪式束缚者之戒','虫群之瘤','共鸣咆哮石','血骑士的战剑','精工辛多雷指环','充能沙石指环']))
 
 # User-confirmed names take precedence over public localization cache.
@@ -39,29 +37,80 @@ if (HERE/'names-zhCN.json').exists():
     for iid,record in json.loads((HERE/'names-zhCN.json').read_text(encoding='utf-8'))['items'].items():
         if record.get('name') and (re.search('[\u4e00-\u9fff]',record['name']) or (iid=='268477' and record['name']=='P.O.W. x3')):NAMES.setdefault(int(iid),record['name'])
 
-ALL_GEMS={str(g['id']):g for g in json.loads((DATA/'gems.json').read_text())}
-ENCHANTS={e['id']:e for e in json.loads((DATA/'enchantments-all.json').read_text())}
 GEM_STATS={'crit':'暴击','haste':'急速','mastery':'精通','vers':'全能','stragiint':'主属性','stamina':'耐力'}
-GEMS=[]
-for gid,g in ALL_GEMS.items():
-    e=ENCHANTS.get(g['enchantId'],{})
-    if e.get('expansion')!=11:continue
-    name=NAMES.get(int(gid),g['name']);quality=e.get('craftingQuality')
-    stats=' / '.join(str(v['amount'])+' '+GEM_STATS.get(v['type'],v['type']) for v in e.get('stats',[]))
-    label=name+((' · 品质 '+str(quality)) if quality else ' · 对战')+' · '+stats
-    GEMS.append({**g,'name':name,'english':g['name'],'label':label})
-GEM_IDS={str(g['id']) for g in GEMS}
 
 # Reuse upstream applicability masks; exclude engineering bot schematics (not scrolls).
 RUNE_IDS={3368,3370,3847,6241,6242,6243,6244,6245}
-GEAR_ENCHANTS=[e for e in ENCHANTS.values() if (e.get('expansion')==11 and e.get('equipRequirements',{}).get('itemClass') in (2,4) and e.get('categoryName')!='Bots') or e['id'] in RUNE_IDS]
 ENCHANT_NAMES=json.loads((HERE/'enchant-names-zhCN.json').read_text(encoding='utf-8')) if (HERE/'enchant-names-zhCN.json').exists() else {}
 STAT_NAMES={**GEM_STATS,'str':'力量','agi':'敏捷','int':'智力','sta':'耐力','leech':'吸血','speed':'加速','avoidance':'闪避','armor':'护甲','runspeed':'加速','stragi':'力量 / 敏捷'}
 
 CLASS_SPECS={'deathknight':{'blood':250,'frost':251,'unholy':252},'demonhunter':{'havoc':577,'vengeance':581,'devourer':1480},'rogue':{'assassination':259,'outlaw':260,'subtlety':261},'warlock':{'affliction':265,'demonology':266,'destruction':267},'mage':{'arcane':62,'fire':63,'frost':64},'paladin':{'holy':65,'protection':66,'retribution':70},'hunter':{'beast_mastery':253,'marksmanship':254,'survival':255},'shaman':{'elemental':262,'enhancement':263,'restoration':264},'warrior':{'arms':71,'fury':72,'protection':73},'priest':{'discipline':256,'holy':257,'shadow':258},'druid':{'balance':102,'feral':103,'guardian':104,'restoration':105},'monk':{'brewmaster':268,'mistweaver':270,'windwalker':269},'evoker':{'devastation':1467,'preservation':1468,'augmentation':1473}}
 SPEC_IDS={cls+':'+spec:i for cls,specs in CLASS_SPECS.items() for spec,i in specs.items()}
 
+_DATA_LOADED = False
+_DATA_LOCK = threading.Lock()
+_DATA_NAMES = ('ALL_GEMS', 'BONUSES', 'CATALOG', 'CATALOG_COUNT', 'CONVERSIONS', 'CRAFTING', 'CRAFT_PAIRS', 'ENCHANTS', 'ENCOUNTERS', 'GEAR_ENCHANTS', 'GEMS', 'GEM_IDS', 'INSTANCES', 'ITEMS', 'TRACKS')
+
+
+def load_data():
+    """Build complete research tables locally before publishing module attributes."""
+    global _DATA_LOADED
+    with _DATA_LOCK:
+        if _DATA_LOADED:
+            return
+        ITEMS = {x['id']:x for x in json.loads((DATA/'equippable-items.json').read_text())}
+        BONUSES = json.loads((DATA/'bonuses.json').read_text())
+        ALL_GEMS={str(g['id']):g for g in json.loads((DATA/'gems.json').read_text())}
+        ENCHANTS={e['id']:e for e in json.loads((DATA/'enchantments-all.json').read_text())}
+        GEMS=[]
+        for gid,g in ALL_GEMS.items():
+            e=ENCHANTS.get(g['enchantId'],{})
+            if e.get('expansion')!=11:continue
+            name=NAMES.get(int(gid),g['name']);quality=e.get('craftingQuality')
+            stats=' / '.join(str(v['amount'])+' '+GEM_STATS.get(v['type'],v['type']) for v in e.get('stats',[]))
+            label=name+((' · 品质 '+str(quality)) if quality else ' · 对战')+' · '+stats
+            GEMS.append({**g,'name':name,'english':g['name'],'label':label})
+        GEM_IDS={str(g['id']) for g in GEMS}
+        GEAR_ENCHANTS=[e for e in ENCHANTS.values() if (e.get('expansion')==11 and e.get('equipRequirements',{}).get('itemClass') in (2,4) and e.get('categoryName')!='Bots') or e['id'] in RUNE_IDS]
+        CONVERSIONS=json.loads((DATA/'item-conversions.json').read_text())['13']
+        ITEMS.update({x['id']:x for x in CONVERSIONS['items']})
+        CRAFT_PAIRS={'/'.join(map(str,BONUSES[str(b)]['craftedStats'])):str(b) for b in range(8790,8796)}
+        CATALOG={s:[] for s,_ in SLOTS}
+        for group,ids in GROUPS.items():
+            for iid in sorted(ids):
+                item=ITEMS[iid]; value=encode(_catalog_fields(iid,ITEMS))
+                record={'label':SOURCE_LABELS[group],'value':value,**_item_info(value,ITEMS),'reason':equip_reason(item),'fitReason':fit_reason(item),'fitReasonsBySpec':{cls+':'+spec:fit_reason(item,spec,character_class=cls) for cls,specs in CLASS_SPECS.items() for spec in specs},'armorType':ARMOR_NAMES.get(item.get('itemSubClass'),'') if item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS else '', 'conversion':group=='non_set_conversion_forms'}
+                for slot in SLOT_MAP.get(item['inventoryType'],[]):CATALOG[slot].append({**record,'fitReasonsBySpec':{cls+':'+spec:fit_reason(item,spec,slot,cls) for cls,specs in CLASS_SPECS.items() for spec in specs}})
+        CATALOG_COUNT=len({x['id'] for rows in CATALOG.values() for x in rows})
+        assert CATALOG_COUNT==523
+        for rows in CATALOG.values():
+            for row in rows:
+                row['filterStats']=FILTER_STATS.get(str(row['id']),[])
+                row['customFilter']=row['crafted'] and any(s['id'] in (24,25) for s in ITEMS[row['id']].get('stats',[]))
+        TRACKS={g:sorted([v['upgrade'] for v in BONUSES.values() if v.get('upgrade',{}).get('seasonId')==37 and v['upgrade']['group']==g],key=lambda t:t['level']) for g in (614,615,616,617,618)}
+        ENCOUNTERS={(i['id'],e['id']):e for i in json.loads((DATA/'instances.json').read_text()) for e in i.get('encounters',[])}
+        CRAFTING=json.loads((DATA/'crafting.json').read_text())
+        INSTANCES={i['id']:i for i in json.loads((DATA/'instances.json').read_text())}
+        globals().update(
+            ITEMS=ITEMS, BONUSES=BONUSES, ALL_GEMS=ALL_GEMS, ENCHANTS=ENCHANTS,
+            GEMS=GEMS, GEM_IDS=GEM_IDS, GEAR_ENCHANTS=GEAR_ENCHANTS,
+            CONVERSIONS=CONVERSIONS, CRAFT_PAIRS=CRAFT_PAIRS, CATALOG=CATALOG,
+            CATALOG_COUNT=CATALOG_COUNT, TRACKS=TRACKS, ENCOUNTERS=ENCOUNTERS,
+            CRAFTING=CRAFTING, INSTANCES=INSTANCES,
+        )
+        _DATA_LOADED = True
+
+
+def __getattr__(name):
+    # Preserve existing imports such as server.CATALOG and server.GEMS.
+    if name in _DATA_NAMES:
+        load_data()
+        return globals()[name]
+    raise AttributeError(name)
+
+
 def enchant_options(f, character_class='deathknight'):
+    load_data()
     item=ITEMS.get(int(f['id']),{});options=[]
     for e in GEAR_ENCHANTS:
         if character_class!='deathknight' and e['id'] in RUNE_IDS:continue
@@ -80,11 +129,13 @@ def enchant_options(f, character_class='deathknight'):
 
 
 def can_add_socket(f):
+    load_data()
     item=ITEMS.get(int(f['id']),{})
     current=any(int(f['id']) in ids for ids in GROUPS.values()) or any(BONUSES.get(b,{}).get('upgrade',{}).get('seasonId')==37 for b in f.get('bonus_id','').split('/'))
     return current and item.get('inventoryType') in (1,6,9)
 
 def gem_sockets(f, include_addable=True):
+    load_data()
     item=ITEMS.get(int(f['id']),{})
     sockets=[v['type'] for v in item.get('socketInfo',{}).get('sockets',[])]
     for b in f.get('bonus_id','').split('/'):
@@ -96,6 +147,7 @@ def gem_sockets(f, include_addable=True):
     return sockets
 
 def check_unique_gems(model):
+    load_data()
     counts={}
     for raw in model['gear'].values():
         for gid in gear_fields(raw).get('gem_id','').split('/'):
@@ -159,7 +211,11 @@ def validate(model):
     for value in model['gear'].values(): gear_fields(value)
 
 def item_info(value):
-    f=gear_fields(value); iid=int(f['id']); item=ITEMS.get(iid,{})
+    load_data()
+    return _item_info(value,ITEMS)
+
+def _item_info(value,items):
+    f=gear_fields(value); iid=int(f['id']); item=items.get(iid,{})
     return {'id':iid,'icon':item.get('icon',''),'name':NAMES.get(iid,item.get('name','未知装备')),'english':item.get('name',''), 'missingName':iid not in NAMES,'crafted':bool(item.get('profession')),'fields':f}
 
 BASE=parse_import((RESEARCH/'cn-user-20260908.input.simc').read_text(encoding='utf-8'))
@@ -167,10 +223,7 @@ BASE['name']='当前装备'
 # Reuse the previously audited inventory; do not maintain another drop table.
 INVENTORY=json.loads((RESEARCH/'epic-catalog-results.json').read_text())
 GROUPS={k:set(v) for k,v in INVENTORY['groups'].items()}
-CONVERSIONS=json.loads((DATA/'item-conversions.json').read_text())['13']
-ITEMS.update({x['id']:x for x in CONVERSIONS['items']})
 SLOT_MAP={1:['head'],2:['neck'],3:['shoulder'],5:['chest'],6:['waist'],7:['legs'],8:['feet'],9:['wrist'],10:['hands'],11:['finger1','finger2'],12:['trinket1','trinket2'],13:['main_hand','off_hand'],14:['off_hand'],15:['main_hand'],16:['back'],17:['main_hand','off_hand'],20:['chest'],21:['main_hand'],22:['off_hand'],23:['off_hand'],25:['main_hand'],26:['main_hand']}
-CRAFT_PAIRS={'/'.join(map(str,BONUSES[str(b)]['craftedStats'])):str(b) for b in range(8790,8796)}
 
 def occupies_both_hands(item):
     return item.get('inventoryType')==17 or (item.get('itemClass')==2 and item.get('itemSubClass') in (2,3,18))
@@ -235,7 +288,11 @@ def fit_reason(item, spec='blood', slot='main_hand', character_class='deathknigh
     return ''
 
 def catalog_fields(iid):
-    item=ITEMS[iid]; f={'id':str(iid)}; bonuses=list(map(str,item.get('bonusLists',[])))
+    load_data()
+    return _catalog_fields(iid,ITEMS)
+
+def _catalog_fields(iid,items):
+    item=items[iid]; f={'id':str(iid)}; bonuses=list(map(str,item.get('bonusLists',[])))
     if iid in GROUPS['crafted_epic']:
         bonuses += ['13751','13836','12497']
         f['crafting_quality']='5'
@@ -250,27 +307,12 @@ def catalog_fields(iid):
     if bonuses:f['bonus_id']='/'.join(dict.fromkeys(bonuses))
     return f
 
-CATALOG={s:[] for s,_ in SLOTS}
 SOURCE_LABELS={'mplus':'大秘境','raid_direct':'团本','raid_token_products':'团本套装成品','crafted_epic':'制作','non_set_conversion_forms':'同源转化形态'}
-for group,ids in GROUPS.items():
-    for iid in sorted(ids):
-        item=ITEMS[iid]; value=encode(catalog_fields(iid))
-        record={'label':SOURCE_LABELS[group],'value':value,**item_info(value),'reason':equip_reason(item),'fitReason':fit_reason(item),'fitReasonsBySpec':{cls+':'+spec:fit_reason(item,spec,character_class=cls) for cls,specs in CLASS_SPECS.items() for spec in specs},'armorType':ARMOR_NAMES.get(item.get('itemSubClass'),'') if item['itemClass']==4 and item.get('inventoryType') in ARMOR_SLOTS else '', 'conversion':group=='non_set_conversion_forms'}
-        for slot in SLOT_MAP.get(item['inventoryType'],[]):CATALOG[slot].append({**record,'fitReasonsBySpec':{cls+':'+spec:fit_reason(item,spec,slot,cls) for cls,specs in CLASS_SPECS.items() for spec in specs}})
 # Imported items outside the search scope stay in the model, never expand this catalog.
-CATALOG_COUNT=len({x['id'] for rows in CATALOG.values() for x in rows})
-assert CATALOG_COUNT==523
 FILTER_STATS=json.loads((HERE/'filter-stats.json').read_text(encoding='utf-8')) if (HERE/'filter-stats.json').exists() else {}
-for rows in CATALOG.values():
-    for row in rows:
-        row['filterStats']=FILTER_STATS.get(str(row['id']),[])
-        row['customFilter']=row['crafted'] and any(s['id'] in (24,25) for s in ITEMS[row['id']].get('stats',[]))
 
 # Shared option generation drives both the UI and server-side validation.
 TRACK_NAMES={'Adventurer':'冒险者','Veteran':'老兵','Champion':'勇士','Hero':'英雄','Myth':'神话'}
-TRACKS={g:sorted([v['upgrade'] for v in BONUSES.values() if v.get('upgrade',{}).get('seasonId')==37 and v['upgrade']['group']==g],key=lambda t:t['level']) for g in (614,615,616,617,618)}
-ENCOUNTERS={(i['id'],e['id']):e for i in json.loads((DATA/'instances.json').read_text()) for e in i.get('encounters',[])}
-CRAFTING=json.loads((DATA/'crafting.json').read_text())
 
 INSTANCE_NAMES={1041:'诸王之眠',1202:'红玉新生法池',1030:'塞塔里斯神庙',1313:'虚空之痕竞技场',1311:'纳洛拉克的洞穴',1304:'密谋小径',1322:'毒牙祭坛'}
 # Public source names not yet localized retain their upstream names explicitly.
@@ -278,9 +320,9 @@ INSTANCE_NAMES={1041:'诸王之眠',1202:'红玉新生法池',1030:'塞塔里斯
 INSTANCE_NAMES.update({1309:'夺目谷',1317:'潮缚石窟',1320:'烈毒之渊'})
 ENCOUNTER_NAMES={2849:'尼姆瑞莎·唤波者',2888:'盘魂者内克扎莉',2874:'陵寝哨兵',2894:'迷失的探险者',2882:'万毒邪祟者瓦什尼克',2871:'斯索拉克',2887:'双子毒牙',2883:'盘卷祭坛',2895:'乌拉特克'}
 PROFESSION_NAMES={164:'锻造',165:'制皮',171:'炼金术',197:'裁缝',202:'工程学',333:'附魔',755:'珠宝加工',773:'铭文'}
-INSTANCES={i['id']:i for i in json.loads((DATA/'instances.json').read_text())}
 
 def equipment_sources(f):
+    load_data()
     iid=int(f['id']);item=ITEMS.get(iid,{})
     profession=item.get('profession',{}).get('id')
     if profession:
@@ -312,6 +354,7 @@ def equipment_sources(f):
     return {'summary':('催化转化 · ' if actual_id!=iid else '')+(' / '.join(summaries) if summaries else '导入装备 · 来源待确认'),'details':details or ['现有数据未提供可确认的具体来源；导入与计算仍保留。']}
 
 def level_options(f,seen=None):
+    load_data()
     iid=int(f['id']); seen=set() if seen is None else seen
     if iid in seen:return []
     seen=seen|{iid}; item=ITEMS.get(iid,{})
@@ -373,10 +416,12 @@ class ReplacementLevelError(ValueError):
         self.alternative_level=new_level
 
 def level_bonus(b):
+    load_data()
     record=BONUSES.get(b,{})
     return bool(record.get('upgrade') or b in ('13751','13835','13836','13849','13850') or 'craftingQuality' in record.get('levelOffset',{}))
 
 def apply_bulk_levels(model, edit):
+    load_data()
     validate(model)
     target=edit['bulkLevel']; original=edit.get('original')
     if target not in ('minimum','maximum','restore') and (type(target) is not int or not 1<=target<=999):raise ValueError('无效统一装等')
@@ -415,6 +460,7 @@ def apply_bulk_levels(model, edit):
     return updated
 
 def apply_edit(model, edit):
+    load_data()
     if 'bulkLevel' in edit:return apply_bulk_levels(model,edit)
     model=copy.deepcopy(model); slot=edit.get('slot')
     if slot not in dict(SLOTS): raise ValueError('无效编辑槽位')
@@ -548,6 +594,7 @@ def apply_edit(model, edit):
 
 @lru_cache(maxsize=2048)
 def replacement_signature(slot,value,probe_json=None):
+    load_data()
     # Cache item-only evidence; native gear stats exclude character and set multipliers.
     probe=json.loads(probe_json) if probe_json else copy.deepcopy(BASE);probe['gear'][slot]=value
     result=calculate(probe)
@@ -562,6 +609,7 @@ def replacement_signature(slot,value,probe_json=None):
             'enchant':f.get('enchant_id',''),'sockets':item['gemSlots']}
 
 def original_matches(model, originals):
+    load_data()
     validate(model)
     # Item comparison needs the current identity and weapon setup, not every slot.
     probe_json=json.dumps({'character':model['character'],'gear':{s:v for s,v in model['gear'].items() if s in ('main_hand','off_hand')}},sort_keys=True)
@@ -599,6 +647,7 @@ def original_matches(model, originals):
     return matches
 
 def calculate(model):
+    load_data()
     validate(model); started=time.perf_counter(); c=model['character']
     holy=(c['class'],c['spec'])==('paladin','holy')
     mistweaver=(c['class'],c['spec'])==('monk','mistweaver')
@@ -716,7 +765,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Host')!=f'127.0.0.1:{PORT}': self.reply(403,{'error':'只允许本机访问'}); return
         path=urlsplit(self.path).path
         if path=='/': self.reply(200,(HERE/'index.html').read_bytes(),'text/html; charset=utf-8')
-        elif path=='/api/bootstrap': self.reply(200,{'token':TOKEN,'catalog':CATALOG,'classSpecs':CLASS_SPECS,'slots':SLOTS,'version':VERSION,'catalogCount':CATALOG_COUNT,'gems':GEMS,'effectCache':cached_effects()})
+        elif path=='/api/bootstrap':
+            load_data()
+            self.reply(200,{'token':TOKEN,'catalog':CATALOG,'classSpecs':CLASS_SPECS,'slots':SLOTS,'version':VERSION,'catalogCount':CATALOG_COUNT,'gems':GEMS,'effectCache':cached_effects()})
         else: self.reply(404,{'error':'页面不存在'})
     def do_POST(self):
         if self.headers.get('Host')!=f'127.0.0.1:{PORT}' or self.headers.get('X-Prototype-Token')!=TOKEN or self.headers.get('Origin',f'http://127.0.0.1:{PORT}')!=f'http://127.0.0.1:{PORT}': self.reply(403,{'error':'请求来源不匹配'}); return
@@ -740,5 +791,6 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as exc: self.reply(422,{'error':str(exc) if not isinstance(exc,subprocess.TimeoutExpired) else '计算超时，配置已保留'})
 
 if __name__=='__main__':
+    load_data()
     print(f'PROTOTYPE http://127.0.0.1:{PORT}',flush=True)
     ThreadingHTTPServer(('127.0.0.1',PORT),Handler).serve_forever()

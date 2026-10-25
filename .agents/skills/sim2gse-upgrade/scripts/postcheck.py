@@ -2,6 +2,9 @@
 import argparse
 import json
 import math
+import hashlib
+from dataclasses import replace
+from types import SimpleNamespace
 from pathlib import Path
 import sqlite3
 import sys
@@ -11,10 +14,6 @@ from precheck import prepare
 
 def decode(value):
     return json.loads(value) if isinstance(value, str) else value
-
-
-def search_batch_sizes(targets):
-    return {end - start for start, end in zip([0, *targets], targets)}
 
 
 def require(condition, message):
@@ -27,10 +26,14 @@ def checkpoint(folder, fields):
     require(path.is_file(), '任务检查点不存在: ' + str(path))
     connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
     try:
-        placeholders = ','.join('?' for _ in fields)
+        scalar_fields = [key for key in fields if key != 'archive']
+        placeholders = ','.join('?' for _ in scalar_fields)
         rows = connection.execute('SELECT key,value FROM state_fields WHERE key IN (' +
-                                  placeholders + ')', fields).fetchall()
+                                  placeholders + ')', scalar_fields).fetchall()
         result = {key: json.loads(value) for key, value in rows}
+        if 'archive' in fields:
+            result['archive'] = [json.loads(value) for (value,) in connection.execute(
+                'SELECT value FROM state_archive ORDER BY ordinal')]
         require(set(result) == set(fields), '任务检查点缺少核验字段')
         return result
     finally:
@@ -56,130 +59,102 @@ def one(table, key, columns, filters=None):
     return rows[0]
 
 
-def valid_scores(values):
-    return (isinstance(values, list) and len(values) == 3 and
-            all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0
-                for value in values))
-
-
 def check_scene(scene, ready):
     from program import canonicalize_search_program
-    from search import digest
-    from seed_training import RETEST_SEEDS, search_program, validate_training_identity
-    targets = scene['targets']
-    scope = f'deathknight-unholy-{targets}-burst'
+    from search import digest, _validate_saved_batch
+    from seed_training import shared_scope, template_character, SELECTED_V2_SCHEMA
+    from population_training import ALGORITHM, _selected, _stage_plan
+    from task import _rule_hashes, parse_character
+    from engine import ROOT
+    from formal_search import contract_for
+
+    targets, folder = scene['targets'], Path(scene['training_task'])
+    manifest = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))
+    environment, key = manifest['environment'], scene['configuration_key']
+    template = next((row for row in ready['templates']
+                     if row['template_sha256'] == environment['template']), None)
+    require(template is not None and any(group['configuration_key'] == key and
+            group['template'] == template['template'] for group in ready['groups']),
+            '训练模板或三元范围不属于当前受检构建')
+    require(environment['engines'] == ready['engines'] and
+            environment['rules'] == _rule_hashes(relative_to=ROOT) and
+            environment['simulation']['target_count'] == targets and
+            environment['simulation']['scene'] == key['target_type'] and
+            environment['burst']['definition_id'] == template['burst_definition_id'],
+            '训练引擎、规则、目标或爆发身份过期')
+    text = (folder / 'standard.simc').read_text(encoding='utf-8')
+    require(hashlib.sha256(text.encode()).hexdigest() == environment['template'], '训练角色副本变化')
+    character = replace(template_character(text), spec_id=key['specialization_id'])
+    state = checkpoint(folder, ['status', 'configuration_key', 'ga', 'archive', 'capabilities',
+                                'starts', 'training_evaluation_plan', 'burst'])
+    ga = state['ga']
+    require(state['status'] == 'completed' and ga['phase'] == 'published' and
+            ga['algorithm'] == ALGORITHM and state['configuration_key'] == key and
+            state['starts'] == manifest['starts'] and state['burst'] == environment['burst'] and
+            state['training_evaluation_plan'] == manifest['stage_plan'] ==
+            _stage_plan(manifest['training_config'], manifest['seed']) and
+            ga['stagnant'] >= manifest['training_config']['stagnation_generations'],
+            '训练检查点没有完成冻结GA收敛与发布')
+    require(digest(manifest) == scene['training_condition'], '训练条件与原清单不一致')
+    # Only existing read-only SQLite queries; never initialize TaskStore or invoke training.
+    store = SimpleNamespace(state=state, batch=lambda batch_key: batch_checkpoint(folder, batch_key))
+    expected = _selected(ga, store, manifest, character,
+        dict(context=dict(capabilities=state['capabilities']), template_sha=environment['template'],
+             engines=ready['engines'], simulation_config=environment['simulation']), key)
+    require(len(scene['selected']) == 4 and set(scene['selected']) ==
+            {row['candidate_id'] for row in expected}, '索引必须指向本次完整四条GA成果')
+    selected = []
+    for expected_row in expected:
+        row = one('seed_selected', shared_scope(key), list(SELECTED_V2_SCHEMA),
+                  {'candidate_id': expected_row['candidate_id'], 'family': 'ga'})
+        row = {name: decode(value) if SELECTED_V2_SCHEMA[name] == 'JSON' else value
+               for name, value in row.items()}
+        require(row == expected_row, '入选四条与完整五场景复测和代表选择不一致')
+        selected.append(row)
+
     run = one('runs', scene['run_id'], ['run_id', 'status', 'engines', 'condition_key',
               'simulation_config', 'config', 'batch_keys', 'burst'])
-    require(decode(run['engines']) == ready['engines'], '页面引擎身份过期')
-    require(len(scene['processed']) == 3 and len(set(scene['processed'])) == 3,
-            '每场必须指定两类合法材料及一类拒绝材料')
-    completed = {}
-    rejected = 0
-    for candidate_id in scene['processed']:
-        row = one('seed_processed', scope,
-                  ['candidate_id', 'condition', 'status', 'stop_reason', 'scores',
-                   'initial_scores', 'task_path', 'initial_program', 'program', 'family', 'error'],
-                  {'candidate_id': candidate_id, 'condition': scene['training_condition']})
-        if row['status'] == 'rejected':
-            require(bool(row['error']), '拒绝材料缺少原因')
-            rejected += 1
-            continue
-        require(row['status'] == 'completed' and row['stop_reason'] in ('no_improvement', 'space_stalled'),
-                '训练没有正式收敛')
-        require(valid_scores(row['scores']) and valid_scores(row['initial_scores']), '独立复测成绩缺项')
-        state = checkpoint(row['task_path'], ['config', 'training_condition', 'capabilities',
-                           'training_candidate_id', 'burst'])
-        manifest = validate_training_identity(Path(row['task_path']).parent,
-            ready['template_sha256'], ready['engines'],
-            state['config'], {'target_count': targets, 'enable_omnium_talents': True},
-            burst_context=state['burst'])
-        require(row['condition'] == manifest['condition'], '训练引擎身份或条件过期')
-        require(state['training_condition'] == row['condition'] and
-                state['training_candidate_id'] == candidate_id, '训练记录与检查点不一致')
-        require(state['burst']['definition_id'] == ready['burst_definition_id'], '训练爆发定义过期')
-        for name, scores in [('retest-initial', row['initial_scores']), ('retest-final', row['scores'])]:
-            for seed, score in zip(RETEST_SEEDS, scores):
-                key = digest(dict(folder=str(Path(row['task_path']) / name), seed=seed))
-                location = batch_checkpoint(row['task_path'], key)
-                group = (location or {}).get('storage_group_key') or key
-                batch = one('batches', group, ['purpose', 'seed', 'samples', 'dps',
-                            'engines', 'condition_key', 'program_identity', 'requested_iterations'],
-                            {'batch_key': key})
-                program = decode(row['initial_program' if name == 'retest-initial' else 'program'])
-                canonical = canonicalize_search_program(program, state['capabilities'])
-                require(batch['purpose'] == 'seed_retest' and batch['seed'] == seed and
-                        batch['samples'] == 127 and batch['dps'] == score,
-                        '独立复测真实批次、128轮规模或成绩不一致')
-                require(decode(batch['engines']) == ready['engines'] and
-                        batch['condition_key'] == row['condition'] and
-                        decode(batch['program_identity']) == canonical['form'] and
-                        batch['requested_iterations'] == 128, '独立复测引擎、条件或程序身份不一致')
-        completed[candidate_id] = row
-    require(len(completed) == 2 and rejected == 1, '缺少两类成功材料或拒绝材料')
-    require(len({row['family'] for row in completed.values()}) == 2, '成功材料须属于两类')
-    require(bool(scene['selected']), '缺少指定入选记录')
-    selected = []
-    for locator in scene['selected']:
-        candidate_id = locator['candidate_id']
-        family = locator['family']
-        require(candidate_id in completed, '入选材料不属于本次成功训练')
-        row = one('seed_selected', scope,
-                  ['candidate_id', 'condition', 'class_name', 'spec', 'targets', 'program',
-                   'scores', 'template_sha256', 'engines', 'family'],
-                  {'candidate_id': candidate_id, 'family': family})
-        require(decode(row['engines']) == ready['engines'], '入选引擎身份过期')
-        require(row['condition'] == scene['training_condition'] and row['targets'] == targets and
-                row['class_name'] == 'deathknight' and row['spec'] == 'unholy' and
-                row['template_sha256'] == ready['template_sha256'], '入选角色或条件不一致')
-        trained = completed[candidate_id]
-        require(any(decode(row['program']) == decode(trained[program]) and row['scores'] == trained[scores]
-                    for program, scores in [('program', 'scores'), ('initial_program', 'initial_scores')]),
-                '入选程序与独立复测不一致')
-        selected.append(row)
-    require(run['status'] in ('completed', 'offline_ready') and
-            decode(run['simulation_config'])['target_count'] == targets, '页面任务未完成或目标数不一致')
-    require(decode(run['burst'])['definition_id'] == ready['burst_definition_id'], '页面爆发定义过期')
+    require(run['status'] == 'completed' and decode(run['engines']) == ready['engines'] and
+            decode(run['simulation_config'])['target_count'] == targets and
+            decode(run['burst'])['definition_id'] == template['burst_definition_id'],
+            '页面任务未完成或引擎、目标、爆发不一致')
     state = checkpoint(scene['page_task'], ['run_id', 'engines', 'condition', 'capabilities', 'phase',
-                       'seed_selected_snapshot', 'starts'])
-    require(state['phase'] == 'done' and state['run_id'] == run['run_id'] and state['engines'] == ready['engines'] and
-            state['condition'] == run['condition_key'], '页面记录与检查点不一致')
+        'seed_selected_snapshot', 'seed_adaptations', 'starts', 'formal_search', 'native'])
+    require(state['phase'] == 'done' and state['run_id'] == run['run_id'] and
+            state['engines'] == ready['engines'] and state['condition'] == run['condition_key'] and
+            state['formal_search'] == contract_for(decode(run['config'])),
+            '页面记录与冻结正式GA检查点不一致')
+    character = replace(parse_character((Path(scene['page_task']) / 'input.simc').read_text(encoding='utf-8')),
+        spec_id=state['native']['identity']['spec_id'], race=state['native']['identity']['race'])
     require(bool(scene['batches']), '缺少页面重新评分批次')
     scored = set()
+    plan = state['formal_search']['stage_plan']['search']
     for locator in scene['batches']:
         saved = batch_checkpoint(scene['page_task'], locator['key'])
-        require(saved is not None, '页面本地批次缺失')
-        group = saved['storage_group_key']
-        require(group == locator['group'], '批次存储组与任务记录不一致')
-        row = one('batches', group, ['batch_key', 'run_id', 'condition_key',
-                  'candidate_key', 'program_identity', 'purpose', 'dps', 'samples', 'requested_iterations'],
-                  {'batch_key': locator['key']})
-        require(row['batch_key'] in run['batch_keys'] and row['run_id'] == run['run_id'] and
-                row['condition_key'] == run['condition_key'] and row['purpose'] == 'search' and
-                row['requested_iterations'] in search_batch_sizes(decode(run['config'])['batch_targets']) and
-                row['samples'] == max(1, row['requested_iterations'] - 1) and
-                math.isfinite(row['dps']) and row['dps'] > 0,
-                '页面批次缺少有效的新条件评分')
-        scored.add((row['candidate_key'], json.dumps(decode(row['program_identity']), sort_keys=True)))
+        require(saved is not None and saved.get('status') == 'success' and
+                saved['storage_group_key'] == locator['group'], '页面可靠批次或存储组不一致')
+        row = one('batches', locator['group'], None, {'batch_key': locator['key']})
+        request = saved['request']
+        require(digest(request) == locator['key'] and row['batch_key'] in run['batch_keys'] and
+                row['run_id'] == run['run_id'] and request['condition'] == run['condition_key'] and
+                request['purpose'] == 'search' and request['iterations'] == plan['iterations'] and
+                request['seed'] == plan['seeds'][0] and math.isfinite(row['dps']) and row['dps'] > 0,
+                '页面批次缺少冻结GA计划下的新条件评分')
+        _validate_saved_batch(row, locator['key'], saved, character, 0, 'nominal',
+                              decode(run['simulation_config']))
+        scored.add(request['behavior_identity'])
     for row in selected:
-        frozen = [item for item in state['seed_selected_snapshot']
-                  if item['candidate_id'] == row['candidate_id'] and item['family'] == row['family']]
-        require(len(frozen) == 1 and all(
-                    (decode(frozen[0][key]) == decode(value) if key in ('program', 'engines')
-                     else frozen[0][key] == value)
-                    for key, value in row.items()), '页面未冻结本次入选记录')
-        canonical = canonicalize_search_program(decode(row['program']), state['capabilities'])
-        candidate_key = canonical['identity']
-        data_key = digest(dict(run_id=run['run_id'], candidate_key=candidate_key))
-        candidate = one('candidates', data_key, ['run_id', 'candidate_key', 'program'])
-        require(candidate['run_id'] == run['run_id'] and candidate['candidate_key'] == candidate_key and
-                canonicalize_search_program(search_program(decode(candidate['program'])), state['capabilities'])['identity'] == candidate_key,
-                '页面实际候选记录与入选程序不一致')
-        require(any(canonicalize_search_program(program, state['capabilities'])['identity'] == canonical['identity']
-                    for program in state['starts']), '页面未实际采用入选起点')
-        require((canonical['identity'], json.dumps(canonical['form'], sort_keys=True)) in scored,
-                '页面没有按新条件重新评分入选程序')
-    return {'targets': targets, 'trained': len(completed), 'rejected': rejected,
-            'selected': len(selected), 'run_id': run['run_id']}
+        frozen = [item for item in state['seed_selected_snapshot'] if item['candidate_id'] == row['candidate_id']]
+        require(frozen == [row], '页面未冻结本次入选记录')
+        adaptations = [item for item in state['seed_adaptations'] if item['candidate_id'] == row['candidate_id']]
+        require(len(adaptations) == 1 and adaptations[0]['status'] in ('accepted', 'duplicate'),
+                '页面没有接受本次入选程序的当前适配')
+        canonical = canonicalize_search_program(adaptations[0]['derived_program'], state['capabilities'])
+        require(canonical['identity'] == adaptations[0]['behavior_identity'] and
+                any(canonicalize_search_program(program, state['capabilities'])['identity'] == canonical['identity']
+                    for program in state['starts']) and canonical['identity'] in scored,
+                '页面未实际采用并按新条件重新评分派生起点')
+    return {'targets': targets, 'generations': ga['generation'], 'selected': len(selected), 'run_id': run['run_id']}
 
 
 def main():
@@ -194,6 +169,9 @@ def main():
                 all(isinstance(scene, dict) for scene in index['scenes']) and
                 sorted(scene.get('targets', 0) for scene in index['scenes']) == [1, 5],
                 '证据索引必须包含单目标及五目标')
+        require(all('processed' not in scene and 'training_task' in scene and
+                    'configuration_key' in scene for scene in index['scenes']),
+                '旧逐材料证据索引已退役；请指定GA任务与三元范围')
         prepare(args.project, args.data_project)
         from seed_training import check_training
         ready = check_training()

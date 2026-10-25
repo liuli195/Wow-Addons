@@ -18,8 +18,11 @@ harness 以零参数 `loadfile` 依次加载四个模块，再调用 `NS.Mount()
 
 import subprocess
 import tempfile
+import pytest
 from pathlib import Path
 
+
+pytestmark = pytest.mark.real
 
 ROOT = Path(__file__).resolve().parents[3]
 LUA = ROOT / ".tools/lua-5.1.5/src/lua.exe"

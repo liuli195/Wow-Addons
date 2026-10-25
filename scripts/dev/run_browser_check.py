@@ -8,6 +8,7 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
+NODE = ROOT / '.local/verify-deps/node/node.exe'
 
 
 def main():
@@ -18,7 +19,7 @@ def main():
     bundled = Path.home() / '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'
     if not env.get('NODE_PATH') and bundled.is_dir():
         env['NODE_PATH'] = str(bundled)
-    subprocess.run(['node', '-e', "require('playwright')"], cwd=test.parent, env=env, check=True)
+    subprocess.run([str(NODE), '-e', "require('playwright')"], cwd=test.parent, env=env, check=True)
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 8765)) == 0:
             raise RuntimeError('8765 端口已有服务；请关闭后重跑，避免使用未知服务')
@@ -41,7 +42,7 @@ def main():
                     if time.monotonic() >= deadline:
                         raise TimeoutError('测试服务启动超时')
                     time.sleep(0.2)
-            browser = subprocess.Popen(['node', str(test), *sys.argv[2:]], cwd=ROOT,
+            browser = subprocess.Popen([str(NODE), str(test), *sys.argv[2:]], cwd=ROOT,
                                        env=env,
                                        creationflags=subprocess.CREATE_NO_WINDOW)
             return browser.wait(timeout=180)

@@ -6,7 +6,6 @@ import runpy
 from contextlib import contextmanager
 import hashlib
 import json
-import msvcrt
 import os
 import re
 from pathlib import Path
@@ -45,7 +44,7 @@ SEARCH_CHAMPION_SCHEMA = dict(
     behavior_identity="VARCHAR", source_run_id="VARCHAR", source_candidate_key="VARCHAR",
     source_candidate_data_key="VARCHAR",
     source_condition_key="VARCHAR", score="DOUBLE", samples="UBIGINT", batch_keys="VARCHAR[]",
-    promotion_evidence="JSON", source_evidence="JSON",
+    promotion_evidence="JSON", source_evidence="JSON", contract_version="UBIGINT", evaluation="JSON",
 )
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
@@ -65,6 +64,7 @@ class ReportLocations:
 
     @contextmanager
     def locked(self):
+        import msvcrt
         with _PUBLICATION_LOCK, (self.root / '.report-publish.lock').open('a+b') as lease:
             if lease.tell() == 0:
                 lease.write(b'0')
@@ -207,7 +207,7 @@ def read_search_champion(condition_key):
     if len(rows) != 1 or rows[0].get('condition_key') != condition_key:
         raise InvalidRecordError('正式冠军记录身份不唯一或不符')
     record = rows[0]
-    for field in ('binding', 'program', 'promotion_evidence', 'source_evidence'):
+    for field in ('binding', 'program', 'promotion_evidence', 'source_evidence', 'evaluation'):
         if isinstance(record.get(field), str):
             try:
                 record[field] = json.loads(record[field])
@@ -223,6 +223,7 @@ def read_search_champion(condition_key):
 
 @contextmanager
 def _search_champion_lock():
+    import msvcrt
     # ponytail: one short global publication lock; split by condition only if contention matters.
     with _PUBLICATION_LOCK, (DATA_ROOT / '.search-champions.lock').open('a+b') as lease:
         if lease.tell() == 0:

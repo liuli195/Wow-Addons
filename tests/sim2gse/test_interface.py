@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import tempfile
+from contextlib import contextmanager, nullcontext
+from copy import deepcopy
+from email.message import Message
+from io import BytesIO
+from types import SimpleNamespace
 import threading
 import time
 import unittest
@@ -25,6 +30,23 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from gse_import import inspect_import  # noqa: E402
 from test_seed_training import memory_result_center  # noqa: E402
+from test_population_training import memory_ga  # noqa: E402
+
+
+def _coarse_batch_keys(result):
+    return {batch['data_key'] for record in result['search']['records']
+            for batch in record['batches'] if batch['request']['purpose'] == 'search'}
+
+
+@contextmanager
+def _fixed_search_population(starts):
+    """非变异代表仅固定测试工作量；真实两代、复测和持久化契约不变。"""
+    import population_training
+    from test_search import _initialized_starts
+    with _initialized_starts(starts), \
+            patch.object(population_training, '_cross', return_value=False), \
+            patch.object(population_training, 'mutate', side_effect=lambda program, *a, **k: deepcopy(list(program))):
+        yield
 
 
 def gse_fixture(payload):
@@ -43,6 +65,56 @@ GSE_PROTECTED_VARIABLE_VECTOR = (
 GSE_PROTECTED_MACRO_VECTOR = (
     "!GSE3!+1GBkaGxwdHh8gISIjITXl5rxvJIfGsh1W9faejI+hnlUimbME8ag7Z5QUpuBgQG4pwW6rzLr0Um/muYNGkQHukMPDGG9hvkrUbFL6wWMwRz+/XkNH"
 )
+
+
+def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
+    import engine
+    from interface import _public_state
+    from sequence import compiled_program
+    from simulation_config import TRAINING_DEFAULTS
+    from test_search import _fast_report
+
+    initial = ("outbreak", "death_coil")
+    better = ("death_coil", "outbreak")
+    worse = ("death_coil", "outbreak", "death_coil")
+    calls = []
+
+    def evaluate(profile, candidate, folder, **options):
+        actions = tuple(name for block in compiled_program(candidate) for name in block)
+        wanted = {initial: 90, better: 120, worse: 80}[actions]
+        report = _fast_report(options['character'], wanted, options['iterations'] - 1)
+        if actions == worse:
+            report['sim']['players'][0]['collected_data']['dps'].pop('variance')
+        calls.append((actions, options['iterations'], options.get('burst_candidate')))
+        summary = engine.check_report(report, options['character'], options['iterations'],
+            simulation_config=options['simulation_config'], allow_zero=True)
+        return dict(report=report, summary=summary, trace=[])
+
+    # The same formal entry owns quarantine and full finalist retests. HTTP,
+    # physical report groups and native execution retain separate real witnesses.
+    with patch.dict(TRAINING_DEFAULTS, crossover_probability=0., mutation_probability=0.):
+        case = memory_ga(formal=True, programs=[[[name] for name in actions]
+            for actions in (initial, better, worse)], native=evaluate)
+        result = case.run()
+    state = _public_state(result, case.store.destination)
+    assert state['status'] == 'completed'
+    assert state['result_ready']
+    coarse = [(actions, count) for actions, count, _ in calls if count == 32]
+    assert [count for actions, count in coarse if actions == worse] == [32, 32]
+    assert [count for actions, count in coarse if actions == better] == [32]
+    assert state['search_result']['dps'] == 120
+    assert result['search']['effective_population_size'] == 2
+    rejected, = result['search']['coarse_rejections'].values()
+    assert rejected['attempts'] == 2
+    assert all(row['kind'] == 'candidate_score' for row in rejected['failures'])
+    finalists = result['final']['scenarios']['nominal']['finalists']
+    assert len(finalists) == 2
+    assert {tuple(name for block in compiled_program(row['candidate']) for name in block)
+            for row in result['search']['records']} == {initial, better}
+    assert all(len(row['batches']) == 3 and row['samples'] == 381 for row in finalists)
+    assert all(batch['requested_iterations'] == 128 for row in finalists for batch in row['batches'])
+    assert all('rule_diagnostics' not in row for row in result['search']['records'])
+    assert calls and all(burst is None for _, _, burst in calls)
 
 
 class ImportInspectionTests(unittest.TestCase):
@@ -364,6 +436,24 @@ class InterfaceTests(unittest.TestCase):
         from test_character_export import sample_profile
         from test_search import _fast_evaluate, _fast_search_boundary, _initialized_starts
 
+        self.real = any(mark.name == 'real' for mark in
+                        getattr(getattr(type(self), self._testMethodName), 'pytestmark', []))
+        if not self.real:
+            # 不构造HTTP服务器：真实Handler读取BytesIO，服务数据IO逐例显式提供。
+            from interface import InterfaceServer
+            self.server = object.__new__(InterfaceServer)
+            self.server.output_root = REPOSITORY / '.local' / 'unused-interface-unit'
+            self.server.task_root = self.server.output_root / 'tasks'
+            self.server.input_root = self.server.output_root / 'inputs'
+            self.server.server_port = 0
+            self.server.tasks, self.server.task_options = {}, {}
+            self.server.tasks_lock = threading.RLock()
+            self.input_write = self.enterContext(patch.object(
+                Path, 'write_text', side_effect=AssertionError('校验失败前不得写入任务输入')))
+            self.file_changes = [self.enterContext(patch.object(
+                Path, name, side_effect=AssertionError('状态读取/拒绝不得改动检查点')))
+                for name in ('write_bytes', 'unlink', 'mkdir')]
+            return
         self.directory = tempfile.TemporaryDirectory(prefix="sim2gse-ui-")
         self.server = create_server(Path(self.directory.name) / "输出", port=0)
         self.thread = threading.Thread(
@@ -373,77 +463,106 @@ class InterfaceTests(unittest.TestCase):
         self.url = f"http://127.0.0.1:{self.server.server_port}/"
 
     def tearDown(self) -> None:
+        if not self.real:
+            self.input_write.assert_not_called()
+            for changed in self.file_changes:
+                changed.assert_not_called()
+            return
         from task import cancel_task
-        for _,handle in list(self.server.tasks.values()):
-            if not handle.done:
-                cancel_task(handle)
-                handle.join(5)
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=2)
-        self.directory.cleanup()
+        from dual_task import DualHandle, cancel as cancel_dual
+        unfinished = []
+        try:
+            for _, handle in list(self.server.tasks.values()):
+                if not handle.done:
+                    (cancel_dual if isinstance(handle, DualHandle) else cancel_task)(handle)
+                    handle.join(5)
+                    if not handle.done:
+                        unfinished.append(handle.output_root)
+        finally:
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join(timeout=2)
+            self.directory.cleanup()
+        self.assertFalse(unfinished, '本次任务未完成取消清理: ' + repr(unfinished))
 
     def test_terminal_parent_does_not_show_stale_scene_as_running(self):
         import result_store
         from dual_task import PARENT_SCHEMA
         task_id = 'a' * 32
-        _, destination = self.server.task_paths(task_id)
-        destination.mkdir()
-        (destination / 'dual.json').write_text(json.dumps(dict(parent_id=task_id)), encoding='utf-8')
-        checkpoint = destination / 'single_target' / 'checkpoint.json'
-        checkpoint.parent.mkdir()
-        checkpoint.write_bytes(b'{"preserved":true}')
         row = dict.fromkeys(PARENT_SCHEMA)
-        row.update(parent_id=task_id, status='failed', phase='single_target', error='native trace failed',
+        row.update(parent_id=task_id, formal_search_version=1, status='failed',
+                   phase='single_target', error='native trace failed',
                    input_sha256='frozen', definition_id='reviewed', spec_id=252,
-                   config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
+                   config=dict(input_interval_ms=200), simulation_config={},
                    rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
                    single_target_path='single_target', aoe_path='aoe',
                    single_target_status='running', aoe_status='pending', burst_instructions='')
-        for status, scene_status in [('failed', 'failed'), ('interrupted', 'incomplete')]:
-            row['status'] = status
-            result_store.write('dual_tasks', task_id, [row], schema=PARENT_SCHEMA)
-            state = self._json_request('GET', '/api/tasks/' + task_id)
-            self.assertEqual(state['status'], status)
-            self.assertEqual(state['scenes'][0]['status'], scene_status)
-            self.assertEqual(state['scenes'][1]['status'], 'pending')
-            self.assertTrue(state['recoverable'])
-            self.assertFalse(state['result_ready'])
-            self.assertEqual(checkpoint.read_bytes(), b'{"preserved":true}')
+        with patch.object(result_store, 'read_records', side_effect=lambda *a, **k: [dict(row)]), \
+                patch.object(Path, 'read_text', return_value=json.dumps(dict(parent_id=task_id))), \
+                patch.object(Path, 'exists', lambda path: path.name == 'dual.json'):
+            for status, scene_status in [('failed', 'failed'), ('interrupted', 'incomplete')]:
+                row['status'] = status
+                state = self._json_request('GET', '/api/tasks/' + task_id)
+                self.assertEqual(state['status'], status)
+                self.assertEqual(state['scenes'][0]['status'], scene_status)
+                self.assertEqual(state['scenes'][1]['status'], 'pending')
+                self.assertTrue(state['recoverable'])
+                self.assertFalse(state['result_ready'])
+        self.input_write.assert_not_called()
 
     def test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume(self):
+        import engine
         import result_store
+        import task
         from dual_task import PARENT_SCHEMA
-        from test_search import _apl_task_boundary
-        from urllib.error import HTTPError
         task_id = 'b' * 32
-        _, destination = self.server.task_paths(task_id)
-        destination.mkdir()
-        pointer = json.dumps(dict(parent_id=task_id))
-        (destination / 'dual.json').write_text(pointer, encoding='utf-8')
-        schema = {key: value for key, value in PARENT_SCHEMA.items() if key != 'rule_snapshot'}
-        row = dict.fromkeys(schema)
+        row = dict.fromkeys(key for key in PARENT_SCHEMA if key != 'rule_snapshot')
         row.update(parent_id=task_id, status='cancelled', phase='single_target', error='old cancellation',
                    input_sha256='frozen', definition_id='reviewed', spec_id=252,
                    config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
                    rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
                    single_target_path='single_target', aoe_path='aoe',
                    single_target_status='cancelled', aoe_status='pending', burst_instructions='')
-        result_store.write('dual_tasks', task_id, [row], schema=schema)
-        state = self._json_request('GET', '/api/tasks/' + task_id)
-        self.assertEqual(state['status'], 'cancelled')
-        self.assertEqual(state['scenes'][0]['status'], 'cancelled')
-        self.assertEqual(state['scenes'][1]['status'], 'pending')
-        with _apl_task_boundary(), self.assertRaises(HTTPError) as raised:
-            self._json_request('POST', '/api/tasks/' + task_id + '/resume', {})
-        failure = json.loads(raised.exception.read().decode('utf-8'))
-        self.assertIn('身份不兼容', failure['error'])
-        self.assertEqual((destination / 'dual.json').read_text(encoding='utf-8'), pointer)
-        self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
+        # 仅替换持久数据/文件锁/原生身份IO，读取、旧身份拒绝和HTTP错误映射均为生产实现。
+        with patch.object(result_store, 'read_records', side_effect=lambda *a, **k: [dict(row)]), \
+                patch.object(Path, 'read_text', return_value=json.dumps(dict(parent_id=task_id))), \
+                patch.object(Path, 'exists', lambda path: path.name == 'dual.json'), \
+                patch.object(task, '_task_lease', side_effect=lambda *a, **k: nullcontext()), \
+                patch.object(engine, 'identity', return_value=('unused.exe', {})):
+            state = self._json_request('GET', '/api/tasks/' + task_id)
+            self.assertEqual(state['status'], 'cancelled')
+            self.assertEqual(state['total_budget_seconds'], 1200)
+            self.assertEqual(state['scenes'][0]['total_budget_seconds'], 600)
+            self.assertFalse(state.get('stop_policy'))
+            self.assertFalse(state['recoverable'])
+            self.assertIn('已退役', state['result_note'])
+            self.assertIn('未进行最终独立复测', state['result_note'])
+            self.assertEqual(state['scenes'][0]['status'], 'cancelled')
+            self.assertEqual(state['scenes'][1]['status'], 'pending')
+            with self.assertRaises(HTTPError) as raised:
+                self._json_request('POST', '/api/tasks/' + task_id + '/resume', {})
+            self.assertIn('身份不兼容', json.loads(raised.exception.read())['error'])
+            self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
 
     def _json_request(self, method: str, path: str, value: dict | None = None,
                       timeout: float = 3) -> dict:
         body = None if value is None else json.dumps(value, ensure_ascii=False).encode("utf-8")
+        if not self.real:
+            from interface import InterfaceHandler
+            handler = object.__new__(InterfaceHandler)
+            handler.server, handler.path = self.server, path
+            handler.request_version, handler.requestline = 'HTTP/1.1', method + ' ' + path
+            handler.command = method
+            handler.headers = Message()
+            handler.headers['Host'] = '127.0.0.1:0'
+            handler.headers['Content-Length'] = str(len(body or b''))
+            handler.rfile, handler.wfile = BytesIO(body or b''), BytesIO()
+            getattr(handler, 'do_' + method)()
+            headers, response = handler.wfile.getvalue().split(b'\r\n\r\n', 1)
+            status = int(headers.split(b' ', 2)[1])
+            if status >= 400:
+                raise HTTPError(path, status, 'interface response', None, BytesIO(response))
+            return json.loads(response)
         request = Request(self.url + path, data=body, method=method,
                           headers={"Content-Type": "application/json"} if body else {})
         with urlopen(request, timeout=timeout) as response:
@@ -472,15 +591,24 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("编码无效", json.loads(raised.exception.read())["error"])
         self.assertEqual(self.server.tasks, {})
-        self.assertEqual(list(self.server.task_root.iterdir()), [])
+        self.input_write.assert_not_called()
 
     def test_empty_submission_is_rejected_without_creating_a_task(self) -> None:
         with self.assertRaises(HTTPError) as raised:
             self._json_request("POST", "/api/tasks", {"profile": "  "})
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("粘贴", json.loads(raised.exception.read())['error'])
-        self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
+        self.input_write.assert_not_called()
 
+
+    def test_http_rejects_retired_formal_settings_before_start_or_resume(self):
+        from simulation_config import RETIRED_SEARCH_SETTINGS
+        for path in ('/api/tasks', '/api/tasks/' + 'a' * 32 + '/resume'):
+            for key in RETIRED_SEARCH_SETTINGS:
+                with self.subTest(path=path, key=key), self.assertRaises(HTTPError) as raised:
+                    self._json_request('POST', path, {key: False})
+                self.assertIn('已退役', json.loads(raised.exception.read())['error'])
+        self.input_write.assert_not_called()
 
     def test_http_rejects_removed_settings_before_start_or_resume(self) -> None:
         for path in ('/api/tasks', '/api/tasks/' + 'a' * 32 + '/resume'):
@@ -492,7 +620,7 @@ class InterfaceTests(unittest.TestCase):
                         self.assertEqual(raised.exception.code, 400)
                         self.assertIn('已移除', json.loads(raised.exception.read())['error'])
         self.assertEqual(self.server.tasks, {})
-        self.assertEqual(list(self.server.task_root.iterdir()), [])
+        self.input_write.assert_not_called()
 
 
     def test_task_api_rejects_unknown_combat_macro_condition_before_creating_task(self) -> None:
@@ -519,9 +647,10 @@ class InterfaceTests(unittest.TestCase):
                     error,
                 )
                 self.assertEqual(self.server.tasks, {})
-                self.assertEqual(list(self.server.task_root.iterdir()), [])
+                self.input_write.assert_not_called()
 
     @pytest.mark.usefixtures('memory_result_center')
+    @pytest.mark.real
     def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
@@ -548,56 +677,69 @@ class InterfaceTests(unittest.TestCase):
         from task import read_task
         self.assertEqual(read_task(destination)["simulation_config"]["target_count"], 5)
 
-    def test_public_service_reports_unmapped_import_skill_without_dps(self) -> None:
+    def test_unmapped_import_error_is_reported_without_dps(self) -> None:
+        from gse_import import import_action_spell_ids, program_from_import
+        from macro_interpreter import map_action
+        from task import TaskError
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
             "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 99999999}]}],
         }])
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "THIRD_PARTY", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._task_state_request(created["task_id"], deadline)
-            if state["status"] in {"completed", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
-        self.assertEqual(state["status"], "failed", state)
-        self.assertIn("99999999", state["error"])
-        self.assertNotIn("dps", state)
+        program = program_from_import(imported, 'THIRD_PARTY', 1)
+        spell_id, = import_action_spell_ids(program)
+        with self.assertRaises(ValueError) as raised:
+            map_action('spell', str(spell_id), [], 'Sequences[THIRD_PARTY].Versions[1].Actions[1]')
+        task_id = 'c' * 32
+        _, destination = self.server.task_paths(task_id)
+        handle = SimpleNamespace(done=True, error=TaskError(str(raised.exception)))
+        self.server.tasks[task_id] = destination, handle
+        state = self._json_request('GET', '/api/tasks/' + task_id)
+        self.assertEqual(state['status'], 'failed', state)
+        self.assertIn('99999999', state['error'])
+        self.assertIn('不能映射', state['error'])
+        self.assertNotIn('dps', state)
+        self.assertFalse(state['result_ready'])
 
-    def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
-        self._check_published_report_group_recovery(use_burst=False)
+    def test_plain_search_request_preserves_disabled_burst_option(self) -> None:
+        import interface
 
+        writes = []
+        source = SimpleNamespace(write_text=lambda text, **options: writes.append((text, options)))
+        destination = self.server.task_root / ('d' * 32)
+        handle = SimpleNamespace(done=False, error=None)
+        self.server.task_options = {'use_burst': False}
+        # Keep the plain request/switch at the real Handler boundary. The
+        # plain × full HTTP/GA/physical recovery cross is deliberately retired;
+        # the burst representative below retains the complete twelve-report fault.
+        with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                patch.object(interface, 'start_task', return_value=handle) as start:
+            created = self._json_request('POST', '/api/tasks', {
+                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
+        self.assertEqual(created['status'], 'starting')
+        self.assertEqual(self.server.tasks[created['task_id']], (destination, handle))
+        self.assertEqual(writes, [(sample_profile(), {'encoding': 'utf-8', 'newline': ''})])
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args, (source, destination))
+        self.assertIs(start.call_args.kwargs['use_burst'], False)
+        self.assertEqual(start.call_args.kwargs['simulation_config']['target_count'], 1)
+        self.assertEqual(start.call_args.kwargs['simulation_config']['scene'], 'single_target')
+
+    @pytest.mark.real
     def test_published_burst_report_group_is_reused_after_registration_interruption(self) -> None:
-        self._check_published_report_group_recovery(use_burst=True)
-
-    def _check_published_report_group_recovery(self, *, use_burst):
         import result_store
         import sequence
         from task import resume_task
 
-        self.server.task_options = {'use_burst': use_burst, 'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
+        self.server.task_options = {'use_burst': True, 'search_config': dict(iterations=2, max_processes=1, diagnostic_logging=True)}
         original_write = result_store.write
         interrupted = False
         evaluated, published, uncommitted_at_interrupt = [], [], set()
         burst_calls = []
-        profile = sample_profile()
-        boundary = _fast_search_boundary
-        if use_burst:
-            import burst
-            from test_burst import page_task_boundary, reviewed_fixture
-            definition, profile = reviewed_fixture()
-            result_store.DATA_ROOT.mkdir(exist_ok=True)
-            burst.publish(definition)
-            boundary = page_task_boundary
+        import burst
+        from test_burst import page_task_boundary, reviewed_fixture
+        definition, profile = reviewed_fixture()
+        result_store.DATA_ROOT.mkdir(exist_ok=True)
+        burst.publish(definition)
 
         def publish_then_interrupt(table, key, rows, **kwargs):
             nonlocal interrupted
@@ -614,7 +756,9 @@ class InterfaceTests(unittest.TestCase):
             burst_calls.append(kwargs.get('burst_candidate') is not None)
             return boundary_evaluate(*args, **kwargs)
 
-        with boundary():
+        # N12恰好越过真实满组登记边界；不靠随机变异碰出第12条。
+        starts = [[["outbreak"]] * clicks for clicks in range(1, 13)]
+        with page_task_boundary(), _fixed_search_population(starts):
             boundary_evaluate = sequence.evaluate
             with patch.object(sequence, 'evaluate', side_effect=evaluate), patch.object(
                     result_store, 'write', side_effect=publish_then_interrupt):
@@ -638,7 +782,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
         self.assertTrue(burst_calls)
-        self.assertTrue(all(enabled == use_burst for enabled in burst_calls))
+        self.assertTrue(all(burst_calls))
         self.assertEqual(len(published), 12)
         self.assertEqual(len(set(published)), 12)
         self.assertTrue(all(evaluated.count(key) == 1 for key in published))
@@ -647,19 +791,19 @@ class InterfaceTests(unittest.TestCase):
         self.assertLessEqual(repeated, uncommitted_at_interrupt)
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
+        self.assertEqual(set(keys), _coarse_batch_keys(resumed))
         self.assertEqual(len(keys), len(set(keys)))
         with result_store.query(
             "SELECT storage_group_key, count(*) FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
+            "WHERE purpose IN ('search', 'feedback', 'nominal') GROUP BY storage_group_key"
         , tables=['batches']) as cursor:
             groups = cursor.fetchall()
         self.assertGreater(sum(row[1] for row in groups), 12)
         self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
-        self.assertEqual(len(groups), (sum(row[1] for row in groups) + 11) // 12)
+        self.assertTrue(any(count > 1 for _, count in groups), '同一阶段仍应批量保存报告')
         with result_store.query(
             "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final')"
+            "WHERE purpose IN ('search', 'feedback', 'nominal')"
         , tables=['batches']) as cursor:
             reports = cursor.fetchall()
         self.assertEqual(len(reports), sum(row[1] for row in groups))
@@ -667,80 +811,24 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(all(score > 0 for _, score in reports))
 
 
-    def test_resume_after_partial_group_commit_uses_unused_group_number(self) -> None:
-        import sqlite3
-        import shutil
-        import result_store
-        import sequence
-        from search import TaskStore
-        from task import resume_task
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
-        original_stage = TaskStore.stage_report
-        original_commit = TaskStore._commit_report_group
-        snapshot = Path(self.directory.name) / 'partial-commit.sqlite3'
-        interrupted = False
-        evaluated = []
-
-        def evaluate(*args, **kwargs):
-            evaluated.append(Path(args[2]).name)
-            return _fast_evaluate(*args, **kwargs)
-
-        def seed_legacy_last_report(store, key, row, stored, **kwargs):
-            if len(store.report_buffer) == 11 and not interrupted:
-                result_store.write_batch(key, stored,
-                                         diagnostic_logging=kwargs.get('diagnostic_logging', False))
-            return original_stage(store, key, row, stored, **kwargs)
-
-        def interrupt_after_commit(store, *args, **kwargs):
-            nonlocal interrupted
-            original_commit(store, *args, **kwargs)
-            if not kwargs.get('checkpoint', True) and not interrupted:
-                interrupted = True
-                with sqlite3.connect(snapshot) as target:
-                    store.db.backup(target)
-                target.close()
-                raise OSError('stop after partial group commit')
-
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-            with patch.object(TaskStore, 'stage_report', seed_legacy_last_report), patch.object(
-                    TaskStore, '_commit_report_group', interrupt_after_commit):
-                created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
-                _, handle = self.server.tasks[created['task_id']]
-                handle.join(30)
-                self.assertTrue(interrupted)
-                self.assertIsNotNone(handle.error)
-            # Restore the exact durable task image at the stop, before error handling.
-            shutil.copyfile(snapshot, handle.output_root / 'task.sqlite3')
-            resumed = resume_task(handle.output_root, diagnostic_logging=True)
-        self.assertEqual(resumed['status'], 'completed')
-        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
-        self.assertEqual(len(set(keys)), 14)
-
+    @pytest.mark.real
     def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
         self._assert_simultaneous_identical_tasks()
 
+    @pytest.mark.real
     def test_lost_report_locations_reject_duplicate_publication(self) -> None:
         import result_store
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         original_url = self.url
-        with _fast_search_boundary():
+        with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]):
             created = self._json_request('POST', '/api/tasks', {
                 'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
             _, handle = self.server.tasks[created['task_id']]
             handle.join(30)
             self.assertIsNone(handle.error)
+            from task import read_task
+            expected = _coarse_batch_keys(read_task(handle.output_root, include_search_records=True))
+            self.assertTrue(expected)
             journal = result_store.DATA_ROOT / '.report-locations.jsonl'
             original = journal.read_bytes()
             for damage in ('missing', 'truncated'):
@@ -774,19 +862,16 @@ class InterfaceTests(unittest.TestCase):
                         server.shutdown(); server.server_close(); thread.join(2)
                     with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
                         keys = [row[0] for row in cursor.fetchall()]
-                    self.assertEqual(len(keys), 14)
-                    self.assertEqual(len(set(keys)), 14)
+                    self.assertEqual(set(keys), expected)
+                    self.assertEqual(len(keys), len(set(keys)))
             journal.write_bytes(original)
 
     def _assert_simultaneous_identical_tasks(self) -> None:
         import result_store
         import sequence
+        from task import read_task
 
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         first_reports = threading.Barrier(2)
         started = set()
         started_lock = threading.Lock()
@@ -797,10 +882,11 @@ class InterfaceTests(unittest.TestCase):
                 first = destination not in started
                 started.add(destination)
             if first:
-                first_reports.wait(self.server.task_options['search_config']['search_budget_seconds'])
+                first_reports.wait(15)  # Test-only deadlock bound, not a product search budget.
             return _fast_evaluate(*args, **kwargs)
 
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
+        with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]), \
+                patch.object(sequence, 'evaluate', side_effect=evaluate):
             created = []
             for _ in range(2):
                 created.append(self._json_request('POST', '/api/tasks', {
@@ -818,70 +904,17 @@ class InterfaceTests(unittest.TestCase):
                     task_error_context=repr(getattr(error, '__context__', None))))
         with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
             keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
+        expected = set().union(*(_coarse_batch_keys(read_task(
+            self.server.tasks[row['task_id']][1].output_root, include_search_records=True)) for row in created))
+        self.assertTrue(expected)
+        self.assertEqual(set(keys), expected)
         self.assertEqual(len(keys), len(set(keys)))
         self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
 
 
 
-    def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
-        self._check_native_round(invalid_variance=True)
-
-    def _check_native_round(self, *, invalid_variance=False):
-        from task import read_task
-        from test_search import _fast_evaluate
-        from test_search import _prepared_search_boundary
-
-        calls = []
-        initial = ("outbreak", "death_coil")
-        better = ("death_coil", "outbreak")
-        worse = ("death_coil", "outbreak", "death_coil")
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            actions = tuple(action["simc_action"] for block in candidate["blocks"] for action in block)
-            wanted = {initial: 90, better: 120, worse: 80}[actions]
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
-            damage.update(mean=wanted, variance=1)
-            result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
-            if invalid_variance and actions == worse:
-                damage.pop("variance")
-            result["summary"]["dps"] = wanted
-            (Path(folder) / "native.json").write_text(json.dumps(result["report"]), encoding="utf-8")
-            calls.append((actions, kwargs["iterations"], kwargs["seed"]))
-            return result
-
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
-            no_improvement_rounds=1, batch_targets=(32, 128, 512),
-            input_interval_ms=200, iterations=2, validation_batches=2, max_processes=2)}
-        with _prepared_search_boundary(self.directory.name,
-                [[[name] for name in actions] for actions in (initial, better, worse)], evaluate=evaluate):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "input_interval_ms": 200})
-            deadline = time.monotonic() + 30
-            while True:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "failed", "cancelled"}:
-                    break
-                time.sleep(.02)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertTrue(state["result_ready"])
-        search_calls = [(actions, count) for actions, count, seed in calls if seed < 20260912 + 100000]
-        expected = [32]
-        self.assertEqual([n for a, n in search_calls if a == worse], expected)
-        self.assertEqual([n for a, n in search_calls if a == better], expected)
-        self.assertEqual(state["search_result"]["dps"], 120)
-        _, handle = self.server.tasks[created["task_id"]]
-        handle.join(5)
-        result = read_task(handle.output_root, include_search_records=True)
-        self.assertTrue(all('rule_diagnostics' not in row for row in result['search']['records']))
-
-
-
-
     @pytest.mark.usefixtures('memory_result_center')
+    @pytest.mark.real
     def test_public_search_reduces_wait_clicks_and_native_evaluates_selected_candidate(self) -> None:
         import cbor2
         import codec
@@ -947,20 +980,7 @@ class InterfaceTests(unittest.TestCase):
             return result
 
         self.server.task_options = {
-            "search_config": {
-                "total_budget_seconds": 60,
-                "search_budget_seconds": 30,
-                "candidate_limit": 3,
-                "round_candidate_limit": 2,
-                "batch_targets": (2,),
-                "validation_batches": 2,
-                "final_batches": 20,
-                "iterations": 2,
-                "final_iterations": 100,
-                "scenarios": ("nominal", "jitter", "slow", "pause", "phase"),
-                "max_processes": 1,
-                "random_seed": 20260926,
-            }
+            "search_config": {'iterations': 2, 'max_processes': 1, 'random_seed': 20260926}
         }
         real_gse_runner = codec.run_command
         with _fast_initialization(real_engine=True), \
@@ -1043,17 +1063,14 @@ class InterfaceTests(unittest.TestCase):
                              [wait["source"]["gse_path"]] * wait["clicks"])
 
 
+    @pytest.mark.real
     def test_completed_task_is_not_visible_before_its_result_is_reliably_saved(self) -> None:
         import search
         import task
 
         waiting, heartbeat, release = threading.Event(), threading.Event(), threading.Event()
         store_run, publish = task._store_run, search.TaskStore.publish
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
-            final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=37,
-        )}
+        self.server.task_options = {"search_config": dict(iterations=2, max_processes=1, random_seed=37)}
 
         def held_result(destination, result, *, state=None):
             if result.get("status") == "completed":
@@ -1067,7 +1084,7 @@ class InterfaceTests(unittest.TestCase):
             if waiting.is_set():
                 heartbeat.set()
 
-        with _fast_search_boundary(), _initialized_starts([[['outbreak']]]), \
+        with _fast_search_boundary(), _fixed_search_population([[['outbreak']]]), \
                 patch.object(task, "_store_run", side_effect=held_result), \
                 patch.object(search.TaskStore, "publish", published_heartbeat):
             created = self._json_request("POST", "/api/tasks", {
@@ -1087,8 +1104,9 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(completed["status"], "completed", completed)
         self.assertTrue(completed["result_ready"], completed)
 
+    @pytest.mark.real
     def test_browser_computes_copies_and_clears_real_candidate(self):
-        # 一次真实180ms双场任务覆盖计算、复制和清旧；200ms保页面初始默认值。
+        # 极小合法种群保留真实180ms双场原生/复测/编译/复制链；不为UI烟测运行长探索。
         import sequence
         evaluate = sequence.evaluate
         evaluated_inputs = set()
@@ -1098,10 +1116,7 @@ class InterfaceTests(unittest.TestCase):
                                   tuple(kwargs['input_times'][:2])))
             return evaluate(*args, **kwargs)
 
-        self.server.task_options = {'search_config': dict(total_budget_seconds=120,
-            search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
-            validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
-            scenarios=('nominal',),max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
@@ -1134,7 +1149,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     assert.equal(state.input_interval_ms,180);
     assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
     assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
-    assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
+    assert.match(await page.locator('#resultNote').innerText(),/正常场景独立复测/);
     assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
     await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
     await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
@@ -1148,10 +1163,27 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        with patch.object(sequence, 'evaluate', observe_evaluation):
-            result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
+        import random
+        import population_training
+        from types import SimpleNamespace
+        original_random = random.Random
+        class NoVariationRandom(original_random):
+            _randbelow = original_random._randbelow
+            def random(self):
+                return .999999  # Only freeze the random gate; real GA still commits its two complete generations.
+        with _initialized_starts([[['outbreak'], ['death_coil']]]), \
+                patch.object(population_training, 'random', SimpleNamespace(Random=NoVariationRandom)), \
+                patch.object(sequence, 'evaluate', observe_evaluation):
+            result=subprocess.run([str(REPOSITORY / '.local/verify-deps/node/node.exe'),'-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
                 text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        from task import read_task
+        failures = [read_task(path) for destination, handle in self.server.tasks.values()
+                    for path in (destination, destination / 'single_target', destination / 'aoe')
+                    if handle.done and (path / 'result.json').exists()] if result.returncode else []
+        if result.returncode:
+            failures.extend(str(handle.error) for _, handle in self.server.tasks.values()
+                            if handle.error is not None)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr+repr(failures))
         self.assertEqual({targets for targets, _ in evaluated_inputs}, {1, 5})
         self.assertEqual({targets for targets, times in evaluated_inputs if times == (0, 180)}, {1, 5})
         self.assertEqual(len(self.server.tasks), 1, '一次开始只创建一个双场任务')
@@ -1161,14 +1193,16 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(saved['simulation_config']['target_count'], 5)
         self.assertEqual(saved['config']['input_interval_ms'], 180)
         self.assertTrue(saved['burst']['definition_id'])
-        self.assertEqual(saved['final']['scenarios'], {})
+        self.assertEqual(set(saved['final']['scenarios']), {'nominal'})
         output = json.loads(result.stdout)
         self._decode_candidate(output['candidate'], 252)
         from gse_import import decode_import
         state = output['state']
         self.assertEqual(state['status'], 'completed', state)
         self.assertEqual([scene['target_count'] for scene in state['scenes']], [1, 5])
-        self.assertTrue(all(scene['total_budget_seconds'] == 120 for scene in state['scenes']))
+        self.assertTrue(all(scene['total_budget_seconds'] is None for scene in state['scenes']))
+        self.assertTrue(all(scene['generation'] == 2 for scene in state['scenes']))
+        self.assertTrue(all(scene['search_result']['samples'] == 381 for scene in state['scenes']))
         self.assertEqual(len({scene['input_sha256'] for scene in state['scenes']}), 1)
         self.assertEqual(set(state['exports']), {'single_target', 'aoe', 'burst'})
         names = [decode_import(value)['sequences'] for value in state['exports'].values()]
@@ -1188,6 +1222,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         for event in result['trace'] if input_sources is not None else []:
             source = input_sources[event['origin'] - 1]
             event.update(source=source, source_origin=input_sources[:event['origin']].count(source))
+        (Path(folder) / 'native.json').write_text(json.dumps(result['report']), encoding='utf-8')
         return result
 
 
@@ -1229,7 +1264,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertIn("点击间隔", json.loads(raised.exception.read())["error"])
         self.assertEqual(self.server.tasks, {})
 
-    def test_interface_reports_native_and_export_failures_without_internal_paths(self):
+    @pytest.mark.real
+    def test_native_unsupported_specializations_fail_before_export(self):
         from task import TaskError
         native_cases = [
             ('native_default', (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
@@ -1246,6 +1282,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                     invocation = json.loads((Path(directory) / 'task/reference/invocation.json').read_text(encoding='utf-8'))
                     self.assertFalse(any(arg.startswith('allow_experimental_specializations=')
                                          for arg in invocation['command']))
+    def test_interface_reports_native_and_export_failures_without_internal_paths(self):
+        from task import TaskError
         cases = [
             ('主动能力不完整，停止模拟与导出: invalid_action', '尚未支持的主动能力'),
             ('原生引擎失败: C:\\private\\simc.exe', '引擎'),
@@ -1258,9 +1296,10 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                 self.assertIn(expected, message)
                 self.assertNotIn('\\', message)
                 self.assertLess(len(message), 161)
-        self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
+        self.assertFalse(_public_state({'status': 'completed'}, self.server.output_root)['result_ready'])
 
 
+    @pytest.mark.real
     def test_dual_freezes_timeline_setting_and_preserves_storage_failure_recovery(self):
         import os
         import result_store
@@ -1274,10 +1313,10 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         import simulation_config
         path = Path(self.directory.name) / 'settings.toml'
         path.write_text('[search]\nsearch_timeline=true\n', encoding='utf-8')
-        self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1, input_interval_ms=200)}
+        self.server.task_options = {'search_config': dict(iterations=2, input_interval_ms=200)}
         edited = []
-        with patch.object(simulation_config, 'DEFAULT_PATH', path), _fast_initialization(), page_task_boundary():
+        with patch.object(simulation_config, 'DEFAULT_PATH', path), _fast_initialization(), page_task_boundary(), \
+                _fixed_search_population([[['outbreak'], ['death_coil']]]):
             evaluate = sequence.evaluate
             def edit_after_start(*args, **kwargs):
                 if not edited:

@@ -10,7 +10,6 @@ import hashlib
 from itertools import islice
 import json
 import math
-import msvcrt
 from pathlib import Path
 import sqlite3
 import sys
@@ -70,6 +69,7 @@ def decode(value):
 
 @contextmanager
 def writer_lock():
+    import msvcrt
     result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
     with (result_store.DATA_ROOT / '.seed-writer.lock').open('a+b') as handle:
         if handle.tell() == 0:
@@ -291,7 +291,8 @@ def retains_core(program, core):
 
 def filter_search_program(program, excluded, validation_capabilities):
     """只派生程序；裁剪已知动作并保留剩余结构、顺序与原始删除位置。"""
-    from program import from_search_program
+    from program import _search_castsequence_parts
+    from macro_interpreter import parse_castsequence
     removed = []
 
     def keep(block, path):
@@ -328,9 +329,16 @@ def filter_search_program(program, excluded, validation_capabilities):
             if remaining:
                 output.append(dict(segment, blocks=remaining))
         elif isinstance(segment, dict) and segment.get('kind') == 'CastSequence':
-            # 删除前用既有解析核对成员和reset，不能删除后掩盖无效定义。
-            from_search_program([segment], validation_capabilities)
-            members = keep(segment['members'], path + '.members')
+            # 先核原结构及语法，再核成员证据；静态不可用技能不需要伪造法术编号。
+            members, reset_text = _search_castsequence_parts(segment, path)
+            parsed = parse_castsequence('/castsequence' + reset_text + ' ' + ','.join(members),
+                                        path, actions=None)
+            actions = validation_capabilities['actions']
+            known = {action['simc_action'] for action in actions if action.get('kind') == 'spell'}
+            known.update(excluded - {action['simc_action'] for action in actions})
+            if parsed['members'] != members or any(member not in known for member in members):
+                raise ValueError(f'{path}: /castsequence 包含当前角色不支持且非原生确证不可用的技能')
+            members = keep(members, path + '.members')
             if members:
                 output.append(dict(segment, members=members))
         else:
@@ -553,7 +561,9 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
     from simulation_config import load_search_config
     values = dict(search_config or {}, diagnostic_logging=diagnostic_logging,
-        diagnostics='summary', no_improvement_rounds=2, max_processes=max_processes)
+        diagnostics='summary', max_processes=max_processes)
+    if rule_snapshot is not None:
+        values.setdefault('no_improvement_rounds', 2)  # Historical v1 identity only.
     # 仅旧完整成果重建原凭据时接受其内嵌配置，不读current职业规则。
     config = config_for(values if rule_snapshot is not None else load_search_config(**values),
                         training=True, legacy=rule_snapshot is not None)

@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from typing import TextIO
 
 
 DAMAGE_EVENTS = {
@@ -32,9 +33,15 @@ def _matches_player(source_name: str, player: str) -> bool:
     return source_name == player or source_name.startswith(player + "-")
 
 
-def _read_events(path: Path) -> list[tuple[datetime, list[str]]]:
+def _read_text(source: Path | TextIO) -> str:
+    if isinstance(source, Path):
+        return source.read_text(encoding="utf-8-sig")
+    return source.read().removeprefix('\ufeff')
+
+
+def _read_events(path: Path | TextIO) -> list[tuple[datetime, list[str]]]:
     events = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+    for line_number, line in enumerate(_read_text(path).splitlines(), 1):
         try:
             timestamp, payload = line.split("  ", 1)
             events.append((datetime.strptime(timestamp, "%m/%d/%Y %H:%M:%S.%f"), next(csv.reader([payload]))))
@@ -43,8 +50,8 @@ def _read_events(path: Path) -> list[tuple[datetime, list[str]]]:
     return events
 
 
-def _latest_gse_session(path: Path) -> tuple[int, list[list[str]]]:
-    rows = list(csv.reader(path.read_text(encoding="utf-8-sig").splitlines()))
+def _latest_gse_session(path: Path | TextIO) -> tuple[int, list[list[str]]]:
+    rows = list(csv.reader(_read_text(path).splitlines()))
     if not rows or any(len(row) < 4 for row in rows):
         raise ValueError("GSE 调试记录格式错误")
     try:
@@ -207,12 +214,12 @@ def _simulation_damage_sources(player: dict, duration: float) -> list[dict]:
 
 
 def analyze(
-    path: Path,
+    path: Path | TextIO,
     player: str,
     duration: float,
     *,
-    gse_debug: Path | None = None,
-    simulation: Path | None = None,
+    gse_debug: Path | TextIO | None = None,
+    simulation: Path | dict | None = None,
     primary_target: str | None = None,
     owned_sources: tuple[str, ...] = (),
     gse_utc_offset: float | None = None,
@@ -443,7 +450,9 @@ def analyze(
         result["gse_debug"] = debug_result
     if simulation is not None:
         try:
-            if simulation.is_dir():
+            if isinstance(simulation, dict):
+                report = simulation
+            elif simulation.is_dir():
                 from result_store import report_for_task
                 report = report_for_task(simulation)
             else:

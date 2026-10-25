@@ -554,8 +554,8 @@ def run_three_arm(source, output, manifest, slot, deadline):
         profile = training_template()
         character = replace(template_character(profile.read_text()), spec_id=context['native']['identity']['spec_id'],
                             race=context['native']['identity']['race'])
-        config = config_for(dict(random_seed=block['search_seed'], batch_targets=(32,), max_processes=2,
-            round_candidate_limit=16, reset_events=(), input_interval_ms=200,
+        config = config_for(dict(random_seed=block['search_seed'], max_processes=2,
+            reset_events=(), input_interval_ms=200,
             diagnostics='off', diagnostic_logging=False, search_observability='off'), training=True)
         store.state.update(run_id=uuid.uuid4().hex, starts=[row['program'] for row in frozen['rows']],
             config=config, capabilities=context['capabilities'], burst=context['burst'],

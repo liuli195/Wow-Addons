@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import unittest
+
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,6 +76,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(fields.get("name"), SKILL.name)
         self.assertTrue(fields.get("description"), "description 不得为空")
 
+    @pytest.mark.real
     def test_claude_side_link_resolves_to_truth(self):
         # 连接不入库（真身才是版本化对象），所以干净克隆上没有它。
         # 这里按需把它建出来，使这条检查**在干净仓库里可准备、可重复**。
@@ -98,6 +101,7 @@ class SkillLayoutTest(unittest.TestCase):
         )
         self.assertEqual(residue, [], "技能自包含后不应再有定位指针")
 
+    @pytest.mark.real
     def test_install_skill_only_writes_inside_the_target_project(self):
         """安装命令只往**目标项目**里写，不碰用户级目录；复制出来的副本能独立跑。
 
@@ -138,6 +142,7 @@ class SkillLayoutTest(unittest.TestCase):
                 oversized.append(f"{path.relative_to(SKILL).as_posix()} = {size} 字节")
         self.assertEqual(oversized, [], "载荷中存在未压缩的大文本：\n" + "\n".join(oversized))
 
+    @pytest.mark.real
     def test_entry_runs_and_reports_integrity(self):
         result = subprocess.run(
             [sys.executable, str(ENTRY), "doctor", "--json"],
@@ -151,6 +156,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(Path(report["lua"]["path"]), REPO_LUA,
                          "实际使用的 Lua 不是仓库固定指定的那个")
 
+    @pytest.mark.real
     def test_catalog_preview_and_full_result(self):
         """一次真实目录查询同时验证缩裁、计数及完整结果可达。"""
         target = ROOT / ".local" / "tests" / "wow-addon-test" / "catalog-full.json"
@@ -236,6 +242,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(len(items) + omitted[0]["omitted"], 11, "省略条数对不上")
         self.assertTrue(report.get("details_truncated"), "裁剪没有被显式标注")
 
+    @pytest.mark.real
     def test_tool_error_message_is_bounded(self):
         """失败信息同样要有上限：错误消息可以很长。
 
@@ -266,6 +273,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertTrue(report.get("details_truncated"), "超长失败信息没有被标注截断")
         self.assertLessEqual(len(report["message"]), 2048 + 16, "失败信息本身没有上限")
 
+    @pytest.mark.real
     def test_small_outputs_are_never_truncated(self):
         """没超预算的命令不该被缩裁——否则代理会以为结果不完整。"""
         result = subprocess.run(
@@ -277,6 +285,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertNotIn("details_truncated", report, "小输出被误标为缩裁")
         self.assertEqual(report.get("cases"), 846, "用例总数不对")
 
+    @pytest.mark.real
     def test_tool_selftest_passes_in_the_repo(self):
         """工具自带的整套自检要在仓库里真跑一遍——否则它退化成一句没人执行的承诺。
 

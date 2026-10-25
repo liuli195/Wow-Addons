@@ -1,9 +1,9 @@
-"""真实角色经三步浏览器界面完成默认预算计算、复制和旧结果清理。"""
+"""真实角色经浏览器自然搜索、完整复测、复制和旧结果清理。"""
 import argparse
 import hashlib
 import json
 from pathlib import Path
-import shutil
+from contextlib import ExitStack
 import sys
 import threading
 import time
@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--output',type=Path)
     parser.add_argument('--profile',type=Path,help='固定角色文件；不修改原文件')
     parser.add_argument('--data-project',type=Path,help='明确使用已有数据中心所在项目')
-    parser.add_argument('--smoke',action='store_true',help='每场600秒预算，缩小候选和样本进行完整链冒烟')
+    parser.add_argument('--smoke',action='store_true',help='内建起点取首个并冻结繁殖随机门；保外部起点和正常3×128复测，不是默认DPS对照')
     args=parser.parse_args()
     output=(args.output or ROOT/'.local/tests'/('界面验收 中文 空格 '+uuid.uuid4().hex[:10])).resolve()
     output.mkdir(parents=True,exist_ok=False)
@@ -31,9 +31,7 @@ def main():
         import result_store
         result_store.bind_project(args.data_project)
     profile=source.read_text(encoding='utf-8')
-    options=dict(search_config=dict(candidate_limit=5,round_candidate_limit=1,batch_targets=(2,),
-        iterations=2,validation_batches=2)) if args.smoke else None
-    server=create_server(output,task_options=options)
+    server=create_server(output)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     url=f'http://127.0.0.1:{server.server_port}/'
     print(url,flush=True)
@@ -54,7 +52,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
   assert.equal(await page.locator('#resultSection').isVisible(),true);
   const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);assert.equal(text,last.exports.single_target);
   await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
-  assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
+  assert.equal(last.status,'completed');
+  assert.equal(last.stop_policy.kind,'natural_stagnation');
+  assert.match(await page.locator('#resultNote').innerText(),/两个循环均已完成正常场景独立复测/);
   assert.equal(Object.keys(last.exports).length,3);assert.ok(last.collection_ready);
   await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),last.collection_text);
   await page.screenshot({path:path.join(input.output,'result.png'),fullPage:true});
@@ -65,11 +65,26 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
     started=time.monotonic()
+    smoke_boundary=ExitStack()
     try:
+        if args.smoke:
+            import random
+            from types import SimpleNamespace
+            from unittest.mock import patch
+            import population_training
+            import search
+            original_random=random.Random
+            class NoVariationRandom(original_random):
+                _randbelow=original_random._randbelow
+                def random(self):
+                    return .999999
+            native_starts=search.initial_programs
+            smoke_boundary.enter_context(patch.object(population_training,'random',SimpleNamespace(Random=NoVariationRandom)))
+            smoke_boundary.enter_context(patch.object(search,'initial_programs',lambda *a,**k:native_starts(*a,**k)[:1]))
         payload=output/'browser-input.json'
         payload.write_text(json.dumps(dict(url=url,profile=profile,output=str(output))),encoding='utf-8')
         try:
-            process=run_command([shutil.which('node') or 'node','-e',script,str(payload)],ROOT,timeout_seconds=1260,
+            process=run_command([str(ROOT/'.local/verify-deps/node/node.exe'),'-e',script,str(payload)],ROOT,timeout_seconds=1260,
                                 runtime=TaskRuntime(1260),output_dir=output)
         finally:
             payload.unlink(missing_ok=True)
@@ -79,6 +94,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
         browser=json.loads((output/'browser.json').read_text(encoding='utf-8'))
         task=output/'tasks'/browser['task_id']
         result=read_task(task)
+        from formal_search import STOP_POLICY
+        assert result['status']=='completed' and result['stop_policy']==STOP_POLICY
         text=result['exports']['single_target']
         assert text==browser['state']['exports']['single_target']
         assert (task/'input.original.simc').read_bytes()==profile.encode('utf-8')
@@ -92,8 +109,17 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
         members=decode_import(result['collection_text'])['sequences']
         assert len(members)==3
         source_counts=[]
+        independent_results=[]
         for purpose, targets in [('single_target',1),('aoe',5)]:
             child=read_single(task/purpose,include_reports=False)
+            assert child['stop_policy']==STOP_POLICY and child['independent_validation_complete'] is True
+            assert child['final']['status']=='completed' and set(child['final']['scenarios'])=={'nominal'}
+            finalists=child['final']['scenarios']['nominal']['finalists']
+            assert finalists and all(len(row['batches'])==3 and row['samples']==381 and
+                all(batch['requested_iterations']==128 for batch in row['batches']) for row in finalists)
+            if args.smoke:
+                assert child['search']['complete_generations']>=2 and not child['search']['partial_round']
+            independent_results.append(child['independent_validation_complete'])
             assert child['simulation_config']['target_count']==targets
             assert child['burst']['definition_id']==result['definition_id']
             store=TaskStore(task/purpose)
@@ -114,6 +140,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
                 store.close()
             source_counts.append(dict(purpose=purpose,target_count=targets,
                                       candidates=child['search']['candidate_count'],
+                                      effective_population=child['search']['effective_population_size'],
+                                      nominal_samples=child['search_result']['samples'],
                                       loop_exclusion_checked=True,same_actor_burst_checked=True))
         import dual_task
         parent=dual_task._load(task)
@@ -125,15 +153,22 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
 
         evidence=dict(status=result['status'],elapsed_seconds=result['elapsed_seconds'],wall_seconds=time.monotonic()-started,
             scenes=result['scenes'],preparation_seconds=result['preparation_seconds'],packaging_seconds=result['packaging_seconds'],
-            smoke=args.smoke,source_counts=source_counts,input_unchanged=True,three_members=True,
-            saved_results_reread=True,independently_tested=False,
+            smoke=args.smoke,smoke_scope=(dict(builtin_starts=1,external_starts='preserved',variation='frozen_gate',
+                nominal='3x128',default_comparison=False) if args.smoke else None),
+            observation_timeout_seconds=1260,stop_policy=result['stop_policy'],
+            source_counts=source_counts,input_unchanged=True,three_members=True,
+            saved_results_reread=True,independently_tested=all(independent_results),
             clipboard_matches=True,input_change_clears=True,candidate_sha256=hashlib.sha256(text.encode()).hexdigest(),game_validation='not_run')
         (output/'acceptance.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
         print(json.dumps(evidence,ensure_ascii=False,indent=2))
     finally:
-        for _,handle in list(server.tasks.values()):
-            if not handle.done:cancel_task(handle);handle.join(5)
-        server.shutdown();server.server_close();thread.join(2)
+        try:
+            for _,handle in list(server.tasks.values()):
+                if not handle.done:cancel_task(handle)
+                handle.join()
+            server.shutdown();server.server_close();thread.join(2)
+        finally:
+            smoke_boundary.close()
 
 
 if __name__=='__main__':main()
