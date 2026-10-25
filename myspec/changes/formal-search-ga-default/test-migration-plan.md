@@ -80,11 +80,11 @@ gear目前只有8个Node VM（脚本虚拟机）／伪DOM（页面对象）检�
 
 ## 并发资源与完整60秒
 
-初始方案只有普通GSE内4；经2026-10-25本机完整真实组选参后，候选采用外层4，`verify.sim2gse-unit`与`verify.sim2gse-real`各内层xdist4／worksteal，其余无xdist，全部原checkParallel:true保留。两GSE组同时运行时为8 worker＋2 pytest控制端＋2其他check主进程＝12，不含BAV／guard自身；不是外4每组各4/8。
+初始方案只有普通GSE内4；经2026-10-25本机完整真实组选参后，候选采用外层4，`verify.sim2gse-unit`内层xdist4、`verify.sim2gse-real`内层xdist6，均worksteal，其余无xdist，全部原checkParallel:true保留。两GSE组同时运行时为10 worker＋2 pytest控制端＋2其他check主进程＝14，不含BAV／guard自身；不是外4每组各4/8。
 
-真实GSE测试每个worker最多2个单线程SimC，内4的GSE局部静态上界为8；若gear真实组同时运行，其既有LOCK串行原生调用另计最多1个。三路适配和browser不在同一gear check内并发。最多两个browser会话（GSE/gear各一），实际浏览器自身多进程、HTTP/Node服务和所有权helper另计；名义≤16不等于OS总进程≤16。20线程共享并发契约的受控回调代表保逻辑边界，不借此运行20个真实引擎。
+真实GSE测试每个worker最多2个单线程SimC，内6的GSE局部静态上界为12；若gear真实组同时运行，其既有LOCK串行原生调用另计最多1个。三路适配和browser不在同一gear check内并发。最多两个browser会话（GSE/gear各一），实际浏览器自身多进程、HTTP/Node服务和所有权helper另计；名义≤16不等于OS总进程≤16。20线程共享并发契约的受控回调代表保逻辑边界，不借此运行20个真实引擎。
 
-本机真实内2一次60秒未结束，内4一次123 passed／24 subtests、pytest55.36秒／外层55.687秒，未改覆盖或预算；后者只证明单组完成，不证明全43项60秒或实测OS峰值。本机保存argv和WorkStealingScheduling日志已核，候选绑定同次实测的real内4／worksteal，正式配置待官方init应用后全组验收，不追加真实重复试验或内8/12组合。realChecks只定义守卫角色，2.7.1对native pytest同样支持pytestXdistWorkers；real保持候选第二项且checkParallel:true，与普通组同第一波启动，沿用既有顺序尽早运行长项。checkParallel:false会等所有parallel结束后串行，不采用该做法、不新增调度器。
+本机真实内2一次60秒未结束，内4单组123 passed／24 subtests、外层55.687秒，但其全43项仍42通过／1超时。随后同7e77e4e源码独占内6／worksteal一次123 passed／24 subtests，pytest43.97秒／外层44.297秒，比内4外层少11.390秒（20.5%），未改覆盖或预算，未见本轮进程／内存／路径错误。单组结果不证明混合全43项60秒或OS峰值。候选仅real workers4→6、worksteal不变，正式配置待官方init应用后全组验收；不再试其他参数。realChecks只定义守卫角色，2.7.1对native pytest同样支持pytestXdistWorkers；real保持候选第二项且checkParallel:true，与普通组同第一波启动，沿用既有顺序尽早运行长项。checkParallel:false会等所有parallel结束后串行，不采用该做法、不新增调度器。
 
 60秒覆盖验证入口所需准备、官方调用至报告收尾，enforceLocalBudget=true；完整正式运行--full不读成功缓存。仅事先构建和环境安装另列真实耗时，不能把本次验证所需指纹刷新／夹具复制移到预算外。诊断、云端warning、缓存命中、未完成、skip均不能作正式绿灯。所有本机TEMP/TMP/TMPDIR和basetemp都在repo内短唯一路径，不能用系统临时目录越过用户限制。
 

@@ -135,3 +135,9 @@ Timeline产品修复独立提交后，原真实失败节点本机已完整通过
 - 同源码真实内4单次123 passed／24 subtests，0失败／0未完成，pytest55.36秒、外层55.687秒；没有修改正式配置，未发现本轮内存／路径污染。只证明完整真实组完成，尚不证明全43项入口至收尾60秒通过。
 - 本机已有保存argv和WorkStealingScheduling日志确认当次为-n 4 --dist=worksteal；候选仅为verify.sim2gse-real增加pytestXdistWorkers:4及同--dist=worksteal。43个检查、17普通／26 native、real角色、全部123覆盖、paths／inputs、outer4／ordinary4／60秒均不变。0cecf8a官方runner先统一校验/注入xdist字段，再按角色运行，不需要把原生组改为普通组。real仍为第二个并行检查，外4第一波启动；不新增调度机制或串行其他检查。正式config不手改，由本机官方init --config --overwrite应用此候选后统一验证。
 - 静态资源边界：两GSE组同时内4，含控制端及另外两check主进程共12个，不含BAV／guard。GSE真实引擎局部上界8个单线程SimC，gear并行原生调用最多再叠1个；浏览器自身多进程、HTTP／Node与所有权helper另计。训练受控20线程回调不是20真实引擎。OS总峰值未实测，不承诺不超过16。
+
+## 2026-10-25 已测真实内6候选（08:53 UTC）
+
+- 官方受管配置7e77e4e仅应用内4／worksteal，整轮43项42通过／1超时，总60.046秒，real检查运行50.16秒被截；不能从两者差额断言全是指纹耗时，首次全选准备及逐项执行重算机制仅为已核静态事实。未修改工具预扫描、必要inputs或守卫。
+- 同HEAD独占真实内6／worksteal一次123 passed／24 subtests，pytest43.97秒、外层44.297秒，0失败／0未完成；相较内4外层55.687秒少11.390秒（20.5%），未见本轮进程／内存／路径错误。普通287／106之前本机守卫已通过，未因纯参数改动另跑无关节点；内6混合全43尚未测，不称60秒整体通过。
+- 候选唯一区别为verify.sim2gse-real的pytestXdistWorkers:4→6，worksteal／outer4／ordinary4／60秒及全部123覆盖、角色和依赖不变，正式config由本机官方init应用，不手改、不再试其他参数。静态混合check进程14个（10worker＋2控制端＋另2check），真实GSE局部最多12个单线程SimC，gear并行另计最多1个；浏览器／HTTP／Node／所有权helper另计，OS峰值和混合资源竞争仍未实测，不能承诺总进程cap。
