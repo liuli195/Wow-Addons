@@ -651,9 +651,10 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     profile.write_bytes(raw.encode('utf-8'))
     assert profile.read_bytes() == raw.encode('utf-8')
     # 只准备待取消的单场冠军；另一场无需预先执行完整双场。
+    # max_processes 属于冻结条件，必须与 dual_result 的单路前置一致。
     first = task.run_task(profile, tmp_path / 'first', use_burst=True,
         simulation_config=dict(target_count=1, scene='single_target'),
-        search_config=dict(input_interval_ms=200, iterations=2))
+        search_config=dict(input_interval_ms=200, iterations=2, max_processes=1))
     assert first['status'] == 'completed', first
     assert (tmp_path / 'first/input.original.simc').read_bytes() == raw.encode('utf-8')
     key = first['search']['formal_champion_snapshot']['condition_key']
