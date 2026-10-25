@@ -1,0 +1,16 @@
+# 八路采用的验证证据
+
+两档受验主干均为 ea0e2302908691a72f804db8e7b0ead1688bdec5，树 48c9630c56cc7286ea255ad97d113aa69a075573。官方工具版本2.7.1，命令为 `build-and-verify verify --project . --full --performance-report --execution-context local`。此次采用配置不新增完整测试轮次。
+
+| 真实组内部进程数 | 真实组秒数 | 全仓工具秒数 | 全仓墙钟秒数 |
+| --- | ---: | ---: | ---: |
+| 6 | 43.09 | 53.2089958 | 53.453 |
+| 8 | 37.61 | 51.1566279 | 51.406 |
+
+两档各四十三项实际执行并通过，零缓存跳过、零未完成，十七项普通守卫及二十六项真实检查；四百一十普通测试和一百三十子测试、一百一十八真实测试和十九子测试通过。两档为本机单次前后对照，不宣称统计稳定收益；八路真实组仍未达到三十秒。六路在暂停时已自然完成且报告完整，因此只补了尚未启动的八路，没有重复六路。
+
+核心证据保存在被忽略目录 `.local/gse-30s-1befd187b4e34581865970f3e5b2c7d4/` 的两档 verify.log、performance-report.json、result.json、cleanup.json 及 final-summary.json。可重建的本轮纹理、假部署、任务数据库等已按明确清单清理，完整日志和报告保留；未删除历史成果或正式数据。两档对照结束时原六路已恢复；本票按用户后续明确指令正式采用八路，不再恢复六路。
+
+本票候选为497139字节UTF-8/LF，SHA256 `c505ac85c11a4db730f955b54fcd36ab94db43decc253900476b7507800f6970`。使用官方 init --config --overwrite 写入，原配置保留在官方备份；只更改真实组 pytestXdistWorkers，其他 JSON 完全相同。
+
+最终干净提交的差异门禁使用 `build-and-verify verify --project . --base ea0e2302908691a72f804db8e7b0ead1688bdec5 --execution-context local`。实际执行与有效缓存分别记录在本机日志 `.local/gse-under-30-adoption/`；此处不把尚未执行的门禁或远端检查写成通过。
