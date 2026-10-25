@@ -69,3 +69,6 @@
 # 工具自带 sha256 清单按原始字节校验；行尾被转换会让完整性检查失败，
 # 并连带让技能安装的逐字节覆盖保护报错。
 .agents/skills/wow-addon-test/** -text
+
+# 固定回放输入按原始字节校验摘要，检出时不得转换行尾。
+projects/gear-planner/fixtures/raidbots-*/*.input.simc -text
