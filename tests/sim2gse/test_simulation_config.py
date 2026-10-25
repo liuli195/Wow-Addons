@@ -245,6 +245,7 @@ class SimulationConfigTests(unittest.TestCase):
 
     @pytest.mark.real
     def test_task_records_effective_config_and_rejects_changed_resume(self) -> None:
+        import search as search_module
         from task import TaskError, resume_task, run_task
         from test_character_export import sample_profile
         from test_search import _fast_search_boundary
@@ -283,37 +284,19 @@ class SimulationConfigTests(unittest.TestCase):
                     resume_task(destination,
                                 simulation_config=dict(simulation, target_count=3))
                 self.assertEqual(_read_state(destination), state_before_resume)
-                resumed = resume_task(destination, simulation_config=simulation)
-                self.assertEqual(resumed['simulation_config'], simulation)
-
-
-    @pytest.mark.real
-    def test_tampered_input_is_rejected_before_task_store_construction(self) -> None:
-        import search
-        from task import TaskError, resume_task, run_task
-        from test_character_export import sample_profile
-        from test_search import _fast_search_boundary
-
-        simulation = config_for({"target_count": 2, "scene": "aoe"})
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "role.simc"
-            destination = Path(directory) / "task"
-            source.write_text(sample_profile(), encoding="utf-8")
-            with _fast_search_boundary():
-                run_task(source, destination, search_config=_fast_search_config(),
-                         simulation_config=simulation)
                 state_before = _read_state(destination)
+                for name in ("profile.json", "result.json", "task.sqlite3"):
+                    self.assertTrue((destination / name).is_file(), name)
                 before = {
-                    name: path.read_bytes()
+                    name: (destination / name).read_bytes()
                     for name in ("profile.json", "result.json", "task.sqlite3")
-                    if (path := destination / name).exists()
                 }
                 for name in ("input.original.simc", "input.simc"):
                     path = destination / name
                     original = path.read_bytes()
                     path.write_bytes(original + b"\n# tampered\n")
                     try:
-                        with patch.object(search, "TaskStore",
+                        with patch.object(search_module, "TaskStore",
                                           side_effect=AssertionError("TaskStore must not open")) as store:
                             with self.assertRaisesRegex(TaskError, "输入"):
                                 resume_task(destination, simulation_config=simulation)
@@ -325,6 +308,40 @@ class SimulationConfigTests(unittest.TestCase):
                         )
                     finally:
                         path.write_bytes(original)
+                resumed = resume_task(destination, simulation_config=simulation)
+                self.assertEqual(resumed['simulation_config'], simulation)
+
+
+    def test_tampered_input_is_rejected_before_task_store_construction(self) -> None:
+        from contextlib import nullcontext
+        import result_store
+        import search
+        import seed_activity
+        import task
+
+        destination = Path('/memory/tampered-input').resolve()
+        original = b'original character\n'
+        effective = b'effective character\n'
+        profile = json.dumps(dict(input_original_sha256=hashlib.sha256(original).hexdigest(),
+                                  input_effective_sha256=hashlib.sha256(effective).hexdigest()))
+        for name, message in (("input.original.simc", "原始输入副本已变化"),
+                              ("input.simc", "任务输入副本已变化")):
+            with self.subTest(input=name):
+                inputs = {destination / 'input.original.simc': original,
+                          destination / 'input.simc': effective}
+                inputs[destination / name] += b'# tampered\n'
+                with patch.object(result_store, 'ensure_available'), \
+                        patch.object(seed_activity, 'foreground_search', nullcontext), \
+                        patch.object(task, '_task_lease', lambda *args: nullcontext()), \
+                        patch.object(Path, 'read_text', autospec=True,
+                                     side_effect=lambda path, **kwargs: {destination / 'profile.json': profile}[path]), \
+                        patch.object(Path, 'read_bytes', autospec=True,
+                                     side_effect=lambda path: inputs[path]), \
+                        patch.object(search, 'TaskStore', side_effect=AssertionError('TaskStore must not open')) as store:
+                    with self.assertRaisesRegex(task.TaskError, message):
+                        task.resume_task(destination, search_timeline=False)
+                    store.assert_not_called()
+
 
     def test_http_target_selection_keeps_startup_options_isolated(self) -> None:
         import interface
