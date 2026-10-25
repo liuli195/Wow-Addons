@@ -139,6 +139,98 @@ def _stage_checkpoint_reports(store, count=1):
 
 
 @pytest.mark.real
+def test_resume_after_partial_group_commit_uses_unused_group_number(tmp_path, monkeypatch):
+    import shutil
+    import result_store
+    from search import TaskStore
+
+    store = _new_checkpoint(tmp_path)
+    before = copy.deepcopy(store.state)
+    rows = _stage_checkpoint_reports(store, count=13)
+    # Keep the original 11 + legacy twelfth + tail publication layout, not a
+    # smaller group. Only the redundant HTTP/GA/native preparation is retired.
+    pending = list(store.report_buffer)
+    # The original interruption occurs before the tail reaches its first flush.
+    store.report_buffer[:] = pending[:12]
+    legacy_key, _, legacy = pending[11]
+    result_store.write_batch(legacy_key, dict(
+        {name: value for name, value in legacy.items() if not name.startswith('_')},
+        report=json.loads(legacy['_report_path'].read_text(encoding='utf-8'))))
+    # These are input counters from the thirteen already-produced reports.
+    store.state.update(batch_requests=13, native_batch_starts=13)
+    snapshot = tmp_path / 'partial-commit.sqlite3'
+    commit = store._commit_report_group
+    interrupted = []
+
+    def interrupt_after_commit(group, number, metadata, **options):
+        commit(group, number, metadata, **options)
+        if not options.get('checkpoint', True):
+            interrupted.append(group)
+            with sqlite3.connect(snapshot) as target:
+                store.db.backup(target)
+            target.close()
+            raise OSError('stop after partial group commit')
+
+    with monkeypatch.context() as fault:
+        fault.setattr(store, '_commit_report_group', interrupt_after_commit)
+        with pytest.raises(OSError, match='stop after partial group commit'):
+            store.checkpoint()
+    assert interrupted == ['checkpoint_g0']
+    assert store.persisted_batches == 11
+    assert TaskStore.load_state(store.db) == before
+    character, destination = store.character, store.destination
+    store.close()
+    # Resume the exact durable image at the interruption, not live staged state.
+    shutil.copyfile(snapshot, destination / 'task.sqlite3')
+    store = TaskStore(destination)
+    try:
+        store.recover_reports(character, None)
+        assert store.state['archive'] == before['archive']
+        assert store.state['completed_batches'] == store.persisted_batches == 11
+        assert store.state['next_report_group'] == 1
+        store.character, store.simulation_config = character, None
+        store.defer_persistence = True
+        for key, row, metadata in pending:
+            saved = store.batch(key)
+            if saved is not None:
+                row.update(saved)
+            else:
+                store.stage_report(key, row, metadata, report_path=metadata['_report_path'])
+        store.state['archive'][0]['batches'] = rows
+        store.state['ga'] = dict(receipts=rows)
+        store.checkpoint()
+        assert store.state['completed_batches'] == store.persisted_batches == 13
+        assert store.state['batch_requests'] == store.state['native_batch_starts'] == 13
+        assert store.state['next_report_group'] == 2
+        assert not store.db.execute('SELECT key FROM report_intents').fetchall()
+        assert not store.report_buffer
+        with result_store.query(
+                "SELECT batch_key, report.sim.statistics.raid_dps.mean "
+                "FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
+            reports = cursor.fetchall()
+        assert {key for key, _ in reports} == {row['data_key'] for row in rows}
+        assert len(reports) == len({key for key, _ in reports}) == 13
+        expected_groups = {'checkpoint_g0': {row['data_key'] for row in rows[:11]},
+                           legacy_key: {legacy_key}, 'checkpoint_g1': {rows[12]['data_key']}}
+        for group, keys in expected_groups.items():
+            assert {row['batch_key'] for row in result_store.read_records('batches', group)} == keys
+            assert all(store.batch(key)['storage_group_key'] == group for key in keys)
+        assert {key: score for key, score in reports} == {
+            row['data_key']: row['dps'] for row in rows}
+        assert all(all(store.batch(row['data_key'])[field] == row[field]
+                       for field in ('request', 'dps', 'samples', 'variance')) for row in rows)
+        assert not list((destination / 'batches').glob('*/native.json'))
+        expected = copy.deepcopy(store.state)
+    finally:
+        store.close()
+    reopened = TaskStore(destination)
+    try:
+        assert reopened.state == expected
+    finally:
+        reopened.close()
+
+
+@pytest.mark.real
 def test_report_checkpoint_persists_original_locations_with_one_complete_comparison(tmp_path):
     store = _new_checkpoint(tmp_path)
     store.state['config']['diagnostic_logging'] = True

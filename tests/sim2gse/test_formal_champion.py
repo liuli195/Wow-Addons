@@ -425,7 +425,7 @@ def test_management_selects_the_highest_within_two_known_old_rule_sources_and_re
                 for run_id in (low_id, high_id)} == originals
 
 
-@pytest.mark.parametrize('stage', ['complete_winner', 'partial_first_batch'])
+@pytest.mark.parametrize('stage', ['partial_first_batch'])
 @pytest.mark.real
 def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch(tmp_path,
         monkeypatch, memory_result_center, unchanged_champion_engine, stage):
@@ -445,11 +445,9 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
     def interrupt(*args, **kwargs):
         if not cancelled[0]:
             cancelled[0] = True
-            if stage == 'partial_first_batch':
-                raise TaskCancelled('constructed partial first batch')
-            result = evaluate(*args, **kwargs)
-            kwargs['runtime'].cancel()
-            return result
+            # 成功报告后的取消/零重复请求由test_search的formal memory_ga承接；
+            # 此处仅保HTTP双场、文件恢复和外部冠军更新的未完成批次代表。
+            raise TaskCancelled('constructed ' + stage)
         return evaluate(*args, **kwargs)
 
     def newer_version(previous):
@@ -459,8 +457,7 @@ def test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch
         assert record['version'] == snapshot['version']
         assert 'formal_champion_publication' not in previous['scenes'][0]
         assert record == incumbent
-        if stage == 'partial_first_batch':
-            assert 'search_result' not in previous['scenes'][0]
+        assert 'search_result' not in previous['scenes'][0]
         record['version'] += 1
         result_store.write('search_champions', snapshot['condition_key'], [record],
                            schema=result_store.SEARCH_CHAMPION_SCHEMA)

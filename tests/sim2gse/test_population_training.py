@@ -762,7 +762,8 @@ def test_public_configured_sample_plan_and_stagnation_are_used_without_old_stage
     assert case.config['top_k'] * 5 * case.config['retest_batches'] * case.config['retest_iterations'] == 320
 
 
-@pytest.mark.parametrize('missing_stage', ['retest', 'coarse'])
+# Coarse recovery stays in memory below; physical publication recovery keeps one retest group.
+@pytest.mark.parametrize('missing_stage', ['retest'])
 @pytest.mark.real
 def test_public_publication_failure_preserves_old_four_and_resume_repairs_only_missing_report_group(
         tmp_path, capsys, monkeypatch, registered_six, missing_stage):
@@ -804,14 +805,13 @@ def test_public_publication_failure_preserves_old_four_and_resume_repairs_only_m
         state = TaskStore.load_state(db)
         assert state['ga']['phase'] == 'qualified'
         first = state['ga']['finals'][state['ga']['finalists'][0]]['nominal']['0']
-        batch_key = (first['batch_key'] if missing_stage == 'retest'
-                     else state['archive'][0]['batches'][0]['data_key'])
+        batch_key = first['batch_key']
         cached = json.loads(db.execute('SELECT value FROM batches WHERE key=?', [batch_key]).fetchone()[0])
         group = cached['storage_group_key']
         first['dps'] = 99999.  # Checkpoint summaries are not independent scoring evidence.
         db.execute("UPDATE state_fields SET value=? WHERE key='ga'", [json.dumps(state['ga'])])
     missing = result_store.read_records('batches', group)
-    expected_missing = 12 if missing_stage == 'retest' else 6
+    expected_missing = 12
     assert len(missing) == expected_missing
     (result_store.DATA_ROOT / 'batches' / (group + '.parquet')).unlink()  # Isolated test data only.
     fresh = []
@@ -885,11 +885,30 @@ def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_
         return None
     monkeypatch.setattr(result_store,'one',missing)
     def mutation(*args,**kwargs): raise TaskCancelled('original feedback may resume after repair')
-    monkeypatch.setattr(population_training,'mutate',mutation)
-    with pytest.raises(TaskCancelled,match='after repair'): case.run()
+    with monkeypatch.context() as breeding:
+        breeding.setattr(population_training,'mutate',mutation)
+        with pytest.raises(TaskCancelled,match='after repair'): case.run()
     assert set(verified)==keys and len(verified)==len(keys)
     assert {Path(folder).name for folder,_,options in case.calls if options['iterations']==32}==keys
     assert len(case.calls)==6
+
+    # Qualified recovery replaces only the missing coarse group, not successful retests.
+    case=memory_ga()
+    assert case.run()['phase']=='qualified'
+    requests={key:deepcopy(case.store.batch(key)['request']) for key in case.reports}
+    coarse={key for key,request in requests.items() if request['purpose']=='search'}
+    retained={key:(deepcopy(case.reports[key]),deepcopy(case.store.batch(key)))
+              for key in requests if key not in coarse}
+    assert len(coarse)==6 and len(retained)==60 and len(case.calls)==66
+    for key in coarse: case.reports.pop(key)
+    case.store.verified_batches.clear()
+    case.calls.clear()
+    assert case.run()['phase']=='qualified'
+    assert {Path(folder).name for folder,_,_ in case.calls}==coarse
+    assert len(case.calls)==6 and all(options['iterations']==32 for _,_,options in case.calls)
+    assert len(case.reports)==case.store.state['completed_batches']==66
+    assert {key:case.store.batch(key)['request'] for key in case.reports}==requests
+    assert {key:(case.reports[key],case.store.batch(key)) for key in retained}==retained
 
 
 def test_public_alias_template_cannot_bypass_frozen_group_scheduling(monkeypatch):

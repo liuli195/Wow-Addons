@@ -67,7 +67,7 @@ Node普通命令和两browser都运行repo内同一冻结exe，inputs直接hash�
 
 ### a311断言到当前实现的可核索引
 
-`test-migration-recovery-map.json` 索引每个a311 GSE测试函数、当前位置、实际ordinary/real与展开项，全部改动参数有明确说明；它是审查索引，不是靠AST名字证明语义等价。所有原名保留，仅已披露的时间线5流程断言并入现有文件生命周期代表及独立曲线等价测试。完整completion/CLI覆盖/取消恢复新段/冻结算法/准备计时/绘图故障仍在。
+`test-migration-recovery-map.json` 索引每个a311 GSE测试函数、当前位置、实际ordinary/real与展开项，全部改动参数有明确说明；它是审查索引，不是靠AST名字证明语义等价。除明确target_tests/target_file的改名、跨文件和合并映射外沿用原名；已披露的时间线5流程断言并入现有文件生命周期代表及独立曲线等价测试。完整completion/CLI覆盖/取消恢复新段/冻结算法/准备计时/绘图故障仍在。
 
 - 原训练取消2×3真实交叉缩为三条已批准代表；burst旧/当前重复HTTP组合只保旧引擎一条，两个版本规则普通验证。历史损坏分支拆成独立规则项，不丢拒绝与不重发断言。
 - `tests/gear-planner/README.md`逐个映射原21 Python入口、两browser及六manual入口；未恢复已批准退役的逐物品原生大矩阵，不夸称其接受度广度仍等价。
@@ -112,3 +112,19 @@ Node普通命令和两browser都运行repo内同一冻结exe，inputs直接hash�
 ### 复测取消后的时间线终态（07:54 UTC）
 
 本机已正式证实上一普通层284／106全绿、守卫完整无违规。真实文件生命周期单点取消状态为cancelled却导出stagnation：新GA先自然结束探索，再于正常复测中取消，Timeline的首次stop没有更新最终原因。产品仅在最终导出时让未完成终态更新顶层stop_reason，保留真实探索停止时间及历史search_stopped事件；不改评分/取消/恢复算法，不放宽旧真实断言。新增一个纯内存Timeline代表先红于cancelled与stagnation不符，再验证终态一致、原10秒停止／12秒保存／15秒调用时长不被重写。固定0ce守卫加环境隔离探针的全普通层285／106通过，3.04秒、四worker完整无违规；新增1项回归因此当前GSE413＝285普通＋128真实，不是找回旧d3缺失节点。真实生命周期原节点仍待本机复验。
+
+## 2026-10-25 最小真实交叉收敛（08:10 UTC）
+
+Timeline产品修复独立提交后，原真实失败节点本机已完整通过取消、恢复和旧时间线字节不变；不以删节点掩盖该故障。本节测试迁移不再改生产或正式配置。最新实际收集GSE410＝287 ordinary＋123 real；gear21＋2未变。相对本轮413＝285＋128，明确退休五条重复物理交叉，新增两个普通承接，其余逻辑合并到已存在节点；partial-group跨文件移动但仍real。全部选择仍为not real/real互补，无skip或隐藏过滤。
+
+| 原流程 | 保留的真实机制 | 普通逻辑承接／明确退役广度 |
+| --- | --- | --- |
+| plain/burst满组登记恢复 | `test_published_burst_report_group_is_reused_after_registration_interruption`保满12份、写后登记前中断、可靠报告零重算、尾部恢复、所有键/组大小/成绩与计数。 | plain Handler请求、False开关和场景由`test_plain_search_request_preserves_disabled_burst_option`保留，普通评分另断言不带burst；退休plain×完整HTTP/GA/物理故障交叉。 |
+| 训练缺组恢复 | `test_public_publication_failure_preserves_old_four_and_resume_repairs_only_missing_report_group[retest]`保实际删除12份Parquet、重开SQLite、旧四条不覆盖、伪造成绩拒绝及只补缺组。 | 原coarse分支并入`test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_errors`：完整66唯一请求后仅删6粗评，补6后累计72次评价，另外60份报告/SQLite凭据逐字段不变；原临时读错与繁殖前修复不变。退休coarse×物理Parquet×完整发布恢复交叉。 |
+| 冠军取消 | `test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch[partial_first_batch]`保未完成不发布、冻结快照、外部版本更新和文件恢复。 | complete-winner成功报告后取消由现`test_cancelled_formal_batches_resume_without_repeating_successful_native_requests`保留完整报告、31样本、SQLite恢复不变与无重复请求；现snapshot/cohort验证版本/来源。退休complete_winner×双场HTTP×发布恢复交叉。 |
+| 坏variance／未知导入拒绝 | 真selected-import评分及唯一完整browser不变。 | `test_formal_search_rejects_missing_variance_without_failing_task`走同正式GA：3候选、两次坏评分、剔除、120赢家、2完整finalists各3×128/381样本；未知技能99999999的failed/no-DPS/不可展示并入现`test_unmapped_import_error_is_reported_without_dps`。不再为纯拒绝规则重跑HTTP/GA。 |
+| 部分组提交恢复 | 同名`test_resume_after_partial_group_commit_uses_unused_group_number`移到`test_checkpoint_changes.py`原helper，仍真实13报告、11＋legacy第12＋tail、确切SQLite备份重开、report-intent恢复、g0=11/legacy=1/g1=1、next_group=2、键/成绩/摘要与清理。 | 退休整段HTTP/GA准备；原native评价计数与实际输出相关性仍由burst满组真实代表验证，此处只证明13份已产生报告的输入计数恢复不重计，不能称完整搜索联调。 |
+
+最新real机制数量为C++/角色/Lua编译38、爆发9、训练/材料/前台16、冠军/双场15、HTTP/browser/时间线10、搜索存储/进程12、检查点/接入/快照/诊断18、战斗日志2、有效输入/配置3，合计123。4+4+1+1旧来源消费未改；唯一browser、异构原生C++/Lua、整组损坏、hardexit/other-owner和DataStore独立接入均保留。不宣称旧重复交叉广度仍真实联调。
+
+各域普通诊断先验证承接，迁移敏感性故障由同输入边界实测，不捏造生产红灯。集中固定0ce守卫＋坏默认配置存在／禁止生产DC读取探针：287 passed、106 subtests、2.98秒，四worker证据完整、evidence_error为空。清单及每个a311原函数映射已按实际收集更新；同名/AST只是索引，新增跨机制承接须独立读断言复核。Windows新真实节点、完整43项/60秒、内2实测及同输入默认新旧DPS对照仍待；本节不是速度或整体通过承诺。

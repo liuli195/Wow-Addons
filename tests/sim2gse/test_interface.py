@@ -30,6 +30,7 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from gse_import import inspect_import  # noqa: E402
 from test_seed_training import memory_result_center  # noqa: E402
+from test_population_training import memory_ga  # noqa: E402
 
 
 def _coarse_batch_keys(result):
@@ -64,6 +65,56 @@ GSE_PROTECTED_VARIABLE_VECTOR = (
 GSE_PROTECTED_MACRO_VECTOR = (
     "!GSE3!+1GBkaGxwdHh8gISIjITXl5rxvJIfGsh1W9faejI+hnlUimbME8ag7Z5QUpuBgQG4pwW6rzLr0Um/muYNGkQHukMPDGG9hvkrUbFL6wWMwRz+/XkNH"
 )
+
+
+def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
+    import engine
+    from interface import _public_state
+    from sequence import compiled_program
+    from simulation_config import TRAINING_DEFAULTS
+    from test_search import _fast_report
+
+    initial = ("outbreak", "death_coil")
+    better = ("death_coil", "outbreak")
+    worse = ("death_coil", "outbreak", "death_coil")
+    calls = []
+
+    def evaluate(profile, candidate, folder, **options):
+        actions = tuple(name for block in compiled_program(candidate) for name in block)
+        wanted = {initial: 90, better: 120, worse: 80}[actions]
+        report = _fast_report(options['character'], wanted, options['iterations'] - 1)
+        if actions == worse:
+            report['sim']['players'][0]['collected_data']['dps'].pop('variance')
+        calls.append((actions, options['iterations'], options.get('burst_candidate')))
+        summary = engine.check_report(report, options['character'], options['iterations'],
+            simulation_config=options['simulation_config'], allow_zero=True)
+        return dict(report=report, summary=summary, trace=[])
+
+    # The same formal entry owns quarantine and full finalist retests. HTTP,
+    # physical report groups and native execution retain separate real witnesses.
+    with patch.dict(TRAINING_DEFAULTS, crossover_probability=0., mutation_probability=0.):
+        case = memory_ga(formal=True, programs=[[[name] for name in actions]
+            for actions in (initial, better, worse)], native=evaluate)
+        result = case.run()
+    state = _public_state(result, case.store.destination)
+    assert state['status'] == 'completed'
+    assert state['result_ready']
+    coarse = [(actions, count) for actions, count, _ in calls if count == 32]
+    assert [count for actions, count in coarse if actions == worse] == [32, 32]
+    assert [count for actions, count in coarse if actions == better] == [32]
+    assert state['search_result']['dps'] == 120
+    assert result['search']['effective_population_size'] == 2
+    rejected, = result['search']['coarse_rejections'].values()
+    assert rejected['attempts'] == 2
+    assert all(row['kind'] == 'candidate_score' for row in rejected['failures'])
+    finalists = result['final']['scenarios']['nominal']['finalists']
+    assert len(finalists) == 2
+    assert {tuple(name for block in compiled_program(row['candidate']) for name in block)
+            for row in result['search']['records']} == {initial, better}
+    assert all(len(row['batches']) == 3 and row['samples'] == 381 for row in finalists)
+    assert all(batch['requested_iterations'] == 128 for row in finalists for batch in row['batches'])
+    assert all('rule_diagnostics' not in row for row in result['search']['records'])
+    assert calls and all(burst is None for _, _, burst in calls)
 
 
 class ImportInspectionTests(unittest.TestCase):
@@ -637,42 +688,37 @@ class InterfaceTests(unittest.TestCase):
         self.assertNotIn('dps', state)
         self.assertFalse(state['result_ready'])
 
-    @pytest.mark.real
-    def test_public_service_reports_unmapped_import_skill_without_dps(self) -> None:
-        imported = gse_fixture(["THIRD_PARTY", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 99999999}]}],
-        }])
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "THIRD_PARTY", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._task_state_request(created["task_id"], deadline)
-            if state["status"] in {"completed", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
-        self.assertEqual(state["status"], "failed", state)
-        self.assertIn("99999999", state["error"])
-        self.assertNotIn("dps", state)
+    def test_plain_search_request_preserves_disabled_burst_option(self) -> None:
+        import interface
 
-    @pytest.mark.real
-    def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
-        self._check_published_report_group_recovery(use_burst=False)
+        writes = []
+        source = SimpleNamespace(write_text=lambda text, **options: writes.append((text, options)))
+        destination = self.server.task_root / ('d' * 32)
+        handle = SimpleNamespace(done=False, error=None)
+        self.server.task_options = {'use_burst': False}
+        # Keep the plain request/switch at the real Handler boundary. The
+        # plain × full HTTP/GA/physical recovery cross is deliberately retired;
+        # the burst representative below retains the complete twelve-report fault.
+        with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                patch.object(interface, 'start_task', return_value=handle) as start:
+            created = self._json_request('POST', '/api/tasks', {
+                'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
+        self.assertEqual(created['status'], 'starting')
+        self.assertEqual(self.server.tasks[created['task_id']], (destination, handle))
+        self.assertEqual(writes, [(sample_profile(), {'encoding': 'utf-8', 'newline': ''})])
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args, (source, destination))
+        self.assertIs(start.call_args.kwargs['use_burst'], False)
+        self.assertEqual(start.call_args.kwargs['simulation_config']['target_count'], 1)
+        self.assertEqual(start.call_args.kwargs['simulation_config']['scene'], 'single_target')
 
     @pytest.mark.real
     def test_published_burst_report_group_is_reused_after_registration_interruption(self) -> None:
-        self._check_published_report_group_recovery(use_burst=True)
-
-    def _check_published_report_group_recovery(self, *, use_burst):
         import result_store
         import sequence
         from task import resume_task
 
-        self.server.task_options = {'use_burst': use_burst, 'search_config': dict(
+        self.server.task_options = {'use_burst': True, 'search_config': dict(
             total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
             round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
             validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
@@ -681,15 +727,11 @@ class InterfaceTests(unittest.TestCase):
         interrupted = False
         evaluated, published, uncommitted_at_interrupt = [], [], set()
         burst_calls = []
-        profile = sample_profile()
-        boundary = _fast_search_boundary
-        if use_burst:
-            import burst
-            from test_burst import page_task_boundary, reviewed_fixture
-            definition, profile = reviewed_fixture()
-            result_store.DATA_ROOT.mkdir(exist_ok=True)
-            burst.publish(definition)
-            boundary = page_task_boundary
+        import burst
+        from test_burst import page_task_boundary, reviewed_fixture
+        definition, profile = reviewed_fixture()
+        result_store.DATA_ROOT.mkdir(exist_ok=True)
+        burst.publish(definition)
 
         def publish_then_interrupt(table, key, rows, **kwargs):
             nonlocal interrupted
@@ -708,7 +750,7 @@ class InterfaceTests(unittest.TestCase):
 
         # N12恰好越过真实满组登记边界；不靠随机变异碰出第12条。
         starts = [[["outbreak"]] * clicks for clicks in range(1, 13)]
-        with boundary(), _fixed_search_population(starts):
+        with page_task_boundary(), _fixed_search_population(starts):
             boundary_evaluate = sequence.evaluate
             with patch.object(sequence, 'evaluate', side_effect=evaluate), patch.object(
                     result_store, 'write', side_effect=publish_then_interrupt):
@@ -732,7 +774,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
         self.assertTrue(interrupted)
         self.assertTrue(burst_calls)
-        self.assertTrue(all(enabled == use_burst for enabled in burst_calls))
+        self.assertTrue(all(burst_calls))
         self.assertEqual(len(published), 12)
         self.assertEqual(len(set(published)), 12)
         self.assertTrue(all(evaluated.count(key) == 1 for key in published))
@@ -760,66 +802,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(len({key for key, _ in reports}), len(reports))
         self.assertTrue(all(score > 0 for _, score in reports))
 
-
-    @pytest.mark.real
-    def test_resume_after_partial_group_commit_uses_unused_group_number(self) -> None:
-        import sqlite3
-        import shutil
-        import result_store
-        import sequence
-        from search import TaskStore
-        from task import resume_task
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
-        original_stage = TaskStore.stage_report
-        original_commit = TaskStore._commit_report_group
-        snapshot = Path(self.directory.name) / 'partial-commit.sqlite3'
-        interrupted = False
-        evaluated = []
-
-        def evaluate(*args, **kwargs):
-            evaluated.append(Path(args[2]).name)
-            return _fast_evaluate(*args, **kwargs)
-
-        def seed_legacy_last_report(store, key, row, stored, **kwargs):
-            if len(store.report_buffer) == 11 and not interrupted:
-                result_store.write_batch(key, stored,
-                                         diagnostic_logging=kwargs.get('diagnostic_logging', False))
-            return original_stage(store, key, row, stored, **kwargs)
-
-        def interrupt_after_commit(store, *args, **kwargs):
-            nonlocal interrupted
-            original_commit(store, *args, **kwargs)
-            if not kwargs.get('checkpoint', True) and not interrupted:
-                interrupted = True
-                with sqlite3.connect(snapshot) as target:
-                    store.db.backup(target)
-                target.close()
-                raise OSError('stop after partial group commit')
-
-        starts = [[["outbreak"]] * clicks for clicks in range(1, 13)]
-        with _fast_search_boundary(), _fixed_search_population(starts), \
-                patch.object(sequence, 'evaluate', side_effect=evaluate):
-            with patch.object(TaskStore, 'stage_report', seed_legacy_last_report), patch.object(
-                    TaskStore, '_commit_report_group', interrupt_after_commit):
-                created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
-                _, handle = self.server.tasks[created['task_id']]
-                handle.join(30)
-                self.assertTrue(interrupted)
-                self.assertIsNotNone(handle.error)
-            # Restore the exact durable task image at the stop, before error handling.
-            shutil.copyfile(snapshot, handle.output_root / 'task.sqlite3')
-            resumed = resume_task(handle.output_root, diagnostic_logging=True)
-        self.assertEqual(resumed['status'], 'completed')
-        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(set(keys), _coarse_batch_keys(resumed))
-        self.assertEqual(len(keys), len(set(keys)))
 
     @pytest.mark.real
     def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
@@ -928,77 +910,6 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(set(keys), expected)
         self.assertEqual(len(keys), len(set(keys)))
         self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
-
-
-
-    @pytest.mark.real
-    def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
-        self._check_native_round(invalid_variance=True)
-
-    def _check_native_round(self, *, invalid_variance=False):
-        import random
-        import population_training
-        from types import SimpleNamespace
-        from task import read_task
-        from test_search import _fast_evaluate
-        from test_search import _prepared_search_boundary
-
-        calls = []
-        initial = ("outbreak", "death_coil")
-        better = ("death_coil", "outbreak")
-        worse = ("death_coil", "outbreak", "death_coil")
-        original_random = random.Random
-        class NoVariationRandom(original_random):
-            _randbelow = original_random._randbelow
-            def random(self):
-                return .999999  # This case isolates score quarantine, not the variation sampler.
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            actions = tuple(action["simc_action"] for block in candidate["blocks"] for action in block)
-            wanted = {initial: 90, better: 120, worse: 80}[actions]
-            result = _fast_evaluate(profile, candidate, folder, **kwargs)
-            damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
-            damage.update(mean=wanted, variance=1)
-            result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
-            if invalid_variance and actions == worse:
-                damage.pop("variance")
-            result["summary"]["dps"] = wanted
-            (Path(folder) / "native.json").write_text(json.dumps(result["report"]), encoding="utf-8")
-            calls.append((actions, kwargs["iterations"], kwargs["seed"]))
-            return result
-
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
-            no_improvement_rounds=1, batch_targets=(32, 128, 512),
-            input_interval_ms=200, iterations=2, validation_batches=2, max_processes=2)}
-        with _prepared_search_boundary(self.directory.name,
-                [[[name] for name in actions] for actions in (initial, better, worse)], evaluate=evaluate), \
-                patch.object(population_training, 'random', SimpleNamespace(Random=NoVariationRandom)):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "input_interval_ms": 200})
-            deadline = time.monotonic() + 30
-            while True:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "failed", "cancelled"}:
-                    break
-                time.sleep(.02)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertTrue(state["result_ready"])
-        search_calls = [(actions, count) for actions, count, _ in calls if count == 32]
-        self.assertEqual([n for a, n in search_calls if a == worse], [32, 32])
-        self.assertEqual([n for a, n in search_calls if a == better], [32])
-        self.assertEqual(state["search_result"]["dps"], 120)
-        _, handle = self.server.tasks[created["task_id"]]
-        handle.join(5)
-        result = read_task(handle.output_root, include_search_records=True)
-        self.assertEqual(result['search']['effective_population_size'], 2)
-        rejected, = result['search']['coarse_rejections'].values()
-        self.assertEqual(rejected['attempts'], 2)
-        self.assertTrue(all(row['kind'] == 'candidate_score' for row in rejected['failures']))
-        self.assertEqual(len(result['final']['scenarios']['nominal']['finalists']), 2)
-        self.assertTrue(all('rule_diagnostics' not in row for row in result['search']['records']))
-
 
 
 

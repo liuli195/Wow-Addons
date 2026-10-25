@@ -543,9 +543,14 @@ class SearchAndValidationTests(TestCase):
             self.assertIsNone(case.store.state.get('selected_candidate_key'))
             self.assertTrue(case.calls)
             first=case.calls[0][0]
+            first_key=Path(first).name
+            saved=case.store.batch(first_key)
+            self.assertEqual((saved['status'],saved['dps'],saved['samples']),('success',100.,31))
+            self.assertIn('report',case.reports[first_key])
             case.store.checkpoint()
             case.store.state=TaskStore.load_state(case.store.db)
             case.store.verified_batches.clear()
+            self.assertEqual(case.store.batch(first_key),saved)
             cancel.clear()
             resumed=case.run(runtime=TaskRuntime(float('inf'),cancel_event=cancel))
         calls=[row[0] for row in case.calls]
