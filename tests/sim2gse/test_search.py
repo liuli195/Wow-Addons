@@ -379,10 +379,14 @@ class SearchAndValidationTests(TestCase):
                     connections[0].execute('SELECT 1')
 
     def test_normal_task_and_dual_scene_still_refuse_four_processes(self):
+        from io import StringIO
         import dual_task
+        from simulation_config import load_search_config
         from search import config_for
         self.assertEqual(config_for()['max_processes'],2)
-        with patch.object(Path,'read_bytes',return_value=sample_profile().encode('utf-8')):
+        with patch('simulation_config.load_search_config', side_effect=lambda **values:
+                   load_search_config(StringIO(''), **values)), \
+                patch.object(Path,'read_bytes',return_value=sample_profile().encode('utf-8')):
             for entry in (run_task,dual_task.start):
                 with self.subTest(entry=entry.__name__),self.assertRaisesRegex(ValueError,'max_processes'):
                     entry(Path('/absent/role.simc'),Path('/absent/task'),search_config={'max_processes':4})

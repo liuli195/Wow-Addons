@@ -832,7 +832,7 @@ def test_public_four_group_resume_uses_frozen_outer_pool_after_next_batch_toml_c
     from copy import deepcopy
     import population_training
     from simulation_config import TRAINING_DEFAULTS
-    templates=[dict(template=str(Path('/templates')/f'{hero}.simc'),template_sha256=hero) for hero in ('rider','sanlayn')]
+    templates=[dict(template=str((Path('/templates')/f'{hero}.simc').resolve()),template_sha256=hero) for hero in ('rider','sanlayn')]
     old=dict(TRAINING_DEFAULTS)
     new=dict(old,max_trainings=10,max_processes=2) if mixed_new_groups else dict(old,max_trainings=1,max_processes=1)
     manifests=[(Path('/saved')/f'{index}-{count}',dict(template_path=row['template'],

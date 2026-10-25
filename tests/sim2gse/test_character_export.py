@@ -177,7 +177,8 @@ class CharacterExportTests(unittest.TestCase):
 
     def test_public_entry_rejects_output_override_before_writing(self) -> None:
         source = sample_profile() + "\noutput=forbidden.simc\n"
-        with patch.object(Path, 'is_file', return_value=True), \
+        with patch('result_store.ensure_available'), \
+                patch.object(Path, 'is_file', return_value=True), \
                 patch.object(Path, 'read_bytes', return_value=source.encode()), \
                 patch.object(Path, 'mkdir') as mkdir, \
                 patch.object(Path, 'write_bytes') as write_bytes, \

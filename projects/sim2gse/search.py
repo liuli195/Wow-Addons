@@ -906,9 +906,13 @@ class TaskStore:
         if connection is None:
             self.db.execute('PRAGMA journal_mode=WAL')
             self.db.execute('PRAGMA synchronous=FULL')
-        self.db.execute('ATTACH DATABASE ? AS shared', (
-            reusable_database if reusable_database is not None else
-            str(self.destination.parent/'cache.sqlite3'),))
+        if reusable_database == ':memory:':
+            # SQLite authorizes ATTACH before bound parameters are available.
+            self.db.execute("ATTACH DATABASE ':memory:' AS shared")
+        else:
+            self.db.execute('ATTACH DATABASE ? AS shared', (
+                reusable_database if reusable_database is not None else
+                str(self.destination.parent/'cache.sqlite3'),))
         if reusable_database is None:
             self.db.execute('PRAGMA shared.journal_mode=WAL')
             self.db.execute('PRAGMA shared.synchronous=FULL')

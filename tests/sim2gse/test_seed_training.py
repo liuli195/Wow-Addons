@@ -155,7 +155,7 @@ def training_cli(monkeypatch):
     monkeypatch.setattr(seed_activity,'training_activity',lambda:nullcontext(threading.Event()))
     monkeypatch.setattr(seed_training,'registry_rows',lambda:[])
     monkeypatch.setattr(seed_training,'sync_history',lambda character,**kwargs:kwargs.get('sources',[]))
-    template=Path('/.tools/sim2gse/build/baseline/Rider.simc')
+    template=Path('/.tools/sim2gse/build/baseline/Rider.simc').resolve()
     monkeypatch.setattr(engine,'training_templates',lambda:(template,))
     monkeypatch.setattr(engine,'identity',lambda mode:(Path('/engine'),dict(upstream_commit='fixed-engine')))
     monkeypatch.setattr(Path,'is_file',lambda path:True)
@@ -208,7 +208,7 @@ def test_training_check_locates_current_template_without_starting_compute(monkey
     monkeypatch.setattr(subprocess,'Popen',forbidden)
     assert main(['--project','/memory','check','--legacy'])==0
     result=json.loads(capsys.readouterr().out)
-    assert result['status']=='ready' and '/.tools/sim2gse/build/baseline/' in result['template']
+    assert result['status']=='ready' and Path(result['template']) == training_cli
     assert result['engines']['baseline']['upstream_commit']==result['engines']['controlled']['upstream_commit']
 
 

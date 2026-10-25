@@ -114,7 +114,7 @@ def training_history(monkeypatch, programs, *, legacy_search=False, source_engin
             path = Path(url2pathname(urlsplit(database).path))
             if path in snapshots:
                 database = connect(':memory:')
-                database.deserialize(snapshots[path])
+                database.executescript(snapshots[path])
                 return database
         raise AssertionError('冠军规则测试不能打开未知数据库: ' + str(database))
 
@@ -190,7 +190,7 @@ def training_history(monkeypatch, programs, *, legacy_search=False, source_engin
                 database.executemany('INSERT INTO batches VALUES (?,?)',
                     [(name, json.dumps(value)) for name, value in receipts[candidate_id].items()])
                 database.commit()
-                snapshots[Path(row['task_path']) / 'task.sqlite3'] = database.serialize()
+                snapshots[Path(row['task_path']) / 'task.sqlite3'] = '\n'.join(database.iterdump())
 
     refresh()
     monkeypatch.setattr(result_store, 'read_records', lambda *args, **kwargs: rows)
