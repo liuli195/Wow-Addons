@@ -57,7 +57,7 @@ def _load(destination):
 
 def _verify(row, destination, identities, *, current_rules=False):
     from burst import load
-    if row.get('formal_search_version') != 1:
+    if type(row.get('formal_search_version')) is not int or row['formal_search_version'] != 1:
         raise task.TaskError('旧正式双场任务身份不兼容，不能继续；原完整成果仍可读取')
     if row.get('rule_snapshot') or not row.get('rules') or not row.get('engines'):
         raise task.TaskError('旧规则双场任务身份不兼容，不能继续；原完整成果仍可读取')
@@ -98,7 +98,7 @@ def _publish_export(row, purpose, compiled):
 def _child_matches(row, child, targets, scene):
     logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
     def business_config(value):
-        frozen = config_for(value, legacy=True)
+        frozen = config_for(value)
         return {key: item for key, item in frozen.items() if key not in logging_keys}
     if (child['profile']['input_original_sha256'] != row['input_sha256']
             or child['simulation_config'] != dict(row['simulation_config'], target_count=targets, scene=scene)
@@ -249,10 +249,10 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     from burst import select_definition
     from engine import identity
     destination = Path(destination).resolve()
-    original, text = task._read_utf8(Path(input_path), description='角色输入')
     simulation_config = simulation_config_for(simulation_config)
     from simulation_config import load_search_config
     config = config_for(load_search_config(**dict(search_config or {}, input_interval_ms=(search_config or {}).get('input_interval_ms', 200))))
+    original, text = task._read_utf8(Path(input_path), description='角色输入')
     effective = task._effective_input_bytes(original, text, simulation_config)
     definition = select_definition(task.parse_character(effective.decode('utf-8')))
     identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
@@ -285,13 +285,15 @@ def resume(destination, *, diagnostic_logging=False, search_timeline=None):
     timeline_origin = time.monotonic() if search_timeline else None
     from engine import identity
     destination = Path(destination).resolve()
+    task._require_current_formal_resume(_load(destination))
     with task._task_lease(destination):
         row = _load(destination)
+        task._require_current_formal_resume(row)
         identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
         _verify(row, destination, identities, current_rules=True)
         row['config'] = config_for(dict(row['config'], diagnostic_logging=diagnostic_logging, search_timeline=search_timeline,
             diagnostics=(row['config'].get('diagnostics') if row['config'].get('diagnostics') != 'off'
-                         else 'summary')), legacy=True)
+                         else 'summary')))
         _save(row)
     return _launch(destination, identities, timeline_origin=timeline_origin)
 
@@ -306,8 +308,10 @@ def _is_running(destination):
 
 def cancel_saved(destination):
     destination = Path(destination).resolve()
+    task._require_current_formal_resume(_load(destination))
     with task._task_lease(destination):
         row = _load(destination)
+        task._require_current_formal_resume(row)
         if row['status'] in ('starting', 'running', 'stopping'):
             row.update(status='cancelled', error='执行进程已退出，已保留完成结果')
             _save(row)
@@ -317,11 +321,12 @@ def cancel_saved(destination):
 def read(destination, *, active=None, include_rule_initialization=True):
     destination = Path(destination).resolve()
     row = _load(destination)
-    recoverable = row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
-    if row['status'] in ('starting', 'running', 'stopping') and not (active if active is not None else _is_running(destination)):
-        row.update(status='interrupted', error='执行进程已退出，可以继续未完成的任务')
-        recoverable = True
-    natural = row.get('formal_search_version') == 1
+    natural = type(row.get('formal_search_version')) is int and row['formal_search_version'] == 1
+    recoverable = natural and row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
+    if row['status'] in ('starting', 'running', 'stopping') and not (active if active is not None else _is_running(destination) if natural else False):
+        row.update(status='interrupted', error=('执行进程已退出，可以继续未完成的任务' if natural else
+                   '旧正式搜索已退役，任务仅可查看；请创建新GA任务'))
+        recoverable = natural
     budget = None if natural else row['config']['total_budget_seconds']
     scenes, exports = [], {}
     elapsed, completed, active_progress = 0., 0, 0.
@@ -370,7 +375,7 @@ def read(destination, *, active=None, include_rule_initialization=True):
             if scenes and completed == len(SCENES) and row['status'] == 'completed' else
             f'已完成{completed}/{len(SCENES)}个循环；其余场景或导出尚未完成，不能视为完整双场成果。')
     else:
-        result_note = '未进行最终独立复测；两个循环分别搜索，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。'
+        result_note = '旧正式搜索已退役，任务仅可查看。原结果未进行最终独立复测；爆发独立按键，游戏效果尚待验证。'
     return dict(status=row['status'], phase=row['phase'], error=row['error'], scenes=scenes,
                 exports=exports, recoverable=recoverable, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),
                 result_ready=bool(exports), input_interval_ms=row['config']['input_interval_ms'],

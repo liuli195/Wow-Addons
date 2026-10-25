@@ -1,6 +1,6 @@
 # 人工启动的预训练
 
-只训练普通循环，不搜索独立爆发宏。用户先清洗并登记材料，入口不自动解释任意复杂宏、不联网、不安装到游戏。正式局部搜索算法不变。
+只训练普通循环，不搜索独立爆发宏。用户先清洗并登记材料，入口不自动解释任意复杂宏、不联网、不安装到游戏。正式搜索和训练复用同一GA执行核心，正式任务只做正常场景复测并选一个冠军。
 
 ## 入口与来源
 
@@ -51,4 +51,4 @@ CLI默认带审核独立爆发；显式 `--legacy` 只表示无独立爆发，ru
 
 ## 支持的观测边界
 
-预训练本次仅支持基础性能日志（`--diagnostic-logging`，默认关闭，可在恢复时按本次切换）与时间DPS曲线（`--search-timeline`，默认关闭）。API明确请求`diagnostics=full`或非`off`的`search_observability`会报错，不静默降级。已有时间曲线可经`task.py curves`离线比较，不会补跑模拟；预训练不支持`curves --damage`战斗伤害桶导出，本次不增加适配。正式局部搜索原有full诊断、过程观测和damage导出保持不变。
+预训练本次仅支持基础性能日志（`--diagnostic-logging`，默认关闭，可在恢复时按本次切换）与时间DPS曲线（`--search-timeline`，默认关闭）。API明确请求`diagnostics=full`或非`off`的`search_observability`会报错，不静默降级。已有时间曲线可经`task.py curves`离线比较，不会补跑模拟；预训练不支持`curves --damage`战斗伤害桶导出，本次不增加适配。正式GA原有full诊断、过程观测和damage导出保持不变。

@@ -161,13 +161,10 @@ def completed_training(tmp_path, targets, programs, *, name='current', candidate
     return template, rows
 
 
-def dual_result(tmp_path, raw, candidate_limit=9, *, expected='completed', interval_ms=200, before_resume=None,
-                validation_batches=1):
+def dual_result(tmp_path, raw, *, expected='completed', interval_ms=200, before_resume=None):
     """走已批准的 POST 双场到 GET 公开结果接缝。"""
     from interface import create_server
-    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=candidate_limit, batch_targets=(2,), iterations=2,
-        validation_batches=validation_batches, final_batches=1, final_iterations=2, scenarios=('nominal',))))
+    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(iterations=2)))
     thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -359,7 +356,7 @@ def test_dual_reads_completed_v1_without_current_profession_rule_library(
         template, rows = completed_training(tmp_path, 1, [([['death_coil']], [190., 200., 210.])])
         monkeypatch.setattr(engine, '_training_template', lambda manifest: template)
         monkeypatch.setenv('SIM2GSE_RULE_CONFIG', str(tmp_path / 'removed-rules.json'))
-        state = dual_result(tmp_path, raw, candidate_limit=1)
+        state = dual_result(tmp_path, raw)
     champion = state['scenes'][0]['training_champion_snapshot']
     assert champion['status'] == 'selected'
     assert champion['candidate_id'] == rows[0]['candidate_id']

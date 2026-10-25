@@ -25,7 +25,8 @@ from contextlib import contextmanager, nullcontext
 from runtime import replace_file, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 from formal_search import runtime_for as formal_runtime, STOP_POLICY as FORMAL_STOP_POLICY
-from simulation_config import config_for as simulation_config_for, engine_options, load_config
+from simulation_config import (RETIRED_SEARCH_SETTINGS, config_for as simulation_config_for,
+                               engine_options, load_config)
 
 
 class TaskError(ValueError):
@@ -420,7 +421,7 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         if isinstance(data_key, str):
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                           'canonicalized_duplicates', 'no_improvement_round_limit', 'configuration_key',
+                           'canonicalized_duplicates', 'configuration_key',
                            'effective_population_size', 'coarse_rejections', 'last_fallbacks')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
     initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
@@ -1010,8 +1011,9 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
         profile, config = decode(run['profile']), decode(run['config'])
         candidate = by_key.get(run['candidate_data_key'])
         identity = (profile or {}).get('identity', {})
-        config_without_logging = lambda value: {key: item for key, item in value.items()
-            if key not in ('search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
+        comparable_config = lambda value: {key: item for key, item in value.items()
+            if key not in (*RETIRED_SEARCH_SETTINGS, 'search_observability', 'diagnostics',
+                           'diagnostic_logging', 'search_timeline')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
                           if key not in ('candidate_key', 'candidate_data_key')}
@@ -1022,8 +1024,8 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
                 or identity.get('spec_id') != native['identity']['spec_id']
                 or decode(run['engines']) != state['engines']
                 or decode(run['simulation_config']) != state['simulation_config']
-                or set(config_without_logging(config)) != set(config_without_logging(state['config']))
-                or config_without_logging(config_for(config, legacy=True)) != config_without_logging(state['config'])
+                or set(comparable_config(config)) != set(comparable_config(state['config']))
+                or comparable_config(config_for(config, legacy=True)) != comparable_config(state['config'])
                 or source_context != current_context or not run['condition_key']
                 or run['selected_candidate_key'] != run['locked_candidate_key']
                 or not run['selected_candidate_key'] or candidate is None
@@ -1049,7 +1051,8 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
                if row['batch_key'] in wanted]
     batches.sort(key=lambda row: row['batch_index'])
     scored = []
-    config = state['config']
+    # Reconstruct old receipts with their original contract, never the current GA config.
+    config = config_for(decode(run['config']), legacy=True)
     for index, row in enumerate(batches):
         if index >= len(config['batch_targets']) or row['batch_index'] != index:
             raise TaskError('明确历史评分批次编号不符')
@@ -1095,12 +1098,13 @@ def _prepare_formal_publication(store, result=None):
     from sequence import compiled_identity
     from search import digest
     state = store.state
+    if not state.get('formal_search'):
+        raise TaskError('旧正式搜索发布已退役；原完整成果仅可读取')
     snapshot = state.get('formal_champion_snapshot')
     if snapshot is None:
         return
     key = state.get('locked_candidate_key')
-    winner = (state.get('formal_winner') if state.get('formal_search') else
-              next((row for row in state.get('archive', []) if row['key'] == key), None))
+    winner = state.get('formal_winner')
     if winner is None:
         state['formal_champion_publication'] = dict(status='not_eligible', reason='没有完整正式赢家')
         return
@@ -1113,31 +1117,7 @@ def _prepare_formal_publication(store, result=None):
                    or row.get('samples', 0) < 1 for row in winner['batches'])):
         state['formal_champion_publication'] = dict(status='not_eligible', reason='正式赢家证据不完整')
         return
-    evidence = []
     previous = state.get('formal_champion_last_published')
-    baseline = (previous['behavior_identity'] if previous else
-                snapshot.get('behavior_identity') if snapshot['status'] == 'selected' else None)
-    if baseline and key != baseline and not state.get('formal_search'):
-        current = winner
-        visited = set()
-        while current['key'] != baseline:
-            predecessor = current.get('global_predecessor_key')
-            comparison = current.get('global_validation') or current.get('validation')
-            ci = (comparison or {}).get('comparison', {}).get('ci95')
-            if (current['key'] in visited or not predecessor or not ci or ci[0] <= 0
-                    or len(comparison.get('candidate', [])) != state['config']['validation_batches']
-                    or len(comparison.get('control', [])) != state['config']['validation_batches']):
-                state['formal_champion_publication'] = dict(status='not_eligible', reason='缺少可信冠军晋级链')
-                return
-            visited.add(current['key'])
-            evidence.append(dict(candidate_key=current['key'], predecessor_key=predecessor,
-                                 comparison=comparison['comparison'],
-                                 batch_keys=[row['data_key'] for side in ('candidate', 'control')
-                                             for row in comparison[side]]))
-            current = next((row for row in state['archive'] if row['key'] == predecessor), None)
-            if current is None:
-                state['formal_champion_publication'] = dict(status='not_eligible', reason='冠军晋级前序缺失')
-                return
     # Persisted export identity and search behavior identity are intentionally distinct.
     source_key = candidate.get('identity') or digest(candidate['program'])
     record = dict(condition_key=snapshot['condition_key'], binding=snapshot['binding'], version=0,
@@ -1146,16 +1126,11 @@ def _prepare_formal_publication(store, result=None):
                   source_candidate_data_key=digest(dict(run_id=state['run_id'], candidate_key=source_key)),
                   source_condition_key=state['condition'], score=winner['score'],
                   samples=sum(row['samples'] for row in winner['batches']),
-                  batch_keys=list(dict.fromkeys([row['data_key'] for row in winner['batches']] +
-                      [batch for item in evidence for batch in item['batch_keys']])), promotion_evidence=evidence)
-    if state.get('formal_search'):
-        record.update(contract_version=2, batch_keys=[batch['data_key']
-            for row in state['formal_finalists'] for batch in row['batches']],
-            evaluation=dict(search=state['formal_search'], engines=state['engines'],
-                complete_generations=state['ga']['generation'], stagnant=state['ga']['stagnant'],
-                finalist_keys=state['ga']['finalists'], finalists=state['formal_finalists']))
-    else:
-        record.update(contract_version=1, evaluation=None)
+                  contract_version=2, promotion_evidence=[],
+                  batch_keys=[batch['data_key'] for row in state['formal_finalists'] for batch in row['batches']],
+                  evaluation=dict(search=state['formal_search'], engines=state['engines'],
+                      complete_generations=state['ga']['generation'], stagnant=state['ga']['stagnant'],
+                      finalist_keys=state['ga']['finalists'], finalists=state['formal_finalists']))
     incumbent = previous or (dict(version=snapshot['version'], source_run_id=snapshot['source_run_id'],
         behavior_identity=snapshot['behavior_identity'])
         if snapshot['status'] == 'selected' and snapshot['version'] > 0 else None)
@@ -1164,7 +1139,7 @@ def _prepare_formal_publication(store, result=None):
     if result is not None:
         fields['search'] = {name: value for name, value in result['search'].items()
                             if name in ('candidate_count', 'unique_candidates', 'rounds', 'partial_round',
-                                        'stop_reason', 'no_improvement_round_limit', 'effective_population_size',
+                                        'stop_reason', 'effective_population_size',
                                         'coarse_rejections', 'last_fallbacks')}
     state['formal_champion_publication_intent'] = dict(record=record,
         expected_version=incumbent['version'] if incumbent else 0, expected_incumbent=incumbent, result_fields=fields)
@@ -1187,6 +1162,9 @@ def _restore_formal_result(store, destination, character):
     if not intent or state.get('formal_champion_publication', {}).get('status') != 'pending':
         return
     record = intent['record']
+    if (not state.get('formal_search') or type(record.get('contract_version')) is not int
+            or record['contract_version'] != 2):
+        raise TaskError('旧正式搜索补保存已退役；原完整成果仅可读取')
     run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
         'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
         'candidate_data_key', 'search_dps', 'search_samples', 'batch_keys', 'final_scenarios'])
@@ -1195,8 +1173,7 @@ def _restore_formal_result(store, destination, character):
             raise InvalidRecordError('完整正式结果缺失')
         _validate_formal_source(record, state, character, run=run)
     except (InvalidRecordError, ValueError, KeyError, TypeError):
-        winner = (state.get('formal_winner') if record.get('contract_version') == 2 else
-                  next((row for row in state.get('archive', []) if row['key'] == record['behavior_identity']), None))
+        winner = state.get('formal_winner')
         fields = intent.get('result_fields') or {}
         if (winner is None or fields.get('status') not in ('completed', 'cancelled')
                 or winner['score'] != record['score']
@@ -1219,11 +1196,9 @@ def _restore_formal_result(store, destination, character):
                 simulation=compiled.get('simulation'), export_text=compiled.get('text')))
         result = dict(fields, candidate=compiled, locked_candidate_key=record['behavior_identity'],
                       selected_candidate_key=record['behavior_identity'])
-        result['search'] = dict(fields.get('search') or {}, records=state['archive'], chains=state['chains'], errors=state.get('errors', []))
-        if record.get('contract_version') == 2:
-            result['search_result'] = state['search_result']
-        result['validation'] = dict(dataset='validation', records=[row[name] for row in state['archive']
-            for name in ('validation', 'global_validation') if name in row])
+        result['search'] = dict(fields.get('search') or {}, records=state['archive'], errors=state.get('errors', []))
+        result['search_result'] = state['search_result']
+        result['validation'] = dict(dataset='validation', records=[])
         result['elapsed_seconds'] = max(fields.get('elapsed_seconds', 0), state.get('elapsed_seconds', 0))
         pointer = _store_run(destination, result, state=state)
         _write_json(destination / 'result.json', pointer, atomic=True)
@@ -1243,8 +1218,11 @@ def _publish_formal_champion(store, destination):
     intent = state.get('formal_champion_publication_intent')
     if not intent:
         return
+    record = intent['record']
+    if (not state.get('formal_search') or type(record.get('contract_version')) is not int
+            or record['contract_version'] != 2):
+        raise TaskError('旧正式搜索补发布已退役；原完整成果仅可读取')
     try:
-        record = intent['record']
         native = state['native']['identity']
         character = replace(parse_character((destination / 'input.simc').read_text(encoding='utf-8-sig')),
                             spec_id=native['spec_id'], race=native['race'])
@@ -1410,7 +1388,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             import cbor2
             from importlib.metadata import version
             condition_config = {key: value for key, value in config.items()
-                                if key not in ('search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
+                                if key not in (*RETIRED_SEARCH_SETTINGS, 'search_observability', 'diagnostics',
+                           'diagnostic_logging', 'search_timeline')}
             condition = digest(dict(fields=character.fields, class_name=character.class_name,
                                     engine=identities,
                                     options=[*COMMON, *engine_options(simulation_config)],
@@ -1682,7 +1661,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
     else:
         gse_program = None
     from search import config_for
-    config = config_for(search_config, legacy=resume)
+    config = config_for(search_config)
     from result_store import ensure_available
     ensure_available()
     simulation_config = simulation_config_for(simulation_config)
@@ -1750,6 +1729,8 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
             search_config = load_search_config(**(search_config or {}))
         from search import config_for
         config = config_for(search_config)
+        if resume and not _lease:
+            _require_current_formal_resume(_read_resume_checkpoint(output_root))
         if config['search_timeline'] and not hasattr(_runtime, 'search_timeline'):
             origin = getattr(_runtime, 'timeline_origin', None)
             if origin is None:
@@ -1854,6 +1835,49 @@ def cancel_task(task):
 
 
 
+def _read_resume_checkpoint(output_root):
+    """Read the existing restore contract through a read-only SQLite connection."""
+    path = Path(output_root).resolve() / 'task.sqlite3'
+    connection = None
+    try:
+        connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+        row = connection.execute('SELECT value FROM state WHERE id=1').fetchone()
+        if row is None:
+            raise TaskError('任务缺少恢复清单')
+        state = json.loads(row[0])
+        if state == {'storage_format': 2}:
+            names = ('formal_search_version', 'formal_search', 'config', 'rule_snapshot',
+                     'rule_context', 'formal_champion_publication_intent')
+            rows = connection.execute('SELECT key,value FROM state_fields WHERE key IN (' +
+                ','.join('?' for _ in names) + ')', names)
+            state = {key: json.loads(value) for key, value in rows}
+        return state
+    except (sqlite3.Error, OSError, ValueError) as error:
+        raise TaskError('任务恢复清单不可读取，请保留原成果并创建新任务') from error
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _require_current_formal_resume(state):
+    if not isinstance(state, dict) or type(state.get('formal_search_version')) is not int or state['formal_search_version'] != 1:
+        raise TaskError('旧正式任务恢复契约已退役，身份不兼容；原完整成果仍可读取，请创建新任务')
+    intent = state.get('formal_champion_publication_intent')
+    if intent:
+        record = intent.get('record', {}) if isinstance(intent, dict) else {}
+        if (not state.get('formal_search') or not isinstance(record, dict)
+                or type(record.get('contract_version')) is not int or record['contract_version'] != 2):
+            raise TaskError('旧正式搜索补保存和补发布已退役；原完整成果仅可读取')
+    if state.get('rule_snapshot') or state.get('rule_context'):
+        raise TaskError('旧规则任务身份不兼容，不能续跑；原完整成果仍可读取')
+    config = state.get('config')
+    if any(key in (config or {}) for key in
+            ('rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy')):
+        raise TaskError('旧任务含已移除搜索开关，身份不兼容，不能续跑；请创建新任务，原成果仍可读取')
+    from simulation_config import reject_removed_search_settings
+    reject_removed_search_settings(config or {})
+
+
 def _resume_task(output_root, **kwargs):
     timeline = kwargs.pop('_timeline', None)
     search_timeline = kwargs.pop('search_timeline', None)
@@ -1871,13 +1895,11 @@ def _resume_task(output_root, **kwargs):
         _verify_task_inputs(destination, profile)
         from search import (TaskStore, _export_search_observability, config_for,
                             verify_behavior_identity_state)
+        _require_current_formal_resume(_read_resume_checkpoint(destination))
         store = TaskStore(destination)
         try:
             state = store.state
-            if type(state.get('formal_search_version')) is not int or state['formal_search_version'] != 1:
-                raise TaskError('旧正式任务恢复契约不兼容；原完整成果仍可读取，请创建新任务')
-            if state.get('rule_snapshot') or state.get('rule_context'):
-                raise TaskError('旧规则任务身份不兼容，不能续跑；原完整成果仍可读取')
+            _require_current_formal_resume(state)
             if 'formal_champion_publication' in state:
                 try:
                     _formal_publication_metadata(state['formal_champion_publication'])
@@ -1908,9 +1930,6 @@ def _resume_task(output_root, **kwargs):
                 raise TaskError('任务缺少恢复模拟配置')
             if simulation_config != simulation_config_for(state['simulation_config']):
                 raise TaskError('恢复模拟配置发生变化，请创建新任务')
-            if any(key in state['config'] for key in
-                    ('rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy')):
-                raise TaskError('旧任务含已移除搜索开关，身份不兼容，不能续跑；请创建新任务，原成果仍可读取')
             requested_config = kwargs.pop('search_config', None) or state['config']
             if set(requested_config) <= {'search_timeline'}:
                 requested_config = dict(state['config'], **requested_config)
@@ -1919,12 +1938,12 @@ def _resume_task(output_root, **kwargs):
             config = config_for(requested_config)
             logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
             if ({key: value for key, value in config.items() if key not in logging_keys} !=
-                    {key: value for key, value in config_for(state['config'], legacy=True).items()
+                    {key: value for key, value in config_for(state['config']).items()
                      if key not in logging_keys}):
                 raise TaskError('恢复配置发生变化，请创建新任务')
             logging = kwargs.pop('diagnostic_logging', False)
             config = config_for(dict(config, diagnostic_logging=logging,
-                diagnostics=(config['diagnostics'] if config['diagnostics'] != 'off' else 'summary')), legacy=True)
+                diagnostics=(config['diagnostics'] if config['diagnostics'] != 'off' else 'summary')))
             state['config'] = config
             from engine import identity
             # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
@@ -2014,6 +2033,7 @@ def resume_task(output_root, **kwargs):
         raise TaskError('规则编辑和规则诊断执行入口已移除')
     overrides = kwargs.get('search_config') or {}
     reject_removed_search_settings(overrides)
+    _require_current_formal_resume(_read_resume_checkpoint(output_root))
     requested_timeline = kwargs.get('search_timeline')
     if requested_timeline is None:
         requested_timeline = overrides.get('search_timeline')
@@ -2131,6 +2151,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
     if saved['search_metrics']:
         search.update(decode(saved['search_metrics']))
     if search.get('formal_search') is not None:
+        search.pop('chains', None)
         from formal_search import contract_for
         frozen = search['formal_search']
         if (not isinstance(frozen, dict) or type(frozen.get('version')) is not int
@@ -2371,7 +2392,7 @@ def main(argv=None):
         return 2
     parser = argparse.ArgumentParser(description='从单个角色文件生成本机离线序列')
     parser.add_argument('input',type=Path,nargs='?',help='角色导出文件')
-    parser.add_argument('--resume',action='store_true',help='按原有清单和预算恢复任务')
+    parser.add_argument('--resume',action='store_true',help='按同版本冻结计划恢复GA任务；旧正式任务仅可查看')
     parser.add_argument('--diagnostic-logging', action='store_true',
                         help='本次开启全部性能诊断日志；新建和恢复默认均关闭')
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')

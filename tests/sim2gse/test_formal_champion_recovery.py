@@ -38,9 +38,7 @@ def test_final_export_observer_excludes_candidate_and_other_task_compilations():
 @contextmanager
 def dual_page(root, raw, *, diagnostic_logging=False, resume_logging=False):
     from interface import create_server
-    server = create_server(root / 'page', task_options=dict(search_config=dict(
-        candidate_limit=5, batch_targets=(2,), iterations=2, validation_batches=2,
-        final_batches=1, final_iterations=2, scenarios=('nominal',))))
+    server = create_server(root / 'page', task_options=dict(search_config=dict(iterations=2)))
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     worker.start()
     base = f'http://127.0.0.1:{server.server_port}'

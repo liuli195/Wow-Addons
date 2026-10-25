@@ -490,9 +490,10 @@ class InterfaceTests(unittest.TestCase):
         from dual_task import PARENT_SCHEMA
         task_id = 'a' * 32
         row = dict.fromkeys(PARENT_SCHEMA)
-        row.update(parent_id=task_id, status='failed', phase='single_target', error='native trace failed',
+        row.update(parent_id=task_id, formal_search_version=1, status='failed',
+                   phase='single_target', error='native trace failed',
                    input_sha256='frozen', definition_id='reviewed', spec_id=252,
-                   config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
+                   config=dict(input_interval_ms=200), simulation_config={},
                    rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
                    single_target_path='single_target', aoe_path='aoe',
                    single_target_status='running', aoe_status='pending', burst_instructions='')
@@ -533,6 +534,8 @@ class InterfaceTests(unittest.TestCase):
             self.assertEqual(state['total_budget_seconds'], 1200)
             self.assertEqual(state['scenes'][0]['total_budget_seconds'], 600)
             self.assertFalse(state.get('stop_policy'))
+            self.assertFalse(state['recoverable'])
+            self.assertIn('已退役', state['result_note'])
             self.assertIn('未进行最终独立复测', state['result_note'])
             self.assertEqual(state['scenes'][0]['status'], 'cancelled')
             self.assertEqual(state['scenes'][1]['status'], 'pending')
@@ -598,6 +601,15 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("粘贴", json.loads(raised.exception.read())['error'])
         self.input_write.assert_not_called()
 
+
+    def test_http_rejects_retired_formal_settings_before_start_or_resume(self):
+        from simulation_config import RETIRED_SEARCH_SETTINGS
+        for path in ('/api/tasks', '/api/tasks/' + 'a' * 32 + '/resume'):
+            for key in RETIRED_SEARCH_SETTINGS:
+                with self.subTest(path=path, key=key), self.assertRaises(HTTPError) as raised:
+                    self._json_request('POST', path, {key: False})
+                self.assertIn('已退役', json.loads(raised.exception.read())['error'])
+        self.input_write.assert_not_called()
 
     def test_http_rejects_removed_settings_before_start_or_resume(self) -> None:
         for path in ('/api/tasks', '/api/tasks/' + 'a' * 32 + '/resume'):
@@ -802,11 +814,7 @@ class InterfaceTests(unittest.TestCase):
         import sequence
         from task import resume_task
 
-        self.server.task_options = {'use_burst': True, 'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
+        self.server.task_options = {'use_burst': True, 'search_config': dict(iterations=2, max_processes=1, diagnostic_logging=True)}
         original_write = result_store.write
         interrupted = False
         evaluated, published, uncommitted_at_interrupt = [], [], set()
@@ -894,11 +902,7 @@ class InterfaceTests(unittest.TestCase):
     @pytest.mark.real
     def test_lost_report_locations_reject_duplicate_publication(self) -> None:
         import result_store
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         original_url = self.url
         with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]):
             created = self._json_request('POST', '/api/tasks', {
@@ -951,11 +955,7 @@ class InterfaceTests(unittest.TestCase):
         import sequence
         from task import read_task
 
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         first_reports = threading.Barrier(2)
         started = set()
         started_lock = threading.Lock()
@@ -966,7 +966,7 @@ class InterfaceTests(unittest.TestCase):
                 first = destination not in started
                 started.add(destination)
             if first:
-                first_reports.wait(self.server.task_options['search_config']['search_budget_seconds'])
+                first_reports.wait(15)  # Test-only deadlock bound, not a product search budget.
             return _fast_evaluate(*args, **kwargs)
 
         with _fast_search_boundary(), _fixed_search_population([[['outbreak'], ['death_coil']]]), \
@@ -1064,20 +1064,7 @@ class InterfaceTests(unittest.TestCase):
             return result
 
         self.server.task_options = {
-            "search_config": {
-                "total_budget_seconds": 60,
-                "search_budget_seconds": 30,
-                "candidate_limit": 3,
-                "round_candidate_limit": 2,
-                "batch_targets": (2,),
-                "validation_batches": 2,
-                "final_batches": 20,
-                "iterations": 2,
-                "final_iterations": 100,
-                "scenarios": ("nominal", "jitter", "slow", "pause", "phase"),
-                "max_processes": 1,
-                "random_seed": 20260926,
-            }
+            "search_config": {'iterations': 2, 'max_processes': 1, 'random_seed': 20260926}
         }
         real_gse_runner = codec.run_command
         with _fast_initialization(real_engine=True), \
@@ -1167,11 +1154,7 @@ class InterfaceTests(unittest.TestCase):
 
         waiting, heartbeat, release = threading.Event(), threading.Event(), threading.Event()
         store_run, publish = task._store_run, search.TaskStore.publish
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
-            final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=37,
-        )}
+        self.server.task_options = {"search_config": dict(iterations=2, max_processes=1, random_seed=37)}
 
         def held_result(destination, result, *, state=None):
             if result.get("status") == "completed":
@@ -1217,10 +1200,7 @@ class InterfaceTests(unittest.TestCase):
                                   tuple(kwargs['input_times'][:2])))
             return evaluate(*args, **kwargs)
 
-        self.server.task_options = {'search_config': dict(total_budget_seconds=120,
-            search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
-            validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
-            scenarios=('nominal',),max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
@@ -1468,8 +1448,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         import simulation_config
         path = Path(self.directory.name) / 'settings.toml'
         path.write_text('[search]\nsearch_timeline=true\n', encoding='utf-8')
-        self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1, input_interval_ms=200)}
+        self.server.task_options = {'search_config': dict(iterations=2, input_interval_ms=200)}
         edited = []
         with patch.object(simulation_config, 'DEFAULT_PATH', path), _fast_initialization(), page_task_boundary(), \
                 _fixed_search_population([[['outbreak'], ['death_coil']]]):

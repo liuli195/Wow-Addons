@@ -20,7 +20,7 @@ def test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_
     definition, raw = reviewed_fixture()
     result_store.DATA_ROOT.mkdir(exist_ok=True)
     burst.publish(definition)
-    dual_result(tmp_path / 'original', raw, candidate_limit=1)
+    dual_result(tmp_path / 'original', raw)
     source = next((tmp_path / 'original' / 'page' / 'tasks').glob('*/single_target'))
     before = task.read_task(source)
     # The HTTP worker has joined and every TaskStore is closed; fold any committed WAL into the DB.

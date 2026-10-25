@@ -399,9 +399,7 @@ def test_page_dual_scores_character_adapted_seed_without_changing_training(
         result_store.write('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe')), [row],
                            schema=seed_training.SELECTED_SCHEMA)
         before = result_store.read_records('seed_selected', seed_training.shared_scope(dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='aoe')))
-        server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-            candidate_limit=8, batch_targets=(2,), iterations=2, validation_batches=1,
-            final_batches=1, final_iterations=2, scenarios=('nominal',))))
+        server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(iterations=2)))
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
@@ -476,9 +474,7 @@ def test_dual_keeps_completed_child_and_recovers_without_searching_it_again(
         return original_run(*args, **kwargs)
 
     monkeypatch.setattr(task, 'run_task', run)
-    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(
-        candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=2,
-        final_batches=1, final_iterations=2, scenarios=('nominal',))))
+    server = create_server(tmp_path / 'page', task_options=dict(search_config=dict(iterations=2)))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     base = f'http://127.0.0.1:{server.server_port}'
@@ -553,7 +549,7 @@ def test_dual_children_reuse_the_frozen_definition_without_rediscovery(tmp_path,
         raise TaskCancelled('fixture stops after frozen child initialization')
     with _fast_search_boundary(), monkeypatch.context() as scoped:
         scoped.setattr(engine, 'reference', cancelled_reference)
-        handle = dual_task.start(profile, tmp_path / 'dual', search_config={'candidate_limit': 1})
+        handle = dual_task.start(profile, tmp_path / 'dual', search_config={})
         handle.join(5)
         assert handle.done
         saved = dual_task.read(handle.output_root)

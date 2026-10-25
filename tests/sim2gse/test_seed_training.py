@@ -324,13 +324,13 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
 
 
 
-def test_training_condition_excludes_only_execution_and_keeps_real_inputs():
+def test_historical_training_condition_excludes_only_execution_and_keeps_real_inputs():
     from copy import deepcopy
     from search import config_for
     from seed_training import RETEST_SEEDS, TRAINING_VERSION, semantic_condition, semantic_versions
     payload = dict(version=TRAINING_VERSION, template='original-role',
         engines={'baseline': 'original-engine'},
-        config=config_for(dict(diagnostic_logging=True, no_improvement_rounds=2)),
+        config=config_for(dict(diagnostic_logging=True, no_improvement_rounds=2), legacy=True),
         simulation=dict(target_count=1, enable_omnium_talents=True), retest=RETEST_SEEDS,
         effective_options=['threads=1'], rule_config_digest='original-rules',
         rules={'projects/sim2gse/seed_training.py': 'original-source'})

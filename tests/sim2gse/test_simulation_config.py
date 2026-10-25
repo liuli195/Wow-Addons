@@ -30,19 +30,7 @@ from simulation_config import (  # noqa: E402
 
 
 def _fast_search_config() -> dict:
-    return {
-        "total_budget_seconds": 30,
-        "search_budget_seconds": 10,
-        "candidate_limit": 2,
-        "round_candidate_limit": 1,
-        "batch_targets": (2,),
-        "validation_batches": 1,
-        "final_batches": 1,
-        "iterations": 2,
-        "final_iterations": 2,
-        "scenarios": ("nominal",),
-        "max_processes": 1,
-    }
+    return {'iterations': 2, 'max_processes': 1}
 
 
 def _read_state(destination: Path) -> bytes:
@@ -331,6 +319,8 @@ class SimulationConfigTests(unittest.TestCase):
                           destination / 'input.simc': effective}
                 inputs[destination / name] += b'# tampered\n'
                 with patch.object(result_store, 'ensure_available'), \
+                        patch.object(task, '_read_resume_checkpoint', return_value=dict(
+                            formal_search_version=1, config=search.config_for())), \
                         patch.object(seed_activity, 'foreground_search', nullcontext), \
                         patch.object(task, '_task_lease', lambda *args: nullcontext()), \
                         patch.object(Path, 'read_text', autospec=True,

@@ -561,7 +561,9 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
     from simulation_config import load_search_config
     values = dict(search_config or {}, diagnostic_logging=diagnostic_logging,
-        diagnostics='summary', no_improvement_rounds=2, max_processes=max_processes)
+        diagnostics='summary', max_processes=max_processes)
+    if rule_snapshot is not None:
+        values.setdefault('no_improvement_rounds', 2)  # Historical v1 identity only.
     # 仅旧完整成果重建原凭据时接受其内嵌配置，不读current职业规则。
     config = config_for(values if rule_snapshot is not None else load_search_config(**values),
                         training=True, legacy=rule_snapshot is not None)

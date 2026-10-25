@@ -17,7 +17,7 @@ def timeline_payload(targets, status='completed', end=45):
     return dict(schema='sim2gse-search-timeline-v1', context=dict(simulation_config=dict(target_count=targets),
             comparison=dict(profile_sha256='known-fixture', engines={'controlled': 'verified-fixture'},
                 simulation_config=dict(target_count=targets), input_interval_ms=300, reset_events=[], burst=None)),
-        resumed=False, time_origin='本次调用', status=status, stop_reason='candidate_limit',
+        resumed=False, time_origin='本次调用', status=status, stop_reason='stagnation',
         search_start_seconds=2, search_stop_seconds=30, result_saved_seconds=end,
         call_seconds=end, truncated_at=None, events=[
             dict(kind='score', seconds=10.001, series='global', dps=100, candidate_key='a', samples=2),
@@ -250,8 +250,7 @@ def test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume(
     with _fast_search_boundary(), _initialized_starts([[['outbreak'], ['death_coil']]]), \
             patch.object(sequence, 'evaluate', side_effect=timed_evaluate):
         with patch.object(sequence, 'evaluate', side_effect=cancel_second):
-            handle = task.start_task(source, folder, search_config=dict(
-                candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+            handle = task.start_task(source, folder, search_config=dict(iterations=2))
             handle.join(10)
             assert handle.done and handle.error is None
             assert handle.result['status'] == 'cancelled'
@@ -264,7 +263,7 @@ def test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume(
         assert task.main(['--resume', '--output', str(folder), '--search-timeline']) == 0
         saved = task.read_task(folder)
         assert saved['status'] == 'completed'
-        assert saved['config']['candidate_limit'] == 1
+        assert saved['config']['iterations'] == 2
         assert old_file.read_bytes() == original
         segments = [json.loads(path.read_text()) for path in folder.glob('search-timeline-*.json')]
         fresh, = [segment for segment in segments if segment['resumed']]
@@ -298,7 +297,7 @@ def test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume(
         with patch.object(search_timeline, 'render', side_effect=OSError('draw failure')):
             resumed = task.resume_task(folder, search_config={'search_timeline': True})
         assert resumed['status'] == task.read_task(folder)['status'] == 'completed'
-        assert task.read_task(folder)['config']['candidate_limit'] == 1
+        assert task.read_task(folder)['config']['iterations'] == 2
         assert len(list(folder.glob('search-timeline-*.json'))) == count + 1
         calls = 0
         with patch.object(sequence, 'evaluate', side_effect=cancel_second):
@@ -309,8 +308,7 @@ def test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume(
         with patch.object(result_store, 'DATA_ROOT', tmp_path / 'failure-center'), \
                 patch.object(sequence, 'evaluate', side_effect=OSError('native failed first')):
             with pytest.raises(task.TaskError, match='native failed first'):
-                task.run_task(source, tmp_path / 'native-failure', search_config=dict(search_timeline=True,
-                    candidate_limit=1, batch_targets=(2,), iterations=2, validation_batches=1))
+                task.run_task(source, tmp_path / 'native-failure', search_config=dict(search_timeline=True, iterations=2))
         failure_path, = (tmp_path / 'native-failure').glob('search-timeline-*.json')
         failed = json.loads(failure_path.read_text())
         assert failed['status'] == 'failed'

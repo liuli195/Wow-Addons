@@ -26,7 +26,7 @@ build-and-verify verify --project .
 
 Sim2GSE 普通层在云端直接运行纯计算与真实 SQLite :memory: 状态规则；原生引擎、Windows 进程/锁及浏览器代表由相应环境验收。普通层不能以 DuckDB :memory: 或物理 TaskStore 冒充受保护内存测试。
 
-Sim2GSE 正式局部搜索及GA预训练使用 `projects/sim2gse/requirements.txt` 中的锁定依赖；已移除自适应选择器专属依赖组和测试。`sim2gse/test_*.py` 仍由统一入口发现，包含新GA公开CLI、正式run/resume、v1/v2消费、曲线和存储故障回归。PR的 `verify.sim2gse` 仍为 `pr: false`，远端PR通过不替代必要本机验证或真实模拟验收。
+Sim2GSE 正式GA搜索及GA预训练使用 `projects/sim2gse/requirements.txt` 中的锁定依赖；已移除自适应选择器专属依赖组和测试。`sim2gse/test_*.py` 仍由统一入口发现，包含新GA公开CLI、正式run/resume、v1/v2消费、曲线和存储故障回归。PR的 `verify.sim2gse` 仍为 `pr: false`，远端PR通过不替代必要本机验证或真实模拟验收。
 
 PR（拉取请求）中的代码、配置和工作流变更运行素材构建及全部 PR 可执行验证；仅配置中登记的文档或 MySpec（自有规格）路径变更按目标分支固定提交运行匹配检查。PR 不准备或缓存 SimulationCraft（战斗模拟器）引擎。缺文件、缺工具、断言失败和超时均返失败，不将跳过记为通过。依赖私人角色、本机研究引擎或历史报告的检查作为本机验收，在对应项目改动后按下方入口单独执行并记录结果。
 
@@ -93,3 +93,5 @@ node tests/gear-planner/check-async.js
 全部pytest项以real标记分层，inventory实际完整收集并验证两个选择互补，不能用-k/ignore/deselect隐藏未迁移节点。普通直接验证已有计算入口；真实保UI双场、异构C++机制、Lua控制块、类型化中心/损坏恢复/CAS及进程所有权等不可替代边界。详情与已披露矩阵退让见本任务test-migration-plan和证据文档；第三方AzeriteUI继续不作自有门禁，gear手工研究与游戏验收不冒充自动43项。
 
 Node自动检查和浏览器必须实际运行 `.local/verify-deps/node/node.exe`，与inputs所hash同一文件；setup只复制已安装Node并比对字节。配置、CI/toolchain官方身份、Windows真实组、无缓存完整60秒、新旧同冻结输入完整默认DPS/耗时对照均仍待验收。云端普通/定向通过不能替代这些结果。
+
+旧正式chain/neighbour执行器及其Git源码抽取benchmark测试已退役；共享原子替换重试测试保留在`test_runtime.py`。旧配置拒绝、旧任务只读/不可继续、v1验真与当前GA重评分仍属现行兼容保护测试，不运行旧算法。

@@ -5,10 +5,8 @@ $PSNativeCommandUseErrorActionPreference = $true
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location -LiteralPath $repoRoot
 $versions = Get-Content scripts/dev/versions.json -Raw | ConvertFrom-Json
-if (-not $Pr) {
-    $simcLock = Get-Content projects/sim2gse/compatibility/lock.json -Raw | ConvertFrom-Json
-}
-New-Item -ItemType Directory -Force .tools/downloads | Out-Null
+$simcLock = Get-Content projects/sim2gse/compatibility/lock.json -Raw | ConvertFrom-Json
+New-Item -ItemType Directory -Force .tools/downloads, .local/t | Out-Null
 
 function Get-Artifact($spec, $path) {
     if ((Test-Path -LiteralPath $path) -and
@@ -84,13 +82,12 @@ foreach ($entry in $versions.repositories.PSObject.Properties) {
     $path = ".tools/$($entry.Name)"
     Sync-Repository $path $entry.Value
 }
-if (-not $Pr) {
-    $gse = [pscustomobject]@{
-        url = 'https://github.com/TimothyLuke/GSE-Advanced-Macro-Compiler.git'
-        commit = $simcLock.gse_commit
-    }
-    Sync-Repository '.tools/sim2gse-research/gse-f225d4c' $gse
+# 普通导出检查也读取锁定源码；仅 SimulationCraft 引擎资料排除在 PR 准备之外。
+$gse = [pscustomobject]@{
+    url = 'https://github.com/TimothyLuke/GSE-Advanced-Macro-Compiler.git'
+    commit = $simcLock.gse_commit
 }
+Sync-Repository '.tools/sim2gse-research/gse-f225d4c' $gse
 git -C .tools/wow-api submodule update --init --recursive --depth 1
 $expected = "$($versions.client.version).$($versions.client.build)"
 if ((Get-Content .tools/wow-ui-source/version.txt).Trim() -ne $expected) {
@@ -100,11 +97,16 @@ if (-not (Test-Path '.venv/Scripts/python.exe')) { python -m venv .venv }
 $requirements = @('-r', 'scripts/dev/requirements.txt', '-r', 'projects/sim2gse/requirements.txt')
 & .venv/Scripts/python.exe -m pip install --disable-pip-version-check @requirements
 npm ci --ignore-scripts --no-audit --no-fund
-$nodeSource = (Get-Command node -CommandType Application).Source
+# 指定 CommandType 会枚举 PATH 上的多个版本，只冻结实际优先执行的一个。
+$nodeSource = (Get-Command node -CommandType Application -TotalCount 1).Source
 $nodeDestination = Join-Path $PWD '.local/verify-deps/node/node.exe'
 New-Item -ItemType Directory -Force (Split-Path $nodeDestination) | Out-Null
 Copy-Item -LiteralPath $nodeSource -Destination $nodeDestination -Force
-if ((Get-FileHash $nodeSource -Algorithm SHA256).Hash -ne (Get-FileHash $nodeDestination -Algorithm SHA256).Hash) {
+$nodeSourceHash = (Get-FileHash -LiteralPath $nodeSource -Algorithm SHA256).Hash
+$nodeDestinationHash = (Get-FileHash -LiteralPath $nodeDestination -Algorithm SHA256).Hash
+Write-Output "Node source: $nodeSource; SHA256=$nodeSourceHash"
+Write-Output "Node frozen: $nodeDestination; SHA256=$nodeDestinationHash"
+if ($nodeSourceHash -ne $nodeDestinationHash) {
     throw '冻结Node副本与实际已安装程序字节不符。'
 }
 & $nodeDestination --version

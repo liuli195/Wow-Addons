@@ -115,7 +115,8 @@ def legacy_formal_inputs():
     config = config_for(dict(candidate_limit=1, batch_targets=(2,), iterations=2,
         validation_batches=1, final_batches=1, final_iterations=2,
         scenarios=('nominal',), input_interval_ms=200), legacy=True)
-    state = dict(condition='current-condition', config=config, input_effective_sha256='same-character',
+    state = dict(condition='current-condition', config=config_for(dict(iterations=2, input_interval_ms=200)),
+        input_effective_sha256='same-character',
         engines=dict(baseline='same-base', controlled='same-controlled'),
         simulation_config=simulation_config_for(dict(target_count=1, scene='single_target')),
         capabilities=_fast_capabilities())

@@ -44,7 +44,8 @@ def memory_ga(monkeypatch):
     from test_search import _fast_capabilities, _fast_report
     from test_character_export import sample_profile
     stores = []
-    def make(*, programs=None, settings=None, native=None, score_for=None, formal=False, search_settings=None):
+    def make(*, programs=None, settings=None, native=None, score_for=None, formal=False, search_settings=None,
+             manifest_fields=None):
         capabilities = _fast_capabilities()
         starts = (deepcopy(programs) if programs is not None else
                   [[[name] for name in order] for order in permutations(
@@ -66,7 +67,7 @@ def memory_ga(monkeypatch):
             if settings: raise ValueError('formal GA settings must come from the production contract')
             frozen = contract_for(search_config)
             config, plan = frozen['config'], frozen['stage_plan']
-        manifest = dict(training_config=config, stage_plan=plan)
+        manifest = dict(training_config=config, stage_plan=plan, **(manifest_fields or {}))
         from search import digest
         condition = digest(manifest)
         store.state.update(run_id='memory', condition=condition, starts=starts, config=search_config,
@@ -219,7 +220,7 @@ def test_public_run_uses_all_materials_ga_and_publishes_four_five_scene_results(
     from task import run_task, resume_task, read_task
     task_folder = tmp_path / 'formal'
     with training_boundary():
-        run_task(template, task_folder, search_config=dict(candidate_limit=1))
+        run_task(template, task_folder, search_config=dict())
         formal = read_task(task_folder)
         assert formal['search']['training_champion_snapshot']['status'] == 'not_applicable'
         assert not any(source['source_kind'] == 'training_champion'

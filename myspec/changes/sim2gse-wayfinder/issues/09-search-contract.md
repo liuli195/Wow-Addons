@@ -1,5 +1,7 @@
 # 确定搜索评分、独立复测与停止规则
 
+> **旧搜索历史资料（2026-10-25）**：本文件中旧局部搜索、预算封顶、分档/CI晋级、分支轮转或旧执行工具条款已退役，仅保留原始决策与验收证据，不作当前运行指引；共用能力不因该标记退役。现行正式GA见[运行契约](../../../../docs/sim2gse/runtime-contract.md)。不得据此重启旧搜索或删除原成果。
+
 Label（标签）: wayfinder:grilling
 Triage（分拣）: ready-for-agent
 Status（状态）: closed
