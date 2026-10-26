@@ -48,7 +48,8 @@ def exact(image, size, opaque=False):
 
 def contain(image, size):
     image = neutral(image)
-    image.thumbnail(size, RESAMPLE)
+    # 明确保留直接缩放，避免新版对透明图片预缩小后改变边缘与派生遮罩。
+    image.thumbnail(size, RESAMPLE, reducing_gap=None)
     canvas = Image.new("RGBA", size, (0, 0, 0, 0))
     canvas.alpha_composite(image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2))
     return canvas
