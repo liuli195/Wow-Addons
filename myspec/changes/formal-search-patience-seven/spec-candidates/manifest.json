@@ -6,7 +6,7 @@
       "source": "myspec/specs/sim2gse-sequence-evaluation/spec.md",
       "source_sha256": "6a9a73f336278aeb14c775f69b6f5db3d666d2d727523762602e435650d15191",
       "candidate": "myspec/changes/formal-search-patience-seven/spec-candidates/sim2gse-sequence-evaluation.md",
-      "candidate_sha256": "731f953df5f8199463b811e2196e1171c6551e809499340f16f847150c66dcf5"
+      "candidate_sha256": "ae0b93b981a5ee016e555865ef8ccda3dea3c42d52c1209a1da2ea2dbed7c087"
     },
     {
       "source": "myspec/specs/sim2gse-user-workflow/spec.md",
