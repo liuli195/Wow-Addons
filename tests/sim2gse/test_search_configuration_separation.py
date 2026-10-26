@@ -79,22 +79,24 @@ def test_public_run_dispatches_reference_with_runtime_file_default_priority(monk
     from task import run_task
     from test_character_export import sample_profile
     from test_search import _fast_identity
-    files = {'/memory/role.simc': sample_profile().encode(), str(codec.LUA): b'fixed compiler identity'}
+    memory_root = Path('/memory').resolve()
+    def key(path): return Path(path).resolve()
+    files = {memory_root / 'role.simc': sample_profile().encode(), key(codec.LUA): b'fixed compiler identity'}
     # The suite's default document isolation is intentionally replaced with an explicit in-memory TOML source.
     from io import StringIO
     document_loader = simulation_config._load_document
     monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: document_loader(StringIO(file_values)))
     read_bytes, read_text = Path.read_bytes, Path.read_text
     is_file, exists = Path.is_file, Path.exists
-    def in_memory(path): return str(path).startswith('/memory/')
-    monkeypatch.setattr(Path, 'read_bytes', lambda p: files[str(p)] if str(p) in files else read_bytes(p))
-    monkeypatch.setattr(Path, 'read_text', lambda p, **kw: files[str(p)].decode() if in_memory(p) else read_text(p, **kw))
-    monkeypatch.setattr(Path, 'write_bytes', lambda p, value: files.__setitem__(str(p), value))
-    monkeypatch.setattr(Path, 'write_text', lambda p, value, **kw: files.__setitem__(str(p), value.encode()))
-    monkeypatch.setattr(Path, 'is_file', lambda p: str(p) in files if in_memory(p) else is_file(p))
-    monkeypatch.setattr(Path, 'exists', lambda p: str(p) in files if in_memory(p) else exists(p))
+    def in_memory(path): return memory_root in key(path).parents
+    monkeypatch.setattr(Path, 'read_bytes', lambda p: files[key(p)] if key(p) in files else read_bytes(p))
+    monkeypatch.setattr(Path, 'read_text', lambda p, **kw: files[key(p)].decode() if in_memory(p) else read_text(p, **kw))
+    monkeypatch.setattr(Path, 'write_bytes', lambda p, value: files.__setitem__(key(p), value))
+    monkeypatch.setattr(Path, 'write_text', lambda p, value, **kw: files.__setitem__(key(p), value.encode()))
+    monkeypatch.setattr(Path, 'is_file', lambda p: key(p) in files if in_memory(p) else is_file(p))
+    monkeypatch.setattr(Path, 'exists', lambda p: key(p) in files if in_memory(p) else exists(p))
     monkeypatch.setattr(Path, 'mkdir', lambda *a, **kw: None)
-    monkeypatch.setattr(os, 'replace', lambda src, dst: files.__setitem__(str(dst), files.pop(str(src))))
+    monkeypatch.setattr(os, 'replace', lambda src, dst: files.__setitem__(key(dst), files.pop(key(src))))
     store_type = search.TaskStore
     monkeypatch.setattr(search, 'TaskStore', lambda destination: store_type(destination,
         connection=sqlite3.connect(':memory:', check_same_thread=False), reusable_database=':memory:', report_locations={}))

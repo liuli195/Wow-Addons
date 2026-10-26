@@ -874,7 +874,7 @@ class InterfaceTests(unittest.TestCase):
                                   tuple(kwargs['input_times'][:2])))
             return evaluate(*args, **kwargs)
 
-        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1, stagnation_generations=2)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()

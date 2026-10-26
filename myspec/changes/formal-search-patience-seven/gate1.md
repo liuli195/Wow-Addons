@@ -30,3 +30,10 @@ Status: approved
 - `spec-candidates/manifest.json`及三个完整文本仅为 draft，供本机官方 MySpec 完整预览；未修改正式规格。
 - 待本机必要的 Windows 官方固定基线验证和 MySpec 预览，汇总第二门禁后再申请确认；未合并、部署或应用规格。
 - 接收功能分支前须保全本机原有五份未跟踪准备文档并逐字比较；云端保护备份位于 `.local/config-separation-recovery/`，不得删除。
+
+### 本机正式验证返工
+- 首轮本机官方验证11组：9通过、2失败。普通GSE有16项失败，根因为新增内存夹具使用POSIX字符串分隔符，Windows角色路径、清单、日志及曲线未匹配；未发现对应产品计算逻辑失效。
+- 夹具改为平台路径对象与实际清单的只读数据库地址匹配，保留所有业务断言；增加Windows盘符路径直接调用相同内存替身的检查。
+- 真实浏览器冒烟已有参考次数2与并发1，但遗漏显式耐心。现仅该冒烟补耐心2，保留两代断言；生产默认8仍由公开正式入口普通检查验证，不以旧断言修改生产默认。
+- 云端定向训练77项通过，页面与配置40项及98子检查通过，真实浏览器未在云端重跑。相关日志：`.local/config-separation-ticket01/ticket03-windows-training-regression.log`与`windows-smoke-settings-02.log`，guard complete。需本机重新验证原失败项及正式入口。
+- 本次四测试文件返工再次通过独立 Spec 与 Standards 复核，零剩余发现。

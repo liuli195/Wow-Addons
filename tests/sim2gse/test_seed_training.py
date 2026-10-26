@@ -428,13 +428,13 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
         max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., mutation_probability=0.)))
     files = {}
     monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
-    monkeypatch.setattr(Path, 'write_text', lambda path, text, **kwargs: files.__setitem__(str(path), text))
-    monkeypatch.setattr(Path, 'read_text', lambda path, **kwargs: files.get(str(path), sample_profile()))
+    monkeypatch.setattr(Path, 'write_text', lambda path, text, **kwargs: files.__setitem__(path, text))
+    monkeypatch.setattr(Path, 'read_text', lambda path, **kwargs: files.get(path, sample_profile()))
     for module in (task, search):
-        monkeypatch.setattr(module, 'replace_file', lambda source, target: files.__setitem__(str(target), files.pop(str(source))))
-    monkeypatch.setattr(Path, 'exists', lambda path: str(path) in files)
+        monkeypatch.setattr(module, 'replace_file', lambda source, target: files.__setitem__(target, files.pop(source)))
+    monkeypatch.setattr(Path, 'exists', lambda path: path in files)
     monkeypatch.setattr(Path, 'glob', lambda path, pattern: iter(
-        [Path(name) for name in files if name.endswith('/identity.json')]
+        [path for path in files if path.name == 'identity.json']
         if pattern == '*/*/identity.json' else []))
     def open_store(folder): return case.store
     open_store.load_state = search.TaskStore.load_state
@@ -442,7 +442,9 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     import sqlite3
     connect = sqlite3.connect
     monkeypatch.setattr(sqlite3, 'connect', lambda database, **kwargs:
-        case.store.db if str(database).startswith('file:/memory/work/') else connect(database, **kwargs))
+        case.store.db if database in {
+            'file:' + path.with_name('task.sqlite3').as_posix() + '?mode=ro'
+            for path in files if path.name == 'identity.json'} else connect(database, **kwargs))
     close = case.store.close
     monkeypatch.setattr(case.store, 'close', lambda: None)
     case.store.state.clear()
@@ -490,7 +492,7 @@ def test_public_training_resume_freezes_computation_and_only_changes_explicit_ob
     with pytest.raises(TaskCancelled):
         seed_training.run_training(case.template, 1, '/memory/work', search_config=dict(
             input_interval_ms=250, reset_events=[(500, 'target')], diagnostic_logging=True, diagnostics='summary'))
-    manifest_path = next(name for name in case.files if name.endswith('/identity.json'))
+    manifest_path = next(path for path in case.files if path.name == 'identity.json')
     frozen = case.files[manifest_path]
     # New files are not current-invocation authority over an unfinished task.
     monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(
@@ -538,7 +540,7 @@ def test_training_cli_consumes_logging_selection_through_real_public_execution(
     result = json.loads(capsys.readouterr().out)[0]
     assert result['status'] == ('completed' if entry == 'run' else 'prepared')
     expected = logging_flag == ['--diagnostic-logging']
-    diagnostics = [json.loads(value) for name, value in case.files.items() if name.endswith('/diagnostics.json')]
+    diagnostics = [json.loads(value) for path, value in case.files.items() if path.name == 'diagnostics.json']
     assert bool(diagnostics) is expected
     if entry == 'run':
         assert case.store.state['config']['diagnostic_logging'] is expected
@@ -557,7 +559,7 @@ def test_public_training_uses_only_shared_file_curve_and_explicit_choice_wins(
     options = {} if explicit is None else {'search_timeline': explicit}
     result = seed_training.run_training(case.template, 1, '/memory/work', search_config=options)
     assert result['status'] == 'completed'
-    curves = [json.loads(value) for name, value in case.files.items() if '/search-timeline-' in name and name.endswith('.json')]
+    curves = [json.loads(value) for path, value in case.files.items() if path.name.startswith('search-timeline-') and path.suffix == '.json']
     assert bool(curves) is expected
     if expected:
         assert curves[0]['status'] == 'completed'
@@ -582,23 +584,35 @@ def test_three_public_training_calls_keep_latest_checkpoint_observation_when_omi
             search_timeline=enabled)
     with pytest.raises(TaskCancelled):
         seed_training.run_training(case.template, 1, '/memory/work', search_config=options(initial_enabled))
-    manifest_path = next(name for name in case.files if name.endswith('/identity.json'))
+    manifest_path = next(path for path in case.files if path.name == 'identity.json')
     frozen = case.files[manifest_path]
     with pytest.raises(TaskCancelled):
         seed_training.run_training(case.template, 1, '/memory/work', search_config=dict(options(latest_logging),
             diagnostics=latest_diagnostics, search_timeline=latest_timeline))
-    previous_curves = {name for name in case.files if '/search-timeline-' in name and name.endswith('.json')}
+    previous_curves = {path for path in case.files if path.name.startswith('search-timeline-') and path.suffix == '.json'}
     monkeypatch.setattr(sequence, 'evaluate', evaluate)
     result = seed_training.run_training(case.template, 1, '/memory/work')
     assert result['status'] == 'completed'
     assert case.store.state['config']['diagnostic_logging'] is latest_logging
     assert case.store.state['config']['diagnostics'] == latest_diagnostics
     assert case.store.state['config']['search_timeline'] is latest_timeline
-    new_curves = [json.loads(value) for name, value in case.files.items()
-                  if '/search-timeline-' in name and name.endswith('.json') and name not in previous_curves]
+    new_curves = [json.loads(value) for path, value in case.files.items()
+                  if path.name.startswith('search-timeline-') and path.suffix == '.json' and path not in previous_curves]
     assert bool(new_curves) is latest_timeline
     if latest_timeline:
         assert new_curves[0]['resumed'] is True and new_curves[0]['status'] == 'completed'
     assert case.files[manifest_path] == frozen
     assert case.calls[0][2]['input_times'][:3] == [0, 250, 500]
     assert all(call[2]['reset_events'] == [(500, 'target')] for call in case.calls)
+
+
+def test_training_memory_io_recognizes_windows_paths(public_training_memory):
+    """Exercise the same fixture IO with Windows drive/separators even on Linux."""
+    import sqlite3
+    from pathlib import PureWindowsPath
+    manifest = PureWindowsPath('Z:/memory/work/ga/scope/task/identity.json')
+    Path.write_text(manifest, '{}')
+    assert Path.read_text(manifest) == '{}' and Path.exists(manifest)
+    assert manifest in Path.glob(manifest.parents[2], '*/*/identity.json')
+    uri = 'file:' + manifest.with_name('task.sqlite3').as_posix() + '?mode=ro'
+    assert sqlite3.connect(uri, uri=True) is public_training_memory.store.db

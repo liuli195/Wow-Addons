@@ -260,7 +260,7 @@ def _initialized_starts(starts):
 
 @contextmanager
 def _fixed_search_population(starts):
-    """非变异代表仅固定测试工作量；真实两代、复测和持久化契约不变。"""
+    """非变异代表仅固定种群；代数由调用方显式配置，复测和持久化契约不变。"""
     from copy import deepcopy
     import population_training
     with _initialized_starts(starts), \
