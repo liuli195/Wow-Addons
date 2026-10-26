@@ -5,7 +5,7 @@ import json
 
 
 def formal_cohort(*, target_count=1, source_run_id='source-run', programs=None,
-                  condition='frozen-condition', config=None):
+                  condition='frozen-condition', config=None, search_version=2):
     """两名完整入围者、各三份128次请求和127有效样本的外部报告输入。"""
     from test_character_export import sample_profile
     from test_search import _fast_capabilities, _fast_report
@@ -21,7 +21,7 @@ def formal_cohort(*, target_count=1, source_run_id='source-run', programs=None,
         simulation_config=simulation_config_for(dict(target_count=target_count,
             scene='single_target' if target_count == 1 else 'aoe')),
         config=dict(config) if config is not None else config_for(dict(input_interval_ms=200)))
-    contract = deepcopy(contract_for(state['config']))
+    contract = deepcopy(contract_for(state['config'], version=search_version))
     finalists, reports = [], []
     programs = programs or [[['outbreak']], [['death_coil']]]
     for program, score in zip(programs, (100., 200.)):
@@ -32,7 +32,7 @@ def formal_cohort(*, target_count=1, source_run_id='source-run', programs=None,
                 behavior_identity=canonical['identity'], purpose='nominal', seed=seed,
                 input_seed=seed + 500000, iterations=128,
                 times=input_times('nominal', seed + 500000, 200), stats=STATS_VERSION,
-                trace=False, reset_events=[], allow_zero=True)
+                trace=False, reset_events=[list(row) for row in state['config']['reset_events']], allow_zero=True)
             key = digest(request)
             receipts.append(dict(status='success', request=request, data_key=key,
                 storage_group_key='cohort-reports', dps=score, samples=127, variance=0.,
@@ -45,7 +45,8 @@ def formal_cohort(*, target_count=1, source_run_id='source-run', programs=None,
                     separators=(',', ':')), seed=seed, input_seed=seed + 500000,
                 iterations=128, requested_iterations=128, batch_index=index, scenario='nominal',
                 stats_version=STATS_VERSION, times=request['times'], trace=False,
-                dps=score, samples=127, variance=0., report=report))
+                dps=score, samples=127, variance=0., report=report,
+                reset_events=[dict(ms=ms, kind=kind) for ms, kind in request['reset_events']]))
         finalists.append(dict(key=canonical['identity'], program=program, score=score,
                               samples=381, batches=receipts))
     winner = finalists[1]  # 已知示例：200胜过100，不复刻生产排序。
@@ -57,7 +58,8 @@ def formal_cohort(*, target_count=1, source_run_id='source-run', programs=None,
         behavior_identity=winner['key'], program=winner['program'], score=200., samples=381,
         batch_keys=[receipt['data_key'] for row in finalists for receipt in row['batches']],
         promotion_evidence=[], evaluation=dict(search=contract, engines=state['engines'],
-            complete_generations=2, stagnant=2, finalists=finalists,
+            complete_generations=contract['config']['stagnation_generations'],
+            stagnant=contract['config']['stagnation_generations'], finalists=finalists,
             finalist_keys=[row['key'] for row in finalists]))
     run = dict(run_id=source_run_id, status='completed', profile=dict(
         input_effective_sha256='frozen-character', identity=dict(
@@ -97,7 +99,8 @@ def formal_publication_inputs(**options):
     state.update(run_id=run['run_id'], native=dict(identity=dict(spec_id=252, race=character.race)),
         formal_search=record['evaluation']['search'], formal_winner=winner,
         formal_finalists=deepcopy(record['evaluation']['finalists']),
-        ga=dict(generation=2, stagnant=2, finalists=record['evaluation']['finalist_keys']),
+        ga=dict(generation=record['evaluation']['complete_generations'],
+                stagnant=record['evaluation']['stagnant'], finalists=record['evaluation']['finalist_keys']),
         locked_candidate_key=winner['key'], selected_candidate_key=winner['key'])
     return record, state, character, run, candidate, reports
 

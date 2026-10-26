@@ -1006,14 +1006,15 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
     by_key = {row['candidate_data_key']: row for row in candidates}
     if len(by_key) != len(candidates):
         raise TaskError('明确历史候选身份不唯一')
+    from simulation_config import FORMAL_ALGORITHM_DEFAULTS
     eligible = []
     for run in runs:
         profile, config = decode(run['profile']), decode(run['config'])
         candidate = by_key.get(run['candidate_data_key'])
         identity = (profile or {}).get('identity', {})
         comparable_config = lambda value: {key: item for key, item in value.items()
-            if key not in (*RETIRED_SEARCH_SETTINGS, 'search_observability', 'diagnostics',
-                           'diagnostic_logging', 'search_timeline')}
+            if key not in (*RETIRED_SEARCH_SETTINGS, *FORMAL_ALGORITHM_DEFAULTS,
+                           'search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
                           if key not in ('candidate_key', 'candidate_data_key')}
@@ -1725,7 +1726,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
     timeline = None
     if mode == 'optimize':
         from simulation_config import load_search_config
-        if not resume:
+        if not resume and _runtime is None:
             search_config = load_search_config(**(search_config or {}))
         from search import config_for
         config = config_for(search_config)
@@ -1882,7 +1883,7 @@ def _resume_task(output_root, **kwargs):
     timeline = kwargs.pop('_timeline', None)
     search_timeline = kwargs.pop('search_timeline', None)
     destination = Path(output_root).resolve()
-    simulation_config = simulation_config_for(kwargs.pop("simulation_config", None))
+    simulation_config = kwargs.pop("simulation_config", None)
     from result_store import ensure_available
     ensure_available()
     with _task_lease(destination):
@@ -1928,22 +1929,15 @@ def _resume_task(output_root, **kwargs):
                 raise TaskError('任务缺少恢复清单')
             if not state.get('simulation_config'):
                 raise TaskError('任务缺少恢复模拟配置')
+            simulation_config = simulation_config_for(state['simulation_config'] if simulation_config is None else simulation_config)
             if simulation_config != simulation_config_for(state['simulation_config']):
                 raise TaskError('恢复模拟配置发生变化，请创建新任务')
-            requested_config = kwargs.pop('search_config', None) or state['config']
-            if set(requested_config) <= {'search_timeline'}:
-                requested_config = dict(state['config'], **requested_config)
-            if search_timeline is not None:
-                requested_config = dict(requested_config, search_timeline=search_timeline)
-            config = config_for(requested_config)
-            logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
-            if ({key: value for key, value in config.items() if key not in logging_keys} !=
-                    {key: value for key, value in config_for(state['config']).items()
-                     if key not in logging_keys}):
-                raise TaskError('恢复配置发生变化，请创建新任务')
-            logging = kwargs.pop('diagnostic_logging', False)
-            config = config_for(dict(config, diagnostic_logging=logging,
-                diagnostics=(config['diagnostics'] if config['diagnostics'] != 'off' else 'summary')))
+            from search import resume_config_for
+            requested_config = dict(kwargs.pop('search_config', None) or {})
+            requested_config.update({key: value for key, value in dict(
+                search_timeline=search_timeline, diagnostic_logging=kwargs.pop('diagnostic_logging', None)).items()
+                if value is not None})
+            config = resume_config_for(state['config'], requested_config)
             state['config'] = config
             from engine import identity
             # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
@@ -2028,16 +2022,17 @@ def _resume_task(output_root, **kwargs):
 
 def resume_task(output_root, **kwargs):
     from seed_activity import foreground_search
-    from simulation_config import load_search_config, reject_removed_search_settings
+    from simulation_config import reject_removed_search_settings
     if any(name in kwargs for name in ('rule_step', 'diagnostic_candidate_key', 'diagnostic_budget_seconds')):
         raise TaskError('规则编辑和规则诊断执行入口已移除')
     overrides = kwargs.get('search_config') or {}
     reject_removed_search_settings(overrides)
-    _require_current_formal_resume(_read_resume_checkpoint(output_root))
+    saved = _read_resume_checkpoint(output_root)
+    _require_current_formal_resume(saved)
     requested_timeline = kwargs.get('search_timeline')
     if requested_timeline is None:
         requested_timeline = overrides.get('search_timeline')
-    enabled = load_search_config(search_timeline=requested_timeline)['search_timeline']
+    enabled = saved['config'].get('search_timeline', False) if requested_timeline is None else requested_timeline
     kwargs['search_timeline'] = enabled
     timeline = getattr(kwargs.get('_runtime'), 'search_timeline', None)
     owns_timeline = enabled and timeline is None
@@ -2155,7 +2150,8 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         from formal_search import contract_for
         frozen = search['formal_search']
         if (not isinstance(frozen, dict) or type(frozen.get('version')) is not int
-                or frozen != contract_for(decode(saved['config']))):
+                or frozen.get('version') not in (1, 2)
+                or frozen != contract_for(decode(saved['config']), version=frozen.get('version'))):
             raise TaskError('正式遗传搜索成果版本或冻结评分契约不符，不能按新语义读取')
     if pointer.get('formal_champion_publication'):
         search['formal_champion_publication'] = pointer['formal_champion_publication']
@@ -2393,14 +2389,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='从单个角色文件生成本机离线序列')
     parser.add_argument('input',type=Path,nargs='?',help='角色导出文件')
     parser.add_argument('--resume',action='store_true',help='按同版本冻结计划恢复GA任务；旧正式任务仅可查看')
-    parser.add_argument('--diagnostic-logging', action='store_true',
-                        help='本次开启全部性能诊断日志；新建和恢复默认均关闭')
+    parser.add_argument('--diagnostic-logging', action=argparse.BooleanOptionalAction, default=None,
+                        help='明确选择本次诊断日志；省略沿用新任务配置或恢复保存值')
     parser.add_argument('--output', type=Path, required=True, help='新任务目录（不会覆盖已有目录）')
     from simulation_config import add_search_arguments
     add_search_arguments(parser)
     args = parser.parse_args(argv)
     try:
-        simulation_config = load_config()
+        simulation_config = None if args.resume else load_config()
         if args.resume:
             result = resume_task(args.output, simulation_config=simulation_config,
                                  diagnostic_logging=args.diagnostic_logging, search_timeline=args.search_timeline)
@@ -2409,7 +2405,7 @@ def main(argv=None):
                 parser.error('新任务需要角色文件')
             result = run_task(args.input, args.output, simulation_config=simulation_config,
                               search_config=dict(diagnostic_logging=args.diagnostic_logging,
-                                  search_timeline=args.search_timeline, diagnostics='summary'))
+                                  search_timeline=args.search_timeline))
         print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:

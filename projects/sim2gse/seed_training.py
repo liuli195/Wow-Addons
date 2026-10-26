@@ -547,25 +547,46 @@ def _check_pretraining_observations(options):
         raise ValueError('预训练仅支持基础性能日志和时间DPS曲线，不支持完整事件或过程观测')
 
 
+def _training_options(search_config, diagnostic_logging):
+    """保留本次明确输入；不把补齐默认值误当恢复覆盖。"""
+    options = dict(search_config or {})
+    if diagnostic_logging is not None:
+        if 'diagnostic_logging' in options:
+            raise ValueError('重复指定 diagnostic_logging，请只使用一个训练入口')
+        options['diagnostic_logging'] = diagnostic_logging
+    _check_pretraining_observations(options)
+    from simulation_config import load_training_search_config
+    load_training_search_config(**options)  # 公共输入先验，不接受未消费的正式参数。
+    return options
+
+
 def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, max_processes=None,
-                     burst_identity=None, verified_engines=None, rule_snapshot=None, diagnostic_logging=False, search_config=None):
+                     burst_identity=None, verified_engines=None, rule_snapshot=None, diagnostic_logging=None, search_config=None,
+                     _frozen_config=None):
     from engine import identity
     _check_cancelled(cancel_event)
-    if rule_snapshot is None:
-        _check_pretraining_observations(search_config or {})
+    if rule_snapshot is None and _frozen_config is None:
+        search_config = _training_options(search_config, diagnostic_logging)
     if max_processes is None:
         from simulation_config import load_training_config
         max_processes = load_training_config()['max_processes']
     text = Path(template).read_text(encoding='utf-8')
     character = template_character(text)
     scope = f'{character.class_name}-{character.spec}-{targets}' + ('-burst' if use_burst else '')
-    from simulation_config import load_search_config
-    values = dict(search_config or {}, diagnostic_logging=diagnostic_logging,
-        diagnostics='summary', max_processes=max_processes)
+    from simulation_config import load_training_search_config
+    values = dict(_frozen_config if _frozen_config is not None else search_config or {})
     if rule_snapshot is not None:
         values.setdefault('no_improvement_rounds', 2)  # Historical v1 identity only.
-    # 仅旧完整成果重建原凭据时接受其内嵌配置，不读current职业规则。
-    config = config_for(values if rule_snapshot is not None else load_search_config(**values),
+        if diagnostic_logging is not None:
+            values['diagnostic_logging'] = diagnostic_logging
+        if use_burst:
+            values['input_interval_ms'] = 200  # 旧完整成果沿原重建规则验真。
+    elif _frozen_config is None:
+        values.setdefault('input_interval_ms', 200 if use_burst else 300)
+        if values.get('diagnostic_logging') and 'diagnostics' not in values:
+            values['diagnostics'] = 'summary'
+        values = load_training_search_config(**values)
+    config = config_for(dict(values, max_processes=max_processes),
                         training=True, legacy=rule_snapshot is not None)
     from dual_task import SCENES
     simulation_config = {'target_count': targets, 'enable_omnium_talents': True,
@@ -584,7 +605,6 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
                 raise ValueError('本次训练的爆发定义已变化，请重新准备')
             if (definition['class_key'] != character.class_name or definition['spec_key'] != character.spec):
                 raise ValueError('当前标准角色职业或专精不适用冻结爆发定义')
-        config = config_for(dict(config, input_interval_ms=200), training=True, legacy=rule_snapshot is not None)
     return dict(text=text, character=character, scope=scope, config=config, simulation_config=simulation_config,
                 engines=engines, template_sha=template_sha, definition=definition, rule_snapshot=rule_snapshot)
 
@@ -592,7 +612,7 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
 
 
 def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burst=False,
-                    materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=False, search_config=None,
+                    materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=None, search_config=None,
                     burst_identity=None):
     """run/prepare共用入口：完整快照原子保存成功后才返回可派发队列。"""
     from engine import reference, prepare_loop, configuration_key
@@ -796,7 +816,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
 
 def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None,
                   max_processes=None, max_trainings=None, prepare_only=False, sources=None, burst_identity=None,
-                  diagnostic_logging=False, search_config=None, _timeline_origin=None, training_config=None,
+                  diagnostic_logging=None, search_config=None, _timeline_origin=None, training_config=None,
                   expected_key=None):
     from population_training import run_group
     from simulation_config import load_training_config
@@ -805,24 +825,25 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
         use_burst=use_burst, sources=sources if sources is not None else registry_rows(), config=config,
         prepare_only=prepare_only, materials=materials, diagnostic_logging=diagnostic_logging,
         search_config=search_config, expected_key=expected_key, timeline_origin=_timeline_origin,
-        burst_identity=burst_identity)
+        burst_identity=burst_identity, training_overrides={key: value for key, value in dict(
+            max_processes=max_processes, max_trainings=max_trainings).items() if value is not None})
 
 
 def run_training(template, targets, workspace, *, use_burst=False, max_processes=None, max_trainings=None,
-                 diagnostic_logging=False, search_config=None):
+                 diagnostic_logging=None, search_config=None):
     from seed_activity import training_activity
-    from simulation_config import load_search_config
-    search_config = load_search_config(**(search_config or {}))
-    _check_pretraining_observations(search_config)
+    from simulation_config import load_training_search_config
+    search_config = _training_options(search_config, diagnostic_logging)
+    options = load_training_search_config(**search_config)
     timeline_origin = None
-    if search_config['search_timeline']:
+    if options['search_timeline']:
         from time import monotonic
         timeline_origin = monotonic()
     with writer_lock(), training_activity() as cancel_event:
         sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
                              max_processes=max_processes, max_trainings=max_trainings, sources=sources,
-                             diagnostic_logging=diagnostic_logging, search_config=search_config, _timeline_origin=timeline_origin)
+                             search_config=search_config, _timeline_origin=timeline_origin)
 
 
 def check_training(template=None, *, use_burst=True, training_config=None):
@@ -1049,7 +1070,7 @@ def main(argv=None):
     for command_parser in (training, preparing):
         from simulation_config import add_search_arguments
         add_search_arguments(command_parser)
-        command_parser.add_argument('--diagnostic-logging', action='store_true',
+        command_parser.add_argument('--diagnostic-logging', action=argparse.BooleanOptionalAction, default=None,
                                     help='本次开启基础性能日志；恢复预训练可按本次设置切换')
         command_parser.add_argument('--template', type=Path, help='明确角色文件；默认使用当前受检构建的标准角色')
         command_parser.add_argument('--targets', type=int, nargs='+', choices=(1, 5), default=[1, 5])
@@ -1076,10 +1097,12 @@ def main(argv=None):
         elif args.command == 'check':
             output = check_training(args.template, use_burst=args.use_burst)
         elif args.command in ('run', 'prepare'):
-            from simulation_config import load_search_config
-            search_config = load_search_config(search_timeline=args.search_timeline)
+            from simulation_config import load_training_search_config
+            search_config = ({'search_timeline': args.search_timeline}
+                             if args.search_timeline is not None else {})
+            options = load_training_search_config(**search_config)
             timeline_origin = None
-            if args.command == 'run' and search_config['search_timeline']:
+            if args.command == 'run' and options['search_timeline']:
                 from time import monotonic
                 timeline_origin = monotonic()
             from simulation_config import load_training_config
@@ -1119,7 +1142,8 @@ def main(argv=None):
                             futures.append(pool.submit(_run_training, Path(row['template']), targets, args.workspace,
                                 cancel_event=cancel_event, use_burst=args.use_burst,
                                 prepare_only=args.command == 'prepare', sources=sources,
-                                training_config=parallelism, expected_key=expected, burst_identity=row['burst_identity'],
+                                training_config=parallelism, max_processes=args.max_processes, max_trainings=args.max_trainings,
+                                expected_key=expected, burst_identity=row['burst_identity'],
                                 diagnostic_logging=args.diagnostic_logging, search_config=search_config,
                                 _timeline_origin=timeline_origin, **material_options))
                         # Deterministic result order; one group's failure never cancels another group.

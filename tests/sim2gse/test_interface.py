@@ -54,7 +54,7 @@ def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
     import engine
     from interface import _public_state
     from sequence import compiled_program
-    from simulation_config import TRAINING_DEFAULTS
+    from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
     from test_search import _fast_report
 
     initial = ("outbreak", "death_coil")
@@ -75,7 +75,7 @@ def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
 
     # The same formal entry owns quarantine and full finalist retests. HTTP,
     # physical report groups and native execution retain separate real witnesses.
-    with patch.dict(TRAINING_DEFAULTS, crossover_probability=0., mutation_probability=0.):
+    with patch.dict(FORMAL_DEFAULTS, crossover_probability=0., mutation_probability=0.):
         case = memory_ga(formal=True, programs=[[[name] for name in actions]
             for actions in (initial, better, worse)], native=evaluate)
         result = case.run()
@@ -711,6 +711,109 @@ class InterfaceTests(unittest.TestCase):
                 for options, expected in previous:
                     self.assertIs(options['diagnostic_logging'], expected)
 
+    def test_service_cli_keeps_builtin_interval_out_of_snapshot(self):
+        import importlib.util
+        import interface, dual_task
+        from http.server import ThreadingHTTPServer
+        script = REPOSITORY / 'scripts/dev/sim2gse/interface.py'
+        spec = importlib.util.spec_from_file_location('interval_service_entry', script)
+        entry = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(entry)
+        source = SimpleNamespace(write_text=lambda *a, **kw: None)
+        destination = self.server.task_root / ('f' * 32)
+        imported = gse_fixture(['INTERVAL', {
+            'MetaData': {'SpecID': 252, 'GSEVersion': 3331}, 'Default': 1,
+            'Versions': [{'Actions': [{'Type': 'Action', 'type': 'spell', 'spell': 77575}]}]}])
+        def socket_open(server, *a, **kw):
+            self.server = server
+            server.server_port = 0
+        def requests():
+            reads = document.call_count
+            with patch.object(self.server, 'task_paths', return_value=(source, destination)):
+                for mode, builtin in (('dual', 200), ('optimize', 300), ('import', 300)):
+                    expected = 200 if resets else builtin
+                    selection = dict(input_interval_ms=200) if resets and (mode != 'dual' or resets == 'file300') else {}
+                    self._json_request('POST', '/api/tasks', dict(profile=sample_profile(), mode=mode,
+                        gse=imported, sequence_name='INTERVAL', version=1, gse_click_ms=expected, gcd_ms=1500, **selection))
+                    if resets:
+                        with self.assertRaises(HTTPError) as caught:
+                            self._json_request('POST', '/api/tasks', dict(profile=sample_profile(), mode=mode,
+                                input_interval_ms=300, gse=imported, sequence_name='INTERVAL', version=1,
+                                gse_click_ms=300, gcd_ms=1500))
+                        self.assertEqual(caught.exception.code, 400)
+                        self.assertIn('点击对齐', json.loads(caught.exception.read())['error'])
+                    options = (dual if mode == 'dual' else single).call_args.kwargs['search_config']
+                    self.assertEqual(options['input_interval_ms'], expected)
+                self.assertIn('step="1" value="' + ('300' if resets == 'file300' else '200') + '"', self._json_request('GET', '/'))
+            self.assertEqual(document.call_count, reads)
+        for resets in (False, True, 'file300'):
+            settings = dict(reset_events=[[400, 'shift']]) if resets else {}
+            if resets == 'file300':
+                settings['input_interval_ms'] = 300
+            with patch.object(ThreadingHTTPServer, '__init__', socket_open), patch.object(Path, 'mkdir'), \
+                    patch.object(interface.InterfaceServer, 'serve_forever', side_effect=requests), \
+                    patch.object(interface.InterfaceServer, 'server_close'), \
+                    patch('simulation_config._load_document', return_value={'search': settings}) as document, \
+                    patch.object(interface, 'start_task', return_value=SimpleNamespace(done=True)) as single, \
+                    patch.object(dual_task, 'start', return_value=SimpleNamespace(done=True)) as dual, \
+                    patch.object(sys, 'argv', [str(script), '--port', '0']):
+                self.assertEqual(entry.main(), 0)
+
+    def test_server_snapshot_preserves_per_entry_interval_fallbacks(self):
+        import interface, dual_task
+        from http.server import ThreadingHTTPServer
+        source = SimpleNamespace(write_text=lambda *a, **kw: None)
+        destination = self.server.task_root / ('f' * 32)
+        imported = gse_fixture(['INTERVAL', {
+            'MetaData': {'SpecID': 252, 'GSEVersion': 3331}, 'Default': 1,
+            'Versions': [{'Actions': [{'Type': 'Action', 'type': 'spell', 'spell': 77575}]}]}])
+        for file, runtime, wanted in (({}, {}, None), ({'input_interval_ms': 250}, {}, 250),
+                                      ({'input_interval_ms': 250}, {'input_interval_ms': 300}, 300)):
+            with patch.object(ThreadingHTTPServer, '__init__'), patch.object(Path, 'mkdir'), \
+                    patch('simulation_config._load_document', return_value={'search': file}):
+                self.server = interface.InterfaceServer(('localhost', 0), destination,
+                    task_options=dict(search_config=runtime))
+            self.server.server_port = 0
+            with patch('simulation_config._load_document', side_effect=AssertionError('请求不得重读配置')), \
+                    patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                    patch.object(interface, 'start_task', return_value=SimpleNamespace(done=True)) as single, \
+                    patch.object(dual_task, 'start', return_value=SimpleNamespace(done=True)) as dual:
+                for mode in ('dual', 'optimize', 'import'):
+                    for explicit in (False, True):
+                        interval = 200 if explicit else wanted if wanted is not None else 200 if mode == 'dual' else 300
+                        request = dict(profile=sample_profile(), mode=mode, gse=imported,
+                            sequence_name='INTERVAL', version=1, gse_click_ms=interval, gcd_ms=1500)
+                        if explicit:
+                            request['input_interval_ms'] = 200
+                        self._json_request('POST', '/api/tasks', request)
+                        options = (dual if mode == 'dual' else single).call_args.kwargs['search_config']
+                        self.assertEqual(options['input_interval_ms'], interval)
+                page = self._json_request('GET', '/')
+                self.assertIn('step="1" value="' + str(wanted or 200) + '"', page)
+
+    def test_new_task_preserves_config_observation_and_page_interval_wins(self):
+        import interface
+        source = SimpleNamespace(write_text=lambda *args, **kwargs: None)
+        destination = self.server.task_root / ('f' * 32)
+        self.server.task_options = dict(search_config=dict(input_interval_ms=250,
+            diagnostic_logging=True, diagnostics='off', search_observability='summary'))
+        with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                patch.object(interface, 'start_task', return_value=SimpleNamespace(done=True)) as start:
+            for body, expected in (({}, 250), ({'input_interval_ms': 200}, 200)):
+                self._json_request('POST', '/api/tasks', dict(profile=sample_profile(), **body))
+                config = start.call_args.kwargs['search_config']
+                self.assertEqual(config['input_interval_ms'], expected)
+                self.assertEqual(config['search_observability'], 'summary')
+                self.assertEqual(config['diagnostics'], 'off')
+
+    def test_page_displays_merged_interval_and_does_not_force_observation(self):
+        for options, expected in (({}, 200), ({'input_interval_ms': 250}, 250),
+                                  ({'input_interval_ms': 300}, 300)):
+            self.server.task_options = dict(search_config=options)
+            page = self._json_request('GET', '/')
+            self.assertIn('value="' + str(expected) + '"', page)
+            self.assertNotIn("search_observability:diagnosticLogging.checked?", page)
+
     def test_served_page_uses_service_logging_only_as_initial_selection(self):
         for default in (False, True):
             self.server.task_options = dict(search_config=dict(diagnostic_logging=default))
@@ -729,13 +832,16 @@ class InterfaceTests(unittest.TestCase):
                 patch.object(dual_task, 'resume', return_value=handle) as resume:
             for default in (False, True):
                 self.server.task_options = dict(search_config=dict(diagnostic_logging=default))
-                for body, expected in ((None, default), ({}, default),
+                for body, expected in ((None, None), ({}, None),
                                        ({'diagnostic_logging': True}, True),
                                        ({'diagnostic_logging': False}, False)):
                     with self.subTest(default=default, body=body):
                         self.assertEqual(self._json_request('POST', path, body)['status'], 'starting')
-                        self.assertIs(resume.call_args.kwargs['diagnostic_logging'], expected)
+                        self.assertIs(resume.call_args.kwargs.get('diagnostic_logging'), expected)
                         self.assertIs(self.server.task_options['search_config']['diagnostic_logging'], default)
+            self._json_request('POST', path, dict(search_timeline=False, diagnostics='off', search_observability='summary'))
+            self.assertEqual(resume.call_args.kwargs['search_config'],
+                             dict(search_timeline=False, diagnostics='off', search_observability='summary'))
             resume.reset_mock()
             for invalid in (None, 0, 1, 'true', [], {}):
                 for endpoint in ('/api/tasks', path):
@@ -743,6 +849,10 @@ class InterfaceTests(unittest.TestCase):
                         self._json_request('POST', endpoint, dict(profile=sample_profile(), diagnostic_logging=invalid))
                     self.assertEqual(caught.exception.code, 400)
                     self.assertIn('布尔值', json.loads(caught.exception.read())['error'])
+            for key in ('search_timeline', 'diagnostics', 'search_observability'):
+                with self.assertRaises(HTTPError) as caught:
+                    self._json_request('POST', path, {key: None})
+                self.assertEqual(caught.exception.code, 400)
             handle.done = False
             with self.assertRaises(HTTPError) as caught:
                 self._json_request('POST', path, {'diagnostic_logging': False})

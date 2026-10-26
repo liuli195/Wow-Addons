@@ -25,7 +25,7 @@ PREVIOUS_SEARCH_ALGORITHM = "rule-single-step-coba-linucb-v1"
 STATS_VERSION = "paired-bootstrap-v1"
 _TASK_COUNTERS = ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates')
 DEFAULT_SCENARIOS = ("nominal", "jitter", "slow", "pause", "phase")
-DEFAULT_CONFIG = {
+TRAINING_SEARCH_DEFAULTS = {
     "iterations": 100,
     "max_processes": 2,
     "random_seed": 20260912,
@@ -36,8 +36,11 @@ DEFAULT_CONFIG = {
     "input_interval_ms": 300,
     "reset_events": (),
 }
+# Formal search owns its defaults; training and historical evidence keep the original runtime values.
+from simulation_config import SEARCH_DEFAULTS, FORMAL_ALGORITHM_DEFAULTS
+DEFAULT_CONFIG = dict(SEARCH_DEFAULTS)
 # Only historical receipt readers may fill the original frozen defaults.
-LEGACY_DEFAULT_CONFIG = dict(DEFAULT_CONFIG, total_budget_seconds=600.0, search_budget_seconds=600.0,
+LEGACY_DEFAULT_CONFIG = dict(TRAINING_SEARCH_DEFAULTS, total_budget_seconds=600.0, search_budget_seconds=600.0,
     candidate_limit=1000, round_candidate_limit=16, no_improvement_rounds=5,
     batch_targets=(32, 128, 256), validation_batches=4, final_batches=20,
     final_iterations=100, trace_search=False, scenarios=DEFAULT_SCENARIOS)
@@ -53,20 +56,20 @@ def verify_behavior_identity_state(state):
         raise ValueError('候选行为身份版本已变化，请创建新任务')
 
 
-def config_for(values=None, *, training=False, legacy=False):
+def config_for(values=None, *, training=False, legacy=False, _defer_interval_alignment=False):
     from simulation_config import reject_removed_search_settings
     if not legacy:
         reject_removed_search_settings(values or {})
     if type(training) is not bool:
         raise ValueError('训练配置开关必须为布尔值')
-    config = dict(LEGACY_DEFAULT_CONFIG if legacy else DEFAULT_CONFIG)
+    config = dict(LEGACY_DEFAULT_CONFIG if legacy else TRAINING_SEARCH_DEFAULTS if training else DEFAULT_CONFIG)
     if values:
         if set(values)-set(config)-({'rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy'} if legacy else set()):
             raise ValueError('未知搜索配置')
         config.update(values)
         if legacy and 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
             config['search_budget_seconds'] = config['total_budget_seconds']
-    limits = [('max_processes', 16 if training else 2), ('iterations', 512), ('random_seed', 1000000000)]
+    limits = [('max_processes', 16 if training else 2 if legacy else 5), ('iterations', 512), ('random_seed', 1000000000)]
     if legacy:
         for key in ('total_budget_seconds', 'search_budget_seconds'):
             value = config[key]
@@ -79,6 +82,14 @@ def config_for(values=None, *, training=False, legacy=False):
     for key, maximum in limits:
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
+    if not training and not legacy:
+        for key in set(FORMAL_ALGORITHM_DEFAULTS) - {'max_processes', 'crossover_probability', 'mutation_probability'}:
+            if type(config[key]) is not int or config[key] < (4 if key == 'top_k' else 1):
+                raise ValueError('正式搜索配置必须为正整数（top_k至少4）: ' + key)
+        for key in ('crossover_probability', 'mutation_probability'):
+            value = config[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError('正式搜索概率必须为0至1的有限数: ' + key)
     if type(config['input_interval_ms']) is not int or not 50 <= config['input_interval_ms'] <= 2000:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
     if config['diagnostics'] not in {'off', 'summary', 'full'}:
@@ -91,7 +102,7 @@ def config_for(values=None, *, training=False, legacy=False):
             raise ValueError(key + ' 必须为布尔值')
     if type(config['diagnostic_logging']) is not bool:
         raise ValueError('诊断日志总开关必须为布尔值')
-    if not config['diagnostic_logging']:
+    if (training or legacy) and not config['diagnostic_logging']:
         config['diagnostics'] = 'off'
         config['search_observability'] = 'off'
     if legacy:
@@ -117,10 +128,31 @@ def config_for(values=None, *, training=False, legacy=False):
     if any(kind in {'shift', 'ctrl', 'alt'} for _, kind in config['reset_events']):
         scenarios = config['scenarios'] if legacy else DEFAULT_SCENARIOS if training else ('nominal',)
         if (scenarios != ('nominal',) or
+                (not _defer_interval_alignment or training or legacy) and
                 any(ms % config['input_interval_ms'] for ms, kind in config['reset_events']
                     if kind in {'shift', 'ctrl', 'alt'})):
             raise ValueError('修饰键 Reset 事件只支持与 nominal 情景点击对齐')
     return config
+
+
+def resume_config_for(saved, overrides=None):
+    """仅本次明确观测覆盖冻结配置，计算变化必须新建任务。"""
+    observation = {'diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline'}
+    explicit = {key: value for key, value in (overrides or {}).items() if value is not None}
+    config = config_for(dict(saved, **explicit))
+    frozen = config_for(saved)
+    if any(config[key] != frozen[key] for key in config if key not in observation):
+        from task import TaskError
+        raise TaskError('恢复配置发生变化，请创建新任务')
+    return config
+
+
+def formal_v1_config_for(values):
+    """旧正式GA仅接受原9项运行配置，Reset按原正常场景验证。"""
+    if set(values) - set(TRAINING_SEARCH_DEFAULTS):
+        raise ValueError('未知历史正式GA运行配置')
+    config = config_for(dict(values, scenarios=('nominal',)), legacy=True)
+    return {key: config[key] for key in TRAINING_SEARCH_DEFAULTS}
 
 
 def _json(value):
@@ -1446,14 +1478,15 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     timeline = getattr(runtime, 'search_timeline', None)
     batch_counters = getattr(store, 'counter_target', state)
     verify_behavior_identity_state(state)
-    observation_mode = config['search_observability']
+    observation_mode = config['search_observability'] if config['diagnostic_logging'] else 'off'
     observability = None
     if observation_mode != 'off':
         with store.lock:
             observability = state.setdefault(
                 'search_observability', _new_search_observability(observation_mode))
-            if observability.get('mode') != observation_mode:
+            if not state.get('formal_search') and observability.get('mode') != observation_mode:
                 raise ValueError('任务恢复时搜索记录模式不能改变')
+            observability['mode'] = observation_mode
             observability['algorithm'] = 'ga-easimple-v1'
 
     initializing = ('behavior_identity_version' not in store.saved_fields
@@ -1552,7 +1585,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 finally:
                     if config['diagnostic_logging']:
                         diagnostic_finish(runtime, 'candidate.write', started)
-            if config['diagnostics'] == 'full':
+            if config['diagnostic_logging'] and config['diagnostics'] == 'full':
                 diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
                                               candidate_compilations_so_far=candidate_compilations))
         except CandidateError:
@@ -1794,11 +1827,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return feedback
 
     result = training_runner(evaluate=evaluate_training, feedback=feedback_training)
-    if config['diagnostics'] != 'off':
+    if config['diagnostic_logging'] and config['diagnostics'] != 'off':
         store.diagnostics_mode = config['diagnostics']
         store.diagnostic_summary = dict(mode=config['diagnostics'],
             task_state_writes=store.state_write_count, candidate_compilations=candidate_compilations,
             lua_compiler_starts=store.lua_compiler_starts)
-        if config['diagnostics'] == 'full':
+        if config['diagnostic_logging'] and config['diagnostics'] == 'full':
             store.diagnostic_summary['events'] = diagnostic_events
     return result

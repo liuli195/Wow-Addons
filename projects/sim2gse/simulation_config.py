@@ -109,20 +109,55 @@ def reject_removed_search_settings(values):
         raise ValueError('旧正式搜索参数已退役，请删除旧配置: ' + ', '.join(sorted(retired)))
 
 
-def load_search_config(path=None, **overrides):
-    """仅保留曲线开关；旧能力键即使为false也明确拒绝。"""
+FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
+    retest_batches=3, retest_iterations=128, stagnation_generations=8, top_k=8,
+    tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
+SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_timeline=False,
+    diagnostic_logging=False, diagnostics='summary', search_observability='full',
+    input_interval_ms=300, reset_events=())
+SEARCH_DEFAULTS = dict(FORMAL_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS)
+
+
+def _search_values(path, overrides):
     section = _load_document(path).get('search', {})
     if not isinstance(section, dict):
         raise ValueError('[search] 必须是 TOML 表')
     reject_removed_search_settings(section)
     reject_removed_search_settings(overrides)
-    if set(section) - {'search_timeline'}:
+    if (set(section) | set(overrides)) - set(SEARCH_DEFAULTS):
         raise ValueError('[search] 包含未知配置')
-    values = {'search_timeline': False, **section}
+    return dict(section, **{key: value for key, value in overrides.items() if value is not None})
+
+
+def load_search_config(path=None, *, default_input_interval_ms=300, **overrides):
+    """运行参数优先，false有效；default_input_interval_ms=None表示所属入口尚未选内置间隔，缺失时不补齐。"""
+    from search import config_for
+    if 'input_interval_ms' in overrides and overrides['input_interval_ms'] is None:
+        raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
+    values = _search_values(path, overrides)
+    config = config_for({'input_interval_ms': 300 if default_input_interval_ms is None else default_input_interval_ms, **values},
+                        _defer_interval_alignment=default_input_interval_ms is None)
+    if default_input_interval_ms is None and 'input_interval_ms' not in values:
+        config.pop('input_interval_ms')
+    config.update({key: values[key] for key in ('diagnostics', 'search_observability') if key in values})
+    return config
+
+
+def load_training_search_config(path=None, **overrides):
+    """训练文件仅沿用旧曲线开关，其余运行值只接受训练显式调用。"""
+    from search import config_for, TRAINING_SEARCH_DEFAULTS
+    section = _search_values(path, {})
+    reject_removed_search_settings(overrides)
+    unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
+                                    'search_observability', 'input_interval_ms', 'reset_events'}
+    if unsupported:
+        raise ValueError('预训练不支持搜索参数，请使用专用训练配置: ' + ', '.join(sorted(unsupported)))
+    values = {key: value for key, value in section.items() if key == 'search_timeline'}
     values.update({key: value for key, value in overrides.items() if value is not None})
-    if type(values['search_timeline']) is not bool:
-        raise ValueError('search_timeline 必须为布尔值')
-    return values
+    projected = {key: value for key, value in values.items() if key in TRAINING_SEARCH_DEFAULTS}
+    config = config_for(projected, training=True)
+    config.update({key: projected[key] for key in ('diagnostics', 'search_observability') if key in projected})
+    return config
 
 
 def _removed_search_argument(value):

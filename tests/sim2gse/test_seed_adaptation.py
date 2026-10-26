@@ -197,11 +197,11 @@ def test_current_seed_deduplicates_derived_behavior_without_filling_the_start_qu
 def test_formal_search_rescores_the_adapted_start_instead_of_reusing_training_score(
         consume_seed, memory_ga, monkeypatch):
     from search import TaskStore
-    from simulation_config import TRAINING_DEFAULTS
+    from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
     original = [['unlearned_racial'], ['outbreak'], ['death_coil']]
     starts, decisions, capabilities = consume_seed([original], native_rows=[native_skill()])
-    monkeypatch.setitem(TRAINING_DEFAULTS, 'crossover_probability', 0.)
-    monkeypatch.setitem(TRAINING_DEFAULTS, 'mutation_probability', 0.)
+    monkeypatch.setitem(FORMAL_DEFAULTS, 'crossover_probability', 0.)
+    monkeypatch.setitem(FORMAL_DEFAULTS, 'mutation_probability', 0.)
     case = memory_ga(formal=True, programs=starts, score_for=lambda candidate, options: 321.)
     case.capabilities.clear()
     case.capabilities.update(capabilities)

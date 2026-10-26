@@ -251,7 +251,7 @@ def start(input_path, destination, *, search_config=None, simulation_config=None
     destination = Path(destination).resolve()
     simulation_config = simulation_config_for(simulation_config)
     from simulation_config import load_search_config
-    config = config_for(load_search_config(**dict(search_config or {}, input_interval_ms=(search_config or {}).get('input_interval_ms', 200))))
+    config = load_search_config(default_input_interval_ms=200, **(search_config or {}))
     original, text = task._read_utf8(Path(input_path), description='角色输入')
     effective = task._effective_input_bytes(original, text, simulation_config)
     definition = select_definition(task.parse_character(effective.decode('utf-8')))
@@ -279,10 +279,8 @@ def _launch(destination, identities, *, timeline_origin=None):
     return handle
 
 
-def resume(destination, *, diagnostic_logging=False, search_timeline=None):
-    from simulation_config import load_search_config
-    search_timeline = load_search_config(search_timeline=search_timeline)['search_timeline']
-    timeline_origin = time.monotonic() if search_timeline else None
+def resume(destination, *, diagnostic_logging=None, search_timeline=None, search_config=None):
+    from search import resume_config_for
     from engine import identity
     destination = Path(destination).resolve()
     task._require_current_formal_resume(_load(destination))
@@ -291,9 +289,11 @@ def resume(destination, *, diagnostic_logging=False, search_timeline=None):
         task._require_current_formal_resume(row)
         identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
         _verify(row, destination, identities, current_rules=True)
-        row['config'] = config_for(dict(row['config'], diagnostic_logging=diagnostic_logging, search_timeline=search_timeline,
-            diagnostics=(row['config'].get('diagnostics') if row['config'].get('diagnostics') != 'off'
-                         else 'summary')))
+        overrides = dict(search_config or {})
+        overrides.update({key: value for key, value in dict(diagnostic_logging=diagnostic_logging,
+                          search_timeline=search_timeline).items() if value is not None})
+        row['config'] = resume_config_for(row['config'], overrides)
+        timeline_origin = time.monotonic() if row['config']['search_timeline'] else None
         _save(row)
     return _launch(destination, identities, timeline_origin=timeline_origin)
 

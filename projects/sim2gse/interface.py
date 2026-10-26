@@ -29,6 +29,9 @@ class InterfaceServer(ThreadingHTTPServer):
         super().__init__(server_address, InterfaceHandler)
         self.output_root = Path(output_root).resolve()
         self.task_options = dict(task_options or {})
+        from simulation_config import load_search_config
+        self.task_options['search_config'] = load_search_config(default_input_interval_ms=None,
+            **(self.task_options.get('search_config') or {}))
         self.task_root = self.output_root / "tasks"
         self.input_root = self.output_root / "inputs"
         self.task_root.mkdir(parents=True, exist_ok=True)
@@ -78,9 +81,13 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_page(self) -> None:
-        enabled = (self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False)
+        from search import config_for
+        config = config_for({'input_interval_ms': 200, **(self.server.task_options.get('search_config') or {})},
+                            _defer_interval_alignment=True)
+        enabled = config['diagnostic_logging']
         page = PAGE.replace(b'diagnosticLogging.checked=false',
                             b'diagnosticLogging.checked=' + (b'true' if enabled else b'false'))
+        page = page.replace(b'step="1" value="200"', ('step="1" value="' + str(config['input_interval_ms']) + '"').encode())
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -182,14 +189,17 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             raise TaskError("请先粘贴角色导出字符串")
         if len(profile.encode("utf-8")) > MAX_PROFILE_BYTES:
             raise TaskError("角色资料过大")
-        interval = value.get("input_interval_ms", 200 if mode == 'dual' else 300)
+        from search import config_for, DEFAULT_CONFIG
+        defaults = {**DEFAULT_CONFIG, 'input_interval_ms': 200 if mode == 'dual' else 300,
+                    **(self.server.task_options.get('search_config') or {})}
+        interval = value.get('input_interval_ms', defaults['input_interval_ms'])
         if type(interval) is not int or not 50 <= interval <= 2000:
             raise TaskError("按键间隔必须为 50 至 2000 毫秒的整数")
         target_count = value.get("target_count", 1)
         if type(target_count) is not int or target_count not in (1, 5):
             raise TaskError("目标数量必须为 1 或 5")
-        observation_mode = value.get("search_observability", "off")
-        diagnostic_logging = self._diagnostic_logging(value)
+        observation_mode = value.get('search_observability', defaults['search_observability'])
+        diagnostic_logging = self._diagnostic_logging(dict({'diagnostic_logging': defaults['diagnostic_logging']}, **value))
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
@@ -197,13 +207,17 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         options["simulation_config"] = simulation_config_for(dict(
             simulation, target_count=target_count, scene=value.get("scene", simulation.get("scene"))))
         options['search_config'] = dict(
-            options.get('search_config') or {}, input_interval_ms=interval,
+            defaults, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
         for key in ('search_timeline',):
             if key in value:
                 if type(value[key]) is not bool:
                     raise TaskError(key + ' 必须为布尔值')
                 options['search_config'][key] = value[key]
+        try:
+            options['search_config'] = config_for(options['search_config'])
+        except ValueError as error:
+            raise TaskError(str(error)) from error
         if mode == "import":
             from gse_import import decode_import, inspect_import
             gse = value.get("gse")
@@ -310,7 +324,12 @@ class InterfaceHandler(BaseHTTPRequestHandler):
 
     def _resume_task(self, task_id):
         value = self._body() if self.headers.get('Content-Length', '0') != '0' else {}
-        diagnostic_logging = self._diagnostic_logging(value)
+        diagnostic_logging = self._diagnostic_logging(value) if 'diagnostic_logging' in value else None
+        from search import config_for
+        try:
+            config_for(value)  # 请求中显式null不是缺省，所有提供值必须合法。
+        except ValueError as error:
+            raise TaskError(str(error)) from error
         _, destination = self.server.task_paths(task_id)
         with self.server.tasks_lock:
             entry = self.server.tasks.get(task_id)
@@ -320,7 +339,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 raise TaskError('此入口只恢复双场任务')
             from dual_task import resume
             handle = resume(destination, diagnostic_logging=diagnostic_logging,
-                search_timeline=(self.server.task_options.get('search_config') or {}).get('search_timeline'))
+                search_config={key: item for key, item in value.items() if key != 'diagnostic_logging'})
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, dict(task_id=task_id, status='starting'))
 
