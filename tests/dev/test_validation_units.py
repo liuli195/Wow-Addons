@@ -175,6 +175,19 @@ def rectangle():
     return image
 
 
+def test_contained_image_preserves_alpha_on_downscale():
+    y, x = np.indices((64, 64))
+    image = Image.new("RGBA", (64, 64), "white")
+    image.putalpha(Image.fromarray(((y * 29 + x * 17) % 256).astype(np.uint8)))
+    result = load("scripts/media/build_assets.py").contain(image, (8, 8))
+    assert result.size == (8, 8)
+    # 固定原有透明度结果，避免依赖升级隐式更换缩放算法。
+    assert result.getchannel("A").tobytes() == bytes.fromhex(
+        "817f817c837d837b7f817f7f7f807e817f817f7f817f7f807f817e7f817f7f80"
+        "80807e80807e7f8080807e80807f7f82827e807f807e817f7c827b857b847b86"
+    )
+
+
 def blp_bytes(image):
     from white_blp import write_white_blp
     with patch.object(Path, "write_bytes") as write:
