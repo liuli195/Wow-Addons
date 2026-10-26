@@ -1,6 +1,6 @@
 # Pillow 13 升级验证记录
 
-状态：云端定向验证已通过，最终新提交的公开构建、完整拉取请求验证及独立审查尚待完成；未合并。
+状态：代码候选已通过云端定向验证、准确同树的远端公开构建/完整拉取请求验证、Windows固定基线差异验证及独立审查；等待完整第二门禁确认，未合并。
 
 ## 身份与范围
 
@@ -28,3 +28,13 @@
 - 这只是云端定向证据，不能替代最新提交的Windows公开构建及完整PR检查，也不声称进行了游戏验收。
 
 证据位于本工作树`.local/pillow13-upgrade/`：`source-manifest.json`、`before-fix/`、`after-fix/`、`red-regression.log`、`green-regression.log`及对应守卫记录。未运行搜索对比、未重新编译模拟引擎、未变更8×2、60秒预算或正式规格。
+
+## 准确候选与正式结果
+
+- 云端已审提交`54e770e90b878e3be8b10ea2ef93686facf9fef7`与远端`434836da543a746ad2622d0c0d5488b9532f55f7`均为tree `a179fd5e81a216dea8b9ecc9243305d750b8af31`；官方Git批量同步产生不同提交身份，已核全部文件一致，不是旧3158结果。
+- 新候选远端7项检查全部成功，含Windows、工具链、四种语言分析及CodeQL汇总。Windows日志证实Pillow13.0.0/Python3.12.10实际安装，`build.assets`通过，`verify --pr --full`41项实际执行通过，`full-not-run=false`；26项开发普通检查含新回归通过，准星既有构建检查通过。
+- 远端证据：https://github.com/liuli195/Wow-Addons/actions/runs/40253835034/job/121351301846 。按既有场景规则仅排除GSE/gear两个私有真实组，不重新编译原生产品。
+- Windows本机BAV2.7.1固定主干差异门禁通过：41项实跑、0缓存命中、17组普通守卫完整；GSE普通388＋168子测试、开发工具26项均通过。墙钟36.375秒，这是PR差异场景，不是新的完整43项性能对照。
+- 本机实际使用仓内隔离Pillow13，原虚拟环境仍为12.3.0。保留原有xdist重写及HUD子进程UTF-8解码线程警告，未将其称为已修复；无验证残留进程。证据`.local/pillow13-windows/run-ea0a3e21bbce42448f8b7cb46f422c99/verification-summary.json`与`verify.log`。
+- 本机已清本轮可重建临时1,358,601字节，隔离包与必要证据约22.18MB待交付后清；云端对比目录约42MB。原图、正式成品、数据与共享旧环境未改。
+- GPT-6 Astra统筹的独立双轴审查与新HEAD CI复核均已完成：Standards 0、Spec 0、无剩余代码/CI阻断。安全版本更新和一行明确缩放参数满足现有素材契约，不需要正式规格变更。

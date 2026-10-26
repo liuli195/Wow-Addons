@@ -1,6 +1,6 @@
 # 图像依赖安全升级与素材兼容验收
 
-**Status:** ready-for-agent（完整门禁一已确认，实施中；未验收或合并）
+**Status:** ready-for-human（技术验收通过，等待第二门禁；未合并）
 
 ## Problem Statement
 
