@@ -118,6 +118,7 @@ def main(argv=None):
         profiles,cases,baseline,manifest=core.data()
         if args.cmd=='doctor':
             b=backend();obj={'version':__version__,'python':sys.version.split()[0],'platform':platform.platform(),'data_integrity':'pass','lua':b,'scope':manifest['scope'],'note':'联网只用于可选依赖安装/源码复核；测试不联网。'}
+            if args.output:core.write_json(args.output,obj)
             emit(obj,args);return 0 if b['available']else 2
         if args.cmd=='catalog':
             obj={'version':__version__,'data_summary':core.validate_data(cases,profiles,baseline),'scope':manifest['scope'],'profiles':profiles,'contract':'references/CONTRACT.md','sources':'assets/reference/sources.json'}

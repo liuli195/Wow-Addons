@@ -3,7 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import runpy
+import importlib.util
 import subprocess
 import tempfile
 
@@ -31,7 +31,11 @@ def main():
     fixtures = args.fixtures.resolve()
     engine = args.engine.resolve(strict=True)
     manifest = json.loads((fixtures / 'manifest.json').read_text(encoding='utf-8'))
-    app = runpy.run_path(str(ROOT / 'projects/gear-planner/server.py'))
+    spec = importlib.util.spec_from_file_location('gear_research_replay', ROOT / 'projects/gear-planner/server.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.load_data()
+    app = vars(module)
     results = []
     for sample in manifest['samples']:
         spec = sample['spec']

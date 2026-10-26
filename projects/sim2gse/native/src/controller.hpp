@@ -33,13 +33,6 @@ public:
   void write_report( js::JsonOutput root ) const;
   selection_t select();
   void notify( const char* event, action_t*, unsigned origin );
-  void observe_execute( action_t& );
-  void observe_replacement( action_t* from, action_t* to );
-  void execution_end( action_t* );
-  void observe_buff( buff_t&, const char*, int old_stacks = 0, action_t* = nullptr, event_t* = nullptr );
-  void finish_buff_observations();
-  unsigned observe_dot( dot_t&, const char*, unsigned = 0, event_t* = nullptr );
-  void finish_observations();
   void transfer_replacement( action_t* from, action_t* to );
   void precombat( action_t&, precombat_phase );
   unsigned origin() const { return sim2gse_origin; }
@@ -109,62 +102,6 @@ private:
   action_t* sim2gse_dispatch = nullptr;
   event_t* sim2gse_commit = nullptr;
   event_t* sim2gse_queue = nullptr;
-
-  // A request is resolved once. No expressions or readiness probes are added.
-  struct observation_object_t
-  {
-    std::string alias, kind, identity, base_button, from_action, qualification;
-    action_t* action = nullptr;
-    action_t* button = nullptr;
-    buff_t* buff = nullptr;
-    bool buff_unique = false;
-    int resource = 0;
-    std::vector<std::pair<std::string, std::string>> components;
-    std::map<std::string, std::set<std::string>> collections;
-  };
-  std::string observation_request_;
-  int observation_protocol_ = 1;
-  std::vector<observation_object_t> observation_objects_;
-  js::sc_js_t observations_;
-  bool observation_active_ = false, observation_complete_ = false;
-  unsigned observation_event_ = 0;
-  std::map<action_t*, std::pair<unsigned, action_t*>> observation_execution_origins_;
-  std::set<action_t*> observation_counted_actions_;
-  struct buff_observation_t
-  {
-    unsigned instance = 0, changes = 0, schedule_changes = 0, natural_instance = 0, natural_changes = 0;
-    bool active = false, complete = false, coverage = false, ambiguous = false, scheduling = false, natural = false;
-    timespan_t start = timespan_t::min(), natural_deadline = timespan_t::min();
-    event_t* natural_event = nullptr;
-    action_t* consumer = nullptr;
-    unsigned consume_instance = 0;
-  };
-  std::map<buff_t*, buff_observation_t> observation_buffs_;
-  unsigned observation_buff_instance_ = 0;
-  bool observation_buffs_active_ = false;
-  struct dot_observation_t
-  {
-    unsigned instance = 0, changes = 0, natural_instance = 0, natural_changes = 0, token = 0, candidate = 0;
-    bool active = false, complete = false, natural = false;
-    timespan_t start = timespan_t::min(), deadline = timespan_t::min(), natural_deadline = timespan_t::min();
-    event_t* natural_event = nullptr;
-  };
-  std::map<dot_t*, dot_observation_t> observation_dots_;
-  std::map<std::string, bool> observation_dot_coverage_;
-  std::map<std::string, action_t*> observation_qualification_sources_;
-  bool observation_dots_active_ = false;
-  unsigned observation_dot_token_ = 0;
-  void write_dot_event( dot_t&, const char*, const char* = nullptr );
-  void write_buff_event( buff_t&, const char*, const char*, action_t* = nullptr );
-  void initialize_observations();
-  void start_observations();
-  void observe_input( unsigned );
-  void observe_ready( action_t*, unsigned, bool );
-  bool observation_wants( const observation_object_t&, const char*, const char* = nullptr ) const;
-  void observe_action( js::JsonOutput, action_t*, action_t*, const observation_object_t& );
-  void observe_unselected( unsigned );
-  js::JsonOutput observation_row( const char*, unsigned, const std::string& = {} );
-
 
   void initialize_times();
   void initialize_sources();

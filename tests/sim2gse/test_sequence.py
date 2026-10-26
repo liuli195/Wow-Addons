@@ -2,52 +2,42 @@
 
 from __future__ import annotations
 
-import tempfile
-import base64
-import zlib
 from pathlib import Path
 import sys
 import unittest
 import json
 import pytest
-from collections import Counter
-from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 
-from task import run_task, TaskError, parse_character
-from engine import reference, inspect
-from codec import export
-from sequence import evaluate, select
+from task import parse_character
+from sequence import evaluate
 from test_character_export import sample_profile
 
 
-@pytest.mark.parametrize('enabled,outcome', [
-    (False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace')])
-def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeypatch, enabled, outcome):
+@pytest.mark.parametrize('enabled,outcome', [(False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace')])
+def test_evaluation_timing_preserves_report_and_trace_contract(monkeypatch, enabled, outcome):
     import runtime
     import sequence
     from test_search import _fast_report
 
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
+    source = Path('unused-role.simc')
     character = parse_character(sample_profile())
     candidate = dict(blocks=[[dict(kind='spell', spell_id=77575, name='Outbreak', simc_action='outbreak')]],
                      compiled_steps=[dict(type='spell', spell=77575)])
     report = _fast_report(character, 100.0, 1)
-    def native_exchange(profile, folder, *args, **kwargs):
-        (folder / 'native.pending.json').write_text(
-            json.dumps(report), encoding='utf-8')
-        trace = '\n'.join('S2GSE\t' + '\t'.join(map(str, [ms, event, 1, 0, action, 0, 0, 100,
+    trace = '\n'.join('S2GSE\t' + '\t'.join(map(str, [ms, event, 1, 0, action, 0, 0, 100,
             0, 1, signature, 0, -1, -1])) for ms, event, action, signature in [
                 (0, 'input', '-', '-'), (1, 'dispatch', 'outbreak', 'outbreak'),
                 (2, 'native_execute', 'outbreak', 'outbreak')])
-        (folder / 'native.txt').write_text(
-            'S2GSE\tinvalid' if outcome == 'invalid_trace' else trace, encoding='utf-8')
-        return 'S2GBLOCK\t0\t0\toutbreak\n'
-    monkeypatch.setattr(sequence, 'run', native_exchange)
+    monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, 'write_text', lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, 'read_text', Mock(
+        side_effect=[sample_profile(), json.dumps(report), 'S2GSE\tinvalid' if outcome == 'invalid_trace' else trace]))
+    monkeypatch.setattr(sequence, 'replace_file', lambda *args: None)
+    monkeypatch.setattr(sequence, 'run', lambda *args, **kwargs: 'S2GBLOCK\t0\t0\toutbreak\n')
     task_runtime = runtime.TaskRuntime(diagnostic_logging=enabled)
     clocks = []
     def performance_clock():
@@ -59,9 +49,9 @@ def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeyp
                      trace=outcome != 'without_trace', runtime=task_runtime)
     if outcome == 'invalid_trace':
         with pytest.raises(ValueError, match='原生来源轨迹字段数量不一致'):
-            evaluate(source, candidate, tmp_path / 'result', **arguments)
+            evaluate(source, candidate, Path('unused-result'), **arguments)
     else:
-        result = evaluate(source, candidate, tmp_path / 'result', **arguments)
+        result = evaluate(source, candidate, Path('unused-result'), **arguments)
         assert result['summary']['dps'] == 100.0
         assert result['report'] == report
         assert len(result['trace']) == (0 if outcome == 'without_trace' else 3)
@@ -76,14 +66,6 @@ def test_evaluation_timing_preserves_report_and_trace_contract(tmp_path, monkeyp
         assert stages == {}
 
 
-def imported_sequence(name, actions):
-    import cbor2
-    from codec import wire_value
-    value = [name, dict(MetaData=dict(SpecID=252, GSEVersion=3331), Default=1,
-                        Versions=[dict(Actions=actions)])]
-    return "!GSE3!" + base64.b64encode(zlib.compress(cbor2.dumps(wire_value(value)), wbits=-15)).decode("ascii")
-
-
 class NativeTraceContractTests(unittest.TestCase):
     """固定原生交换报告，检查公开评估入口的轨迹身份契约；不冒称引擎验收。"""
 
@@ -93,15 +75,15 @@ class NativeTraceContractTests(unittest.TestCase):
         def candidate(count):
             return dict(blocks=[[command]] * count,
                         compiled_steps=[dict(type='spell', spell=77575)] * count)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'profile.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            character = parse_character(sample_profile())
+        root = Path('unused-trace')
+        source = root / 'profile.simc'
+        character = parse_character(sample_profile())
+        with patch.object(Path, 'mkdir'), patch.object(Path, 'read_text', return_value=sample_profile()), \
+                patch.object(Path, 'write_text', autospec=True) as write:
             for loop, burst in ((4096, 0), (4096, 4096)):
                 with self.subTest(loop=loop, burst=burst):
                     def boundary(profile, folder, *args, **kwargs):
-                        options = dict(line.split('=', 1) for line in profile.read_text().splitlines()
+                        options = dict(line.split('=', 1) for line in write.call_args.args[1].splitlines()
                                        if line.startswith('sim2gse_'))
                         self.assertEqual(len(options['sim2gse_steps'].split('/')), loop + burst)
                         if burst:
@@ -144,623 +126,52 @@ class NativeTraceContractTests(unittest.TestCase):
             (2, 'native_derived', 1, 'disease_effect', '', 0),
             (2000, 'input', 2, '-', '-', 1), (2001, 'dispatch', 2, 'death_coil', 'death_coil', 1),
             (2050, 'native_interrupt', 2, 'replacement_cast', 'death_coil', 1)]
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'input.simc'
-            source.write_text(raw, encoding='utf-8')
-            def native_exchange(profile, folder, *args, **kwargs):
-                (folder / 'native.pending.json').write_text(json.dumps(report), encoding='utf-8')
-                (folder / 'native.txt').write_text('\n'.join(
-                    'S2GSE\t' + '\t'.join(map(str, [ms, event, origin, 0, action, 0, 0, 100, 0,
-                                                    0, signature, 0, 0, member]))
-                    for ms, event, origin, action, signature, member in events), encoding='utf-8')
-                return 'S2GBLOCK\t0\t0\tdark_transformation\nS2GBLOCK\t0\t1\tdeath_coil\n'
-            with patch('sequence.run', side_effect=native_exchange):
-                result = evaluate(source, candidate, root / 'result', character=character,
-                                  iterations=2, input_times=[0, 2000])
-                original = list(events)
-                events[2] = (2, 'native_derived', 1, 'blightfall', '', 0)
-                events[6] = (2050, 'native_execute', 2, 'death_coil', 'death_coil', 1)
-                with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
-                    evaluate(source, candidate, root / 'derived', character=character,
-                             iterations=2, input_times=[0, 2000])
-                events[:] = original + [original[2]]
-                with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
-                    evaluate(source, candidate, root / 'duplicate', character=character,
-                             iterations=2, input_times=[0, 2000])
-                events[:] = original
-                events[2] = (2, 'native_execute', 1, 'blightfall', 'other_command', 0)
-                with self.assertRaisesRegex(ValueError, '不属于来源输入对应的编译块'):
-                    evaluate(source, candidate, root / 'wrong-signature', character=character,
-                             iterations=2, input_times=[0, 2000])
-                events[:] = original
-                events[2] = (2, 'native_execute', 1, 'dark_transformation', 'dark_transformation', 0)
-                events[6] = (2050, 'native_interrupt', 2, 'death_coil', 'death_coil', 1)
-                direct = evaluate(source, candidate, root / 'direct', character=character,
-                                  iterations=2, input_times=[0, 2000])
-                self.assertTrue(direct['consistent'])
+        root = Path('unused-exchange')
+        source = root / 'input.simc'
+        def native_exchange(profile, folder, *args, **kwargs):
+            return 'S2GBLOCK\t0\t0\tdark_transformation\nS2GBLOCK\t0\t1\tdeath_coil\n'
+        def read_native(path, **kwargs):
+            if path.name == 'input.simc':
+                return raw
+            if path.name == 'native.pending.json':
+                return json.dumps(report)
+            if path.name != 'native.txt':
+                raise AssertionError('unexpected read: ' + str(path))
+            return '\n'.join(
+                'S2GSE\t' + '\t'.join(map(str, [ms, event, origin, 0, action, 0, 0, 100, 0,
+                                                0, signature, 0, 0, member]))
+                for ms, event, origin, action, signature, member in events)
+        with patch('sequence.run', side_effect=native_exchange), patch.object(Path, 'mkdir'), \
+                patch.object(Path, 'write_text'), patch.object(Path, 'read_text', read_native), \
+                patch('sequence.replace_file'):
+            result = evaluate(source, candidate, root / 'result', character=character,
+                              iterations=2, input_times=[0, 2000])
+            original = list(events)
+            events[2] = (2, 'native_derived', 1, 'blightfall', '', 0)
+            events[6] = (2050, 'native_execute', 2, 'death_coil', 'death_coil', 1)
+            with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
+                evaluate(source, candidate, root / 'derived', character=character,
+                         iterations=2, input_times=[0, 2000])
+            events[:] = original + [original[2]]
+            with self.assertRaisesRegex(ValueError, '派发与实际执行轨迹不一致'):
+                evaluate(source, candidate, root / 'duplicate', character=character,
+                         iterations=2, input_times=[0, 2000])
+            events[:] = original
+            events[2] = (2, 'native_execute', 1, 'blightfall', 'other_command', 0)
+            with self.assertRaisesRegex(ValueError, '不属于来源输入对应的编译块'):
+                evaluate(source, candidate, root / 'wrong-signature', character=character,
+                         iterations=2, input_times=[0, 2000])
+            events[:] = original
+            events[2] = (2, 'native_execute', 1, 'dark_transformation', 'dark_transformation', 0)
+            events[6] = (2050, 'native_interrupt', 2, 'death_coil', 'death_coil', 1)
+            direct = evaluate(source, candidate, root / 'direct', character=character,
+                              iterations=2, input_times=[0, 2000])
+            self.assertTrue(direct['consistent'])
         self.assertTrue(result['consistent'])
         self.assertEqual([(row['action'], row['signature']) for row in result['trace']
                           if row['event'] in {'native_execute', 'native_interrupt'}],
                          [('blightfall', 'dark_transformation'), ('replacement_cast', 'death_coil')])
 
-
-class SequenceSimulationTests(unittest.TestCase):
-    def test_native_queue_replacement_advances_castsequence_as_issued_member(self):
-        from engine import training_template
-        from seed_training import template_character
-        from program import compile_program, from_search_program
-        with tempfile.TemporaryDirectory(prefix='native-replacement-') as directory:
-            root = Path(directory)
-            # Fixed upstream's official San'layn variant selects Blightfall; Rider does not.
-            template = training_template().with_name(
-                "MID2_Death_Knight_Unholy_San'layn.simc")
-            prepared = self.prepare(template.read_text(encoding='utf-8'), root / 'standard',
-                                    character_parser=template_character)
-            source, character, native, capabilities = prepared
-            program = from_search_program([dict(kind='CastSequence',
-                members=['dark_transformation', 'dark_transformation'], reset=None)], capabilities)
-            candidate = compile_program(program, root / 'export', identity=native['identity'],
-                                        capabilities=capabilities)
-            times = list(range(0, 180000, 300))
-            result = evaluate(source, candidate, root / 'controlled', character=character,
-                              iterations=2, input_times=times)
-            quiet = evaluate(source, candidate, root / 'quiet', character=character,
-                             iterations=2, input_times=times, trace=False)
-            self.assertEqual(result['report']['sim']['players'][0]['collected_data'],
-                             quiet['report']['sim']['players'][0]['collected_data'])
-            timed = evaluate(source, candidate, root / 'timed', character=character,
-                             iterations=2, input_times=times, failure_events=[])
-            replaced = next(row for row in timed['trace']
-                            if row['event'] == 'native_execute' and row['action'] == 'blightfall')
-            with self.assertRaisesRegex(ValueError, '已执行后收到否定反馈'):
-                evaluate(source, candidate, root / 'late-feedback', character=character,
-                         iterations=2, input_times=times,
-                         failure_events=[(int(replaced['ms']) + 1, replaced['origin'], 'dark_transformation')])
-        executed = [row for row in result['trace'] if row['event'] == 'native_execute' and row['battle'] == 0]
-        self.assertEqual([(row['action'], row['signature'], row['sequence_member'])
-                          for row in executed[:2]],
-                         [('dark_transformation', 'dark_transformation', 0),
-                          ('blightfall', 'dark_transformation', 1)])
-        self.assertTrue(result['consistent'])
-
-    def test_expanded_loop_over_128_clicks_runs_with_separate_burst(self):
-        from program import compile_program, from_search_program
-        source, character, native, capabilities = self.prepared
-        capabilities = dict(capabilities, precombat_actions=[])
-        with tempfile.TemporaryDirectory(prefix='expanded-sequence-') as directory:
-            root = Path(directory)
-            ordinary = from_search_program([
-                dict(kind='Loop', blocks=[['outbreak']], count=129)], capabilities)
-            burst = from_search_program([['death_coil'], ['scourge_strike']], capabilities)
-            candidate = compile_program(ordinary, root / 'ordinary',
-                identity=native['identity'], capabilities=capabilities)
-            burst_candidate = compile_program(burst, root / 'burst',
-                identity=native['identity'], capabilities=capabilities)
-            result = evaluate(source, candidate, root / 'with-burst',
-                character=character, iterations=1, input_times=[0, 300, 600],
-                burst_candidate=burst_candidate, input_sources=['loop', 'burst', 'loop'])
-            self.assertTrue(result['consistent'])
-            self.assertEqual(len(candidate['compiled_steps']), 129)
-            self.assertEqual(len(burst_candidate['compiled_steps']), 2)
-            self.assertEqual(len(result['native_blocks']), 131)
-            self.assertEqual(result['blocks'], result['native_blocks'])
-
-    def test_long_search_castsequence_compiles_and_runs_with_member_limits(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        members = ['death_and_decay', 'putrefy', 'dark_transformation',
-                   'army_of_the_dead', 'death_and_decay', 'putrefy', 'dark_transformation']
-        program = from_search_program([
-            {'kind': 'CastSequence', 'members': members,
-             'reset': {'timeout_seconds': None, 'flags': ['combat']}},
-            ['festering_strike'], ['scourge_strike'], ['death_coil'],
-        ], capabilities)
-        with tempfile.TemporaryDirectory(prefix='long-search-castsequence-') as directory:
-            root = Path(directory)
-            candidate = compile_program(program, root / 'export', identity=native['identity'],
-                                        capabilities=capabilities)
-            result = evaluate(source, candidate, root / 'controlled', character=character,
-                              iterations=1, input_times=list(range(0, 180000, 300)))
-            self.assertTrue(result['consistent'])
-            self.assertEqual(result['castsequences'][0]['members'], members)
-            self.assertTrue(any(event['event'] == 'native_execute'
-                                and event['sequence_member'] == 6 for event in result['trace']))
-            upper = from_search_program([
-                {'kind': 'CastSequence', 'members': ['outbreak'] * 32, 'reset': None},
-            ], capabilities)
-            with self.assertRaisesRegex(ValueError, '255'):
-                compile_program(upper, root / 'too-long', identity=native['identity'],
-                                capabilities=capabilities)
-        for count in (1, 33):
-            with self.subTest(count=count), self.assertRaisesRegex(ValueError, '2 至 32'):
-                from_search_program([
-                    {'kind': 'CastSequence', 'members': ['outbreak'] * count, 'reset': None},
-                ], capabilities)
-
-    def test_castsequence_timeout_refreshes_and_waits_for_next_client_update(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        program = from_search_program([
-            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike", "outbreak"],
-             "reset": {"timeout_seconds": 2, "flags": []}},
-        ], capabilities)
-        with tempfile.TemporaryDirectory(prefix="castsequence-refresh-") as directory:
-            root = Path(directory)
-            candidate = compile_program(program, root / "export", identity=native["identity"],
-                                        capabilities=capabilities)
-            result = evaluate(source, candidate, root / "controlled", character=character,
-                              iterations=1, input_times=list(range(0, 7000, 300)))
-            executions = [event["action"] for event in result["trace"]
-                          if event["event"] == "native_execute"
-                          and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
-            self.assertGreaterEqual(len(executions), 3, result["trace"])
-            self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", "outbreak"])
-            for at, expected in ((6999, "outbreak"), (7001, "festering_strike")):
-                result = evaluate(source, candidate, root / str(at), character=character,
-                                  iterations=1, input_times=[0, 3000, 4000, 4500, 6000, at])
-                executions = [event["action"] for event in result["trace"]
-                              if event["event"] == "native_execute"
-                              and event["action"] in {"festering_strike", "scourge_strike", "outbreak"}]
-                self.assertEqual(executions[:3], ["festering_strike", "scourge_strike", expected])
-
-
-    def test_castsequence_reset_while_second_member_pending_keeps_old_identity(self):
-        from program import compile_program, from_search_program
-
-        text = (REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8')
-        with tempfile.TemporaryDirectory(prefix='castsequence-pending-reset-') as directory:
-            root = Path(directory)
-            source, character, native, capabilities = self.prepare(text, root / 'setup')
-            program = from_search_program([
-                {"kind": "CastSequence", "members": ["consume", "the_hunt"],
-                 "reset": {"timeout_seconds": None, "flags": ["target"]}},
-            ], capabilities)
-            candidate = compile_program(program, root / 'export', identity=native['identity'],
-                                        capabilities=capabilities)
-            result = evaluate(source, candidate, root / 'controlled', character=character,
-                              iterations=1, input_times=list(range(0, 7000, 100)),
-                              reset_events=[(3600, 'target')])
-        executions = [event for event in result['trace']
-                      if event['event'] == 'native_execute'
-                      and event['action'] in {'consume', 'the_hunt'}]
-        self.assertEqual([(event['action'], event['sequence_member']) for event in executions[:3]],
-                         [('consume', 0), ('the_hunt', 1), ('consume', 0)])
-
-    def test_castsequence_reset_does_not_restore_old_queue_as_pending(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        program = from_search_program([
-            {"kind": "CastSequence", "members": ["putrefy", "soul_reaper"],
-             "reset": {"timeout_seconds": None, "flags": ["target"]}},
-            ["putrefy"],
-        ], capabilities)
-        with tempfile.TemporaryDirectory(prefix="castsequence-stale-queue-") as directory:
-            root = Path(directory)
-            candidate = compile_program(program, root / "export", identity=native["identity"],
-                                        capabilities=capabilities)
-            result = evaluate(source, candidate, root / "controlled", character=character,
-                              iterations=1, input_times=[0, 1050, 1120, 1270, 1340, 1410, 1500, 3000],
-                              gcd_states=[(0, 1270)] * 3 + [(1270, 1200)] * 4 + [(0, 0)],
-                              reset_events=[(1280, "target")],
-                              failure_events=[(1300, 3, "putrefy")])
-        events = result["trace"]
-        sequence_step = result["castsequences"][0]["step"]
-        self.assertTrue(any(event["event"] == "queue_restore" and event["origin"] == 2
-                            and event["sequence_step"] == sequence_step
-                            for event in events), events)
-        self.assertFalse(any(event["event"] == "castsequence_pending" and event["ms"] == 1340
-                             for event in events), events)
-        self.assertTrue(any(event["event"] == "native_execute" and event["origin"] == 2
-                            and event["sequence_member"] == 0 and event["ms"] > 1280
-                            for event in events), events)
-        self.assertTrue(any(event["event"] == "queue" and event["origin"] == 8
-                            and event["sequence_step"] == sequence_step
-                            and event["sequence_member"] == 0 for event in events), events)
-
-    def test_castsequence_reset_events_restart_first_member(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        cases = [
-            ('target', ['target'], 4500),
-            ('shift', ['shift'], 9000),
-            ('death', [], 4500),
-        ]
-        for event_kind, flags, at in cases:
-            with self.subTest(event=event_kind):
-                reset = ({"timeout_seconds": None,
-                          "flags": flags} if flags else None)
-                program = from_search_program([
-                    {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"],
-                     "reset": reset},
-                ], capabilities)
-                with tempfile.TemporaryDirectory(prefix="castsequence-reset-") as directory:
-                    root = Path(directory)
-                    candidate = compile_program(program, root / "export", identity=native["identity"],
-                                                capabilities=capabilities)
-                    result = evaluate(source, candidate, root / "controlled", character=character,
-                                      iterations=1, input_times=[0, 3000, 6000, 9000, 12000],
-                                      reset_events=[(at, event_kind)])
-                executions = [event for event in result["trace"]
-                              if event["event"] == "native_execute"
-                              and event["action"] in {"festering_strike", "scourge_strike"}]
-                self.assertGreaterEqual(len(executions), 2, result["trace"])
-                self.assertEqual([event["action"] for event in executions[:2]],
-                                 ["festering_strike", "festering_strike"])
-
-    def test_castsequence_failure_holds_member_and_success_wraps(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        program = from_search_program([
-            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"], "reset": None},
-        ], capabilities)
-        times = list(range(0, 20000, 300))
-        failures = [None] * len(times)
-        failures[1] = "festering_strike"
-        with tempfile.TemporaryDirectory(prefix="castsequence-failure-") as directory:
-            root = Path(directory)
-            candidate = compile_program(program, root / "export", identity=native["identity"],
-                                        capabilities=capabilities)
-            result = evaluate(source, candidate, root / "controlled", character=character,
-                              iterations=1, input_times=times, failed_actions=failures)
-            scored = evaluate(source, candidate, root / "scored", character=character,
-                              iterations=1, input_times=times, failed_actions=failures,
-                              trace=False)
-        events = [event for event in result["trace"] if event["battle"] == 0]
-        self.assertTrue(any(event["event"] == "observed_failed" and event["origin"] == 2
-                            and event["sequence_member"] == 0 for event in events))
-        executions = [event for event in events if event["event"] == "native_execute"
-                      and event["action"] in {"festering_strike", "scourge_strike"}]
-        self.assertGreaterEqual(len(executions), 3, events)
-        self.assertEqual([event["action"] for event in executions[:3]],
-                         ["festering_strike", "scourge_strike", "festering_strike"])
-        self.assertEqual([event["sequence_member"] for event in executions[:3]], [0, 1, 0])
-        self.assertEqual(scored["trace"], [])
-        self.assertEqual(scored["summary"]["dps"], result["summary"]["dps"])
-
-    def test_castsequence_repeated_clicks_do_not_replace_pending_member(self):
-        from program import compile_program, from_search_program
-
-        source, character, native, capabilities = self.prepared
-        program = from_search_program([
-            {"kind": "CastSequence", "members": ["festering_strike", "scourge_strike"], "reset": None},
-        ], capabilities)
-        with tempfile.TemporaryDirectory(prefix="castsequence-pending-") as directory:
-            root = Path(directory)
-            candidate = compile_program(program, root / "export", identity=native["identity"],
-                                        capabilities=capabilities)
-            result = evaluate(source, candidate, root / "controlled", character=character,
-                              iterations=1, input_times=list(range(0, 2400, 100)))
-        events = [event for event in result["trace"] if event["battle"] == 0]
-        executions = [event for event in events if event["event"] == "native_execute"
-                      and event["action"] in {"festering_strike", "scourge_strike"}]
-        self.assertGreaterEqual(len(executions), 2, events)
-        self.assertEqual([event["action"] for event in executions[:2]],
-                         ["festering_strike", "scourge_strike"])
-        self.assertEqual([event["sequence_member"] for event in executions[:2]], [0, 1])
-        self.assertEqual({event["sequence_step"] for event in executions[:2]},
-                         {result["castsequences"][0]["step"]})
-        self.assertTrue(any(event["event"] == "castsequence_pending" for event in events))
-        before_second_success = [event for event in events if event["ms"] < executions[1]["ms"]]
-        self.assertFalse([event for event in before_second_success
-                          if event["event"] == "replace" and event["action"] == "scourge_strike"],
-                         "等待当前成员成功时，重复点击不应替换其待执行请求")
-
-    def test_public_entry_simulates_imported_loop_and_empty_clicks(self):
-        text = imported_sequence("THIRD_PARTY", [
-            {"Type": "Loop", "Repeat": "2", 1: {"Type": "Action", "type": "spell", "spell": 77575},
-             2: {"Type": "Pause", "Clicks": 2}},
-        ])
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "character.simc"
-            source.write_text(sample_profile(), encoding="utf-8")
-            result = run_task(source, Path(directory) / "task", mode="import", gse_text=text,
-                              sequence_name="THIRD_PARTY", version=1,
-                              gse_context=dict(click_ms=300, gcd_ms=1500, seed=1))
-        self.assertEqual(result["controlled_simulation"]["blocks"],
-                         [["outbreak"], [], [], ["outbreak"], [], []])
-        self.assertTrue(result["controlled_simulation"]["consistent"])
-        self.assertGreater(result["controlled_simulation"]["summary"]["dps"], 0)
-
-    @classmethod
-    def setUpClass(cls):
-        cls.directory = tempfile.TemporaryDirectory(prefix='sim2gse-sequence-shared-')
-        cls.prepared = cls.prepare(sample_profile(), Path(cls.directory.name) / 'default')
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.directory.cleanup()
-
-    @staticmethod
-    def prepare(text, root, *, character_parser=parse_character):
-        root.mkdir(parents=True, exist_ok=True)
-        source = root / 'input.simc'
-        source.write_text(text, encoding='utf-8')
-        character = character_parser(text)
-        native = reference(source, root / 'reference', character, iterations=2)
-        character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
-        return source, character, native, inspect(native, root / 'capabilities')
-
-    def candidate(self, prepared, program):
-        source, character, native, capabilities = prepared
-        folder = Path(tempfile.mkdtemp(prefix='candidate-', dir=self.directory.name))
-        return export(select(capabilities, program), folder, identity=native['identity']), source, character
-
-    def task(self, program, *, phase_ms=0, iterations=3):
-        candidate, source, character = self.candidate(self.prepared, program)
-        folder = Path(tempfile.mkdtemp(prefix='controlled-', dir=self.directory.name))
-        controlled = evaluate(source, candidate, folder, character=character,
-                              iterations=iterations, input_times=list(range(phase_ms, 180000, 300)))
-        return {'candidate': candidate, 'character': character,
-                'controlled_simulation': controlled}
-
-    def test_single_evaluation_uses_interval_and_validates_phase(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory)/'input.simc'
-            source.write_text(sample_profile(), encoding='utf-8')
-            result = run_task(source, Path(directory)/'valid', mode='single', program=[['outbreak']],
-                              phase_ms=179, search_config={'input_interval_ms':180})
-            simulation = result['controlled_simulation']
-            self.assertEqual(simulation['input_times'], list(range(179,180000,180)))
-            self.assertEqual(simulation['blocks'], [['raise_dead'], ['outbreak']])
-            self.assertEqual(simulation['native_blocks'], [[], ['outbreak']])
-            self.assertTrue(simulation['consistent'])
-            self.assertTrue(simulation['trace'])
-            self.assertGreater(simulation['report']['sim']['players'][0]['collected_data']['dps']['mean'], 0)
-            with self.assertRaisesRegex(TaskError, '0 至 179'):
-                run_task(source, Path(directory)/'invalid', mode='single', phase_ms=180,
-                         search_config={'input_interval_ms':180})
-
-    def test_real_timeline_preserves_first_precombat_gcd(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(self.prepared, [['outbreak']])
-            simulation = evaluate(source, candidate, Path(directory) / 'precombat-gcd',
-                                  character=character, iterations=2,
-                                  input_times=[0, 214, 844, 1052])
-            executed = [e for e in simulation['trace']
-                        if e['event'] == 'native_execute' and e['action'] == 'outbreak']
-            self.assertFalse(any(e['ms'] == 214 for e in executed))
-            self.assertTrue(any(e['ms'] >= 1270 and e['origin'] == 4 for e in executed), executed)
-
-    def test_failed_steps_and_queue_replacement(self):
-        result = self.task([['outbreak'], ['death_coil'], ['scourge_strike']], iterations=2)
-        events = result['controlled_simulation']['trace']
-        self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'death_coil' and e['ms'] == 600 for e in events))
-        self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'scourge_strike' and e['ms'] == 600 for e in events))
-        self.assertTrue(any(e['event'] == 'queue_commit' for e in events))
-        self.assertTrue(all(e['cooldown_ms'] <= 0 for e in events if e['event'] == 'dispatch'))
-        executed = [e for e in events if e['event'] == 'native_execute']
-        dispatched = [e for e in events if e['event'] == 'dispatch']
-        self.assertTrue(all(e['origin'] > 0 and e['step'] == (e['origin'] - 1) % 4
-                            for e in dispatched + executed))
-        self.assertEqual(Counter((e['battle'], e['origin'], e['signature'], e['ms']) for e in executed),
-                         Counter((d['battle'], d['origin'], d['signature'], d['ms']) for d in dispatched))
-        retained = self.task([['outbreak'], ['outbreak'], ['outbreak'], ['outbreak'], ['death_coil'], ['outbreak']],
-                             iterations=2)
-        events = retained['controlled_simulation']['trace']
-        queued = [e for e in events if e['event'] == 'queue']
-        dispatched = [e for e in events if e['event'] == 'dispatch']
-        failed_times = sorted({e['ms'] for e in events if e['event'] == 'not_ready'})
-        self.assertTrue(any(q['origin'] == d['origin'] and any(q['ms'] < t < d['ms'] for t in failed_times)
-                            for q in queued for d in dispatched))
-
-    def test_cooldown_ending_inside_queue_window_executes_from_that_press(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(self.prepared, [['putrefy']])
-            simulation = evaluate(source, candidate, Path(directory) / 'queue-window',
-                                  character=character, iterations=2,
-                                  input_times=[0, 300, 1200, 1500, 2900, 3000, 31100, 31200])
-            events = [e for e in simulation['trace'] if e['action'] == 'putrefy']
-            self.assertTrue(any(e['event'] == 'queue' and e['ms'] == 31200
-                                and e['cooldown_ms'] == 301 for e in events), events)
-            self.assertTrue(any(e['event'] == 'native_execute' and e['ms'] >= 31501
-                                and e['origin'] == 8 for e in events))
-
-    def test_pending_queue_can_be_replaced_before_commit(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['putrefy'], ['scourge_strike'], ['putrefy']])
-            simulation = evaluate(source, candidate, Path(directory) / 'queue-replace',
-                                  character=character, iterations=2,
-                                  input_times=[0, 1050, 1120, 1445])
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'replace' and e['action'] == 'putrefy'
-                                and e['origin'] == 2 for e in events), events)
-            self.assertTrue(any(e['event'] == 'queue_commit' and e['action'] == 'scourge_strike'
-                                and e['origin'] == 3 for e in events), events)
-            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'putrefy'
-                                and e['origin'] == 4 for e in events), events)
-
-    def test_queue_locks_before_gcd_ready_and_executes_at_native_boundary(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['scourge_strike'], ['putrefy'], ['soul_reaper'], ['scourge_strike']])
-            simulation = evaluate(source, candidate, Path(directory) / 'queue-commit',
-                                  character=character, iterations=2,
-                                  input_times=[0, 1450, 2500, 2800, 2850, 3800, 3850])
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'queue_commit' and e['action'] == 'putrefy'
-                                and e['origin'] == 3 for e in events), events)
-            self.assertFalse(any(e['event'] == 'replace' and e['action'] == 'putrefy'
-                                 and e['origin'] == 3 for e in events))
-            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'soul_reaper'
-                                and e['origin'] == 4 for e in events), events)
-            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'scourge_strike'
-                                and e['origin'] == 5 for e in events), events)
-            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'putrefy'
-                                and e['origin'] == 3 and e['ms'] >= 2892 for e in events), events)
-            self.assertTrue(any(e['event'] == 'outside_window' and e['action'] == 'scourge_strike'
-                                and e['origin'] == 7 and e['ms'] == 3850 for e in events), events)
-
-    def test_repeated_queue_commits_do_not_accumulate_clock_lead(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(self.prepared, [['scourge_strike']])
-            simulation = evaluate(source, candidate, Path(directory) / 'clock-lead',
-                                  character=character, iterations=2,
-                                  input_times=list(range(0, 9000, 70)))
-            commits = [e for e in simulation['trace'] if e['event'] == 'queue_commit'
-                       and e['gcd'] > e['ms']]
-            self.assertGreaterEqual(len(commits), 3)
-            self.assertLessEqual(max(e['gcd'] - e['ms'] for e in commits), 150)
-
-    def test_observed_gcd_transition_commits_previous_pending_action(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['putrefy'], ['soul_reaper']])
-            simulation = evaluate(
-                source, candidate, Path(directory) / 'gcd-feedback',
-                character=character, iterations=2,
-                input_times=[0, 1050, 1120, 1200, 1270],
-                gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
-                            (1270, 1200), (1270, 1200)])
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'queue_tentative' and e['action'] == 'putrefy'
-                                and e['origin'] == 2 and e['ms'] == 1120 for e in events), events)
-            self.assertTrue(any(e['event'] == 'queue_locked' and e['action'] == 'soul_reaper'
-                                and e['origin'] == 3 and e['ms'] == 1120 for e in events), events)
-            self.assertTrue(any(e['event'] == 'queue_confirm' and e['action'] == 'putrefy'
-                                and e['origin'] == 2 for e in events), events)
-            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'putrefy'
-                                and e['origin'] == 2 and 1442 <= e['ms'] < 1460 for e in events), events)
-
-    def test_observed_gcd_transition_rolls_back_when_snapshot_reverts(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['putrefy'], ['soul_reaper']])
-            simulation = evaluate(
-                source, candidate, Path(directory) / 'gcd-feedback-rollback',
-                character=character, iterations=2,
-                input_times=[0, 1050, 1120, 1200, 1270, 1500, 1700],
-                gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
-                            (1270, 1200), (0, 1270), (1500, 1200),
-                            (1700, 1200)])
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'queue_tentative' and e['action'] == 'putrefy'
-                                and e['origin'] == 2 and e['ms'] == 1120 for e in events), events)
-            self.assertTrue(any(e['event'] == 'queue_rollback' and e['action'] == 'putrefy'
-                                and e['origin'] == 2 and e['ms'] == 1270 for e in events), events)
-            self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'putrefy'
-                                 and e['origin'] == 2 for e in events), events)
-
-    def test_failure_feedback_is_not_visible_before_its_event_time(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['putrefy'], ['soul_reaper']])
-            kwargs = dict(character=character, iterations=2,
-                          input_times=[0, 1050, 1120, 1200, 1270, 1500],
-                          gcd_states=[(0, 1270), (0, 1270), (1270, 1200),
-                                      (1270, 1200), (1270, 1200), (1270, 1200)])
-            baseline = evaluate(source, candidate, Path(directory) / 'without-failure', **kwargs)
-            with_failure = evaluate(
-                source, candidate, Path(directory) / 'timed-failure',
-                failure_events=[(1300, 2, 'putrefy')], **kwargs)
-            self.assertEqual(with_failure['failure_events'], [(1300, 2, 'putrefy')])
-            prefix = lambda result: [(e['ms'], e['event'], e['origin'], e['action'])
-                                     for e in result['trace'] if e['ms'] < 1300]
-            self.assertEqual(prefix(baseline), prefix(with_failure))
-            events = with_failure['trace']
-            self.assertTrue(any(e['event'] == 'observed_failed' and e['ms'] == 1300
-                                and e['origin'] == 2 for e in events), events)
-            self.assertTrue(any(e['event'] == 'queue_rollback' and e['origin'] == 2
-                                for e in events), events)
-            self.assertFalse(any(e['event'] == 'native_execute' and e['origin'] == 2
-                                 for e in events), events)
-
-    def test_failed_tentative_winner_promotes_earlier_candidate(self):
-        with tempfile.TemporaryDirectory() as directory:
-            candidate, source, character = self.candidate(
-                self.prepared, [['putrefy'], ['putrefy']])
-            simulation = evaluate(
-                source, candidate, Path(directory) / 'failed-tentative-winner',
-                character=character, iterations=2,
-                input_times=[0, 1050, 1120, 1270, 1340, 1410, 1500],
-                gcd_states=[(0, 1270), (0, 1270), (0, 1270),
-                            (1270, 1200), (1270, 1200), (1270, 1200), (1270, 1200)],
-                failure_events=[(1300, 3, 'putrefy')])
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'queue_restore' and e['origin'] == 2
-                                for e in events), events)
-            self.assertTrue(any(e['event'] == 'native_execute' and e['origin'] == 2
-                                for e in events), events)
-
-    def test_press_during_cast_queues_the_ready_button_variant(self):
-        with tempfile.TemporaryDirectory() as directory:
-            prepared = self.prepare(
-                (REPOSITORY / 'tests/sim2gse/fixtures/devourer.simc').read_text(encoding='utf-8'),
-                Path(directory) / 'prepared')
-            candidate, source, character = self.candidate(prepared, [['consume']])
-            simulation = evaluate(source, candidate, Path(directory) / 'cast-window',
-                                  character=character, iterations=2,
-                                  input_times=[0, 100, 200, 300, 400, 1400])
-            events = simulation['trace']
-            self.assertTrue(any(e['event'] == 'precombat_cast' for e in events), events)
-            self.assertFalse(any(e['event'] == 'native_execute' and e['action'] == 'consume'
-                                 and e['ms'] < 1479 for e in events), events)
-
-            events = [e for e in simulation['trace'] if e['action'] in ('devour', 'consume')]
-            self.assertTrue(any(e['event'] == 'not_ready' and e['action'] == 'devour'
-                                and e['ms'] == 1400 for e in events))
-            self.assertTrue(any(e['event'] == 'queue' and e['action'] == 'consume'
-                                and e['ms'] == 1400 and e['origin'] == 6 for e in events), events)
-            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'consume'
-                                and e['ms'] >= 2959 and e['origin'] == 6 for e in events), events)
-
-    def test_same_block_item_order(self):
-        first_actions = []
-        text = sample_profile().replace('trinket1=,id=250245', 'trinket1=,id=202610,ilevel=311')
-        text = text.replace('trinket2=,id=250228', 'trinket2=,id=219303,ilevel=311')
-        prepared = self.prepare(text, Path(tempfile.mkdtemp(prefix='items-', dir=self.directory.name)))
-        for slots, first_signature in [
-                (('trinket1', 'trinket2'), 'use_item,slot=trinket1'),
-                (('trinket2', 'trinket1'), 'use_item,slot=trinket2')]:
-            program = [[*[f'use_item,slot={s}' for s in slots], 'outbreak']]
-            candidate, source, character = self.candidate(prepared, program)
-            controlled = evaluate(source, candidate,
-                                  Path(tempfile.mkdtemp(prefix='items-controlled-', dir=self.directory.name)),
-                                  character=character, iterations=2)
-            result = {'candidate': candidate, 'controlled_simulation': controlled}
-            self.assertEqual(result['controlled_simulation']['blocks'], [['raise_dead'], *program])
-            self.assertEqual(result['controlled_simulation']['native_blocks'], [[], *program])
-            events = result['controlled_simulation']['trace']
-            first_press = [e for e in events if e['event'] == 'native_execute' and e['ms'] == 300]
-            self.assertTrue(first_press[0]['action'].startswith('use_item_'))
-            self.assertEqual(first_press[0]['signature'], first_signature)
-            self.assertTrue(any(e['event'] == 'native_execute' and e['action'] == 'outbreak'
-                                and e['ms'] >= 1500 for e in events))
-            first_actions.append(first_press[0]['action'])
-        self.assertNotEqual(first_actions[0], first_actions[1])
-
-    def test_phase_reset_and_replay(self):
-        from engine import identity
-
-        candidate, source, character = self.candidate(self.prepared, [['outbreak']])
-        times = [150, 550, 1000, 1400]
-        with tempfile.TemporaryDirectory(prefix='phase-replay-', dir=self.directory.name) as directory:
-            first = evaluate(source, candidate, Path(directory) / 'first', character=character,
-                             iterations=3, input_times=times)
-            second = evaluate(source, candidate, Path(directory) / 'second', character=character,
-                              iterations=3, input_times=times)
-        inputs = [e for e in first['trace'] if e['event'] == 'input']
-        self.assertEqual(inputs[0]['ms'], 150)
-        self.assertTrue(all(e['step'] == 0 and e['ms'] == 150 for e in inputs if e['origin'] == 1))
-        self.assertEqual(first['trace'], second['trace'])
-        self.assertEqual(first['report']['sim']['players'], second['report']['sim']['players'])
-        self.assertEqual(first['summary']['samples'], 2)
-        self.assertEqual(first['input_times'], times)
-        self.assertEqual({e['battle'] for e in inputs if e['origin'] == 1}, {0, 1, 2})
-
-        for battle in (0, 1, 2):
-            self.assertEqual([(event['ms'], event['origin']) for event in inputs
-                              if event['battle'] == battle], list(zip(times, range(1, 5))))
-        _, manifest = identity('controlled')
-        self.assertIn('projects/sim2gse/native/src/controller.cpp',
-                      {entry['path'] for entry in manifest['sources']},
-                      '输入时间和每轮重置尚未由独立控制源码提供')
 
 if __name__ == "__main__":
     unittest.main()

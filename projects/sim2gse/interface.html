@@ -9,7 +9,7 @@
 <main>
 <section><h2><span class="number">01</span>导入角色</h2>
 <label for="profile">角色导出字符串</label><textarea id="profile" rows="7" spellcheck="false" placeholder="在这里粘贴从 SimC（角色导出插件）复制的完整文本"></textarea>
-<p id="error" class="error" role="alert" hidden></p><label for="interval">模拟按键间隔（毫秒）</label><input id="interval" type="number" min="50" max="2000" step="1" value="200"><p class="note">依次寻找单目标和5目标序列，每场最多600秒，另需读取角色和整理结果。爆发宏中的内容自动排除在普通循环之外。地面技能在角色脚下释放。</p><button id="start">开始运行</button>
+<p id="error" class="error" role="alert" hidden></p><label for="interval">模拟按键间隔（毫秒）</label><input id="interval" type="number" min="50" max="2000" step="1" value="200"><p class="note">依次寻找单目标和5目标序列，每场遗传搜索自然早停后完成正常场景复测，没有总时间硬截止；可随时取消。另需读取角色和整理结果。爆发宏中的内容自动排除在普通循环之外。地面技能在角色脚下释放。</p><button id="start">开始运行</button>
 </section>
 <section><h2>导入第三方 GSE 序列并模拟 DPS（每秒伤害）</h2>
 <label for="targetCount">导入模拟的目标数量</label><select id="targetCount"><option value="1">1 目标</option><option value="5">5 目标</option></select>
@@ -30,7 +30,6 @@
 <div id="dualResults" hidden><label for="aoeResult">5目标序列</label><textarea id="aoeResult" rows="3" readonly></textarea><button id="copyAoe" disabled>复制5目标</button>
 <label for="burstResult">爆发序列</label><textarea id="burstResult" rows="3" readonly></textarea><button id="copyBurst" disabled>复制爆发</button>
 <p id="burstInstructions" class="note"></p><label for="collectionResult">三个序列的一次导入包</label><textarea id="collectionResult" rows="3" readonly></textarea><button id="copyCollection" disabled>复制全部三个序列</button></div>
-<details id="ruleInitialization" hidden><summary>规则起点与来源（静态近似，非实战证明）</summary><pre id="ruleInitializationText"></pre></details>
 <p id="resultNote" class="note">等待运行结果</p><p id="copyStatus" class="note" role="status"></p>
 </section>
 </main>
@@ -44,50 +43,31 @@ const outputs={single_target:[result,copy],aoe:[document.getElementById('aoeResu
 const collectionResult=document.getElementById('collectionResult'),copyCollection=document.getElementById('copyCollection');
 const diagnosticLogging=document.createElement('input');
 diagnosticLogging.type='checkbox';diagnosticLogging.id='diagnosticLogging';diagnosticLogging.style.width='auto';
-diagnosticLogging.disabled=true;diagnosticLogging.checked=false;
+diagnosticLogging.checked=false;
 const diagnosticLabel=document.createElement('label');
-diagnosticLabel.append(diagnosticLogging,document.createTextNode(' 性能诊断日志（由启动命令控制，默认关闭）'));
+diagnosticLabel.append(diagnosticLogging,document.createTextNode(' 性能诊断日志（仅本次任务；初始值来自启动设置）'));
 interval.after(diagnosticLabel);
 const gseImport=document.getElementById('gseImport'),inspectImport=document.getElementById('inspectImport'),importSequence=document.getElementById('importSequence'),importVersion=document.getElementById('importVersion'),importStart=document.getElementById('importStart'),importResult=document.getElementById('importResult');
 const importInspection=document.getElementById('importInspection'),importSelection=document.getElementById('importSelection'),gcdMs=document.getElementById('gcdMs');
 interval.addEventListener('input',resetResult);
 targetCount.addEventListener('change',resetResult);
-const phases={storage_unavailable:'存储暂时不可读取',single_target:'正在搜索单目标',aoe:'正在搜索5目标',package:'正在整理三个序列',initialize:'正在读取角色和模拟引擎',search:'正在寻找合适的序列',validation:'正在复测候选序列',final:'正在进行最终复测',complete:'计算完成',done:'计算完成'};
+const phases={storage_unavailable:'存储暂时不可读取',single_target:'正在搜索单目标',aoe:'正在搜索5目标',package:'正在整理三个序列',initialize:'正在读取角色和模拟引擎',initial:'正在粗评初始种群',breed:'正在遗传搜索',retest:'正在正常场景复测',qualified:'正在保存冠军凭据',search:'正在寻找合适的序列',validation:'正在复测候选序列',final:'正在进行最终复测',complete:'计算完成',done:'计算完成'};
 let running=false,taskId=null,timer=null,inspected=null;
-function resetResult(){ruleDetailsIdentity='';loadedRuleDetailsIdentity='';resultSection.hidden=true;document.getElementById('ruleInitialization').hidden=true;document.getElementById('ruleInitializationText').textContent='';for(const [field,button] of Object.values(outputs)){field.value='';button.disabled=true;}collectionResult.value='';copyCollection.disabled=true;document.getElementById('dualResults').hidden=true;resumeButton.hidden=true;localStorage.removeItem('sim2gse-task');resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';importResult.hidden=true;importResult.textContent='';}
+function resetResult(){resultSection.hidden=true;for(const [field,button] of Object.values(outputs)){field.value='';button.disabled=true;}collectionResult.value='';copyCollection.disabled=true;document.getElementById('dualResults').hidden=true;resumeButton.hidden=true;localStorage.removeItem('sim2gse-task');resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';importResult.hidden=true;importResult.textContent='';}
 function showError(message){error.textContent=message;error.hidden=false;}
 function resetProgress(){progress.value=0;progressText.textContent='等待开始';progressNote.textContent='开始后，这里会展示实际任务进度。';}
 profile.addEventListener('input',()=>{error.hidden=true;resetResult();resetProgress();});
-let ruleDetailsIdentity='',loadedRuleDetailsIdentity='';
-async function loadRuleInitialization(){
- const identity=ruleDetailsIdentity;
- if(!identity||loadedRuleDetailsIdentity===identity)return;
- loadedRuleDetailsIdentity=identity;
- try{
-  const response=await fetch('/api/tasks/'+taskId+'?details=rule_initialization',{cache:'no-store'}),state=await response.json();
-  if(!response.ok||state.storage_unavailable)throw new Error(state.error||'读取规则起点失败');
-  if(identity!==ruleDetailsIdentity)return;
-  const detail=state.rule_initialization||(state.scenes||[]).filter(scene=>scene.rule_initialization).map(scene=>({purpose:scene.purpose,...scene.rule_initialization}));
-  document.getElementById('ruleInitializationText').textContent=JSON.stringify(detail,null,2);
- }catch(e){if(identity===ruleDetailsIdentity){loadedRuleDetailsIdentity='';document.getElementById('ruleInitializationText').textContent=e.message;}}
-}
-document.getElementById('ruleInitialization').addEventListener('toggle',()=>{if(document.getElementById('ruleInitialization').open)loadRuleInitialization();});
 async function poll(){
  try{
   const response=await fetch('/api/tasks/'+taskId,{cache:'no-store'}),state=await response.json();
   if(!response.ok)throw new Error(state.error||'读取任务状态失败');
   error.hidden=true;if(state.storage_unavailable)showError(state.error);
-  const ruleIdentities=[state.rule_initialization_identity,...(state.scenes||[]).map(scene=>scene.rule_initialization_identity)].filter(Boolean);
-  const detailsIdentity=ruleIdentities.length?taskId+':'+ruleIdentities.join(':'):'';
-  if(detailsIdentity!==ruleDetailsIdentity){ruleDetailsIdentity=detailsIdentity;loadedRuleDetailsIdentity='';document.getElementById('ruleInitializationText').textContent='';}
-  document.getElementById('ruleInitialization').hidden=!detailsIdentity;
-  if(detailsIdentity&&document.getElementById('ruleInitialization').open)loadRuleInitialization();
-  progress.value=state.progress||0;progressText.textContent=phases[state.phase]||state.phase||'正在处理';
+  if(state.progress==null){progress.removeAttribute('value');}else{progress.value=state.progress;} progressText.textContent=phases[state.phase]||state.phase||'正在处理';
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
   if(state.scenes){
    const labels={single_target:'单目标',aoe:'5目标'},statuses={pending:'等待',running:'运行中',completed:'完成',failed:'失败',incomplete:'未完成'};
-   progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)).join(' · ');
-   progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。';
+   progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)+(scene.status==='running'?'（'+(phases[scene.phase]||'正在准备')+'）':'')).join(' · ');
+   progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；'+(state.stop_policy?'自然早停后完成正常复测，无总时间硬截止。'+state.scenes.map(scene=>labels[scene.purpose]+'第 '+(scene.generation||0)+' 代').join('，'):'旧任务每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。');
    for(const [purpose,[field,button]] of Object.entries(outputs)){field.value=state.exports[purpose]||'';button.disabled=!field.value;}
    collectionResult.value=state.collection_text||'';copyCollection.disabled=!state.collection_ready;
    resultSection.hidden=!state.result_ready;document.getElementById('dualResults').hidden=false;
@@ -117,13 +97,13 @@ importVersion.addEventListener('change',refreshImportSupport);
 inspectImport.addEventListener('click',async()=>{if(running)return;try{const response=await fetch('/api/gse/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gse:gseImport.value.trim()})});const data=await response.json();if(!response.ok)throw new Error(data.error||'检查导入内容失败');inspected=data;importSequence.replaceChildren();for(const item of data.sequences)importSequence.add(new Option(item.name,item.name));fillVersions();importSelection.hidden=false;refreshImportSupport();error.hidden=true;}catch(e){inspected=null;importSelection.hidden=true;importStart.disabled=true;showError(e.message||'检查导入内容失败');}});
 importStart.addEventListener('click',async()=>{if(running||!inspected)return;const member=inspected.sequences.find(item=>item.name===importSequence.value);const selected=member?.version_support?.find(item=>item.version===Number(importVersion.value));if(selected?.simulation_preflight_passed!==true){showError(selected?.support_reason||'当前序列不能模拟。');refreshImportSupport();return;}if(!profile.value.trim()){showError('请先粘贴角色导出字符串。');profile.focus();return;}if(!interval.checkValidity()||!gcdMs.checkValidity()){showError('请检查两个毫秒数输入。');return;}
  running=true;start.disabled=true;importStart.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;gseImport.disabled=true;importStart.textContent='模拟中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动导入模拟';
- try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,target_count:Number(targetCount.value),mode:'import',gse:gseImport.value.trim(),sequence_name:importSequence.value,version:Number(importVersion.value),gse_click_ms:Number(interval.value),gcd_ms:Number(gcdMs.value),input_interval_ms:Number(interval.value)})});const state=await response.json();if(!response.ok)throw new Error(state.error||'导入模拟启动失败');taskId=state.task_id;poll();}
+ try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,target_count:Number(targetCount.value),mode:'import',gse:gseImport.value.trim(),sequence_name:importSequence.value,version:Number(importVersion.value),gse_click_ms:Number(interval.value),gcd_ms:Number(gcdMs.value),input_interval_ms:Number(interval.value),diagnostic_logging:diagnosticLogging.checked})});const state=await response.json();if(!response.ok)throw new Error(state.error||'导入模拟启动失败');taskId=state.task_id;poll();}
  catch(e){showError(e.message||'导入模拟启动失败');finish();}
 });
 copy.addEventListener('click',async()=>{if(!result.value.trim())return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(result.value);status.textContent='已复制。';}catch{result.focus();result.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
 for(const [field,button] of [outputs.aoe,outputs.burst,[collectionResult,copyCollection]])button.addEventListener('click',async()=>{if(!field.value)return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(field.value);status.textContent='已复制。';}catch{field.focus();field.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
 cancelButton.addEventListener('click',async()=>{cancelButton.disabled=true;try{const response=await fetch('/api/tasks/'+taskId+'/cancel',{method:'POST'});if(!response.ok)throw new Error();}catch{showError('取消请求未送达，请重试。');}finally{cancelButton.disabled=false;}});
-resumeButton.addEventListener('click',async()=>{if(running)return;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;try{const response=await fetch('/api/tasks/'+taskId+'/resume',{method:'POST'}),state=await response.json();if(!response.ok)throw new Error(state.error||'任务不能继续');running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;poll();}catch(e){showError(e.message);finish();resumeButton.hidden=false;}});
+resumeButton.addEventListener('click',async()=>{if(running)return;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;try{const response=await fetch('/api/tasks/'+taskId+'/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({diagnostic_logging:diagnosticLogging.checked})}),state=await response.json();if(!response.ok)throw new Error(state.error||'任务不能继续');running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;poll();}catch(e){showError(e.message);finish();resumeButton.hidden=false;}});
 const savedTask=localStorage.getItem('sim2gse-task');if(savedTask){taskId=savedTask;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;cancelButton.hidden=false;poll();}
 </script>
 </html>

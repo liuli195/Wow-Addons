@@ -1,0 +1,86 @@
+# 退役实施验证（统一验证已通过，最终交付待确认）
+
+固定基线：`6b5861fc548ce9753a03f1bc78453ef5cad01faf`。独立分支`codex/retire-legacy-search`；无正式数据、AB目录或主工作树修改。
+
+## 已完成
+
+- 公开run/resume/dual的11退役键先取得红灯（candidate_limit原先落入普通范围错误而非退役拒绝），实现后33项通过；随后加入训练入口、TOML与HTTP前置拒绝，最小组合46项及22个子例通过，0.51秒。
+- 旧双场读取的`recoverable=false`先取得红灯（原为true），实现后通过；原预算与结果仍可读取。
+- 冻结正常/训练场景的修饰键Reset合法性、旧v1 pending补保存/补发布禁止写入4项通过，0.27秒。
+- 旧Git源码提取执行benchmark及其专用测试删除；共用两次PermissionError重试测试原义移入`test_runtime.py`。
+- 普通层：`PYTHONDONTWRITEBYTECODE=1 <既有venv>/bin/python -m pytest tests/sim2gse -m 'not real' -p no:cacheprovider -q`，首轮403通过、118个real未执行、130个子例通过，6.32秒。最初轻量worktree没有固定`.tools`导致15个只读依赖缺失失败，未冒称产品回归；仅软链接复用原树固定工具后通过，未复制工具或执行构建。
+- `git diff --check`通过；旧专用符号及工具执行引用反查完成。历史11键仅保留明确拒绝清单、隔离legacy解码、旧报告读取和原始兼容证明测试；runtime共享时限与单次/导入安全上限保持。
+- 56份历史说明原位加退役提示（清单`history-annotations.txt`）；原文数字、路径、结论未删。正式GA对照阶段补“已结束/仅历史”提示。
+
+## 尚未完成，不作通过
+
+- 完整交付门禁二的最终确认、正式规格原子应用与应用后复核。官方完整预览已成功，READY仅表示可申请应用，不等于已应用。
+- 未启动新的算法对照、重训或引擎构建；实际游戏内验证仍未运行。本任务未合并主干、发布或部署。
+
+新增工作树及文档当前约20MB，复用既有venv/固定tools；整体90–150分钟投入已授权，未扩大到正式数据清理或主干合并。
+
+## 首轮独审与返工
+
+固定`6b5861f...d5a48bb`双轴只读审查：Standards无阻塞硬违规，提出postcheck正向/计划篡改覆盖与配置投影命名；Spec发现P1归档读取布局、P2旧恢复拒绝前可写两项阻塞。
+
+- P1：归档实际在`state_archive`，不是`state_fields`。用生产TaskStore写真实SQLite内存格式再只读查询的回归先失败，随后补按ordinal读取归档；不实例化写存储、不加载无关归档。
+- P2：公共恢复先只读预检原版本、旧配置与v1意图，再允许foreground/曲线/锁和写TaskStore；锁内重读及实例状态复核保留。公开run(resume=True)同样前置，旧双场恢复/已退出任务取消均不再改写旧状态，读取失去执行者的旧记录不再探测写锁。当前GA仍保持原同版本恢复。旧版本与旧pending负例先在foreground/曲线路径失败，修复后只出现SELECT；旧双场负例验证引擎、写锁和保存均未触达。
+- 复用现有`memory_ga`与真实SQLite backup补训练五场景→四条代表→页面正式GA重新评分的成功链和冻结计划篡改拒绝；只替换现有原生/文件/中心读取边界，不新跑真实训练。postcheck全8项通过，0.98秒。投影名称改为`comparable_config`，无新抽象。
+- 首次扩展普通回归暴露原输入篡改测试未提供新增只读检查点输入，按明确IO边界补当前版本清单，保原输入哈希及禁止写TaskStore断言。最终普通410项通过、118个real未运行、130个子例通过，6.58秒；`git diff --check`通过。
+
+主线`b393dbd`局部mock退栈修复和`f5ae3b2`最终验收文档均已正常cherry-pick纳入；退役测试移除旧参数的改动保留，没有退回全局mock或旧参数。
+
+## 功能分支同步授权
+
+第一次GitHub tree上传被安全审核拒绝，未创建远端树/分支，未改通道。用户随后对准确仓库`liuli195/Wow-Addons`、分支`codex/retire-legacy-search`、本轮源码/测试/文档/规格提案约102文件1.7MB及后续必要修正再次明确确认（`Sentinel_6add6c6fb50c81919e4fddf4ef177d0b`，对应请求`Sentinel_8e184d15e4ec81919b452190cb50cbcf`）。仅修后复审通过版本重试原上传操作；不上传正式数据/凭据，不main、不force、不发布。远端同步成功须以真实回读为准。
+
+## 修后固定双轴复审
+
+固定`d5a48bb...2cd6640`已通过Standards/Spec两轴只读复审；P1/P2及两项建议全部关闭，无新增阻塞。保留原源码/引擎身份保护，未引入第二套恢复或存储框架。
+
+只读恢复普通测试证明连接使用`mode=ro`、只发SELECT且不调用TaskStore/foreground/曲线；它使用SQLite内存边界，不能替代真实磁盘WAL/SHM行为验收。相应函数注释仅陈述只读连接，不扩大证据结论。此处是该次普通层复审的证据限制；后续真实运行结果见下文，不用早期记录覆盖新结果。
+
+## 正式规格提案的表达修正
+
+原功能分支已成功同步并回读：远端`85c245d778c34e65654e1ce016cd8f2a9094ea30`与云端`cd4e55e`同树`4f4d2be5492eb5c8c301bc917957c1c1d8404369`。本机MySpec 2.7.1正规状态流程校验发现“改名＋修改同一需求”不受支持，首次校验失败未生成预览或应用，不冒称通过。
+
+用户随后明确同意两项旧契约改为删除旧规则、添加新规则，并要求全称、正式规格只写外部可观察功能和验收。三份目标全文据此净化，具体字段、存储及内部算法组织移入开发说明；仍保留全部数量、可观察性能、完整性、失败保护与兼容恢复边界。静态增量为3删除、41修改、2新增、0改名；没有修改代码或正式主规格，也没有扩大删除。
+
+独立规格审查发现并修复两处表述问题：正式入围必须按粗评均分领先排序，不可任取候选；正式搜索与训练的内部共用关系不写入行为规格。另主动保留扰动取整的精确规则，避免将取最近整数且中点取偶数误写成普通四舍五入。草案格式、需求与增量对应及空白检查完成；当时官方全量预览、最终确认及统一验收尚待真实结果；后续结果见下文，静态检查不代替官方流程。
+
+## 当前固定候选的本机统一验证
+
+父层于2026-10-25核对本机回传：远端`7002708901664480b5e5de039d9acb00456408a3`，与云端`aba8e50`同树`b12bc41c4a503a90f830f0d62a4a90508cbfc1e2`。这是本次退役候选的完整运行，不借用退役前主线绿色结果。
+
+- 统一验证43项全部通过；工具记录53.2620014秒，外层墙钟53.516秒。
+- 普通Sim2GSE：410项及130个子例通过；真实Sim2GSE：118项及19个子例通过。
+- 17项普通层守卫通过。固定基线影响检查命中11项，复用刚完成完整运行的有效结果；不冒称另跑了一遍无缓存全集。
+- 保留新训练、正常场景复测、双场公开流程、取消恢复、原生失败、旧来源读取/重评、报告与冠军可靠发布等既有代表。旧benchmark专属三项真实测试退役，121减至118，不将删旧工具测试当作通用能力提速收益。
+
+## 官方规格完整预览
+
+原会话`ba7ba40dc46e4777a9c35b0dacba6819`只做增量校验即失败，尚未绑定预览路径，直接中止也被拒绝。按官方首次预览入口正规记录原路径/基线后，旧非法增量仍明确失败，再用新状态及锁身份正规归档；未手写状态、删锁或改工具。
+
+新会话`18deac668e4040138bd218baf148157a`的增量校验、应用到独立预览、预览主规格校验和完整差异均返回0。操作为3项删除、41项修改、2项新增、0项改名。预览内容指纹：`sha256:6b69f03b2c6d666490c5e0ef183faf860bf0df987bde81e909c16e65772c2e76`；完整差异127825字节、1061行。正式主规格原指纹不变，仍为PREVIEW_ONLY。完整预览已交用户，正式应用须随完整门禁二最终确认，不把单独规格就绪当成任务交付完成。
+
+本轮证据更新仅在提案目录外；输入指纹对应`spec-proposals`的9个文件保持逐字节不变。
+
+## 最小真实旧磁盘恢复代表
+
+云端使用生产TaskStore创建隔离临时旧契约记录及真实WAL模式SQLite；保存取消状态、旧配置、候选结果，并保留角色输入、结果及导出哨兵文件。随后调用公开`task.resume_task(..., search_timeline=True)`，SQLite连接和查询均为真实执行；仅在计算、写存储、前台活动、写锁、曲线和发布边界设置禁止调用观测。
+
+- 结果：0.16秒，明确命中“旧正式任务恢复契约已退役”，不是缺输入或缺引擎的假拒绝。
+- 原`task.sqlite3`、角色输入、已保存结果和导出哨兵字节均不变；六个副作用边界调用次数均为0，实际SQL仅两次SELECT。
+- **实际新增`task.sqlite3-wal`和`task.sqlite3-shm`辅助文件。**因此只读连接不等于绝不创建文件，不能承诺目录零变化；本证据证明旧可靠内容未被改写、不启动计算或新成果发布。
+- 脚本仅在仓内`.local/retirement-diagnostics/`，4210字节，SHA-256 `3205a49f7a5564018a412d0191d97f8f33a170853caea127e79ebb4c57d97f99`；临时产物约108KB，不入候选。使用合成旧契约夹具，**不是**新模拟或实际游戏导出的正确性证据。
+- Windows对应运行已回传：退出0、0.437秒，脚本SHA-256精确一致；特定旧契约拒绝、旧数据库/两输入/结果/导出哨兵摘要全不变。1个真实只读连接、2次SELECT、6边界调用均0；新增WAL为0字节、SHM为32768字节。合成任务目录78704字节，总探测目录84807字节/11文件。输出证据为本机仓内`.local/retirement-diagnostics/old_disk_resume.output.json`及对应运行记录。树干净、官方预览与状态指纹保持。没有读取或修改正式数据中心、原训练成果、历史对照目录。
+
+## PR 76 CI preparation repair verification
+
+The first remote Windows run failed during pinned Node preparation because command discovery returned multiple applications. Verification continued after setup failed, exposing missing upstream inputs and temporary roots; a fixed gear input also had checkout line-ending changes. The repair only changes setup, workflow success conditions, fixed-input attributes and ordinary-check cache inputs; search logic, formal specifications, commands, roles, parallelism and budget are unchanged.
+
+- A real two-PATH executable-byte fixture reproduced the old multiple-source hash mismatch and proved first-source selection and matching copied bytes. Neither fixture executable ran; production Node was untouched and PATH restored. This is not full setup validation.
+- All 38 fixed gear inputs report text unset; the existing expected-digest test passed. PowerShell parsing and workflow success/always diagnostic conditions passed.
+- Official BAV 2.7.1 init applied a candidate that only appends the Lua executable and all 94 Lua files at the pinned GSE commit to ordinary-check inputs. Approved list SHA256: 1935c4842ac9878b5d4833ce2c9b69c3db03f71a057edf8b9bd17d2cf7b891b9. An in-memory hash substitution changed the cache key and restoring the original reader restored it; no tool file was written.
+- Five affected tests passed in 0.62 seconds. Clean repair commit d1cc5a094e17075229d50ddbac9f2608bfff2227 passed official verification against fixed base f4b40e19f4118f1120df3914dae76efc19d0eef5: 43 checks actually ran and passed, zero cache hits, 17 guard receipts, 53.516 seconds wall. GSE had 410 ordinary tests plus 130 subtests and 118 real tests plus 19 subtests; real-check duration was 43.53 seconds. No owned simulation process remained.
+- These local results do not replace CI for the new pushed HEAD. Original failure evidence is retained; remote Windows, toolchain and review gates must pass before normal merge.

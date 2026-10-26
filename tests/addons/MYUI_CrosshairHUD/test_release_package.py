@@ -1,11 +1,15 @@
 """从正式打包和部署入口检查文件边界、备份及个人设置保护。"""
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
+import shutil
+import zipfile
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
+pytestmark = pytest.mark.real
 
 
 def tool():
@@ -15,9 +19,15 @@ def tool():
     return module
 
 
-def test_package_contains_only_runtime(tmp_path):
+@pytest.fixture(scope="module")
+def release_package(tmp_path_factory):
+    """正常消费者共享只读正式基包；损坏测试只改各自副本。"""
+    return tool().build(ROOT, tmp_path_factory.mktemp('hud-packages'))
+
+
+def test_package_contains_only_runtime(release_package):
     module = tool()
-    package = module.build(ROOT, tmp_path / 'packages')
+    package = release_package
     manifest = module.validate(package)
     assert len(manifest['files']) == 25
     paths = [entry['path'] for entry in manifest['files']]
@@ -27,11 +37,29 @@ def test_package_contains_only_runtime(tmp_path):
         p = entry['path']
         if p.endswith('.blp'):
             assert (package / 'AddOns' / p).read_bytes() == (ROOT / 'addons' / p).read_bytes()
+    with zipfile.ZipFile(package / 'MYUI_CrosshairHUD.zip') as archive:
+        assert sorted(archive.namelist()) == sorted(paths)
+        for name in paths:
+            assert archive.read(name) == (package / 'AddOns' / name).read_bytes()
 
 
-def test_deploy_backs_up_exact_scopes_and_preserves_settings(tmp_path):
+def test_package_rejects_linked_directories(tmp_path, release_package):
+    package = tmp_path / 'linked-package'
+    shutil.copytree(release_package, package)
+    link = package / 'AddOns/linked-runtime'
+    target = package / 'AddOns/MYUI_CrosshairHUD'
+    if os.name == 'nt':
+        subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)],
+                       check=True, capture_output=True, text=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match='链接'):
+        tool().validate(package)
+
+
+def test_deploy_backs_up_exact_scopes_and_preserves_settings(tmp_path, release_package):
     module = tool()
-    package = module.build(ROOT, tmp_path / 'packages')
+    package = release_package
     game = tmp_path / '_retail_'
     addons = game / 'Interface/AddOns'
     old = {
@@ -61,9 +89,10 @@ def test_deploy_backs_up_exact_scopes_and_preserves_settings(tmp_path):
     assert (addons / 'MYUI_CrosshairHUD/Diagnostics.lua').is_file()
 
 
-def test_corrupt_package_stops_before_deployment(tmp_path):
+def test_corrupt_package_stops_before_deployment(tmp_path, release_package):
     module = tool()
-    package = module.build(ROOT, tmp_path / 'packages')
+    package = tmp_path / 'corrupt-package'
+    shutil.copytree(release_package, package)
     (package / 'AddOns/MYUI_CrosshairHUD/Core.lua').write_bytes(b'corrupt')
     addons = tmp_path / '_retail_/Interface/AddOns'
     addons.mkdir(parents=True)
@@ -73,8 +102,8 @@ def test_corrupt_package_stops_before_deployment(tmp_path):
     assert not (tmp_path / 'backups').exists()
 
 
-def test_packaged_core_still_draws_real_readings(tmp_path, monkeypatch):
-    package = tool().build(ROOT, tmp_path / 'packages')
+def test_packaged_core_still_draws_real_readings(release_package, monkeypatch):
+    package = release_package
     spec = importlib.util.spec_from_file_location('packaged_core_check', Path(__file__).with_name('test_core_readings.py'))
     checks = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(checks)
@@ -82,8 +111,8 @@ def test_packaged_core_still_draws_real_readings(tmp_path, monkeypatch):
     checks.test_arc_rotation_chain()
 
 
-def test_packaged_diagnostic_command_is_lazy_copyable_and_safe(tmp_path):
-    package = tool().build(ROOT, tmp_path / 'packages')
+def test_packaged_diagnostic_command_is_lazy_copyable_and_safe(tmp_path, release_package):
+    package = release_package
     source = r'''
 local frames, notices = {}, {}
 local methods = {}
@@ -151,9 +180,9 @@ io.write('PASS diagnostic window\n')
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_deployment_rejects_wtf_even_when_suffix_looks_correct(tmp_path):
+def test_deployment_rejects_wtf_even_when_suffix_looks_correct(tmp_path, release_package):
     module = tool()
-    package = module.build(ROOT, tmp_path / 'packages')
+    package = release_package
     wrong = tmp_path / '_retail_/WTF/Interface/AddOns'
     wrong.mkdir(parents=True)
     with pytest.raises(ValueError, match='WTF'):
@@ -163,9 +192,9 @@ def test_deployment_rejects_wtf_even_when_suffix_looks_correct(tmp_path):
 
 
 @pytest.mark.parametrize('old_build', ['previous-build', None])
-def test_backup_identifies_old_install_separately_from_target(tmp_path, old_build):
+def test_backup_identifies_old_install_separately_from_target(tmp_path, old_build, release_package):
     module = tool()
-    package = module.build(ROOT, tmp_path / 'packages')
+    package = release_package
     addons = tmp_path / '_retail_/Interface/AddOns'
     toc = addons / 'MYUI_CrosshairHUD/MYUI_CrosshairHUD.toc'
     toc.parent.mkdir(parents=True)

@@ -1,21 +1,38 @@
 """原生进程清理的可移植边界回归；真实Windows进程测试仍在test_search。"""
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "projects" / "sim2gse"))
 import runtime
 
 
+def _redirect(content):
+    """Explicit process-output IO boundary; no filesystem or fake path engine."""
+    redirect = Mock(spec=Path)
+    redirect.exists.return_value = True
+    redirect.read_bytes.return_value = content
+    redirect.unlink.side_effect = lambda **kwargs: setattr(redirect.exists, 'return_value', False)
+    return redirect
+
+
 class RuntimeTests(TestCase):
+    def test_replacement_retries_two_permission_failures_then_succeeds(self):
+        from unittest.mock import call
+        source, destination = Path('/memory/pending'), Path('/memory/published')
+        occupied = PermissionError('constructed temporary occupation')
+        with patch.object(runtime.os, 'replace', side_effect=[occupied, occupied, None]) as replace, \
+                patch.object(runtime.time, 'sleep') as sleep:
+            runtime.replace_file(source, destination)
+        self.assertEqual(replace.call_args_list, [call(source, destination)] * 3)
+        self.assertEqual(sleep.call_args_list, [call(0.02)] * 2)
+
     def test_completed_process_returns_without_waiting_for_poll_interval(self):
-        with tempfile.TemporaryDirectory() as directory:
-            stdout, stderr = Path(directory) / 'stdout.tmp', Path(directory) / 'stderr.tmp'
-            stdout.write_bytes(b'complete')
-            stderr.write_bytes(b'')
+        with patch.object(Path, 'mkdir'):
+            directory = Path('/memory/process')
+            stdout, stderr = _redirect(b'complete'), _redirect(b'')
             clock = [0.0]
             def wait(timeout):
                 clock[0] = max(clock[0], 0.001)
@@ -36,10 +53,9 @@ class RuntimeTests(TestCase):
         for target, failures, winerror, expected_calls in (("stdout", 2, 32, 3), ("stderr", 2, 32, 3),
                                                           ("stdout", 20, 32, 11), ("stdout", 1, 5, 1),
                                                           ("stdout", 1, None, 1)):
-            with self.subTest(target=target, failures=failures, winerror=winerror), tempfile.TemporaryDirectory() as directory:
-                stdout, stderr = Path(directory) / "stdout.tmp", Path(directory) / "stderr.tmp"
-                stdout.write_bytes(b"owned stdout")
-                stderr.write_bytes(b"owned stderr")
+            with self.subTest(target=target, failures=failures, winerror=winerror), patch.object(Path, 'mkdir'):
+                directory = Path('/memory/process')
+                stdout, stderr = _redirect(b"owned stdout"), _redirect(b"owned stderr")
                 events, reservations, attempts = [], [], []
                 process = SimpleNamespace(stdout_path=stdout, stderr_path=stderr,
                                           terminate=lambda: events.append("terminate"),
@@ -52,7 +68,6 @@ class RuntimeTests(TestCase):
                 def sleep(seconds):
                     sleeps.append(seconds)
                     clock[0] += seconds
-                original_unlink = Path.unlink
                 violation = PermissionError("injected sharing or access failure")
                 if winerror is not None:
                     violation.winerror = winerror
@@ -63,12 +78,14 @@ class RuntimeTests(TestCase):
                         attempts.append(path)
                         if len(attempts) <= failures:
                             raise violation
-                    return original_unlink(path, *args, **kwargs)
+                    path.exists.return_value = False
+
+                for redirect in (stdout, stderr):
+                    redirect.unlink.side_effect = lambda *args, _path=redirect, **kwargs: unlink(_path, *args, **kwargs)
 
                 original_budget = runtime.BudgetExceeded("original native budget")
                 expected_error = runtime.BudgetExceeded if failures < expected_calls else PermissionError
                 with patch.object(runtime, "_create_process", return_value=process), \
-                        patch.object(Path, "unlink", unlink), \
                         patch.object(runtime.time, "monotonic", side_effect=lambda: clock[0]), \
                         patch.object(runtime.time, "sleep", side_effect=sleep):
                     with self.assertRaises(expected_error) as raised:
@@ -95,11 +112,10 @@ class RuntimeTests(TestCase):
     def test_unbounded_training_runtime_keeps_process_timeout_and_cancellation(self):
         import math
         for cancel in (False, True):
-            with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(cancel=cancel), patch.object(Path, 'mkdir'):
+                directory = Path('/memory/process')
                 clock, events = [0.0], []
-                stdout, stderr = Path(directory) / 'stdout.tmp', Path(directory) / 'stderr.tmp'
-                stdout.write_bytes(b'')
-                stderr.write_bytes(b'')
+                stdout, stderr = _redirect(b''), _redirect(b'')
                 with patch.object(runtime.time, 'monotonic', side_effect=lambda: clock[0]):
                     task = runtime.TaskRuntime(math.inf, used_seconds=601)
                     def wait(timeout):

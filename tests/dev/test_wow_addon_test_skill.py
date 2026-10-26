@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import unittest
+
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +51,7 @@ def skill_env():
 
 
 def load_entry():
-    """按路径加载技能入口，供**预算边界**用例直接驱动它的输出出口。"""
+    """按路径加载公开命令入口及输出预算出口。"""
     if str(ENTRY.parent) not in sys.path:
         sys.path.insert(0, str(ENTRY.parent))
     import importlib.util
@@ -61,6 +63,93 @@ def load_entry():
 
 class _JsonArgs:
     json = True
+
+
+@pytest.mark.parametrize('available', [False, True])
+def test_doctor_saves_complete_result_without_changing_exit_code(monkeypatch, capsys, available):
+    entry = load_entry()
+    # 已校验资产的明确输入；本例只验公开命令输出，不重复资产完整性检查。
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'diagnostic output fixture'}))
+    backend = dict(available=available, reason='backend diagnostic ' * 100)
+    monkeypatch.setattr(entry, 'backend', lambda: backend)
+    saved = []
+    monkeypatch.setattr(entry.core, 'write_json', lambda path, value: saved.append((path, value)))
+
+    assert entry.main(['doctor', '--json', '--output', '完整环境诊断.json']) == (0 if available else 2)
+    preview = json.loads(capsys.readouterr().out)
+    (path, full), = saved
+    assert path == '完整环境诊断.json'
+    assert full['lua'] == backend
+    assert full['data_integrity'] == 'pass'
+    assert set(full) == {'version', 'python', 'platform', 'data_integrity', 'lua', 'scope', 'note'}
+    assert preview['details_truncated'] is True
+    assert len(preview['lua']['reason']) < len(full['lua']['reason'])
+    assert 'details_truncated' not in full
+
+    def unexpected_write(*args):
+        raise AssertionError('doctor without --output must not write a report')
+    monkeypatch.setattr(entry.core, 'write_json', unexpected_write)
+    assert entry.main(['doctor', '--json']) == (0 if available else 2)
+    assert json.loads(capsys.readouterr().out)['lua']['available'] is available
+
+
+def test_doctor_output_write_failure_is_a_tool_error(monkeypatch, capsys):
+    entry = load_entry()
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'diagnostic output fixture'}))
+    monkeypatch.setattr(entry, 'backend', lambda: dict(available=True, kind='executable'))
+    def cannot_write(*args):
+        raise OSError('output unavailable')
+    monkeypatch.setattr(entry.core, 'write_json', cannot_write)
+    assert entry.main(['doctor', '--json', '--output', 'unwritable.json']) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert json.loads(captured.err)['status'] == 'tool_error'
+
+
+@pytest.mark.real
+def test_doctor_output_file_roundtrip(tmp_path, monkeypatch, capsys):
+    entry = load_entry()
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'diagnostic output fixture'}))
+    monkeypatch.setattr(entry, 'backend', lambda: dict(available=True, kind='executable'))
+    output = tmp_path / '完整环境诊断.json'
+    assert entry.main(['doctor', '--json', '--output', str(output)]) == 0
+    assert json.loads(output.read_text(encoding='utf-8')) == json.loads(capsys.readouterr().out)
+
+
+def test_doctor_explains_executable_override_and_preserves_automatic_library_discovery(monkeypatch, capsys):
+    entry = load_entry()
+    from wowtestlib import luaexec
+    monkeypatch.setattr(entry.core, 'data', lambda: ([], [], [], {'scope': 'backend discovery fixture'}))
+    monkeypatch.delenv('WOWTEST_LUA', raising=False)
+    monkeypatch.setenv('WOWTEST_LUA_BACKEND', '')
+    monkeypatch.setattr(luaexec.importlib.util, 'find_spec', lambda name: None)
+    monkeypatch.setattr(luaexec.ctypes.util, 'find_library', lambda name: None)
+    monkeypatch.setattr(luaexec.shutil, 'which', lambda name: None)
+
+    assert entry.main(['doctor', '--json']) == 2
+    missing = json.loads(capsys.readouterr().out)['lua']
+    assert missing['available'] is False
+    assert 'WOWTEST_LUA 指向 Lua 可执行程序' in missing['reason']
+    assert '程序或共享库' not in missing['reason']
+
+    monkeypatch.setattr(luaexec.ctypes.util, 'find_library', lambda name: 'liblua.so')
+    assert entry.main(['doctor', '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['lua'] == dict(
+        available=True, kind='library', path='liblua.so', version='lua5.4')
+
+    monkeypatch.setenv('WOWTEST_LUA', 'lua-program')
+    monkeypatch.setattr(luaexec.shutil, 'which', lambda name: '/tools/lua-program')
+    assert entry.main(['doctor', '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['lua'] == dict(
+        available=True, kind='executable', path='/tools/lua-program')
+
+    monkeypatch.setattr(luaexec.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(Path, 'is_file', lambda path: False)
+    assert entry.main(['doctor', '--json']) == 2
+    assert json.loads(capsys.readouterr().out)['lua'] == dict(
+        available=False, reason='WOWTEST_LUA 指定的程序不存在')
+
+
 # 打包不变量：载荷里不得出现未被声明的纯文本大文件（应放进压缩容器）
 PLAIN_TEXT_CEILING_BYTES = 64 * 1024
 PLAIN_TEXT_SUFFIXES = {".json", ".lua", ".md", ".txt", ".csv", ".py"}
@@ -74,6 +163,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(fields.get("name"), SKILL.name)
         self.assertTrue(fields.get("description"), "description 不得为空")
 
+    @pytest.mark.real
     def test_claude_side_link_resolves_to_truth(self):
         # 连接不入库（真身才是版本化对象），所以干净克隆上没有它。
         # 这里按需把它建出来，使这条检查**在干净仓库里可准备、可重复**。
@@ -98,6 +188,7 @@ class SkillLayoutTest(unittest.TestCase):
         )
         self.assertEqual(residue, [], "技能自包含后不应再有定位指针")
 
+    @pytest.mark.real
     def test_install_skill_only_writes_inside_the_target_project(self):
         """安装命令只往**目标项目**里写，不碰用户级目录；复制出来的副本能独立跑。
 
@@ -138,6 +229,7 @@ class SkillLayoutTest(unittest.TestCase):
                 oversized.append(f"{path.relative_to(SKILL).as_posix()} = {size} 字节")
         self.assertEqual(oversized, [], "载荷中存在未压缩的大文本：\n" + "\n".join(oversized))
 
+    @pytest.mark.real
     def test_entry_runs_and_reports_integrity(self):
         result = subprocess.run(
             [sys.executable, str(ENTRY), "doctor", "--json"],
@@ -151,6 +243,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(Path(report["lua"]["path"]), REPO_LUA,
                          "实际使用的 Lua 不是仓库固定指定的那个")
 
+    @pytest.mark.real
     def test_catalog_preview_and_full_result(self):
         """一次真实目录查询同时验证缩裁、计数及完整结果可达。"""
         target = ROOT / ".local" / "tests" / "wow-addon-test" / "catalog-full.json"
@@ -236,6 +329,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(len(items) + omitted[0]["omitted"], 11, "省略条数对不上")
         self.assertTrue(report.get("details_truncated"), "裁剪没有被显式标注")
 
+    @pytest.mark.real
     def test_tool_error_message_is_bounded(self):
         """失败信息同样要有上限：错误消息可以很长。
 
@@ -266,6 +360,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertTrue(report.get("details_truncated"), "超长失败信息没有被标注截断")
         self.assertLessEqual(len(report["message"]), 2048 + 16, "失败信息本身没有上限")
 
+    @pytest.mark.real
     def test_small_outputs_are_never_truncated(self):
         """没超预算的命令不该被缩裁——否则代理会以为结果不完整。"""
         result = subprocess.run(
@@ -277,6 +372,7 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertNotIn("details_truncated", report, "小输出被误标为缩裁")
         self.assertEqual(report.get("cases"), 846, "用例总数不对")
 
+    @pytest.mark.real
     def test_tool_selftest_passes_in_the_repo(self):
         """工具自带的整套自检要在仓库里真跑一遍——否则它退化成一句没人执行的承诺。
 

@@ -102,6 +102,13 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             raise TaskError("请求内容不是有效的 JSON（结构化数据）") from error
         if not isinstance(value, dict):
             raise TaskError("请求内容格式无效")
+        from simulation_config import reject_removed_search_settings
+        try:
+            reject_removed_search_settings(value)
+        except ValueError as error:
+            raise TaskError(str(error)) from error
+        if any(name in value for name in ('rule_step', 'diagnostic_candidate_key', 'diagnostic_budget_seconds')):
+            raise TaskError('规则编辑和规则诊断执行入口已移除')
         return value
 
     def do_GET(self):  # noqa: N802
@@ -122,19 +129,12 @@ class InterfaceHandler(BaseHTTPRequestHandler):
                 _, destination = self.server.task_paths(task_id)
                 with self.server.tasks_lock:
                     entry = self.server.tasks.get(task_id)
-                details = parse_qs(urlsplit(self.path).query).get('details') == ['rule_initialization']
-                state = self._read_public_state(destination, entry, include_rule_initialization=details)
+                if parse_qs(urlsplit(self.path).query).get('details') == ['rule_initialization']:
+                    raise TaskError('规则起点详情入口已移除')
+                state = self._read_public_state(destination, entry)
             except (TaskError, OSError, ValueError) as error:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
                 return
-            for view in [state, *state.get('scenes', [])]:
-                initialization = view.get('rule_initialization')
-                if initialization:
-                    view['has_rule_initialization'] = True
-                    view['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
-                        initialization.get('compilation', 'pending'))
-                    if not details:
-                        del view['rule_initialization']
             self._send_json(HTTPStatus.OK, state)
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "页面不存在"})
@@ -189,19 +189,17 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         if type(target_count) is not int or target_count not in (1, 5):
             raise TaskError("目标数量必须为 1 或 5")
         observation_mode = value.get("search_observability", "off")
-        if type(value.get("diagnostic_logging", False)) is not bool:
-            raise TaskError("诊断日志总开关必须为布尔值")
+        diagnostic_logging = self._diagnostic_logging(value)
         if not isinstance(observation_mode, str) or observation_mode not in ("off", "summary", "full"):
             raise TaskError("搜索记录模式必须是 off、summary 或 full")
         options = dict(self.server.task_options)
-        diagnostic_logging = (options.get('search_config') or {}).get('diagnostic_logging', False)
         simulation = options.get("simulation_config") or {}
         options["simulation_config"] = simulation_config_for(dict(
             simulation, target_count=target_count, scene=value.get("scene", simulation.get("scene"))))
         options['search_config'] = dict(
             options.get('search_config') or {}, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
-        for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+        for key in ('search_timeline',):
             if key in value:
                 if type(value[key]) is not bool:
                     raise TaskError(key + ' 必须为布尔值')
@@ -303,7 +301,16 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         state = cancel_task(entry[1] if entry else destination)
         self._send_json(HTTPStatus.OK, _public_state(state, destination))
 
+    def _diagnostic_logging(self, value):
+        default = (self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False)
+        selected = value.get('diagnostic_logging', default)
+        if type(selected) is not bool:
+            raise TaskError('诊断日志总开关必须为布尔值')
+        return selected
+
     def _resume_task(self, task_id):
+        value = self._body() if self.headers.get('Content-Length', '0') != '0' else {}
+        diagnostic_logging = self._diagnostic_logging(value)
         _, destination = self.server.task_paths(task_id)
         with self.server.tasks_lock:
             entry = self.server.tasks.get(task_id)
@@ -312,8 +319,7 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             if not (destination / 'dual.json').exists():
                 raise TaskError('此入口只恢复双场任务')
             from dual_task import resume
-            handle = resume(destination, diagnostic_logging=(
-                self.server.task_options.get('search_config') or {}).get('diagnostic_logging', False),
+            handle = resume(destination, diagnostic_logging=diagnostic_logging,
                 search_timeline=(self.server.task_options.get('search_config') or {}).get('search_timeline'))
             self.server.tasks[task_id] = (destination, handle)
         self._send_json(HTTPStatus.ACCEPTED, dict(task_id=task_id, status='starting'))
@@ -324,7 +330,7 @@ def _starting_state() -> dict:
         "status": "starting",
         "phase": "initialize",
         "elapsed_seconds": 0.0,
-        "total_budget_seconds": 600.0,
+        "total_budget_seconds": None,
         "progress": 0.0,
         "completed_batches": 0,
         "result_ready": False,
@@ -374,21 +380,22 @@ def _public_state(state: dict, destination: Path) -> dict:
     """把真实任务事件转为页面所需的少量状态；结果就绪前不读取候选文本。"""
     status = state.get("status", "starting")
     phase = state.get("phase", "initialize")
-    budget = float((state.get("config") or {}).get("total_budget_seconds", 600))
+    natural = bool(state.get("stop_policy") or (state.get("search") or {}).get("formal_search"))
+    budget = None if natural else float((state.get("config") or {}).get("total_budget_seconds", 600))
     elapsed = max(0.0, float(state.get("elapsed_seconds", 0)))
     response = {
         "status": status,
         "phase": "done" if phase in ("done", "complete") else phase,
         "elapsed_seconds": elapsed,
         "total_budget_seconds": budget,
-        "progress": min(1.0, elapsed / budget) if budget else 0.0,
+        "progress": (1.0 if status == "completed" else None) if natural else min(1.0, elapsed / budget) if budget else 0.0,
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
-    for name in ('rule_initialization', 'has_rule_initialization', 'rule_initialization_identity'):
-        if name in state:
-            response[name] = state[name]
     search = state.get("search") or state
+    if natural:
+        from formal_search import STOP_POLICY
+        response.update(stop_policy=STOP_POLICY, generation=state.get("generation", search.get("rounds", 0)))
     metric_names = ("batch_requests", "batch_cache_hits", "native_batch_starts",
                     "canonicalized_duplicates")
     if all(search.get(name) is not None for name in metric_names):
@@ -419,7 +426,8 @@ def _public_state(state: dict, destination: Path) -> dict:
             if state.get('improvement') == 'search_result':
                 response['evidence_status'] = 'search_result'
                 response['search_result'] = state.get('search_result', {})
-                response['result_note'] = '已输出搜索选中的序列；未进行最终独立复测，游戏效果尚待验证。'
+                response['result_note'] = ('已完成正常场景独立复测并选出冠军；游戏效果尚待验证。' if natural
+                                           else '已输出搜索选中的序列；未进行最终独立复测，游戏效果尚待验证。')
                 return response
             if status == "validation_incomplete" and state.get("improvement") == "not_proven_better":
                 response["result_note"] = (

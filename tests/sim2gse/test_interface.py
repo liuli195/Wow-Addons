@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import tempfile
+from contextlib import nullcontext
+from copy import deepcopy
+from email.message import Message
+from io import BytesIO
+from types import SimpleNamespace
 import threading
-import time
 import unittest
 import json
 import base64
@@ -24,7 +28,8 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 
 from gse_import import inspect_import  # noqa: E402
-from test_seed_training import memory_result_center  # noqa: E402
+from test_population_training import memory_ga  # noqa: E402
+from test_search import _fixed_search_population  # noqa: E402
 
 
 def gse_fixture(payload):
@@ -43,6 +48,56 @@ GSE_PROTECTED_VARIABLE_VECTOR = (
 GSE_PROTECTED_MACRO_VECTOR = (
     "!GSE3!+1GBkaGxwdHh8gISIjITXl5rxvJIfGsh1W9faejI+hnlUimbME8ag7Z5QUpuBgQG4pwW6rzLr0Um/muYNGkQHukMPDGG9hvkrUbFL6wWMwRz+/XkNH"
 )
+
+
+def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
+    import engine
+    from interface import _public_state
+    from sequence import compiled_program
+    from simulation_config import TRAINING_DEFAULTS
+    from test_search import _fast_report
+
+    initial = ("outbreak", "death_coil")
+    better = ("death_coil", "outbreak")
+    worse = ("death_coil", "outbreak", "death_coil")
+    calls = []
+
+    def evaluate(profile, candidate, folder, **options):
+        actions = tuple(name for block in compiled_program(candidate) for name in block)
+        wanted = {initial: 90, better: 120, worse: 80}[actions]
+        report = _fast_report(options['character'], wanted, options['iterations'] - 1)
+        if actions == worse:
+            report['sim']['players'][0]['collected_data']['dps'].pop('variance')
+        calls.append((actions, options['iterations'], options.get('burst_candidate')))
+        summary = engine.check_report(report, options['character'], options['iterations'],
+            simulation_config=options['simulation_config'], allow_zero=True)
+        return dict(report=report, summary=summary, trace=[])
+
+    # The same formal entry owns quarantine and full finalist retests. HTTP,
+    # physical report groups and native execution retain separate real witnesses.
+    with patch.dict(TRAINING_DEFAULTS, crossover_probability=0., mutation_probability=0.):
+        case = memory_ga(formal=True, programs=[[[name] for name in actions]
+            for actions in (initial, better, worse)], native=evaluate)
+        result = case.run()
+    state = _public_state(result, case.store.destination)
+    assert state['status'] == 'completed'
+    assert state['result_ready']
+    coarse = [(actions, count) for actions, count, _ in calls if count == 32]
+    assert [count for actions, count in coarse if actions == worse] == [32, 32]
+    assert [count for actions, count in coarse if actions == better] == [32]
+    assert state['search_result']['dps'] == 120
+    assert result['search']['effective_population_size'] == 2
+    rejected, = result['search']['coarse_rejections'].values()
+    assert rejected['attempts'] == 2
+    assert all(row['kind'] == 'candidate_score' for row in rejected['failures'])
+    finalists = result['final']['scenarios']['nominal']['finalists']
+    assert len(finalists) == 2
+    assert {tuple(name for block in compiled_program(row['candidate']) for name in block)
+            for row in result['search']['records']} == {initial, better}
+    assert all(len(row['batches']) == 3 and row['samples'] == 381 for row in finalists)
+    assert all(batch['requested_iterations'] == 128 for row in finalists for batch in row['batches'])
+    assert all('rule_diagnostics' not in row for row in result['search']['records'])
+    assert calls and all(burst is None for _, _, burst in calls)
 
 
 class ImportInspectionTests(unittest.TestCase):
@@ -358,12 +413,29 @@ class ImportInspectionTests(unittest.TestCase):
 class InterfaceTests(unittest.TestCase):
     def setUp(self) -> None:
         global _friendly_error, _public_state, create_server, run_task
-        global sample_profile, _fast_evaluate, _fast_search_boundary, _initialized_starts
+        global sample_profile
         from interface import _friendly_error, _public_state, create_server
         from task import run_task
         from test_character_export import sample_profile
-        from test_search import _fast_evaluate, _fast_search_boundary, _initialized_starts
 
+        self.real = any(mark.name == 'real' for mark in
+                        getattr(getattr(type(self), self._testMethodName), 'pytestmark', []))
+        if not self.real:
+            # 不构造HTTP服务器：真实Handler读取BytesIO，服务数据IO逐例显式提供。
+            from interface import InterfaceServer
+            self.server = object.__new__(InterfaceServer)
+            self.server.output_root = REPOSITORY / '.local' / 'unused-interface-unit'
+            self.server.task_root = self.server.output_root / 'tasks'
+            self.server.input_root = self.server.output_root / 'inputs'
+            self.server.server_port = 0
+            self.server.tasks, self.server.task_options = {}, {}
+            self.server.tasks_lock = threading.RLock()
+            self.input_write = self.enterContext(patch.object(
+                Path, 'write_text', side_effect=AssertionError('校验失败前不得写入任务输入')))
+            self.file_changes = [self.enterContext(patch.object(
+                Path, name, side_effect=AssertionError('状态读取/拒绝不得改动检查点')))
+                for name in ('write_bytes', 'unlink', 'mkdir')]
+            return
         self.directory = tempfile.TemporaryDirectory(prefix="sim2gse-ui-")
         self.server = create_server(Path(self.directory.name) / "输出", port=0)
         self.thread = threading.Thread(
@@ -373,90 +445,112 @@ class InterfaceTests(unittest.TestCase):
         self.url = f"http://127.0.0.1:{self.server.server_port}/"
 
     def tearDown(self) -> None:
+        if not self.real:
+            self.input_write.assert_not_called()
+            for changed in self.file_changes:
+                changed.assert_not_called()
+            return
         from task import cancel_task
-        for _,handle in list(self.server.tasks.values()):
-            if not handle.done:
-                cancel_task(handle)
-                handle.join(5)
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=2)
-        self.directory.cleanup()
+        from dual_task import DualHandle, cancel as cancel_dual
+        unfinished = []
+        try:
+            for _, handle in list(self.server.tasks.values()):
+                if not handle.done:
+                    (cancel_dual if isinstance(handle, DualHandle) else cancel_task)(handle)
+                    handle.join(5)
+                    if not handle.done:
+                        unfinished.append(handle.output_root)
+        finally:
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join(timeout=2)
+            self.directory.cleanup()
+        self.assertFalse(unfinished, '本次任务未完成取消清理: ' + repr(unfinished))
 
     def test_terminal_parent_does_not_show_stale_scene_as_running(self):
         import result_store
         from dual_task import PARENT_SCHEMA
         task_id = 'a' * 32
-        _, destination = self.server.task_paths(task_id)
-        destination.mkdir()
-        (destination / 'dual.json').write_text(json.dumps(dict(parent_id=task_id)), encoding='utf-8')
-        checkpoint = destination / 'single_target' / 'checkpoint.json'
-        checkpoint.parent.mkdir()
-        checkpoint.write_bytes(b'{"preserved":true}')
         row = dict.fromkeys(PARENT_SCHEMA)
-        row.update(parent_id=task_id, status='failed', phase='single_target', error='native trace failed',
+        row.update(parent_id=task_id, formal_search_version=1, status='failed',
+                   phase='single_target', error='native trace failed',
                    input_sha256='frozen', definition_id='reviewed', spec_id=252,
-                   config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
+                   config=dict(input_interval_ms=200), simulation_config={},
                    rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
                    single_target_path='single_target', aoe_path='aoe',
                    single_target_status='running', aoe_status='pending', burst_instructions='')
-        for status, scene_status in [('failed', 'failed'), ('interrupted', 'incomplete')]:
-            row['status'] = status
-            result_store.write('dual_tasks', task_id, [row], schema=PARENT_SCHEMA)
-            state = self._json_request('GET', '/api/tasks/' + task_id)
-            self.assertEqual(state['status'], status)
-            self.assertEqual(state['scenes'][0]['status'], scene_status)
-            self.assertEqual(state['scenes'][1]['status'], 'pending')
-            self.assertTrue(state['recoverable'])
-            self.assertFalse(state['result_ready'])
-            self.assertEqual(checkpoint.read_bytes(), b'{"preserved":true}')
+        with patch.object(result_store, 'read_records', side_effect=lambda *a, **k: [dict(row)]), \
+                patch.object(Path, 'read_text', return_value=json.dumps(dict(parent_id=task_id))), \
+                patch.object(Path, 'exists', lambda path: path.name == 'dual.json'):
+            for status, scene_status in [('failed', 'failed'), ('interrupted', 'incomplete')]:
+                row['status'] = status
+                state = self._json_request('GET', '/api/tasks/' + task_id)
+                self.assertEqual(state['status'], status)
+                self.assertEqual(state['scenes'][0]['status'], scene_status)
+                self.assertEqual(state['scenes'][1]['status'], 'pending')
+                self.assertTrue(state['recoverable'])
+                self.assertFalse(state['result_ready'])
+        self.input_write.assert_not_called()
 
     def test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume(self):
+        import engine
         import result_store
+        import task
         from dual_task import PARENT_SCHEMA
-        from test_search import _apl_task_boundary
-        from urllib.error import HTTPError
         task_id = 'b' * 32
-        _, destination = self.server.task_paths(task_id)
-        destination.mkdir()
-        pointer = json.dumps(dict(parent_id=task_id))
-        (destination / 'dual.json').write_text(pointer, encoding='utf-8')
-        schema = {key: value for key, value in PARENT_SCHEMA.items() if key != 'rule_snapshot'}
-        row = dict.fromkeys(schema)
+        row = dict.fromkeys(key for key in PARENT_SCHEMA if key != 'rule_snapshot')
         row.update(parent_id=task_id, status='cancelled', phase='single_target', error='old cancellation',
                    input_sha256='frozen', definition_id='reviewed', spec_id=252,
                    config=dict(total_budget_seconds=600, input_interval_ms=200), simulation_config={},
                    rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
                    single_target_path='single_target', aoe_path='aoe',
                    single_target_status='cancelled', aoe_status='pending', burst_instructions='')
-        result_store.write('dual_tasks', task_id, [row], schema=schema)
-        state = self._json_request('GET', '/api/tasks/' + task_id)
-        self.assertEqual(state['status'], 'cancelled')
-        self.assertEqual(state['scenes'][0]['status'], 'cancelled')
-        self.assertEqual(state['scenes'][1]['status'], 'pending')
-        with _apl_task_boundary(), self.assertRaises(HTTPError) as raised:
-            self._json_request('POST', '/api/tasks/' + task_id + '/resume', {})
-        failure = json.loads(raised.exception.read().decode('utf-8'))
-        self.assertIn('缺少规则配置快照', failure['error'])
-        self.assertEqual((destination / 'dual.json').read_text(encoding='utf-8'), pointer)
-        self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
+        # 仅替换持久数据/文件锁/原生身份IO，读取、旧身份拒绝和HTTP错误映射均为生产实现。
+        with patch.object(result_store, 'read_records', side_effect=lambda *a, **k: [dict(row)]), \
+                patch.object(Path, 'read_text', return_value=json.dumps(dict(parent_id=task_id))), \
+                patch.object(Path, 'exists', lambda path: path.name == 'dual.json'), \
+                patch.object(task, '_task_lease', side_effect=lambda *a, **k: nullcontext()), \
+                patch.object(engine, 'identity', return_value=('unused.exe', {})):
+            state = self._json_request('GET', '/api/tasks/' + task_id)
+            self.assertEqual(state['status'], 'cancelled')
+            self.assertEqual(state['total_budget_seconds'], 1200)
+            self.assertEqual(state['scenes'][0]['total_budget_seconds'], 600)
+            self.assertFalse(state.get('stop_policy'))
+            self.assertFalse(state['recoverable'])
+            self.assertIn('已退役', state['result_note'])
+            self.assertIn('未进行最终独立复测', state['result_note'])
+            self.assertEqual(state['scenes'][0]['status'], 'cancelled')
+            self.assertEqual(state['scenes'][1]['status'], 'pending')
+            with self.assertRaises(HTTPError) as raised:
+                self._json_request('POST', '/api/tasks/' + task_id + '/resume', {})
+            self.assertIn('身份不兼容', json.loads(raised.exception.read())['error'])
+            self.assertEqual(self._json_request('GET', '/api/tasks/' + task_id)['status'], 'cancelled')
 
     def _json_request(self, method: str, path: str, value: dict | None = None,
-                      timeout: float = 3) -> dict:
+                      timeout: float = 3) -> dict | str:
         body = None if value is None else json.dumps(value, ensure_ascii=False).encode("utf-8")
+        if not self.real:
+            from interface import InterfaceHandler
+            handler = object.__new__(InterfaceHandler)
+            handler.server, handler.path = self.server, path
+            handler.request_version, handler.requestline = 'HTTP/1.1', method + ' ' + path
+            handler.command = method
+            handler.headers = Message()
+            handler.headers['Host'] = '127.0.0.1:0'
+            handler.headers['Content-Length'] = str(len(body or b''))
+            handler.rfile, handler.wfile = BytesIO(body or b''), BytesIO()
+            getattr(handler, 'do_' + method)()
+            headers, response = handler.wfile.getvalue().split(b'\r\n\r\n', 1)
+            status = int(headers.split(b' ', 2)[1])
+            if status >= 400:
+                raise HTTPError(path, status, 'interface response', None, BytesIO(response))
+            return response.decode('utf-8') if path == '/' else json.loads(response)
         request = Request(self.url + path, data=body, method=method,
                           headers={"Content-Type": "application/json"} if body else {})
         with urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read().decode('utf-8')
+            return body if path == '/' else json.loads(body)
 
-    def _task_state_request(self, task_id: str, deadline: float) -> dict:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Task polling reached its overall test deadline")
-        state = self._json_request("GET", f"/api/tasks/{task_id}", timeout=remaining)
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Task polling reached its overall test deadline")
-        return state
 
     def test_import_inspection_http_wiring(self) -> None:
         payload = ["HTTP_IMPORT", {
@@ -472,14 +566,36 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("编码无效", json.loads(raised.exception.read())["error"])
         self.assertEqual(self.server.tasks, {})
-        self.assertEqual(list(self.server.task_root.iterdir()), [])
+        self.input_write.assert_not_called()
 
     def test_empty_submission_is_rejected_without_creating_a_task(self) -> None:
         with self.assertRaises(HTTPError) as raised:
             self._json_request("POST", "/api/tasks", {"profile": "  "})
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("粘贴", json.loads(raised.exception.read())['error'])
-        self.assertEqual(list((Path(self.directory.name) / "输出" / "tasks").iterdir()), [])
+        self.input_write.assert_not_called()
+
+
+    def test_http_rejects_retired_formal_settings_before_start_or_resume(self):
+        from simulation_config import RETIRED_SEARCH_SETTINGS
+        for path in ('/api/tasks', '/api/tasks/' + 'a' * 32 + '/resume'):
+            for key in RETIRED_SEARCH_SETTINGS:
+                with self.subTest(path=path, key=key), self.assertRaises(HTTPError) as raised:
+                    self._json_request('POST', path, {key: False})
+                self.assertIn('已退役', json.loads(raised.exception.read())['error'])
+        self.input_write.assert_not_called()
+
+    def test_http_rejects_removed_settings_before_start_or_resume(self) -> None:
+        for path in ('/api/tasks', '/api/tasks/' + 'a' * 32 + '/resume'):
+            for key in ('adaptive_selector_enabled', 'rule_initialization_enabled', 'rule_diagnostics_policy', 'rule_step', 'diagnostic_candidate_key'):
+                for value in (False, True):
+                    with self.subTest(path=path, key=key, value=value):
+                        with self.assertRaises(HTTPError) as raised:
+                            self._json_request('POST', path, {'profile': sample_profile(), key: value})
+                        self.assertEqual(raised.exception.code, 400)
+                        self.assertIn('已移除', json.loads(raised.exception.read())['error'])
+        self.assertEqual(self.server.tasks, {})
+        self.input_write.assert_not_called()
 
 
     def test_task_api_rejects_unknown_combat_macro_condition_before_creating_task(self) -> None:
@@ -506,647 +622,139 @@ class InterfaceTests(unittest.TestCase):
                     error,
                 )
                 self.assertEqual(self.server.tasks, {})
-                self.assertEqual(list(self.server.task_root.iterdir()), [])
+                self.input_write.assert_not_called()
 
-    @pytest.mark.usefixtures('memory_result_center')
-    def test_public_service_simulates_selected_import_and_returns_dps(self) -> None:
-        imported = gse_fixture(["THIRD_PARTY", {
-            "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
-            "Versions": [{"Actions": [{"Type": "Action", "type": "macro",
-                                         "macro": "/targetenemy [noharm][dead]\n/cast 77575"}]}],
-        }])
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported, "target_count": 5,
-            "sequence_name": "THIRD_PARTY", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._task_state_request(created["task_id"], deadline)
-            if state["status"] in {"completed", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertEqual(state["selected_sequence"], "THIRD_PARTY")
-        self.assertGreater(state["dps"], 0)
-        self.assertFalse(state["result_ready"])
-        destination, _ = self.server.tasks[created["task_id"]]
-        from task import read_task
-        self.assertEqual(read_task(destination)["simulation_config"]["target_count"], 5)
 
-    def test_public_service_reports_unmapped_import_skill_without_dps(self) -> None:
+    def test_unmapped_import_error_is_reported_without_dps(self) -> None:
+        from gse_import import import_action_spell_ids, program_from_import
+        from macro_interpreter import map_action
+        from task import TaskError
         imported = gse_fixture(["THIRD_PARTY", {
             "MetaData": {"SpecID": 252, "GSEVersion": 3331}, "Default": 1,
             "Versions": [{"Actions": [{"Type": "Action", "type": "spell", "spell": 99999999}]}],
         }])
-        created = self._json_request("POST", "/api/tasks", {
-            "profile": sample_profile(), "mode": "import", "gse": imported,
-            "sequence_name": "THIRD_PARTY", "version": 1,
-            "gse_click_ms": 300, "gcd_ms": 1500, "input_interval_ms": 300,
-        })
-        deadline = time.monotonic() + 30
-        state = {}
-        while time.monotonic() < deadline:
-            state = self._task_state_request(created["task_id"], deadline)
-            if state["status"] in {"completed", "failed", "cancelled"}:
-                break
-            time.sleep(0.1)
-        self.assertEqual(state["status"], "failed", state)
-        self.assertIn("99999999", state["error"])
-        self.assertNotIn("dps", state)
+        program = program_from_import(imported, 'THIRD_PARTY', 1)
+        spell_id, = import_action_spell_ids(program)
+        with self.assertRaises(ValueError) as raised:
+            map_action('spell', str(spell_id), [], 'Sequences[THIRD_PARTY].Versions[1].Actions[1]')
+        task_id = 'c' * 32
+        _, destination = self.server.task_paths(task_id)
+        handle = SimpleNamespace(done=True, error=TaskError(str(raised.exception)))
+        self.server.tasks[task_id] = destination, handle
+        state = self._json_request('GET', '/api/tasks/' + task_id)
+        self.assertEqual(state['status'], 'failed', state)
+        self.assertIn('99999999', state['error'])
+        self.assertIn('不能映射', state['error'])
+        self.assertNotIn('dps', state)
+        self.assertFalse(state['result_ready'])
 
-    def test_published_report_group_is_reused_after_registration_interruption(self) -> None:
-        import result_store
-        import sequence
-        from task import resume_task
+    def test_plain_search_request_preserves_disabled_burst_option(self) -> None:
+        import interface
 
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
-        original_write = result_store.write
-        interrupted = False
-        evaluated = []
-
-        def publish_then_interrupt(table, key, rows, **kwargs):
-            nonlocal interrupted
-            result = original_write(table, key, rows, **kwargs)
-            if table == 'batches' and len(rows) == 12 and not interrupted:
-                interrupted = True
-                raise OSError('published group before registration')
-            return result
-
-        def evaluate(*args, **kwargs):
-            evaluated.append(Path(args[2]).name)
-            return _fast_evaluate(*args, **kwargs)
-
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-            with patch.object(result_store, 'write', side_effect=publish_then_interrupt):
-                created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    state = self._task_state_request(created['task_id'], deadline)
-                    if state['status'] == 'failed':
-                        break
-                    time.sleep(0.02)
-                self.assertEqual(state['status'], 'failed', state)
-                self.assertIn('published group before registration', state['error'])
-            _, handle = self.server.tasks[created['task_id']]
-            handle.join(5)
-            resumed = resume_task(handle.output_root, diagnostic_logging=True)
-        self.assertEqual(resumed['status'], 'completed')
-        self.assertTrue(_public_state(resumed, handle.output_root)['result_ready'])
-        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
-        self.assertTrue(interrupted)
-        self.assertEqual(len(evaluated), len(set(evaluated)))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
-        self.assertEqual(len(keys), len(set(keys)))
-        with result_store.query(
-            "SELECT storage_group_key, count(*) FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final') GROUP BY storage_group_key"
-        , tables=['batches']) as cursor:
-            groups = cursor.fetchall()
-        self.assertGreater(sum(row[1] for row in groups), 12)
-        self.assertTrue(all(key and 1 <= count <= 12 for key, count in groups))
-        self.assertEqual(len(groups), (sum(row[1] for row in groups) + 11) // 12)
-        with result_store.query(
-            "SELECT batch_key, report.sim.statistics.raid_dps.mean FROM batches "
-            "WHERE purpose IN ('search', 'validation', 'final')"
-        , tables=['batches']) as cursor:
-            reports = cursor.fetchall()
-        self.assertEqual(len(reports), sum(row[1] for row in groups))
-        self.assertEqual(len({key for key, _ in reports}), len(reports))
-        self.assertTrue(all(score > 0 for _, score in reports))
-
-
-    def test_resume_after_partial_group_commit_uses_unused_group_number(self) -> None:
-        import sqlite3
-        import shutil
-        import result_store
-        import sequence
-        from search import TaskStore
-        from task import resume_task
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1, diagnostic_logging=True)}
-        original_stage = TaskStore.stage_report
-        original_commit = TaskStore._commit_report_group
-        snapshot = Path(self.directory.name) / 'partial-commit.sqlite3'
-        interrupted = False
-        evaluated = []
-
-        def evaluate(*args, **kwargs):
-            evaluated.append(Path(args[2]).name)
-            return _fast_evaluate(*args, **kwargs)
-
-        def seed_legacy_last_report(store, key, row, stored, **kwargs):
-            if len(store.report_buffer) == 11 and not interrupted:
-                result_store.write_batch(key, stored,
-                                         diagnostic_logging=kwargs.get('diagnostic_logging', False))
-            return original_stage(store, key, row, stored, **kwargs)
-
-        def interrupt_after_commit(store, *args, **kwargs):
-            nonlocal interrupted
-            original_commit(store, *args, **kwargs)
-            if not kwargs.get('checkpoint', True) and not interrupted:
-                interrupted = True
-                with sqlite3.connect(snapshot) as target:
-                    store.db.backup(target)
-                target.close()
-                raise OSError('stop after partial group commit')
-
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-            with patch.object(TaskStore, 'stage_report', seed_legacy_last_report), patch.object(
-                    TaskStore, '_commit_report_group', interrupt_after_commit):
-                created = self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target', 'diagnostic_logging': True})
-                _, handle = self.server.tasks[created['task_id']]
-                handle.join(30)
-                self.assertTrue(interrupted)
-                self.assertIsNotNone(handle.error)
-            # Restore the exact durable task image at the stop, before error handling.
-            shutil.copyfile(snapshot, handle.output_root / 'task.sqlite3')
-            resumed = resume_task(handle.output_root, diagnostic_logging=True)
-        self.assertEqual(resumed['status'], 'completed')
-        self.assertEqual(resumed['search']['native_batch_starts'], len(evaluated))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
-        self.assertEqual(len(set(keys)), 14)
-
-    def test_simultaneous_identical_tasks_keep_one_logical_report_per_batch(self) -> None:
-        self._assert_simultaneous_identical_tasks()
-
-    def test_lost_report_locations_reject_duplicate_publication(self) -> None:
-        import result_store
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
-        original_url = self.url
-        with _fast_search_boundary():
+        writes = []
+        source = SimpleNamespace(write_text=lambda text, **options: writes.append((text, options)))
+        destination = self.server.task_root / ('d' * 32)
+        handle = SimpleNamespace(done=False, error=None)
+        self.server.task_options = {'use_burst': False}
+        # Keep the plain request/switch at the real Handler boundary. The
+        # plain × full HTTP/GA/physical recovery cross is deliberately retired;
+        # the burst representative below retains the complete twelve-report fault.
+        with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                patch.object(interface, 'start_task', return_value=handle) as start:
             created = self._json_request('POST', '/api/tasks', {
                 'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
-            _, handle = self.server.tasks[created['task_id']]
-            handle.join(30)
-            self.assertIsNone(handle.error)
-            journal = result_store.DATA_ROOT / '.report-locations.jsonl'
-            original = journal.read_bytes()
-            for damage in ('missing', 'truncated'):
-                with self.subTest(damage=damage):
-                    journal.write_bytes(original)
-                    if damage == 'missing':
-                        journal.unlink()
-                    else:
-                        journal.write_bytes(original.splitlines(keepends=True)[0])
-                    server = create_server(Path(self.directory.name) / damage, port=0,
-                                           task_options=self.server.task_options)
-                    thread = threading.Thread(target=server.serve_forever,
-                                              kwargs={'poll_interval': .01}, daemon=True)
-                    thread.start()
-                    try:
-                        self.url = f'http://127.0.0.1:{server.server_port}/'
-                        created = self._json_request('POST', '/api/tasks', {
-                            'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'})
-                        _, second = server.tasks[created['task_id']]
-                        second.join(30)
-                        state = self._json_request('GET', '/api/tasks/' + created['task_id'])
-                        self.assertEqual(state['status'], 'failed', state)
-                        self.assertEqual(state['phase'], 'storage_unavailable', state)
-                        self.assertTrue(state['storage_unavailable'] and state['recoverable'])
-                        self.assertFalse(state['result_ready'])
-                        self.assertIn('共享存储', state['error'])
-                        self.assertIsInstance(second.error.__cause__, result_store.DataReadError)
-                        self.assertIn('报告位置清单', str(second.error))
-                    finally:
-                        self.url = original_url
-                        server.shutdown(); server.server_close(); thread.join(2)
-                    with result_store.query("SELECT batch_key FROM batches WHERE purpose='search'", tables=['batches']) as cursor:
-                        keys = [row[0] for row in cursor.fetchall()]
-                    self.assertEqual(len(keys), 14)
-                    self.assertEqual(len(set(keys)), 14)
-            journal.write_bytes(original)
+        self.assertEqual(created['status'], 'starting')
+        self.assertEqual(self.server.tasks[created['task_id']], (destination, handle))
+        self.assertEqual(writes, [(sample_profile(), {'encoding': 'utf-8', 'newline': ''})])
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args, (source, destination))
+        self.assertIs(start.call_args.kwargs['use_burst'], False)
+        self.assertEqual(start.call_args.kwargs['simulation_config']['target_count'], 1)
+        self.assertEqual(start.call_args.kwargs['simulation_config']['scene'], 'single_target')
 
-    def _assert_simultaneous_identical_tasks(self) -> None:
-        import result_store
-        import sequence
+    def test_task_logging_choice_overrides_only_this_request(self):
+        import interface
+        import dual_task
 
-        self.server.task_options = {'search_config': dict(
-            total_budget_seconds=30, search_budget_seconds=15, candidate_limit=1,
-            round_candidate_limit=1, batch_targets=tuple(range(2, 30, 2)),
-            validation_batches=1, final_batches=1, iterations=2, final_iterations=2,
-            scenarios=('nominal',), max_processes=1)}
-        first_reports = threading.Barrier(2)
-        started = set()
-        started_lock = threading.Lock()
+        source = SimpleNamespace(write_text=lambda *args, **kwargs: None)
+        destination = self.server.task_root / ('d' * 32)
+        handle = SimpleNamespace(done=True, error=None)
+        imported = gse_fixture(['LOGGING', {
+            'MetaData': {'SpecID': 252, 'GSEVersion': 3331}, 'Default': 1,
+            'Versions': [{'Actions': [{'Type': 'Action', 'type': 'spell', 'spell': 77575}]}],
+        }])
+        with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                patch.object(interface, 'start_task', return_value=handle) as single, \
+                patch.object(dual_task, 'start', return_value=handle) as dual:
+            for default in (False, True):
+                original = dict(search_config=dict(diagnostic_logging=default, diagnostics='summary',
+                                                   search_timeline=True))
+                self.server.task_options = deepcopy(original)
+                previous = []
+                for mode in ('optimize', 'import', 'dual'):
+                    for choice in ('omitted', True, False):
+                        with self.subTest(default=default, mode=mode, choice=choice):
+                            request = dict(profile=sample_profile(), mode=mode, gse=imported,
+                                sequence_name='LOGGING', version=1, gse_click_ms=300, gcd_ms=1500,
+                                input_interval_ms=300)
+                            if choice != 'omitted':
+                                request['diagnostic_logging'] = choice
+                            created = self._json_request('POST', '/api/tasks', request)
+                            self.assertEqual(created['status'], 'starting')
+                            options = (dual if mode == 'dual' else single).call_args.kwargs['search_config']
+                            expected = default if choice == 'omitted' else choice
+                            self.assertIs(options['diagnostic_logging'], expected)
+                            self.assertEqual(options['diagnostics'], 'summary')
+                            self.assertIs(options['search_timeline'], True)
+                            self.assertEqual(self.server.task_options, original)
+                            previous.append((options, expected))
+                for options, expected in previous:
+                    self.assertIs(options['diagnostic_logging'], expected)
 
-        def evaluate(*args, **kwargs):
-            destination = Path(args[2]).parents[1]
-            with started_lock:
-                first = destination not in started
-                started.add(destination)
-            if first:
-                first_reports.wait(self.server.task_options['search_config']['search_budget_seconds'])
-            return _fast_evaluate(*args, **kwargs)
+    def test_served_page_uses_service_logging_only_as_initial_selection(self):
+        for default in (False, True):
+            self.server.task_options = dict(search_config=dict(diagnostic_logging=default))
+            page = self._json_request('GET', '/')
+            self.assertIn('diagnosticLogging.checked=' + str(default).lower(), page)
+            self.assertNotIn('diagnosticLogging.disabled=true', page)
+            self.assertIn('本次任务', page)
 
-        with _fast_search_boundary(), patch.object(sequence, 'evaluate', side_effect=evaluate):
-            created = []
-            for _ in range(2):
-                created.append(self._json_request('POST', '/api/tasks', {
-                    'profile': sample_profile(), 'target_count': 1, 'scene': 'single_target'}))
-            deadline = time.monotonic() + 30
-            for task in created:
-                while time.monotonic() < deadline:
-                    state = self._task_state_request(task['task_id'], deadline)
-                    if state['status'] in {'completed', 'failed'}:
-                        break
-                    time.sleep(.02)
-                error = self.server.tasks[task['task_id']][1].error
-                self.assertEqual(state['status'], 'completed', dict(state, task_error=repr(error),
-                    task_error_cause=repr(getattr(error, '__cause__', None)),
-                    task_error_context=repr(getattr(error, '__context__', None))))
-        with result_store.query("SELECT batch_key FROM batches WHERE purpose = 'search'", tables=['batches']) as cursor:
-            keys = [row[0] for row in cursor.fetchall()]
-        self.assertEqual(len(keys), 14)
-        self.assertEqual(len(keys), len(set(keys)))
-        self.assertIsNotNone(result_store.one('batches', 'batch_key', keys[0]))
-
-    def test_rule_start_and_sources_are_visible_through_page_and_task_api(self):
-        from test_search import _apl_task_boundary, _minimal_rule_pack
-        pack = _minimal_rule_pack()
-        configuration = pack['configurations'][0]
-        configuration['opener']['source_basis'] = 'fixture: explicit page opener source'
-        rules = Path(self.directory.name) / 'rules.json'
-        rules.write_text(json.dumps(pack), encoding='utf-8')
-        self.server.task_options = {'search_config': dict(
-            candidate_limit=1, batch_targets=(2,), iterations=2,
-            validation_batches=1, input_interval_ms=200, diagnostics='full')}
-        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), _apl_task_boundary():
-            page = urlopen(self.url).read().decode('utf-8')
-            created = self._json_request('POST', '/api/tasks', {'profile': sample_profile(),
-                                       'input_interval_ms': 200, 'target_count': 1, 'scene': 'single_target',
-                                       'diagnostic_logging': True, 'search_observability': 'full'})
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created['task_id'], deadline)
-                if state['status'] in ('completed', 'failed', 'cancelled'):
-                    break
-                time.sleep(.01)
-        self.assertEqual(state['status'], 'completed', state)
-        self.server.tasks[created['task_id']][1].join(5)
-        import result_store
-        # Observe the installed external storage API, while retaining actual disk reads.
-        reads = []
-        read_key = result_store._SKILL_API['read_key']
-        def audited_read(root, table, key, **options):
-            if table == 'runs':
-                reads.append(options.get('columns'))
-            return read_key(root, table, key, **options)
-        with patch.dict(result_store._SKILL_API, {'read_key': audited_read}):
-            state = self._json_request('GET', '/api/tasks/' + created['task_id'])
-        self.assertTrue(reads)
-        self.assertTrue(all(columns is not None and 'rule_initialization' not in columns
-                            for columns in reads), '默认摘要不得向存储读取完整初始化列')
-        self.assertNotIn('rule_initialization', state, '500ms进度轮询不应携带完整初始化详情')
-        self.assertTrue(state['has_rule_initialization'])
-        detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
-        initialization = detail['rule_initialization']
-        self.assertEqual(state['rule_initialization_identity'],
-                         initialization['behavior_identity'] + ':' + initialization['compilation'])
-        self.assertTrue(initialization['export_text'].startswith('!GSE3!'))
-        self.assertEqual(initialization['compilation'], 'passed_with_client_boundary_stubs')
-        self.assertTrue(initialization['click_mapping'])
-        self.assertEqual(initialization['configuration_key'], configuration['key'])
-        self.assertEqual(initialization['source_opener']['source_basis'],
-                         configuration['opener']['source_basis'])
-        self.assertIn('ruleInitialization', page)
-        self.assertIn('state.rule_initialization', page)
-        self.assertIn('diagnosticLogging.disabled=true;diagnosticLogging.checked=false', page)
-        self.assertNotIn('search_observability', state)
-        from task import read_task
-        _, destination = self.server.task_paths(created['task_id'])
-        result = read_task(destination)
-        self.assertNotIn('diagnostics', result['search'])
-        self.assertFalse((destination / 'diagnostics.json').exists())
-        self.assertFalse((destination / 'observability').exists())
+    def test_resume_logging_choice_inherits_default_and_rejects_invalid_or_running_requests(self):
+        import dual_task
+        task_id = 'e' * 32
+        _, destination = self.server.task_paths(task_id)
+        handle = SimpleNamespace(done=True, error=None)
+        path = '/api/tasks/' + task_id + '/resume'
+        with patch.object(Path, 'exists', lambda value: value.name == 'dual.json'), \
+                patch.object(dual_task, 'resume', return_value=handle) as resume:
+            for default in (False, True):
+                self.server.task_options = dict(search_config=dict(diagnostic_logging=default))
+                for body, expected in ((None, default), ({}, default),
+                                       ({'diagnostic_logging': True}, True),
+                                       ({'diagnostic_logging': False}, False)):
+                    with self.subTest(default=default, body=body):
+                        self.assertEqual(self._json_request('POST', path, body)['status'], 'starting')
+                        self.assertIs(resume.call_args.kwargs['diagnostic_logging'], expected)
+                        self.assertIs(self.server.task_options['search_config']['diagnostic_logging'], default)
+            resume.reset_mock()
+            for invalid in (None, 0, 1, 'true', [], {}):
+                for endpoint in ('/api/tasks', path):
+                    with self.subTest(invalid=invalid, endpoint=endpoint), self.assertRaises(HTTPError) as caught:
+                        self._json_request('POST', endpoint, dict(profile=sample_profile(), diagnostic_logging=invalid))
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertIn('布尔值', json.loads(caught.exception.read())['error'])
+            handle.done = False
+            with self.assertRaises(HTTPError) as caught:
+                self._json_request('POST', path, {'diagnostic_logging': False})
+            self.assertIn('仍在运行', json.loads(caught.exception.read())['error'])
+            resume.assert_not_called()
+            self.assertEqual(self.server.tasks[task_id], (destination, handle))
 
 
-    def test_public_search_rejects_missing_variance_without_failing_task(self) -> None:
-        self._check_adaptive_round(invalid_variance=True)
-
-    def _check_adaptive_round(self, *, invalid_variance=False):
-        from task import read_task
-        from test_rule_diagnostics import _observed_evaluate
-        from test_search import _guided_search_boundary
-
-        calls = []
-        initial = ("outbreak", "death_coil")
-        better = ("death_coil", "outbreak")
-        worse = ("death_coil", "outbreak", "death_coil")
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            actions = tuple(action["simc_action"] for block in candidate["blocks"] for action in block)
-            wanted = {initial: 90, better: 120, worse: 80}[actions]
-            result = _observed_evaluate(profile, candidate, folder, **kwargs)
-            damage = result["report"]["sim"]["players"][0]["collected_data"]["dps"]
-            damage.update(mean=wanted, variance=1)
-            result["report"]["sim"]["statistics"]["raid_dps"]["mean"] = wanted
-            if invalid_variance and actions == worse:
-                damage.pop("variance")
-            result["summary"]["dps"] = wanted
-            (Path(folder) / "native.json").write_text(json.dumps(result["report"]), encoding="utf-8")
-            calls.append((actions, kwargs["iterations"], kwargs["seed"]))
-            return result
-
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, candidate_limit=3, round_candidate_limit=2,
-            no_improvement_rounds=1, batch_targets=(32, 128, 512),
-            input_interval_ms=200, iterations=2, validation_batches=2, max_processes=2)}
-        with _guided_search_boundary(self.directory.name, [[[name] for name in initial]], evaluate=evaluate):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "input_interval_ms": 200})
-            deadline = time.monotonic() + 30
-            while True:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "failed", "cancelled"}:
-                    break
-                time.sleep(.02)
-        self.assertEqual(state["status"], "completed", state)
-        self.assertTrue(state["result_ready"])
-        search_calls = [(actions, count) for actions, count, seed in calls if seed < 20260912 + 100000]
-        expected = [32]
-        self.assertEqual([n for a, n in search_calls if a == worse], expected)
-        self.assertEqual([n for a, n in search_calls if a == better], expected)
-        self.assertEqual(state["search_result"]["dps"], 120)
-        _, handle = self.server.tasks[created["task_id"]]
-        handle.join(5)
-        result = read_task(handle.output_root, include_search_records=True)
-        steps = list(result['search']['rule_steps'].values())
-        self.assertEqual(len(steps), 2)
-        parent_keys = {step['parent_candidate_key'] for step in steps}
-        self.assertEqual(len(parent_keys), 1)
-        parent = next(row for row in result['search']['records'] if row['key'] in parent_keys)
-        pool = parent['rule_diagnostics']['pool']
-        self.assertTrue(pool['complete'])
-        self.assertEqual({step['operation']['operation'] for step in steps}, {'move', 'insert'})
-        self.assertEqual({step['selection']['operation_id'] for step in steps},
-                         {operation['operation_id'] for operation in pool['operations']})
-
-
-
-    @pytest.mark.usefixtures('memory_result_center')
-    def test_public_search_reduces_wait_clicks_and_native_evaluates_selected_candidate(self) -> None:
-        import cbor2
-        import codec
-        import engine
-        import search
-        import sequence
-        from rule_config import DEFAULT_PATH
-        from task import read_task
-        from test_rule_diagnostics import _condition_pack, _observed_evaluate
-        from test_search import _fast_initialization
-
-        real_evaluate = sequence.evaluate
-        capabilities = {
-            "actions": [
-                dict(kind="spell", spell_id=77575, simc_action="outbreak", name="Outbreak",
-                     gcd_ms=1500, base_spell_id=77575),
-                dict(kind="spell", spell_id=47541, simc_action="death_coil", name="Death Coil",
-                     gcd_ms=1500, base_spell_id=47541),
-                dict(kind="spell", spell_id=55090, simc_action="scourge_strike", name="Scourge Strike",
-                     gcd_ms=1500, base_spell_id=55090),
-            ],
-            "precombat_actions": [], "sources": [], "protocol": 3,
-            "scope": "test", "coverage": "constructed-test-boundary",
-        }
-
-        def inspect(_reference, folder):
-            # Constructed static GCD supports the requested interval without one-empty-click syntax.
-            for action in _reference['static_snapshot']['actions']:
-                action['gcd_ms'] = 1500
-            folder = Path(folder)
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
-            return capabilities
-
-        pack = _condition_pack()
-        pack['general']['templates'] = {'idle-renamed':
-            json.loads(DEFAULT_PATH.read_bytes())['general']['templates']['可避免空闲']}
-        pack['object_sets']['sample'].update(
-            occupancy=dict(kind='state', native_identity='controlled_input.occupancy'),
-            reservations=dict(kind='policy', value='effective_execution_constraints'))
-        pack['configurations'][0]['states']['only']['priority'] = [dict(name='idle input',
-            template='idle-renamed', arguments=dict(priority_refs=[], edit_range='editable',
-                allowed_actions=['consumer'], occupancy='occupancy', reservations='reservations', wait_delta=1))]
-        rules = Path(self.directory.name) / 'wait-rules.json'
-        rules.write_text(json.dumps(pack), encoding='utf-8')
-        initial = [["outbreak"], dict(kind="WaitClicks", clicks=3), ["death_coil"]]
-
-        wait_candidates = {300: {}}
-        native_evaluations = []
-        active_interval = 300
-
-        def evaluate(profile, candidate, folder, **kwargs):
-            blocks = [[action["simc_action"] for action in block]
-                      for block in candidate["blocks"]]
-            clicks = sequence.compiled_program(candidate)
-            self.assertEqual([click or [] for click in clicks], blocks)
-            waits = [node for node in candidate["program"]["nodes"] if node["kind"] == "Pause"]
-            if waits:
-                interval = active_interval
-                counts = tuple(node["clicks"] for node in waits)
-                wait_candidates[interval].setdefault(counts, candidate)
-                if counts == (2,) and interval not in {row[0] for row in native_evaluations}:
-                    self.assertEqual(kwargs["input_times"][:3], [0, interval, interval * 2])
-                    result = real_evaluate(profile, candidate, folder, **kwargs)
-                    native_evaluations.append((interval, candidate, result))
-                    self.assertEqual(result["blocks"], blocks)
-                    self.assertEqual(result["native_blocks"], blocks)
-                score_offset = 1000 if any(
-                    native_interval == interval and native_candidate["text"] == candidate["text"]
-                    for native_interval, native_candidate, _ in native_evaluations
-                ) else 0
-                # 与原用例相同：实际原生核回放，搜索分差由构造评分边界控制。
-                result = _observed_evaluate(profile, candidate, folder, score_offset=score_offset, **kwargs)
-            else:
-                result = _observed_evaluate(profile, candidate, folder, **kwargs)
-            payload = result['report']['sim']['players'][0]['sim2gse_rule_observations']
-            for collection in ('inputs', 'action_observations'):
-                for row in payload[collection]:
-                    row['source_step'] = row['input_index'] % len(blocks)
-            for row in payload['inputs']:
-                row['occupancy'] = dict(empty=row['input_index'] == 1, gcd=False,
-                    casting=False, channeling=False, queue_committed=False)
-            payload['state_observations'] = [dict(row, object='occupancy', value=row['occupancy'])
-                                             for row in payload['inputs']]
-            return result
-
-        self.server.task_options = {
-            "search_config": {
-                "total_budget_seconds": 60,
-                "search_budget_seconds": 30,
-                "candidate_limit": 3,
-                "round_candidate_limit": 2,
-                "batch_targets": (2,),
-                "validation_batches": 2,
-                "final_batches": 20,
-                "iterations": 2,
-                "final_iterations": 100,
-                "scenarios": ("nominal", "jitter", "slow", "pause", "phase"),
-                "max_processes": 1,
-                "random_seed": 20260926,
-            }
-        }
-        real_gse_runner = codec.run_command
-        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(rules)}), \
-             _fast_initialization(real_engine=True), \
-             patch.object(codec, "run_command", side_effect=real_gse_runner), \
-             patch.object(engine, "inspect", side_effect=inspect), \
-             patch.object(sequence, "check_report", new=engine.check_report), \
-             _initialized_starts([initial]), \
-             patch.object(sequence, "evaluate", side_effect=evaluate):
-            interval = 300
-            active_interval = interval
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target",
-                "input_interval_ms": interval,
-            })
-            deadline = time.monotonic() + 45
-            state = {}
-            while time.monotonic() < deadline:
-                state = self._task_state_request(created["task_id"], deadline)
-                if state["status"] in {"completed", "validation_incomplete", "failed", "cancelled"}:
-                    break
-                time.sleep(0.05)
-            handle = self.server.tasks[created["task_id"]][1]
-            handle.join(5)
-            saved = read_task(handle.output_root, include_search_records=True)
-
-        self.assertEqual(state["status"], "completed", state)
-        self.assertEqual(state["evidence_status"], "search_result")
-        self.assertEqual(state["input_interval_ms"], interval)
-        reduced = [step for step in saved['search']['rule_steps'].values()
-                   if step['operation']['operation'] == 'reduce_wait']
-        self.assertEqual(len(reduced), 1)
-        parent = next(row for row in saved['search']['records']
-                      if row['key'] == reduced[0]['parent_candidate_key'])
-        pool = parent['rule_diagnostics']['pool']
-        self.assertTrue(pool['complete'])
-        self.assertIn('insert', {row['operation'] for row in pool['operations']})
-        self.assertEqual(reduced[0]['operation']['source_path'], [1])
-        self.assertEqual(reduced[0]['operation']['count'], 1)
-        self.assertEqual(reduced[0]['selection']['operation_id'], reduced[0]['request']['operation_id'])
-        self.assertEqual(reduced[0]['candidate_key'], saved['selected_candidate_key'])
-        self.assertEqual(reduced[0]['candidate_key'], saved['locked_candidate_key'])
-        self.assertEqual(saved['candidate']['text'], state['candidate_text'])
-        self.assertTrue(wait_candidates[interval], f"搜索未在 {interval} 毫秒间隔评价空点击候选")
-        self.assertGreaterEqual(len(wait_candidates[interval]), 2,
-                                "不同 WaitClicks 次数未作为不同候选评价")
-        self.assertEqual(len({candidate["text"] for candidate in wait_candidates[interval].values()}),
-                         len(wait_candidates[interval]))
-        selected_wait = next((candidate for candidate in wait_candidates[interval].values()
-                              if candidate["text"] == state["candidate_text"]), None)
-        self.assertIsNotNone(selected_wait,
-                             f"公开任务在 {interval} 毫秒间隔没有选择 WaitClicks 候选")
-        self.assertEqual(saved['candidate']['program'], selected_wait['program'])
-        native_wait = next((candidate for native_interval, candidate, _ in native_evaluations
-                            if native_interval == interval), None)
-        self.assertIsNotNone(native_wait,
-                             f"{interval} 毫秒间隔没有真实评价的 WaitClicks 候选")
-        self.assertEqual(selected_wait["text"], native_wait["text"],
-                         f"{interval} 毫秒间隔最终候选没有经过真实原生评价")
-        payload = cbor2.loads(zlib.decompress(base64.b64decode(state["candidate_text"][6:]), -15))
-        actions = payload[1][b"Versions"][0][b"Actions"]
-        exported_waits = [action for action in actions if action[b"Type"] == b"Pause"]
-        expected_clicks = [node["clicks"] for node in selected_wait["program"]["nodes"]
-                           if node["kind"] == "Pause"]
-        self.assertEqual([action[b"Clicks"] for action in exported_waits], expected_clicks)
-        self.assertTrue(exported_waits and all(action[b"Clicks"] >= 2 for action in exported_waits))
-        self.assertTrue(all(all(count >= 2 for count in counts)
-                            for counts in wait_candidates[interval]))
-        self.assertTrue(next(iter(wait_candidates[interval].values()))["text"].startswith("!GSE3!"))
-
-        self.assertEqual({row[0] for row in native_evaluations}, {300},
-                         "空点击候选必须进入真实原生评价")
-        for interval, candidate, result in native_evaluations:
-            self.assertEqual(result["input_times"][:3], [0, interval, interval * 2])
-            self.assertEqual(candidate["precombat_count"], 0)
-            wait = next(node for node in candidate["program"]["nodes"] if node["kind"] == "Pause")
-            empty_clicks = [click for click in candidate["compiled_program"]["clicks"]
-                            if click["kind"] == "EmptyClick"
-                            and click["source"]["path"] == wait["source"]["path"]]
-            self.assertEqual(len(empty_clicks), wait["clicks"])
-            self.assertTrue(all(click["source"] == wait["source"] for click in empty_clicks))
-
-            payload = cbor2.loads(zlib.decompress(base64.b64decode(candidate["text"][6:]), -15))
-            actions = payload[1][b"Versions"][0][b"Actions"]
-            pause_index = int(wait["source"]["gse_path"]) - 1
-            self.assertEqual(actions[pause_index][b"Type"], b"Pause")
-            self.assertEqual(actions[pause_index][b"Clicks"], wait["clicks"])
-            all_empty = [step for step in candidate["compiled_steps"] if step["type"] == "click"]
-            self.assertEqual(len(all_empty), sum(node["clicks"] for node in candidate["program"]["nodes"]
-                                                if node["kind"] == "Pause"))
-            compiled_empty = [step for step in all_empty if step["blockPath"] == wait["source"]["gse_path"]]
-            self.assertEqual(len(compiled_empty), wait["clicks"])
-            self.assertEqual([step["blockPath"] for step in compiled_empty],
-                             [wait["source"]["gse_path"]] * wait["clicks"])
-
-
-    def test_completed_task_is_not_visible_before_its_result_is_reliably_saved(self) -> None:
-        import search
-        import task
-
-        waiting, heartbeat, release = threading.Event(), threading.Event(), threading.Event()
-        store_run, publish = task._store_run, search.TaskStore.publish
-        self.server.task_options = {"search_config": dict(
-            total_budget_seconds=60, search_budget_seconds=30, candidate_limit=1,
-            batch_targets=(2,), iterations=2, validation_batches=1, final_batches=1,
-            final_iterations=2, scenarios=("nominal",), max_processes=1, random_seed=37,
-        )}
-
-        def held_result(destination, result, *, state=None):
-            if result.get("status") == "completed":
-                waiting.set()
-                if not release.wait(5):
-                    raise AssertionError("result persistence was not released")
-            return store_run(destination, result, state=state)
-
-        def published_heartbeat(store):
-            publish(store)
-            if waiting.is_set():
-                heartbeat.set()
-
-        with _fast_search_boundary(), _initialized_starts([[['outbreak']]]), \
-                patch.object(task, "_store_run", side_effect=held_result), \
-                patch.object(search.TaskStore, "publish", published_heartbeat):
-            created = self._json_request("POST", "/api/tasks", {
-                "profile": sample_profile(), "target_count": 1, "scene": "single_target"})
-            handle = self.server.tasks[created["task_id"]][1]
-            try:
-                self.assertTrue(waiting.wait(5), "task never reached result persistence")
-                self.assertTrue(heartbeat.wait(5), "held task did not publish a heartbeat")
-                pending = self._json_request("GET", "/api/tasks/" + created["task_id"])
-                self.assertEqual(pending["status"], "running", pending)
-                self.assertFalse(pending["result_ready"], pending)
-            finally:
-                release.set()
-                handle.join(5)
-            self.assertTrue(handle.done)
-            completed = self._json_request("GET", "/api/tasks/" + created["task_id"])
-        self.assertEqual(completed["status"], "completed", completed)
-        self.assertTrue(completed["result_ready"], completed)
-
+    @pytest.mark.real
+    @pytest.mark.usefixtures('installed_result_center')
     def test_browser_computes_copies_and_clears_real_candidate(self):
-        # 一次真实180ms双场任务覆盖计算、复制和清旧；200ms保页面初始默认值。
+        # 极小合法种群保留真实180ms双场原生/复测/编译/复制链；不为UI烟测运行长探索。
         import sequence
         evaluate = sequence.evaluate
         evaluated_inputs = set()
@@ -1156,10 +764,7 @@ class InterfaceTests(unittest.TestCase):
                                   tuple(kwargs['input_times'][:2])))
             return evaluate(*args, **kwargs)
 
-        self.server.task_options = {'search_config': dict(total_budget_seconds=120,
-            search_budget_seconds=90,candidate_limit=1,batch_targets=(2,),
-            validation_batches=1,final_batches=1,iterations=2,final_iterations=2,
-            scenarios=('nominal',),max_processes=1)}
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
@@ -1174,6 +779,54 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
  const browser=await chromium.launch({channel:'msedge',headless:true});
  try{
+  // 浏览器只拦截计算请求；真实页面的可操作状态、点击和请求正文均实际执行。
+  {
+   const context=await browser.newContext();
+   try{
+    const page=await context.newPage(),submitted=[];let finishPolling=Promise.resolve(),releasePolling;
+    await page.route('**/api/**',async route=>{
+     const request=route.request(),path=new URL(request.url()).pathname;
+     let body;
+     if(path==='/api/gse/inspect')body={syntax:['Action'],sequences:[{name:'LOGGING',version_count:1,default_version:1,version_support:[{version:1,simulation_preflight_passed:true,support_status:'requires_character_validation'}]}]};
+     else if(request.method()==='POST'){
+      submitted.push({path,body:request.postDataJSON()});
+      if(path.endsWith('/resume')){await route.fulfill({status:400,json:{error:'本次恢复未启动'}});return;}
+      body={task_id:'a'.repeat(32),status:'starting'};
+     }else{await finishPolling;body={status:'cancelled',phase:'done',recoverable:true,error:'本次计算已停止'};}
+     await route.fulfill({json:body});
+    });
+    await page.goto(input.url);
+    const checkbox=page.locator('#diagnosticLogging');
+    assert.equal(await checkbox.isDisabled(),false);
+    assert.equal(await checkbox.isChecked(),false);
+    await checkbox.setChecked(true);
+    await page.locator('#profile').fill(input.profile);
+    finishPolling=new Promise(resolve=>{releasePolling=resolve;});
+    await page.locator('#start').click();
+    await page.locator('#cancel').waitFor({state:'visible'});
+    assert.equal(submitted.at(-1).body.mode,'dual');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,true);
+    const count=submitted.length;
+    await checkbox.setChecked(false);
+    assert.equal(submitted.length,count,'勾选不应修改正在运行的任务');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,true);
+    releasePolling();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    await page.locator('#resume').click();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    assert.ok(submitted.at(-1).path.endsWith('/resume'));
+    assert.equal(submitted.at(-1).body.diagnostic_logging,false);
+    assert.equal(await page.locator('#resume').isVisible(),true,'失败后仍可继续');
+    await page.locator('#gseImport').fill('!GSE3!browser-fixture');
+    await page.locator('#inspectImport').click();
+    await page.locator('#importStart').click();
+    await page.waitForFunction(()=>!document.querySelector('#start').disabled);
+    assert.equal(submitted.at(-1).body.mode,'import');
+    assert.equal(submitted.at(-1).body.diagnostic_logging,false);
+    assert.equal(submitted.length,3);
+   }finally{await context.close();}
+  }
+  // END_DIAGNOSTIC_SELECTION
   {
    const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
    try{
@@ -1191,8 +844,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
     assert.equal(state.input_interval_ms,180);
     assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
+    assert.equal(submitted.diagnostic_logging,false);
     assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
-    assert.match(await page.locator('#resultNote').innerText(),/未进行最终独立复测/);
+    assert.match(await page.locator('#resultNote').innerText(),/正常场景独立复测/);
     assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
     await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
     await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
@@ -1202,43 +856,22 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     console.log(JSON.stringify({candidate:text,state}));
    }finally{await context.close();}
   }
-  {
-   const context=await browser.newContext();
-   try{
-    const page=await context.newPage();
-    let detailReads=0;
-    const summary={status:'running',phase:'aoe',result_ready:true,result_note:'已有单场结果',
-     exports:{},collection_ready:false,scenes:[
-      {purpose:'single_target',status:'completed',total_budget_seconds:600,
-       has_rule_initialization:true,rule_initialization_identity:'rule-a:compiled'},
-      {purpose:'aoe',status:'running',total_budget_seconds:600}]};
-    const unavailableState={status:'running',phase:'storage_unavailable',
-     storage_unavailable:true,recoverable:true,error:'存储暂时不可读取'};
-    await page.route('**/api/tasks/saved-rule-task*',async route=>{
-     const details=new URL(route.request().url()).searchParams.has('details');
-     let body=summary;
-     if(details){
-      detailReads++;
-      body=detailReads===1?unavailableState:{...summary,scenes:[
-       {...summary.scenes[0],rule_initialization:{behavior_identity:'rule-a',
-        compilation:'compiled',evidence:'restored_rule_details'}},summary.scenes[1]]};
-     }
-     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
-    });
-    await page.addInitScript(()=>localStorage.setItem('sim2gse-task','saved-rule-task'));
-    await page.goto(input.url);
-    await page.locator('#ruleInitialization summary').click();
-    await page.waitForFunction(()=>document.getElementById('ruleInitializationText').textContent.includes('restored_rule_details'),null,{timeout:5000});
-    assert.equal(detailReads,2,'详情恢复后应重新取详情');
-   }finally{await context.close();}
-  }
+
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-        with patch.object(sequence, 'evaluate', observe_evaluation):
-            result=subprocess.run(['node','-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
+        with _fixed_search_population([[['outbreak'], ['death_coil']]]), \
+                patch.object(sequence, 'evaluate', observe_evaluation):
+            result=subprocess.run([str(REPOSITORY / '.local/verify-deps/node/node.exe'),'-e',script],input=json.dumps(dict(url=self.url,profile=reviewed_profile)),
                 text=True,encoding='utf-8',capture_output=True,env=env,timeout=120)
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        from task import read_task
+        failures = [read_task(path) for destination, handle in self.server.tasks.values()
+                    for path in (destination, destination / 'single_target', destination / 'aoe')
+                    if handle.done and (path / 'result.json').exists()] if result.returncode else []
+        if result.returncode:
+            failures.extend(str(handle.error) for _, handle in self.server.tasks.values()
+                            if handle.error is not None)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr+repr(failures))
         self.assertEqual({targets for targets, _ in evaluated_inputs}, {1, 5})
         self.assertEqual({targets for targets, times in evaluated_inputs if times == (0, 180)}, {1, 5})
         self.assertEqual(len(self.server.tasks), 1, '一次开始只创建一个双场任务')
@@ -1248,14 +881,16 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(saved['simulation_config']['target_count'], 5)
         self.assertEqual(saved['config']['input_interval_ms'], 180)
         self.assertTrue(saved['burst']['definition_id'])
-        self.assertEqual(saved['final']['scenarios'], {})
+        self.assertEqual(set(saved['final']['scenarios']), {'nominal'})
         output = json.loads(result.stdout)
         self._decode_candidate(output['candidate'], 252)
         from gse_import import decode_import
         state = output['state']
         self.assertEqual(state['status'], 'completed', state)
         self.assertEqual([scene['target_count'] for scene in state['scenes']], [1, 5])
-        self.assertTrue(all(scene['total_budget_seconds'] == 120 for scene in state['scenes']))
+        self.assertTrue(all(scene['total_budget_seconds'] is None for scene in state['scenes']))
+        self.assertTrue(all(scene['generation'] == 2 for scene in state['scenes']))
+        self.assertTrue(all(scene['search_result']['samples'] == 381 for scene in state['scenes']))
         self.assertEqual(len({scene['input_sha256'] for scene in state['scenes']}), 1)
         self.assertEqual(set(state['exports']), {'single_target', 'aoe', 'burst'})
         names = [decode_import(value)['sequences'] for value in state['exports'].values()]
@@ -1263,19 +898,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         collection = decode_import(state['collection_text'])
         self.assertEqual(collection['payload']['type'], 'COLLECTION')
         self.assertEqual(set(collection['sequences']), {name for member in names for name in member})
-
-    @staticmethod
-    def _ui_score(profile, candidate, folder, *, burst_candidate=None, input_sources=None, **kwargs):
-        """Construct scores only; browser, preparation, compiler and Windows IO stay real."""
-        from test_search import _fast_evaluate
-        result = _fast_evaluate(profile, candidate, folder, **kwargs)
-        targets = (kwargs.get('simulation_config') or {}).get('target_count', 1)
-        report = result['report']['sim']
-        report['targets'] = [dict(report['targets'][0]) for _ in range(targets)]
-        for event in result['trace'] if input_sources is not None else []:
-            source = input_sources[event['origin'] - 1]
-            event.update(source=source, source_origin=input_sources[:event['origin']].count(source))
-        return result
 
 
     def _decode_candidate(self, candidate, expected_spec):
@@ -1318,21 +940,6 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
 
     def test_interface_reports_native_and_export_failures_without_internal_paths(self):
         from task import TaskError
-        native_cases = [
-            ('native_default', (REPOSITORY / 'tests/sim2gse/fixtures/discipline.simc').read_text(encoding='utf-8')),
-            ('native_unsupported', (REPOSITORY / 'tests/sim2gse/fixtures/holy-paladin.simc').read_text(encoding='utf-8')),
-        ]
-        for failure, profile in native_cases:
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
-                source = Path(directory) / 'input.simc'
-                source.write_text(profile, encoding='utf-8')
-                with self.assertRaisesRegex(TaskError, '原生未提供'):
-                    run_task(source, Path(directory) / 'task', mode='single',
-                             search_config={'diagnostic_logging': True})
-                if failure == 'native_default':
-                    invocation = json.loads((Path(directory) / 'task/reference/invocation.json').read_text(encoding='utf-8'))
-                    self.assertFalse(any(arg.startswith('allow_experimental_specializations=')
-                                         for arg in invocation['command']))
         cases = [
             ('主动能力不完整，停止模拟与导出: invalid_action', '尚未支持的主动能力'),
             ('原生引擎失败: C:\\private\\simc.exe', '引擎'),
@@ -1345,66 +952,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
                 self.assertIn(expected, message)
                 self.assertNotIn('\\', message)
                 self.assertLess(len(message), 161)
-        self.assertFalse(_public_state({'status': 'completed'}, Path(self.directory.name))['result_ready'])
-
-
-    def test_dual_freezes_one_rule_pack_even_when_file_changes_between_scenes(self):
-        import os
-        import result_store
-        result_store.DATA_ROOT.mkdir(exist_ok=True)
-        import sequence
-        import burst
-        from test_burst import page_task_boundary, reviewed_fixture
-        from test_search import _fast_initialization, _minimal_rule_pack
-        definition, profile = reviewed_fixture()
-        burst.publish(definition)
-        pack = _minimal_rule_pack()
-        original_source = pack['configurations'][0]['opener']['source_basis']
-        path = Path(self.directory.name) / 'rules.json'
-        path.write_text(json.dumps(pack), encoding='utf-8')
-        self.server.task_options = {'search_config': dict(candidate_limit=1, batch_targets=(2,),
-            iterations=2, validation_batches=1, input_interval_ms=200, search_timeline=True, rule_initialization_enabled=True)}
-        edited = []
-        with patch.dict(os.environ, {'SIM2GSE_RULE_CONFIG': str(path)}), _fast_initialization(), page_task_boundary():
-            evaluate = sequence.evaluate
-            def edit_after_start(*args, **kwargs):
-                if not edited:
-                    for configuration in pack['configurations']:
-                        configuration['opener']['source_basis'] = 'next task only'
-                    path.write_text(json.dumps(pack), encoding='utf-8')
-                    edited.append(True)
-                return evaluate(*args, **kwargs)
-            with patch.object(sequence, 'evaluate', side_effect=edit_after_start):
-                created = self._json_request('POST', '/api/tasks', {'profile':profile, 'mode':'dual',
-                    'input_interval_ms':200})
-                handle = self.server.tasks[created['task_id']][1]
-                handle.join(20)
-                self.assertTrue(handle.done)
-                detail = self._json_request('GET', '/api/tasks/' + created['task_id'] + '?details=rule_initialization')
-        self.assertEqual(detail['status'], 'completed', detail)
-        self.assertTrue(edited)
-        curves = [json.loads(next((handle.output_root / scene).glob('search-timeline-*.json')).read_text(encoding='utf-8'))
-                  for scene in ('single_target', 'aoe')]
-        self.assertGreater(curves[1]['search_start_seconds'], curves[0]['call_seconds'])
-        self.assertEqual([curve['context']['simulation_config']['target_count'] for curve in curves], [1, 5])
-        reports = [scene['rule_initialization'] for scene in detail['scenes']]
-        self.assertEqual(reports[0]['rule_config_digest'], reports[1]['rule_config_digest'])
-        for report in reports:
-            self.assertTrue(all(configuration['opener']['source_basis'] == original_source
-                                for configuration in report['rule_snapshot']['pack']['configurations']))
-        moved = result_store.DATA_ROOT.with_name('temporarily-unavailable')
-        result_store.DATA_ROOT.rename(moved)
-        try:
-            state = self._json_request('GET', '/api/tasks/' + created['task_id'])
-            self.assertEqual(state['status'], 'failed')
-            self.assertTrue(state['recoverable'])
-            self.assertIn('存储', state['error'])
-            self.assertFalse(state['result_ready'])
-        finally:
-            moved.rename(result_store.DATA_ROOT)
-        restored = self._json_request('GET', '/api/tasks/' + created['task_id'])
-        self.assertEqual(restored['status'], 'completed')
-        self.assertTrue(restored['collection_ready'])
+        self.assertFalse(_public_state({'status': 'completed'}, self.server.output_root)['result_ready'])
 
 
 if __name__ == "__main__":

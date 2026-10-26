@@ -1,8 +1,7 @@
-"""多起点局部搜索、分批统计和任务缓存。"""
+"""GA共用的候选变异、可靠评价和任务缓存；旧完整成果只读验真。"""
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import os
 import copy
@@ -14,44 +13,34 @@ import math
 from pathlib import Path
 import random
 import sqlite3
-import statistics
 import time
 
 from runtime import replace_file, diagnostic_start, diagnostic_finish, diagnostic_summary, diagnostic_candidate
-from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
+from runtime import BudgetExceeded, TaskCancelled
 
 
+# Shared preparation / historical evidence identities, not executable search selectors.
 SEARCH_ALGORITHM = "independent-search-modes-v2"
 PREVIOUS_SEARCH_ALGORITHM = "rule-single-step-coba-linucb-v1"
 STATS_VERSION = "paired-bootstrap-v1"
 _TASK_COUNTERS = ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates')
-SCREENING_ERROR_MULTIPLIER = 1.96
 DEFAULT_SCENARIOS = ("nominal", "jitter", "slow", "pause", "phase")
 DEFAULT_CONFIG = {
-    "total_budget_seconds": 600.0,
-    "search_budget_seconds": 600.0,
-    "candidate_limit": 1000,
-    "round_candidate_limit": 16,
-    "no_improvement_rounds": 5,
-    "batch_targets": (32, 128, 256),
-    "validation_batches": 4,
-    "final_batches": 20,
     "iterations": 100,
-    "final_iterations": 100,
     "max_processes": 2,
-    "scenarios": DEFAULT_SCENARIOS,
     "random_seed": 20260912,
-    "trace_search": False,
-    "rule_initialization_enabled": False,
-    "adaptive_selector_enabled": False,
     "search_timeline": False,
-    "rule_diagnostics_policy": "on_demand",
     "diagnostic_logging": False,
     "diagnostics": "off",
     "search_observability": "off",
     "input_interval_ms": 300,
     "reset_events": (),
 }
+# Only historical receipt readers may fill the original frozen defaults.
+LEGACY_DEFAULT_CONFIG = dict(DEFAULT_CONFIG, total_budget_seconds=600.0, search_budget_seconds=600.0,
+    candidate_limit=1000, round_candidate_limit=16, no_improvement_rounds=5,
+    batch_targets=(32, 128, 256), validation_batches=4, final_batches=20,
+    final_iterations=100, trace_search=False, scenarios=DEFAULT_SCENARIOS)
 
 
 def verify_behavior_identity_state(state):
@@ -65,39 +54,39 @@ def verify_behavior_identity_state(state):
 
 
 def config_for(values=None, *, training=False, legacy=False):
+    from simulation_config import reject_removed_search_settings
+    if not legacy:
+        reject_removed_search_settings(values or {})
     if type(training) is not bool:
         raise ValueError('训练配置开关必须为布尔值')
-    config = dict(DEFAULT_CONFIG)
-    legacy_policy = legacy and 'rule_diagnostics_policy' not in (values or {})
-    if legacy_policy:
-        config['rule_diagnostics_policy'] = 'eager'
+    config = dict(LEGACY_DEFAULT_CONFIG if legacy else DEFAULT_CONFIG)
     if values:
-        if set(values)-set(config):
+        if set(values)-set(config)-({'rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy'} if legacy else set()):
             raise ValueError('未知搜索配置')
         config.update(values)
-        if 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
+        if legacy and 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
             config['search_budget_seconds'] = config['total_budget_seconds']
-    for key, maximum in (('total_budget_seconds',600),('search_budget_seconds',600)):
-        value=config[key]
-        if type(value) not in (int,float) or not math.isfinite(value) or not 0 < value <= maximum:
-            raise ValueError('计算预算必须在已确认上限内')
-    if config['search_budget_seconds'] > config['total_budget_seconds']:
-        raise ValueError('搜索预算不能超过总预算')
-    for key, maximum in (('candidate_limit',1000),('round_candidate_limit',16),('no_improvement_rounds',5),
-                         ('max_processes',DEFAULT_CONFIG['round_candidate_limit'] if training else 2),('validation_batches',20),('final_batches',20),
-                         ('iterations',512),('final_iterations',100),('random_seed',1000000000)):
+    limits = [('max_processes', 16 if training else 2), ('iterations', 512), ('random_seed', 1000000000)]
+    if legacy:
+        for key in ('total_budget_seconds', 'search_budget_seconds'):
+            value = config[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 600:
+                raise ValueError('历史计算预算必须在原上限内')
+        if config['search_budget_seconds'] > config['total_budget_seconds']:
+            raise ValueError('历史搜索预算不能超过总预算')
+        limits += [('candidate_limit', 1000), ('round_candidate_limit', 16), ('no_improvement_rounds', 5),
+                   ('validation_batches', 20), ('final_batches', 20), ('final_iterations', 100)]
+    for key, maximum in limits:
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
     if type(config['input_interval_ms']) is not int or not 50 <= config['input_interval_ms'] <= 2000:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
     if config['diagnostics'] not in {'off', 'summary', 'full'}:
         raise ValueError('诊断模式必须是 off、summary 或 full')
-    if config['rule_diagnostics_policy'] not in ('eager', 'on_demand'):
-        raise ValueError('规则诊断策略必须是 eager 或 on_demand')
     if (not isinstance(config['search_observability'], str) or
             config['search_observability'] not in ('off', 'summary', 'full')):
         raise ValueError('搜索记录模式必须是 off、summary 或 full')
-    for key in ('rule_initialization_enabled', 'adaptive_selector_enabled', 'search_timeline'):
+    for key in (('search_timeline', 'trace_search') if legacy else ('search_timeline',)):
         if type(config[key]) is not bool:
             raise ValueError(key + ' 必须为布尔值')
     if type(config['diagnostic_logging']) is not bool:
@@ -105,17 +94,18 @@ def config_for(values=None, *, training=False, legacy=False):
     if not config['diagnostic_logging']:
         config['diagnostics'] = 'off'
         config['search_observability'] = 'off'
-    config['batch_targets']=tuple(config['batch_targets'])
-    previous=0
-    for value in config['batch_targets']:
-        if type(value) is not int or value-previous < 2 or value>512:
-            raise ValueError('独立加测批次必须至少请求两场，累计不超过512场')
-        previous=value
-    if not config['batch_targets']:
-        raise ValueError('缺少搜索批次')
-    config['scenarios']=tuple(config['scenarios'])
-    if not config['scenarios'] or len(set(config['scenarios']))!=len(config['scenarios']) or set(config['scenarios'])-set(DEFAULT_SCENARIOS):
-        raise ValueError('最终复测情景无效')
+    if legacy:
+        config['batch_targets'] = tuple(config['batch_targets'])
+        previous = 0
+        for value in config['batch_targets']:
+            if type(value) is not int or value - previous < 2 or value > 512:
+                raise ValueError('历史独立加测批次必须至少请求两场，累计不超过512场')
+            previous = value
+        if not config['batch_targets']:
+            raise ValueError('缺少历史搜索批次')
+        config['scenarios'] = tuple(config['scenarios'])
+        if not config['scenarios'] or len(set(config['scenarios'])) != len(config['scenarios']) or set(config['scenarios']) - set(DEFAULT_SCENARIOS):
+            raise ValueError('历史最终复测情景无效')
     events = config['reset_events']
     if not isinstance(events, (list, tuple)) or any(
             not isinstance(row, (list, tuple)) or len(row) != 2 or
@@ -125,12 +115,11 @@ def config_for(values=None, *, training=False, legacy=False):
         raise ValueError('/castsequence Reset 事件配置无效')
     config['reset_events'] = tuple(tuple(row) for row in events)
     if any(kind in {'shift', 'ctrl', 'alt'} for _, kind in config['reset_events']):
-        if (config['scenarios'] != ('nominal',) or
+        scenarios = config['scenarios'] if legacy else DEFAULT_SCENARIOS if training else ('nominal',)
+        if (scenarios != ('nominal',) or
                 any(ms % config['input_interval_ms'] for ms, kind in config['reset_events']
                     if kind in {'shift', 'ctrl', 'alt'})):
             raise ValueError('修饰键 Reset 事件只支持与 nominal 情景点击对齐')
-    if legacy_policy:
-        config.pop('rule_diagnostics_policy')
     return config
 
 
@@ -158,20 +147,8 @@ def _unique_names(names, available):
 
 
 def initial_programs(capabilities, reference, seed=20260912, *, input_interval_ms=300,
-                     target_count=1, burst=None, initialization=None, rule_snapshot=None, scene=None,
-                     rule_initialization_enabled=False):
+                     target_count=1, burst=None, scene=None):
     """从四个来源产生稳定合法的起点，而不读派生或宠物动作。"""
-    rule_start = None
-    if rule_initialization_enabled:
-        from rule_initialization import context, generate
-        _, binding = context(capabilities, reference, target_count=target_count,
-                             scene=scene, rule_snapshot=rule_snapshot)
-        from rule_config import load
-        rule_snapshot = rule_snapshot or load()
-        rule_start = generate(capabilities, reference, binding=binding, input_interval_ms=input_interval_ms,
-                              target_count=target_count, burst=burst, rule_snapshot=rule_snapshot)
-        if initialization is not None:
-            initialization.update(rule_start)
     baseline_actions = capabilities.get('baseline_actions', capabilities['actions'])
     actions = [a["simc_action"] for a in baseline_actions]
     available = set(actions)
@@ -186,10 +163,7 @@ def initial_programs(capabilities, reference, seed=20260912, *, input_interval_m
         if names:
             starts.append([[name] for name in names])
 
-    if rule_start is not None:
-        starts.append(rule_start['program'])  # 仅替换均匀来源。
-    else:
-        add(actions)
+    add(actions)
     frequency = []
     for row in reference.get("action_sequence", []):
         if row.get("queue_failed"):
@@ -239,8 +213,8 @@ def _copy_program(program):
 
 
 def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observation=None,
-           excluded_programs=()):
-    """执行动作块、顺序 Loop 或 WaitClicks 变异。"""
+           excluded_programs=(), feedback_getter=None):
+    """执行动作块、顺序 Loop 或 WaitClicks 变异；按需取值须返回非空反馈字典。"""
     source = _copy_program(program)
     available = [a["simc_action"] for a in capabilities["actions"]]
     if not source or not available:
@@ -295,7 +269,9 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         except ValueError:
             return False
 
-    if operation != "loop" and feedback and rng.random() < 0.5:
+    if operation != "loop" and (feedback or feedback_getter is not None) and rng.random() < 0.5:
+        if feedback_getter is not None:
+            feedback = feedback_getter()
         targets = [row['source_position'] for row in feedback.get('positions', [])
                    if row.get('unresolved_inputs', 0) > 0 and not row.get('ambiguous')
                    and row.get('source_position') is not None]
@@ -551,49 +527,6 @@ def input_times(scenario, seed=0, interval_ms=300):
     raise ValueError(f"未知输入情景: {scenario}")
 
 
-def _percentile(values, fraction):
-    if not values:
-        return None
-    values = sorted(values)
-    position = (len(values) - 1) * fraction
-    low = math.floor(position)
-    high = math.ceil(position)
-    if low == high:
-        return values[low]
-    return values[low] + (values[high] - values[low]) * (position - low)
-
-
-def paired_ci(candidate, control, seed=20260912, samples=2000):
-    differences = [a - b for a, b in zip(candidate, control)]
-    if not differences:
-        return None
-    if len(differences) < 2:
-        return None
-    rng = random.Random(seed)
-    means = [statistics.mean(rng.choices(differences, k=len(differences))) for _ in range(samples)]
-    return [_percentile(means, 0.025), _percentile(means, 0.975)]
-
-
-def summarize_pairs(candidate_rows, control_rows, seed=20260912):
-    candidate = [float(row["dps"]) for row in candidate_rows]
-    control = [float(row["dps"]) for row in control_rows]
-    differences = [a - b for a, b in zip(candidate, control)]
-    mean_candidate = statistics.mean(candidate) if candidate else None
-    mean_control = statistics.mean(control) if control else None
-    difference = statistics.mean(differences) if differences else None
-    ci = paired_ci(candidate, control, seed) if differences else None
-    return {
-        "candidate_mean_dps": mean_candidate,
-        "control_mean_dps": mean_control,
-        "mean_difference": difference,
-        "relative_gain": (mean_candidate / mean_control - 1) if mean_candidate is not None and mean_control else None,
-        "ci95": ci,
-        "status": "improvement_confirmed" if ci and ci[0] > 0 else "not_proven_better",
-        "batch_count": len(differences),
-        "method": STATS_VERSION,
-    }
-
-
 def _new_search_observability(mode):
     return {
         "mode": mode,
@@ -608,10 +541,6 @@ def _new_search_observability(mode):
             "duplicates": 0,
             "score_started": 0,
             "score_completed": 0,
-            "route_checks": 0,
-            "route_promotions": 0,
-            "global_checks": 0,
-            "global_promotions": 0,
             "invalid_reasons": {},
             "duplicate_reasons": {},
             "sampled_mutations": {},
@@ -626,7 +555,7 @@ def _new_search_observability(mode):
 def _export_search_observability(value, *, include_details=True):
     summary = dict(value["summary"])
     summary["generated_events"] = (summary["initial_candidates"] +
-                                   summary["mutation_attempts"] + summary.get('rule_steps', 0))
+                                   summary["mutation_attempts"])
     summary["resolved_events"] = sum(summary["outcomes"].values())
     summary["pending_events"] = summary["generated_events"] - summary["resolved_events"]
     summary["positions"] = sorted(
@@ -636,9 +565,44 @@ def _export_search_observability(value, *, include_details=True):
                          row["action_position"] or 0, row["action"]),
     )
     exported = {"mode": value["mode"], "summary": summary}
+    if value.get('algorithm'):
+        exported['algorithm'] = value['algorithm']
     if value["mode"] == "full" and include_details:
         exported["details"] = value["details"]
     return exported
+
+
+def _observe_ga(store, kind, **values):
+    """Observe actual GA work only; never draw randomness or request extra scores."""
+    with store.lock:
+        if not store.diagnostic_logging or store.state['config']['search_observability'] == 'off':
+            return
+        observation = store.state.get('search_observability')
+        if not observation:
+            return
+        summary = observation['summary']
+        if kind in ('initial', 'mutation'):
+            field = 'initial_candidates' if kind == 'initial' else 'mutation_attempts'
+            summary[field] += 1
+            summary['outcomes']['observed'] = summary['outcomes'].get('observed', 0) + 1
+        if kind == 'mutation':
+            for field, name in (('sampled_mutations', 'sampled_mutation'), ('actual_mutations', 'actual_mutation')):
+                method = values.get(name) or 'no_change'
+                summary[field][method] = summary[field].get(method, 0) + 1
+            method = summary['methods'].setdefault(values.get('actual_mutation') or 'no_change', dict(attempts=0))
+            method['attempts'] += 1
+        if kind == 'coarse_score':
+            summary['legal_candidates'] += 1
+            summary['score_started'] += 1
+            summary['score_completed'] += 1
+        if values.get('illegal_reason'):
+            summary['invalid_candidates'] += 1
+            reason = values['illegal_reason']
+            summary['invalid_reasons'][reason] = summary['invalid_reasons'].get(reason, 0) + 1
+        event = dict(event_id=observation['next_event_id'], kind=kind, **values)
+        observation['next_event_id'] += 1
+        if observation['mode'] == 'full':
+            observation['details'].append(event)
 
 
 def _position_observations(candidate, candidate_identity, trace):
@@ -778,11 +742,23 @@ def _parent_positions(program, capabilities, positions):
 
 
 def _score_variance(report, character):
-    from engine import damage_statistics, CandidateError
+    from engine import damage_statistics, CandidateScoreError
     variance = damage_statistics(report, character).get('variance')
     if type(variance) not in (int, float) or not math.isfinite(variance) or variance < 0:
-        raise CandidateError('伤害方差无效')
+        raise CandidateScoreError('伤害方差无效')
     return variance
+
+
+def _coarse_score_failure(state, identity):
+    """Only two explicitly classified score-data failures can reject a new candidate."""
+    attempt = digest(dict(candidate=identity, stage='search', index=0))
+    count = state.get('training_failures', {}).get(attempt, 0)
+    causes = state.get('training_failure_causes', {}).get(attempt, [])
+    if (type(count) is not int or count != 2 or len(causes) != count
+            or any(cause.get('kind') != 'candidate_score' or not cause.get('reason') for cause in causes)):
+        return None  # Unknown old or mixed process failures must remain fail-closed.
+    return dict(attempt_key=attempt, attempts=count, failures=copy.deepcopy(causes),
+                reason=causes[-1]['reason'], condition=state.get('condition'))
 
 
 def _checkpoint_copy(value):
@@ -793,24 +769,6 @@ def _checkpoint_copy(value):
     if isinstance(value, tuple):
         return tuple(_checkpoint_copy(item) for item in value)
     return value
-
-
-def _checkpoint_diagnostic_reference(record):
-    """Project only an equivalent top-level copy; keep its scored evidence locally."""
-    diagnostic = record.get('rule_diagnostics')
-    for source in ('batches', 'score_batches', 'diagnostic_batches'):
-        rows = record.get(source)
-        if (isinstance(diagnostic, dict) and all(isinstance(diagnostic.get(key), str) and diagnostic[key]
-                for key in ('version', 'parent_identity')) and isinstance(diagnostic.get('evidence'), dict)
-                and isinstance(rows, list) and rows and isinstance(rows[0], dict)
-                and rows[0].get('rule_diagnostics') is diagnostic):
-            projected = dict(record)
-            del projected['rule_diagnostics']
-            projected['rule_diagnostics_ref'] = dict(version=1, source=source,
-                diagnostic_version=diagnostic['version'], parent_identity=diagnostic['parent_identity'],
-                evidence=diagnostic['evidence'])
-            return projected
-    return record
 
 
 def _restore_checkpoint_diagnostics(state):
@@ -865,7 +823,8 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
         raise ValueError('缓存规则观察请求身份不符')
     if saved.get('source_scoring_batch_key') != request.get('source_scoring_batch_key'):
         raise ValueError('缓存诊断来源批次身份不符')
-    summary = check_report(report, character, request['iterations'], simulation_config=simulation_config)
+    summary = check_report(report, character, request['iterations'], simulation_config=simulation_config,
+                           **(dict(allow_zero=True) if request.get('allow_zero') else {}))
     if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
             or _score_variance(report, character) != cached['variance']
             or any(saved[field] != cached[field] for field in ('dps', 'samples', 'variance'))):
@@ -874,24 +833,39 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
 
 class TaskStore:
     """任务检查点与成功批次；锁保护心跳与主线程共用的事务。"""
-    def __init__(self, destination, *, lock=None):
+    def __init__(self, destination, *, lock=None, connection=None,
+                 reusable_database=None, report_locations=None):
+        # TaskStore owns and closes supplied connections too. Callers sharing a
+        # connection across threads must create it with check_same_thread=False.
         self.lock = lock or threading.RLock()
         with self.lock:
             try:
-                self._initialize(destination)
+                self._initialize(destination, connection=connection,
+                                 reusable_database=reusable_database,
+                                 report_locations=report_locations)
             except BaseException:
                 if hasattr(self, 'db'):
                     self.db.close()
                 raise
 
-    def _initialize(self, destination):
+    def _initialize(self, destination, *, connection=None, reusable_database=None,
+                    report_locations=None):
         self.destination = Path(destination)
-        self.db = sqlite3.connect(self.destination / 'task.sqlite3', check_same_thread=False)
-        self.db.execute('PRAGMA journal_mode=WAL')
-        self.db.execute('PRAGMA synchronous=FULL')
-        self.db.execute('ATTACH DATABASE ? AS shared',(str(self.destination.parent/'cache.sqlite3'),))
-        self.db.execute('PRAGMA shared.journal_mode=WAL')
-        self.db.execute('PRAGMA shared.synchronous=FULL')
+        self.db = connection if connection is not None else sqlite3.connect(
+            self.destination / 'task.sqlite3', check_same_thread=False)
+        if connection is None:
+            self.db.execute('PRAGMA journal_mode=WAL')
+            self.db.execute('PRAGMA synchronous=FULL')
+        if reusable_database == ':memory:':
+            # SQLite authorizes ATTACH before bound parameters are available.
+            self.db.execute("ATTACH DATABASE ':memory:' AS shared")
+        else:
+            self.db.execute('ATTACH DATABASE ? AS shared', (
+                reusable_database if reusable_database is not None else
+                str(self.destination.parent/'cache.sqlite3'),))
+        if reusable_database is None:
+            self.db.execute('PRAGMA shared.journal_mode=WAL')
+            self.db.execute('PRAGMA shared.synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS shared.reusable (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS state_fields (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
@@ -916,8 +890,10 @@ class TaskStore:
         self.verified_batches = {}
         self.report_buffer = []
         self.unsaved_batches = {}
-        from result_store import DATA_ROOT, ReportLocations
-        self.report_locations = ReportLocations(DATA_ROOT)
+        if report_locations is None:
+            from result_store import DATA_ROOT, ReportLocations
+            report_locations = ReportLocations(DATA_ROOT)
+        self.report_locations = report_locations
         self.persisted_batches = self.db.execute(
             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
         self.db.commit()
@@ -998,8 +974,6 @@ class TaskStore:
                 del self.saved_fields[key]
             for key in changed_fields:
                 value = self.state[key]
-                if key == 'pending':
-                    value = [_checkpoint_diagnostic_reference(record) for record in value]
                 previous = self.saved_fields.get(key)
                 if previous is None or previous[0] != value:
                     payload = _json(value)
@@ -1012,7 +986,6 @@ class TaskStore:
                 del self.saved_archive[key]
             for key in changed_archive:
                 ordinal, record = current_archive[key]
-                record = _checkpoint_diagnostic_reference(record)
                 previous = self.saved_archive.get(key)
                 if previous is None or previous[:2] != (ordinal, record):
                     payload = _json(record)
@@ -1047,19 +1020,21 @@ class TaskStore:
             deferred = getattr(self, 'defer_persistence', False)
             self.defer_persistence = False
             try:
-                self.flush_reports()
+                state_committed = self.flush_reports()
                 if self.unsaved_batches:
                     with self._transaction():
                         for key, value in self.unsaved_batches.items():
-                            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
+                            payload = _json(value)
+                            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, payload))
                             if value.get('status') == 'success' and value['request']['purpose'] != 'final':
-                                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, _json(value)))
+                                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, payload))
                         self.persisted_batches = self.db.execute(
                             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
                         self.state['completed_batches'] = self.persisted_batches
                     self.unsaved_batches.clear()
-                reconcile_selection_feedback(self)
-                self.save()
+                    state_committed = False  # The summaries changed completed_batches after the report commit.
+                if not state_committed:
+                    self.save()
             finally:
                 self.defer_persistence = deferred
 
@@ -1087,14 +1062,15 @@ class TaskStore:
         return None
 
     def flush_reports(self, *, replace_group=None):
+        """Return whether this invocation committed the complete buffered state."""
         if getattr(self, 'defer_persistence', False):
-            return
+            return False
         from result_store import write, _api, DATA_ROOT, prepare_batch
         publish_started = diagnostic_start() if self.diagnostic_logging else None
         try:
             with self.lock:
                 if not self.report_buffer:
-                    return
+                    return False
             with self.lock, self.report_locations.locked() as locations:
                 api = _api()
                 number = self.state.get('next_report_group', 0)
@@ -1179,12 +1155,17 @@ class TaskStore:
                                 diagnostic_finish(self, 'report.write', started, rows=len(retained), groups=1,
                                                   replacements=len(plan['replacements']))
                     last = position == len(plans) - 1
+                    if last:
+                        # Persist the caller's archive/GA references in the same final transaction.
+                        # Every group is published before assigning these reserved locations.
+                        for key, row, _ in self.report_buffer:
+                            row['storage_group_key'] = locations.entries[key]
                     self._commit_report_group(group, group_number, metadata, checkpoint=last,
                                               clear_intents=tuple(plans) if last else ())
                 for key, row, metadata_row in self.report_buffer:
-                    row['storage_group_key'] = self.verified_batches[key]['storage_group_key']
                     metadata_row['_report_path'].unlink(missing_ok=True)
                 self.report_buffer.clear()
+                return True
         finally:
             if self.diagnostic_logging:
                 diagnostic_finish(self, 'report.publish', publish_started)
@@ -1192,9 +1173,10 @@ class TaskStore:
     def _commit_report_group(self, group, number, metadata, *, checkpoint=True, clear_intents=()):
         with self.lock, self._transaction():
             for key, row in metadata:
-                self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(row)))
+                payload = _json(row)
+                self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, payload))
                 if row['request']['purpose'] != 'final':
-                    self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, _json(row)))
+                    self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, payload))
                 self.verified_batches[key] = row
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
@@ -1287,7 +1269,11 @@ class TaskStore:
             brief = {key: self.state.get(key) for key in
                      ('status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
                       'batch_requests', 'batch_cache_hits', 'native_batch_starts',
-                      'canonicalized_duplicates', 'error')}
+                      'canonicalized_duplicates', 'error', 'formal_search')}
+            if self.state.get('formal_search'):
+                brief['stop_policy'] = self.state['formal_search']['stop_policy']
+                brief['generation'] = self.state.get('ga', {}).get('generation', 0)
+                brief['phase'] = self.state.get('ga', {}).get('phase', brief['phase'])
             brief['completed_batches'] = self.persisted_batches
             if not self.diagnostic_logging:
                 for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):
@@ -1336,9 +1322,10 @@ class TaskStore:
             return
         with self.lock, self._transaction():
             self.verified_batches.pop(key, None)
-            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, _json(value)))
+            payload = _json(value)
+            self.db.execute('INSERT OR REPLACE INTO batches VALUES (?,?)', (key, payload))
             if value.get('status')=='success' and value['request']['purpose']!='final':
-                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,_json(value)))
+                self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)',(key,payload))
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
             self.persisted_batches = self.state['completed_batches']
@@ -1417,522 +1404,65 @@ def rule_diagnostic_status(record):
     return record.get('rule_diagnostic_status', 'not_diagnosed')
 
 
-def freeze_selection_feedback(store, work, rows, *, reason=None):
-    """冻结生成父的已有共同成绩；不补评分，也不拿验证对手代替父。"""
-    step = work.get('rule_step', {})
-    receipt = step.get('selection')
-    if not receipt or receipt.get('feedback'):
-        return
-    key = str(receipt['decision_id'])
-    if key in store.state.get('selection_feedback_intents', {}):
-        return
-    parent = next(row for row in store.state['archive'] if row['key'] == step['parent_candidate_key'])
-    def common_key(row):
-        return digest({name: value for name, value in row['request'].items()
-                       if name not in ('program', 'behavior_identity', 'trace')})
-    parents = {common_key(row): row for row in parent['batches']}
-    pairs = [(row, parents[common_key(row)]) for row in rows if common_key(row) in parents]
-    valid = [(child, before) for child, before in pairs if all(
-        type(row.get('samples')) is int and row['samples'] > 0 and
-        type(row.get('dps')) in (int, float) and math.isfinite(row['dps']) for row in (child, before))]
-    reward = None
-    if valid and len(valid) == len(pairs) and reason is None:
-        before = _score([row for _, row in valid])
-        after = _score([row for row, _ in valid])
-        if before > 0 and math.isfinite(after):
-            reward = (after-before)/before
-    intent = dict(receipt=receipt, reward=reward, common_batches=len(valid),
-        reason=reason or (None if reward is not None else 'no_valid_common_batches'),
-        evidence=[dict(candidate_batch=child['data_key'], parent_batch=before['data_key'],
-                       candidate_dps=child['dps'], parent_dps=before['dps'],
-                       candidate_samples=child['samples'], parent_samples=before['samples'])
-                  for child, before in valid])
-    store.state.setdefault('selection_feedback_intents', {})[key] = intent
-    store.state['selection_feedback_incomplete'] = True
-    flushed_reports = bool(store.report_buffer)
-    store.flush_reports()
-    store.save(fields=None if flushed_reports else (
-        'selection_feedback_intents', 'selection_feedback_incomplete',
-        'rule_steps', 'pending', 'search_observability', 'errors'))
-
-
-TRAINING_STOP_POLICY = 'two-unimproved-rounds-v1'
-
-
-def reconcile_selection_feedback(store, runtime=None, *, finalizing=False, cancel_event=None):
-    """补共享反馈后再补任务状态；已评分恢复不重新模拟/重新学习。"""
-    if not store.state.get('config', {}).get('adaptive_selector_enabled', False) or getattr(store, 'diagnostic_only', False):
-        return
-    intents = store.state.get('selection_feedback_intents', {})
-    if not intents and (not finalizing or not store.state.get('pending')):
-        if store.state.get('selection_feedback_incomplete'):
-            store.state['selection_feedback_incomplete'] = False
-            store.save(fields=('selection_feedback_incomplete', 'pending', 'rule_steps', 'search_observability'))
-        return
-    from selector import settle, commit_feedback
-    sparse = store.state.get('sparse_selection', False)
-    deferred = sparse and getattr(store, 'defer_persistence', False)
-    if deferred:
-        settle = store.selection_session.settle
-        intents = dict(intents)
-    started = time.monotonic()
-    elapsed_before = store.state.get('elapsed_seconds', 0)
-    # 整批以既有锁等待上限为收尾截止；不增加搜索预算，到期保留意图。
-    recovery = (TaskRuntime(30, cancel_event=runtime.cancel_event if runtime else cancel_event,
-                           diagnostic_logging=(runtime.diagnostic_logging if runtime is not None
-                                               else store.diagnostic_logging))
-                if runtime is None or finalizing else runtime)
-    if recovery is not runtime and recovery.diagnostic_logging:
-        if not hasattr(store, 'diagnostic_runtimes'):
-            store.diagnostic_runtimes = []
-        store.diagnostic_runtimes.append(recovery)
-    feedback_budget = (math.inf if store.state.get('training_stop_policy') == TRAINING_STOP_POLICY else
-                       store.state.get('config', {}).get('total_budget_seconds', math.inf))
-    pending_frozen = finalizing
-    stopped = False
-    def freeze_pending():
-        for work in store.state.get('pending', []):
-            if runtime is None:
-                store.state['elapsed_seconds'] = elapsed_before + time.monotonic()-started
-            freeze_selection_feedback(store, work, work.get('score_batches', []),
-                reason='candidate_failed' if work.get('score_error') or work.get('selection_error') else None)
-    try:
-        if finalizing:
-            # 原终止和半批冻结后恢复共用；全部意图先落盘，结算截止不丢后项。
-            freeze_pending()
-            intents = store.state.get('selection_feedback_intents', {})
-            if deferred:
-                intents = dict(intents)
-        if sparse and not deferred and not pending_frozen and elapsed_before >= feedback_budget:
-            freeze_pending()
-            intents = store.state.get('selection_feedback_intents', {})
-            pending_frozen = True
-        committed = commit_feedback(intents, runtime=recovery,
-            session=getattr(store, 'selection_session', None)) if sparse and not deferred and intents else None
-        while True:
-            # 补发本身也可能耗尽任务；仍沿同一收尾截止补齐剩余意图。
-            if (not sparse and runtime is None and not pending_frozen and
-                    elapsed_before + time.monotonic()-started >=
-                    feedback_budget):
-                freeze_pending()
-                intents = store.state.get('selection_feedback_intents', {})
-                pending_frozen = True
-            if stopped or not intents:
-                break
-            key = min(intents, key=int)
-            intent = intents[key]
-            receipt = intent['receipt']
-            try:
-                recovery.check()
-                feedback = (committed[key] if committed is not None else
-                    settle(receipt, intent['reward'], intent['common_batches'],
-                           reason=intent['reason'], runtime=recovery))
-            except (BudgetExceeded, TaskCancelled):
-                stopped = True
-                continue
-            if feedback['status'] == 'already_settled':
-                feedback = dict(feedback, status='learned' if intent['reward'] is not None else 'no_learn')
-            feedback['evidence'] = intent['evidence']
-            changed_fields = {'selection_feedback_intents', 'selection_feedback_incomplete',
-                              'pending', 'rule_steps', 'search_observability'}
-            changed_archive = []
-            for step in store.state.get('rule_steps', {}).values():
-                selection = step.get('selection')
-                if selection and selection['decision_id'] == receipt['decision_id']:
-                    selection['feedback'] = feedback
-            for collection in ('pending', 'archive'):
-                for item in store.state.get(collection, []):
-                    selection = item.get('rule_step', {}).get('selection')
-                    if selection and selection['decision_id'] == receipt['decision_id']:
-                        selection['feedback'] = feedback
-                        if collection == 'archive':
-                            changed_archive.append(item['key'])
-            del intents[key]
-            store.state['selection_feedback_incomplete'] = bool(store.state.get('selection_feedback_intents'))
-            if runtime is None:
-                store.state['elapsed_seconds'] = elapsed_before + time.monotonic()-started
-            if not sparse:
-                flushed_reports = bool(store.report_buffer)
-                store.flush_reports()
-                store.save(fields=None if flushed_reports else changed_fields, archive_keys=changed_archive)
-    finally:
-        store.state['selection_feedback_incomplete'] = bool(store.state.get('selection_feedback_intents'))
-        if runtime is None:
-            store.state['elapsed_seconds'] = elapsed_before + time.monotonic()-started
-        # Retry every coupled change if an earlier checkpoint transaction failed.
-        store.save()
-
-
-def _score_bounds(rows):
-    count = sum(row['samples'] for row in rows)
-    mean = _score(rows)
-    variance_sum = sum(row['samples'] * (row['variance'] + (row['dps'] - mean) ** 2)
-                       for row in rows)
-    error = SCREENING_ERROR_MULTIPLIER * math.sqrt(variance_sum / count / count)
-    return mean - error, mean + error
-
-
 def _tuple(value):
     return tuple(_tuple(v) for v in value) if isinstance(value, list) else value
 
 
 def optimize(*, profile, character, capabilities, reference, destination, runtime,
-             config, condition_key, store, simulation_config=None, training=False, rule_step=None,
-             diagnostic_candidate_key=None):
+             config, condition_key, store, simulation_config=None, training=False,
+             training_runner=None, training_stage_plan=None):
+    if store.state.get('training_candidate_supplier') is not None:
+        raise ValueError('旧训练供应器检查点身份不兼容，不能恢复；原成果仍可读取')
+    if not training or training_runner is None or training_stage_plan is None:
+        raise ValueError('搜索必须提供共享GA执行器及完整冻结评分计划')
+    scenarios = ('nominal',) if store.state.get('formal_search') else ('nominal', 'jitter', 'pause', 'slow', 'phase')
+    expected = dict(search=(None, 1), feedback=(2, 1), **{name: (None, None) for name in scenarios})
+    if set(training_stage_plan) != set(expected):
+        raise ValueError('GA必须冻结全部评分阶段')
+    seeds = []
+    for stage, (iterations, count) in expected.items():
+        plan = training_stage_plan[stage]
+        if ((iterations is not None and plan.get('iterations') != iterations)
+                or type(plan.get('iterations')) is not int or plan['iterations'] < 1
+                or (count is not None and len(plan.get('seeds', [])) != count)
+                or not plan.get('seeds')
+                or any(type(seed) is not int or seed <= 0 for seed in plan['seeds'])):
+            raise ValueError('GA冻结种子或样本数不符')
+        seeds.extend(plan['seeds'])
+    if len(set(seeds)) != len(seeds) or set(seeds) & {seed + 500000 for seed in seeds}:
+        raise ValueError('GA阶段种子冲突')
+    saved_plan = store.state.get('training_evaluation_plan')
+    if saved_plan is not None and saved_plan != training_stage_plan:
+        raise ValueError('GA恢复评分计划变化')
+    store.state['training_evaluation_plan'] = copy.deepcopy(training_stage_plan)
     store.character = character
     store.simulation_config = simulation_config
-    from engine import check_report, player_report, damage_statistics, CandidateError
+    from engine import player_report, CandidateError, CandidateScoreError, NativeEvaluationError
     from program import BEHAVIOR_IDENTITY_VERSION
     from sequence import evaluate, compiled_identity
     from simulation_config import config_for
     simulation_config = config_for(simulation_config)
     state = store.state
-    timeline = getattr(runtime, 'search_timeline', None) if diagnostic_candidate_key is None else None
+    timeline = getattr(runtime, 'search_timeline', None)
     batch_counters = getattr(store, 'counter_target', state)
     verify_behavior_identity_state(state)
-    selector_enabled = (config['adaptive_selector_enabled'] and diagnostic_candidate_key is None
-                        and not getattr(store, 'diagnostic_only', False))
-    if selector_enabled:
-        from selector import require_dependencies
-        require_dependencies()
-    if selector_enabled and diagnostic_candidate_key is None and state.get('sparse_selection'):
-        from selector import MemorySelection
-        store.selection_session = MemorySelection(state, runtime)
-    if diagnostic_candidate_key is None:
-        reconcile_selection_feedback(store, runtime, finalizing=state.get('stop_reason') == 'search_deadline')
-    observation_mode = config['search_observability'] if diagnostic_candidate_key is None else 'off'
+    observation_mode = config['search_observability']
     observability = None
-    observation_events = {}
-    position_jobs = []
-    observation_pause_seconds = 0.0
-    observation_call_depth = 0
-    search_recording_active = state.get('phase', 'search') == 'search'
     if observation_mode != 'off':
         with store.lock:
             observability = state.setdefault(
                 'search_observability', _new_search_observability(observation_mode))
             if observability.get('mode') != observation_mode:
                 raise ValueError('任务恢复时搜索记录模式不能改变')
-            observation_events = {row['event_id']: row for row in observability['details']}
-            position_jobs = observability.setdefault('position_jobs', [])
+            observability['algorithm'] = 'ga-easimple-v1'
 
-    def serialize_observability(function):
-        def call(*args, **kwargs):
-            nonlocal observation_pause_seconds, observation_call_depth
-            if observability is None:
-                return function(*args, **kwargs)
-            outermost = observation_call_depth == 0
-            started = time.perf_counter() if outermost and search_recording_active else None
-            observation_call_depth += 1
-            try:
-                with store.lock:
-                    return function(*args, **kwargs)
-            finally:
-                observation_call_depth -= 1
-                if started is not None:
-                    seconds = time.perf_counter() - started
-                    observation_pause_seconds += seconds
-                    runtime.started += seconds
-        return call
-
-    def event_for(work):
-        return observation_events.get(work.get('observation_id')) if observability else None
-
-    @serialize_observability
-    def method_summary(work):
-        if not observability:
-            return None
-        name = work.get('observation_actual_mutation', 'initial')
-        return observability['summary']['methods'].setdefault(name, {
-            'attempts': 0,
-            'legal_candidates': 0,
-            'invalid_candidates': 0,
-            'duplicates': 0,
-            'score_started': 0,
-            'score_completed': 0,
-            'route_checks': 0,
-            'route_promotions': 0,
-            'global_checks': 0,
-            'global_promotions': 0,
-            'outcomes': {},
-            'score_changes': dict(count=0, total=0.0, minimum=None, maximum=None),
-            'phase_seconds': {},
-        })
-
-    @serialize_observability
-    def mark_work(work, flag, counter):
-        if not observability:
-            return
-        internal_flag = 'observation_' + flag
-        if work.get(internal_flag):
-            return
-        work[internal_flag] = True
-        observability['summary'][counter] += 1
-        stats = method_summary(work)
-        stats[counter] += 1
-        row = event_for(work)
-        if row is not None:
-            row[flag] = True
-
-    @serialize_observability
-    def mark_candidate(work, key=None, error=None):
-        if not observability or work.get('observation_candidate_recorded'):
-            return
-        work['observation_candidate_recorded'] = True
-        summary = observability['summary']
-        row = event_for(work)
-        if row is not None:
-            row['candidate_identity'] = key
-            row['legal'] = error is None
-            row['illegal_reason'] = str(error) if error is not None else None
-        if error is None:
-            summary['legal_candidates'] += 1
-            method_summary(work)['legal_candidates'] += 1
-        else:
-            summary['invalid_candidates'] += 1
-            method_summary(work)['invalid_candidates'] += 1
-            summary['invalid_reasons'][str(error)] = summary['invalid_reasons'].get(str(error), 0) + 1
-
-    @serialize_observability
-    def mark_duplicate(work, reason):
-        if not observability or work.get('observation_duplicate_recorded'):
-            return
-        work['observation_duplicate_recorded'] = True
-        summary = observability['summary']
-        summary['duplicates'] += 1
-        summary['duplicate_reasons'][reason] = summary['duplicate_reasons'].get(reason, 0) + 1
-        method_summary(work)['duplicates'] += 1
-        row = event_for(work)
-        if row is not None:
-            row['duplicate_reason'] = reason
-
-    @serialize_observability
-    def mark_promotion(work, kind, *, checked=None, promoted=None):
-        if not observability:
-            return
-        summary = observability['summary']
-        stats = method_summary(work)
-        row = event_for(work)
-        if checked:
-            flag = 'observation_' + kind + '_checked'
-            if not work.get(flag):
-                work[flag] = True
-                counter = kind + '_checks'
-                summary[counter] += 1
-                stats[counter] += 1
-                if row is not None:
-                    row[kind + '_promotion']['checked'] = True
-        if promoted is not None:
-            flag = 'observation_' + kind + '_promoted'
-            if promoted and not work.get(flag):
-                work[flag] = True
-                counter = kind + '_promotions'
-                summary[counter] += 1
-                stats[counter] += 1
-            if row is not None:
-                row[kind + '_promotion']['promoted'] = bool(promoted)
-                row[kind + '_promotion']['complete'] = True
-
-    @serialize_observability
-    def add_stage_time(work, stage, seconds):
-        if not observability:
-            return
-        flag = 'observation_timed_' + stage
-        if work.get(flag):
-            return
-        work[flag] = True
-        seconds = max(0.0, seconds)
-        summary = observability['summary']
-        summary['phase_seconds'][stage] = summary['phase_seconds'].get(stage, 0.0) + seconds
-        stats = method_summary(work)
-        stats['phase_seconds'][stage] = stats['phase_seconds'].get(stage, 0.0) + seconds
-        row = event_for(work)
-        if row is not None:
-            row['stage_seconds'][stage] = seconds
-
-    @serialize_observability
-    def add_score_change(work, change):
-        changes = method_summary(work).setdefault(
-            'score_changes', dict(count=0, total=0.0, minimum=None, maximum=None))
-        changes['count'] += 1
-        changes['total'] += change
-        changes['minimum'] = change if changes['minimum'] is None else min(changes['minimum'], change)
-        changes['maximum'] = change if changes['maximum'] is None else max(changes['maximum'], change)
-        changes['mean'] = changes['total'] / changes['count']
-
-    @serialize_observability
-    def mark_outcome(work, outcome):
-        if not observability or work.get('observation_outcome') is not None:
-            return
-        work['observation_outcome'] = outcome
-        row = event_for(work)
-        if row is not None:
-            row['outcome'] = outcome
-        summary = observability['summary']['outcomes']
-        summary[outcome] = summary.get(outcome, 0) + 1
-        outcomes = method_summary(work).setdefault('outcomes', {})
-        outcomes[outcome] = outcomes.get(outcome, 0) + 1
-
-    @serialize_observability
-    def add_position_summary(work, rows):
-        if not observability:
-            return
-        positions = observability['summary']['positions']
-        for row in rows:
-            key = _json([row['candidate_identity'], row['click_position'],
-                         row['action_position'], row['action']])
-            current = positions.get(key)
-            if current is None:
-                positions[key] = dict(row, failures=dict(row['failures']))
-                continue
-            _merge_position_counts(current, row)
-        event = event_for(work)
-        if event is not None:
-            event_rows = event.setdefault('position_summary', [])
-            event_positions = {
-                _json([row['candidate_identity'], row['click_position'],
-                       row['action_position'], row['action']]): row
-                for row in event_rows
-            }
-            for position in rows:
-                key = _json([position['candidate_identity'], position['click_position'],
-                             position['action_position'], position['action']])
-                current = event_positions.get(key)
-                if current is None:
-                    current = dict(position, failures=dict(position['failures']))
-                    event_rows.append(current)
-                    event_positions[key] = current
-                else:
-                    _merge_position_counts(current, position)
-            event['position_comparison_count'] = event.get('position_comparison_count', 0) + 1
-
-    def queue_position_observation(work, program, comparison):
-        if observability is not None:
-            with store.lock:
-                if any(job['event_id'] == work['observation_id'] and job['comparison'] == comparison
-                       for job in position_jobs):
-                    return
-                position_jobs.append(dict(
-                    event_id=work['observation_id'], program=_copy_program(program),
-                    comparison=comparison, status='pending'))
-
-    def _merge_position_counts(current, row):
-        for field in ('turns', 'queued', 'queue_blocked', 'processing', 'successes'):
-            current[field] += row[field]
-        for failure, count in row['failures'].items():
-            current['failures'][failure] = current['failures'].get(failure, 0) + count
-
-    def make_observation_event(event_id, *, parent_identity, sampled_mutation,
-                               actual_mutation, modification_position):
-        return dict(
-            event_id=event_id,
-            parent_identity=parent_identity,
-            sampled_mutation=sampled_mutation,
-            actual_mutation=actual_mutation,
-            modification_position=modification_position,
-            candidate_identity=None,
-            legal=None,
-            illegal_reason=None,
-            duplicate_reason=None,
-            parent_score=None,
-            candidate_score=None,
-            score_change=None,
-            score_started=False,
-            score_completed=False,
-            route_promotion=dict(checked=False, promoted=False, complete=False),
-            global_promotion=dict(checked=False, promoted=False, complete=False),
-            outcome=None,
-            stage_seconds={},
-        )
-
-    @serialize_observability
-    def reserve_initial_observation():
-        event_id = observability['next_event_id']
-        observability['next_event_id'] += 1
-        event = make_observation_event(
-            event_id, parent_identity=None, sampled_mutation='initial',
-            actual_mutation='initial', modification_position=None)
-        if observation_mode == 'full':
-            observability['details'].append(event)
-            observation_events[event_id] = event
-        observability['summary']['initial_candidates'] += 1
-        return event_id
-
-    @serialize_observability
-    def reserve_rule_step_observation(work):
-        step = work['rule_step']
-        operation = step['operation']
-        method = 'rule_step:' + operation['operation']
-        event_id = observability['next_event_id']
-        observability['next_event_id'] += 1
-        event = make_observation_event(event_id, parent_identity=step['parent_candidate_key'],
-            sampled_mutation=None, actual_mutation=method,
-            modification_position={key: operation[key] for key in ('source_path', 'destination_path', 'count')})
-        event['parent_score'] = step['parent_score']
-        if observation_mode == 'full':
-            observability['details'].append(event)
-            observation_events[event_id] = event
-        summary = observability['summary']
-        summary['rule_steps'] = summary.get('rule_steps', 0) + 1
-        work.update(observation_id=event_id, observation_actual_mutation=method,
-                    observation_parent_score=step['parent_score'])
-
-    @serialize_observability
-    def commit_mutation_observations(events):
-        if not observability:
-            return
-        summary = observability['summary']
-        for event in events:
-            summary['mutation_attempts'] += 1
-            sampled = event['sampled_mutation'] or 'unknown'
-            actual = event['actual_mutation'] or 'unknown'
-            summary['sampled_mutations'][sampled] = summary['sampled_mutations'].get(sampled, 0) + 1
-            summary['actual_mutations'][actual] = summary['actual_mutations'].get(actual, 0) + 1
-            work = {'observation_actual_mutation': actual}
-            stats = method_summary(work)
-            stats['attempts'] += 1
-            if event['legal'] is True:
-                summary['legal_candidates'] += 1
-                stats['legal_candidates'] += 1
-            elif event['legal'] is False:
-                summary['invalid_candidates'] += 1
-                stats['invalid_candidates'] += 1
-                reason = event['illegal_reason'] or 'unknown'
-                summary['invalid_reasons'][reason] = summary['invalid_reasons'].get(reason, 0) + 1
-            if event['duplicate_reason']:
-                summary['duplicates'] += 1
-                stats['duplicates'] += 1
-                reason = event['duplicate_reason']
-                summary['duplicate_reasons'][reason] = summary['duplicate_reasons'].get(reason, 0) + 1
-            outcome = ('invalid_candidate' if event['legal'] is False else
-                       'duplicate' if event['duplicate_reason'] else None)
-            if outcome:
-                event['outcome'] = outcome
-                outcomes = summary['outcomes']
-                outcomes[outcome] = outcomes.get(outcome, 0) + 1
-                method_outcomes = stats.setdefault('outcomes', {})
-                method_outcomes[outcome] = method_outcomes.get(outcome, 0) + 1
-            for stage, seconds in event['stage_seconds'].items():
-                summary['phase_seconds'][stage] = summary['phase_seconds'].get(stage, 0.0) + seconds
-                stats['phase_seconds'][stage] = stats['phase_seconds'].get(stage, 0.0) + seconds
-            if observation_mode == 'full':
-                observability['details'].append(event)
-                observation_events[event['event_id']] = event
-        observability['next_event_id'] += len(events)
-
-    rng = random.Random(config['random_seed'])
-    if 'rng' in state:
-        rng.setstate(_tuple(state['rng']))
-    if 'behavior_identity_version' not in state:
+    initializing = ('behavior_identity_version' not in store.saved_fields
+                    or store.saved_fields.get('phase', (None, 0))[0] == 'initialize')
+    if initializing:
         state['behavior_identity_version'] = BEHAVIOR_IDENTITY_VERSION
-    state.setdefault('run_nonce', uuid.uuid4().hex)
     state.setdefault('phase', 'search')
     state.setdefault('archive', [])
-    state.setdefault('pending', [])
-    state.setdefault('rounds', 0)
-    state.setdefault('no_improvement', 0)
     state.setdefault('seen', [])
-    state.setdefault('chains', [])
     state.setdefault('evaluated_keys', [])
     if config['diagnostic_logging']:
         for name in ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts'):
@@ -1943,33 +1473,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     if starts is None:
         starts = initial_programs(capabilities, reference, config['random_seed'],
             input_interval_ms=config['input_interval_ms'],
-            target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'),
-            initialization=state.setdefault('rule_initialization', {}) if config['rule_initialization_enabled'] else None,
-            rule_initialization_enabled=config['rule_initialization_enabled'])
-    observable_flags = tuple(name for name in ('target', 'combat', 'shift', 'ctrl', 'alt')
-                             if any(kind == name for _, kind in config['reset_events']))
+            target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'))
     state.setdefault('starts', starts)
-    from rule_diagnostics import observation_request, VERSION as RULE_DIAGNOSTICS_VERSION
-    rule_context = state.get('rule_context') or state.get('rule_initialization')
-    if state.get('rule_context'):
-        # 运行时引用已冻结规则，不在共享上下文中重复持久化整份规则包。
-        rule_context = dict(rule_context, rule_snapshot=state['rule_snapshot'])
-    if (selector_enabled or diagnostic_candidate_key) and state.get('rule_context'):
-        rule_context['rule_observation_request'] = observation_request(rule_context, protocol=2)
-        state['rule_context']['rule_observation_request'] = rule_context['rule_observation_request']
-    rule_observation_request = observation_request(rule_context) if (selector_enabled or diagnostic_candidate_key) and rule_context else None
-    eager_diagnostics = selector_enabled and config.get('rule_diagnostics_policy', 'eager') == 'eager'
-    if rule_step is not None:
-        from rule_diagnostics import enqueue
-        enqueue(state, rule_step, config, max(runtime.elapsed_seconds, state.get('elapsed_seconds', 0)))
-        store.save()
-    if observability:
-        for work in state['pending']:
-            if work.get('rule_step') and 'observation_id' not in work:
-                reserve_rule_step_observation(work)
-        store.save()
+    if initializing:
+        # burst可提前写内存version；只有已落盘且完成准备的状态才可跳过首份检查点。
+        store.checkpoint()
     candidates = {}
-    diagnostic_sources = set()
     burst_context = state.get('burst')
     def planned_inputs(times):
         if burst_context is None:
@@ -2058,43 +1567,18 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def score_variance(report):
         return _score_variance(report, character)
 
-    def encode_selection_context(diagnostic, report):
-        if not selector_enabled:
-            return
-        from selector import context_features, FEATURE_VERSION
-        initialization = rule_context
-        resolved = next(item for item in initialization['rule_snapshot']['resolved']
-                        if item['key'] == initialization['configuration_key'])
-        diagnostic['selection_context'] = dict(version=FEATURE_VERSION,
-            values=context_features(diagnostic,
-                player_report(report, character).get('sim2gse_rule_observations'), objects=resolved['objects']))
+    if observability is not None and not observability.get('initial_logged'):
+        for program in starts:
+            _observe_ga(store, 'initial', candidate_identity=candidate_key(program))
+        observability['initial_logged'] = True
 
-    def replay_incomplete_diagnostic(program, receipt, saved=None):
-        diagnostic = receipt.get('rule_diagnostics')
-        if not diagnostic or diagnostic['pool']['complete']:
-            return False
-        runtime.check()
-        if saved is None:
-            from result_store import one as read_record
-            saved = store.staged_report(receipt['data_key']) or read_record('batches', 'batch_key', receipt['data_key'],
-                group_key=receipt.get('storage_group_key'))
-            _validate_saved_batch(saved, receipt['data_key'], receipt, character, 0, 'nominal', simulation_config)
-        from rule_diagnostics import diagnose
-        diagnostic = diagnose(program, capabilities, rule_context,
-            saved['report'], task_run_id=state['run_id'], batch_key=receipt['data_key'],
-            behavior_identity=candidate_key(program), runtime=runtime,
-            requested_iterations=receipt['request']['iterations'], batch_request=receipt['request'])
-        encode_selection_context(diagnostic, saved['report'])
-        receipt.update(rule_diagnostics=diagnostic, diagnostics_replayed=True)
-        return True
 
-    def batch(program, purpose, index, iterations, scenario='nominal', trace=False, *, prepared_candidate=None,
-              source_batch=None):
+    def batch(program, purpose, index, iterations, scenario='nominal', trace=False, *, prepared_candidate=None):
         runtime.check()
-        seed_offset = {'search': 0, 'validation': 100000, 'final': 200000, 'diagnostic': 0}[purpose]
-        # 每次运行独立的最终样本，恢复复用同一编号，不借用旧任务见过的最终样本。
-        nonce = int(state['run_nonce'][:8], 16) % 100000000 if purpose == 'final' else 0
-        seed = config['random_seed'] + seed_offset + index + DEFAULT_SCENARIOS.index(scenario) * 1000 + nonce
+        plan = training_stage_plan[purpose]
+        if iterations != plan['iterations']:
+            raise ValueError('GA评分必须使用冻结阶段与样本数')
+        seed = plan['seeds'][index]
         input_seed = seed + 500000
         times = input_times(scenario, input_seed, config["input_interval_ms"])
         times, burst_options = planned_inputs(times)
@@ -2105,27 +1589,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         seed=seed, input_seed=input_seed, iterations=iterations, times=times,
                         stats=STATS_VERSION, trace=trace,
                         reset_events=[list(row) for row in config['reset_events']])
-        if eager_diagnostics and purpose == 'search' and index == 0:
-            request['rule_observations'] = dict(version=RULE_DIAGNOSTICS_VERSION,
-                                                request=rule_observation_request)
+        request['allow_zero'] = True
         if burst_context is not None:
             request['burst'] = dict(definition_id=burst_context['definition_id'],
                                     program=compiled_identity(burst_context['candidate']),
                                     plan=burst_context['plan'], interval_ms=config['input_interval_ms'],
                                     sources=burst_options['input_sources'])
-        if purpose == 'diagnostic':
-            original = source_batch['request']
-            if (original['purpose'] != 'search' or original['condition'] != condition_key
-                    or original['program'] != request['program'] or original['behavior_identity'] != behavior_id):
-                raise ValueError('补采诊断的原评分程序或条件不符')
-            request = dict(original, purpose='diagnostic', source_scoring_batch_key=source_batch['data_key'],
-                           rule_observations=dict(version=RULE_DIAGNOSTICS_VERSION,
-                                                  request=rule_observation_request))
-            seed, input_seed, iterations, times, trace = (request[name] for name in
-                ('seed', 'input_seed', 'iterations', 'times', 'trace'))
-            if request.get('burst'):
-                burst_options = dict(burst_candidate=burst_context['candidate'],
-                                     input_sources=request['burst']['sources'])
         key = digest(request)
         def count_scored_candidate():
             if purpose == 'search' and behavior_id not in state['evaluated_keys']:
@@ -2136,13 +1605,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if config['diagnostic_logging']:
                 batch_counters['batch_requests'] += 1
             verified = store.verified_batches.get(key)
-            if (verified is not None and verified.get('rule_diagnostics') and
-                    not verified['rule_diagnostics']['pool']['complete']):
-                saved = store.staged_report(key)
-                if saved is not None:
-                    replay_incomplete_diagnostic(program, verified, saved)
-                else:
-                    verified = None  # Reuse the validated stored report below, not another score.
             if verified is not None and config['diagnostic_logging']:
                 batch_counters['batch_cache_hits'] += 1
         if verified is not None:
@@ -2171,30 +1633,19 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             except (BudgetExceeded, TaskCancelled):
                 raise
             except (ValueError, KeyError, TypeError, RuntimeError) as error:
-                if purpose == 'diagnostic':
-                    raise ValueError('补采诊断缓存来源不可核验，不能重新采集掩盖差异') from error
                 store.put_batch(key, dict(status='invalid', request=request))
             else:
                 runtime.check()
                 with store.lock:
                     count_scored_candidate()
-                if cached.get('rule_diagnostics'):
-                    from rule_diagnostics import rebind
-                    cached = dict(cached, rule_diagnostics=rebind(cached['rule_diagnostics'], state['run_id'],
-                        diagnostic_logging=config['diagnostic_logging']))
-                if purpose == 'diagnostic' or eager_diagnostics and purpose == 'search' and index == 0:
-                    replay_incomplete_diagnostic(program, cached, saved)
                 store.put_batch(key, cached, counter='batch_cache_hits', verified=True)
                 return dict(cached, cached=True)
-        elif cached and cached['status'] == 'failed':
-            raise CandidateError('该批次此前失败，不自动重跑: ' + cached['error'])
         runtime.check()
         if runtime.remaining_seconds < state['batch_estimate']:
             raise BudgetExceeded('剩余阶段时间不足一个预计批次')
         allowance = min(30, runtime.remaining_seconds)
         with store.lock:
-            if diagnostic_candidate_key is None:
-                state.setdefault('inflight', {})[key] = dict(start=runtime.elapsed_seconds, allowance=allowance)
+            state.setdefault('inflight', {})[key] = dict(start=runtime.elapsed_seconds, allowance=allowance)
             count_scored_candidate()
             store.save()
         folder = destination / 'batches' / key
@@ -2203,8 +1654,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         center_stored = False
         try:
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
-            if (purpose == 'diagnostic' or eager_diagnostics and purpose == 'search' and index == 0) and rule_observation_request is not None:
-                kwargs['rule_observation_request'] = rule_observation_request
+            kwargs['allow_zero'] = True
             def native_started():
                 with store.lock:
                     batch_counters['native_batch_starts'] = batch_counters.get('native_batch_starts', 0) + 1
@@ -2219,6 +1669,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                               simulation_config=simulation_config, on_native_start=native_started,
                               **burst_options, **kwargs)
             variance = score_variance(result['report'])
+            if (type(result['summary']['dps']) not in (int, float)
+                    or not math.isfinite(result['summary']['dps']) or result['summary']['dps'] < 0
+                    or type(result['summary']['samples']) is not int or result['summary']['samples'] < 1):
+                raise CandidateScoreError('候选评分均值或有效样本无效')
             report_valid = True
             row = dict(status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], variance=variance, requested_iterations=iterations,
@@ -2226,30 +1680,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
                            player_report(result['report'], character)['collected_data'].get('resource_overflowed',{}).get(reference['identity']['resource'],{}).get('mean',0)>0,
                            {v['simc_action']: a['simc_action'] for a in capabilities['actions'] for v in a.get('variants',[a])}) if trace else None)
-            mismatch = purpose == 'diagnostic' and any(row[name] != source_batch[name]
-                                                       for name in ('dps', 'samples', 'variance'))
-            if mismatch:
-                row['rule_diagnostic_status'] = 'mismatch'
-            elif purpose == 'diagnostic' or eager_diagnostics and purpose == 'search' and index == 0:
-                from rule_diagnostics import diagnose, feedback_observations
-                row['rule_diagnostics'] = diagnose(program, capabilities, rule_context,
-                    result['report'], task_run_id=state['run_id'], batch_key=key,
-                    behavior_identity=behavior_id, runtime=runtime, requested_iterations=iterations,
-                    batch_request=request)
-                encode_selection_context(row['rule_diagnostics'], result['report'])
-                row['rule_diagnostic_status'] = rule_diagnostic_status(row)
-            if eager_diagnostics and purpose == 'search' and index == 0:
-                from rule_diagnostics import feedback_observations
-                events, feedback_evidence = feedback_observations(
-                    player_report(result['report'], character).get('sim2gse_rule_observations'), iterations,
-                    observation_request=rule_observation_request)
-                row['feedback_evidence'] = dict(feedback_evidence, batch_key=key)
-                if events is not None:
-                    row['feedback'] = feedback_from_trace(events, [a['simc_action'] for a in capabilities['actions']],
-                        player_report(result['report'], character)['collected_data'].get('resource_overflowed', {}).get(
-                            reference['identity']['resource'], {}).get('mean', 0) > 0,
-                        {v['simc_action']: a['simc_action'] for a in capabilities['actions'] for v in a.get('variants', [a])})
-                    row['position_summary'] = _position_observations(compiled, behavior_id, events)
             if trace and 'position_summary' not in row:
                 row['position_summary'] = _position_observations(
                     compiled, behavior_id, result['trace'])
@@ -2263,14 +1693,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                           input_seed=request['input_seed'], iterations=iterations,
                           times=request['times'], trace=trace, dps=row['dps'],
                           samples=row['samples'], variance=row['variance'],
-                          requested_iterations=iterations, report=result['report'],
-                          rule_observations=None, rule_diagnostics=None,
-                          source_scoring_batch_key=request.get('source_scoring_batch_key'),
-                          rule_diagnostic_status=row.get('rule_diagnostic_status'))
-            if 'rule_observations' in request:
-                stored['rule_observations'] = json.dumps(request['rule_observations'], ensure_ascii=False)
-            if 'rule_diagnostics' in row:
-                stored['rule_diagnostics'] = json.dumps(row['rule_diagnostics'], ensure_ascii=False)
+                          requested_iterations=iterations, report=result['report'])
             if request['reset_events']:
                 stored['reset_events'] = [dict(ms=ms, kind=kind)
                                           for ms, kind in request['reset_events']]
@@ -2279,9 +1702,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 write_traces(trace_key, state['run_id'], result['trace'], batch_key=key)
                 row['trace_source'] = dict(run_id=state['run_id'], batch_key=key, storage_key=trace_key)
             with store.lock:
-                if diagnostic_candidate_key is None:
-                    state['inflight'].pop(key, None)
-                    state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
+                state['inflight'].pop(key, None)
+                state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
                 store.stage_report(key, row, stored, diagnostic_logging=config['diagnostic_logging'],
                                    replace_group=(cached.get('storage_group_key') or key)
                                    if cached and cached['status'] == 'success' else None)
@@ -2300,720 +1722,83 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 from engine import discard_diagnostic_files
                 discard_diagnostic_files(folder)
             with store.lock:
-                if diagnostic_candidate_key is None and state.setdefault('inflight', {}).pop(key, None) is not None:
+                if state.setdefault('inflight', {}).pop(key, None) is not None:
                     store.save()
 
-    def ensure_rule_diagnostics(record):
-        if eager_diagnostics and rule_diagnostic_status(record) == 'complete':
-            return
-        if eager_diagnostics:
-            receipt = record['batches'][0]
-            replay_incomplete_diagnostic(record['program'], receipt)
-        else:
-            source = record['batches'][0]
-            if digest(source['request']) != source['data_key']:
-                raise ValueError('补采诊断的原评分请求摘要不符')
-            if source['data_key'] not in diagnostic_sources:
-                from result_store import one as read_record
-                saved = store.staged_report(source['data_key']) or read_record('batches', 'batch_key', source['data_key'],
-                    group_key=source.get('storage_group_key'))
-                _validate_saved_batch(saved, source['data_key'], source, character, 0, 'nominal', simulation_config)
-                diagnostic_sources.add(source['data_key'])
-            receipt = batch(record['program'], 'diagnostic', 0, source['request']['iterations'],
-                            source_batch=source)
-            if any(receipt[name] != source[name] for name in ('dps', 'samples', 'variance')):
-                receipt.pop('rule_diagnostics', None)
-                receipt['rule_diagnostic_status'] = 'mismatch'
-            record['diagnostic_batches'] = [receipt]
-            record['rule_diagnostic_source'] = dict(kind='on_demand_replay',
-                scoring_batch_key=source['data_key'], diagnostic_batch_key=receipt['data_key'])
-        record['rule_diagnostics'] = receipt.get('rule_diagnostics')
-        if receipt.get('diagnostics_replayed'):
-            record['diagnostics_replayed'] = True
-        record['rule_diagnostic_status'] = rule_diagnostic_status(receipt)
-        store.flush_reports()
-        store.save(archive_keys=(record['key'],), fields=())
-        if record['rule_diagnostic_status'] == 'mismatch':
-            raise ValueError('补采诊断与原评分成绩不一致；原评分和奖励保持不变')
-        runtime.check()
-
-    if diagnostic_candidate_key is not None:
-        record = next((row for row in state['archive'] if row['key'] == diagnostic_candidate_key), None)
-        if record is None or not record.get('batches'):
-            raise ValueError('明确诊断的候选没有原评分记录')
-        ensure_rule_diagnostics(record)
-        return record
-
-    def pair(first, second, purpose, count, scenario='nominal'):
-        rows = [[], []]
-        # 外层只允许两个引擎；结果始终按预分配的对象顺序消费。
-        for index in range(count):
-            candidate(first)
-            candidate(second)
-            if candidate_key(first) == candidate_key(second):
-                row = batch(first, purpose, index,
-                            config['final_iterations'] if purpose == 'final' else config['iterations'],
-                            scenario, trace=False)
-                rows[0].append(row)
-                rows[1].append(row)
-                continue
-            with ThreadPoolExecutor(max_workers=config['max_processes']) as pool:
-                futures = [pool.submit(batch, program, purpose, index,
-                                       config['final_iterations'] if purpose == 'final' else config['iterations'],
-                                       scenario, trace=False)
-                           for side, program in enumerate((first, second))]
-                for side, future in enumerate(futures):
-                    rows[side].append(future.result())
-        return rows
-
-    def score_batch(program, index, prepared_candidate=None):
-        target = config['batch_targets'][index]
-        previous = config['batch_targets'][index - 1] if index else 0
-        row = batch(program, 'search', index, target - previous,
-                    trace=(config['diagnostic_logging'] and not state['archive'] and index == 0),
-                    prepared_candidate=prepared_candidate)
-        if row.get('rule_diagnostics'):
-            from rule_diagnostics import rebind
-            row = dict(row, rule_diagnostics=rebind(row['rule_diagnostics'], state['run_id'],
-                                                   diagnostic_logging=config['diagnostic_logging']))
-        return dict(row, target=target)
-
-    def append_score(program, rows, index):
-        rows.append(score_batch(program, index))
-
-    def screen_round():
-        pending = state['pending']
-        if all(work.get('screen_complete') for work in pending):
-            return
-        for index in range(len(config['batch_targets'])):
-            active = [work for work in pending if not work.get('screened_out') and not work.get('score_error')]
-            missing = [work for work in active if len(work.setdefault('score_batches', [])) <= index]
-            with ThreadPoolExecutor(max_workers=config['max_processes']) as pool:
-                for start in range(0, len(missing), config['max_processes']):
-                    ready = []
-                    # 只准备即将派发的候选，编译和共享候选状态始终由主线程处理。
-                    for work in missing[start:start + config['max_processes']]:
-                        runtime.check()
-                        try:
-                            ready.append((work, candidate(work['program'])))
-                        except CandidateError as error:
-                            work['score_error'] = str(error)
-                            store.save()
-                    futures = [(work, pool.submit(score_batch, work['program'], index, compiled))
-                               for work, compiled in ready]
-                    stopped = None
-                    for work, future in futures:
-                        try:
-                            started = diagnostic_start() if config['diagnostic_logging'] else None
-                            try:
-                                row = future.result()
-                            finally:
-                                if config['diagnostic_logging']:
-                                    diagnostic_finish(runtime, 'main.wait', started)
-                            with store.lock:
-                                work['score_batches'].append(row)
-                                store.save()
-                        except CandidateError as error:
-                            with store.lock:
-                                work['score_error'] = str(error)
-                                store.save()
-                        except BaseException as error:
-                            # 即使一项停止，也消费其余完整成绩，供原顺序恢复使用。
-                            if stopped is None:
-                                stopped = error
-                    if stopped is not None:
-                        raise stopped
-            active = [work for work in active if not work.get('score_error')]
-            if not active:
-                break
-            bounds = [_score_bounds(work['score_batches'][:index + 1]) for work in active]
-            best_lower = max(lower for lower, upper in bounds)
-            for work, (lower, upper) in zip(active, bounds):
-                if upper < best_lower:
-                    work['screened_out'] = True
-            store.save()
-            if sum(not work.get('screened_out') for work in active) <= 1:
-                break
-        for work in pending:
-            work['screen_complete'] = True
-        store.save()
-
-    def record(program, rows=None):
+    def record(program, rows):
         compiled = candidate(program)  # 编译合法性必须先于任何原生计算。
         key = candidate_key(program)
-        if rows is None:
-            rows = []
-            targets = len(config['batch_targets']) if not state['archive'] else 1
-            for index in range(targets):
-                append_score(program, rows, index)
         return dict(key=key, program=program, batches=rows, score=_score(rows),
-                    candidate=compiled,candidate_sha256=digest(compiled),
-                    rule_diagnostics=rows[0].get('rule_diagnostics') if rows else None,
-                    rule_diagnostic_status=rule_diagnostic_status(rows[0]) if rows else 'not_diagnosed',
-                    **(dict(diagnostics_replayed=True) if rows and rows[0].get('diagnostics_replayed') else {}))
+                    candidate=compiled,candidate_sha256=digest(compiled))
 
-    def finish_rule_step(work, status, **outcome):
-        if work.get('rule_step'):
-            step = dict(work['rule_step'], status=status, **outcome)
-            state['rule_steps'][step['request']['operation_id']] = step
-            return step
 
-    def challenges(current, opponent):
-        for index in range(len(config['batch_targets'])):
-            for item in (current, opponent):
-                if len(item['batches']) <= index:
-                    append_score(item['program'], item['batches'], index)
-                    item['score'] = _score(item['batches'])
-                    if timeline is not None:
-                        timeline.revise(item)
-                    store.save()
-            left = current['batches'][:index + 1]
-            right = opponent['batches'][:index + 1]
-            low, high = _score_bounds(left)
-            other_low, other_high = _score_bounds(right)
-            if high < other_low:
-                return False
-            if low > other_high:
-                return True
-        return _score(left) > _score(right)
+    def training_batch(program, stage, index=0, *, trace=False):
+        with store.lock:
+            canonical = prepare(program)
+            compiled = candidate(program)
+        scenario = stage if stage not in ('search', 'feedback') else 'nominal'
+        attempt_key = digest(dict(candidate=canonical['identity'], stage=stage, index=index))
+        failures = state.setdefault('training_failures', {})
+        while True:
+            if failures.get(attempt_key, 0) >= 2:
+                known = _coarse_score_failure(state, canonical['identity']) if stage == 'search' else None
+                if known is not None:
+                    raise CandidateScoreError(known['reason'])
+                raise CandidateError('该原条件批次已用尽一次重试: ' + attempt_key)
+            try:
+                row = batch(program, stage, index, training_stage_plan[stage]['iterations'],
+                            scenario=scenario, prepared_candidate=compiled, trace=trace)
+                if row['samples'] < 1 or not math.isfinite(row['dps']) or row['dps'] < 0:
+                    raise CandidateScoreError('独立训练评分不可靠')
+                return canonical, row
+            except (CandidateError, NativeEvaluationError) as error:
+                with store.lock:
+                    failures[attempt_key] = failures.get(attempt_key, 0) + 1
+                    if state.get('formal_search') and stage == 'search':
+                        kind = ('candidate_score' if isinstance(error, CandidateScoreError) else
+                                'native' if isinstance(error, NativeEvaluationError) else 'candidate')
+                        state.setdefault('training_failure_causes', {}).setdefault(attempt_key, []).append(
+                            dict(kind=kind, reason=str(error)))
+                    store.checkpoint()
+                if failures[attempt_key] >= 2:
+                    raise
 
-    def search():
-        runtime.phase_limit = (runtime.budget_seconds if training else
-                               min(config['search_budget_seconds'], config['total_budget_seconds']))
-        if state.get('stop_reason') == 'cancelled':
-            state.pop('stop_reason')
-        initialization = state.get('rule_initialization')
-        if initialization:
-            # Export the rule start even when a frozen champion is searched first.
-            # The ordinary candidate cache reuses this compilation; no extra simulation.
-            compiled = candidate(initialization['program'])
-            for position in initialization['positions']:
-                if position['kind'] != 'action':
-                    continue
-                click = compiled['compiled_program']['clicks'][position['click_position']]
-                if click.get('commands') != position['commands'] or click['source'] != position['source']:
-                    raise ValueError('规则起点位置与实际编译点击不一致')
-            initialization.update(export_text=compiled['text'],
-                                  compilation=compiled['upstream_compilation'],
-                                  click_mapping=compiled['compiled_program']['clicks'])
-            store.save()
-        if not state['archive'] and not state['pending']:
+    def evaluate_training(program, stage, index=0):
+        if stage not in training_stage_plan or stage == 'feedback':
+            raise ValueError('独立训练评价阶段不符')
+        canonical, row = training_batch(program, stage, index)
+        with store.lock:
+            if stage == 'search' and not any(r['key'] == canonical['identity'] for r in state['archive']):
+                state['archive'].append(record(copy.deepcopy(program), [row]))
+                state['seen'].append(canonical['identity'])
+                if config['diagnostic_logging'] and canonical['identity'] in getattr(store, 'diagnostic_new_behaviors', ()):
+                    diagnostic_candidate(store, 'screening_archived', canonical['identity'], runtime)
+                _observe_ga(store, 'coarse_score', candidate_identity=canonical['identity'],
+                            score=row['dps'], samples=row['samples'], cached=bool(row.get('cached')))
+        return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
+                    input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
+                    dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
+                    cached=bool(row.get('cached')))
+
+    def feedback_training(program):
+        canonical, diagnostic = training_batch(program, 'feedback', trace=True)
+        feedback = dict(diagnostic['feedback'])
+        feedback['positions'] = _parent_positions(program, capabilities, diagnostic.get('position_summary', []))
+        if observability is not None:
             with store.lock:
-                state['pending'] = []
-                for program in (starts if training else starts[:config['candidate_limit']]):
-                    work = dict(program=program, start=True)
-                    if observability:
-                        work.update(observation_id=reserve_initial_observation(),
-                                    observation_actual_mutation='initial')
-                    state['pending'].append(work)
-                store.save()
-        while training or len(state['evaluated_keys']) < config['candidate_limit'] or state['pending']:
-            runtime.check()
-            if (not training and state['pending'] and len(state['evaluated_keys']) >= config['candidate_limit']
-                    and candidate_key(state['pending'][0]['program']) not in state['evaluated_keys']):
-                state['stop_reason'] = 'candidate_limit'
-                store.save()
-                break
-            if not selector_enabled and not state['pending']:
-                if all(chain.get('stalled') for chain in state['chains']):
-                    state['stop_reason'] = 'space_stalled'
-                    break
-                no_improvement_limit = (config['no_improvement_rounds'] if training
-                                        else len(state['chains']))
-                if state['no_improvement'] >= no_improvement_limit:
-                    state['stop_reason']='no_improvement'
-                    break
-                lane_index = state.get('next_chain_index', 0)
-                while state['chains'][lane_index].get('stalled'):
-                    lane_index = (lane_index + 1) % len(state['chains'])
-                lane=state['chains'][lane_index]
-                base = next(r for r in state['archive'] if r['key'] == lane['best'])
-                diagnostic=batch(base['program'],'search',99,2,trace=True)
-                feedback = dict(diagnostic['feedback'])
-                feedback['positions'] = _parent_positions(
-                    base['program'], capabilities, diagnostic.get('position_summary', []))
-                lane.update(feedback=feedback,feedback_source=base['key'])
-                generated = []
-                generation_observations = []
-                existing = set(state['seen'])
-                existing_sources = {program_key(record['program']) for record in state['archive']}
-                for attempt in range(160):
-                    if len(generated) >= (config['round_candidate_limit'] if training else min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys']))):
-                        break
-                    kwargs = {'reset_flags': observable_flags} if observable_flags else {}
-                    mutation_observation = {} if observability else None
-                    mutation_started = time.perf_counter() if observability else None
-                    mutation_kwargs = dict(feedback=lane['feedback'], excluded_programs=existing_sources, **kwargs)
-                    if mutation_observation is not None:
-                        mutation_kwargs['observation'] = mutation_observation
-                    program = mutate(base['program'], capabilities, rng, **mutation_kwargs)
-                    if rng.randrange(16)==0:
-                        program = [[a['simc_action']] for a in capabilities['actions']]
-                        rng.shuffle(program)
-                        if mutation_observation is not None:
-                            mutation_observation.update(
-                                actual_mutation='shuffle', modification_position={'segments': 'all'})
-                    if mutation_observation is not None and program == base['program']:
-                        mutation_observation.update(actual_mutation='no_change', modification_position=None)
-                    mutation_seconds = time.perf_counter() - mutation_started if observability else 0.0
-                    event_id = (observability['next_event_id'] + len(generation_observations)
-                                if observability else None)
-                    event = (make_observation_event(
-                        event_id, parent_identity=base['key'],
-                        sampled_mutation=mutation_observation['sampled_mutation'],
-                        actual_mutation=mutation_observation['actual_mutation'],
-                        modification_position=mutation_observation['modification_position'])
-                             if mutation_observation is not None else None)
-                    if event is not None:
-                        event['parent_score'] = base['score']
-                        event['stage_seconds']['mutation'] = mutation_seconds
-                    candidate_check_started = time.perf_counter() if observability else None
-                    try:
-                        key = candidate_key(program)
-                    except CandidateError as error:
-                        if event is not None:
-                            event.update(legal=False, illegal_reason=str(error))
-                            event['stage_seconds']['candidate_check'] = (
-                                time.perf_counter() - candidate_check_started)
-                            generation_observations.append(event)
-                        continue
-                    if event is not None:
-                        event.update(candidate_identity=key, legal=True)
-                        event['stage_seconds']['candidate_check'] = (
-                            time.perf_counter() - candidate_check_started)
-                    if key == base['key']:
-                        duplicate_reason = 'parent_unchanged'
-                    elif key in state['seen']:
-                        duplicate_reason = 'already_seen'
-                    elif key in existing:
-                        duplicate_reason = 'same_round'
-                    else:
-                        duplicate_reason = None
-                    if event is not None:
-                        event['duplicate_reason'] = duplicate_reason
-                        generation_observations.append(event)
-                    if duplicate_reason is not None:
-                        if config['diagnostic_logging']:
-                            state['canonicalized_duplicates'] += 1
-                        continue
-                    existing.add(key)
-                    existing_sources.add(program_key(program))
-                    work = dict(program=program, start=False, lane=lane_index)
-                    if event is not None:
-                        work.update(observation_id=event_id,
-                                    observation_actual_mutation=event['actual_mutation'],
-                                    observation_parent_score=base['score'],
-                                    observation_candidate_recorded=True)
-                    generated.append(work)
-                commit_mutation_observations(generation_observations)
-                if not generated:
-                    lane['stalled'] = True
-                    state.update(next_chain_index=(lane_index + 1) % len(state['chains']),
-                                 rng=rng.getstate())
-                    store.save()
-                    continue
-                state['pending'] = generated
-                state['next_chain_index'] = (lane_index + 1) % len(state['chains'])
-                state['round_improved'] = False
-                state['full_round'] = len(generated)==config['round_candidate_limit']
-                state['rng'] = rng.getstate()
-                store.save()
-            if selector_enabled and (not state['pending'] or state.get('selection_generation')):
-                from rule_diagnostics import apply
-                from selector import action_features, reserve, FEATURE_VERSION
-                generation = state.get('selection_generation')
-                if generation is None:
-                    if all(chain.get('stalled') for chain in state['chains']):
-                        state['stop_reason'] = 'space_stalled'
-                        break
-                    no_improvement_limit = (config['no_improvement_rounds'] if training
-                                            else len(state['chains']))
-                    if state['no_improvement'] >= no_improvement_limit:
-                        state['stop_reason'] = 'no_improvement'
-                        break
-                    lane_index = state.get('next_chain_index', 0)
-                    while state['chains'][lane_index].get('stalled'):
-                        lane_index = (lane_index + 1) % len(state['chains'])
-                    generation = dict(lane=lane_index, parent=state['chains'][lane_index]['best'], selected=0,
-                        limit=(config['round_candidate_limit'] if training else
-                               min(config['round_candidate_limit'], config['candidate_limit']-len(state['evaluated_keys']))))
-                    state['selection_generation'] = generation
-                    flushed_reports = bool(store.report_buffer)
-                    store.flush_reports()
-                    store.save(fields=None if flushed_reports else ('selection_generation',))
-                lane_index = generation['lane']
-                lane = state['chains'][lane_index]
-                base = next(row for row in state['archive'] if row['key'] == generation['parent'])
-                ensure_rule_diagnostics(base)
-                diagnostic = base.get('rule_diagnostics') or {}
-                pool = diagnostic.get('pool') or {}
-                context = diagnostic.get('selection_context') or {}
-                if not pool.get('complete') or context.get('version') != FEATURE_VERSION:
-                    raise ValueError('当前父缺少完整规则池或兼容选择特征，不能回退随机搜索')
-                while generation['selected'] < generation['limit']:
-                    runtime.check()
-                    intent = state.get('selection_intent')
-                    if intent is None:
-                        excluded = set(state['seen']) | {item.get('rule_step', {}).get('operation', {}).get(
-                            'resulting_behavior_identity') for item in state['pending']}
-                        operations = [operation for operation in pool['operations']
-                                      if operation['resulting_behavior_identity'] not in excluded]
-                        if not operations:
-                            break
-                        features = action_features(diagnostic, base['program'], operations)
-                        decision = state.get('selection_sequence', 0) + 1
-                        intent = dict(task_run_id=state['run_id'], decision_id=decision,
-                            parent_identity=diagnostic['parent_identity'],
-                            pool_digest=digest([row['operation_id'] for row in operations]),
-                            context=context['values'], actions=[dict(operation_id=row['operation_id'], features=values)
-                                for row, values in zip(operations, features)])
-                        state.update(selection_sequence=decision, selection_intent=intent)
-                        flushed_reports = bool(store.report_buffer)
-                        store.flush_reports()
-                        store.save(fields=None if flushed_reports else ('selection_sequence', 'selection_intent'))
-                    if not hasattr(store, 'selection_session'):
-                        from selector import MemorySelection
-                        store.selection_session = MemorySelection(state, runtime)
-                        state['sparse_selection'] = True
-                        if intent['decision_id'] <= store.selection_session.watermark:
-                            intent['decision_id'] = state['selection_sequence'] + 1
-                            state['selection_sequence'] = intent['decision_id']
-                    receipt = store.selection_session.reserve(intent, runtime=runtime)
-                    operation = next(row for row in pool['operations'] if row['operation_id'] == receipt['operation_id'])
-                    request = dict(parent_identity=diagnostic['parent_identity'], operation_id=operation['operation_id'])
-                    step = dict(request=request, parent_candidate_key=base['key'], parent_score=base['score'],
-                                operation=copy.deepcopy(operation), selection=receipt, status='queued')
-                    work = dict(program=base['program'], start=False, lane=lane_index, rule_step=step)
-                    try:
-                        work['program'] = apply(base['program'], operation)
-                        if candidate_key(work['program']) != operation['resulting_behavior_identity']:
-                            raise CandidateError('选择操作的行为身份不符')
-                    except (ValueError, CandidateError) as error:
-                        work['selection_error'] = str(error)
-                    state.setdefault('rule_steps', {})[request['operation_id']] = step
-                    if observability:
-                        reserve_rule_step_observation(work)
-                    state['pending'].append(work)
-                    generation['selected'] += 1
-                    state.pop('selection_intent', None)
-                    flushed_reports = bool(store.report_buffer)
-                    store.flush_reports()
-                    store.save(fields=None if flushed_reports else (
-                        'pending', 'rule_steps', 'selection_generation', 'selection_intent', 'search_observability'))
-                if generation['selected'] == 0:
-                    lane['stalled'] = True
-                state.update(next_chain_index=(lane_index + 1) % len(state['chains']),
-                             round_improved=False, full_round=generation['selected']==config['round_candidate_limit'])
-                state.pop('selection_generation', None)
-                store.save()
-                if not state['pending']:
-                    continue
-            work = state['pending'][0]
-            key = program_key(work['program'])
-            scoring_started = None
-            try:
-                if work.get('selection_error'):
-                    raise CandidateError(work['selection_error'])
-                key = candidate_key(work['program'])
-                mark_candidate(work, key=key)
-                if key in state['seen']:
-                    reconcile_selection_feedback(store, runtime)
-                    freeze_selection_feedback(store, work, [], reason='already_scored')
-                    reconcile_selection_feedback(store, runtime)
-                    if config['diagnostic_logging']:
-                        state['canonicalized_duplicates'] += 1
-                    mark_duplicate(work, 'already_scored')
-                    mark_outcome(work, 'duplicate')
-                    finish_rule_step(work, 'duplicate', candidate_key=key, reason='already_scored')
-                    state['pending'].pop(0)
-                    store.save()
-                    continue
-                if observability:
-                    mark_work(work, 'score_started', 'score_started')
-                    scoring_started = time.perf_counter()
-                if not work['start']:
-                    screen_round()
-                    if work.get('score_error'):
-                        raise CandidateError(work['score_error'])
-                current = record(work['program'], work.get('score_batches'))
-                if work.get('rule_step'):
-                    current['rule_step'] = finish_rule_step(work, 'scored',
-                        score=current['score'], candidate_key=current['key'])
-                freeze_selection_feedback(store, work, current['batches'])
-                reconcile_selection_feedback(store, runtime)
-                if observability:
-                    with store.lock:
-                        row = event_for(work)
-                        if row is not None:
-                            row['candidate_score'] = current['score']
-                            parent_score = work.get('observation_parent_score')
-                            if parent_score is not None:
-                                row['parent_score'] = parent_score
-                                row['score_change'] = current['score'] - parent_score
-                                add_score_change(work, row['score_change'])
-                    add_stage_time(work, 'scoring', time.perf_counter() - scoring_started)
-                    mark_work(work, 'score_completed', 'score_completed')
-                    mark_outcome(work, 'scored')
-            except CandidateError as error:
-                if observability:
-                    mark_candidate(work, error=error)
-                    mark_outcome(work, 'score_failed' if scoring_started is not None
-                                 else 'invalid_candidate')
-                    with store.lock:
-                        row = event_for(work)
-                        if row is not None and work.get('observation_score_started'):
-                            row['score_error'] = str(error)
-                    if scoring_started is not None and not work.get('observation_timed_scoring'):
-                        add_stage_time(work, 'scoring', time.perf_counter() - scoring_started)
-                state.setdefault('errors', []).append(
-                    dict(program=program_key(work['program']), error=str(error)))
-                finish_rule_step(work, 'failed', candidate_key=key, reason=str(error))
-                freeze_selection_feedback(store, work, [], reason='candidate_failed')
-                reconcile_selection_feedback(store, runtime)
-                current = None
-            if current:
-                route_promoted = global_promoted = False
-                if not state['archive']:
-                    state['best']=key
-                else:
-                    opponent_key=state['best'] if work['start'] else state['chains'][work['lane']]['best']
-                    opponent=next(r for r in state['archive'] if r['key']==opponent_key)
-                    if timeline is not None:
-                        if opponent_key == state['best'] and 'global' not in timeline.current:
-                            timeline.score(opponent, 'global', 'restored_known')
-                        lane = 'lane:' + str(work.get('lane', 0))
-                        if not work['start'] and lane not in timeline.current:
-                            timeline.score(opponent, lane, 'restored_known')
-                    if not work.get('screened_out') and challenges(current, opponent):
-                        if observability:
-                            if work['start']:
-                                mark_promotion(work, 'global', checked=True)
-                            else:
-                                mark_promotion(work, 'route', checked=True)
-                                if opponent_key == state['best']:
-                                    mark_promotion(work, 'global', checked=True)
-                            promotion_started = time.perf_counter()
-                        try:
-                            queue_position_observation(work, current['program'], 'route')
-                            left,right=pair(current['program'],opponent['program'],'validation',config['validation_batches'])
-                        finally:
-                            if observability:
-                                add_stage_time(work, 'promotion_check',
-                                              time.perf_counter() - promotion_started)
-                        comparison = summarize_pairs(left, right)
-                        ci = comparison['ci95']
-                        current['validation']=dict(comparison=comparison,candidate=left,control=right)
-                        route_promoted = bool(ci and ci[0] > 0)
-                        if observability:
-                            if work['start']:
-                                mark_promotion(work, 'global', promoted=route_promoted)
-                            else:
-                                mark_promotion(work, 'route', promoted=route_promoted)
-                                if opponent_key == state['best']:
-                                    mark_promotion(work, 'global', promoted=route_promoted)
-                        if route_promoted:
-                            global_best=next(r for r in state['archive'] if r['key']==state['best'])
-                            if timeline is not None and 'global' not in timeline.current:
-                                timeline.score(global_best, 'global', 'restored_known')
-                            if opponent_key==state['best']:
-                                global_promoted = True
-                            elif challenges(current, global_best):
-                                if observability:
-                                    mark_promotion(work, 'global', checked=True)
-                                    global_started = time.perf_counter()
-                                try:
-                                    queue_position_observation(work, current['program'], 'global')
-                                    left,right=pair(current['program'],global_best['program'],'validation',config['validation_batches'])
-                                finally:
-                                    if observability:
-                                        add_stage_time(work, 'global_check',
-                                                      time.perf_counter() - global_started)
-                                comparison = summarize_pairs(left, right)
-                                ci = comparison['ci95']
-                                current['global_validation']=dict(comparison=comparison,candidate=left,control=right)
-                                global_promoted = bool(ci and ci[0] > 0)
-                                if observability:
-                                    mark_promotion(work, 'global', promoted=global_promoted)
-                state['archive'].append(current)
-                # 后续加测可能取消；只有候选完整入档后才发布赢家指针。
-                if route_promoted and not work['start']:
-                    state['chains'][work['lane']]['best'] = key
-                if global_promoted:
-                    if not training and 'formal_champion_snapshot' in state:
-                        current['global_predecessor_key'] = state['best']
-                    state['best'] = key
-                if global_promoted or (route_promoted and not work['start']):
-                    state['round_improved'] = True
-                if timeline is not None:
-                    if state['best'] == key:
-                        timeline.score(current, 'global', 'initial' if len(state['archive']) == 1 else 'promotion')
-                    if work['start'] or route_promoted:
-                        timeline.score(current, 'lane:' + str(len(state['chains']) if work['start'] else work['lane']), 'initial' if work['start'] else 'promotion')
-                if work['start']:
-                    state['chains'].append(dict(best=key,visited=[key],rounds=0))
-                else:
-                    state['chains'][work['lane']]['visited'].append(key)
-            state['seen'].append(key)
-            state['pending'].pop(0)
-            if not state['pending'] and not work['start']:
-                state['rounds'] += 1
-                state['chains'][work['lane']]['rounds']+=1
-                if state.get('round_improved'):
-                    state['no_improvement'] = 0
-                elif state['full_round']:
-                    state['no_improvement'] += 1
-            store.save()
-            if current and global_promoted:
-                store.checkpoint()
-            if (config['diagnostic_logging'] and current
-                    and key in getattr(store, 'diagnostic_new_behaviors', ())):
-                diagnostic_candidate(store, 'screening_archived', key, runtime)
-        runtime.check()  # 已完成评分先可靠归档，再传播诊断期间发生的取消/预算耗尽。
-        state.setdefault('stop_reason', 'candidate_limit')
+                for position in feedback['positions']:
+                    key = _json([canonical['identity'], position['click_position'],
+                                 position['action_position'], position['action']])
+                    observability['summary']['positions'][key] = dict(position,
+                        candidate_identity=canonical['identity'])
+        return feedback
 
-    search_interrupted = None
-    if state['phase'] == 'search':
-        if timeline is not None:
-            timeline.start()
-            if timeline.resumed:
-                pointers = [('global', state.get('best'))]
-                pointers.extend(('lane:' + str(index), chain['best'])
-                                for index, chain in enumerate(state['chains']))
-                for series, key in pointers:
-                    saved = store.saved_archive.get(key)
-                    if saved is not None:
-                        timeline.score(saved[1], series, 'restored_known')
-        try:
-            scored = [(row, row['batches'][0]) for row in state['archive'] if row.get('batches')]
-            scored += [(work, work['score_batches'][0]) for work in state['pending'] if work.get('score_batches')]
-            for observed, receipt in scored if eager_diagnostics else ():
-                if replay_incomplete_diagnostic(observed['program'], receipt):
-                    observed.update(rule_diagnostics=receipt['rule_diagnostics'], diagnostics_replayed=True)
-                    store.save()
-            search()
-        except (BudgetExceeded, TaskCancelled) as error:
-            state['stop_reason'] = ('cancelled' if isinstance(error, TaskCancelled)
-                                    else 'search_deadline')
-            pending_outcome = ('cancelled_not_scored' if isinstance(error, TaskCancelled)
-                               else 'budget_not_scored')
-            for work in state['pending']:
-                mark_outcome(work, pending_outcome)
-            if isinstance(error, TaskCancelled):
-                search_interrupted = error
-            else:
-                reconcile_selection_feedback(store, runtime, finalizing=True)
-            store.save()
-        finally:
-            if timeline is not None:
-                timeline.stop(state.get('stop_reason', 'failed'))
-            search_recording_active = False
-            runtime.started -= observation_pause_seconds
-            runtime.phase_limit = runtime.budget_seconds
-        if not state['archive']:
-            if isinstance(search_interrupted, TaskCancelled):
-                raise search_interrupted
-            raise BudgetExceeded('搜索窗口内未完成有效初始序列')
-        state['locked_candidate_key'] = state['best']
-        state['phase'] = 'search' if search_interrupted else 'done'
-        store.save()
-        store.publish()
-    best = next(r for r in state['archive'] if r['key'] == state['locked_candidate_key'])
-    if timeline is not None and 'global' not in timeline.current:
-        timeline.score(best, 'global', 'restored_known')
-    final = dict(dataset='final', status='not_requested', scenarios={})
-    interrupted = search_interrupted
-
-    if observability is not None and not isinstance(interrupted, TaskCancelled):
-        observation_runtime = runtime
-        with store.lock:
-            observability['summary'].pop('position_observation_incomplete', None)
-        for job_index, job in enumerate(position_jobs):
-            if job.get('status') == 'completed':
-                continue
-            work = {'observation_id': job['event_id']}
-            program = job['program']
-            comparison = job['comparison']
-            try:
-                compiled = candidate(program)
-                seed = config['random_seed'] + 100000
-                observation_kwargs = ({'reset_events': list(config['reset_events'])}
-                                      if config['reset_events'] else {})
-                observation_times, observation_burst = planned_inputs(
-                    input_times('nominal', seed + 500000, config['input_interval_ms']))
-                traced = evaluate(
-                    profile, compiled,
-                    destination / 'observability' / f"{work['observation_id']}-{comparison}-{job_index}",
-                    character=character, iterations=2, seed=seed,
-                    input_times=observation_times,
-                    trace=True, runtime=observation_runtime,
-                    simulation_config=simulation_config,
-                    **observation_burst,
-                    **observation_kwargs,
-                )
-                trace_key = digest(dict(run_id=state['run_id'], event_id=work['observation_id'],
-                                        comparison=comparison, job_index=job_index))
-                write_batch(trace_key, dict(
-                    batch_key=trace_key, run_id=state['run_id'], purpose='position_observation',
-                    candidate_key=candidate_key(program), seed=seed, requested_iterations=2,
-                    samples=traced['summary']['samples'], dps=traced['summary']['dps'],
-                    report=traced['report']), diagnostic_logging=config['diagnostic_logging'])
-                observation_folder = destination / 'observability' / f"{work['observation_id']}-{comparison}-{job_index}"
-                (observation_folder / 'native.json').unlink(missing_ok=True)
-                if config['diagnostic_logging']:
-                    write_traces(trace_key, state['run_id'], traced['trace'], batch_key=trace_key)
-                add_position_summary(
-                    work, _position_observations(
-                        compiled, candidate_key(program), traced['trace']))
-                with store.lock:
-                    job['status'] = 'completed'
-            except TaskCancelled as error:
-                with store.lock:
-                    observability['summary']['position_observation_incomplete'] = True
-                interrupted = error
-                break
-            except BudgetExceeded:
-                with store.lock:
-                    observability['summary']['position_observation_incomplete'] = True
-                break
-    store.flush_reports()
-    chosen = best
-    result = dict(status='completed', phase='done',
-                  search=dict(dataset='search', starts=starts, records=state['archive'], chains=state['chains'],rounds=state['rounds'],
-                              candidate_count=len(state['evaluated_keys']),unique_candidates=len(state['seen']),
-                              errors=state.get('errors', []),
-                              partial_round=bool(state['pending']) or not state.get('full_round',True),stop_reason=state.get('stop_reason'),
-                              no_improvement_round_limit=(config['no_improvement_rounds'] if training
-                                                          else len(state['chains']))),
-                  validation=dict(dataset='validation',records=[r[k] for r in state['archive'] for k in ('validation','global_validation') if k in r]), final=final, locked_candidate_key=state['locked_candidate_key'],
-                  candidate=candidate(chosen['program']), independent_validation_complete=False,
-                  improvement='search_result',
-                  search_result=dict(dps=chosen['score'],
-                                     samples=sum(row['samples'] for row in chosen['batches']),
-                                     reference_dps=reference['dps'],
-                                     reference_ratio=chosen['score']/reference['dps'] if reference['dps'] else None),
-                  selected_candidate_key=chosen['key'], native_reference=reference,
-                  elapsed_seconds=runtime.elapsed_seconds, completed_batches=state['completed_batches'])
-    result['search']['rule_diagnostics'] = chosen.get('rule_diagnostics')
-    result['search']['rule_diagnostic_status'] = rule_diagnostic_status(chosen)
-    result['search']['rule_diagnostics_version'] = RULE_DIAGNOSTICS_VERSION
-    if config['diagnostic_logging']:
-        result['search'].update({name: state[name] for name in
-                                ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts')})
-    if observability:
-        with store.lock:
-            result['search']['observability'] = _export_search_observability(observability)
+    result = training_runner(evaluate=evaluate_training, feedback=feedback_training)
     if config['diagnostics'] != 'off':
-        result['search']['diagnostics'] = dict(
-            mode=config['diagnostics'], task_state_writes=store.state_write_count,
-            candidate_compilations=candidate_compilations,
+        store.diagnostics_mode = config['diagnostics']
+        store.diagnostic_summary = dict(mode=config['diagnostics'],
+            task_state_writes=store.state_write_count, candidate_compilations=candidate_compilations,
             lua_compiler_starts=store.lua_compiler_starts)
         if config['diagnostics'] == 'full':
-            result['search']['diagnostics']['events'] = diagnostic_events
-        store.diagnostics_mode = config['diagnostics']
-        store.diagnostic_summary = result['search']['diagnostics']
-    result['candidate']['simulation'] = 'passed_native_model'
-    if interrupted:
-        result['status'] = 'cancelled' if isinstance(interrupted, TaskCancelled) else 'completed'
-        result['phase'] = 'search' if isinstance(interrupted, TaskCancelled) else 'done'
-    store.save()
+            store.diagnostic_summary['events'] = diagnostic_events
     return result

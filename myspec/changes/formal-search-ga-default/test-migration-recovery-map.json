@@ -1,0 +1,3080 @@
+{
+  "version": 1,
+  "baseline": "a311de29092413f8fe2bdae0778d6092a6596d7b",
+  "reimplementation_not_original_d3": true,
+  "old_d3_extra_ordinary_node": "Unknown: original complete node list and relevant source bytes are unavailable. Old 413/285 cannot identify its extra ordinary node; no filler test added. New baseline mapping and independent review are required.",
+  "scope": "Maps every a311 GSE test function and every changed parametrization to actual current collected entries. AST names alone are not a semantic proof; retained assertions and explicit approved consolidations must be independently reviewed. Gear old-entry mapping is tests/gear-planner/README.md; addon/dev moves are in test-migration-plan.md and source diff.",
+  "counts": {
+    "sim2gse": {
+      "ordinary": 287,
+      "real": 123
+    },
+    "gear-planner": {
+      "ordinary": 21,
+      "real": 2
+    }
+  },
+  "files": [
+    {
+      "file": "tests/sim2gse/test_benchmark.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_snapshot_result_reader_binds_the_original_connected_project",
+          "baseline_line": 112,
+          "target_lines": [
+            113
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_product_rejects_missing_candidate_identity_and_incomplete_nominal",
+          "baseline_line": 10,
+          "target_lines": [
+            11
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_product_command_summarizes_without_requiring_five_final_scenarios",
+          "baseline_line": 20,
+          "target_lines": [
+            21
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_product_summary_uses_exported_nominal_and_side_budgets",
+          "baseline_line": 29,
+          "target_lines": [
+            31
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_product_comparison_reads_search_result_without_final_retest",
+          "baseline_line": 55,
+          "target_lines": [
+            54
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_snapshot_publication_recovers_from_brief_directory_occupation",
+          "baseline_line": 65,
+          "target_lines": [
+            64
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_snapshot_publication_preserves_persistent_and_unrelated_failures",
+          "baseline_line": 95,
+          "target_lines": [
+            95
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_burst.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_public_burst_precheck_requires_a_reviewed_definition",
+          "baseline_line": 67,
+          "target_lines": [
+            69
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_burst_precheck_roundtrip_and_real_potion",
+          "baseline_line": 74,
+          "target_lines": [
+            77
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_burst_rejects_draft_corruption",
+          "baseline_line": 127,
+          "target_lines": [
+            131
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_burst_storage_failure_keeps_the_previous_version",
+          "baseline_line": 146,
+          "target_lines": [
+            151
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_burst_native_rejects_wrong_spell_id_with_a_real_action",
+          "baseline_line": 172,
+          "target_lines": [
+            171
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_source_castsequence_keeps_native_queued_origins",
+          "baseline_line": 185,
+          "target_lines": [
+            185
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_sources_share_cooldown_and_reset_between_battles",
+          "baseline_line": 213,
+          "target_lines": [
+            214
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_search_excludes_current_burst_content_and_changes_with_definition",
+          "baseline_line": 245,
+          "target_lines": [
+            247
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reviewed_burst_training_rejects_unsafe_adaptation_and_preserves_old_training",
+          "baseline_line": 285,
+          "target_lines": [
+            286
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_page_dual_scores_character_adapted_seed_without_changing_training",
+          "baseline_line": 373,
+          "target_lines": [
+            374
+          ],
+          "mapping": "Approved duplicate old/current engine HTTP matrix reduced to old engine real; both source contracts retained as ordinary rules.",
+          "parameter_declaration_changed": true,
+          "role": "real",
+          "collected_count": 1,
+          "case_ids": [
+            "[True]"
+          ]
+        },
+        {
+          "baseline_test": "test_dual_keeps_completed_child_and_recovers_without_searching_it_again",
+          "baseline_line": 448,
+          "target_lines": [
+            451
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_children_reuse_the_frozen_definition_without_rediscovery",
+          "baseline_line": 522,
+          "target_lines": [
+            526
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_character_export.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_public_commands_reject_retired_data_options",
+          "baseline_line": 39,
+          "target_lines": [
+            40
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_lua_start_callback_counts_failed_process_start",
+          "baseline_line": 61,
+          "target_lines": [
+            62
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_process_creation_failure_does_not_call_start_callback",
+          "baseline_line": 78,
+          "target_lines": [
+            82
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_native_precombat_buttons_and_item_keep_the_complete_nocombat_prefix",
+          "baseline_line": 89,
+          "target_lines": [
+            92
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_client_target_masks_apply_across_classes_and_mixed_blocks",
+          "baseline_line": 140,
+          "target_lines": [
+            150
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_entry_rejects_output_override_before_writing",
+          "baseline_line": 174,
+          "target_lines": [
+            178
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_entry_preserves_real_character_and_bag_candidates",
+          "baseline_line": 184,
+          "target_lines": [
+            193
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_entry_rejects_multiple_characters_and_bad_values",
+          "baseline_line": 224,
+          "target_lines": [
+            234
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_entry_simulates_native_channel_item",
+          "baseline_line": 242,
+          "target_lines": [
+            247
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_native_catalogue_exports_both_active_items",
+          "baseline_line": 257,
+          "target_lines": [
+            263
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_checkpoint_changes.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_checkpoint_structural_changes_fall_back_without_losing_unmarked_nested_state",
+          "baseline_line": 37,
+          "target_lines": [
+            51
+          ],
+          "role": "ordinary",
+          "collected_count": 5,
+          "case_ids": [
+            "[reorder]",
+            "[delete]",
+            "[append]",
+            "[new_field]",
+            "[whole_archive]"
+          ]
+        },
+        {
+          "baseline_test": "test_scoped_checkpoint_deletes_an_explicit_field",
+          "baseline_line": 57,
+          "target_lines": [
+            72
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_scoped_checkpoint_failure_rolls_back_and_retry_persists_all_changes",
+          "baseline_line": 66,
+          "target_lines": [
+            81
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_report_checkpoint_persists_original_locations_with_one_complete_comparison",
+          "baseline_line": 126,
+          "target_lines": [
+            231
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_mixed_checkpoint_and_immediate_batch_encode_each_summary_once",
+          "baseline_line": 142,
+          "target_lines": [
+            248
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_empty_report_checkpoint_still_saves_nested_state_and_summary_count",
+          "baseline_line": 193,
+          "target_lines": [
+            299
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[False]",
+            "[True]"
+          ]
+        },
+        {
+          "baseline_test": "test_last_report_group_failure_keeps_reliable_reports_for_retry_or_recovery",
+          "baseline_line": 209,
+          "target_lines": [
+            315
+          ],
+          "role": "real",
+          "collected_count": 2,
+          "case_ids": [
+            "[same_object]",
+            "[reopen]"
+          ]
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_combat_log.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_preserves_real_training_damage_after_the_dummy_reaches_one_health",
+          "baseline_line": 30,
+          "target_lines": [
+            77
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reports_normal_kill_damage_at_every_target_level",
+          "baseline_line": 53,
+          "target_lines": [
+            99
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reports_primary_target_without_calling_splash_a_multitarget_test",
+          "baseline_line": 76,
+          "target_lines": [
+            121
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_groups_damage_by_spell_id_owner_and_button_origin",
+          "baseline_line": 124,
+          "target_lines": [
+            183
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_rejects_overcounted_simulation_damage_sources",
+          "baseline_line": 199,
+          "target_lines": [
+            202
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_uses_latest_gse_session_and_compares_primary_dps_with_simulation",
+          "baseline_line": 224,
+          "target_lines": [
+            216
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_rejects_ambiguous_comparison_and_malformed_debug",
+          "baseline_line": 300,
+          "target_lines": [
+            294
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_rejects_non_finite_and_inconsistent_simulation_distributions",
+          "baseline_line": 328,
+          "target_lines": [
+            318
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": [
+        "test_groups_damage_by_spell_id_owner_and_button_origin_in_memory"
+      ]
+    },
+    {
+      "file": "tests/sim2gse/test_data_store_connection.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_connected_consumer_reads_writes_without_old_user_installation",
+          "baseline_line": 13,
+          "target_lines": [
+            15
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_unconnected_consumer_fails_before_writing_data",
+          "baseline_line": 52,
+          "target_lines": [
+            54
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_page_classifies_wrapped_storage_failure_from_the_real_target",
+          "baseline_line": 69,
+          "target_lines": [
+            71
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_known_batch_groups_and_legacy_single_do_not_fallback_on_missing_keys",
+          "baseline_line": 96,
+          "target_lines": [
+            98
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_page_classifies_report_locator_permission_error_as_storage_failure",
+          "baseline_line": 114,
+          "target_lines": [
+            115
+          ],
+          "role": "real",
+          "collected_count": 2,
+          "case_ids": [
+            "[.report-publish.lock]",
+            "[.report-locations.jsonl]"
+          ]
+        },
+        {
+          "baseline_test": "test_page_reports_storage_startup_failure_before_native_compute",
+          "baseline_line": 172,
+          "target_lines": [
+            172
+          ],
+          "role": "real",
+          "collected_count": 3,
+          "case_ids": [
+            "[dual-api-version]",
+            "[optimize-api-version]",
+            "[dual-definition-file]"
+          ]
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_diagnostic_logging.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_public_report_write_records_only_opt_in_stage_totals",
+          "baseline_line": 10,
+          "target_lines": [
+            9
+          ],
+          "role": "real",
+          "collected_count": 1,
+          "case_ids": [
+            "[True]"
+          ]
+        },
+        {
+          "baseline_test": "test_timing_failure_does_not_replace_report_error",
+          "baseline_line": 29,
+          "target_lines": [
+            30
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_stage_wall_union_merges_overlaps_across_invocation_owners",
+          "baseline_line": 39,
+          "target_lines": [
+            40
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_covered_wall_unions_selected_stages_without_wait_or_nested_double_count",
+          "baseline_line": 57,
+          "target_lines": [
+            58
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_dual_engine_identity.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_dual_verifies_engines_once_per_start_and_resume_with_separate_scene_runtimes",
+          "baseline_line": 65,
+          "target_lines": [
+            65
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_rejects_changed_engine_on_first_verification",
+          "baseline_line": 141,
+          "target_lines": [
+            142
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_engine.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_native_execution_timing_preserves_process_outcome",
+          "baseline_line": 16,
+          "target_lines": [
+            15
+          ],
+          "role": "ordinary",
+          "collected_count": 3,
+          "case_ids": [
+            "[False-success]",
+            "[True-success]",
+            "[True-timeout]"
+          ]
+        },
+        {
+          "baseline_test": "test_apl_pool_filters_native_non_buttons_and_preserves_button_variants_and_slots",
+          "baseline_line": 108,
+          "target_lines": [
+            107
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_apl_pool_rejects_missing_protocol_or_unmappable_native_button",
+          "baseline_line": 140,
+          "target_lines": [
+            138
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_apl_pool_ignores_unequipped_and_passive_items_but_keeps_executed_item_errors",
+          "baseline_line": 153,
+          "target_lines": [
+            151
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_apl_pool_preserves_baseline_button_commands_and_rejects_unconfirmed_only_forms",
+          "baseline_line": 179,
+          "target_lines": [
+            176
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_queries_reject_invalid_ids_and_overflow",
+          "baseline_line": 204,
+          "target_lines": [
+            200
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inventory_adds_native_query_and_real_items_without_widening_search",
+          "baseline_line": 215,
+          "target_lines": [
+            206
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reference_runs_action_query_separately_from_dps_profile",
+          "baseline_line": 249,
+          "target_lines": [
+            239
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_probe_action_is_initialized_for_mage_pet_setup",
+          "baseline_line": 292,
+          "target_lines": [
+            279
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_probe_resolves_name_form_action_outside_executed_subset",
+          "baseline_line": 320,
+          "target_lines": [
+            309
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_formal_champion.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_dual_inherits_each_scenes_formal_champion_after_publication",
+          "baseline_line": 11,
+          "target_lines": [
+            11
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_preserves_legacy_ten_source_paths_and_replaces_champion_after_complete_retests",
+          "baseline_line": 51,
+          "target_lines": [
+            52
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_stale_task_cannot_replace_a_newly_published_distinct_champion",
+          "baseline_line": 118,
+          "target_lines": [
+            120
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_resume_publishes_a_saved_winner_before_completion_or_budget_early_return",
+          "baseline_line": 189,
+          "target_lines": [
+            192
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_formal_champion_isolated_by_frozen_character_and_full_conditions",
+          "baseline_line": 233,
+          "target_lines": [
+            237
+          ],
+          "mapping": "Original equipment/cadence/engine/targets loop becomes four ordinary cases; real source isolation still represented.",
+          "parameter_declaration_changed": true,
+          "role": "ordinary",
+          "collected_count": 4,
+          "case_ids": [
+            "[equipment]",
+            "[cadence]",
+            "[engine]",
+            "[targets]"
+          ]
+        },
+        {
+          "baseline_test": "test_management_selects_the_highest_within_two_known_old_rule_sources_and_rejects_missing_proof",
+          "baseline_line": 330,
+          "target_lines": [
+            326
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_cancel_freezes_formal_champion_and_never_publishes_a_partial_batch",
+          "baseline_line": 432,
+          "target_lines": [
+            428
+          ],
+          "role": "real",
+          "collected_count": 1,
+          "case_ids": [
+            "[partial_first_batch]"
+          ],
+          "mapping": "Only partial_first_batch remains real, retaining frozen champion/version, no partial publication, external version update and file resume/unchanged publication. Existing formal memory cancellation proves a complete successful report/31 samples, unchanged SQLite checkpoint receipt and no repeated successful request; snapshot/cohort ordinary validators retain version/source rules. Only complete_winner x dual HTTP x publication/file resume cross is retired.",
+          "parameter_declaration_changed": true
+        },
+        {
+          "baseline_test": "test_dual_formal_champion_read_errors_remain_visible_and_do_not_overwrite_the_incumbent",
+          "baseline_line": 478,
+          "target_lines": [
+            473
+          ],
+          "mapping": "Original fault loop becomes five ordinary cases; strict source/report validators retained, true read/CAS failure has real representatives.",
+          "parameter_declaration_changed": true,
+          "role": "ordinary",
+          "collected_count": 5,
+          "case_ids": [
+            "[corrupt_champion]",
+            "[temporary_read]",
+            "[corrupt_candidate]",
+            "[temporary_candidate_read]",
+            "[source_program]"
+          ]
+        }
+      ],
+      "new_test_names": [
+        "test_formal_champion_rejects_changed_algorithm_or_incomplete_retest_contract",
+        "test_formal_champion_requires_complete_request_reports_and_matching_source",
+        "test_formal_champion_validates_all_six_original_reports_without_a_center",
+        "test_formal_snapshot_freezes_the_verified_published_version_without_rewriting_it",
+        "test_formal_source_consumes_only_supported_explicit_contracts",
+        "test_formal_source_rejects_unknown_or_noninteger_contract_versions"
+      ]
+    },
+    {
+      "file": "tests/sim2gse/test_formal_champion_recovery.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_public_formal_search_naturally_retests_and_exports_one_champion_per_scene",
+          "baseline_line": 50,
+          "target_lines": [
+            51
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_formal_publication_failure_is_recoverable_without_rescoring_saved_scene",
+          "baseline_line": 79,
+          "target_lines": [
+            81
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_failed_first_score_keeps_reference_readable_without_search_columns",
+          "baseline_line": 118,
+          "target_lines": [
+            121
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_formal_champion_rejects_a_truncated_finalist_cohort_before_scoring",
+          "baseline_line": 142,
+          "target_lines": [
+            146
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_formal_completed_save_failure_resumes_verified_winner_without_rescoring",
+          "baseline_line": 182,
+          "target_lines": [
+            165
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_formal_champion_review.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_public_saved_result_remains_readable_when_optional_checkpoint_metadata_is_broken",
+          "baseline_line": 12,
+          "target_lines": [
+            12
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_formal_coarse_tolerance.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_formal_invalid_offspring_retains_verified_slot_across_checkpoint_resume",
+          "baseline_line": 97,
+          "target_lines": [
+            98
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_formal_coarse_tolerance_fails_closed_outside_proven_new_score_data",
+          "baseline_line": 119,
+          "target_lines": [
+            120
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": [
+        "test_invalid_mean_uses_real_report_validation_and_never_masks_count_or_stage"
+      ]
+    },
+    {
+      "file": "tests/sim2gse/test_interface.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_import_inspection_lists_versions_and_nested_syntax_without_simulating",
+          "baseline_line": 56,
+          "target_lines": [
+            123
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_returns_the_full_decoded_payload",
+          "baseline_line": 75,
+          "target_lines": [
+            142
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_decodes_fixed_protected_sequence_vector",
+          "baseline_line": 99,
+          "target_lines": [
+            166
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_reports_unknown_protected_key_without_dropping_raw_input",
+          "baseline_line": 119,
+          "target_lines": [
+            186
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_parses_collection_variable_and_macro_encodings",
+          "baseline_line": 129,
+          "target_lines": [
+            196
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_recursively_expands_plain_nested_collection_members",
+          "baseline_line": 161,
+          "target_lines": [
+            228
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_reconstructs_self_contained_collection_delta_fork",
+          "baseline_line": 202,
+          "target_lines": [
+            269
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_rejects_unknown_block_with_member_version_and_path",
+          "baseline_line": 290,
+          "target_lines": [
+            357
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_marks_newer_gse_members_as_not_simulatable",
+          "baseline_line": 304,
+          "target_lines": [
+            371
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_preserves_empty_and_corrupt_encoding_diagnostics",
+          "baseline_line": 322,
+          "target_lines": [
+            389
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_rejects_duplicate_cbor_map_keys_without_silent_loss",
+          "baseline_line": 338,
+          "target_lines": [
+            405
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_rejects_decompression_over_limit",
+          "baseline_line": 355,
+          "target_lines": [
+            422
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_terminal_parent_does_not_show_stale_scene_as_running",
+          "baseline_line": 398,
+          "target_lines": [
+            488
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume",
+          "baseline_line": 426,
+          "target_lines": [
+            512
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_inspection_http_wiring",
+          "baseline_line": 477,
+          "target_lines": [
+            577
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_empty_submission_is_rejected_without_creating_a_task",
+          "baseline_line": 493,
+          "target_lines": [
+            593
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_http_rejects_removed_settings_before_start_or_resume",
+          "baseline_line": 501,
+          "target_lines": [
+            601
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_api_rejects_unknown_combat_macro_condition_before_creating_task",
+          "baseline_line": 514,
+          "target_lines": [
+            614
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_service_simulates_selected_import_and_returns_dps",
+          "baseline_line": 541,
+          "target_lines": [
+            640
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_service_reports_unmapped_import_skill_without_dps",
+          "baseline_line": 567,
+          "target_lines": [
+            668
+          ],
+          "role": "ordinary",
+          "collected_count": 1,
+          "target_file": "tests/sim2gse/test_interface.py",
+          "target_tests": [
+            "test_unmapped_import_error_is_reported_without_dps"
+          ],
+          "mapping": "Failed status, spell id 99999999, no DPS and no result_ready are retained in the existing ordinary Handler/error projection; selected-import scoring and the complete real browser remain. The duplicate unknown-skill HTTP/task preparation cross is retired.",
+          "parameter_declaration_changed": true
+        },
+        {
+          "baseline_test": "test_published_report_group_is_reused_after_registration_interruption",
+          "baseline_line": 588,
+          "target_lines": [
+            691
+          ],
+          "role": "ordinary",
+          "collected_count": 1,
+          "target_file": "tests/sim2gse/test_interface.py",
+          "target_tests": [
+            "test_plain_search_request_preserves_disabled_burst_option"
+          ],
+          "mapping": "Plain Handler input/scene and use_burst=False remain ordinary; no-burst scoring is also asserted by the ordinary variance representative. The burst=True real representative retains the full twelve-report physical registration interruption, zero-repeat requests and tail recovery; only the plain x complete HTTP/GA/storage cross is retired.",
+          "parameter_declaration_changed": true
+        },
+        {
+          "baseline_test": "test_published_burst_report_group_is_reused_after_registration_interruption",
+          "baseline_line": 591,
+          "target_lines": [
+            715
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_resume_after_partial_group_commit_uses_unused_group_number",
+          "baseline_line": 686,
+          "target_lines": [
+            141
+          ],
+          "role": "real",
+          "collected_count": 1,
+          "target_file": "tests/sim2gse/test_checkpoint_changes.py",
+          "target_tests": [
+            "test_resume_after_partial_group_commit_uses_unused_group_number"
+          ],
+          "mapping": "The same real partial-commit mechanism now uses existing checkpoint/report helpers without HTTP/GA setup: thirteen physical reports, eleven grouped + legacy twelfth + tail, exact SQLite backup/reopen, recover_reports, next group number 2, all keys/DPS/receipts unique, counters and native JSON cleanup. Native-evaluation-to-published-count correlation remains in the burst registration real witness.",
+          "parameter_declaration_changed": true
+        },
+        {
+          "baseline_test": "test_simultaneous_identical_tasks_keep_one_logical_report_per_batch",
+          "baseline_line": 743,
+          "target_lines": [
+            806
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_lost_report_locations_reject_duplicate_publication",
+          "baseline_line": 746,
+          "target_lines": [
+            810
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_search_rejects_missing_variance_without_failing_task",
+          "baseline_line": 850,
+          "target_lines": [
+            70
+          ],
+          "role": "ordinary",
+          "collected_count": 1,
+          "target_file": "tests/sim2gse/test_interface.py",
+          "target_tests": [
+            "test_formal_search_rejects_missing_variance_without_failing_task"
+          ],
+          "mapping": "Three exact candidates run the actual formal memory GA: bad variance twice, exclusion, 120-DPS winner, two complete finalists with three 128-iteration batches/381 samples, no diagnostics or burst. HTTP, file durability and true native execution have separate real witnesses; no product scoring policy is weakened.",
+          "parameter_declaration_changed": true
+        },
+        {
+          "baseline_test": "test_public_search_reduces_wait_clicks_and_native_evaluates_selected_candidate",
+          "baseline_line": 921,
+          "target_lines": [
+            916
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_completed_task_is_not_visible_before_its_result_is_reliably_saved",
+          "baseline_line": 1082,
+          "target_lines": [
+            1079
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_browser_computes_copies_and_clears_real_candidate",
+          "baseline_line": 1126,
+          "target_lines": [
+            1124
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_invalid_interval_is_rejected_before_creating_task",
+          "baseline_line": 1266,
+          "target_lines": [
+            1265
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_rejects_gse_click_rate_that_differs_from_simulation_interval",
+          "baseline_line": 1273,
+          "target_lines": [
+            1272
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_interface_reports_native_and_export_failures_without_internal_paths",
+          "baseline_line": 1288,
+          "target_lines": [
+            1305
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_freezes_timeline_setting_and_preserves_storage_failure_recovery",
+          "baseline_line": 1320,
+          "target_lines": [
+            1322
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": [
+        "test_native_unsupported_specializations_fail_before_export"
+      ]
+    },
+    {
+      "file": "tests/sim2gse/test_manual_search_task.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_manual_acceptance_accepts_search_result_without_final_retest",
+          "baseline_line": 9,
+          "target_lines": [
+            10
+          ],
+          "role": "ordinary",
+          "collected_count": 1,
+          "target_tests": [
+            "test_manual_acceptance_requires_natural_complete_nominal_retest"
+          ],
+          "mapping": "Old manual fixture only accepted retired no-retest/600-second output. P2 regression replaces it with natural completed nominal/3x128 evidence, allows >1000 candidates and >600 seconds, and rejects incomplete flags or missing finalists before saving acceptance."
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_native_compatibility.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_unknown_build_protocol_is_rejected",
+          "baseline_line": 20,
+          "target_lines": [
+            21
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_changed_own_source_rejects_previously_built_engine",
+          "baseline_line": 31,
+          "target_lines": [
+            26
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_original_remains_a_verification_artifact_only",
+          "baseline_line": 56,
+          "target_lines": [
+            40
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_original_baseline_and_disabled_controller_keep_native_combat",
+          "baseline_line": 91,
+          "target_lines": [
+            76
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reference_reads_initialized_replacement_forms_without_claiming_availability",
+          "baseline_line": 183,
+          "target_lines": [
+            169
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reference_reads_audited_player_haste_and_executed_precombat_occupancy",
+          "baseline_line": 218,
+          "target_lines": [
+            204
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reference_collects_non_dk_cast_and_complete_channel_timing",
+          "baseline_line": 241,
+          "target_lines": [
+            227
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_reference_does_not_count_unexecuted_precombat_cast",
+          "baseline_line": 277,
+          "target_lines": [
+            263
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_population_training.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_public_check_freezes_both_verified_heroes_and_four_groups",
+          "baseline_line": 18,
+          "target_lines": [
+            139
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_run_uses_all_materials_ga_and_publishes_four_five_scene_results",
+          "baseline_line": 40,
+          "target_lines": [
+            159
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_selection_reads_each_report_group_once_without_skipping_receipts",
+          "baseline_line": 108,
+          "target_lines": [
+            254
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_default_prepare_and_run_verify_four_real_template_groups_and_shared_limit",
+          "baseline_line": 194,
+          "target_lines": [
+            311
+          ],
+          "role": "real",
+          "collected_count": 2,
+          "case_ids": [
+            "[False]",
+            "[True]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_cancel_flushes_tail_and_resume_keeps_frozen_config_and_successful_batches",
+          "baseline_line": 305,
+          "target_lines": [
+            421
+          ],
+          "mapping": "Explicitly approved 2x3 native matrix becomes three representatives: foreground on/on, foreground off/on, interrupt on/off. Both mechanisms and all transitions remain; not all crosses are proved.",
+          "parameter_declaration_changed": true,
+          "role": "real",
+          "collected_count": 3,
+          "case_ids": [
+            "[foreground-on_to_on]",
+            "[foreground-off_to_on]",
+            "[interrupt-on_to_off]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_training_accepts_verified_zero_stress_as_full_loss_without_retry",
+          "baseline_line": 402,
+          "target_lines": [
+            524
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_run_retries_original_request_once_and_preserves_exhaustion_on_resume",
+          "baseline_line": 438,
+          "target_lines": [
+            539
+          ],
+          "role": "ordinary",
+          "collected_count": 17,
+          "case_ids": [
+            "[candidate-1]",
+            "[candidate-2]",
+            "[exit-1]",
+            "[exit-2]",
+            "[missing-1]",
+            "[missing-2]",
+            "[json-1]",
+            "[json-2]",
+            "[nan-1]",
+            "[nan-2]",
+            "[inf-1]",
+            "[inf-2]",
+            "[samples-1]",
+            "[samples-2]",
+            "[identity-1]",
+            "[storage-1]",
+            "[duration-1]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_run_feedback_failure_uses_same_persistent_single_retry_budget",
+          "baseline_line": 524,
+          "target_lines": [
+            612
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_illegal_slot_uses_first_child_and_ten_persistent_extra_regenerations",
+          "baseline_line": 558,
+          "target_lines": [
+            626
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[clicks]",
+            "[macro]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_a_tournament_and_block_crossover_keep_duplicate_slots_and_reuse_scores",
+          "baseline_line": 611,
+          "target_lines": [
+            661
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_selection_keeps_nominal_and_minimax_stability_champions_and_reports_ineligible",
+          "baseline_line": 672,
+          "target_lines": [
+            691
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[False]",
+            "[True]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_formal_entry_reads_legacy_contract_rejects_unknown_and_recycles_completed_winner",
+          "baseline_line": 724,
+          "target_lines": [
+            725
+          ],
+          "role": "ordinary",
+          "collected_count": 4,
+          "case_ids": [
+            "[None]",
+            "[1]",
+            "[2]",
+            "[99]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_configured_sample_plan_and_stagnation_are_used_without_old_stage_caps",
+          "baseline_line": 764,
+          "target_lines": [
+            755
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_publication_failure_preserves_old_four_and_resume_repairs_only_missing_report_group",
+          "baseline_line": 796,
+          "target_lines": [
+            766
+          ],
+          "role": "real",
+          "collected_count": 1,
+          "case_ids": [
+            "[retest]"
+          ],
+          "mapping": "Only retest remains real: delete twelve physical Parquet reports, reopen SQLite, retain old four results and reject forged checkpoint DPS. The existing ordinary coarse-resume test also completes 66 unique requests, removes six coarse reports, rescoring only those six while preserving all sixty successful retest reports and SQLite receipts. Coarse x physical Parquet x complete publication recovery cross is retired.",
+          "parameter_declaration_changed": true
+        },
+        {
+          "baseline_test": "test_public_four_group_resume_uses_frozen_outer_pool_after_next_batch_toml_changes",
+          "baseline_line": 863,
+          "target_lines": [
+            833
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[all_frozen]",
+            "[mixed_new]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_errors",
+          "baseline_line": 927,
+          "target_lines": [
+            857
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_alias_template_cannot_bypass_frozen_group_scheduling",
+          "baseline_line": 998,
+          "target_lines": [
+            914
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_run_training_defaults_really_cross_and_mutate_without_global_rng_patch",
+          "baseline_line": 1049,
+          "target_lines": [
+            942
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_ga_timeline_switch_exports_existing_scores_without_extra_evaluations",
+          "baseline_line": 1090,
+          "target_lines": [
+            962
+          ],
+          "role": "ordinary",
+          "collected_count": 4,
+          "case_ids": [
+            "[False-cli]",
+            "[False-api]",
+            "[True-cli]",
+            "[True-api]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_feedback_commits_at_twelve_and_replays_same_generation_rng",
+          "baseline_line": 1137,
+          "target_lines": [
+            996
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_failed_ga_exports_failed_timeline_and_compares_without_scoring",
+          "baseline_line": 1213,
+          "target_lines": [
+            1047
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_program.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_castsequence_parser_keeps_reset_rules_and_rejects_conditions",
+          "baseline_line": 24,
+          "target_lines": [
+            25
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_macro_interpreter_maps_raw_text_with_explicit_scene_and_catalogue",
+          "baseline_line": 39,
+          "target_lines": [
+            40
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_compile_rejects_click_rate_different_from_simulation_input_interval",
+          "baseline_line": 60,
+          "target_lines": [
+            61
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_import_rejects_gse_version_newer_than_locked_upstream_before_compiling",
+          "baseline_line": 71,
+          "target_lines": [
+            72
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_embed_missing_and_cycle_errors_include_source_path",
+          "baseline_line": 86,
+          "target_lines": [
+            86
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_expansion_limit_is_checked_before_starting_upstream_compiler",
+          "baseline_line": 109,
+          "target_lines": [
+            109
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_random_loop_repeat_maps_actual_upstream_order_across_seeds",
+          "baseline_line": 124,
+          "target_lines": [
+            123
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_upstream_compiles_six_control_blocks_in_one_collection",
+          "baseline_line": 163,
+          "target_lines": [
+            163
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_default_scene_rejects_active_petattack_with_its_source_path",
+          "baseline_line": 263,
+          "target_lines": [
+            264
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_item_action_rejects_ambiguous_actual_item_id",
+          "baseline_line": 277,
+          "target_lines": [
+            278
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_search_program_keeps_export_and_compiled_order",
+          "baseline_line": 285,
+          "target_lines": [
+            286
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_overlong_compiled_macro_rejected_before_lua",
+          "baseline_line": 304,
+          "target_lines": [
+            306
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_retired_capabilities.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_public_formal_search_without_profession_rule_library_keeps_native_three_part_scope",
+          "baseline_line": 6,
+          "target_lines": [
+            6
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_task_rejects_removed_capability_even_when_disabled",
+          "baseline_line": 37,
+          "target_lines": [
+            36
+          ],
+          "role": "ordinary",
+          "collected_count": 6,
+          "case_ids": [
+            "[False-adaptive_selector_enabled]",
+            "[False-rule_initialization_enabled]",
+            "[False-rule_diagnostics_policy]",
+            "[True-adaptive_selector_enabled]",
+            "[True-rule_initialization_enabled]",
+            "[True-rule_diagnostics_policy]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_task_rejects_removed_toml_before_reading_profile",
+          "baseline_line": 47,
+          "target_lines": [
+            44
+          ],
+          "role": "ordinary",
+          "collected_count": 3,
+          "case_ids": [
+            "[adaptive_selector_enabled]",
+            "[rule_initialization_enabled]",
+            "[rule_diagnostics_policy]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_resume_rejects_removed_override_before_reading_old_task",
+          "baseline_line": 58,
+          "target_lines": [
+            59
+          ],
+          "role": "ordinary",
+          "collected_count": 3,
+          "case_ids": [
+            "[adaptive_selector_enabled]",
+            "[rule_initialization_enabled]",
+            "[rule_diagnostics_policy]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_resume_rejects_retired_rule_edit_and_diagnosis_before_reading_task",
+          "baseline_line": 66,
+          "target_lines": [
+            66
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[options0]",
+            "[options1]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_cli_rejects_retired_rule_editor",
+          "baseline_line": 73,
+          "target_lines": [
+            72
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[rules-check]",
+            "[rules-save]"
+          ]
+        },
+        {
+          "baseline_test": "test_research_cli_rejects_retired_per_material_ab_execution_before_loading_materials",
+          "baseline_line": 79,
+          "target_lines": [
+            79
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_cli_rejects_removed_options_instead_of_silently_disabling",
+          "baseline_line": 94,
+          "target_lines": [
+            100
+          ],
+          "role": "ordinary",
+          "collected_count": 8,
+          "case_ids": [
+            "[--adaptive-selector-enabled-task]",
+            "[--adaptive-selector-enabled-seed_training]",
+            "[--no-adaptive-selector-enabled-task]",
+            "[--no-adaptive-selector-enabled-seed_training]",
+            "[--rule-initialization-enabled-task]",
+            "[--rule-initialization-enabled-seed_training]",
+            "[--no-rule-initialization-enabled-task]",
+            "[--no-rule-initialization-enabled-seed_training]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_resume_refuses_incompatible_frozen_modes_without_rewriting_identity",
+          "baseline_line": 105,
+          "target_lines": [
+            110
+          ],
+          "role": "ordinary",
+          "collected_count": 3,
+          "case_ids": [
+            "[adaptive_selector_enabled]",
+            "[rule_initialization_enabled]",
+            "[rule_diagnostics_policy]"
+          ]
+        },
+        {
+          "baseline_test": "test_public_training_refuses_old_per_material_workspace_before_native",
+          "baseline_line": 128,
+          "target_lines": [
+            135
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_ga_without_profession_rule_library_publishes_native_scope",
+          "baseline_line": 163,
+          "target_lines": [
+            161
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_foreground_cancel_stops_both_active_ga_groups_and_keeps_old_publication",
+          "baseline_line": 189,
+          "target_lines": [
+            188
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_concurrent_prepare_uses_check_frozen_burst_identity_without_rediscovery",
+          "baseline_line": 243,
+          "target_lines": [
+            243
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_pretraining_rejects_unsupported_observation_levels_before_any_work",
+          "baseline_line": 289,
+          "target_lines": [
+            288
+          ],
+          "role": "ordinary",
+          "collected_count": 3,
+          "case_ids": [
+            "[options0]",
+            "[options1]",
+            "[options2]"
+          ]
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_runtime.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_completed_process_returns_without_waiting_for_poll_interval",
+          "baseline_line": 14,
+          "target_lines": [
+            22
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_redirect_cleanup_retries_only_transient_windows_sharing_violation",
+          "baseline_line": 35,
+          "target_lines": [
+            42
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_unbounded_training_runtime_keeps_process_timeout_and_cancellation",
+          "baseline_line": 95,
+          "target_lines": [
+            102
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_search.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_mutate_fetches_parent_feedback_only_after_its_usage_gate",
+          "baseline_line": 29,
+          "target_lines": [
+            30
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_mutate_keeps_legacy_feedback_truthiness_and_random_consumption",
+          "baseline_line": 60,
+          "target_lines": [
+            61
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_store_initialization_failure_closes_connection",
+          "baseline_line": 320,
+          "target_lines": [
+            333
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_final_publish_failure_still_closes_connection",
+          "baseline_line": 341,
+          "target_lines": [
+            348
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_normal_task_and_dual_scene_still_refuse_four_processes",
+          "baseline_line": 373,
+          "target_lines": [
+            381
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_uses_full_apl_pool_without_changing_baseline_starts",
+          "baseline_line": 384,
+          "target_lines": [
+            394
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_mutates_unexecuted_apl_button_and_scores_exports_it",
+          "baseline_line": 404,
+          "target_lines": [
+            411
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_formal_nominal_retest_selects_from_all_finalists_without_paired_ci",
+          "baseline_line": 468,
+          "target_lines": [
+            475
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_formal_initial_scores_overlap_with_at_most_two_engines",
+          "baseline_line": 497,
+          "target_lines": [
+            500
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_cancelled_formal_batches_resume_without_repeating_successful_native_requests",
+          "baseline_line": 528,
+          "target_lines": [
+            528
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_run_task_deduplicates_equivalent_programs_before_native_evaluation",
+          "baseline_line": 560,
+          "target_lines": [
+            566
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_search_observability_is_off_by_default_and_preserves_selection",
+          "baseline_line": 611,
+          "target_lines": [
+            591
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_resume_rejects_checkpoint_from_an_old_behavior_identity_version",
+          "baseline_line": 684,
+          "target_lines": [
+            642
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_run_task_rejects_canonical_compiler_mismatch_before_native_evaluation",
+          "baseline_line": 722,
+          "target_lines": [
+            658
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_canonical_identity_expands_repeat_once_and_preserves_source_tree",
+          "baseline_line": 759,
+          "target_lines": [
+            676
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_canonical_identity_keeps_action_block_boundaries_distinct",
+          "baseline_line": 785,
+          "target_lines": [
+            702
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_canonical_identity_keeps_castsequence_reset_distinct",
+          "baseline_line": 795,
+          "target_lines": [
+            712
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_canonical_identity_rejects_invalid_wait_click_counts_with_location",
+          "baseline_line": 821,
+          "target_lines": [
+            738
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_canonical_identity_rejects_expansion_over_4096_with_location",
+          "baseline_line": 831,
+          "target_lines": [
+            748
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_search_starts_match_fixed_baseline_golden",
+          "baseline_line": 841,
+          "target_lines": [
+            758
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_entry_runs_multi_start_search_with_isolated_validation",
+          "baseline_line": 869,
+          "target_lines": [
+            785
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_search_resumes_without_resetting_budget_or_batches",
+          "baseline_line": 921,
+          "target_lines": [
+            843
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_corrupt_parquet_cache_shard_is_recomputed",
+          "baseline_line": 977,
+          "target_lines": [
+            900
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_cold_cache_storage_failure_and_cancellation_do_not_resimulate",
+          "baseline_line": 1037,
+          "target_lines": [
+            964
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_valid_exchange_report_is_kept_when_center_write_fails",
+          "baseline_line": 1074,
+          "target_lines": [
+            1002
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_hard_exit_preserves_checkpoint_and_cleans_owned_engine",
+          "baseline_line": 1105,
+          "target_lines": [
+            1034
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_owned_process_tree_hard_exit_does_not_stop_other_owner",
+          "baseline_line": 1238,
+          "target_lines": [
+            1170
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_completed_search_removes_native_report_exchange_files",
+          "baseline_line": 1285,
+          "target_lines": [
+            1218
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_native_global_failure_stops_task",
+          "baseline_line": 1358,
+          "target_lines": [
+            1292
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_formal_deduplicates_legal_starts_and_stops_on_complete_generation_stagnation",
+          "baseline_line": 1376,
+          "target_lines": [
+            1310
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_process_creation_failure_releases_thread_and_temporary_files",
+          "baseline_line": 1400,
+          "target_lines": [
+            1334
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_search_closeout.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_default_task_keeps_old_starts_without_rule_generation",
+          "baseline_line": 5,
+          "target_lines": [
+            5
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_default_search_expands_without_selector_or_rule_diagnostics",
+          "baseline_line": 21,
+          "target_lines": [
+            33
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_search_timeline.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_task_enabled_timeline_exports_existing_scores_after_completion",
+          "baseline_line": 9,
+          "target_tests": [
+            "test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume"
+          ],
+          "target_lines": [
+            208
+          ],
+          "mapping": "Approved timeline consolidation: completion, CLI override, cancellation/new resume segment, frozen algorithm, preparation timing and export failure assertions are in the linked file-lifecycle representative; score equivalence remains its separate ordinary test.",
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_cli_timeline_override_and_default_off_have_identical_results",
+          "baseline_line": 30,
+          "target_tests": [
+            "test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume"
+          ],
+          "target_lines": [
+            208
+          ],
+          "mapping": "Approved timeline consolidation: completion, CLI override, cancellation/new resume segment, frozen algorithm, preparation timing and export failure assertions are in the linked file-lifecycle representative; score equivalence remains its separate ordinary test.",
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_offline_curves_never_start_tasks_or_backfill_future_and_split_targets",
+          "baseline_line": 91,
+          "target_lines": [
+            60
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_cancelled_timeline_resumes_as_new_segment_and_export_failure_keeps_result",
+          "baseline_line": 126,
+          "target_tests": [
+            "test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume"
+          ],
+          "target_lines": [
+            208
+          ],
+          "mapping": "Approved timeline consolidation: completion, CLI override, cancellation/new resume segment, frozen algorithm, preparation timing and export failure assertions are in the linked file-lifecycle representative; score equivalence remains its separate ordinary test.",
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_records_distinct_ga_stages_with_independent_clock_and_bounded_events",
+          "baseline_line": 182,
+          "target_lines": [
+            99
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_damage_curves_read_existing_native_buckets_without_pet_double_count_or_simulation",
+          "baseline_line": 235,
+          "target_lines": [
+            164
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_resume_timeline_only_override_does_not_reset_frozen_algorithm",
+          "baseline_line": 270,
+          "target_tests": [
+            "test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume"
+          ],
+          "target_lines": [
+            208
+          ],
+          "mapping": "Approved timeline consolidation: completion, CLI override, cancellation/new resume segment, frozen algorithm, preparation timing and export failure assertions are in the linked file-lifecycle representative; score equivalence remains its separate ordinary test.",
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_async_task_timeline_includes_pre_worker_configuration_preparation",
+          "baseline_line": 282,
+          "target_tests": [
+            "test_timeline_cli_file_lifecycle_preserves_results_and_frozen_resume"
+          ],
+          "target_lines": [
+            208
+          ],
+          "mapping": "Approved timeline consolidation: completion, CLI override, cancellation/new resume segment, frozen algorithm, preparation timing and export failure assertions are in the linked file-lifecycle representative; score equivalence remains its separate ordinary test.",
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_curves_group_physical_conditions_not_algorithm_switches",
+          "baseline_line": 316,
+          "target_lines": [
+            186
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": [
+        "test_cancelled_retest_keeps_search_stop_time_but_exports_terminal_reason",
+        "test_timeline_switch_has_identical_formal_scores_and_native_requests"
+      ]
+    },
+    {
+      "file": "tests/sim2gse/test_seed_training.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_training_check_locates_current_template_without_starting_compute",
+          "baseline_line": 138,
+          "target_lines": [
+            205
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_training_entry_refuses_missing_definition_before_starting_compute",
+          "baseline_line": 158,
+          "target_lines": [
+            215
+          ],
+          "role": "ordinary",
+          "collected_count": 1,
+          "case_ids": [
+            "[run]"
+          ]
+        },
+        {
+          "baseline_test": "test_training_cli_override_repairs_partial_config_without_precheck_losing_it",
+          "baseline_line": 175,
+          "target_lines": [
+            229
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[run]",
+            "[prepare]"
+          ]
+        },
+        {
+          "baseline_test": "test_training_run_shows_requested_retest_maximum_before_compute_and_keeps_it_on_resume",
+          "baseline_line": 213,
+          "target_lines": [
+            249
+          ],
+          "mapping": "Same two literal settings/expected totals, supplied as parsed dict instead of temporary TOML.",
+          "parameter_declaration_changed": true,
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[settings0-expected0]",
+            "[settings1-expected1]"
+          ]
+        },
+        {
+          "baseline_test": "test_training_list_defaults_to_burst_and_preserves_legacy_results",
+          "baseline_line": 272,
+          "target_lines": [
+            278
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenance",
+          "baseline_line": 286,
+          "target_lines": [
+            292
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_training_condition_excludes_only_execution_and_keeps_real_inputs",
+          "baseline_line": 322,
+          "target_lines": [
+            327
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_training_entry_rejects_an_active_foreground_search",
+          "baseline_line": 357,
+          "target_lines": [
+            362
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_missing_project_and_unreadable_center_are_not_silently_empty",
+          "baseline_line": 376,
+          "target_lines": [
+            382
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_unconnected_public_search_does_not_create_data_root",
+          "baseline_line": 393,
+          "target_lines": [
+            392
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_prepare_rejects_oversize_macro_without_losing_legal_materials",
+          "baseline_line": 418,
+          "target_lines": [
+            410
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[illegal_program0]",
+            "[illegal_program1]"
+          ]
+        },
+        {
+          "baseline_test": "test_prepare_keeps_tool_failure_explicit_instead_of_rejecting_material",
+          "baseline_line": 445,
+          "target_lines": [
+            423
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[load_targeting]",
+            "[run_command]"
+          ]
+        },
+        {
+          "baseline_test": "test_prepare_reuses_context_and_only_rebuilds_changed_sources",
+          "baseline_line": 467,
+          "target_lines": [
+            436
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_training_prepare_freezes_burst_across_scenes_and_checks_current_definition",
+          "baseline_line": 551,
+          "target_lines": [
+            520
+          ],
+          "mapping": "Single changed=True parameter inlined; same definition-change rejection and frozen-scene assertions.",
+          "parameter_declaration_changed": true,
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_training_prepare_keeps_history_missing_and_read_failure_semantics",
+          "baseline_line": 608,
+          "target_lines": [
+            543
+          ],
+          "mapping": "Corrupt branch split into test_training_prepare_keeps_corrupt_history_without_republishing; missing/unreadable remain.",
+          "parameter_declaration_changed": true,
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[missing]",
+            "[unreadable]"
+          ]
+        },
+        {
+          "baseline_test": "test_training_prepare_keeps_formal_burst_through_public_cli",
+          "baseline_line": 675,
+          "target_lines": [
+            585
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": [
+        "test_training_prepare_keeps_corrupt_history_without_republishing"
+      ]
+    },
+    {
+      "file": "tests/sim2gse/test_sequence.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_evaluation_timing_preserves_report_and_trace_contract",
+          "baseline_line": 29,
+          "target_lines": [
+            27
+          ],
+          "role": "ordinary",
+          "collected_count": 3,
+          "case_ids": [
+            "[False-without_trace]",
+            "[True-with_trace]",
+            "[True-invalid_trace]"
+          ]
+        },
+        {
+          "baseline_test": "test_expanded_click_limit_applies_to_each_independent_sequence",
+          "baseline_line": 90,
+          "target_lines": [
+            87
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_replacement_castsequence_keeps_issued_signature_and_actual_action",
+          "baseline_line": 124,
+          "target_lines": [
+            121
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_native_queue_replacement_advances_castsequence_as_issued_member",
+          "baseline_line": 189,
+          "target_lines": [
+            193
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_expanded_loop_over_128_clicks_runs_with_separate_burst",
+          "baseline_line": 227,
+          "target_lines": [
+            231
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_long_search_castsequence_compiles_and_runs_with_member_limits",
+          "baseline_line": 249,
+          "target_lines": [
+            253
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_castsequence_timeout_refreshes_and_waits_for_next_client_update",
+          "baseline_line": 282,
+          "target_lines": [
+            286
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_castsequence_reset_while_second_member_pending_keeps_old_identity",
+          "baseline_line": 310,
+          "target_lines": [
+            314
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_castsequence_reset_does_not_restore_old_queue_as_pending",
+          "baseline_line": 332,
+          "target_lines": [
+            336
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_castsequence_reset_events_restart_first_member",
+          "baseline_line": 364,
+          "target_lines": [
+            368
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_castsequence_failure_holds_member_and_success_wraps",
+          "baseline_line": 395,
+          "target_lines": [
+            399
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_castsequence_repeated_clicks_do_not_replace_pending_member",
+          "baseline_line": 426,
+          "target_lines": [
+            430
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_public_entry_simulates_imported_loop_and_empty_clicks",
+          "baseline_line": 454,
+          "target_lines": [
+            458
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_single_evaluation_uses_interval_and_validates_phase",
+          "baseline_line": 502,
+          "target_lines": [
+            506
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_real_timeline_preserves_first_precombat_gcd",
+          "baseline_line": 519,
+          "target_lines": [
+            523
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_failed_steps_and_queue_replacement",
+          "baseline_line": 530,
+          "target_lines": [
+            534
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_cooldown_ending_inside_queue_window_executes_from_that_press",
+          "baseline_line": 552,
+          "target_lines": [
+            556
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_pending_queue_can_be_replaced_before_commit",
+          "baseline_line": 564,
+          "target_lines": [
+            568
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_queue_locks_before_gcd_ready_and_executes_at_native_boundary",
+          "baseline_line": 579,
+          "target_lines": [
+            583
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_repeated_queue_commits_do_not_accumulate_clock_lead",
+          "baseline_line": 600,
+          "target_lines": [
+            604
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_observed_gcd_transition_commits_previous_pending_action",
+          "baseline_line": 611,
+          "target_lines": [
+            615
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_observed_gcd_transition_rolls_back_when_snapshot_reverts",
+          "baseline_line": 631,
+          "target_lines": [
+            635
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_failure_feedback_is_not_visible_before_its_event_time",
+          "baseline_line": 650,
+          "target_lines": [
+            654
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_failed_tentative_winner_promotes_earlier_candidate",
+          "baseline_line": 674,
+          "target_lines": [
+            678
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_press_during_cast_queues_the_ready_button_variant",
+          "baseline_line": 691,
+          "target_lines": [
+            695
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_same_block_item_order",
+          "baseline_line": 713,
+          "target_lines": [
+            717
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_phase_reset_and_replay",
+          "baseline_line": 738,
+          "target_lines": [
+            742
+          ],
+          "role": "real",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_simulation_config.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_training_section_is_independent_validated_and_bounded",
+          "baseline_line": 57,
+          "target_lines": [
+            58
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_missing_config_uses_documented_defaults",
+          "baseline_line": 87,
+          "target_lines": [
+            86
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_partial_config_inherits_defaults",
+          "baseline_line": 98,
+          "target_lines": [
+            94
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_invalid_config_is_rejected",
+          "baseline_line": 112,
+          "target_lines": [
+            103
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_config_for_returns_a_valid_copy",
+          "baseline_line": 125,
+          "target_lines": [
+            115
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_entry_removes_only_valid_omnium_line_when_disabled",
+          "baseline_line": 132,
+          "target_lines": [
+            122
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_baseline_and_controlled_engines_share_target_options",
+          "baseline_line": 172,
+          "target_lines": [
+            163
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_report_target_count_can_follow_the_effective_config",
+          "baseline_line": 199,
+          "target_lines": [
+            188
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_controlled_sequence_passes_the_effective_config_to_the_engine",
+          "baseline_line": 239,
+          "target_lines": [
+            228
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_task_records_effective_config_and_rejects_changed_resume",
+          "baseline_line": 277,
+          "target_lines": [
+            246
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_tampered_input_is_rejected_before_task_store_construction",
+          "baseline_line": 320,
+          "target_lines": [
+            290
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_http_target_selection_keeps_startup_options_isolated",
+          "baseline_line": 358,
+          "target_lines": [
+            329
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_command_line_task_entry_loads_config_for_new_and_resume",
+          "baseline_line": 394,
+          "target_lines": [
+            358
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_command_line_service_reads_config_once_at_startup",
+          "baseline_line": 413,
+          "target_lines": [
+            376
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_invalid_service_config_stops_before_starting_server",
+          "baseline_line": 435,
+          "target_lines": [
+            398
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    },
+    {
+      "file": "tests/sim2gse/test_training_champion.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_dual_rescores_training_champion_from_an_older_engine",
+          "baseline_line": 192,
+          "target_lines": [
+            204
+          ],
+          "role": "ordinary",
+          "collected_count": 4,
+          "case_ids": [
+            "[False-False]",
+            "[False-True]",
+            "[True-False]",
+            "[True-True]"
+          ]
+        },
+        {
+          "baseline_test": "test_training_champion_rejects_invalid_final_evidence_and_reports_temporary_storage_errors",
+          "baseline_line": 233,
+          "target_lines": [
+            234
+          ],
+          "role": "ordinary",
+          "collected_count": 4,
+          "case_ids": [
+            "[wrong_program]",
+            "[report_missing]",
+            "[report_corrupt]",
+            "[temporary_error]"
+          ]
+        },
+        {
+          "baseline_test": "test_dual_does_not_replace_an_inapplicable_highest_champion_with_second_place",
+          "baseline_line": 287,
+          "target_lines": [
+            264
+          ],
+          "mapping": "Single static_proof=True parameter inlined; source applicability and no second-place fallback retained.",
+          "parameter_declaration_changed": true,
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_resume_keeps_the_frozen_training_champion_after_new_training_arrives",
+          "baseline_line": 316,
+          "target_lines": [
+            283
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_distinguishes_corrupt_training_records_from_temporary_read_failures",
+          "baseline_line": 364,
+          "target_lines": [
+            331
+          ],
+          "mapping": "Adds explicit corrupt alongside temporary ordinary record checks; no broad exception suppression.",
+          "parameter_declaration_changed": true,
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[processed_corrupt]",
+            "[processed_temporary]"
+          ]
+        },
+        {
+          "baseline_test": "test_dual_reads_completed_v1_without_current_profession_rule_library",
+          "baseline_line": 384,
+          "target_lines": [
+            347
+          ],
+          "role": "real",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_seed_scope_is_exact_and_target_count_is_only_source_evidence",
+          "baseline_line": 404,
+          "target_lines": [
+            368
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_dual_rejects_unproved_training_hero_identity",
+          "baseline_line": 435,
+          "target_lines": [
+            392
+          ],
+          "role": "ordinary",
+          "collected_count": 2,
+          "case_ids": [
+            "[source_rules]",
+            "[report_hero]"
+          ]
+        }
+      ],
+      "new_test_names": [
+        "test_training_selected_snapshot_rejects_mixed_unknown_or_incomplete_contracts",
+        "test_training_selected_snapshot_uses_explicit_contract_not_source_labels"
+      ]
+    },
+    {
+      "file": "tests/sim2gse/test_upgrade_skill.py",
+      "baseline_tests": [
+        {
+          "baseline_test": "test_page_batch_sizes_follow_cumulative_targets",
+          "baseline_line": 18,
+          "target_lines": [
+            17
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_postcheck_rejects_incomplete_index_before_loading_project",
+          "baseline_line": 27,
+          "target_lines": [
+            26
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_precheck_rejects_missing_project_without_creating_it",
+          "baseline_line": 37,
+          "target_lines": [
+            37
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_precheck_rejects_foreign_repository",
+          "baseline_line": 45,
+          "target_lines": [
+            45
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        },
+        {
+          "baseline_test": "test_postcheck_rejects_unreadable_index",
+          "baseline_line": 53,
+          "target_lines": [
+            55
+          ],
+          "role": "ordinary",
+          "collected_count": 1
+        }
+      ],
+      "new_test_names": []
+    }
+  ],
+  "mapping_defaults": {
+    "target": "Same file and same test name unless target_tests or target_file is listed; detailed cross-mechanism replacement notes name the retained real/ordinary witnesses.",
+    "assertions": "Same-name retention is an index, not proof: inspect the actual source diff and declared boundary moves. Changed parameter declarations and all merged entries have explicit notes.",
+    "roles": "Role comes from actual pytest collection, not fixture names; all parameter cases are counted below."
+  },
+  "roi_base": "4d46501889c1152bdb8b19a8a30d3bce316ff689",
+  "roi_count_change": {
+    "before": {
+      "ordinary": 285,
+      "real": 128,
+      "total": 413
+    },
+    "after": {
+      "ordinary": 287,
+      "real": 123,
+      "total": 410
+    },
+    "explanation": "Five duplicate real crosses retired; two replacements become ordinary, while other logic merges into existing nodes. The partial-group real witness moves files and remains real. No node is skipped or hidden by selection."
+  }
+}

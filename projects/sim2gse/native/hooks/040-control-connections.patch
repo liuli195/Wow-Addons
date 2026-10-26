@@ -28,14 +28,13 @@
      action->sim->print_debug( "{} skipping queued do_execute for {} due to failing target_ready() check", *action->player, *action );
    }
    else
-@@ -81,6 +83,9 @@
+@@ -81,6 +83,8 @@
        action->player->sequence_add( action, action->target );
      }
  
 +    if (action->player->sim2gse_control.enabled())
 +      action->player->sim2gse_control.notify(action->is_precombat ? "native_precombat" : "native_execute", action, sim2gse_origin);
      action->execute();
-+    action->player->sim2gse_control.execution_end(action);
      action->line_cooldown->start();
  
 @@ -98,9 +102,11 @@
@@ -104,14 +103,13 @@
    {
      if ( sim().debug )
      {
-@@ -264,10 +276,15 @@
+@@ -264,10 +276,14 @@
        // Action target must follow any potential pre-execute-state target if it differs from the
        // current (default) target of the action.
        action->set_target( target );
 +      if (p()->sim2gse_control.enabled() && !action->background)
 +        p()->sim2gse_control.notify(action->is_precombat ? "native_precombat" : "native_execute", action, sim2gse_origin);
        action->execute();
-+      p()->sim2gse_control.execution_end(action);
      }
      else
      {
@@ -120,17 +118,6 @@
        // Release assigned pre_execute_state, since we are not calling action->execute() (that does
        // it automatically)
        if ( action->pre_execute_state )
-@@ -1925,7 +1943,10 @@
-   consume_resource();
-
-   if ( !dual && ( !player->first_cast || !harmful ) )
-+  {
-     stats->add_execute( time_to_execute, target );
-+    player->sim2gse_control.observe_execute(*this);
-+  }
-
-   if ( pre_execute_state )
-     action_state_t::release( pre_execute_state );
 @@ -2193,7 +2209,7 @@
        }
        else
@@ -404,14 +391,6 @@
  
    sim->print_debug( "Combat begins for {}.", *this );
  
-@@ -6431,6 +6322,7 @@
-  */
- void player_t::datacollection_end()
- {
-+  sim2gse_control.finish_observations();
-   // This checks if the actor was arisen at least once during this iteration.
-   if ( !requires_data_collection() )
-     return;
 @@ -6745,6 +6633,7 @@
   */
  void player_t::reset()

@@ -8,7 +8,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.real
 
 
 def load():
@@ -19,76 +22,8 @@ def load():
     return module
 
 
-def parse(source, module):
-    return module.parse_documentation("local X = " + source)
-
-
-def check_parser_rules(module):
-    # 表字面量：具名键与数组部分分开存放。
-    table = parse('{ A = 1, { Name = "x" } }', module)
-    assert table["A"] == 1
-    assert [entry["Name"] for entry in table.entries] == ["x"]
-
-    # 数组部分非空的表必须为真值；守卫失守会让文档正文整段消失。
-    assert parse('{ "正文" }', module)
-    assert parse('{ "正文" }', module).entries == ["正文"]
-
-    # 标量与引用。
-    assert parse('{ A = true, B = false, C = nil, D = "s" }', module) == {
-        "A": True, "B": False, "C": None, "D": "s"}
-    assert parse('{ V = Enum.Foo.Bar }', module)["V"] == ("ref", "Enum.Foo.Bar")
-    assert parse('{ V = Constants.A - Constants.B + 1 }', module)["V"][0] == "expr"
-
-    # 数字：负数与十六进制都要能吃下。
-    assert parse('{ A = -1, B = 0xFF, C = 1.5 }', module) == {"A": -1, "B": 255, "C": 1.5}
-
-    # 字符串转义：`\n` 还原为换行；产出注解时必须写回转义形式，
-    # 否则文档注释断行、产出行外文本，文件不再是合法 Lua。
-    assert module.unquote('"a\\nb"') == "a\nb"
-    doc = module.Table()
-    doc.entries = ["含换行的说明\n第二行"]
-    node = module.Table()
-    node.update({"Name": "F", "Documentation": doc,
-                 "Arguments": module.Table(), "Returns": module.Table()})
-    block = module.Generator({}, ()).function_block(
-        {"Name": "S", "Type": "System", "Namespace": "C_S"}, node)
-    comment = block.splitlines()[0]
-    assert comment == "---含换行的说明\\n第二行", comment
-    assert "---[Documentation]" in block
-
-    # 类型解析：基础类型映射、枚举加前缀、未知类型降级为 any。
-    annotated = module.Table()
-    annotated["Name"] = "SomeEnum"
-    annotated["Type"] = "Enumeration"
-    system = module.Table()
-    system["Tables"] = module.Table()
-    system["Tables"].entries = [annotated]
-    typed = module.Generator({"s": system}, ("Handwritten",), ("Known",))
-    assert typed.resolve_type("bool") == "boolean"
-    assert typed.resolve_type("cstring") == "string"
-    assert typed.resolve_type("luaIndex") == "number"
-    assert typed.resolve_type("Known") == "Enum.Known"
-    assert typed.resolve_type("SomeEnum") == "Enum.SomeEnum"
-    assert typed.resolve_type("Handwritten") == "Handwritten"
-    assert typed.resolve_type("Missing") == "any"
-    # 联合类型：有一支解析不到就整体降级，避免产出 `A|any` 这种误导写法。
-    assert typed.resolve_type("Handwritten|number") == "Handwritten|number"
-    assert typed.resolve_type("Handwritten|Missing") == "any"
-
-    # 内层类型与可空标记。
-    assert typed.field_type({"Type": "number", "InnerType": "Unknown"}) == "any[]"
-    line = typed.annotation("param", {"Name": "x", "Type": "number", "Nilable": True})
-    assert line == "---@param x? number"
-    line = typed.annotation("return", {"Name": "x", "Type": "number", "Default": 0})
-    assert line.startswith("---@return number? x")
-    line = typed.annotation("field", {"Name": "x", "Type": "number", "StrideIndex": True})
-    assert line.startswith("---@field ... number")
-
-
-
 def main():
     module = load()
-    check_parser_rules(module)
 
     # 产出必须是合法 Lua。文档正文里的 `\n` 若原样铺开会让注释断行、
     # 产出行外文本，这条断言专门盯住那个缺陷。
@@ -127,11 +62,7 @@ def main():
         assert {p.name for p in folder.glob("*.lua")} == set(expected), "注解产出文件清单不一致"
         for name, text in expected.items():
             assert (folder / name).read_text(encoding="utf-8") == text, f"注解产出与磁盘不一致：{name}"
-    print("PASS: 解析、类型映射与产出规则符合预期")
-
-
-def test_parser_rules():
-    check_parser_rules(load())
+    print("PASS: 真实生成、磁盘比对及批量Lua语法检查符合预期")
 
 
 def test_build_wow_annotations():

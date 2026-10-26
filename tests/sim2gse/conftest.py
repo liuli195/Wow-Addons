@@ -11,13 +11,24 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'projects' / 'sim2gse'))
 
 
+@pytest.fixture(autouse=True)
+def explicit_unit_configuration(request, monkeypatch):
+    if request.node.get_closest_marker('real') is not None:
+        return
+    from io import StringIO
+    import simulation_config
+    read_document = simulation_config._load_document
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None:
+                        read_document(StringIO('') if path is None else path))
+
+
 @pytest.fixture(scope="session")
 def installed_data_store(tmp_path_factory):
     """The test runner provides a real installed package, never a user home link."""
-    source = os.environ.get("DATA_STORE_TEST_SKILL")
-    if not source:
-        pytest.fail("请按 tests/README.md 提供独立 DATA_STORE_TEST_SKILL 测试安装副本")
-    source = Path(source)
+    source = Path(__file__).resolve().parents[2] / '.local/verify-deps/data-store'
+    supplied = os.environ.get('DATA_STORE_TEST_SKILL')
+    if supplied and Path(supplied).resolve() != source.resolve():
+        pytest.fail('DATA_STORE_TEST_SKILL 必须指向已登记的 .local/verify-deps/data-store')
     if not (source / "scripts/project_binding.py").is_file():
         pytest.fail("测试安装副本缺少数据中心接入脚本")
     installed = tmp_path_factory.mktemp("data-store-install") / "skill"
@@ -31,9 +42,18 @@ def installed_data_store_api(installed_data_store):
 
 
 @pytest.fixture(autouse=True)
-def isolated_result_center(tmp_path, monkeypatch, installed_data_store_api, installed_data_store):
+def isolated_result_center(request):
+    if request.node.get_closest_marker('real') is None:
+        return
+    tmp_path = request.getfixturevalue('tmp_path')
+    monkeypatch = request.getfixturevalue('monkeypatch')
     import result_store
     monkeypatch.setattr(result_store, 'DATA_ROOT', tmp_path / 'data')
+
+
+@pytest.fixture
+def installed_result_center(monkeypatch, installed_data_store, installed_data_store_api):
+    import result_store
     # Business tests use the real package copy; connection tests launch clean processes.
     monkeypatch.setattr(result_store, '_SKILL_API', installed_data_store_api)
     monkeypatch.setenv('DATA_STORE_TEST_SKILL', str(installed_data_store))

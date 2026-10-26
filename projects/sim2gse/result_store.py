@@ -6,7 +6,6 @@ import runpy
 from contextlib import contextmanager
 import hashlib
 import json
-import msvcrt
 import os
 import re
 from pathlib import Path
@@ -45,20 +44,7 @@ SEARCH_CHAMPION_SCHEMA = dict(
     behavior_identity="VARCHAR", source_run_id="VARCHAR", source_candidate_key="VARCHAR",
     source_candidate_data_key="VARCHAR",
     source_condition_key="VARCHAR", score="DOUBLE", samples="UBIGINT", batch_keys="VARCHAR[]",
-    promotion_evidence="JSON", source_evidence="JSON",
-)
-SEARCH_LEARNER_SCHEMA = dict(
-    model_key='VARCHAR', version='UBIGINT', state_version='UBIGINT',
-    feature_version='VARCHAR', reward_version='VARCHAR', coba_version='VARCHAR',
-    numpy_version='VARCHAR', dimension='UBIGINT', alpha='DOUBLE', features='JSON',
-    seed='BIGINT', rng_state='BIGINT', theta='DOUBLE[]', a_inv='DOUBLE[][]',
-    reservations='JSON', settled='JSON',
-    theta_bytes='BLOB', a_inv_bytes='BLOB', matrix_format='VARCHAR',
-)
-SEARCH_LEARNER_CONTROL_SCHEMA = dict(
-    **{name: kind for name, kind in SEARCH_LEARNER_SCHEMA.items()
-       if name not in ('theta', 'a_inv', 'theta_bytes', 'a_inv_bytes', 'matrix_format')},
-    base_version='UBIGINT', phase='VARCHAR',
+    promotion_evidence="JSON", source_evidence="JSON", contract_version="UBIGINT", evaluation="JSON",
 )
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
@@ -78,6 +64,7 @@ class ReportLocations:
 
     @contextmanager
     def locked(self):
+        import msvcrt
         with _PUBLICATION_LOCK, (self.root / '.report-publish.lock').open('a+b') as lease:
             if lease.tell() == 0:
                 lease.write(b'0')
@@ -220,7 +207,7 @@ def read_search_champion(condition_key):
     if len(rows) != 1 or rows[0].get('condition_key') != condition_key:
         raise InvalidRecordError('正式冠军记录身份不唯一或不符')
     record = rows[0]
-    for field in ('binding', 'program', 'promotion_evidence', 'source_evidence'):
+    for field in ('binding', 'program', 'promotion_evidence', 'source_evidence', 'evaluation'):
         if isinstance(record.get(field), str):
             try:
                 record[field] = json.loads(record[field])
@@ -236,6 +223,7 @@ def read_search_champion(condition_key):
 
 @contextmanager
 def _search_champion_lock():
+    import msvcrt
     # ponytail: one short global publication lock; split by condition only if contention matters.
     with _PUBLICATION_LOCK, (DATA_ROOT / '.search-champions.lock').open('a+b') as lease:
         if lease.tell() == 0:
@@ -281,133 +269,16 @@ def publish_search_champion(record, expected_version, *, expected_incumbent=None
         return dict(status='published', version=record['version'], source_run_id=record['source_run_id'])
 
 
-@contextmanager
-def search_learner_lock(runtime=None):
-    """One short cross-process lock protects the shared learner's atomic record."""
-    DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 30
-    while True:
-        if runtime is not None:
-            runtime.check()
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise DataReadError('等待共享选择器保存锁超时')
-        if _PUBLICATION_LOCK.acquire(timeout=min(.05, remaining)):
-            break
-    try:
-        with (DATA_ROOT / '.search-learners.lock').open('a+b') as lease:
-            if lease.tell() == 0:
-                lease.write(b'0')
-                lease.flush()
-            while True:
-                if runtime is not None:
-                    runtime.check()
-                lease.seek(0)
-                try:
-                    msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise DataReadError('等待共享选择器保存锁超时')
-                    time.sleep(.05)
-            try:
-                yield
-            finally:
-                lease.seek(0)
-                msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
-    finally:
-        _PUBLICATION_LOCK.release()
 
 
-def read_search_learner_metadata(model_key):
-    """Caller holds the shared lock; inspect the same record's version and parameters."""
-    rows = read_records('search_learners', model_key, columns=[
-        'model_key', 'version', 'state_version', 'feature_version', 'reward_version',
-        'coba_version', 'numpy_version', 'dimension', 'alpha', 'features', 'seed', 'matrix_format'])
-    if not rows:
-        return None
-    if (len(rows) != 1 or rows[0].get('model_key') != model_key
-            or type(rows[0].get('version')) is not int or rows[0]['version'] < 0):
-        raise InvalidRecordError('共享选择器记录身份或版本无效')
-    record = rows[0]
-    if isinstance(record.get('features'), str):
-        try:
-            record['features'] = json.loads(record['features'])
-        except ValueError as error:
-            raise InvalidRecordError('共享选择器元数据损坏') from error
-    return record
 
 
-def read_search_learner(model_key):
-    """Read the complete matrix snapshot; selector composes its newer control state."""
-    rows = read_records('search_learners', model_key)
-    if not rows:
-        return None
-    if len(rows) != 1 or rows[0].get('model_key') != model_key:
-        raise InvalidRecordError('共享选择器记录身份不唯一或不符')
-    record = rows[0]
-    for field in ('features', 'reservations', 'settled'):
-        if isinstance(record.get(field), str):
-            try:
-                record[field] = json.loads(record[field])
-            except ValueError as error:
-                raise InvalidRecordError('共享选择器元数据损坏') from error
-    return record
 
 
-def write_search_learner(record, *, runtime=None):
-    """Caller holds the shared lock; this full commit absorbs older control state."""
-    logging = runtime is not None and runtime.diagnostic_logging
-    if logging:
-        from runtime import diagnostic_start, diagnostic_finish
-        started = diagnostic_start()
-    else:
-        started = None
-    try:
-        return write('search_learners', record['model_key'], [record], schema=SEARCH_LEARNER_SCHEMA,
-                     binary=record.get('state_version') == 3)
-    finally:
-        if logging:
-            try:
-                diagnostic_finish(runtime, 'model.full_write', started, rows=1, dimension=record['dimension'], matrix_values=(record['dimension'] * (record['dimension'] + 1) if record.get('theta') is not None or record.get('theta_bytes') is not None else 0), reservations=len(record['reservations']), settled=len(record['settled']))
-            except Exception:
-                pass
 
 
-def read_search_learner_control(model_key):
-    """Read the mandatory small v2 control record, including publication phase."""
-    rows = read_records('search_learner_controls', model_key)
-    if not rows:
-        return None
-    if len(rows) != 1 or rows[0].get('model_key') != model_key:
-        raise InvalidRecordError('共享选择器控制记录身份不唯一或不符')
-    record = rows[0]
-    for field in ('features', 'reservations', 'settled'):
-        if isinstance(record.get(field), str):
-            try:
-                record[field] = json.loads(record[field])
-            except ValueError as error:
-                raise InvalidRecordError('共享选择器控制记录损坏') from error
-    return record
 
 
-def write_search_learner_control(record, *, runtime=None):
-    """Caller holds the shared lock; reserve/no-learn commit without copying matrices."""
-    logging = runtime is not None and runtime.diagnostic_logging
-    if logging:
-        from runtime import diagnostic_start, diagnostic_finish
-        started = diagnostic_start()
-    else:
-        started = None
-    try:
-        return write('search_learner_controls', record['model_key'], [record],
-                     schema=SEARCH_LEARNER_CONTROL_SCHEMA)
-    finally:
-        if logging:
-            try:
-                diagnostic_finish(runtime, 'model.control_write', started, rows=1, reservations=len(record['reservations']), settled=len(record['settled']), **{record['phase'] + '_writes': 1})
-            except Exception:
-                pass
 
 
 def _report_columns(value):

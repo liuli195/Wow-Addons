@@ -31,7 +31,7 @@ class Timeline:
     def configure(self, *, profile_sha, engines, simulation_config, config, burst=None):
         """只复用已冻结的物理条件；算法与种子是对照标签，不是分图键。"""
         self.context['algorithm'] = {key: config[key] for key in (
-            'rule_initialization_enabled', 'adaptive_selector_enabled', 'random_seed')}
+            'random_seed',)}
         if not profile_sha or not engines:
             return  # 准备失败/旧文件口径未知，不把多个未知段自动合图。
         self.context['comparison'] = dict(profile_sha256=profile_sha,
@@ -91,6 +91,8 @@ class Timeline:
             if status is not None:
                 self.status = status
             self.stop(self.status)
+            if self.status != 'completed':
+                self.stop_reason = self.status  # Retest/publication can stop after exploration ended.
             payload = dict(schema=SCHEMA, context=self.context, resumed=self.resumed,
                 time_origin='本次公开调用；包含准备及排队等待；不含上次运行',
                 status=self.status, stop_reason=self.stop_reason, events=self.events,
