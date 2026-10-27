@@ -618,13 +618,15 @@ def test_training_cli_consumes_logging_selection_through_real_public_execution(
         assert case.store.state['config']['diagnostics'] == ('summary' if expected else 'off')
 
 
-@pytest.mark.parametrize('explicit, expected', [(None, False), (False, False), (True, True)])
+@pytest.mark.parametrize('file_curve, explicit, expected', [
+    (False, None, False), (False, True, True), (True, None, True), (True, False, False)])
 def test_public_training_ignores_formal_curve_and_uses_explicit_choice(
-        monkeypatch, public_training_memory, explicit, expected):
+        monkeypatch, public_training_memory, file_curve, explicit, expected):
     import seed_training, simulation_config
     case = public_training_memory
     monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(
-        training=dict(max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., mutation_probability=0.),
+        training=dict(max_processes=1, max_trainings=1, top_k=4, crossover_probability=0.,
+                      mutation_probability=0., search_timeline=file_curve),
         search=dict(search_timeline=True, diagnostic_logging=True, diagnostics='full',
                     search_observability='full', iterations=128, random_seed=345, max_processes=5)))
     options = {} if explicit is None else {'search_timeline': explicit}

@@ -69,13 +69,20 @@ TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     min_publish=4, behavior_alpha=0.5, crossover_probability=0.8, mutation_probability=0.8)
 
 
+def _training_section(path):
+    section = _load_document(path).get("training", {})
+    if not isinstance(section, dict) or set(section) - (set(TRAINING_DEFAULTS) | {'search_timeline'}):
+        raise ValueError("[training] 包含未知GA配置")
+    if 'search_timeline' in section and type(section['search_timeline']) is not bool:
+        raise ValueError('训练search_timeline必须为布尔值')
+    return section
+
+
 def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None) -> dict:
     """启动读取的GA白名单；普通搜索的资源和采样上限不变。"""
     import math
-    section = _load_document(path).get("training", {})
-    if not isinstance(section, dict) or set(section) - set(TRAINING_DEFAULTS):
-        raise ValueError("[training] 包含未知GA配置")
-    values = dict(TRAINING_DEFAULTS, **section)
+    section = _training_section(path)
+    values = dict(TRAINING_DEFAULTS, **{key: value for key, value in section.items() if key in TRAINING_DEFAULTS})
     values.update({key: value for key, value in dict(max_processes=max_processes,
         max_trainings=max_trainings).items() if value is not None})
     for key in set(values) - {'crossover_probability', 'mutation_probability', 'behavior_alpha'}:
@@ -145,14 +152,16 @@ def load_search_config(path=None, *, default_input_interval_ms=300, **overrides)
 
 
 def load_training_search_config(path=None, **overrides):
-    """训练运行值只接受训练显式调用，不继承正式配置或观测开关。"""
+    """训练曲线读取自身文件区域；本次明确值优先，不继承正式配置。"""
     from search import config_for, TRAINING_SEARCH_DEFAULTS
     reject_removed_search_settings(overrides)
     unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
                                     'search_observability', 'input_interval_ms', 'reset_events'}
     if unsupported:
         raise ValueError('预训练不支持搜索参数，请使用专用训练配置: ' + ', '.join(sorted(unsupported)))
-    values = {key: value for key, value in overrides.items() if value is not None}
+    section = _training_section(path)
+    values = {key: section[key] for key in ('search_timeline',) if key in section}
+    values.update({key: value for key, value in overrides.items() if value is not None})
     projected = {key: value for key, value in values.items() if key in TRAINING_SEARCH_DEFAULTS}
     config = config_for(projected, training=True)
     config.update({key: projected[key] for key in ('diagnostics', 'search_observability') if key in projected})

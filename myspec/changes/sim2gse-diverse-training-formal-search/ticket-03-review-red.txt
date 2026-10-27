@@ -1,0 +1,101 @@
+FFFFFFFFF                                                                [100%]
+================================== FAILURES ===================================
+_ test_training_curve_file_is_independent_and_explicit_choice_wins[True-False-None-True] _
+tests\sim2gse\test_diverse_training.py:17: in test_training_curve_file_is_independent_and_explicit_choice_wins
+    assert 'search_timeline' not in load_training_config(BytesIO(document))
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+_ test_training_curve_file_is_independent_and_explicit_choice_wins[True-False-False-False] _
+tests\sim2gse\test_diverse_training.py:17: in test_training_curve_file_is_independent_and_explicit_choice_wins
+    assert 'search_timeline' not in load_training_config(BytesIO(document))
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+_ test_training_curve_file_is_independent_and_explicit_choice_wins[False-True-None-False] _
+tests\sim2gse\test_diverse_training.py:17: in test_training_curve_file_is_independent_and_explicit_choice_wins
+    assert 'search_timeline' not in load_training_config(BytesIO(document))
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+_ test_training_curve_file_is_independent_and_explicit_choice_wins[False-True-True-True] _
+tests\sim2gse\test_diverse_training.py:17: in test_training_curve_file_is_independent_and_explicit_choice_wins
+    assert 'search_timeline' not in load_training_config(BytesIO(document))
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+_ test_training_valid_child_scoring_failure_pauses_without_committing_generation _
+tests\sim2gse\test_diverse_training.py:45: in test_training_valid_child_scoring_failure_pauses_without_committing_generation
+    assert saved['population'] == before and saved['pending'] == ga['pending']
+E   AssertionError: assert ([{'key': 'sim...core': 100.0}] == [{'program': ...core': 100.0}]
+E     
+E     Use -v to get more diff and {'parent_slot..., ...], None]} == {'programs': ..., ...), None)}
+E     
+E     Omitting 3 identical items, use -vv to show
+E     Differing items:
+E     {'rng': [3, [4122478476, 1387394810, 1567000137, 483781791, 2922290311, 2120701818, ...], None]} != {'rng': (3, (4122478476, 1387394810, 1567000137, 483781791, 2922290311, 2120701818, ...), None)}
+E     Use -v to get more diff)
+_ test_public_training_ignores_formal_curve_and_uses_explicit_choice[False-None-False] _
+D:\My Project\Wow Addons\tests\sim2gse\test_seed_training.py:633: in test_public_training_ignores_formal_curve_and_uses_explicit_choice
+    result = seed_training.run_training(case.template, 1, '/memory/work', search_config=options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:848: in run_training
+    return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:827: in _run_training
+    config = training_config or load_training_config(max_processes=max_processes, max_trainings=max_trainings)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+_ test_public_training_ignores_formal_curve_and_uses_explicit_choice[False-True-True] _
+D:\My Project\Wow Addons\tests\sim2gse\test_seed_training.py:633: in test_public_training_ignores_formal_curve_and_uses_explicit_choice
+    result = seed_training.run_training(case.template, 1, '/memory/work', search_config=options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:848: in run_training
+    return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:827: in _run_training
+    config = training_config or load_training_config(max_processes=max_processes, max_trainings=max_trainings)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+_ test_public_training_ignores_formal_curve_and_uses_explicit_choice[True-None-True] _
+D:\My Project\Wow Addons\tests\sim2gse\test_seed_training.py:633: in test_public_training_ignores_formal_curve_and_uses_explicit_choice
+    result = seed_training.run_training(case.template, 1, '/memory/work', search_config=options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:848: in run_training
+    return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:827: in _run_training
+    config = training_config or load_training_config(max_processes=max_processes, max_trainings=max_trainings)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+_ test_public_training_ignores_formal_curve_and_uses_explicit_choice[True-False-False] _
+D:\My Project\Wow Addons\tests\sim2gse\test_seed_training.py:633: in test_public_training_ignores_formal_curve_and_uses_explicit_choice
+    result = seed_training.run_training(case.template, 1, '/memory/work', search_config=options)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:848: in run_training
+    return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
+D:\My Project\Wow Addons\projects\sim2gse\seed_training.py:827: in _run_training
+    config = training_config or load_training_config(max_processes=max_processes, max_trainings=max_trainings)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\My Project\Wow Addons\projects\sim2gse\simulation_config.py:77: in load_training_config
+    raise ValueError("[training] 鍖呭惈鏈煡GA閰嶇疆")
+E   ValueError: [training] 鍖呭惈鏈煡GA閰嶇疆
+=========================== short test summary info ===========================
+FAILED tests/sim2gse/test_diverse_training.py::test_training_curve_file_is_independent_and_explicit_choice_wins[True-False-None-True]
+FAILED tests/sim2gse/test_diverse_training.py::test_training_curve_file_is_independent_and_explicit_choice_wins[True-False-False-False]
+FAILED tests/sim2gse/test_diverse_training.py::test_training_curve_file_is_independent_and_explicit_choice_wins[False-True-None-False]
+FAILED tests/sim2gse/test_diverse_training.py::test_training_curve_file_is_independent_and_explicit_choice_wins[False-True-True-True]
+FAILED tests/sim2gse/test_diverse_training.py::test_training_valid_child_scoring_failure_pauses_without_committing_generation
+FAILED tests/sim2gse/test_seed_training.py::test_public_training_ignores_formal_curve_and_uses_explicit_choice[False-None-False]
+FAILED tests/sim2gse/test_seed_training.py::test_public_training_ignores_formal_curve_and_uses_explicit_choice[False-True-True]
+FAILED tests/sim2gse/test_seed_training.py::test_public_training_ignores_formal_curve_and_uses_explicit_choice[True-None-True]
+FAILED tests/sim2gse/test_seed_training.py::test_public_training_ignores_formal_curve_and_uses_explicit_choice[True-False-False]
+9 failed, 102 deselected in 0.74s
+exit_code=1

@@ -6,6 +6,47 @@ import pytest
 from test_population_training import memory_ga
 
 
+@pytest.mark.parametrize('training_curve,formal_curve,explicit,expected', [
+    (True, False, None, True), (True, False, False, False),
+    (False, True, None, False), (False, True, True, True)])
+def test_training_curve_file_is_independent_and_explicit_choice_wins(
+        training_curve, formal_curve, explicit, expected):
+    from simulation_config import load_training_config, load_training_search_config, load_search_config
+    document = ('[training]\nsearch_timeline=' + str(training_curve).lower()
+                + '\n[search]\nsearch_timeline=' + str(formal_curve).lower()).encode()
+    assert 'search_timeline' not in load_training_config(BytesIO(document))
+    options = {} if explicit is None else dict(search_timeline=explicit)
+    assert load_training_search_config(BytesIO(document), **options)['search_timeline'] is expected
+    assert load_search_config(BytesIO(document))['search_timeline'] is formal_curve
+    for value in ('1', '"true"'):
+        with pytest.raises(ValueError, match='布尔'):
+            load_training_config(BytesIO(('[training]\nsearch_timeline=' + value).encode()))
+
+
+def test_training_valid_child_scoring_failure_pauses_without_committing_generation(memory_ga):
+    from copy import deepcopy
+    from engine import CandidateScoreError
+    def score(candidate, options):
+        return float('nan') if candidate['blocks'][0][0]['simc_action'] == 'scourge_strike' else 100.
+    case = memory_ga(programs=[[['outbreak']], [['death_coil']]], score_for=score,
+                     settings=dict(top_k=2, min_publish=1, stagnation_generations=1))
+    case.run()
+    ga = case.store.state['ga']
+    ga.update(phase='breed', stagnant=0, generation=0, finals={},
+        pending=dict(programs=[[['scourge_strike']], [['invalid']]], parent_slots=[0, 1],
+                     regenerations=[0, 0], rng=deepcopy(ga['rng'])))
+    before = deepcopy(ga['population'])
+    start = len(case.calls)
+    with pytest.raises(CandidateScoreError):
+        case.run()
+    assert len(case.calls) - start == 2  # Original request plus its single retry.
+    assert ga['population'] == before and ga['generation'] == 0
+    saved = case.store.load_state(case.store.db)['ga']
+    from search import digest
+    assert saved['population'] == before and digest(saved['pending']) == digest(ga['pending'])
+    assert saved['generation'] == 0 and saved['phase'] == 'breed'
+
+
 def test_training_config_owns_diversity_and_publication_without_formal_tournament():
     from simulation_config import load_training_config, load_search_config
     config = load_training_config(BytesIO(b'[training]\ntop_k=10\nmin_publish=5\nbehavior_alpha=0.25\n'))

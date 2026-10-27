@@ -1,6 +1,6 @@
 # 票03实施与验证记录
 
-状态：票02在90068d9通过独立本机Astra high审查后实施；本票待独立审查。未进行真实模拟、训练、安装、重编译、推送或合并。正式规格未应用。
+状态：票02在90068d9通过独立本机Astra high审查后实施；本票首轮审查3个P2已完成代码及候选修正，待重新生成完整预览与复审。未进行真实模拟、训练、安装、重编译、推送或合并。正式规格未应用。
 
 ## 实现与证据
 
@@ -47,3 +47,19 @@
 整体计时从2026-10-27 19:08 UTC开始，20:31 UTC约83分钟，仍在4小时内。本次只读统计：本次规格工作目录约303KB（含整个预览），本变更证据目录约67KB，票03两个pytest临时目录无文件；新增源码、测试及小日志总体远低于50MB。此为已落盘任务产物统计，不把已有约426MB三引擎算新增；真实浏览器临时目录的峰值未测，不能保证未来真实检查不触及50MB。
 
 本票完成后停止等待独立本机审查，不进入合并、发布或正式规格应用。
+
+## 首轮审查修复
+
+1. 训练曲线文件此前仅有文档，没有接线。现在只从自己的[training]读取search_timeline，严格布尔校验，算法配置投影不混入观测字段；显式true/false优先。正式读取自己的[search]，训练恢复仍沿保存的观测值，仅本次明确值覆盖。没有增加配置框架或其他观测文件键。
+2. 候选规格频率改为每分钟执行次数；x为按钮频率绝对差之和除以冻结参考总频率R，F=x/(1+x)，不是按按钮数量平均。玩家覆盖仍取平均绝对差。生产数学未改变。
+3. 候选规格区分结构非法孩子与合法评分失败。前者跳过竞争；后者按原请求重试一次，仍失败保存检查点并暂停整代。新增负例验证两次尝试、父本不变、代数不增加、冻结提案保留；没有给训练新增正式容错跳过策略。
+
+定向命令：现有Python执行 -m pytest -q tests/sim2gse/test_diverse_training.py tests/sim2gse/test_seed_training.py -k 'curve_file or ignores_formal_curve or valid_child_scoring' -p no:cacheprovider --tb=short。首次日志ticket-03-review-red.txt为9失败，其中1项是测试比较持久化随机状态的元组/列表表示差异，不算产品红灯；修正为语义摘要比较后，ticket-03-review-red-confirmed.txt实际8失败、1通过，exit1。接线后ticket-03-review-green.txt实际9通过，exit0。全普通回归ticket-03-review-regression.txt实际517通过、168子测试通过、4real排除，7.75秒，exit0。
+
+### 重新预览的当前阻塞
+
+修改后的增量校验成功（exit0），但沿旧会话调用apply-delta到预览目录返回exit1、input_content_changed。没有正式应用；随后validate-main检查的是旧预览，不代表修复预览成功。旧READY_TO_APPLY状态也不能作为本轮内容就绪证明。
+
+修复候选在.local/spec-work/current/delta，生成脚本在.local/spec-work/ticket03-preview.py；current/preview及ticket03-preview.diff仍为旧预览。需按MySpec恢复规则，获得调用方明确“无活动会话”确认后归档旧预览，再state-init导入已中止增量、重新分析及生成预览，不能改指纹强行沿用。
+
+已读取中止身份：工作树D:/My Project/Wow Addons；工作根.local/spec-work；正式规格myspec/specs；增量current/delta；预览current/preview；命令add；阶段PREVIEW_ONLY；会话b513d3226a4e462a8df5c35db73812ce；stateSha256=3bb9452ad7d93fd70b78c4c4eab6185714763271c80e7c464e86a086c53cb3a3；lockIdentitySha256=8604a76133ff1a7093e3a25d595e256d297de46e86c2300afed9d6655b5bb9e9。未调用state-abort，未删除锁。这是工具一致性拒绝，不是自动审批拒绝。
