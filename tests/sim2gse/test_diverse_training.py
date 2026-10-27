@@ -88,6 +88,76 @@ def test_reference_omission_and_replacement_executes_follow_verified_unholy_stat
     assert describe(report, character, context)['frequencies'] == [15., 0., 0.]
 
 
+@pytest.mark.parametrize('layout', ['top', 'child', 'both'])
+@pytest.mark.parametrize('names,ids', [
+    (('death_coil', 'necrotic_coil'), (47541, 1242174)),
+    (('base_button', 'replacement_button'), (901, 902)),
+])
+def test_grouped_variant_has_one_coordinate_and_exclusive_report_layout(layout, names, ids):
+    from behavior import context_for, describe
+    from seed_training import template_character
+    from test_character_export import sample_profile
+    from test_search import _fast_report
+    character = template_character(sample_profile())
+    report = _fast_report(character, 100., 31)
+    player = report['sim']['players'][0]
+    base = dict(player['stats'][0], name=names[0], id=ids[0], num_executes=dict(mean=30.))
+    child = dict(base, name=names[1], id=ids[1], num_executes=dict(mean=15.))
+    if layout != 'top':
+        base.update(children=[child], num_executes=dict(mean=45.))
+    player['stats'] = [base] + ([child] if layout != 'child' else [])
+    variants = [dict(kind='spell', simc_action=name, spell_id=spell, base_spell_id=ids[0])
+                for name, spell in zip(names, ids)]
+    capabilities = dict(actions=[dict(variants[0], variants=variants)])
+    if layout == 'both':
+        with pytest.raises(ValueError, match='统计布局'):
+            context_for(report, character, capabilities)
+    else:
+        context = context_for(report, character, capabilities)
+        assert len(context['actions']) == 1
+        assert context['reference_rate'] == 15.
+        assert describe(report, character, context)['frequencies'] == [15.]
+
+
+@pytest.mark.parametrize('owner,name,index', [
+    ('unknown', 'actor', 1), ('', 'actor', 1), (None, 'actor', 1),
+    ('player', '', 1), ('owned_unit', None, 2), ('player', 'actor', None),
+])
+def test_unknown_actor_identity_cannot_turn_into_zero(owner, name, index):
+    from behavior import context_for, describe
+    from seed_training import template_character
+    from test_character_export import sample_profile
+    from test_search import _fast_report
+    character = template_character(sample_profile())
+    report = _fast_report(character, 100., 31)
+    capabilities = dict(actions=[dict(kind='spell', simc_action='outbreak', spell_id=1001)])
+    context = context_for(report, character, capabilities)
+    row = report['sim']['players'][0]['stats'][0]
+    row.update(sim2gse_owner_type=owner, sim2gse_actor_name=name, sim2gse_actor_index=index)
+    with pytest.raises(ValueError, match='归属|身份'):
+        describe(report, character, context)
+    with pytest.raises(ValueError, match='归属|身份|映射'):
+        context_for(report, character, capabilities)
+
+
+@pytest.mark.parametrize('children', [None, []])
+def test_known_pet_stat_is_distinct_from_player_and_reliable_omission(children):
+    from behavior import context_for, describe
+    from seed_training import template_character
+    from test_character_export import sample_profile
+    from test_search import _fast_report
+    character = template_character(sample_profile())
+    report = _fast_report(character, 100., 31)
+    capabilities = dict(actions=[dict(kind='spell', simc_action='outbreak', spell_id=1001)])
+    report['sim']['players'][0]['stats'][0]['children'] = children
+    context = context_for(report, character, capabilities)
+    row = report['sim']['players'][0]['stats'][0]
+    row.update(sim2gse_owner_type='owned_unit', sim2gse_actor_name='pet', sim2gse_actor_index=2)
+    assert describe(report, character, context)['frequencies'] == [0.]
+    report['sim']['players'][0]['stats'] = []
+    assert describe(report, character, context)['frequencies'] == [0.]
+
+
 def test_training_public_optimizer_retests_only_nominal_and_publishes_all_qualified(memory_ga):
     import population_training
     case = memory_ga(settings=dict(top_k=6))

@@ -51,7 +51,31 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 
 最终输出保存在 `.local/tests/sim2gse-dc-ticket01/ordinary-tests.txt`：478项及168个子测试通过，4项真实检查明确排除；pytest用时7.42秒，外层7.809秒，退出码0。已安装DEAP版本核验为1.4.4。原始红灯输出保留在本次工具调用记录。
 
-## 边界与下一票
+## 独立审查后的 P2 修复（2026-10-27）
+
+- 同组基础按钮与替换形态只建立一个频率坐标。顶层替换执行次数加到基础按钮；父项已累计的直接子统计不再相加。同一形态同时出现在顶层和子项、父项位置错误或子项执行次数超过父项累计值均明确拒绝。用真实名称和任意合成名称两组测试验证，不靠技能编号特判去重。
+- 先校验归属枚举、角色名称及角色索引，再判断玩家或已知宠物；未知、空归属和缺失身份明确失败，不能写成零。可靠省略与已知宠物仍分开处理。行为上下文版本升为 v2，旧描述不混接。
+- 既有报告只读复核发现持久化后的可选 `children` 字段可能为 null（空值）；补失败测试后兼容空值，非列表的其他值仍拒绝。单目标、多目标各一份既有参考及粗评报告复核均成功，均为 8 个动作、1 个增益；未运行新模拟。
+
+本轮实际日志均位于本目录：
+
+| 日志 | 命令选择与结果 |
+| --- | --- |
+| `ticket-01-review-red.txt` | 定向选择 `grouped_variant or actor_identity or known_pet`：12 failed、1 passed、10 deselected，退出码 1 |
+| `ticket-01-review-green.txt` | 相同定向选择：13 passed、10 deselected，退出码 0 |
+| `ticket-01-review-null-red.txt` | 增加空值用例后选择 `known_pet`：1 failed、1 passed、22 deselected，退出码 1 |
+| `ticket-01-review-regression.txt` | 最终普通层：492 passed、4 deselected、168 subtests passed，7.09 秒，退出码 0（包含新增空值用例） |
+
+定向命令（空值红灯将 `-k` 后表达式换成 `known_pet`）：
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+.venv/Scripts/python.exe -m pytest -q tests/sim2gse/test_diverse_training.py -k 'grouped_variant or actor_identity or known_pet' -p no:cacheprovider --basetemp=.local/tests/diverse-training-review --tb=short
+```
+
+最终普通层命令与上节一致。原始首轮开发红灯没有另存独立日志，仅有当时工具调用记录；本轮日志是本轮实际执行，不补造旧日志。两项 P2 已修复，等待独立复审，未开始票 02。
+
+## 仍未运行的边界
 
 - 未运行 4 项 `real`（真实）检查、真实训练、新原生模拟或游戏验收；内存测试不证明物理持久化可靠性。
 - 未运行正式 `build-and-verify verify --project . --base a914e40c9e20225647729b0ea16d680cc476fdf9 --execution-context local`：它会匹配包含真实引擎链的 `verify.sim2gse-real`，需 root 在既定限制下处理，不能把普通层通过当作正式统一验证通过。
