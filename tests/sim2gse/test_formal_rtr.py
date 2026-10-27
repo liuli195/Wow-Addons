@@ -161,9 +161,23 @@ def test_formal_progress_and_saved_result_keep_frozen_population(memory_ga, monk
     public = _public_state(progress[-1], case.store.destination)
     assert public['search_metrics']['effective_population_size'] == 6
     assert public['search_metrics']['rtr_window_size'] == 4
+    assert progress[-1]['retest_budget']['planned_requested_iterations'] == 6 * 3 * 128
     stored = {}
     monkeypatch.setattr(Path, 'read_text', lambda *a, **kw: json.dumps(dict(run_id='memory')))
     monkeypatch.setattr(Path, 'read_bytes', lambda *a: b'fixed-input')
     monkeypatch.setattr(result_store, 'write', lambda table, key, rows, **kw: stored.update({table: deepcopy(rows)}))
     task._store_run(case.store.destination, result, state=case.store.state)
     assert stored['runs'][0]['search_metrics']['rtr_window_size'] == 4
+    assert stored['runs'][0]['search_metrics']['retest_budget']['effective_samples'] == 6 * 3 * 127
+    monkeypatch.setattr(Path, 'is_file', lambda p: p.name == 'result.json')
+    saved = stored['runs'][0]
+    saved['candidate_data_key'] = None
+    monkeypatch.setattr(result_store, 'one', lambda *a, **kw: deepcopy(saved))
+    loaded = task.read_task(case.store.destination)
+    assert loaded['search_result']['retest']['planned_requested_iterations'] == 6 * 3 * 128
+    paused_result = deepcopy(result)
+    paused_result.pop('search_result', None)
+    paused_result.update(status='cancelled')
+    case.store.state.pop('search_result', None)
+    task._store_run(case.store.destination, paused_result, state=case.store.state)
+    assert stored['runs'][0]['search_metrics']['retest_budget']['planned_requested_iterations'] == 6 * 3 * 128

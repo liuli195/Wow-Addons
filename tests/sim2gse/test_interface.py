@@ -492,6 +492,44 @@ class InterfaceTests(unittest.TestCase):
                 self.assertFalse(state['result_ready'])
         self.input_write.assert_not_called()
 
+    def test_default_dual_http_read_keeps_scene_population_budget_and_unknowns(self):
+        import result_store, task
+        from dual_task import PARENT_SCHEMA
+        task_id = 'b' * 32
+        _, destination = self.server.task_paths(task_id)
+        handle = SimpleNamespace(done=False, error=None)
+        self.server.tasks[task_id] = (destination, handle)
+        row = dict.fromkeys(PARENT_SCHEMA)
+        row.update(parent_id=task_id, formal_search_version=1, status='running', phase='single_target',
+            input_sha256='frozen', definition_id='reviewed', config=dict(input_interval_ms=200),
+            preparation_seconds=1., packaging_seconds=0., single_target_path='single_target',
+            aoe_path='aoe', single_target_status='running', aoe_status='pending', burst_instructions='')
+        budget = dict(candidates=6, scenarios=1, planned_batches=18, planned_requested_iterations=2304,
+                      completed_batches=2, effective_samples=254)
+        child = dict(status='running', phase='retest', generation=2,
+                     effective_population_size=9, rtr_window_size=6, retest_budget=budget)
+        with patch.object(result_store, 'read_records', return_value=[row]), \
+                patch.object(Path, 'read_text', return_value=json.dumps(dict(parent_id=task_id))), \
+                patch.object(Path, 'exists', lambda p: p.name == 'dual.json' or
+                             p.name == 'profile.json' and p.parent.name == 'single_target'), \
+                patch.object(task, 'read_task', side_effect=lambda *a, **kw: deepcopy(child)):
+            for state in ('running', 'cancelled', 'completed'):
+                row['status'] = state
+                row['single_target_status'] = 'completed' if state == 'completed' else 'running'
+                handle.done = state != 'running'
+                if state == 'completed':
+                    child = dict(search=dict(effective_population_size=9, rtr_window_size=6, rounds=2),
+                        search_result=dict(samples=381, retest=dict(budget, completed_batches=18,
+                                                                  effective_samples=2286)))
+                public = self._json_request('GET', '/api/tasks/' + task_id)
+                scene = public['scenes'][0]
+                self.assertEqual((scene['effective_population_size'], scene['rtr_window_size']), (9, 6))
+                self.assertEqual(scene['retest_budget']['planned_requested_iterations'], 2304)
+                self.assertEqual(scene['retest_budget']['effective_samples'], 2286 if state == 'completed' else 254)
+                self.assertNotIn('effective_population_size', public['scenes'][1])
+                self.assertNotIn('retest_budget', public['scenes'][1])
+                if state == 'completed': self.assertEqual(scene['search_result']['samples'], 381)
+
     def test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume(self):
         import engine
         import result_store
@@ -963,6 +1001,13 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
     assert.match(await page.locator('#resultNote').innerText(),/正常场景独立复测/);
     assert.equal(Object.keys(state.exports).length,3);assert.ok(state.collection_ready);
+    for(const scene of state.scenes){
+     assert.equal(scene.effective_population_size,1);assert.equal(scene.rtr_window_size,1);
+     assert.equal(scene.retest_budget.planned_requested_iterations,384);
+     assert.equal(scene.retest_budget.effective_samples,381);
+    }
+    const evidence=await page.locator('#progressNote').innerText();
+    for(const value of ['初始人数1','窗口1','1个候选','3/3批','384次请求','冠军有效样本381'])assert.ok(evidence.includes(value),evidence);
     await page.locator('#copy').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),text);
     await page.locator('#copyCollection').click();assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),state.collection_text);
     await page.locator('#profile').fill(input.profile+'\n# changed');

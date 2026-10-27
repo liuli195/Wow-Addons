@@ -1309,6 +1309,9 @@ class TaskStore:
                 brief['phase'] = self.state.get('ga', {}).get('phase', brief['phase'])
                 brief.update({key: self.state['ga'][key] for key in
                     ('effective_population_size', 'rtr_window_size') if key in self.state.get('ga', {})})
+                if self.state.get('ga', {}).get('finalists'):
+                    from population_training import retest_budget
+                    brief['retest_budget'] = retest_budget(self.state['ga'], self.state['formal_search']['config'])
             brief['completed_batches'] = self.persisted_batches
             if not self.diagnostic_logging:
                 for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):

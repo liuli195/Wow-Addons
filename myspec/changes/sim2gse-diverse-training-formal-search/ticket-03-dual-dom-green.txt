@@ -1,0 +1,2 @@
+PASS: actual page start dual, polling, resume and completed DOM text; pending values remain unknown
+exit_code=0

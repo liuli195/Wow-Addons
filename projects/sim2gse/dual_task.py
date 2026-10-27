@@ -351,6 +351,13 @@ def read(destination, *, active=None, include_rule_initialization=True):
                 if name in child:
                     scene[name] = child[name]
             search = child.get('search') or child
+            for name in ('effective_population_size', 'rtr_window_size'):
+                if name in search:
+                    scene[name] = search[name]
+            retest = (child.get('retest_budget') or search.get('retest_budget')
+                      or (child.get('search_result') or {}).get('retest'))
+            if retest:
+                scene['retest_budget'] = retest
             for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
                          'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',
                          'formal_champion_publication_verification', 'formal_search', 'start_adaptations'):

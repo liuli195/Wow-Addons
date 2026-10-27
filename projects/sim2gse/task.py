@@ -424,6 +424,11 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
                            'canonicalized_duplicates', 'configuration_key',
                            'effective_population_size', 'rtr_window_size', 'coarse_rejections', 'last_fallbacks')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    if summary.get('retest'):
+        search_metrics['retest_budget'] = summary['retest']
+    elif (state or {}).get('formal_search') and state.get('ga', {}).get('finalists'):
+        from population_training import retest_budget
+        search_metrics['retest_budget'] = retest_budget(state['ga'], state['formal_search']['config'])
     initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
     if initialization:
         search_metrics['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
@@ -2210,6 +2215,8 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             cfg = search['formal_search']['config']
             task_result['search_result']['retest'] = dict(scenario='nominal', batches=cfg['retest_batches'],
                                                         requested_iterations=cfg['retest_iterations'])
+            if search.get('retest_budget'):
+                task_result['search_result']['retest'].update(search['retest_budget'])
     if saved['validation_summary']:
         task_result['validation'] = decode(saved['validation_summary'])
 

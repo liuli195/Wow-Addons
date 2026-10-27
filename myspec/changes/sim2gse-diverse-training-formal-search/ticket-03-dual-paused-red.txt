@@ -1,0 +1,11 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+________ test_formal_progress_and_saved_result_keep_frozen_population _________
+tests\sim2gse\test_formal_rtr.py:183: in test_formal_progress_and_saved_result_keep_frozen_population
+    assert stored['runs'][0]['search_metrics']['retest_budget']['planned_requested_iterations'] == 6 * 3 * 128
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'retest_budget'
+=========================== short test summary info ===========================
+FAILED tests/sim2gse/test_formal_rtr.py::test_formal_progress_and_saved_result_keep_frozen_population
+1 failed, 14 deselected in 0.53s
+exit_code=1
