@@ -1,6 +1,6 @@
 # 票03实施与验证记录
 
-状态：票02在90068d9通过独立本机Astra high审查后实施；本票首轮审查3个P2已完成代码及候选修正，待重新生成完整预览与复审。未进行真实模拟、训练、安装、重编译、推送或合并。正式规格未应用。
+状态：票02在90068d9通过独立本机Astra high审查后实施；本票首轮审查3个P2已完成代码及候选修正，新预览已重新生成并校验，待独立复审。未进行真实模拟、训练、安装、重编译、推送或合并。正式规格未应用。
 
 ## 实现与证据
 
@@ -56,10 +56,20 @@
 
 定向命令：现有Python执行 -m pytest -q tests/sim2gse/test_diverse_training.py tests/sim2gse/test_seed_training.py -k 'curve_file or ignores_formal_curve or valid_child_scoring' -p no:cacheprovider --tb=short。首次日志ticket-03-review-red.txt为9失败，其中1项是测试比较持久化随机状态的元组/列表表示差异，不算产品红灯；修正为语义摘要比较后，ticket-03-review-red-confirmed.txt实际8失败、1通过，exit1。接线后ticket-03-review-green.txt实际9通过，exit0。全普通回归ticket-03-review-regression.txt实际517通过、168子测试通过、4real排除，7.75秒，exit0。
 
-### 重新预览的当前阻塞
+### 重新预览的一致性拒绝记录（已按官方流程恢复）
 
 修改后的增量校验成功（exit0），但沿旧会话调用apply-delta到预览目录返回exit1、input_content_changed。没有正式应用；随后validate-main检查的是旧预览，不代表修复预览成功。旧READY_TO_APPLY状态也不能作为本轮内容就绪证明。
 
 修复候选在.local/spec-work/current/delta，生成脚本在.local/spec-work/ticket03-preview.py；current/preview及ticket03-preview.diff仍为旧预览。需按MySpec恢复规则，获得调用方明确“无活动会话”确认后归档旧预览，再state-init导入已中止增量、重新分析及生成预览，不能改指纹强行沿用。
 
 已读取中止身份：工作树D:/My Project/Wow Addons；工作根.local/spec-work；正式规格myspec/specs；增量current/delta；预览current/preview；命令add；阶段PREVIEW_ONLY；会话b513d3226a4e462a8df5c35db73812ce；stateSha256=3bb9452ad7d93fd70b78c4c4eab6185714763271c80e7c464e86a086c53cb3a3；lockIdentitySha256=8604a76133ff1a7093e3a25d595e256d297de46e86c2300afed9d6655b5bb9e9。未调用state-abort，未删除锁。这是工具一致性拒绝，不是自动审批拒绝。
+
+### 修订预览恢复完成
+
+调用方明确确认本任务旧预览无其他活动操作后，再次核对锁及状态散列与上文完全一致；身份查询结束后的python/python3/pytest/myspec进程列表为空。工具state-abort成功归档旧会话，未手工删除锁；随后state-init导入已归档的修订增量，重新分析完整需求和修订，state-set-conflicts为空。
+
+新输入指纹纳入批准需求、门禁、修订候选生成脚本和全部Sim2GSE顶层Python源码，绑定源码提交a70b7701ded167f2c0fb77a60fd037f813733081。validate-delta、apply-delta（仅预览目标）、validate-main及diff均exit0。新会话cdd0c4d650b245888e60b3c7a191ebde，状态PREVIEW_ONLY / READY_TO_APPLY；此状态仅代表工具预览就绪，仍待独立内容复审及应用门禁。
+
+真实回执：.local/spec-work/ticket03-review-preview-receipt.json；新指纹：.local/spec-work/ticket03-review-fingerprints.json；新状态：.local/spec-work/current/state.json；完整差异：.local/spec-work/ticket03-preview.diff；完整预览：.local/spec-work/current/preview。旧会话保存在aborted/3bb9452ad7d93fd70b78c4c4eab6185714763271c80e7c464e86a086c53cb3a3-b2c82c73db54451b91b1ff3b8bc96a6b。上述路径均相对.local/spec-work（已写完整前缀的除外）。
+
+预览内容指纹sha256:9004b4d4e93804b5e9050781cfc0028f776400f38094a67707971d18ad540655；增量指纹sha256:84cb2678c685cabd9b108fa38141b7973d207bd3b3f86b8f2451ff6138cbe9b6。已核对预览seed-training第96/112/113行的评分失败暂停、第339行的配置隔离、第359行的每分钟与sumabs/R数学。正式myspec/specs没有Git差异，未应用、未真实模拟、未推送或合并。
