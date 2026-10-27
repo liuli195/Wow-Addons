@@ -217,7 +217,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     or batches[0].get('data_key') != row['batch_key']
                     or digest(batches[0].get('request')) != row['batch_key']
                     or any(batches[0].get(field) != row[field] for field in ('dps', 'samples'))
-                    or diverse and batches[0].get('behavior') != row.get('behavior')):
+                    or batches[0].get('behavior') != row.get('behavior')):
                 raise ValueError('恢复粗评档案与冻结条件的成功凭据不符；已暂停，旧四条保持不变')
         fitness = {row['candidate_key']: row['dps'] for row in verified}
         if any(fitness.get(row['key']) != row['score'] for row in ga['population']):
@@ -232,6 +232,9 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             if not ga['population']:
                 raise ValueError('没有可靠的正式粗评候选；全部候选评分无效')
             ga['effective_population_size'] = len(ga['population'])
+            if not diverse:
+                ga['rtr_window_size'] = max(1, min(len(ga['population']),
+                    math.ceil(config['rtr_window_ratio'] * len(ga['population']))))
             ga.update(phase='breed', baseline=baseline())
             store.checkpoint()
         while ga['phase'] == 'breed':
@@ -239,6 +242,9 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             if (policy or diverse) and (type(ga.get('effective_population_size')) is not int
                     or ga['effective_population_size'] != len(ga['population']) or not ga['population']):
                 raise ValueError('有效种群大小与已冻结检查点不符')
+            if not diverse and ga.get('rtr_window_size') != max(1, min(len(ga['population']),
+                    math.ceil(config['rtr_window_ratio'] * ga['effective_population_size']))):
+                raise ValueError('RTR窗口与冻结初始人数不符')
             population = [individual(row) for row in ga['population']]
             pending = ga.get('pending')
             if pending is None:
@@ -278,6 +284,17 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     store.checkpoint()
             if policy and len(pending['programs']) != ga['effective_population_size']:
                 raise ValueError('正式子代槽数量与已冻结种群不符')
+            if not diverse:
+                if 'windows' not in pending:
+                    pending['windows'] = [rng.sample(range(len(population)), ga['rtr_window_size'])
+                                          for _ in pending['programs']]
+                    pending['rng'] = rng.getstate()
+                    store.checkpoint()
+                if (len(pending['windows']) != len(pending['programs']) or any(
+                        len(window) != ga['rtr_window_size'] or len(set(window)) != len(window)
+                        or any(type(slot) is not int or not 0 <= slot < len(population) for slot in window)
+                        for window in pending['windows'])):
+                    raise ValueError('RTR无放回窗口提案与冻结人数不符')
             valid_slots = []
             for slot, program in enumerate(pending['programs']):
                 try:
@@ -296,7 +313,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     previous = deepcopy(ga['population'][slot])
                     members.append(previous)
                     if not diverse:
-                        fallbacks[str(slot)] = dict(rejected_key=key(program), retained_key=previous['key'])
+                        fallbacks[str(slot)] = dict(rejected_key=key(program), status='skipped')
                 else:
                     members.append(dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps']))
             if diverse:
@@ -323,6 +340,19 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     for child, parent in assignment:
                         if rows[child]['dps'] > survivors[parent]['score']:
                             survivors[parent] = members[child]
+                members = survivors
+            else:
+                from behavior import distance
+                archive = {row['key']: row for row in store.state['archive']}
+                survivors = deepcopy(ga['population'])
+                for child, row in enumerate(rows):
+                    if row is None:
+                        continue
+                    nearest = min(pending['windows'][child], key=lambda slot: (distance(
+                        row['behavior'], archive[survivors[slot]['key']]['batches'][0]['behavior'],
+                        store.state['behavior_context'], config['behavior_alpha']), survivors[slot]['key'], slot))
+                    if row['dps'] > survivors[nearest]['score']:
+                        survivors[nearest] = members[child]
                 members = survivors
             current = baseline()
             improved = len(current) > len(ga['baseline']) or any(

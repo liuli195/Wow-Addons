@@ -796,7 +796,8 @@ class InterfaceTests(unittest.TestCase):
         source = SimpleNamespace(write_text=lambda *args, **kwargs: None)
         destination = self.server.task_root / ('f' * 32)
         self.server.task_options = dict(search_config=dict(input_interval_ms=250,
-            diagnostic_logging=True, diagnostics='off', search_observability='summary'))
+            diagnostic_logging=True, diagnostics='off', search_observability='summary',
+            rtr_window_ratio=.8, behavior_alpha=.25, top_k=8))
         with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
                 patch.object(interface, 'start_task', return_value=SimpleNamespace(done=True)) as start:
             for body, expected in (({}, 250), ({'input_interval_ms': 200}, 200)):
@@ -805,6 +806,9 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(config['input_interval_ms'], expected)
                 self.assertEqual(config['search_observability'], 'summary')
                 self.assertEqual(config['diagnostics'], 'off')
+                self.assertEqual(config['rtr_window_ratio'], .8)
+                self.assertEqual(config['behavior_alpha'], .25)
+                self.assertEqual(config['top_k'], 8)
 
     def test_page_displays_merged_interval_and_does_not_force_observation(self):
         for options, expected in (({}, 200), ({'input_interval_ms': 250}, 250),
@@ -831,7 +835,8 @@ class InterfaceTests(unittest.TestCase):
         with patch.object(Path, 'exists', lambda value: value.name == 'dual.json'), \
                 patch.object(dual_task, 'resume', return_value=handle) as resume:
             for default in (False, True):
-                self.server.task_options = dict(search_config=dict(diagnostic_logging=default))
+                self.server.task_options = dict(search_config=dict(diagnostic_logging=default,
+                    rtr_window_ratio=.9, behavior_alpha=.9, top_k=10))
                 for body, expected in ((None, None), ({}, None),
                                        ({'diagnostic_logging': True}, True),
                                        ({'diagnostic_logging': False}, False)):

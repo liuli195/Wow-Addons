@@ -111,7 +111,8 @@ def reject_removed_search_settings(values):
 
 FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
     retest_batches=3, retest_iterations=128, stagnation_generations=8, top_k=8,
-    tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
+    tournament_size=3, rtr_window_ratio=0.66, behavior_alpha=0.5,
+    crossover_probability=0.8, mutation_probability=0.8)
 SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_timeline=False,
     diagnostic_logging=False, diagnostics='summary', search_observability='full',
     input_interval_ms=300, reset_events=())

@@ -40,7 +40,7 @@ def test_formal_run_uses_five_workers_and_eight_stagnant_generations(memory_ga):
     assert result['status'] == 'completed'
     assert peak == 5
     assert result['search']['complete_generations'] == 8
-    assert result['search']['formal_search']['version'] == 2
+    assert result['search']['formal_search']['version'] == 3
 
 
 @pytest.mark.parametrize('file_values, overrides, expected', [

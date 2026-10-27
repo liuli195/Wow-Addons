@@ -884,11 +884,19 @@ def check_training(template=None, *, use_burst=True, training_config=None):
 def selected_contract_version(rows):
     """缺版本是旧成果，不从TRAINING_VERSION或程序来源猜新契约。"""
     versions = {row.get('contract_version') if row.get('contract_version') is not None else 1 for row in rows}
-    if any(type(version) is not int or version not in (1, 2) for version in versions) or len(versions) > 1:
+    if any(type(version) is not int or version not in (1, 2, 3) for version in versions) or len(versions) > 1:
         raise ValueError('不支持的训练成果契约版本')
     version = next(iter(versions), 1)
     if version == 2 and len(rows) != 4:
         raise ValueError('v2训练成果必须是完整四条')
+    if version == 3:
+        publication = (rows[0].get('evaluation') or {}).get('publication')
+        if (not isinstance(publication, dict) or set(publication) != {'count', 'top_k', 'min_publish'}
+                or any(type(value) is not int for value in publication.values())
+                or not 1 <= publication['min_publish'] <= len(rows) == publication['count'] <= publication['top_k']
+                or any((row.get('evaluation') or {}).get('publication') != publication for row in rows)
+                or len({row.get('candidate_id') for row in rows}) != len(rows)):
+            raise ValueError('v3训练成果发布人数或完整性不符')
     return version
 
 

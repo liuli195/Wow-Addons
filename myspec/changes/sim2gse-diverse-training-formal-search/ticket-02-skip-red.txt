@@ -1,0 +1,17 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_formal_invalid_offspring_retains_verified_slot_across_checkpoint_resume _
+tests\sim2gse\test_formal_coarse_tolerance.py:118: in test_formal_invalid_offspring_retains_verified_slot_across_checkpoint_resume
+    assert result['last_fallbacks']['0'] == dict(rejected_key=key(BAD), status='skipped')
+E   AssertionError: assert {'rejected_ke...58f010c08030'} == {'rejected_ke...s': 'skipped'}
+E
+E     Omitting 1 identical items, use -vv to show
+E     Left contains 1 more item:
+E     {'retained_key': 'sim2gse-search-behavior-v2-6a77746f6823f8aafeccc5e56ac7cf29069ce9b9746213bc3b4458f010c08030'}
+E     Right contains 1 more item:
+E     {'status': 'skipped'}
+E     Use -v to get more diff
+=========================== short test summary info ===========================
+FAILED tests/sim2gse/test_formal_coarse_tolerance.py::test_formal_invalid_offspring_retains_verified_slot_across_checkpoint_resume
+1 failed, 2 deselected in 0.39s
+exit_code=1

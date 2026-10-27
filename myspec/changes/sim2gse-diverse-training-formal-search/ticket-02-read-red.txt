@@ -1,0 +1,15 @@
+.F                                                                       [100%]
+================================== FAILURES ===================================
+_____________ test_public_result_reads_frozen_formal_versions[3] ______________
+tests\sim2gse\test_formal_rtr.py:74: in test_public_result_reads_frozen_formal_versions
+    result = read_task('/memory/saved-run')
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+projects\sim2gse\task.py:2059: in read_task
+    return _read_task(output_root, include_search_records=include_search_records,
+projects\sim2gse\task.py:2150: in _read_task
+    raise TaskError('姝ｅ紡閬椾紶鎼滅储鎴愭灉鐗堟湰鎴栧喕缁撹瘎鍒嗗绾︿笉绗︼紝涓嶈兘鎸夋柊璇箟璇诲彇')
+E   task.TaskError: 姝ｅ紡閬椾紶鎼滅储鎴愭灉鐗堟湰鎴栧喕缁撹瘎鍒嗗绾︿笉绗︼紝涓嶈兘鎸夋柊璇箟璇诲彇
+=========================== short test summary info ===========================
+FAILED tests/sim2gse/test_formal_rtr.py::test_public_result_reads_frozen_formal_versions[3]
+1 failed, 1 passed, 8 deselected in 0.32s
+exit_code=1

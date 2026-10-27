@@ -199,6 +199,7 @@ def test_retired_toml_settings_cannot_reenter_current_defaults():
 
 @pytest.mark.parametrize('old_state', [
     {'config': {}},
+    {'formal_search_version': 1, 'formal_search': {'version': 2}, 'config': {}},
     {'formal_search_version': 1, 'formal_search': {'version': 1}, 'config': {},
      'formal_champion_publication_intent': {'record': {'contract_version': 1}}},
 ])

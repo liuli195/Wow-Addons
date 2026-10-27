@@ -8,7 +8,7 @@ import pytest
 from test_population_training import memory_ga
 
 
-POLICY = dict(version=1, initial='exclude_invalid_score', offspring='retain_verified_slot')
+POLICY = dict(version=2, initial='exclude_invalid_score', offspring='skip_invalid_offspring')
 CAPABILITIES = dict(precombat_actions=[], actions=[dict(kind='spell', spell_id=index,
     base_spell_id=index, simc_action=name, name=name, gcd_ms=1500)
     for index, name in enumerate(('outbreak', 'death_coil', 'scourge_strike'), 1)])
@@ -32,8 +32,9 @@ def memory_case(monkeypatch, *, fault='score', formal=True, phase='breed', stop=
         'storage': DataReadError('storage unavailable'), 'identity': ValueError('identity mismatch'),
         'cancel': TaskCancelled('cancelled')}[fault]
     config = dict(TRAINING_DEFAULTS, top_k=2, max_processes=1,
-        crossover_probability=0., mutation_probability=1., tournament_size=1)
+        crossover_probability=0., mutation_probability=1., tournament_size=1, rtr_window_ratio=.66)
     state = dict(config=dict(reset_events=()), condition='memory-condition', starts=deepcopy(STARTS),
+        behavior_context=dict(actions=[{}], buffs=[], reference_rate=1.),
         archive=[], errors=[], training_failures={}, training_failure_causes={},
         ga=dict(algorithm=population_training.ALGORITHM, phase=phase, generation=0, stagnant=0,
             population=[], pending=None, rng=random.Random(20260912).getstate(), finals={}, baseline=[]))
@@ -68,16 +69,19 @@ def memory_case(monkeypatch, *, fault='score', formal=True, phase='breed', stop=
         if batch_key not in store.receipts:
             store.calls.append((identity, stage))
             score = 100. if program == STARTS[0] else 90. if program == STARTS[1] else 80.
-            receipt = dict(status='success', request=request, data_key=batch_key, dps=score, samples=31)
+            receipt = dict(status='success', request=request, data_key=batch_key, dps=score, samples=31,
+                           behavior=dict(frequencies=[score], coverage=[]))
             store.receipts[batch_key] = receipt
             if stage == 'search':
                 store.state['archive'].append(dict(key=identity, program=deepcopy(program), score=score, batches=[receipt]))
         receipt = store.receipts[batch_key]
-        return dict(candidate_key=identity, batch_key=batch_key, dps=receipt['dps'], samples=31)
+        return dict(candidate_key=identity, batch_key=batch_key, dps=receipt['dps'], samples=31,
+                    behavior=receipt['behavior'])
     if phase == 'breed':
         initial = [evaluate(program, 'search', 0) for program in STARTS]
         state['ga'].update(population=[dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps'])
-            for program, row in zip(STARTS, initial)], baseline=[100., 90.], effective_population_size=2)
+            for program, row in zip(STARTS, initial)], baseline=[100., 90.], effective_population_size=2,
+            rtr_window_size=2)
     mutation_count = [0]
     def mutate(program, *args, **kwargs):
         mutation_count[0] += 1
@@ -101,6 +105,9 @@ def test_formal_invalid_offspring_retains_verified_slot_across_checkpoint_resume
     previous = deepcopy(store.state['ga']['population'][0])
     with pytest.raises(TaskCancelled, match='checkpoint interruption'):
         run()
+    frozen_windows = deepcopy(store.saved[0]['ga']['pending']['windows'])
+    assert all(len(window) == len(set(window)) == 2 for window in frozen_windows)
+    assert store.saved[0]['ga']['generation'] == 0
     store.state, store.receipts = deepcopy(store.saved)
     result = run()
     assert result['phase'] == 'qualified' and result['generation'] == result['stagnant'] == 2
@@ -108,7 +115,7 @@ def test_formal_invalid_offspring_retains_verified_slot_across_checkpoint_resume
     assert result['population'][0] == previous
     assert store.calls.count((key(BAD), 'search')) == 2, '恢复不得再给已耗尽的原请求尝试'
     assert key(BAD) not in {row['key'] for row in store.state['archive']}
-    assert result['last_fallbacks']['0']['retained_key'] == previous['key']
+    assert result['last_fallbacks']['0'] == dict(rejected_key=key(BAD), status='skipped')
     with monkeypatch.context() as scoped:
         control, complete, _, _ = memory_case(scoped)
         uninterrupted = complete()
@@ -173,6 +180,7 @@ def test_invalid_mean_uses_real_report_validation_and_never_masks_count_or_stage
             result = case.run()
             assert result['status'] == 'completed'
             assert result['search']['effective_population_size'] == 1
+            assert result['search']['rtr_window_size'] == 1
             assert len(attempts) == 2 and len(set(attempts)) == 1
             assert len(result['search']['coarse_rejections']) == 1
             assert result['search_result']['dps'] == 100.

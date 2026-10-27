@@ -53,16 +53,18 @@ def memory_ga(monkeypatch):
             frozen = contract_for(search_config)
             config, plan = frozen['config'], frozen['stage_plan']
         manifest = dict(training_config=config, stage_plan=plan, **(manifest_fields or {}))
-        if not formal:
-            from behavior import context_for
-            manifest['behavior_context'] = context_for(_fast_report(character, 100., 31), character, capabilities)
+        from behavior import context_for
+        manifest['behavior_context'] = context_for(_fast_report(character, 100., 31), character, capabilities)
         from search import digest
         condition = digest(manifest)
         store.state.update(run_id='memory', condition=condition, starts=starts, config=search_config,
             behavior_identity_version=program.BEHAVIOR_IDENTITY_VERSION,
             archive=[], errors=[], ga=dict(algorithm=training.ALGORITHM, phase='initial', generation=0,
             stagnant=0, population=[], pending=None, rng=random.Random(20260912).getstate(), finals={}, baseline=[]))
-        if formal: store.state['formal_search'] = frozen
+        store.state['behavior_context'] = manifest['behavior_context']
+        if formal:
+            store.state['formal_search'] = frozen
+            store.state['ga']['algorithm'] = frozen['algorithm']
         else:
             store.state['ga']['algorithm'] = training.TRAINING_ALGORITHM
             store.state['behavior_context'] = manifest['behavior_context']

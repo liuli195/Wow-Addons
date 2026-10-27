@@ -5,7 +5,7 @@ from unittest.mock import Mock
 from test_population_training import memory_ga
 
 
-def test_legacy_ten_sources_are_assembled_before_complete_formal_retests(memory_ga, monkeypatch):
+def test_new_formal_sources_exclude_independent_training_champion(memory_ga, monkeypatch):
     import task
     from program import canonicalize_search_program
     from runtime import TaskRuntime
@@ -46,17 +46,17 @@ def test_legacy_ten_sources_are_assembled_before_complete_formal_retests(memory_
     task._assemble_formal_starts(state, starts, character=case.character,
         configuration_key=configuration, capabilities=capabilities,
         runtime=TaskRuntime(float('inf')), use_burst=True)
-    assert len(state['start_sources']) == 10
-    assert len(state['starts']) == 10 and state['starts'][0] == former
+    assert len(state['start_sources']) == 9
+    assert len(state['starts']) == 9 and state['starts'][0] == former
     groups = [source for values in state['start_sources'].values() for source in values]
     assert [sum(source['source_kind'] == kind for source in groups) for kind in
-        ('native', 'seed_selected', 'training_champion', 'formal_champion')] == [4, 4, 1, 1]
+        ('native', 'seed_selected', 'training_champion', 'formal_champion')] == [4, 4, 0, 1]
     assert state['formal_champion_adaptation']['status'] == 'accepted'
     result = case.run()
     assert 'chains' not in result['search']
     assert result['search']['stop_reason'] == 'stagnation'
     assert result['stop_policy'] == dict(version=1, kind='natural_stagnation')
-    assert result['search_result']['dps'] == 300.
+    assert result['search_result']['dps'] == 200.
     task._prepare_formal_publication(case.store)
     record = state['formal_champion_publication_intent']['record']
     assert record['contract_version'] == 2
@@ -79,10 +79,8 @@ def test_legacy_ten_sources_are_assembled_before_complete_formal_retests(memory_
     intent = state['formal_champion_publication_intent']
     publication = result_store.publish_search_champion(record, intent['expected_version'],
         expected_incumbent=intent['expected_incumbent'])
-    assert publication['status'] == 'published'
-    assert current[0]['source_run_id'] == state['run_id'] != previous['source_run_id']
-    assert current[0]['score'] == 300. and previous['score'] == 200.
-    assert current[0]['version'] == 2
+    assert publication['status'] == 'unchanged'
+    assert current[0] == previous  # Equal quality keeps the previously published champion.
     assert state['ga']['generation'] >= 2
     assert all(len(row['batches']) == 3 and row['samples'] == 381
                for row in state['formal_finalists'])
@@ -403,7 +401,7 @@ def test_formal_champion_requires_complete_request_reports_and_matching_source(m
         task._validate_formal_source(record, state, character, run=run, candidate=candidate)
 
 
-@pytest.mark.parametrize('search_version', [1, 2])
+@pytest.mark.parametrize('search_version', [1, 2, 3])
 def test_formal_champion_validates_all_six_original_reports_without_a_center(monkeypatch, search_version):
     import result_store
     import task
