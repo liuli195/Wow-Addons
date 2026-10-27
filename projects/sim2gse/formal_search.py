@@ -6,9 +6,9 @@ import random
 from runtime import TaskRuntime
 from search import digest
 
-ALGORITHM = 'formal-ga-easimple-v1'
+ALGORITHM = 'formal-ga-easimple-v2'
 STOP_POLICY = dict(version=1, kind='natural_stagnation')
-VERSION = 1
+VERSION = 2
 COARSE_FAILURE_POLICY = dict(version=1, initial='exclude_invalid_score', offspring='retain_verified_slot')
 
 
@@ -50,12 +50,27 @@ def freeze_starts(starts, capabilities, runtime):
     return programs, decisions
 
 
-def contract_for(config):
+# Frozen original v1 algorithm constants: historical receipts never read live defaults.
+V1_ALGORITHM_CONFIG = dict(max_processes=2, coarse_iterations=32, retest_batches=3,
+    retest_iterations=128, stagnation_generations=2, top_k=8, tournament_size=3,
+    crossover_probability=0.8, mutation_probability=0.8)
+
+
+def contract_for(config, *, version=VERSION):
     from population_training import _stage_plan
-    from simulation_config import TRAINING_DEFAULTS
-    ga_config = {key: value for key, value in TRAINING_DEFAULTS.items() if key != 'max_trainings'}
-    ga_config['max_processes'] = config['max_processes']
-    return dict(version=VERSION, algorithm=ALGORITHM, stop_policy=STOP_POLICY, config=ga_config,
+    from simulation_config import FORMAL_ALGORITHM_DEFAULTS
+    if type(version) is not int or version not in (1, VERSION):
+        raise ValueError('正式遗传搜索契约版本不符')
+    if version == 1:
+        from search import formal_v1_config_for
+        config = formal_v1_config_for(config)
+        ga_config = dict(V1_ALGORITHM_CONFIG, max_processes=config.get('max_processes', 2))
+        if type(ga_config['max_processes']) is not int or not 1 <= ga_config['max_processes'] <= 2:
+            raise ValueError('历史正式搜索并发超出范围')
+    else:
+        ga_config = {key: config[key] for key in FORMAL_ALGORITHM_DEFAULTS}
+    return dict(version=version, algorithm='formal-ga-easimple-v1' if version == 1 else ALGORITHM,
+                stop_policy=STOP_POLICY, config=ga_config,
                 coarse_failure_policy=COARSE_FAILURE_POLICY,
                 stage_plan=_stage_plan(ga_config, config['random_seed'], scenarios=('nominal',)))
 
@@ -129,7 +144,7 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
     if config['diagnostic_logging']:
         result['search'].update({key: state.get(key, 0) for key in
             ('canonicalized_duplicates', 'batch_requests', 'batch_cache_hits', 'native_batch_starts')})
-    if config['diagnostics'] != 'off':
+    if config['diagnostic_logging'] and config['diagnostics'] != 'off':
         result['search']['diagnostics'] = store.diagnostic_summary
     if state.get('search_observability'):
         from search import _export_search_observability
@@ -146,10 +161,11 @@ def validate_evidence(record, state, character, *, verify_reports):
     evaluation = record.get('evaluation') or {}
     if (not isinstance(evaluation, dict) or not isinstance(evaluation.get('search'), dict)
             or type(evaluation['search'].get('version')) is not int
+            or evaluation['search']['version'] not in (1, VERSION)
             or not isinstance(evaluation['search'].get('coarse_failure_policy'), dict)
             or type((evaluation['search'].get('coarse_failure_policy') or {}).get('version')) is not int):
         raise InvalidRecordError('正式遗传冠军评价契约版本格式不符')
-    expected = contract_for(state['config'])
+    expected = contract_for(state['config'], version=evaluation['search']['version'])
     config = expected['config']
     if (evaluation.get('search') != expected or evaluation.get('engines') != state['engines']
             or type(evaluation.get('complete_generations')) is not int

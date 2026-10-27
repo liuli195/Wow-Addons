@@ -17,7 +17,7 @@
 
 正式搜索保留原四来源初始化，复用分组GA的选择、交叉、变异、反馈和可靠保存；人工预训练也只运行分组GA，见[训练说明](../../docs/sim2gse/seed-training.md)。自适应选择器、规则化起点及其开关已经移除。旧配置键或对应正反CLI参数即使显式false也会报“已移除”，不能用旧键重新启用。四套职业优先规则、八类模板解释、规则编辑/手动单步及专属观察请求也已移除；新任务只用原生专精/真实英雄与明确场景作三元成果隔离，不加载职业规则库。基础失败/位置反馈和随机变异、静态角色证据、独立爆发、通用日志与曲线保留。旧v1内嵌规则快照及alignment只读验真，不提供规则执行入口。包含旧开关的未完成任务拒绝恢复；旧完整成果仍只读，不改历史身份。
 
-轻量曲线使用 `[search] search_timeline = true` 或 `--search-timeline` 开启，`--no-search-timeline` 显式关闭；任务、服务启动及训练共用，默认关闭且不新增页面控件。它不打开 `diagnostic_logging`、不改变算法或评分缓存身份，也不增加模拟/追踪。恢复时曲线按本次参数或配置选择，算法仍沿原冻结设置。
+轻量曲线使用 `[search] search_timeline = true` 或 `--search-timeline` 开启，`--no-search-timeline` 显式关闭；任务、服务启动及训练共用，默认关闭且不新增页面控件。它不打开 `diagnostic_logging`、不改变算法或评分缓存身份，也不增加模拟/追踪。新任务曲线按本次明确参数、所属配置、内置默认取值；恢复仅本次明确曲线参数覆盖，否则沿保存值，算法仍沿原冻结设置。
 
 开启后每次执行结束在任务目录保存独立 `search-timeline-*.json` 与同名静态 HTML（内嵌 SVG）。只采集已有成绩和当前赢家的修订，内存最多10,000事件，达到上限明确标截断。每10秒取当时最后已知值，首次成绩前留空，修订可下降；停止后虚线延续，不填补失败/截断以后的未知成绩。恢复是新时间段，不补造上次时间。训练逐组独立、同次公开调用共用时间原点；双场也包含第二场等待。`call_seconds` 是业务收尾后的采集截止秒数，不是含导出完成的调用总时长；实际性能外层计时包含全部导出。强制终止可丢失尚未导出的本段曲线，导出错误不会重跑或覆盖业务结果。
 
@@ -57,6 +57,17 @@ python projects/sim2gse/task.py curves --damage 任务目录 batch:已有批次�
 
 战斗日志不能证明专精、天赋、装备、游戏版本、候选序列、敌人攻击和生命时间线、目标防御、各技能实际覆盖范围以及输入节奏与模拟一致。输出中的百分比只是完整命中伤害的吞吐量比值；`simulation_comparison.accuracy_assessed` 在这些条件未核对时为 `false`，不能将该百分比当作模拟准确率结论。
 
-正式搜索只有GA入口：粗评32次，历史不同行为top8连续两个完整代名次无提高后收敛；入围者全部完成正常场景3批×128次请求后选一个冠军，不做训练的五场景四条发布。当前任务冻结算法、评价计划、随机状态和输入，取消后仅同版本同身份恢复。旧chain/neighbour正式搜索、Git历史提取执行工具和旧任务继续入口已退役；旧成果仍可查看、按原契约验真，并作为新任务起点重新评分。
+正式搜索只有GA入口：默认最多5个评分进程，自由选招参考请求128次；粗评32次，历史不同行为top8连续八个完整代名次无提高后收敛；入围者全部完成正常场景3批×128次请求后选一个冠军，不做训练的五场景四条发布。当前任务冻结算法、评价计划、随机状态和输入，取消后仅同版本同身份恢复。旧chain/neighbour正式搜索、Git历史提取执行工具和旧任务继续入口已退役；旧成果仍可查看、按原契约验真，并作为新任务起点重新评分。
 
 新配置明确拒绝11个旧正式搜索参数：`total_budget_seconds`、`search_budget_seconds`、`candidate_limit`、`round_candidate_limit`、`no_improvement_rounds`、`batch_targets`、`validation_batches`、`final_batches`、`final_iterations`、`trace_search`、`scenarios`，即使值为false也不接受。`iterations`仍控制自由选招参考评价，不控制GA粗评/复测；并发、随机种子、按键间隔、Reset事件及现有诊断/曲线设置继续生效。正式评分只用冻结正常场景，修饰键Reset仍要求与正常点击对齐；训练五场景不接受该修饰键事件。历史只读解码保留原字段，不能通过它启用旧搜索。
+
+
+正式 `[search]` 配置与 `[training]` 独立；新任务直接运行参数优先于文件，文件优先于内置默认，显式 `false` 不表示未提供。正式9项算法默认：`max_processes=5`、`coarse_iterations=32`、`retest_batches=3`、`retest_iterations=128`、`stagnation_generations=8`、`top_k=8`、`tournament_size=3`、`crossover_probability=0.8`、`mutation_probability=0.8`。正式并发不超过5。
+
+另8项运行默认：`iterations=128`、`random_seed=20260912`、`search_timeline=false`、`diagnostic_logging=false`、`diagnostics="summary"`、`search_observability="full"`、`input_interval_ms=300`、`reset_events=[]`。17项均可写入 `[search]`。诊断模式是期望细分，日志总闸默认仍关闭、不实际采集；仅开启总闸才按期望细分记录，显式off或summary不升级。页面与双场内置间隔为200毫秒，单场为300；仅在文件和运行参数均未提供时采用内置值。页面明确选择优先于运行参数，随后是文件与内置默认。恢复观测仅本次明确选择覆盖，否则保留保存值（false也是明确选择）。算法参数在新任务创建时冻结，恢复不从当前文件热改计算设置。
+
+训练10项默认和原有上限不变：评分并发不超过16，训练并发与评分并发乘积不超过20，默认4×5；训练仅沿用 `[search] search_timeline` 文件开关，不读取正式计算或其它观测字段。正式遗传成果的新内嵌契约为v2；已完成v1遗传成果及更旧搜索成果仍使用原常量和配置默认只读验真（旧搜索并发上限2），不会以新默认重释历史结果。
+
+训练公开 `run_training`／准备入口只接受实际支持的运行项：`input_interval_ms`、`reset_events`、`diagnostic_logging`、`diagnostics`（`off`／`summary`）、`search_observability="off"` 和 `search_timeline`。爆发／非爆发内置间隔仍为200／300毫秒，明确间隔直接生效。新训练未显式开启日志则关闭；仅开启总闸时默认基础摘要，明确 `diagnostics="off"` 不被提升。CLI（命令行）`run`／`prepare` 使用 `--diagnostic-logging`／`--no-diagnostic-logging` 明确选择；同一次调用不可同时通过专用 `diagnostic_logging` 参数和 `search_config` 指定总闸（即使相同也报错）。完整事件与非off过程观测不支持，计算前明确拒绝。
+
+训练不接受 `search_config` 中的 `iterations`、`random_seed`、`max_processes` 或正式算法参数：准备参考固定100次，训练随机种子来自原组清单生成机制，训练并发只能走专用参数／`[training]`。运行明确值优先于训练文件，再取训练内置默认；文件只兼容既有共享曲线，不新增日志文件来源。恢复沿原清单的计算、种子、按键间隔、Reset及训练十项；本次明确计算值与原清单冲突则拒绝，合法的新文件计算值只影响新任务。恢复观测只覆盖本次明确项，否则沿最新可靠检查点的观测值（尚无检查点配置时回退原清单），不会在多次恢复时跳回初始观测；仅重新开启总闸不会将保存的 `diagnostics="off"` 提升成摘要，需明确指定 `summary`。非法当前配置文件仍明确报错，不作坏文件恢复。

@@ -5,6 +5,7 @@ import subprocess
 
 
 import pytest
+from test_population_training import memory_ga
 
 
 def command(tmp_path, args):
@@ -334,3 +335,284 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monke
         assert {call.args[2] for call in fallback.call_args_list}=={'valid_candidate','affected_candidate'}
         assert writer.call_count==1
     assert registry==before
+
+
+@pytest.mark.parametrize('entry', ['run', 'prepare'])
+@pytest.mark.parametrize('setting', ['iterations', 'random_seed', 'max_processes', 'coarse_iterations',
+    'retest_batches', 'retest_iterations', 'stagnation_generations', 'top_k', 'tournament_size',
+    'crossover_probability', 'mutation_probability'])
+def test_training_public_inputs_reject_unused_search_parameters_before_io(monkeypatch, entry, setting):
+    import seed_training
+    def forbidden(*args, **kwargs):
+        raise AssertionError('invalid public settings must fail before IO')
+    monkeypatch.setattr(Path, 'read_text', forbidden)
+    invoke = seed_training.run_training if entry == 'run' else seed_training.ensure_prepared
+    with pytest.raises(ValueError, match=setting):
+        invoke('/memory/template', 1, '/memory/work', search_config={setting: 1})
+
+
+@pytest.mark.parametrize('logging, options, expected', [
+    (None, {'diagnostic_logging': True, 'diagnostics': 'off'}, (True, 'off')),
+    (None, {'diagnostic_logging': True, 'diagnostics': 'summary'}, (True, 'summary')),
+    (False, {}, (False, 'off')),
+    (True, {}, (True, 'summary')),
+])
+def test_public_prepare_consumes_explicit_runtime_options(monkeypatch, training_cli, logging, options, expected):
+    import result_store, seed_training, simulation_config
+    monkeypatch.setattr(result_store, 'read_records', lambda *args: [])
+    monkeypatch.setattr(result_store, 'write', lambda *args, **kwargs: None)
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(search=dict(
+        iterations=128, random_seed=123, max_processes=5, input_interval_ms=900,
+        diagnostic_logging=True, diagnostics='full', search_observability='full', search_timeline=True)))
+    monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, 'write_text', lambda *args, **kwargs: None)
+    ready = seed_training.ensure_prepared(training_cli, 1, '/memory/work', sources=[],
+        diagnostic_logging=logging, search_config=dict(options, input_interval_ms=250,
+            reset_events=[(500, 'target')], search_timeline=False))
+    assert (ready['config']['diagnostic_logging'], ready['config']['diagnostics']) == expected
+    assert ready['config']['input_interval_ms'] == 250
+    assert ready['config']['reset_events'] == ((500, 'target'),)
+    assert ready['config']['search_timeline'] is False
+    assert (ready['config']['iterations'], ready['config']['random_seed'], ready['config']['max_processes']) == (100, 20260912, 5)
+
+
+@pytest.mark.parametrize('entry', ['run', 'prepare'])
+@pytest.mark.parametrize('logging', [False, True])
+def test_public_training_rejects_duplicate_logging_authority_before_io(monkeypatch, entry, logging):
+    import seed_training
+    def forbidden(*args, **kwargs): raise AssertionError('duplicate setting must fail before IO')
+    monkeypatch.setattr(Path, 'read_text', forbidden)
+    invoke = seed_training.run_training if entry == 'run' else seed_training.ensure_prepared
+    with pytest.raises(ValueError, match='重复.*diagnostic_logging'):
+        invoke('/memory/template', 1, '/memory/work', diagnostic_logging=logging,
+               search_config={'diagnostic_logging': logging})
+
+
+@pytest.mark.parametrize('use_burst, interval', [(False, None), (True, None), (True, 450)])
+def test_public_prepare_preserves_interval_defaults_and_explicit_burst_interval(
+        monkeypatch, training_cli, use_burst, interval):
+    import burst, result_store, seed_training
+    monkeypatch.setattr(result_store, 'read_records', lambda *args: [])
+    monkeypatch.setattr(result_store, 'write', lambda *args, **kwargs: None)
+    monkeypatch.setattr(burst, 'select_definition', lambda character: dict(definition_id='verified'))
+    options = {} if interval is None else {'input_interval_ms': interval}
+    ready = seed_training.ensure_prepared(training_cli, 1, '/memory/work', sources=[],
+        use_burst=use_burst, search_config=options)
+    assert ready['config']['input_interval_ms'] == (interval or (200 if use_burst else 300))
+
+
+@pytest.mark.parametrize('entry', ['run', 'prepare'])
+@pytest.mark.parametrize('options', [dict(diagnostics='full'), dict(search_observability='summary'),
+                                     dict(search_observability='full')])
+def test_public_training_rejects_unsupported_observation_before_io(monkeypatch, entry, options):
+    import seed_training
+    monkeypatch.setattr(Path, 'read_text', lambda *a, **kw: pytest.fail('must reject before IO'))
+    invoke = seed_training.run_training if entry == 'run' else seed_training.ensure_prepared
+    with pytest.raises(ValueError, match='预训练仅支持'):
+        invoke('/memory/template', 1, '/memory/work', search_config=options)
+
+
+@pytest.fixture
+def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga):
+    """Real public orchestration + preparation + GA; only filesystem/native/store IO are in memory."""
+    from copy import deepcopy
+    import population_training, result_store, seed_training, simulation_config, task, search
+    from search import digest
+    from test_character_export import sample_profile
+    case = memory_ga(settings=dict(max_trainings=1), search_settings=dict(input_interval_ms=250,
+        reset_events=[(500, 'target')]))
+    sources = [prepared_input.source(str(index), program) for index, program in enumerate(case.starts)]
+    monkeypatch.setattr(seed_training, 'sync_history', lambda *args, **kwargs: deepcopy(sources))
+    monkeypatch.setattr(seed_training, 'registry_rows', lambda: deepcopy(sources))
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(training=dict(
+        max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., mutation_probability=0.)))
+    files = {}
+    monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, 'write_text', lambda path, text, **kwargs: files.__setitem__(path, text))
+    monkeypatch.setattr(Path, 'read_text', lambda path, **kwargs: files.get(path, sample_profile()))
+    for module in (task, search):
+        monkeypatch.setattr(module, 'replace_file', lambda source, target: files.__setitem__(target, files.pop(source)))
+    monkeypatch.setattr(Path, 'exists', lambda path: path in files)
+    monkeypatch.setattr(Path, 'glob', lambda path, pattern: iter(
+        [path for path in files if path.name == 'identity.json']
+        if pattern == '*/*/identity.json' else []))
+    def open_store(folder): return case.store
+    open_store.load_state = search.TaskStore.load_state
+    monkeypatch.setattr(population_training, 'TaskStore', open_store)
+    import sqlite3
+    connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, 'connect', lambda database, **kwargs:
+        case.store.db if database in {
+            'file:' + path.with_name('task.sqlite3').as_posix() + '?mode=ro'
+            for path in files if path.name == 'identity.json'} else connect(database, **kwargs))
+    close = case.store.close
+    monkeypatch.setattr(case.store, 'close', lambda: None)
+    case.store.state.clear()
+    header = deepcopy(prepared_input.header)
+    native = header['context']['native']
+    native.update(dps=100., samples=99)
+    def read_records(table, key):
+        if table != 'seed_prepared': return []
+        row = deepcopy(header)
+        row['config_key'] = key
+        row['checksum'] = digest([{name: value for name, value in row.items() if name != 'checksum'}])
+        return [row]
+    monkeypatch.setattr(result_store, 'read_records', read_records)
+    monkeypatch.setattr(result_store, '_api', lambda: {})
+    case.files, case.template, case.sources = files, training_cli, sources
+    yield case
+    monkeypatch.setattr(case.store, 'close', close)
+
+
+def test_public_run_training_consumes_interval_reset_logging_and_training_defaults(public_training_memory):
+    import seed_training
+    case = public_training_memory
+    result = seed_training.run_training(case.template, 1, '/memory/work', search_config=dict(
+        input_interval_ms=250, reset_events=[(500, 'target')], diagnostic_logging=True, diagnostics='off'))
+    assert result['status'] == 'completed'
+    assert result['training_config']['stagnation_generations'] == 2
+    assert (result['training_config']['coarse_iterations'], result['training_config']['retest_batches'],
+            result['training_config']['retest_iterations']) == (32, 3, 128)
+    assert case.calls and case.calls[0][2]['input_times'][:3] == [0, 250, 500]
+    assert all(call[2]['reset_events'] == [(500, 'target')] for call in case.calls)
+    assert case.store.state['config']['diagnostic_logging'] is True
+    assert case.store.state['config']['diagnostics'] == 'off'
+    assert not getattr(case.store, 'diagnostic_summary', None)
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_public_training_resume_freezes_computation_and_only_changes_explicit_observation(
+        monkeypatch, public_training_memory, explicit):
+    import seed_training, sequence, simulation_config
+    from runtime import TaskCancelled
+    case = public_training_memory
+    evaluate = sequence.evaluate
+    def pause(*args, **kwargs): raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work', search_config=dict(
+            input_interval_ms=250, reset_events=[(500, 'target')], diagnostic_logging=True, diagnostics='summary'))
+    manifest_path = next(path for path in case.files if path.name == 'identity.json')
+    frozen = case.files[manifest_path]
+    # New files are not current-invocation authority over an unfinished task.
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(
+        training=dict(max_processes=2, max_trainings=2, coarse_iterations=7, retest_batches=1,
+                      retest_iterations=9, stagnation_generations=4),
+        search=dict(input_interval_ms=900, random_seed=456, search_timeline=False)))
+    monkeypatch.setattr(sequence, 'evaluate', evaluate)
+    options = dict(diagnostic_logging=False, diagnostics='off') if explicit else {}
+    result = seed_training.run_training(case.template, 1, '/memory/work', search_config=options)
+    assert result['status'] == 'completed'
+    assert result['training_config']['coarse_iterations'] == 32
+    assert result['training_config']['max_processes'] == 1
+    assert case.files[manifest_path] == frozen
+    assert case.calls[0][2]['input_times'][:3] == [0, 250, 500]
+    assert all(call[2]['reset_events'] == [(500, 'target')] for call in case.calls)
+    assert case.store.state['config']['diagnostic_logging'] is (not explicit)
+    assert case.store.state['config']['diagnostics'] == ('off' if explicit else 'summary')
+
+
+@pytest.mark.parametrize('options, parallelism', [
+    ({'input_interval_ms': 300}, {}), ({'reset_events': []}, {}),
+    ({}, {'max_processes': 2}), ({}, {'max_trainings': 2})])
+def test_public_training_resume_rejects_explicit_computation_conflicts_before_native(
+        monkeypatch, public_training_memory, options, parallelism):
+    import seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    monkeypatch.setattr(sequence, 'evaluate', lambda *a, **kw: (_ for _ in ()).throw(TaskCancelled('pause')))
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work', search_config=dict(
+            input_interval_ms=250, reset_events=[(500, 'target')]))
+    monkeypatch.setattr(sequence, 'evaluate', lambda *a, **kw: pytest.fail('conflict must fail before native'))
+    with pytest.raises(ValueError, match='恢复.*配置.*变化'):
+        seed_training.run_training(case.template, 1, '/memory/work', search_config=options, **parallelism)
+
+
+@pytest.mark.parametrize('entry', ['run', 'prepare'])
+@pytest.mark.parametrize('logging_flag', [[], ['--diagnostic-logging'], ['--no-diagnostic-logging']])
+def test_training_cli_consumes_logging_selection_through_real_public_execution(
+        capsys, public_training_memory, entry, logging_flag):
+    import seed_training
+    case = public_training_memory
+    assert seed_training.main(['--project', '/memory', entry, '--legacy', '--targets', '1',
+        '--template', str(case.template), '--workspace', '/memory/work', *logging_flag]) == 0
+    result = json.loads(capsys.readouterr().out)[0]
+    assert result['status'] == ('completed' if entry == 'run' else 'prepared')
+    expected = logging_flag == ['--diagnostic-logging']
+    diagnostics = [json.loads(value) for path, value in case.files.items() if path.name == 'diagnostics.json']
+    assert bool(diagnostics) is expected
+    if entry == 'run':
+        assert case.store.state['config']['diagnostic_logging'] is expected
+        assert case.store.state['config']['diagnostics'] == ('summary' if expected else 'off')
+
+
+@pytest.mark.parametrize('explicit, expected', [(None, True), (False, False), (True, True)])
+def test_public_training_uses_only_shared_file_curve_and_explicit_choice_wins(
+        monkeypatch, public_training_memory, explicit, expected):
+    import seed_training, simulation_config
+    case = public_training_memory
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(
+        training=dict(max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., mutation_probability=0.),
+        search=dict(search_timeline=True, diagnostic_logging=True, diagnostics='full',
+                    search_observability='full', iterations=128, random_seed=345, max_processes=5)))
+    options = {} if explicit is None else {'search_timeline': explicit}
+    result = seed_training.run_training(case.template, 1, '/memory/work', search_config=options)
+    assert result['status'] == 'completed'
+    curves = [json.loads(value) for path, value in case.files.items() if path.name.startswith('search-timeline-') and path.suffix == '.json']
+    assert bool(curves) is expected
+    if expected:
+        assert curves[0]['status'] == 'completed'
+        assert any(event['kind'] == 'score' for event in curves[0]['events'])
+    assert case.store.state['config']['diagnostic_logging'] is False
+    assert case.store.state['config']['input_interval_ms'] == 300
+
+
+@pytest.mark.parametrize('initial_enabled, latest_logging, latest_diagnostics, latest_timeline', [
+    (True, False, 'off', False), (False, True, 'summary', True), (True, True, 'off', False)])
+def test_three_public_training_calls_keep_latest_checkpoint_observation_when_omitted(
+        monkeypatch, public_training_memory, initial_enabled, latest_logging, latest_diagnostics, latest_timeline):
+    import seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    evaluate = sequence.evaluate
+    def pause(*args, **kwargs): raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    def options(enabled):
+        return dict(input_interval_ms=250, reset_events=[(500, 'target')],
+            diagnostic_logging=enabled, diagnostics='summary' if enabled else 'off',
+            search_timeline=enabled)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work', search_config=options(initial_enabled))
+    manifest_path = next(path for path in case.files if path.name == 'identity.json')
+    frozen = case.files[manifest_path]
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work', search_config=dict(options(latest_logging),
+            diagnostics=latest_diagnostics, search_timeline=latest_timeline))
+    previous_curves = {path for path in case.files if path.name.startswith('search-timeline-') and path.suffix == '.json'}
+    monkeypatch.setattr(sequence, 'evaluate', evaluate)
+    result = seed_training.run_training(case.template, 1, '/memory/work')
+    assert result['status'] == 'completed'
+    assert case.store.state['config']['diagnostic_logging'] is latest_logging
+    assert case.store.state['config']['diagnostics'] == latest_diagnostics
+    assert case.store.state['config']['search_timeline'] is latest_timeline
+    new_curves = [json.loads(value) for path, value in case.files.items()
+                  if path.name.startswith('search-timeline-') and path.suffix == '.json' and path not in previous_curves]
+    assert bool(new_curves) is latest_timeline
+    if latest_timeline:
+        assert new_curves[0]['resumed'] is True and new_curves[0]['status'] == 'completed'
+    assert case.files[manifest_path] == frozen
+    assert case.calls[0][2]['input_times'][:3] == [0, 250, 500]
+    assert all(call[2]['reset_events'] == [(500, 'target')] for call in case.calls)
+
+
+def test_training_memory_io_recognizes_windows_paths(public_training_memory):
+    """Exercise the same fixture IO with Windows drive/separators even on Linux."""
+    import sqlite3
+    from pathlib import PureWindowsPath
+    manifest = PureWindowsPath('Z:/memory/work/ga/scope/task/identity.json')
+    Path.write_text(manifest, '{}')
+    assert Path.read_text(manifest) == '{}' and Path.exists(manifest)
+    assert manifest in Path.glob(manifest.parents[2], '*/*/identity.json')
+    uri = 'file:' + manifest.with_name('task.sqlite3').as_posix() + '?mode=ro'
+    assert sqlite3.connect(uri, uri=True) is public_training_memory.store.db

@@ -148,11 +148,11 @@ def test_formal_coarse_tolerance_fails_closed_outside_proven_new_score_data(monk
 def test_invalid_mean_uses_real_report_validation_and_never_masks_count_or_stage(monkeypatch, memory_ga):
     """报告先验样本身份，明确坏mean才可由正式粗评隔离；没有第二评分器。"""
     import engine
-    import simulation_config
+    from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
     from test_search import _fast_report
     with monkeypatch.context() as scoped:
-        scoped.setitem(simulation_config.TRAINING_DEFAULTS, 'mutation_probability', 0.)
-        scoped.setitem(simulation_config.TRAINING_DEFAULTS, 'crossover_probability', 0.)
+        scoped.setitem(FORMAL_DEFAULTS, 'mutation_probability', 0.)
+        scoped.setitem(FORMAL_DEFAULTS, 'crossover_probability', 0.)
         def make(mean, *, formal=True, stage='search', count=None):
             attempts = []
             def native(profile, candidate, folder, **options):

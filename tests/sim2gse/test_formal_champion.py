@@ -403,11 +403,16 @@ def test_formal_champion_requires_complete_request_reports_and_matching_source(m
         task._validate_formal_source(record, state, character, run=run, candidate=candidate)
 
 
-def test_formal_champion_validates_all_six_original_reports_without_a_center(monkeypatch):
+@pytest.mark.parametrize('search_version', [1, 2])
+def test_formal_champion_validates_all_six_original_reports_without_a_center(monkeypatch, search_version):
     import result_store
     import task
     from champion_evidence_fixture import formal_cohort
-    record, state, character, run, candidate, reports = formal_cohort()
+    historical = dict(iterations=100, max_processes=2, random_seed=20260912,
+        search_timeline=False, diagnostic_logging=False, diagnostics='off',
+        search_observability='off', input_interval_ms=200, reset_events=((400, 'shift'),))
+    record, state, character, run, candidate, reports = formal_cohort(
+        config=historical if search_version == 1 else None, search_version=search_version)
     monkeypatch.setattr(result_store, 'report_locations', lambda keys: {})
     monkeypatch.setattr(result_store, 'read_many', lambda *args, **kwargs: reports)
     assert task._validate_formal_source(record, state, character, run=run,

@@ -290,7 +290,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     return execute
 
 
-def _unfinished(workspace, *, template=None, targets=None, scope=None):
+def _unfinished(workspace, *, template=None, targets=None, scope=None, include_state=False):
     """Startup-only scan of known task manifests, never a per-score fallback."""
     import sqlite3
     for path in (Path(workspace).resolve() / 'ga').glob('*/*/identity.json'):
@@ -308,7 +308,7 @@ def _unfinished(workspace, *, template=None, targets=None, scope=None):
             except sqlite3.OperationalError as error:
                 raise ValueError('GA任务检查点不完整: ' + str(path.parent)) from error
         if state.get('ga', {}).get('phase') != 'published':
-            yield path.parent, manifest
+            yield (path.parent, manifest, state) if include_state else (path.parent, manifest)
 
 
 def group_configs(workspace, templates, config, targets=(1, 5)):
@@ -341,26 +341,46 @@ def group_workers(workspace, templates, config, targets=(1, 5), *, effective_con
 
 
 def run_group(template, targets, workspace, *, cancel_event, use_burst, sources, config,
-              prepare_only=False, materials=None, diagnostic_logging=False, search_config=None,
-              expected_key=None, timeline_origin=None, burst_identity=None):
+              prepare_only=False, materials=None, diagnostic_logging=None, search_config=None,
+              expected_key=None, timeline_origin=None, burst_identity=None, training_overrides=None):
     import seed_training as seeds
     from task import _write_json, _rule_hashes
     from engine import ROOT
     if any((Path(workspace) / str(targets)).glob('*/identity.json')):
         raise ValueError('旧逐材料训练目录不能作为GA任务恢复；请使用新工作目录，原完整成果仍可读取')
-    frozen = list(_unfinished(workspace, template=template, targets=targets))
+    frozen = list(_unfinished(workspace, template=template, targets=targets, include_state=True))
     if len(frozen) > 1:
         raise ValueError('同模板/目标存在多个未完成GA任务')
+    options = seeds._training_options(search_config, diagnostic_logging)
+    inputs = None
     if frozen:
         from simulation_config import reject_removed_search_settings
-        reject_removed_search_settings(frozen[0][1]['search_config'])
-        seeds._check_pretraining_observations(frozen[0][1]['search_config'])
+        from search import config_for
+        saved = frozen[0][1]['search_config']
+        reject_removed_search_settings(saved)
+        seeds._check_pretraining_observations(saved)
+        observation = {'diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline'}
+        explicit = {key: value for key, value in options.items() if value is not None}
+        frozen_runtime = config_for(saved, training=True)
+        checkpoint = frozen[0][2].get('config') or {}
+        # 计算仍取不可变清单；省略观测取最近可靠检查点，不跳回初次选择。
+        latest = dict(saved, **{key: checkpoint[key] for key in observation if key in checkpoint})
+        seeds._check_pretraining_observations(latest)
+        resumed = config_for(dict(latest, **explicit), training=True)
+        if (any(resumed[key] != frozen_runtime[key]
+                for key in explicit if key not in observation)
+                or any(value != frozen[0][1]['training_config'][key]
+                       for key, value in (training_overrides or {}).items())):
+            raise ValueError('恢复训练配置发生变化，请创建新任务')
         config = frozen[0][1]['training_config']
         sources = [source for row in frozen[0][1]['sources'] for source in row['sources']]
         materials = None  # Resume the original material manifest, not today's registry/subset.
+        inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
+            use_burst=use_burst, max_processes=config['max_processes'],
+            burst_identity=burst_identity, _frozen_config=resumed)
     ready = seeds.ensure_prepared(template, targets, workspace, cancel_event=cancel_event,
-        use_burst=use_burst, sources=sources, materials=materials,
-        max_processes=config['max_processes'], diagnostic_logging=diagnostic_logging, search_config=search_config,
+        use_burst=use_burst, sources=sources, materials=materials, inputs=inputs,
+        max_processes=config['max_processes'], search_config=options,
         burst_identity=burst_identity)
     context = ready['context']
     if not context or not ready['queue']:
@@ -403,11 +423,11 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
     store = TaskStore(folder)
     character = replace(ready['character'], spec_id=context['native']['identity']['spec_id'],
                         race=context['native']['identity']['race'])
-    runtime = TaskRuntime(float('inf'), cancel_event=cancel_event, diagnostic_logging=diagnostic_logging)
-    execution_config = dict(manifest['search_config'], diagnostic_logging=diagnostic_logging,
-        diagnostics='summary' if diagnostic_logging else 'off')
+    execution_config = ready['config']
+    runtime = TaskRuntime(float('inf'), cancel_event=cancel_event,
+                          diagnostic_logging=execution_config['diagnostic_logging'])
     timeline = None
-    if (search_config or {}).get('search_timeline'):
+    if execution_config['search_timeline']:
         from search_timeline import Timeline
         timeline = Timeline(origin=timeline_origin, context=dict(configuration_key=configuration_key,
             simulation_config=ready['simulation_config']), resumed=bool(active))

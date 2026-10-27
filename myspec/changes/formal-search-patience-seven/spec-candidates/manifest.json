@@ -1,0 +1,25 @@
+{
+  "status": "draft_only_not_official_preview",
+  "formal_specs_modified": false,
+  "files": [
+    {
+      "source": "myspec/specs/sim2gse-sequence-evaluation/spec.md",
+      "source_sha256": "6a9a73f336278aeb14c775f69b6f5db3d666d2d727523762602e435650d15191",
+      "candidate": "myspec/changes/formal-search-patience-seven/spec-candidates/sim2gse-sequence-evaluation.md",
+      "candidate_sha256": "ae0b93b981a5ee016e555865ef8ccda3dea3c42d52c1209a1da2ea2dbed7c087"
+    },
+    {
+      "source": "myspec/specs/sim2gse-user-workflow/spec.md",
+      "source_sha256": "c6af9de51fb7a4137061acac289f93be80f105c5e074af1db21161c5029c7b41",
+      "candidate": "myspec/changes/formal-search-patience-seven/spec-candidates/sim2gse-user-workflow.md",
+      "candidate_sha256": "21bdd4251305ca38c40dbcb67c66dedbfccc433380c5f0b935f2b4c7be342b35"
+    },
+    {
+      "source": "myspec/specs/sim2gse-seed-training/spec.md",
+      "source_sha256": "6398abde2a00c6a6e63e32c0aa1d3c93093160d9ea36f4d8c8fe489988f1403c",
+      "candidate": "myspec/changes/formal-search-patience-seven/spec-candidates/sim2gse-seed-training.md",
+      "candidate_sha256": "34aa33e6e614a6796a048d6aa9667539c9b46d8a430493367b9622c8b23b199b"
+    }
+  ],
+  "code_commit": "e1a8c504d0411fcdba19fa116cf65435b80b8e9d"
+}

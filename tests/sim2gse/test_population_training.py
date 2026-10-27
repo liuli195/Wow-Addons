@@ -689,3 +689,64 @@ def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(monke
     assert max(row[0] for row in checkpoints)<=12
     resumed=case.store.load_state(case.store.db)['ga']
     assert resumed['generation']==0 and len(resumed['pending']['programs'])==70
+
+
+def test_formal_resume_can_switch_observation_detail_without_changing_computation(memory_ga):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from runtime import TaskCancelled, TaskRuntime
+    case = memory_ga(formal=True, programs=[[['outbreak']]],
+                     search_settings=dict(diagnostic_logging=True, search_observability='summary'))
+    cancel = SimpleNamespace(is_set=lambda: case.store.state['ga']['generation'] >= 1)
+    with pytest.raises(TaskCancelled):
+        case.run(runtime=TaskRuntime(float('inf'), diagnostic_logging=True, cancel_event=cancel))
+    frozen = deepcopy(case.store.state['formal_search'])
+    history = deepcopy(case.store.state['search_observability'])
+    assert not history['details']
+    case.search_config['search_observability'] = 'full'
+    result = case.run()
+    assert result['status'] == 'completed'
+    assert case.store.state['formal_search'] == frozen
+    assert case.store.state['search_observability']['details']
+    assert case.store.state['search_observability']['summary']['mutation_attempts'] > history['summary']['mutation_attempts']
+
+
+def test_formal_master_off_retains_expected_detail_without_collecting_new_logs(memory_ga):
+    case = memory_ga(formal=True, programs=[[['outbreak']]])
+    result = case.run()
+    assert case.search_config['diagnostic_logging'] is False
+    assert (case.search_config['diagnostics'], case.search_config['search_observability']) == ('summary', 'full')
+    assert 'search_observability' not in case.store.state
+    assert 'diagnostics' not in result['search']
+    assert not getattr(case.store, 'diagnostic_summary', None)
+
+
+def test_single_resume_missing_simulation_keeps_saved_and_explicit_difference_rejects(memory_ga, monkeypatch):
+    import hashlib, json, sqlite3
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    import engine, result_store, search, seed_activity, task
+    case = memory_ga(formal=True, programs=[[['outbreak']]])
+    raw = b'frozen input'
+    hashes = dict(input_original_sha256=hashlib.sha256(raw).hexdigest(),
+                  input_effective_sha256=hashlib.sha256(raw).hexdigest())
+    case.store.state.update(hashes, formal_search_version=1,
+        simulation_config=dict(target_count=5, scene='aoe', enable_omnium_talents=False))
+    case.store.checkpoint()
+    connection = SimpleNamespace(execute=case.store.db.execute, close=lambda: None)
+    monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: connection)
+    monkeypatch.setattr(search, 'TaskStore', lambda *a: case.store)
+    close_store = case.store.close
+    monkeypatch.setattr(case.store, 'close', lambda: None)
+    monkeypatch.setattr(result_store, 'ensure_available', lambda: None)
+    monkeypatch.setattr(task, '_task_lease', lambda *a: nullcontext())
+    monkeypatch.setattr(seed_activity, 'foreground_search', nullcontext)
+    monkeypatch.setattr(Path, 'read_text', lambda *a, **kw: json.dumps(hashes))
+    monkeypatch.setattr(Path, 'read_bytes', lambda *a: raw)
+    monkeypatch.setattr(engine, 'identity', lambda *a: (_ for _ in ()).throw(ValueError('原生身份不可用')))
+    monkeypatch.setattr('simulation_config._load_document', lambda *a: (_ for _ in ()).throw(AssertionError('不得读当前文件')))
+    with pytest.raises(task.TaskError, match='原生身份不可用'):
+        task.resume_task('/memory/ga')
+    with pytest.raises(task.TaskError, match='恢复模拟配置发生变化'):
+        task.resume_task('/memory/ga', simulation_config=dict(target_count=1, scene='single_target'))
+    close_store()

@@ -260,7 +260,7 @@ def _initialized_starts(starts):
 
 @contextmanager
 def _fixed_search_population(starts):
-    """非变异代表仅固定测试工作量；真实两代、复测和持久化契约不变。"""
+    """非变异代表仅固定种群；代数由调用方显式配置，复测和持久化契约不变。"""
     from copy import deepcopy
     import population_training
     with _initialized_starts(starts), \
@@ -291,18 +291,18 @@ class SearchAndValidationTests(TestCase):
                 connections[0].execute('SELECT 1')
 
 
-    def test_normal_task_and_dual_scene_still_refuse_four_processes(self):
+    def test_normal_task_and_dual_scene_refuse_more_than_five_processes(self):
         from io import StringIO
         import dual_task
         from simulation_config import load_search_config
         from search import config_for
-        self.assertEqual(config_for()['max_processes'],2)
+        self.assertEqual(config_for()['max_processes'],5)
         with patch('simulation_config.load_search_config', side_effect=lambda **values:
                    load_search_config(StringIO(''), **values)), \
                 patch.object(Path,'read_bytes',return_value=sample_profile().encode('utf-8')):
             for entry in (run_task,dual_task.start):
                 with self.subTest(entry=entry.__name__),self.assertRaisesRegex(ValueError,'max_processes'):
-                    entry(Path('/absent/role.simc'),Path('/absent/task'),search_config={'max_processes':4})
+                    entry(Path('/absent/role.simc'),Path('/absent/task'),search_config={'max_processes':6})
 
     def test_task_uses_full_apl_pool_without_changing_baseline_starts(self):
         import engine
@@ -323,12 +323,12 @@ class SearchAndValidationTests(TestCase):
     def test_formal_nominal_retest_selects_from_all_finalists_without_paired_ci(self):
         import search
         from program import canonicalize_search_program
-        from simulation_config import TRAINING_DEFAULTS
+        from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
         preferred=[['outbreak']]
         def score(candidate,options):
             blocks=[[row['simc_action'] for row in block] for block in candidate['blocks']]
             return (200. if blocks==preferred else 100.) if options['iterations']==32 else (50. if blocks==preferred else 150.)
-        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[preferred,[['death_coil']]],score_for=score)
             result=case.run()
         preferred_key=canonicalize_search_program(preferred,case.capabilities)['identity']
@@ -346,7 +346,7 @@ class SearchAndValidationTests(TestCase):
 
     def test_formal_initial_scores_overlap_with_at_most_two_engines(self):
         import threading
-        from simulation_config import TRAINING_DEFAULTS
+        from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
         barrier,lock=threading.Barrier(2,timeout=2),threading.Lock()
         active,peak,initial_calls=0,0,[]
         starts=[[['outbreak']],[['death_coil']]]
@@ -363,7 +363,7 @@ class SearchAndValidationTests(TestCase):
                 return 100.
             finally:
                 with lock: active-=1
-        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=starts,score_for=score,search_settings=dict(max_processes=2))
             result=case.run()
         self.assertEqual(result['status'],'completed')
@@ -375,7 +375,7 @@ class SearchAndValidationTests(TestCase):
     def test_cancelled_formal_batches_resume_without_repeating_successful_native_requests(self):
         import threading
         from runtime import TaskRuntime,TaskCancelled
-        from simulation_config import TRAINING_DEFAULTS
+        from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
         cancel=threading.Event()
         interrupted=[False]
         def score(candidate,options):
@@ -383,7 +383,7 @@ class SearchAndValidationTests(TestCase):
                 interrupted[0]=True
                 cancel.set()
             return 100.
-        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]],score_for=score)
             with self.assertRaises(TaskCancelled):
                 case.run(runtime=TaskRuntime(float('inf'),cancel_event=cancel))
@@ -412,11 +412,11 @@ class SearchAndValidationTests(TestCase):
         import sequence
         from formal_search import freeze_starts
         from runtime import TaskRuntime
-        from simulation_config import TRAINING_DEFAULTS
+        from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
         action='use_item,slot=trinket1'
         equivalents=[[dict(kind='Loop',count=2,blocks=[[action]])],[[action],[action]]]
         compiles=[]
-        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=equivalents)
             starts,_=freeze_starts(case.starts,case.capabilities,TaskRuntime(float('inf')))
             case.store.state['starts']=starts
@@ -485,8 +485,8 @@ class SearchAndValidationTests(TestCase):
 
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
         from copy import deepcopy
-        from simulation_config import TRAINING_DEFAULTS
-        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]])
             result=case.run()
             before=deepcopy(result['search_result'])
@@ -503,14 +503,14 @@ class SearchAndValidationTests(TestCase):
         import program
         import sequence
         from engine import CandidateError
-        from simulation_config import TRAINING_DEFAULTS
+        from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
         canonicalize=program.canonicalize_search_program
         def wrong_form(search_program,capabilities):
             result=canonicalize(search_program,capabilities)
             if search_program==[['outbreak']]:
                 result['form']=dict(result['form'],clicks=[['death_coil']])
             return result
-        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]])
             with patch.object(program,'canonicalize_search_program',side_effect=wrong_form):
                 with self.assertRaisesRegex(CandidateError,'标准形式与编译计划不一致'):
@@ -679,9 +679,9 @@ class SearchAndValidationTests(TestCase):
     def test_formal_deduplicates_legal_starts_and_stops_on_complete_generation_stagnation(self):
         from formal_search import freeze_starts
         from runtime import TaskRuntime
-        from simulation_config import TRAINING_DEFAULTS
+        from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
         starts=[[['outbreak']],[['death_coil']]]
-        with patch.dict(TRAINING_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=starts+[starts[0],[['missing_action']]])
             frozen,decisions=freeze_starts(case.starts,case.capabilities,TaskRuntime(float('inf')))
             case.store.state.update(starts=frozen,start_adaptations=decisions)
@@ -691,7 +691,7 @@ class SearchAndValidationTests(TestCase):
         self.assertEqual(result['search']['starts'],starts)
         self.assertEqual(result['search']['stop_reason'],'stagnation')
         self.assertGreaterEqual(result['search']['complete_generations'],2)
-        self.assertEqual(result['search']['formal_search']['config']['stagnation_generations'],2)
+        self.assertEqual(result['search']['formal_search']['config']['stagnation_generations'],8)
         self.assertFalse(result['search']['partial_round'])
         self.assertEqual(saved['ga']['generation'],result['search']['complete_generations'])
         self.assertEqual(saved['search_result']['samples'],381)
