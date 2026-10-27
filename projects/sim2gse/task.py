@@ -424,6 +424,10 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
                            'canonicalized_duplicates', 'configuration_key',
                            'effective_population_size', 'rtr_window_size', 'coarse_rejections', 'last_fallbacks')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
+    frozen_population = (state or {}).get('ga') or {}
+    for name in ('effective_population_size', 'rtr_window_size'):
+        if name in frozen_population:
+            search_metrics.setdefault(name, frozen_population[name])
     if summary.get('retest'):
         search_metrics['retest_budget'] = summary['retest']
     elif (state or {}).get('formal_search') and state.get('ga', {}).get('finalists'):

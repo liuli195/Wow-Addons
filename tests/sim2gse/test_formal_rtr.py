@@ -143,7 +143,9 @@ def test_rtr_children_compete_in_frozen_order_against_updated_survivors(memory_g
     assert ga['pending'] is None
 
 
-def test_formal_progress_and_saved_result_keep_frozen_population(memory_ga, monkeypatch):
+@pytest.mark.parametrize('terminal,initialized', [('cancelled', True), ('failed', True),
+                                               ('cancelled', False), ('failed', False)])
+def test_formal_progress_and_saved_result_keep_frozen_population(memory_ga, monkeypatch, terminal, initialized):
     import json
     from pathlib import Path
     import search
@@ -175,9 +177,37 @@ def test_formal_progress_and_saved_result_keep_frozen_population(memory_ga, monk
     monkeypatch.setattr(result_store, 'one', lambda *a, **kw: deepcopy(saved))
     loaded = task.read_task(case.store.destination)
     assert loaded['search_result']['retest']['planned_requested_iterations'] == 6 * 3 * 128
-    paused_result = deepcopy(result)
-    paused_result.pop('search_result', None)
-    paused_result.update(status='cancelled')
+    # Match run_task's cancellation/failure payload: no completed-result search mapping.
+    paused_result = dict(status=terminal, phase='search', elapsed_seconds=1., error='interrupted')
     case.store.state.pop('search_result', None)
+    case.store.state['locked_candidate_key'] = None
+    if not initialized:
+        for name in ('effective_population_size', 'rtr_window_size'):
+            case.store.state['ga'].pop(name)
+        case.store.state['ga'].update(finalists=[], finals={})
     task._store_run(case.store.destination, paused_result, state=case.store.state)
-    assert stored['runs'][0]['search_metrics']['retest_budget']['planned_requested_iterations'] == 6 * 3 * 128
+    if initialized:
+        assert stored['runs'][0]['search_metrics']['retest_budget']['planned_requested_iterations'] == 6 * 3 * 128
+    saved = stored['runs'][0]
+    loaded = task.read_task(case.store.destination)
+    import dual_task
+    from interface import InterfaceHandler
+    parent = dict.fromkeys(dual_task.PARENT_SCHEMA)
+    parent.update(status=terminal, phase='single_target', formal_search_version=1,
+        input_sha256='fixed', config=dict(input_interval_ms=200), preparation_seconds=0., packaging_seconds=0.,
+        single_target_status='running', aoe_status='pending', single_target_path='single_target', aoe_path='aoe')
+    monkeypatch.setattr(dual_task, '_load', lambda *a: deepcopy(parent))
+    monkeypatch.setattr(Path, 'exists', lambda p: p.name == 'dual.json' or
+                        p.name == 'profile.json' and p.parent.name == 'single_target')
+    public = InterfaceHandler._read_public_state(None, case.store.destination, None)
+    scene = public['scenes'][0]
+    for values in (saved['search_metrics'], loaded['search'], scene):
+        if initialized:
+            assert (values['effective_population_size'], values['rtr_window_size']) == (6, 4)
+        else:
+            assert 'effective_population_size' not in values and 'rtr_window_size' not in values
+    assert public['recoverable']
+    if initialized:
+        assert scene['retest_budget']['planned_requested_iterations'] == 2304
+    else:
+        assert 'retest_budget' not in scene
