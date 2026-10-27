@@ -1,0 +1,26 @@
+{
+  "status": "partial-schema-proof-scope-decision-required",
+  "source": "/workspace/scratch/0af43d0efb8f/rule-step-native-smoke/pool-negative-cache/frozen-input.json",
+  "bytes": 4962559,
+  "sha256": "86fddbdaa9e54468455a32da285cd5ed3f5ee2e1bfab52431c76e734113a7821",
+  "provenance": "/workspace/scratch/0af43d0efb8f/rule-step-native-smoke/pool-negative-cache/input-provenance.json",
+  "report_version": "2.0.0",
+  "sim_version": "1210-01",
+  "upstream_matches_current_lock": "eed909156d8eccbfca0f284cc271c080949d6a20",
+  "requested_iterations": 2,
+  "effective_samples": 1,
+  "seconds": 180.0,
+  "target_count": 1,
+  "examples": {
+    "outbreak_executions_mean": 25.0,
+    "runic_corruption_uptime_percent": 45.0,
+    "sudden_doom_uptime_percent": 48.565555555555555
+  },
+  "not_proven": [
+    "general per-target DoT coverage",
+    "full supported critical-buff identity list",
+    "all actionable-button statistics mapping",
+    "current controlled-build end-to-end readiness"
+  ],
+  "native_runs": 0
+}
