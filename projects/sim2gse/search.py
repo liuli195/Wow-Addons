@@ -1447,7 +1447,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         raise ValueError('旧训练供应器检查点身份不兼容，不能恢复；原成果仍可读取')
     if not training or training_runner is None or training_stage_plan is None:
         raise ValueError('搜索必须提供共享GA执行器及完整冻结评分计划')
-    scenarios = ('nominal',) if store.state.get('formal_search') else ('nominal', 'jitter', 'pause', 'slow', 'phase')
+    scenarios = ('nominal',)
     expected = dict(search=(None, 1), feedback=(2, 1), **{name: (None, None) for name in scenarios})
     if set(training_stage_plan) != set(expected):
         raise ValueError('GA必须冻结全部评分阶段')
@@ -1487,7 +1487,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if not state.get('formal_search') and observability.get('mode') != observation_mode:
                 raise ValueError('任务恢复时搜索记录模式不能改变')
             observability['mode'] = observation_mode
-            observability['algorithm'] = 'ga-easimple-v1'
+            observability['algorithm'] = store.state['ga']['algorithm']
 
     initializing = ('behavior_identity_version' not in store.saved_fields
                     or store.saved_fields.get('phase', (None, 0))[0] == 'initialize')
@@ -1663,6 +1663,10 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if cached['request'] != request:
                     raise ValueError('缓存请求身份不符')
                 _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config)
+                if state.get('behavior_context') and purpose == 'search':
+                    from behavior import describe
+                    if cached.get('behavior') != describe(saved['report'], character, state['behavior_context']):
+                        raise ValueError('缓存行为描述与原生报告不符')
             except (BudgetExceeded, TaskCancelled):
                 raise
             except (ValueError, KeyError, TypeError, RuntimeError) as error:
@@ -1713,6 +1717,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
                            player_report(result['report'], character)['collected_data'].get('resource_overflowed',{}).get(reference['identity']['resource'],{}).get('mean',0)>0,
                            {v['simc_action']: a['simc_action'] for a in capabilities['actions'] for v in a.get('variants',[a])}) if trace else None)
+            if state.get('behavior_context') and purpose == 'search':
+                from behavior import describe
+                row['behavior'] = describe(result['report'], character, state['behavior_context'])
             if trace and 'position_summary' not in row:
                 row['position_summary'] = _position_observations(
                     compiled, behavior_id, result['trace'])
@@ -1811,7 +1818,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
                     input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
                     dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
-                    cached=bool(row.get('cached')))
+                    cached=bool(row.get('cached')), **({'behavior': row['behavior']} if 'behavior' in row else {}))
 
     def feedback_training(program):
         canonical, diagnostic = training_batch(program, 'feedback', trace=True)

@@ -48,7 +48,8 @@ def prepared_input(monkeypatch):
     from copy import deepcopy
     from types import SimpleNamespace
     import codec,program,result_store,seed_training as seeds,task
-    from test_search import _fast_capabilities
+    from test_search import _fast_capabilities, _fast_report
+    from behavior import context_for
     from test_character_export import sample_profile
     from search import config_for,digest
     config=config_for(dict(max_processes=1),training=True)
@@ -66,7 +67,8 @@ def prepared_input(monkeypatch):
     header=dict.fromkeys(seeds.PREPARED_SCHEMA)
     header.update(kind='context',config_key=key,version=seeds.PREPARATION_VERSION,
         context=dict(native=native,all_capabilities=capabilities,capabilities=capabilities,burst=None,
-                     representations={}))
+                     representations={}, behavior_context=context_for(
+                         _fast_report(character, 100., 31), character, capabilities)))
     header['checksum']=digest([{name:value for name,value in header.items() if name!='checksum'}])
     writes=[]
     monkeypatch.setattr(result_store,'read_records',lambda table,key:deepcopy([header]))
@@ -125,8 +127,8 @@ def test_training_cli_override_repairs_partial_config_without_precheck_losing_it
 
 
 @pytest.mark.parametrize(('settings','expected'),[
-    ({},('8候选','120请求批','15360请求迭代')),
-    (dict(top_k=4,retest_batches=2,retest_iterations=7),('4候选','40请求批','280请求迭代'))])
+    ({},('8候选','24请求批','3072请求迭代')),
+    (dict(top_k=4,retest_batches=2,retest_iterations=7),('4候选','8请求批','56请求迭代'))])
 def test_training_run_shows_requested_retest_maximum_before_compute_and_keeps_it_on_resume(
         monkeypatch,capsys,training_cli,settings,expected):
     import population_training,seed_training,simulation_config
@@ -141,7 +143,7 @@ def test_training_run_shows_requested_retest_maximum_before_compute_and_keeps_it
         def execute(*args,**kwargs):
             message=capsys.readouterr()
             assert all(value in message.err for value in expected)
-            assert '五场景复测' in message.err and '非实际有效样本' in message.err and message.out==''
+            assert '正常场景复测' in message.err and '非实际有效样本' in message.err and message.out==''
             checked.append(True)
             if not resume: raise TaskCancelled('fixture pause after startup')
             return dict(status='completed')
@@ -480,6 +482,48 @@ def test_public_run_training_consumes_interval_reset_logging_and_training_defaul
     assert not getattr(case.store, 'diagnostic_summary', None)
 
 
+def test_public_training_minimum_failure_preserves_snapshot_and_publication_retry_reuses_retests(
+        public_training_memory, monkeypatch):
+    from copy import deepcopy
+    import result_store
+    import seed_training, simulation_config
+    case = public_training_memory
+    writes = []
+    failure = [True]
+    def write(table, key, rows, **options):
+        if table != 'seed_selected':
+            return
+        if failure[0]:
+            raise OSError('constructed publication failure')
+        writes.append(deepcopy(rows))
+    monkeypatch.setattr(result_store, 'write', write)
+    config = dict(case.config, top_k=6, min_publish=4)
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(training=config))
+    with pytest.raises(OSError, match='publication failure'):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    assert writes == [] and case.store.state['ga']['phase'] == 'qualified'
+    calls = len(case.calls)
+    frozen = deepcopy(case.store.state['ga']['finalists'])
+    failure[0] = False
+    result = seed_training.run_training(case.template, 1, '/memory/work')
+    assert result['selected'] == 6 and len(writes) == 1 and len(writes[0]) == 6
+    assert len(case.calls) == calls and case.store.state['ga']['finalists'] == frozen
+
+
+def test_public_training_insufficient_qualified_count_never_writes_snapshot(public_training_memory, monkeypatch):
+    import result_store
+    import seed_training, simulation_config
+    case = public_training_memory
+    writes = []
+    monkeypatch.setattr(result_store, 'write', lambda table, *args, **kwargs: writes.append(table))
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None:
+        dict(training=dict(case.config, top_k=8, min_publish=7)))
+    with pytest.raises(ValueError, match='不足最低发布数'):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    assert 'seed_selected' not in writes
+    assert len(case.store.state['ga']['finalists']) == 6
+
+
 @pytest.mark.parametrize('explicit', [False, True])
 def test_public_training_resume_freezes_computation_and_only_changes_explicit_observation(
         monkeypatch, public_training_memory, explicit):
@@ -547,8 +591,8 @@ def test_training_cli_consumes_logging_selection_through_real_public_execution(
         assert case.store.state['config']['diagnostics'] == ('summary' if expected else 'off')
 
 
-@pytest.mark.parametrize('explicit, expected', [(None, True), (False, False), (True, True)])
-def test_public_training_uses_only_shared_file_curve_and_explicit_choice_wins(
+@pytest.mark.parametrize('explicit, expected', [(None, False), (False, False), (True, True)])
+def test_public_training_ignores_formal_curve_and_uses_explicit_choice(
         monkeypatch, public_training_memory, explicit, expected):
     import seed_training, simulation_config
     case = public_training_memory

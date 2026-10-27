@@ -34,7 +34,7 @@ SELECTED_SCHEMA = dict(configuration_key='JSON', candidate_id='VARCHAR', conditi
 SELECTED_V2_SCHEMA = dict(SELECTED_SCHEMA, contract_version='UBIGINT', evaluation='JSON')
 RETEST_SEEDS = (20261008, 20261009, 20261010)
 TRAINING_VERSION = 'seed-training-v2'
-PREPARATION_VERSION = 'seed-preparation-v1'
+PREPARATION_VERSION = 'seed-preparation-v2'
 PREPARED_SCHEMA = dict(CANDIDATE_SCHEMA, kind='VARCHAR', config_key='VARCHAR',
     version='VARCHAR', program_revision='VARCHAR', status='VARCHAR', reason='VARCHAR',
     initial_program='JSON', behavior_id='VARCHAR', adaptation='JSON', context='JSON',
@@ -671,13 +671,17 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                                                  burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
         reference_key = digest(dict(condition=semantic_condition(current_input, semantic_versions()),
                                     purpose='seed_reference'))
+        native_report = json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))
+        from behavior import context_for
+        behavior_context = context_for(native_report, actual_character, capabilities)
         result_store.write_batch(reference_key, dict(batch_key=reference_key, run_id=config_key,
             purpose='seed_reference', dps=native['dps'], samples=native['samples'],
-            report=json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))),
+            report=native_report),
             diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
         (setup / 'reference/native.json').unlink()
         context = dict(native=native, all_capabilities=all_capabilities, capabilities=capabilities,
-                       burst=burst_context, configuration_key=scope_key, representations={})
+                       burst=burst_context, configuration_key=scope_key, representations={},
+                       behavior_context=behavior_context)
     if context:
         from engine import ROOT
         from task import _rule_hashes
@@ -874,7 +878,7 @@ def check_training(template=None, *, use_burst=True, training_config=None):
     config = load_training_config() if training_config is None else training_config
     return dict(status='ready', **templates[0], templates=templates, groups=groups,
         engines=engines, use_burst=use_burst, training_config=config,
-        final_requested_iterations_per_group=config['top_k'] * 5 * config['retest_batches'] * config['retest_iterations'])
+        final_requested_iterations_per_group=config['top_k'] * config['retest_batches'] * config['retest_iterations'])
 
 
 def selected_contract_version(rows):
@@ -1128,8 +1132,8 @@ def main(argv=None):
                     if args.command == 'run':
                         for row, targets in jobs:
                             config = configs[(str(Path(row['template']).resolve()), targets)]
-                            batches = config['top_k'] * 5 * config['retest_batches']
-                            print(f"{Path(row['template']).name}/{targets}：五场景复测最多"
+                            batches = config['top_k'] * config['retest_batches']
+                            print(f"{Path(row['template']).name}/{targets}：正常场景复测最多"
                                   f"{config['top_k']}候选、{batches}请求批、"
                                   f"{batches * config['retest_iterations']}请求迭代（非实际有效样本）；"
                                   f"本次分组并发上限{workers}", file=sys.stderr, flush=True)

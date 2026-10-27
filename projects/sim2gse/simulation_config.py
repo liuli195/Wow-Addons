@@ -66,7 +66,7 @@ def load_config(path: str | Path | BinaryIO | TextIO | None = None) -> dict:
 
 TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
-    tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
+    min_publish=4, behavior_alpha=0.5, crossover_probability=0.8, mutation_probability=0.8)
 
 
 def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None) -> dict:
@@ -78,16 +78,16 @@ def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, 
     values = dict(TRAINING_DEFAULTS, **section)
     values.update({key: value for key, value in dict(max_processes=max_processes,
         max_trainings=max_trainings).items() if value is not None})
-    for key in set(values) - {'crossover_probability', 'mutation_probability'}:
+    for key in set(values) - {'crossover_probability', 'mutation_probability', 'behavior_alpha'}:
         if type(values[key]) is not int or values[key] < 1:
             raise ValueError('训练配置必须为正整数: ' + key)
     if values['max_processes'] > 16 or values['max_trainings'] > 10:
         raise ValueError('训练并发超出既有范围')
     if values['max_processes'] * values['max_trainings'] > 20:
         raise ValueError('训练并发与评分并发乘积不得超过20')
-    if values['top_k'] < 4:
-        raise ValueError('训练top_k必须至少为4')
-    for key in ('crossover_probability', 'mutation_probability'):
+    if values['min_publish'] > values['top_k']:
+        raise ValueError('训练min_publish不得超过top_k')
+    for key in ('crossover_probability', 'mutation_probability', 'behavior_alpha'):
         value = values[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
             raise ValueError('训练概率必须为0至1的有限数: ' + key)
@@ -144,16 +144,14 @@ def load_search_config(path=None, *, default_input_interval_ms=300, **overrides)
 
 
 def load_training_search_config(path=None, **overrides):
-    """训练文件仅沿用旧曲线开关，其余运行值只接受训练显式调用。"""
+    """训练运行值只接受训练显式调用，不继承正式配置或观测开关。"""
     from search import config_for, TRAINING_SEARCH_DEFAULTS
-    section = _search_values(path, {})
     reject_removed_search_settings(overrides)
     unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
                                     'search_observability', 'input_interval_ms', 'reset_events'}
     if unsupported:
         raise ValueError('预训练不支持搜索参数，请使用专用训练配置: ' + ', '.join(sorted(unsupported)))
-    values = {key: value for key, value in section.items() if key == 'search_timeline'}
-    values.update({key: value for key, value in overrides.items() if value is not None})
+    values = {key: value for key, value in overrides.items() if value is not None}
     projected = {key: value for key, value in values.items() if key in TRAINING_SEARCH_DEFAULTS}
     config = config_for(projected, training=True)
     config.update({key: projected[key] for key in ('diagnostics', 'search_observability') if key in projected})

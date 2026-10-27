@@ -88,7 +88,7 @@ class SimulationConfigTests(unittest.TestCase):
         path = BytesIO()
         expected = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
             retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
-            tournament_size=3, crossover_probability=.8, mutation_probability=.8)
+            min_publish=4, behavior_alpha=.5, crossover_probability=.8, mutation_probability=.8)
         self.assertEqual(load_training_config(BytesIO(path.getvalue())), expected)
         path = BytesIO(('[training]\nmax_trainings=10\nmax_processes=2').encode("utf-8"))
         self.assertEqual(load_training_config(BytesIO(path.getvalue())), dict(expected, max_processes=2, max_trainings=10))
