@@ -442,7 +442,7 @@ def test_public_configured_sample_plan_and_stagnation_are_used_without_old_stage
     requests = [options['iterations'] for _,_,options in case.calls]
     assert ga['generation'] == ga['stagnant'] == 3
     assert requests.count(4) == 6 and requests.count(8) == 8 and len(requests) == 14
-    assert case.config['top_k'] * 5 * case.config['retest_batches'] * case.config['retest_iterations'] == 320
+    assert case.config['top_k'] * case.config['retest_batches'] * case.config['retest_iterations'] == 64
 
 
 # Coarse recovery stays in memory below; physical publication recovery keeps one retest group.

@@ -218,10 +218,10 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     or digest(batches[0].get('request')) != row['batch_key']
                     or any(batches[0].get(field) != row[field] for field in ('dps', 'samples'))
                     or batches[0].get('behavior') != row.get('behavior')):
-                raise ValueError('恢复粗评档案与冻结条件的成功凭据不符；已暂停，旧四条保持不变')
+                raise ValueError('恢复粗评档案与冻结条件的成功凭据不符；已暂停，旧快照保持不变')
         fitness = {row['candidate_key']: row['dps'] for row in verified}
         if any(fitness.get(row['key']) != row['score'] for row in ga['population']):
-            raise ValueError('恢复种群粗分与成功凭据不符；已暂停，旧四条保持不变')
+            raise ValueError('恢复种群粗分与成功凭据不符；已暂停，旧快照保持不变')
         if ga['phase'] == 'initial':
             rows = scores(store.state['starts'], allow_rejections=bool(policy))
             unique = {}
@@ -533,7 +533,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             simulation_config=ready['simulation_config']), resumed=bool(active))
         timeline.configure(profile_sha=ready['template_sha'], engines=ready['engines'],
             simulation_config=ready['simulation_config'], config=manifest['search_config'], burst=context['burst'])
-        timeline.context['algorithm'].update(training=ALGORITHM, random_seed=manifest['seed'], training_config=config)
+        timeline.context['algorithm'].update(training=TRAINING_ALGORITHM, random_seed=manifest['seed'], training_config=config)
         runtime.search_timeline = timeline
     try:
         if not store.state:
@@ -576,6 +576,10 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         return dict(status='completed', algorithm=TRAINING_ALGORITHM, population_size=len(manifest['starts']),
             complete_generations=ga['generation'], configuration_key=configuration_key,
             selected=len(selected), task_path=str(folder), training_config=config,
+            retest=selected[0]['evaluation']['retest'],
+            evaluation_counts=dict(native_batch_starts=store.state.get('native_batch_starts', 0),
+                **{key: store.state.get(key, 0) if execution_config['diagnostic_logging'] else None
+                   for key in ('batch_requests', 'batch_cache_hits')}),
             ineligible=ga.get('ineligible', {}))
     except BaseException as error:
         store.state.update(status='paused', error=str(error))
@@ -617,7 +621,7 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
                         or row['candidate_key'] != identity):
                     raise ValueError('发布复测凭据与冻结候选/条件/成绩不符')
                 if row['batch_key'] in receipts:
-                    raise ValueError('发布复测凭据重复；旧四条保持不变')
+                    raise ValueError('发布复测凭据重复；旧快照保持不变')
                 receipts[row['batch_key']] = (cached, index, scenario)
             samples = sum(row['samples'] for row in batches)
             results[scenario] = dict(dps=sum(row['dps'] * row['samples'] for row in batches) / samples,
@@ -639,23 +643,34 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
     for group, targets in groups.items():
         saved_rows = read_many('batches', [group])
         if len(saved_rows) > 12:
-            raise ValueError('发布报告组超过十二份；旧四条保持不变')
+            raise ValueError('发布报告组超过十二份；旧快照保持不变')
         found = set()
         for saved in saved_rows:
             key = saved.get('batch_key')
             if key not in targets:
                 continue
             if key in found:
-                raise ValueError('发布复测报告重复；旧四条保持不变')
+                raise ValueError('发布复测报告重复；旧快照保持不变')
             found.add(key)
             cached, index, scenario = targets[key]
             _validate_saved_batch(saved, key, cached, character, index, scenario,
                                   simulation_config)
         if found != targets.keys():
-            raise ValueError('发布缺少完整复测报告；旧四条保持不变')
+            raise ValueError('发布缺少完整复测报告；旧快照保持不变')
         # Only small receipts survive the group; do not retain the last full report.
         del saved_rows, saved
     return qualified
+
+
+def retest_budget(ga, config, scenarios=SCENARIOS):
+    """Frozen finalist workload, separate from actual valid samples or cache activity."""
+    planned_batches = len(ga['finalists']) * len(scenarios) * config['retest_batches']
+    receipts = {row['batch_key']: row for identity in ga['finalists'] for scenario in scenarios
+                for row in ga['finals'].get(identity, {}).get(scenario, {}).values()}
+    return dict(candidates=len(ga['finalists']), scenarios=len(scenarios),
+        batches_per_candidate=config['retest_batches'], iterations_per_batch=config['retest_iterations'],
+        planned_batches=planned_batches, planned_requested_iterations=planned_batches * config['retest_iterations'],
+        completed_batches=len(receipts), effective_samples=sum(row['samples'] for row in receipts.values()))
 
 
 def _selected(ga, store, manifest, character, ready, configuration_key):
@@ -686,6 +701,7 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],
             template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=3,
             evaluation=dict(scenarios=row['scenarios'],
+                retest=retest_budget(ga, config),
                 nominal_champion=row['identity'] == nominal[0]['identity'],
                 publication=dict(count=len(chosen), top_k=config['top_k'], min_publish=config['min_publish'])))
         result.append(record)

@@ -524,6 +524,33 @@ def test_public_training_insufficient_qualified_count_never_writes_snapshot(publ
     assert len(case.store.state['ga']['finalists']) == 6
 
 
+@pytest.mark.parametrize('entry', ['api', 'cli'])
+def test_public_training_reports_actual_retest_budget_and_samples(
+        public_training_memory, monkeypatch, capsys, entry):
+    import seed_training, simulation_config, result_store
+    case = public_training_memory
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None:
+        dict(training=dict(case.config, top_k=8)))
+    selected = []
+    def write(table, key, rows, **kwargs):
+        if table == 'seed_selected': selected.extend(rows)
+    monkeypatch.setattr(result_store, 'write', write)
+    if entry == 'api':
+        result = seed_training.run_training(case.template, 1, '/memory/work')
+    else:
+        assert seed_training.main(['--project', '/memory', 'run', '--legacy', '--targets', '1',
+                                  '--workspace', '/memory/work']) == 0
+        result = json.loads(capsys.readouterr().out)[0]
+    assert result['selected'] == 6
+    assert result['retest'] == dict(candidates=6, scenarios=1, batches_per_candidate=3,
+        iterations_per_batch=128, planned_batches=18, planned_requested_iterations=2304,
+        completed_batches=18, effective_samples=2286)
+    assert all(row['evaluation']['retest'] == result['retest'] for row in selected)
+    assert result['evaluation_counts']['batch_requests'] is None
+    assert result['evaluation_counts']['batch_cache_hits'] is None
+    assert result['evaluation_counts']['native_batch_starts'] == 24
+
+
 @pytest.mark.parametrize('explicit', [False, True])
 def test_public_training_resume_freezes_computation_and_only_changes_explicit_observation(
         monkeypatch, public_training_memory, explicit):

@@ -20,6 +20,8 @@ def test_formal_freezes_actual_population_and_rtr_window(memory_ga, count, windo
     public = _public_state(result, case.store.destination)
     assert public['search_metrics']['effective_population_size'] == count
     assert public['search_metrics']['rtr_window_size'] == window
+    assert public['search_result']['retest']['planned_requested_iterations'] == 8 * 3 * 128
+    assert public['search_result']['retest']['effective_samples'] == 8 * 3 * 127
     previous = deepcopy(case.store.state['ga'])
     calls = len(case.calls)
     assert case.run()['selected_candidate_key'] == result['selected_candidate_key']

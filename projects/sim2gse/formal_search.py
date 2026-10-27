@@ -81,7 +81,7 @@ def contract_for(config, *, version=VERSION):
 
 def run(*, profile, character, capabilities, reference, destination, runtime,
         config, condition_key, store, simulation_config):
-    from population_training import _evolution, _retest_scores
+    from population_training import _evolution, _retest_scores, retest_budget
     from search import optimize
     state = store.state
     frozen = contract_for(config)
@@ -127,7 +127,7 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
     summary = dict(dps=winner['score'], samples=winner['samples'], reference_dps=reference['dps'],
         reference_ratio=winner['score'] / reference['dps'] if reference['dps'] else None,
         retest=dict(scenario='nominal', batches=ga_config['retest_batches'],
-                    requested_iterations=ga_config['retest_iterations']))
+                    requested_iterations=ga_config['retest_iterations'], **retest_budget(ga, ga_config)))
     state['search_result'] = summary
     runtime.check()
     store.checkpoint()

@@ -1,0 +1,29 @@
+FFFF                                                                     [100%]
+================================== FAILURES ===================================
+__________ test_formal_freezes_actual_population_and_rtr_window[9-6] __________
+tests\sim2gse\test_formal_rtr.py:23: in test_formal_freezes_actual_population_and_rtr_window
+    assert public['search_result']['retest']['planned_requested_iterations'] == 8 * 3 * 128
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'planned_requested_iterations'
+_________ test_formal_freezes_actual_population_and_rtr_window[10-7] __________
+tests\sim2gse\test_formal_rtr.py:23: in test_formal_freezes_actual_population_and_rtr_window
+    assert public['search_result']['retest']['planned_requested_iterations'] == 8 * 3 * 128
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'planned_requested_iterations'
+_________ test_formal_freezes_actual_population_and_rtr_window[13-9] __________
+tests\sim2gse\test_formal_rtr.py:23: in test_formal_freezes_actual_population_and_rtr_window
+    assert public['search_result']['retest']['planned_requested_iterations'] == 8 * 3 * 128
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'planned_requested_iterations'
+_________ test_formal_freezes_actual_population_and_rtr_window[15-10] _________
+tests\sim2gse\test_formal_rtr.py:23: in test_formal_freezes_actual_population_and_rtr_window
+    assert public['search_result']['retest']['planned_requested_iterations'] == 8 * 3 * 128
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'planned_requested_iterations'
+=========================== short test summary info ===========================
+FAILED tests/sim2gse/test_formal_rtr.py::test_formal_freezes_actual_population_and_rtr_window[9-6]
+FAILED tests/sim2gse/test_formal_rtr.py::test_formal_freezes_actual_population_and_rtr_window[10-7]
+FAILED tests/sim2gse/test_formal_rtr.py::test_formal_freezes_actual_population_and_rtr_window[13-9]
+FAILED tests/sim2gse/test_formal_rtr.py::test_formal_freezes_actual_population_and_rtr_window[15-10]
+4 failed, 11 deselected in 0.71s
+exit_code=1

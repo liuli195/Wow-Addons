@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**实施状态:** 已实施并完成普通回归，待独立审查；真实验证待授权、正式规格仅预览。详见[实施记录](../ticket-03-implementation.md)。
+
 **实施授权:** 完整门禁一已获用户当次确认；本机按批准分支、模型、顺序与预算实施。
 
 ## Acceptance criteria
