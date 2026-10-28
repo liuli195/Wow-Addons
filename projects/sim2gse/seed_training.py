@@ -890,11 +890,17 @@ def selected_contract_version(rows):
     if version == 2 and len(rows) != 4:
         raise ValueError('v2训练成果必须是完整四条')
     if version == 3:
-        publication = (rows[0].get('evaluation') or {}).get('publication')
+        try:
+            evaluations = [decode(row.get('evaluation')) for row in rows]
+        except ValueError as error:
+            raise ValueError('v3训练成果发布人数校验失败：evaluation不是有效JSON对象') from error
+        if any(not isinstance(evaluation, dict) for evaluation in evaluations):
+            raise ValueError('v3训练成果发布人数校验失败：evaluation必须为对象')
+        publication = evaluations[0].get('publication')
         if (not isinstance(publication, dict) or set(publication) != {'count', 'top_k', 'min_publish'}
                 or any(type(value) is not int for value in publication.values())
                 or not 1 <= publication['min_publish'] <= len(rows) == publication['count'] <= publication['top_k']
-                or any((row.get('evaluation') or {}).get('publication') != publication for row in rows)
+                or any(evaluation.get('publication') != publication for evaluation in evaluations)
                 or len({row.get('candidate_id') for row in rows}) != len(rows)):
             raise ValueError('v3训练成果发布人数或完整性不符')
     return version

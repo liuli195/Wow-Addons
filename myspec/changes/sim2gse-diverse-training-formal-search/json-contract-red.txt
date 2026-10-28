@@ -1,0 +1,74 @@
+.FFFFFFFF.                                                               [100%]
+================================== FAILURES ===================================
+_____ test_connected_consumer_reads_writes_without_old_user_installation ______
+tests\sim2gse\test_data_store_connection.py:65: in test_connected_consumer_reads_writes_without_old_user_installation
+    assert result.returncode == 0, result.stderr
+E   AssertionError: Traceback (most recent call last):
+E       File "<string>", line 18, in <module>
+E       File "D:\My Project\Wow Addons\projects\sim2gse\seed_training.py", line 893, in selected_contract_version
+E         publication = (rows[0].get('evaluation') or {}).get('publication')
+E                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E     AttributeError: 'str' object has no attribute 'get'
+E     
+E   assert 1 == 0
+E    +  where 1 = CompletedProcess(args=['D:\\My Project\\Wow Addons\\.venv\\Scripts\\python.exe', '-c', "import json,runpy,sys\nm=runpy...)\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: \'str\' object has no attribute \'get\'\n').returncode
+____ test_selected_v3_rejects_malformed_or_non_object_evaluation[{broken] _____
+tests\sim2gse\test_data_store_connection.py:73: in test_selected_v3_rejects_malformed_or_non_object_evaluation
+    selected_contract_version([dict(candidate_id='one',contract_version=3,evaluation=evaluation)])
+projects\sim2gse\seed_training.py:893: in selected_contract_version
+    publication = (rows[0].get('evaluation') or {}).get('publication')
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'str' object has no attribute 'get'
+_______ test_selected_v3_rejects_malformed_or_non_object_evaluation[[]] _______
+tests\sim2gse\test_data_store_connection.py:73: in test_selected_v3_rejects_malformed_or_non_object_evaluation
+    selected_contract_version([dict(candidate_id='one',contract_version=3,evaluation=evaluation)])
+projects\sim2gse\seed_training.py:893: in selected_contract_version
+    publication = (rows[0].get('evaluation') or {}).get('publication')
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'str' object has no attribute 'get'
+______ test_selected_v3_rejects_malformed_or_non_object_evaluation[null] ______
+tests\sim2gse\test_data_store_connection.py:73: in test_selected_v3_rejects_malformed_or_non_object_evaluation
+    selected_contract_version([dict(candidate_id='one',contract_version=3,evaluation=evaluation)])
+projects\sim2gse\seed_training.py:893: in selected_contract_version
+    publication = (rows[0].get('evaluation') or {}).get('publication')
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'str' object has no attribute 'get'
+______ test_selected_v3_rejects_malformed_or_non_object_evaluation[42_0] ______
+tests\sim2gse\test_data_store_connection.py:73: in test_selected_v3_rejects_malformed_or_non_object_evaluation
+    selected_contract_version([dict(candidate_id='one',contract_version=3,evaluation=evaluation)])
+projects\sim2gse\seed_training.py:893: in selected_contract_version
+    publication = (rows[0].get('evaluation') or {}).get('publication')
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'str' object has no attribute 'get'
+_____ test_selected_v3_rejects_malformed_or_non_object_evaluation["text"] _____
+tests\sim2gse\test_data_store_connection.py:73: in test_selected_v3_rejects_malformed_or_non_object_evaluation
+    selected_contract_version([dict(candidate_id='one',contract_version=3,evaluation=evaluation)])
+projects\sim2gse\seed_training.py:893: in selected_contract_version
+    publication = (rows[0].get('evaluation') or {}).get('publication')
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'str' object has no attribute 'get'
+__ test_selected_v3_rejects_malformed_or_non_object_evaluation[evaluation5] ___
+tests\sim2gse\test_data_store_connection.py:72: in test_selected_v3_rejects_malformed_or_non_object_evaluation
+    with pytest.raises(ValueError, match='v3.*evaluation'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: Regex pattern did not match.
+E     Expected regex: 'v3.*evaluation'
+E     Actual message: 'v3璁粌鎴愭灉鍙戝竷浜烘暟鎴栧畬鏁存€т笉绗?
+______ test_selected_v3_rejects_malformed_or_non_object_evaluation[42_1] ______
+tests\sim2gse\test_data_store_connection.py:73: in test_selected_v3_rejects_malformed_or_non_object_evaluation
+    selected_contract_version([dict(candidate_id='one',contract_version=3,evaluation=evaluation)])
+projects\sim2gse\seed_training.py:893: in selected_contract_version
+    publication = (rows[0].get('evaluation') or {}).get('publication')
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'int' object has no attribute 'get'
+=========================== short test summary info ===========================
+FAILED tests/sim2gse/test_data_store_connection.py::test_connected_consumer_reads_writes_without_old_user_installation
+FAILED tests/sim2gse/test_data_store_connection.py::test_selected_v3_rejects_malformed_or_non_object_evaluation[{broken]
+FAILED tests/sim2gse/test_data_store_connection.py::test_selected_v3_rejects_malformed_or_non_object_evaluation[[]]
+FAILED tests/sim2gse/test_data_store_connection.py::test_selected_v3_rejects_malformed_or_non_object_evaluation[null]
+FAILED tests/sim2gse/test_data_store_connection.py::test_selected_v3_rejects_malformed_or_non_object_evaluation[42_0]
+FAILED tests/sim2gse/test_data_store_connection.py::test_selected_v3_rejects_malformed_or_non_object_evaluation["text"]
+FAILED tests/sim2gse/test_data_store_connection.py::test_selected_v3_rejects_malformed_or_non_object_evaluation[evaluation5]
+FAILED tests/sim2gse/test_data_store_connection.py::test_selected_v3_rejects_malformed_or_non_object_evaluation[42_1]
+8 failed, 2 passed in 0.99s
+exit_code=1
